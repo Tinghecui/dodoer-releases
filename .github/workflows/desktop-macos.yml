@@ -2,12 +2,10 @@
 # .github/public/workflows/ 里维护）。跑在 GitHub 托管的 macOS 机器上，公开仓库不收费。
 # 编法、冒烟、打包都在 scripts/cowork-desktop-build.sh 里。两种包（完整版、纯客户端版）在两台机器上同时编（matrix），
 # 各自编前端、sidecar 和主程序（不共用：纯客户端版换了 feature 和编进二进制的 Tauri 配置，主程序反正要重编），最后 publish 汇总发版。
-# 不发版的构建（每晚、macos/pr/<n>、手动不勾 publish）codeg 这个 crate 用 opt-level 1（依赖照旧，缓存和发版共用），快三四成；
-# 发版那次是正式的 release 配置。
 #
 # - tag cowork-codeg-vX.Y.Z 同步过来：编正式版，版本号 1.Y.Z，发到本仓库的 Release v1.Y.Z：两种包各自的安装 zip、
 #   自动更新用的 .app.tar.gz + .sig、latest.json 和 latest-client.json。装好的 app 从 releases/latest/download/latest(-client).json 查更新
-# - 每晚（北京时间 02:00）编一次 main，两种包都冒烟、不发：PR 上只查配置（test.yml 的 Desktop editions），编出来的包最晚第二天知道。
+# - 每晚（北京时间 02:37）编一次 main，两种包都冒烟、不发：PR 上只查配置（test.yml 的 Desktop editions），编出来的包最晚第二天知道。
 #   main 的这个提交已经有一次成功的 desktop-macos（前一晚、或者打 tag 发版那次）就跳过
 # - 私有 PR 打了 macos-build 标签：public-sync 把它同步到 macos/pr/<n>，这里编、冒烟、不发，结果报回那个 PR（「公开 CI / desktop-macos」）。
 #   PR 再推会重编（上一次没编完的取消），去掉标签或关掉 PR 就删 macos/pr/<n>
@@ -22,7 +20,8 @@ on:
     tags: ["cowork-codeg-v*"]
     branches: ["macos/pr/**"]
   schedule:
-    - cron: "0 18 * * *"
+    # 不放整点：GitHub 整点的定时任务最挤，会晚很久或者干脆丢掉（2026-11-07 第一晚 18:00 的那次就没跑）
+    - cron: "37 18 * * *"
   workflow_dispatch:
     inputs:
       ref:
@@ -155,15 +154,6 @@ jobs:
           key: pnpm-macos-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: pnpm-macos-
       - run: pnpm install --frozen-lockfile
-
-      # 只给 codeg 这一个 crate 降级（profile 的 package 覆盖）：依赖的编译指纹不变，rust-cache 恢复的依赖照样能用。
-      # 写在 rust-cache 之后：它把 .cargo/config.toml 算进缓存 key，先写就和发版的缓存分家了
-      - name: 不发版：codeg 用 opt-level 1
-        if: needs.prepare.outputs.publish != 'true'
-        run: |
-          mkdir -p src-tauri/.cargo
-          printf '[profile.release.package.codeg]\nopt-level = 1\n' >> src-tauri/.cargo/config.toml
-          cat src-tauri/.cargo/config.toml
 
       - id: build
         name: tauri build、冒烟、打包（${{ matrix.edition }}）

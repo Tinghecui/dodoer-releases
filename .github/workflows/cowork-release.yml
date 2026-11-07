@@ -155,6 +155,9 @@ jobs:
             dist/smoke.txt
           retention-days: 14
 
+      # 本仓库的「Latest」必须一直是桌面版 v1.Y.Z：装好的 app 从 releases/latest/download/latest(-client).json 查更新，
+      # server 包的 Release 一旦成了 Latest，这两个地址就 404、桌面版收不到更新。所以这里固定 --latest=false。
+      # tag 带后缀（cowork-codeg-vX.Y.Z-test.1 这种，演练用）的标成 prerelease。
       - name: 发 Release（已有同名 Release 就只替换资产）
         if: steps.meta.outputs.publish == 'true'
         env:
@@ -163,7 +166,8 @@ jobs:
         run: |
           set -euo pipefail
           if ! gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release create "$VERSION" --title "$VERSION" --notes "$(printf '%s\n\n%s' "Cowork 用的 codeg-server（基于 codeg v0.40.0）。" "资产：$NAME.tar.gz（linux x64，glibc >= 2.35）及 .sha256")"
+            pre=(); [[ "$VERSION" =~ ^cowork-codeg-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || pre=(--prerelease)
+            gh release create "$VERSION" --latest=false "${pre[@]}" --title "$VERSION" --notes "$(printf '%s\n\n%s' "Cowork 用的 codeg-server（基于 codeg v0.40.0）。" "资产：$NAME.tar.gz（linux x64，glibc >= 2.35）及 .sha256")"
           fi
           gh release upload "$VERSION" "dist/$NAME.tar.gz" "dist/$NAME.tar.gz.sha256" --clobber
           cat "dist/$NAME.tar.gz.sha256"

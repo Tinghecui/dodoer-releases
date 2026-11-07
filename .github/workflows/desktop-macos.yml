@@ -165,7 +165,8 @@ jobs:
           if gh release view "$rel" -R "$RELEASE_REPO" >/dev/null 2>&1; then
             gh release upload "$rel" -R "$RELEASE_REPO" --clobber "${files[@]}"
           else
-            gh release create "$rel" -R "$RELEASE_REPO" --target main \
+            # --latest：本仓库也放 server 包的 Release，Latest 要明确给桌面版（app 从 releases/latest/download/ 查更新）
+            gh release create "$rel" -R "$RELEASE_REPO" --target main --latest \
               --title "dodoer ${VERSION}（${TAG}）" --notes "$body" "${files[@]}"
           fi
           echo "### dodoer $VERSION 已发布：https://github.com/$RELEASE_REPO/releases/tag/$rel" >> "$GITHUB_STEP_SUMMARY"

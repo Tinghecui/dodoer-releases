@@ -6767,7 +6767,7 @@ fn conversation_worktree_dir(repo_name: &str, branch: &str) -> String {
     }
 }
 
-async fn git_ref_exists(repo: &str, full_ref: &str) -> Result<bool, AppCommandError> {
+pub(crate) async fn git_ref_exists(repo: &str, full_ref: &str) -> Result<bool, AppCommandError> {
     let out = crate::process::tokio_command("git")
         .args(["rev-parse", "--verify", "--quiet", full_ref])
         .current_dir(repo)
@@ -6972,15 +6972,70 @@ pub struct ConversationWorktreeCreated {
     pub setup_command: Option<String>,
 }
 
+/// Cowork fork: [`create_conversation_worktree_core`], then — when the first
+/// send handed over its message (`auto_name`) and the spec forks a new branch
+/// — rename that placeholder branch after the message in the background (see
+/// [`crate::worktree_autoname`]). Returns as soon as the worktree exists; the
+/// rename arrives later as a `folder://changed` upsert.
+pub async fn create_conversation_worktree_named_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    manager: &crate::acp::manager::ConnectionManager,
+    data_dir: &Path,
+    folder_id: i32,
+    spec: ConversationWorktreeSpec,
+    auto_name: Option<crate::worktree_autoname::AutoNameSeed>,
+) -> Result<ConversationWorktreeCreated, AppCommandError> {
+    let placeholder = match &spec {
+        ConversationWorktreeSpec::BranchOff { branch, .. } => Some(branch.trim().to_string()),
+        ConversationWorktreeSpec::Checkout { .. } => None,
+    };
+    let created = create_conversation_worktree_core(emitter, db, folder_id, spec).await?;
+    if let (Some(seed), Some(placeholder), Some(root_folder_id)) =
+        (auto_name, placeholder, created.folder.parent_id)
+    {
+        crate::worktree_autoname::spawn(crate::worktree_autoname::AutoNameJob {
+            emitter: emitter.clone(),
+            conn: db.conn.clone(),
+            manager: manager.clone_ref(),
+            data_dir: data_dir.to_path_buf(),
+            root_folder_id,
+            folder_id: created.folder.id,
+            worktree_path: created.folder.path.clone(),
+            placeholder,
+            seed,
+        });
+    }
+    Ok(created)
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn create_conversation_worktree(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
+    manager: tauri::State<'_, crate::acp::manager::ConnectionManager>,
     folder_id: i32,
     spec: ConversationWorktreeSpec,
+    auto_name: Option<crate::worktree_autoname::AutoNameSeed>,
 ) -> Result<ConversationWorktreeCreated, AppCommandError> {
-    create_conversation_worktree_core(&EventEmitter::Tauri(app), &db, folder_id, spec).await
+    use tauri::Manager;
+    // The same data directory a session launch resolves (see `acp_connect`).
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map(|p| crate::paths::resolve_effective_data_dir(&p))
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    create_conversation_worktree_named_core(
+        &EventEmitter::Tauri(app),
+        &db,
+        &manager,
+        &data_dir,
+        folder_id,
+        spec,
+        auto_name,
+    )
+    .await
 }
 
 #[cfg(test)]

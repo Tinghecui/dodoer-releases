@@ -1335,10 +1335,20 @@ const ConversationTabView = memo(function ConversationTabView({
             // The init command runs in the background; the message does not
             // wait for it (Paseo's order too). Its outcome only becomes a
             // toast — a failed install must not hold the conversation back.
+            // Cowork fork: a branch the user left unnamed is named after this
+            // first message in the background; the send does not wait for it.
+            const autoName =
+              draftWorktree.kind === "branch_off" && draftWorktree.auto_name
+                ? {
+                    message: draft.displayText,
+                    agent: draftTab.agentType,
+                  }
+                : null
             const created = await createConversationWorktreeWatchingSetup(
               draftTab.folderId,
               draftWorktree,
-              (result) => notifyWorktreeSetupResult(result, tBranch)
+              (result) => notifyWorktreeSetupResult(result, tBranch),
+              autoName
             )
             notifyWorktreeCreated(created, tBranch)
             const detail = created.folder

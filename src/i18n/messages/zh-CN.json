@@ -2770,6 +2770,7 @@
         "switchFailed": "切换分支失败",
         "openStashWindowFailed": "打开贮藏窗口失败",
         "worktreePlanned": "发送后将在新工作树中开始：{branch}",
+        "worktreePlannedAuto": "发送第一条消息时会建新工作树，分支名由 AI 根据这条消息起",
         "worktreeCreateFailed": "创建工作树失败",
         "worktreeIncludeCopied": "已按 .worktreeinclude 拷贝 {count} 个被忽略的文件",
         "worktreeIncludeFailed": ".worktreeinclude 里有 {count} 个文件没能拷贝",
@@ -2856,6 +2857,7 @@
         "savingRemotes": "保存中...",
         "startWorktreeTitle": "在新工作树中开始",
         "startWorktreeDescription": "发送第一条消息时才创建分支和工作树，此前不会改动仓库。",
+        "branchNameAutoPlaceholder": "留空则由 AI 根据第一条消息起名",
         "baseLabel": "起点",
         "baseCurrent": "{branch}（当前）"
       },
@@ -2902,8 +2904,11 @@
       "noMatches": "无匹配项",
       "startInWorktree": "在新工作树中开始…",
       "clearWorktree": "不用工作树（在当前目录开始）",
+      "editWorktree": "调整新工作树…",
+      "worktreeAutoLabel": "新工作树",
       "openInWorktree": "在新工作树中打开",
       "worktreePlannedTitle": "发送后将在新工作树中开始：{branch}（基于 {base}）",
+      "worktreePlannedAutoTitle": "发送后将在新工作树中开始（基于 {base}），分支名由 AI 根据第一条消息起",
       "worktreeCleanup": {
         "title": "最后一个会话已删除，工作树 {branch} 仍在磁盘上",
         "action": "删除工作树及分支",

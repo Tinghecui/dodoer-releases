@@ -2770,6 +2770,7 @@
         "switchFailed": "切換分支失敗",
         "openStashWindowFailed": "開啟收藏視窗失敗",
         "worktreePlanned": "送出後將在新工作樹中開始：{branch}",
+        "worktreePlannedAuto": "送出第一則訊息時會建立新工作樹，分支名稱由 AI 根據這則訊息命名",
         "worktreeCreateFailed": "建立工作樹失敗",
         "worktreeIncludeCopied": "已依 .worktreeinclude 複製 {count} 個被忽略的檔案",
         "worktreeIncludeFailed": ".worktreeinclude 中有 {count} 個檔案無法複製",
@@ -2856,6 +2857,7 @@
         "savingRemotes": "儲存中...",
         "startWorktreeTitle": "在新工作樹中開始",
         "startWorktreeDescription": "送出第一則訊息時才建立分支和工作樹，之前不會變更儲存庫。",
+        "branchNameAutoPlaceholder": "留空則由 AI 根據第一則訊息命名",
         "baseLabel": "起點",
         "baseCurrent": "{branch}（目前）"
       },
@@ -2902,8 +2904,11 @@
       "noMatches": "無相符項目",
       "startInWorktree": "在新工作樹中開始…",
       "clearWorktree": "不用工作樹（在目前目錄開始）",
+      "editWorktree": "調整新工作樹…",
+      "worktreeAutoLabel": "新工作樹",
       "openInWorktree": "在新工作樹中開啟",
       "worktreePlannedTitle": "送出後將在新工作樹中開始：{branch}（基於 {base}）",
+      "worktreePlannedAutoTitle": "送出後將在新工作樹中開始（基於 {base}），分支名稱由 AI 根據第一則訊息命名",
       "worktreeCleanup": {
         "title": "最後一個對話已刪除，工作樹 {branch} 仍在磁碟上",
         "action": "刪除工作樹及分支",

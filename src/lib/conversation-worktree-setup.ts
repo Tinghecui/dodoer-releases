@@ -1,6 +1,7 @@
 import { createConversationWorktree } from "@/lib/api"
 import { subscribe } from "@/lib/platform"
 import type {
+  ConversationWorktreeAutoName,
   ConversationWorktreeCreated,
   ConversationWorktreeSetupResult,
   ConversationWorktreeSpec,
@@ -32,7 +33,8 @@ const SETUP_WATCH_LIMIT_MS = 2 * 60 * 60 * 1000
 export async function createConversationWorktreeWatchingSetup(
   folderId: number,
   spec: ConversationWorktreeSpec,
-  onSetupDone: (result: ConversationWorktreeSetupResult) => void
+  onSetupDone: (result: ConversationWorktreeSetupResult) => void,
+  autoName: ConversationWorktreeAutoName | null = null
 ): Promise<ConversationWorktreeCreated> {
   const early: ConversationWorktreeSetupResult[] = []
   let target: number | null = null
@@ -67,7 +69,7 @@ export async function createConversationWorktreeWatchingSetup(
 
   let created: ConversationWorktreeCreated
   try {
-    created = await createConversationWorktree(folderId, spec)
+    created = await createConversationWorktree(folderId, spec, autoName)
   } catch (e) {
     stop()
     throw e

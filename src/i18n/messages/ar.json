@@ -2770,6 +2770,7 @@
         "switchFailed": "فشل تبديل الفرع",
         "openStashWindowFailed": "فشل فتح نافذة الـ stash",
         "worktreePlanned": "سيبدأ في شجرة عمل جديدة عند الإرسال: {branch}",
+        "worktreePlannedAuto": "تُنشأ شجرة عمل جديدة عند الإرسال، ويسمّي الوكيل فرعها من رسالتك الأولى",
         "worktreeCreateFailed": "تعذّر إنشاء شجرة العمل",
         "worktreeIncludeCopied": "تم نسخ {count, plural, one {ملف متجاهَل واحد} other {# ملفات متجاهَلة}} من .worktreeinclude",
         "worktreeIncludeFailed": "تعذّر نسخ {count, plural, one {ملف واحد} other {# ملفات}} من .worktreeinclude",
@@ -2856,6 +2857,7 @@
         "savingRemotes": "جارٍ الحفظ...",
         "startWorktreeTitle": "البدء في شجرة عمل جديدة",
         "startWorktreeDescription": "يُنشأ الفرع وشجرة العمل عند إرسال أول رسالة؛ لا يتغير شيء في المستودع قبل ذلك.",
+        "branchNameAutoPlaceholder": "اتركه فارغًا لتسميته من رسالتك الأولى",
         "baseLabel": "نقطة البداية",
         "baseCurrent": "{branch} (الحالي)"
       },
@@ -2902,8 +2904,11 @@
       "noMatches": "لا توجد نتائج",
       "startInWorktree": "البدء في شجرة عمل جديدة…",
       "clearWorktree": "بدون شجرة عمل — البدء في هذا الفرع الحالي",
+      "editWorktree": "تعديل شجرة العمل الجديدة…",
+      "worktreeAutoLabel": "شجرة عمل جديدة",
       "openInWorktree": "فتح في شجرة عمل جديدة",
       "worktreePlannedTitle": "يبدأ في شجرة عمل جديدة عند الإرسال: {branch} (من {base})",
+      "worktreePlannedAutoTitle": "يبدأ في شجرة عمل جديدة عند الإرسال (من {base})، ويُسمّى الفرع من رسالتك الأولى",
       "worktreeCleanup": {
         "title": "حُذفت آخر محادثة؛ شجرة العمل {branch} ما زالت على القرص",
         "action": "حذف شجرة العمل والفرع",

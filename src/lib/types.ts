@@ -4992,12 +4992,24 @@ export type ConversationWorktreeSpec =
       /** Where it forks from (local branch, `origin/x`, or any commit-ish);
        *  `null` forks from the root checkout's HEAD. */
       base: string | null
+      /** Cowork fork: `branch` is only a placeholder — after the first send
+       *  an agent renames it after that message (Paseo-style; see Rust
+       *  `worktree_autoname`). */
+      auto_name?: boolean
     }
   | {
       kind: "checkout"
       /** An existing branch (`origin/x` checks out the tracking local `x`). */
       branch: string
     }
+
+/** Cowork fork: the first message a new conversation worktree's branch is
+ *  named after (mirrors Rust `AutoNameSeed`). `agent` names it when the
+ *  commit message settings pick no agent. */
+export interface ConversationWorktreeAutoName {
+  message: string
+  agent: AgentType | null
+}
 
 /** What `.worktreeinclude` copied into a new conversation worktree (mirrors
  *  Rust `WorktreeIncludeCopy`). Paths are relative to the worktree. */

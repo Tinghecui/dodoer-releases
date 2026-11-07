@@ -770,6 +770,7 @@ function sanitizeWorktreeSpec(
       kind: "branch_off",
       branch: v.branch,
       base: typeof v.base === "string" && v.base.length > 0 ? v.base : null,
+      ...(v.auto_name === true ? { auto_name: true } : {}),
     }
   }
   return undefined

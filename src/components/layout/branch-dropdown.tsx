@@ -39,7 +39,6 @@ import { Label } from "@/components/ui/label"
 import {
   gitInit,
   gitNewBranch,
-  gitWorktreeAdd,
   gitListAllBranches,
   gitMerge,
   gitRebase,
@@ -48,7 +47,6 @@ import {
   gitRemoveWorktree,
 } from "@/lib/api"
 import { subscribe } from "@/lib/platform"
-import { DirectoryPathInput } from "@/components/shared/directory-path-input"
 import { useSwitchToBranch } from "@/hooks/use-switch-to-branch"
 import {
   buildBranchTree,
@@ -76,11 +74,9 @@ import type {
   FolderDetail,
   GitBranchList,
 } from "@/lib/types"
-import { fsBaseName, siblingFsPath } from "@/lib/path-utils"
 import { defaultConversationBranch } from "@/lib/worktree-slug"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
-import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useGitCredential } from "@/contexts/git-credential-context"
 
 type ConfirmAction = {
@@ -164,8 +160,7 @@ export function BranchDropdown({
   const tCommon = useTranslations("Folder.common")
   const activeFolder = folder
   const refreshFolder = useAppWorkspaceStore((s) => s.refreshFolder)
-  const openWorktreeFolder = useAppWorkspaceStore((s) => s.openWorktreeFolder)
-  const { openNewConversationTab, setDraftWorktree } = useTabActions()
+  const { setDraftWorktree } = useTabActions()
   // The draft's pending "start in a worktree" choice — the object reference is
   // stable until the choice itself changes, so this never re-renders the chip
   // for unrelated tab activity.
@@ -174,7 +169,12 @@ export function BranchDropdown({
       ? s.tabs.find((tab) => tab.id === draftTabId)?.pendingWorktree
       : undefined
   )
-  const { openConversations } = useWorkbenchRoute()
+  // Cowork fork: a planned branch the first message will name — the chip
+  // shows "new worktree" rather than the placeholder.
+  const autoNamedWorktree =
+    pendingWorktree?.kind === "branch_off" && pendingWorktree.auto_name
+      ? pendingWorktree
+      : null
   const { withCredentialRetry } = useGitCredential()
   const switchToBranch = useSwitchToBranch()
   // Grabbing the popover's inner scrollbar blurs focus, which WebKit bounces to
@@ -225,9 +225,6 @@ export function BranchDropdown({
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [branchLoading, setBranchLoading] = useState(false)
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null)
-  const [worktreeOpen, setWorktreeOpen] = useState(false)
-  const [worktreeBranchName, setWorktreeBranchName] = useState("")
-  const [worktreePath, setWorktreePath] = useState("")
   // "Start in a new worktree" (drafts only): just records the choice on the
   // draft; the first send creates the branch and worktree.
   const [startWorktreeOpen, setStartWorktreeOpen] = useState(false)
@@ -283,21 +280,30 @@ export function BranchDropdown({
   // tab owns the remotes. The last entry carries no `groupEnd`: the row builder
   // already separates the operation block from the branch tree.
   //
-  // A draft composer adds "start in a new worktree" (and, once chosen, the way
-  // back) — the Paseo-style choice of WHERE the conversation will work, which
-  // only exists before the first send fixes its working directory.
+  // A draft composer adds "start in a new worktree" (and, once chosen, the
+  // ways to adjust or undo it) — the Paseo-style choice of WHERE the
+  // conversation will work, which only exists before the first send fixes its
+  // working directory.
+  //
+  // Cowork fork: no "new worktree…" here. A worktree a conversation works in
+  // is the draft's own (above); a bare one with a hand-picked path next to the
+  // project was one more way to the same place.
   const operations = useMemo<BranchOperationMeta[]>(
     () => [
       ...(pendingWorktree
-        ? [{ id: "clearWorktree", label: t("clearWorktree"), groupEnd: true }]
+        ? [
+            ...(pendingWorktree.kind === "branch_off"
+              ? [{ id: "editWorktree", label: t("editWorktree") }]
+              : []),
+            { id: "clearWorktree", label: t("clearWorktree"), groupEnd: true },
+          ]
         : []),
       { id: "pull", label: t("pullCode") },
       { id: "fetch", label: t("fetchRemoteBranches"), groupEnd: true },
       { id: "commit", label: t("openCommitWindow") },
       { id: "push", label: t("pushCode"), groupEnd: true },
       { id: "newBranch", label: t("newBranch") },
-      { id: "newWorktree", label: t("newWorktree") },
-      ...(draftTabId
+      ...(draftTabId && !pendingWorktree
         ? [{ id: "startInWorktree", label: t("startInWorktree") }]
         : []),
     ],
@@ -426,29 +432,25 @@ export function BranchDropdown({
     )
   }
 
-  function handleOpenWorktreeDialog() {
-    const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-    let random = ""
-    for (let i = 0; i < 6; i++) {
-      random += chars[Math.floor(Math.random() * chars.length)]
-    }
-    // `folderPath` is a native OS path. Splitting it on "/" alone left every
-    // Windows repo with no name and no parent — `lastIndexOf("/")` returns -1
-    // there, so the prefilled worktree path came out as the bare relative
-    // "/C:\work\repo-main-abc123" instead of a sibling directory.
-    const folderName = fsBaseName(folderPath) || "project"
-    const currentBranch = branch ?? "main"
-    const defaultBranch = `cv-${currentBranch}-${random}`
-    setWorktreeBranchName(defaultBranch)
-    setWorktreePath(
-      siblingFsPath(folderPath, `${folderName}-${currentBranch}-${random}`)
-    )
-    setWorktreeOpen(true)
+  // Cowork fork: one click, no dialog (Paseo-style). The branch gets a
+  // placeholder name that an agent replaces with one read from the first
+  // message (`auto_name`); it forks from the branch this folder has checked
+  // out. "Adjust" (`handleOpenEditWorktree`) picks another base or a name.
+  function handleStartInWorktree() {
+    if (!draftTabId) return
+    setDraftWorktree(draftTabId, {
+      kind: "branch_off",
+      branch: defaultConversationBranch(),
+      base: branch ?? null,
+      auto_name: true,
+    })
+    toast.success(t("toasts.worktreePlannedAuto"))
   }
 
-  function handleOpenStartWorktree() {
-    setStartBranchName(defaultConversationBranch())
-    setStartBase(branch ?? "")
+  function handleOpenEditWorktree() {
+    if (pendingWorktree?.kind !== "branch_off") return
+    setStartBranchName(pendingWorktree.auto_name ? "" : pendingWorktree.branch)
+    setStartBase(pendingWorktree.base ?? branch ?? "")
     // The base picker lists every branch; the popup may not have loaded them
     // yet (the operation can be reached by keyboard before the list renders).
     if (branchList.local.length === 0) void loadAllBranches()
@@ -456,36 +458,25 @@ export function BranchDropdown({
   }
 
   function handleStartWorktree() {
+    if (!draftTabId) return
     const name = startBranchName.trim()
-    if (!name || !draftTabId) return
+    const base = startBase.trim() || null
     setStartWorktreeOpen(false)
-    const spec: ConversationWorktreeSpec = {
-      kind: "branch_off",
-      branch: name,
-      base: startBase.trim() || null,
-    }
+    // Left empty: the agent names it after the first message.
+    const spec: ConversationWorktreeSpec = name
+      ? { kind: "branch_off", branch: name, base }
+      : {
+          kind: "branch_off",
+          branch: defaultConversationBranch(),
+          base,
+          auto_name: true,
+        }
     setDraftWorktree(draftTabId, spec)
-    toast.success(t("toasts.worktreePlanned", { branch: name }))
-  }
-
-  async function handleNewWorktree() {
-    const name = worktreeBranchName.trim()
-    const wtPath = worktreePath.trim()
-    if (!name || !wtPath) return
-    setWorktreeOpen(false)
-    await runGitTask(t("tasks.newWorktree", { name }), async () => {
-      await gitWorktreeAdd(folderPath, name, wtPath)
-      // Register the worktree as a folder parented to this repo (flattened to
-      // the root), then open a draft conversation in it. Once child folders are
-      // merged under their parent in the sidebar, a worktree with no
-      // conversations would otherwise be unreachable; this also lands the new
-      // session with its cwd set to the worktree directory (detail.path).
-      const detail = await openWorktreeFolder(wtPath, folderId)
-      // Return to the conversation workspace if a route (e.g. Automations)
-      // was covering the content region, else the new tab opens unseen.
-      openConversations()
-      openNewConversationTab(detail.id, detail.path)
-    })
+    toast.success(
+      name
+        ? t("toasts.worktreePlanned", { branch: name })
+        : t("toasts.worktreePlannedAuto")
+    )
   }
 
   async function handleConfirm() {
@@ -680,11 +671,11 @@ export function BranchDropdown({
         setNewBranchName("")
         setNewBranchOpen(true)
         break
-      case "newWorktree":
-        handleOpenWorktreeDialog()
-        break
       case "startInWorktree":
-        handleOpenStartWorktree()
+        handleStartInWorktree()
+        break
+      case "editWorktree":
+        handleOpenEditWorktree()
         break
       case "clearWorktree":
         if (draftTabId) setDraftWorktree(draftTabId, null)
@@ -776,17 +767,21 @@ export function BranchDropdown({
             variant="ghost"
             size="xs"
             title={
-              pendingWorktree
-                ? t("worktreePlannedTitle", {
-                    branch: pendingWorktree.branch,
-                    base:
-                      pendingWorktree.kind === "branch_off"
-                        ? (pendingWorktree.base ?? branch ?? "HEAD")
-                        : pendingWorktree.branch,
+              autoNamedWorktree
+                ? t("worktreePlannedAutoTitle", {
+                    base: autoNamedWorktree.base ?? branch ?? "HEAD",
                   })
-                : isDetached
-                  ? t("detachedHead", { sha: head?.short_sha ?? "" })
-                  : (branch ?? undefined)
+                : pendingWorktree
+                  ? t("worktreePlannedTitle", {
+                      branch: pendingWorktree.branch,
+                      base:
+                        pendingWorktree.kind === "branch_off"
+                          ? (pendingWorktree.base ?? branch ?? "HEAD")
+                          : pendingWorktree.branch,
+                    })
+                  : isDetached
+                    ? t("detachedHead", { sha: head?.short_sha ?? "" })
+                    : (branch ?? undefined)
             }
             className="min-w-0 gap-0.5 px-1.5"
           >
@@ -798,9 +793,14 @@ export function BranchDropdown({
               <GitBranch className="size-3 shrink-0 text-muted-foreground" />
             )}
             <span className="max-w-[10rem] truncate">
-              {pendingWorktree
-                ? pendingWorktree.branch
-                : (branch ?? head?.branch ?? head?.short_sha ?? t("noBranch"))}
+              {autoNamedWorktree
+                ? t("worktreeAutoLabel")
+                : pendingWorktree
+                  ? pendingWorktree.branch
+                  : (branch ??
+                    head?.branch ??
+                    head?.short_sha ??
+                    t("noBranch"))}
             </span>
             <ChevronDown className="size-3 shrink-0 text-muted-foreground/60" />
           </Button>
@@ -903,56 +903,6 @@ export function BranchDropdown({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={worktreeOpen} onOpenChange={setWorktreeOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>{t("dialogs.newWorktreeTitle")}</DialogTitle>
-            <DialogDescription>
-              {t("dialogs.newWorktreeDescription", { branch: branch ?? "-" })}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
-            <div className="space-y-2">
-              <Label htmlFor="wt-branch">{t("dialogs.branchNameLabel")}</Label>
-              <Input
-                id="wt-branch"
-                placeholder={t("dialogs.branchNamePlaceholder")}
-                value={worktreeBranchName}
-                onChange={(e) => setWorktreeBranchName(e.target.value)}
-                {...ime.props}
-                onKeyDown={(e) => {
-                  if (ime.isComposing(e)) return
-                  if (e.key === "Enter") handleNewWorktree()
-                }}
-                autoFocus
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="wt-path">{t("dialogs.worktreePathLabel")}</Label>
-              <DirectoryPathInput
-                id="wt-path"
-                placeholder={t("dialogs.worktreePathPlaceholder")}
-                value={worktreePath}
-                onValueChange={setWorktreePath}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setWorktreeOpen(false)}>
-              {tCommon("cancel")}
-            </Button>
-            <Button
-              disabled={
-                !worktreeBranchName.trim() || !worktreePath.trim() || loading
-              }
-              onClick={handleNewWorktree}
-            >
-              {tCommon("create")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       <Dialog open={startWorktreeOpen} onOpenChange={setStartWorktreeOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -968,7 +918,7 @@ export function BranchDropdown({
               </Label>
               <Input
                 id="start-wt-branch"
-                placeholder={t("dialogs.branchNamePlaceholder")}
+                placeholder={t("dialogs.branchNameAutoPlaceholder")}
                 value={startBranchName}
                 onChange={(e) => setStartBranchName(e.target.value)}
                 {...ime.props}
@@ -1014,12 +964,7 @@ export function BranchDropdown({
             >
               {tCommon("cancel")}
             </Button>
-            <Button
-              disabled={!startBranchName.trim()}
-              onClick={handleStartWorktree}
-            >
-              {tCommon("confirm")}
-            </Button>
+            <Button onClick={handleStartWorktree}>{tCommon("confirm")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -2770,6 +2770,7 @@
         "switchFailed": "No se pudo cambiar de rama",
         "openStashWindowFailed": "No se pudo abrir la ventana de stash",
         "worktreePlanned": "Empezará en un worktree nuevo al enviar: {branch}",
+        "worktreePlannedAuto": "Al enviar se crea un worktree nuevo; el agente nombra la rama a partir de tu primer mensaje",
         "worktreeCreateFailed": "No se pudo crear el worktree",
         "worktreeIncludeCopied": "{count, plural, one {Se copió # archivo ignorado} other {Se copiaron # archivos ignorados}} de .worktreeinclude",
         "worktreeIncludeFailed": "No se {count, plural, one {pudo copiar # archivo} other {pudieron copiar # archivos}} de .worktreeinclude",
@@ -2856,6 +2857,7 @@
         "savingRemotes": "Guardando...",
         "startWorktreeTitle": "Empezar en un worktree nuevo",
         "startWorktreeDescription": "La rama y su worktree se crean al enviar el primer mensaje; antes no cambia nada en el repositorio.",
+        "branchNameAutoPlaceholder": "Déjalo vacío para nombrarla a partir de tu primer mensaje",
         "baseLabel": "Punto de partida",
         "baseCurrent": "{branch} (actual)"
       },
@@ -2902,8 +2904,11 @@
       "noMatches": "Sin coincidencias",
       "startInWorktree": "Empezar en un worktree nuevo…",
       "clearWorktree": "Sin worktree: empezar en este checkout",
+      "editWorktree": "Ajustar worktree nuevo…",
+      "worktreeAutoLabel": "Worktree nuevo",
       "openInWorktree": "Abrir en un worktree nuevo",
       "worktreePlannedTitle": "Empieza en un worktree nuevo al enviar: {branch} (desde {base})",
+      "worktreePlannedAutoTitle": "Empieza en un worktree nuevo al enviar (desde {base}); la rama se nombra a partir de tu primer mensaje",
       "worktreeCleanup": {
         "title": "Última conversación eliminada; el worktree {branch} sigue en disco",
         "action": "Eliminar worktree y rama",

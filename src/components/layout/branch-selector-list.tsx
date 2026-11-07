@@ -106,7 +106,7 @@ const OP_ICONS: Record<string, LucideIcon> = {
   commit: GitCommitHorizontal,
   push: CloudUpload,
   newBranch: GitBranchPlus,
-  newWorktree: FolderGit2,
+  editWorktree: FolderGit2,
   startInWorktree: FolderGit2,
   clearWorktree: GitBranch,
   init: GitBranch,

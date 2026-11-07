@@ -422,6 +422,29 @@ pub async fn seed_folder_alias(
     Ok(res.rows_affected > 0)
 }
 
+/// Cowork fork: move a folder's alias from `from` to `to`, only while it still
+/// reads `from` — a worktree branch renamed after its first message
+/// ([`crate::worktree_autoname`]) takes its seeded label along, and a label
+/// the user already changed stays theirs. One conditional UPDATE for the same
+/// reason as [`seed_folder_alias`]. Returns whether a row was written.
+pub async fn replace_folder_alias(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+    from: &str,
+    to: &str,
+) -> Result<bool, DbError> {
+    use sea_orm::sea_query::Expr;
+    let res = folder::Entity::update_many()
+        .col_expr(folder::Column::Alias, Expr::value(to))
+        .col_expr(folder::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(folder::Column::Id.eq(folder_id))
+        .filter(folder::Column::DeletedAt.is_null())
+        .filter(folder::Column::Alias.eq(from))
+        .exec(conn)
+        .await?;
+    Ok(res.rows_affected > 0)
+}
+
 /// `(id, path)` of every live worktree folder still without an alias — the work
 /// list for the startup backfill that labels worktrees registered before aliases
 /// were seeded at creation. `parent_id IS NOT NULL` is exactly "is a worktree

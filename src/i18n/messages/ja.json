@@ -2770,6 +2770,7 @@
         "switchFailed": "ブランチの切り替えに失敗しました",
         "openStashWindowFailed": "stash ウィンドウを開けませんでした",
         "worktreePlanned": "送信時に新しいワークツリーで開始します: {branch}",
+        "worktreePlannedAuto": "最初のメッセージを送信すると新しいワークツリーを作成し、ブランチ名は AI がそのメッセージから付けます",
         "worktreeCreateFailed": "ワークツリーを作成できませんでした",
         "worktreeIncludeCopied": ".worktreeinclude に従って無視対象のファイルを {count} 件コピーしました",
         "worktreeIncludeFailed": ".worktreeinclude のファイル {count} 件をコピーできませんでした",
@@ -2856,6 +2857,7 @@
         "savingRemotes": "保存中...",
         "startWorktreeTitle": "新しいワークツリーで開始",
         "startWorktreeDescription": "最初のメッセージを送信したときにブランチとワークツリーを作成します。それまでリポジトリは変更されません。",
+        "branchNameAutoPlaceholder": "空欄なら最初のメッセージから名前を付けます",
         "baseLabel": "開始元",
         "baseCurrent": "{branch}（現在）"
       },
@@ -2902,8 +2904,11 @@
       "noMatches": "一致する項目がありません",
       "startInWorktree": "新しいワークツリーで開始…",
       "clearWorktree": "ワークツリーを使わない（このチェックアウトで開始）",
+      "editWorktree": "新しいワークツリーを調整…",
+      "worktreeAutoLabel": "新しいワークツリー",
       "openInWorktree": "新しいワークツリーで開く",
       "worktreePlannedTitle": "送信時に新しいワークツリーで開始: {branch}（{base} から）",
+      "worktreePlannedAutoTitle": "送信時に新しいワークツリーで開始（{base} から）。ブランチ名は最初のメッセージから付けます",
       "worktreeCleanup": {
         "title": "最後の会話を削除しました。ワークツリー {branch} はまだ残っています",
         "action": "ワークツリーとブランチを削除",

@@ -77,7 +77,7 @@ describe("createConversationWorktreeWatchingSetup", () => {
 
     const out = await createConversationWorktreeWatchingSetup(3, spec, onDone)
 
-    expect(createMock).toHaveBeenCalledWith(3, spec)
+    expect(createMock).toHaveBeenCalledWith(3, spec, null)
     expect(out.folder.id).toBe(7)
     // Not before the caller got `created` back to announce the setup.
     expect(onDone).not.toHaveBeenCalled()
@@ -85,6 +85,15 @@ describe("createConversationWorktreeWatchingSetup", () => {
     expect(onDone).toHaveBeenCalledTimes(1)
     expect(onDone).toHaveBeenCalledWith(result(7, false))
     expect(unsubscribeMock).toHaveBeenCalled()
+  })
+
+  it("hands the first message on for naming the branch", async () => {
+    createMock.mockResolvedValue(created(7, null))
+    const autoName = { message: "fix the login timeout", agent: "claude_code" }
+
+    await createConversationWorktreeWatchingSetup(3, spec, vi.fn(), autoName)
+
+    expect(createMock).toHaveBeenCalledWith(3, spec, autoName)
   })
 
   it("reports a later result for its own folder only, once", async () => {

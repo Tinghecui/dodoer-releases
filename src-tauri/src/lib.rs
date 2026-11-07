@@ -86,6 +86,8 @@ pub mod jenny_progress;
 pub mod workbench_apps;
 pub mod workspace_state;
 pub mod workspace_transfer;
+// Cowork fork: name a conversation worktree's branch after its first message.
+pub mod worktree_autoname;
 
 /// Sweep stale ACP binary cache trash created by the rename-aside fallback in
 /// `acp::binary_cache::clear_agent_cache`. Safe to call any time; intended to

@@ -2770,6 +2770,7 @@
         "switchFailed": "Échec du changement de branche",
         "openStashWindowFailed": "Échec de l'ouverture de la fenêtre de remisage",
         "worktreePlanned": "Démarrera dans un nouveau worktree à l'envoi : {branch}",
+        "worktreePlannedAuto": "Un nouveau worktree est créé à l'envoi ; l'agent nomme sa branche d'après votre premier message",
         "worktreeCreateFailed": "Impossible de créer le worktree",
         "worktreeIncludeCopied": "{count, plural, one {# fichier ignoré copié} other {# fichiers ignorés copiés}} depuis .worktreeinclude",
         "worktreeIncludeFailed": "Impossible de copier {count, plural, one {# fichier} other {# fichiers}} de .worktreeinclude",
@@ -2856,6 +2857,7 @@
         "savingRemotes": "Enregistrement...",
         "startWorktreeTitle": "Démarrer dans un nouveau worktree",
         "startWorktreeDescription": "La branche et son worktree sont créés à l'envoi du premier message ; rien ne change dans le dépôt avant.",
+        "branchNameAutoPlaceholder": "Laisser vide pour la nommer d'après votre premier message",
         "baseLabel": "Point de départ",
         "baseCurrent": "{branch} (actuelle)"
       },
@@ -2902,8 +2904,11 @@
       "noMatches": "Aucune correspondance",
       "startInWorktree": "Démarrer dans un nouveau worktree…",
       "clearWorktree": "Sans worktree — démarrer dans ce checkout",
+      "editWorktree": "Ajuster le nouveau worktree…",
+      "worktreeAutoLabel": "Nouveau worktree",
       "openInWorktree": "Ouvrir dans un nouveau worktree",
       "worktreePlannedTitle": "Démarre dans un nouveau worktree à l'envoi : {branch} (depuis {base})",
+      "worktreePlannedAutoTitle": "Démarre dans un nouveau worktree à l'envoi (depuis {base}) ; la branche est nommée d'après votre premier message",
       "worktreeCleanup": {
         "title": "Dernière conversation supprimée ; le worktree {branch} est encore sur le disque",
         "action": "Supprimer le worktree et la branche",

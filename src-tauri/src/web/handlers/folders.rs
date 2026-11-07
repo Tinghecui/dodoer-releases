@@ -588,6 +588,9 @@ pub async fn create_folder_directory(
 pub struct CreateConversationWorktreeParams {
     pub folder_id: i32,
     pub spec: folder_commands::ConversationWorktreeSpec,
+    /// Cowork fork: the first message, to name the new branch after.
+    #[serde(default)]
+    pub auto_name: Option<crate::worktree_autoname::AutoNameSeed>,
 }
 
 /// Create (and register) the worktree a conversation will work in. See
@@ -597,11 +600,14 @@ pub async fn create_conversation_worktree(
     Json(params): Json<CreateConversationWorktreeParams>,
 ) -> Result<Json<folder_commands::ConversationWorktreeCreated>, AppCommandError> {
     Ok(Json(
-        folder_commands::create_conversation_worktree_core(
+        folder_commands::create_conversation_worktree_named_core(
             &state.emitter,
             &state.db,
+            &state.connection_manager,
+            &state.data_dir,
             params.folder_id,
             params.spec,
+            params.auto_name,
         )
         .await?,
     ))

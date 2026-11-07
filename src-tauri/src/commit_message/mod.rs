@@ -327,8 +327,10 @@ impl Drop for Inflight {
     }
 }
 
-/// The agent to run, with the selections to start it with.
-async fn resolve_agent(
+/// The agent to run, with the selections to start it with. Also picks the
+/// agent that names a conversation worktree's branch
+/// ([`crate::worktree_autoname`]).
+pub(crate) async fn resolve_agent(
     conn: &sea_orm::DatabaseConnection,
     settings: &CommitMessageSettings,
     fallback_agent: Option<AgentType>,

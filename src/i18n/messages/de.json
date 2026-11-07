@@ -2770,6 +2770,7 @@
         "switchFailed": "Branch konnte nicht gewechselt werden",
         "openStashWindowFailed": "Stash-Fenster konnte nicht geöffnet werden",
         "worktreePlanned": "Startet beim Senden in einem neuen Worktree: {branch}",
+        "worktreePlannedAuto": "Beim Senden wird ein neuer Worktree angelegt; der Agent benennt den Branch nach deiner ersten Nachricht",
         "worktreeCreateFailed": "Worktree konnte nicht erstellt werden",
         "worktreeIncludeCopied": "{count, plural, one {# ignorierte Datei} other {# ignorierte Dateien}} aus .worktreeinclude kopiert",
         "worktreeIncludeFailed": "{count, plural, one {# Datei} other {# Dateien}} aus .worktreeinclude konnten nicht kopiert werden",
@@ -2856,6 +2857,7 @@
         "savingRemotes": "Speichern...",
         "startWorktreeTitle": "In neuem Worktree starten",
         "startWorktreeDescription": "Branch und Worktree werden beim Senden der ersten Nachricht angelegt; vorher ändert sich nichts im Repository.",
+        "branchNameAutoPlaceholder": "Leer lassen, um ihn nach deiner ersten Nachricht zu benennen",
         "baseLabel": "Ausgangspunkt",
         "baseCurrent": "{branch} (aktuell)"
       },
@@ -2902,8 +2904,11 @@
       "noMatches": "Keine Treffer",
       "startInWorktree": "In neuem Worktree starten…",
       "clearWorktree": "Kein Worktree – in diesem Checkout starten",
+      "editWorktree": "Neuen Worktree anpassen…",
+      "worktreeAutoLabel": "Neuer Worktree",
       "openInWorktree": "In neuem Worktree öffnen",
       "worktreePlannedTitle": "Startet beim Senden in einem neuen Worktree: {branch} (von {base})",
+      "worktreePlannedAutoTitle": "Startet beim Senden in einem neuen Worktree (von {base}); der Branch wird nach deiner ersten Nachricht benannt",
       "worktreeCleanup": {
         "title": "Letzte Unterhaltung gelöscht; Worktree {branch} liegt noch auf der Festplatte",
         "action": "Worktree und Branch löschen",

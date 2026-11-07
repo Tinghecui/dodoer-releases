@@ -116,6 +116,7 @@ import type {
   FolderHistoryEntry,
   ConversationWorktreeSpec,
   ConversationWorktreeCreated,
+  ConversationWorktreeAutoName,
   FolderDetail,
   FolderGroupDetail,
   ConversationBranchTag,
@@ -3648,11 +3649,13 @@ export async function openWorktreeFolder(
  */
 export async function createConversationWorktree(
   folderId: number,
-  spec: ConversationWorktreeSpec
+  spec: ConversationWorktreeSpec,
+  autoName: ConversationWorktreeAutoName | null = null
 ): Promise<ConversationWorktreeCreated> {
   return getTransport().call("create_conversation_worktree", {
     folderId,
     spec,
+    autoName,
   })
 }
 

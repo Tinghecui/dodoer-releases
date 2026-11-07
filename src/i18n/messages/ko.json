@@ -2770,6 +2770,7 @@
         "switchFailed": "브랜치 전환에 실패했습니다",
         "openStashWindowFailed": "스태시 창을 열지 못했습니다",
         "worktreePlanned": "전송 시 새 워크트리에서 시작합니다: {branch}",
+        "worktreePlannedAuto": "첫 메시지를 보내면 새 워크트리를 만들고, 브랜치 이름은 AI가 그 메시지를 보고 정합니다",
         "worktreeCreateFailed": "워크트리를 만들 수 없습니다",
         "worktreeIncludeCopied": ".worktreeinclude에 따라 무시된 파일 {count}개를 복사했습니다",
         "worktreeIncludeFailed": ".worktreeinclude의 파일 {count}개를 복사하지 못했습니다",
@@ -2856,6 +2857,7 @@
         "savingRemotes": "저장 중...",
         "startWorktreeTitle": "새 워크트리에서 시작",
         "startWorktreeDescription": "첫 메시지를 보낼 때 브랜치와 워크트리를 만듭니다. 그 전에는 저장소가 바뀌지 않습니다.",
+        "branchNameAutoPlaceholder": "비워 두면 첫 메시지를 보고 이름을 정합니다",
         "baseLabel": "시작 지점",
         "baseCurrent": "{branch} (현재)"
       },
@@ -2902,8 +2904,11 @@
       "noMatches": "일치하는 항목 없음",
       "startInWorktree": "새 워크트리에서 시작…",
       "clearWorktree": "워크트리 없이 현재 체크아웃에서 시작",
+      "editWorktree": "새 워크트리 조정…",
+      "worktreeAutoLabel": "새 워크트리",
       "openInWorktree": "새 워크트리에서 열기",
       "worktreePlannedTitle": "전송 시 새 워크트리에서 시작: {branch} ({base} 기준)",
+      "worktreePlannedAutoTitle": "전송 시 새 워크트리에서 시작 ({base} 기준). 브랜치 이름은 첫 메시지를 보고 정합니다",
       "worktreeCleanup": {
         "title": "마지막 대화를 삭제했습니다. 워크트리 {branch}은(는) 아직 디스크에 있습니다",
         "action": "워크트리와 브랜치 삭제",

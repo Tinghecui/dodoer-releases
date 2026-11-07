@@ -2770,6 +2770,7 @@
         "switchFailed": "Failed to switch branch",
         "openStashWindowFailed": "Failed to open stash window",
         "worktreePlanned": "Will start in a new worktree on send: {branch}",
+        "worktreePlannedAuto": "A new worktree is created when you send; the agent names its branch from your first message",
         "worktreeCreateFailed": "Could not create the worktree",
         "worktreeIncludeCopied": "Copied {count, plural, one {# ignored file} other {# ignored files}} listed in .worktreeinclude",
         "worktreeIncludeFailed": "Could not copy {count, plural, one {# file} other {# files}} listed in .worktreeinclude",
@@ -2856,6 +2857,7 @@
         "savingRemotes": "Saving...",
         "startWorktreeTitle": "Start in a new worktree",
         "startWorktreeDescription": "The branch and its worktree are created when you send the first message; nothing in the repository changes before that.",
+        "branchNameAutoPlaceholder": "Leave empty to name it from your first message",
         "baseLabel": "Start from",
         "baseCurrent": "{branch} (current)"
       },
@@ -2902,8 +2904,11 @@
       "noMatches": "No matches",
       "startInWorktree": "Start in a new worktree…",
       "clearWorktree": "No worktree — start in this checkout",
+      "editWorktree": "Adjust new worktree…",
+      "worktreeAutoLabel": "New worktree",
       "openInWorktree": "Open in a new worktree",
       "worktreePlannedTitle": "Starts in a new worktree on send: {branch} (from {base})",
+      "worktreePlannedAutoTitle": "Starts in a new worktree on send (from {base}); the branch is named from your first message",
       "worktreeCleanup": {
         "title": "Last conversation deleted; worktree {branch} is still on disk",
         "action": "Delete worktree and branch",

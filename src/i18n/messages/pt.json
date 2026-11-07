@@ -2770,6 +2770,7 @@
         "switchFailed": "Falha ao trocar de branch",
         "openStashWindowFailed": "Falha ao abrir a janela de stash",
         "worktreePlanned": "Começará em um novo worktree ao enviar: {branch}",
+        "worktreePlannedAuto": "Um novo worktree é criado ao enviar; o agente nomeia a branch a partir da sua primeira mensagem",
         "worktreeCreateFailed": "Não foi possível criar o worktree",
         "worktreeIncludeCopied": "{count, plural, one {# arquivo ignorado copiado} other {# arquivos ignorados copiados}} do .worktreeinclude",
         "worktreeIncludeFailed": "Não foi possível copiar {count, plural, one {# arquivo} other {# arquivos}} do .worktreeinclude",
@@ -2856,6 +2857,7 @@
         "savingRemotes": "Salvando...",
         "startWorktreeTitle": "Começar em um novo worktree",
         "startWorktreeDescription": "O branch e o worktree são criados ao enviar a primeira mensagem; nada muda no repositório antes disso.",
+        "branchNameAutoPlaceholder": "Deixe vazio para nomeá-la a partir da sua primeira mensagem",
         "baseLabel": "Ponto de partida",
         "baseCurrent": "{branch} (atual)"
       },
@@ -2902,8 +2904,11 @@
       "noMatches": "Nenhuma correspondência",
       "startInWorktree": "Começar em um novo worktree…",
       "clearWorktree": "Sem worktree — começar neste checkout",
+      "editWorktree": "Ajustar novo worktree…",
+      "worktreeAutoLabel": "Novo worktree",
       "openInWorktree": "Abrir em um novo worktree",
       "worktreePlannedTitle": "Começa em um novo worktree ao enviar: {branch} (a partir de {base})",
+      "worktreePlannedAutoTitle": "Começa em um novo worktree ao enviar (a partir de {base}); a branch é nomeada a partir da sua primeira mensagem",
       "worktreeCleanup": {
         "title": "Última conversa excluída; o worktree {branch} ainda está no disco",
         "action": "Excluir worktree e branch",

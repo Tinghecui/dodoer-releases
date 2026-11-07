@@ -7,17 +7,13 @@
 //!
 //! 1. asks the user to confirm the host (anyone can craft a `codeg://` link;
 //!    the dialog is what keeps a stray link from adding a server);
-//! 2. trades the code for a device token at `<url>/_cowork/desktop-token` —
-//!    Cowork's nginx forwards that path on every employee domain to
-//!    cowork-web, which only answers when the code was minted for that
-//!    domain's employee. The request also names this machine (`device`, shown
-//!    in the portal's "my devices") and, when this address is already saved
-//!    with a device token, hands that token back (`previous`) so Cowork
-//!    renews that device instead of listing a new one on every click. Older
-//!    Cowork ignores both fields;
+//! 2. trades the code for the employee's workspace token at
+//!    `<url>/_cowork/desktop-token` — Cowork's nginx forwards that path on
+//!    every employee domain to cowork-web, which only answers when the code
+//!    was minted for that domain's employee;
 //! 3. saves it as a Remote Workspace connection, or refreshes the token of an
-//!    existing connection to the same address (so re-linking after a revoke
-//!    or a password change is the same click);
+//!    existing connection to the same address (so re-linking after a password
+//!    change — which rotates the token — is the same click);
 //! 4. opens that connection's window, which then takes the place of the local
 //!    one like any remote workspace opened from `main`.
 //!
@@ -28,100 +24,6 @@ use serde::Deserialize;
 
 /// Path the token exchange is posted to, on the workspace's own origin.
 pub const TOKEN_PATH: &str = "/_cowork/desktop-token";
-
-/// Prefix of the per-device tokens Cowork hands out (`cwdev_…`). Only such a
-/// token is sent back as `previous`; a connection saved with the daemon
-/// password (before devices existed) has nothing to renew.
-const DEVICE_TOKEN_PREFIX: &str = "cwdev_";
-
-/// Cowork's limit on a device name (`DEVICE_NAME_RE`: 1–40 UTF-16 units, no
-/// line breaks or tabs). A longer name would be dropped for a generic one.
-const DEVICE_NAME_MAX_UTF16: usize = 40;
-
-/// The JSON body of the exchange: the one-time code, plus this machine's name
-/// and the device token being renewed when there are ones.
-pub fn exchange_body(
-    code: &str,
-    device: Option<&str>,
-    previous: Option<&str>,
-) -> serde_json::Value {
-    let mut body = serde_json::json!({ "code": code });
-    if let Some(device) = device {
-        body["device"] = device.into();
-    }
-    if let Some(previous) = previous {
-        body["previous"] = previous.into();
-    }
-    body
-}
-
-/// The saved token worth sending as `previous`: a device token, nothing else.
-pub fn previous_device_token(saved: &str) -> Option<&str> {
-    let saved = saved.trim();
-    (saved.starts_with(DEVICE_TOKEN_PREFIX) && saved.len() > DEVICE_TOKEN_PREFIX.len())
-        .then_some(saved)
-}
-
-/// Turn the machine's raw name into one Cowork accepts: control characters
-/// become spaces, a bare host name loses its mDNS `.local`, and the result is
-/// cut to Cowork's length limit. `None` when nothing is left.
-pub fn device_name(raw: &str) -> Option<String> {
-    let cleaned: String = raw
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    let mut name = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
-    if name.len() > ".local".len() && name.to_ascii_lowercase().ends_with(".local") {
-        name.truncate(name.len() - ".local".len());
-    }
-    let mut units = 0;
-    let cut: String = name
-        .chars()
-        .take_while(|c| {
-            units += c.len_utf16();
-            units <= DEVICE_NAME_MAX_UTF16
-        })
-        .collect();
-    let cut = cut.trim().to_string();
-    (!cut.is_empty()).then_some(cut)
-}
-
-/// This machine's name as people know it: the macOS "Computer Name"
-/// (`scutil --get ComputerName`, e.g. "James's Mac mini"), else the host name.
-pub fn this_device_name() -> Option<String> {
-    #[cfg(target_os = "macos")]
-    {
-        let computer_name = std::process::Command::new("scutil")
-            .args(["--get", "ComputerName"])
-            .output()
-            .ok()
-            .filter(|out| out.status.success())
-            .and_then(|out| String::from_utf8(out.stdout).ok())
-            .and_then(|name| device_name(&name));
-        if computer_name.is_some() {
-            return computer_name;
-        }
-    }
-    host_name().and_then(|name| device_name(&name))
-}
-
-#[cfg(unix)]
-fn host_name() -> Option<String> {
-    let mut buf = [0u8; 256];
-    // SAFETY: the buffer is valid for `buf.len()` bytes; gethostname writes at
-    // most that many and we only read up to the first NUL (or the whole buffer).
-    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
-    if rc != 0 {
-        return None;
-    }
-    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    String::from_utf8(buf[..end].to_vec()).ok()
-}
-
-#[cfg(not(unix))]
-fn host_name() -> Option<String> {
-    std::env::var("COMPUTERNAME").ok()
-}
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
@@ -184,10 +86,7 @@ mod desktop {
     use tauri::{AppHandle, Manager};
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
-    use super::{
-        display_host, exchange_body, parse_token_response, previous_device_token, same_workspace,
-        this_device_name, Exchanged, TOKEN_PATH,
-    };
+    use super::{display_host, parse_token_response, same_workspace, Exchanged, TOKEN_PATH};
     use crate::commands::remote_workspace::{
         build_remote_workspace_window, validate_remote_health,
     };
@@ -219,6 +118,8 @@ mod desktop {
         if !confirm(app, &host).await {
             return Ok(());
         }
+        let Exchanged { token, name } = exchange(url, code).await?;
+
         let db = app
             .try_state::<AppDatabase>()
             .ok_or_else(|| "应用还没准备好，稍后再点一次链接".to_string())?;
@@ -227,12 +128,6 @@ mod desktop {
             .map_err(|e| e.to_string())?
             .into_iter()
             .find(|c| same_workspace(&c.base_url, url));
-        let previous = saved.as_ref().and_then(|c| previous_device_token(&c.token));
-        let device = tauri::async_runtime::spawn_blocking(this_device_name)
-            .await
-            .ok()
-            .flatten();
-        let Exchanged { token, name } = exchange(url, code, device.as_deref(), previous).await?;
         let connection = match saved {
             Some(c) => {
                 let updated =
@@ -291,12 +186,7 @@ mod desktop {
         rx.await.unwrap_or(false)
     }
 
-    async fn exchange(
-        url: &str,
-        code: &str,
-        device: Option<&str>,
-        previous: Option<&str>,
-    ) -> Result<Exchanged, String> {
+    async fn exchange(url: &str, code: &str) -> Result<Exchanged, String> {
         let client = reqwest::Client::builder()
             .timeout(EXCHANGE_TIMEOUT)
             // The code is only good for this host; never follow it elsewhere.
@@ -305,7 +195,7 @@ mod desktop {
             .map_err(|e| e.to_string())?;
         let response = client
             .post(format!("{}{TOKEN_PATH}", url.trim_end_matches('/')))
-            .json(&exchange_body(code, device, previous))
+            .json(&serde_json::json!({ "code": code }))
             .send()
             .await
             .map_err(|e| {
@@ -372,55 +262,6 @@ mod tests {
             "https://james.example.com",
             "https://jenny.example.com"
         ));
-    }
-
-    #[test]
-    fn exchange_body_only_carries_what_there_is() {
-        assert_eq!(
-            exchange_body("c0de", None, None),
-            serde_json::json!({ "code": "c0de" })
-        );
-        assert_eq!(
-            exchange_body("c0de", Some("James's Mac mini"), Some("cwdev_abc")),
-            serde_json::json!({
-                "code": "c0de",
-                "device": "James's Mac mini",
-                "previous": "cwdev_abc"
-            })
-        );
-        assert_eq!(
-            exchange_body("c0de", Some("mini"), None),
-            serde_json::json!({ "code": "c0de", "device": "mini" })
-        );
-    }
-
-    #[test]
-    fn only_a_device_token_is_handed_back() {
-        assert_eq!(previous_device_token(" cwdev_abc "), Some("cwdev_abc"));
-        // A connection saved with the daemon password (before devices) or by
-        // hand: nothing to renew, and no reason to send it anywhere.
-        assert_eq!(previous_device_token("s3cret-daemon-password"), None);
-        assert_eq!(previous_device_token("cwdev_"), None);
-        assert_eq!(previous_device_token(""), None);
-    }
-
-    #[test]
-    fn device_name_fits_what_cowork_accepts() {
-        assert_eq!(
-            device_name("James's Mac mini\n").as_deref(),
-            Some("James's Mac mini")
-        );
-        assert_eq!(device_name("james-mbp.local").as_deref(), Some("james-mbp"));
-        assert_eq!(device_name("a\tb\r\nc").as_deref(), Some("a b c"));
-        assert_eq!(device_name("  \n "), None);
-        assert_eq!(device_name(".local").as_deref(), Some(".local"));
-        let long = "x".repeat(60);
-        assert_eq!(device_name(&long).map(|n| n.len()), Some(40));
-        // Cowork counts UTF-16 units: 21 emoji are 42 of them, so 20 fit.
-        let emoji = "😀".repeat(21);
-        assert_eq!(device_name(&emoji).map(|n| n.chars().count()), Some(20));
-        let cjk = "张".repeat(41);
-        assert_eq!(device_name(&cjk).map(|n| n.chars().count()), Some(40));
     }
 
     #[test]

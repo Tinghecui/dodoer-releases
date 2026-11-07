@@ -1,8 +1,5 @@
-import { readFileSync } from "node:fs"
-import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
-  CLIENT_API_VERSION,
   compareVersions,
   judgeCompat,
   readServerCompat,
@@ -81,17 +78,5 @@ describe("compareVersions", () => {
     expect(compareVersions("v1.2.0", "1.2.0")).toBe(0)
     expect(compareVersions("1.2.0-jenny.1", "1.2.1")).toBeLessThan(0)
     expect(compareVersions("garbage", "1.2.0")).toBe(0)
-  })
-})
-
-describe("CLIENT_API_VERSION", () => {
-  it("is the server's API_VERSION of the same build (sent in the WS hello)", () => {
-    const rust = readFileSync(
-      join(__dirname, "../../../src-tauri/src/compat.rs"),
-      "utf8"
-    )
-    const m = /pub const API_VERSION: u32 = (\d+);/.exec(rust)
-    expect(m).not.toBeNull()
-    expect(CLIENT_API_VERSION).toBe(Number(m![1]))
   })
 })

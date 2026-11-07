@@ -21,14 +21,5 @@ fn main() {
         return;
     }
 
-    // Cowork fork: start the bundled codeg-server the way the app does, check
-    // it answers, crash it, see it restarted, stop it — for CI on the machine
-    // the app is built on (`desktop-macos.yml`). No window.
-    if std::env::args().any(|a| a == "--local-daemon-smoke") {
-        let _log_guard = codeg_lib::logging::init::init_stderr_only();
-        let args: Vec<String> = std::env::args().collect();
-        std::process::exit(codeg_lib::local_daemon::run_smoke(&args));
-    }
-
     codeg_lib::run()
 }

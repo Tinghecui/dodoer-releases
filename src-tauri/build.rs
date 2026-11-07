@@ -90,10 +90,7 @@ fn ensure_sidecar_placeholder() {
     };
     let dir = PathBuf::from("binaries");
 
-    // `codeg-server`: the app's own daemon, a child process (Cowork fork,
-    // `local_daemon`). A placeholder is never started: `server_beside` skips
-    // an empty file and the app keeps its daemon in-process.
-    for name in ["codeg-mcp", "codeg-computer-helper", "codeg-cli", "codeg-server"] {
+    for name in ["codeg-mcp", "codeg-computer-helper", "codeg-cli"] {
         let path = dir.join(format!("{name}-{triple}{ext}"));
 
         println!("cargo:rerun-if-changed={}", path.display());

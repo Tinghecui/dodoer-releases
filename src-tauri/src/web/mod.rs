@@ -992,16 +992,6 @@ pub async fn start_web_server(
     host: Option<String>,
     token: Option<String>,
 ) -> Result<WebServerInfo, AppCommandError> {
-    // Cowork fork: the web service is the in-process daemon's. With the
-    // daemon in a child process (`local_daemon`) there is none here to serve
-    // it; the app runs the daemon in-process again once the web service is
-    // set to start with it (`auto_start`), from the next launch.
-    if crate::local_daemon::registered().is_some() {
-        return Err(AppCommandError::new(
-            crate::app_error::AppErrorCode::InvalidInput,
-            "The web service needs the in-process daemon: turn on \"start with the app\" and restart the app",
-        ));
-    }
     do_start_web_server_tauri(app, &state, port, host, token).await
 }
 

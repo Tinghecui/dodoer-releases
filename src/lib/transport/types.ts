@@ -1,5 +1,4 @@
 import type { EventEnvelope, LiveSessionSnapshot } from "@/lib/types"
-import type { ServerCompat } from "@/lib/cowork/compat"
 
 export type UnsubscribeFn = () => void
 
@@ -159,14 +158,6 @@ export interface Transport {
    * reconnect transparently to the caller.
    */
   eventStream?(): EventStream
-
-  /**
-   * Cowork fork: the server's answers to this transport's WS `hello`
-   * (`server-info.ts`): on every (re)connect to a server that knows the
-   * handshake, and at once with the current one. Never fires against an older
-   * server. Optional — IPC-only transports leave this undefined.
-   */
-  onServerInfo?(callback: (info: ServerCompat) => void): UnsubscribeFn
 
   destroy?(): void
 }

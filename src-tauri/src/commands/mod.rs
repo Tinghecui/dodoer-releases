@@ -52,9 +52,6 @@ pub mod generative_ui;
 /// computer"), even from a remote-desktop window. Desktop-only by design.
 #[cfg(feature = "tauri-runtime")]
 pub mod local_command;
-/// Cowork fork: the windows' side of the app's child daemon.
-#[cfg(feature = "tauri-runtime")]
-pub mod local_daemon;
 pub mod logging;
 pub mod mcp;
 pub mod mcp_service;

@@ -6,11 +6,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import {
-  WS_HELLO_ACTION,
-  WS_READY_CHANNEL,
-  WS_SERVER_INFO_TYPE,
-} from "./constants"
+import { WS_READY_CHANNEL } from "./constants"
 import { CODEG_WS_PROTOCOL } from "./ws-auth"
 
 const rust = (file: string) =>
@@ -36,14 +32,6 @@ describe("WS protocol constants agree across TypeScript and Rust", () => {
   it("ready channel", () => {
     expect(rustConst(ws, "WS_READY_CHANNEL")).toBe(WS_READY_CHANNEL)
     expect(rustConst(proxy, "WS_READY_CHANNEL")).toBe(WS_READY_CHANNEL)
-  })
-
-  // Cowork fork: the optional handshake. The Rust tests hold serde's wire
-  // names to these consts.
-  it("hello and server_info", () => {
-    const attach = rust("web/ws_attach.rs")
-    expect(rustConst(attach, "WS_HELLO_ACTION")).toBe(WS_HELLO_ACTION)
-    expect(rustConst(attach, "WS_SERVER_INFO_TYPE")).toBe(WS_SERVER_INFO_TYPE)
   })
 
   it("event subprotocol and token prefix", () => {

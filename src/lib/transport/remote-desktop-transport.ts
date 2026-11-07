@@ -1,12 +1,9 @@
 import { invoke } from "@tauri-apps/api/core"
-import { getVersion } from "@tauri-apps/api/app"
 import { getCurrentWebview } from "@tauri-apps/api/webview"
 import type { UnlistenFn } from "@tauri-apps/api/event"
 import { WS_READY_CHANNEL } from "./constants"
 import type { AttachTransportHost } from "./web-event-stream"
 import { WebEventStream } from "./web-event-stream"
-import { ServerInfoChannel } from "./server-info"
-import type { ServerCompat } from "@/lib/cowork/compat"
 import type {
   CallOptions,
   EventStream,
@@ -43,13 +40,6 @@ export type RemoteConnectionState =
   | "connected"
   | "reconnecting"
   | "disconnected"
-
-// Cowork fork: this app's version for the WS `hello`, asked once.
-let desktopVersion: Promise<string | undefined> | null = null
-function desktopAppVersion(): Promise<string | undefined> {
-  desktopVersion ??= getVersion().catch(() => undefined)
-  return desktopVersion
-}
 
 const ATTACH_FRAME_TYPES = new Set([
   "snapshot",
@@ -143,8 +133,6 @@ export class RemoteDesktopTransport implements Transport {
   private wsOpen = false
   private wsReadyCallbacks = new Set<() => void>()
   private eventStreamInstance: WebEventStream | null = null
-  // Cowork fork: the optional WS handshake (`server-info.ts`).
-  private serverInfo = new ServerInfoChannel("codeg-desktop", desktopAppVersion)
   /// Debounce timer for the "send failed → reissue active attaches" path.
   /// `sendWsFrame` is fire-and-forget over a Tauri invoke; if Rust reports
   /// the frame was not queued (no entry / queue full / timeout) we kick the
@@ -352,23 +340,6 @@ export class RemoteDesktopTransport implements Transport {
     }
   }
 
-  onServerInfo(callback: (info: ServerCompat) => void): UnsubscribeFn {
-    return this.serverInfo.subscribe(callback)
-  }
-
-  // On its own rather than through `sendWsFrame`: a `hello` that fails to go
-  // out must not set off the attach retry a failed frame there does. Every
-  // window on the shared socket says hello and hears every answer; they agree.
-  private sendHello() {
-    void this.serverInfo.hello((frame) => {
-      if (this.destroyed || !this.wsOpen) return
-      return invoke("remote_ws_send_text", {
-        connectionId: this.config.id,
-        text: JSON.stringify(frame),
-      })
-    })
-  }
-
   onReady(callback: () => void): UnsubscribeFn {
     this.readyCallbacks.add(callback)
     return () => {
@@ -507,7 +478,6 @@ export class RemoteDesktopTransport implements Transport {
       this.eventStreamInstance?.handleServerFrame(frame)
       return
     }
-    if (this.serverInfo.handleFrame(frame)) return
 
     if (!frame || typeof frame !== "object") return
     const { channel, payload } = frame as LegacyEnvelope
@@ -522,7 +492,6 @@ export class RemoteDesktopTransport implements Transport {
       this.wsOpen = true
       this.readyResolve()
       this.setConnectionState("connected")
-      this.sendHello()
       for (const cb of this.readyCallbacks) {
         try {
           cb()
@@ -549,7 +518,6 @@ export class RemoteDesktopTransport implements Transport {
       return
     }
     if (channel === WS_DISCONNECTED_CHANNEL) {
-      this.serverInfo.reset()
       this.recoveryNeeded = true
       this.setConnectionState("reconnecting")
       // Repeated failed handshakes share the same waiters. Replacing their
@@ -559,7 +527,6 @@ export class RemoteDesktopTransport implements Transport {
       return
     }
     if (channel === WS_UNAUTHORIZED_CHANNEL) {
-      this.serverInfo.reset()
       // Only a definitive authentication rejection ends Rust's retries, and
       // it drops this window's subscription: the same expiry an HTTP 401
       // reports.
@@ -613,7 +580,6 @@ export class RemoteDesktopTransport implements Transport {
     this.wsReadyCallbacks.clear()
     this.eventStreamInstance?.destroy()
     this.eventStreamInstance = null
-    this.serverInfo.destroy()
     // Settle any in-flight `subscribe()` awaiters so their promises don't
     // leak alongside the destroyed transport. Safe to call multiple times.
     this.readyResolve?.()

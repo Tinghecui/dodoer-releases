@@ -15,18 +15,6 @@ import {
 } from "@/lib/browser/native-surface-occlusion"
 
 /**
- * Sonner removes a dismissed toast with a `setState` 200ms later
- * (`TIME_BEFORE_UNMOUNT`). Left pending, that timer can fire after the file's
- * jsdom environment is torn down — `window is not defined` from react-dom,
- * which vitest reports as an unhandled error and fails the whole shard (seen
- * on a busy self-hosted runner). Dismiss and let it run while still mounted.
- */
-async function settleToasts() {
-  toast.dismiss()
-  await act(() => new Promise((resolve) => setTimeout(resolve, 250)))
-}
-
-/**
  * The toaster must live in the BODY, not where it is mounted. Every dialog
  * portals to the body at z-50, while the workspace shell's root is
  * `fixed inset-0` — a stacking context that would cap sonner's z-index no
@@ -34,8 +22,6 @@ async function settleToasts() {
  * explains why a button did nothing) painted underneath it.
  */
 describe("AppToaster", () => {
-  afterEach(settleToasts)
-
   it("mounts the toaster on the body rather than in the tree that renders it", async () => {
     const { container } = render(
       <div id="shell" className="fixed inset-0">
@@ -68,8 +54,8 @@ describe("AppToaster occlusion", () => {
     toast.dismiss()
     resetNativeSurfaceOcclusionForTests()
   })
-  afterEach(async () => {
-    await settleToasts()
+  afterEach(() => {
+    toast.dismiss()
     resetNativeSurfaceOcclusionForTests()
   })
 

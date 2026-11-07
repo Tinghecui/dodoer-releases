@@ -1,14 +1,12 @@
 import { WS_READY_CHANNEL } from "./constants"
 import type { AttachTransportHost } from "./web-event-stream"
 import { WebEventStream } from "./web-event-stream"
-import { ServerInfoChannel } from "./server-info"
 import type {
   CallOptions,
   EventStream,
   Transport,
   UnsubscribeFn,
 } from "./types"
-import type { ServerCompat } from "@/lib/cowork/compat"
 import { buildCodegWebSocketProtocols } from "./ws-auth"
 import { parseJsonOrThrow } from "../json-parse-error"
 import {
@@ -98,11 +96,6 @@ export class WebTransport implements Transport {
   private wsOpen = false
   private wsReadyCallbacks = new Set<() => void>()
   private eventStreamInstance: WebEventStream | null = null
-  // Cowork fork: the optional WS handshake (`server-info.ts`).
-  private serverInfo = new ServerInfoChannel(
-    "codeg-web",
-    () => process.env.CODEG_APP_VERSION
-  )
   // Connection-health state machine. Starts "connected" so SSR/first paint
   // never flashes the dialog; the first real transition comes from `onclose`
   // (→ reconnecting) or a 401 (→ unauthorized). `connListeners` are React
@@ -354,10 +347,6 @@ export class WebTransport implements Transport {
     }
   }
 
-  onServerInfo(callback: (info: ServerCompat) => void): UnsubscribeFn {
-    return this.serverInfo.subscribe(callback)
-  }
-
   eventStream(): EventStream {
     if (!this.eventStreamInstance) {
       const host: AttachTransportHost = {
@@ -487,7 +476,6 @@ export class WebTransport implements Transport {
           typeof parsed === "object" &&
           "type" in (parsed as object)
         ) {
-          if (this.serverInfo.handleFrame(parsed)) return
           this.eventStreamInstance?.handleServerFrame(parsed)
           return
         }
@@ -500,7 +488,6 @@ export class WebTransport implements Transport {
           // keeps growing its backoff instead of restarting from 1s.
           this.wsFailCount = 0
           this.setConnState("connected")
-          void this.serverInfo.hello((frame) => this.sendWsFrame(frame))
           for (const cb of this.readyCallbacks) {
             try {
               cb()
@@ -539,7 +526,6 @@ export class WebTransport implements Transport {
     this.ws.onclose = () => {
       this.ws = null
       this.wsOpen = false
-      this.serverInfo.reset()
       // New subscribers (and any concurrent subscribe() calls in flight)
       // must wait for the next connection's `__ready__` before resolving.
       this.resetReady()
@@ -660,7 +646,6 @@ export class WebTransport implements Transport {
       this.ws = null
     }
     this.wsOpen = false
-    this.serverInfo.reset()
   }
 
   destroy() {
@@ -688,7 +673,6 @@ export class WebTransport implements Transport {
     this.connListeners.clear()
     this.eventStreamInstance?.destroy()
     this.eventStreamInstance = null
-    this.serverInfo.destroy()
     // Settle any in-flight `subscribe()` awaiters so their promises don't
     // leak alongside the destroyed transport. Safe to call multiple times —
     // resolving an already-settled Promise is a no-op.

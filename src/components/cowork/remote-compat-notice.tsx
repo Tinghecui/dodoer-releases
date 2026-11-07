@@ -3,11 +3,7 @@
 import { useEffect, useRef } from "react"
 import { toast } from "sonner"
 import { useAppUpdate } from "@/components/providers/update-provider"
-import {
-  judgeCompat,
-  readServerCompat,
-  type ServerCompat,
-} from "@/lib/cowork/compat"
+import { judgeCompat, readServerCompat } from "@/lib/cowork/compat"
 import { useCoworkText } from "@/lib/cowork/i18n"
 import { getTransport, isRemoteDesktopMode } from "@/lib/transport"
 
@@ -18,9 +14,8 @@ const RECHECK_AFTER_MS = 10 * 60 * 1000
 
 /**
  * In a remote-desktop window, checks once whether this app and the server work
- * together (`src/lib/cowork/compat.ts`), again on every reconnect the server
- * answers the WS `hello` (`src/lib/transport/server-info.ts`), and, when they
- * don't, says which side to upgrade in a toast that stays until dismissed. A too-old app gets a
+ * together (`src/lib/cowork/compat.ts`) and, when they don't, says which side
+ * to upgrade in a toast that stays until dismissed. A too-old app gets a
  * "check for update" button (the desktop app updates itself). Renders nothing.
  */
 export function RemoteCompatNotice() {
@@ -35,17 +30,23 @@ export function RemoteCompatNotice() {
     if (!isRemoteDesktopMode()) return
     let cancelled = false
     let lastCheck = 0
-    let appVersion: Promise<string> | null = null
-    const getAppVersion = () =>
-      (appVersion ??= import("@tauri-apps/api/app")
-        .then((app) => app.getVersion())
-        .catch((err) => {
-          appVersion = null
-          throw err
-        }))
 
-    const show = (server: ServerCompat, version: string) => {
-      const verdict = judgeCompat(server, version)
+    const check = async () => {
+      lastCheck = Date.now()
+      let health: unknown
+      let version: string
+      try {
+        health = await getTransport().call("health", {}, { timeoutMs: 8000 })
+        const { getVersion } = await import("@tauri-apps/api/app")
+        version = await getVersion()
+      } catch (err) {
+        // Offline or restarting: the connection UI says so; try next time.
+        lastCheck = 0
+        console.warn("[RemoteCompatNotice] check failed:", err)
+        return
+      }
+      if (cancelled) return
+      const verdict = judgeCompat(readServerCompat(health), version)
       const tr = tRef.current
       if (verdict.kind === "ok") {
         toast.dismiss(TOAST_ID)
@@ -71,35 +72,6 @@ export function RemoteCompatNotice() {
       }
     }
 
-    const check = async () => {
-      lastCheck = Date.now()
-      let health: unknown
-      let version: string
-      try {
-        health = await getTransport().call("health", {}, { timeoutMs: 8000 })
-        version = await getAppVersion()
-      } catch (err) {
-        // Offline or restarting: the connection UI says so; try next time.
-        lastCheck = 0
-        console.warn("[RemoteCompatNotice] check failed:", err)
-        return
-      }
-      if (!cancelled) show(readServerCompat(health), version)
-    }
-
-    // A server that knows the WS handshake says the same on every reconnect,
-    // which is when Cowork has upgraded it; an older one never does, and the
-    // check above (and on coming back) covers it.
-    const unsubscribe = getTransport().onServerInfo?.((info) => {
-      lastCheck = Date.now()
-      getAppVersion().then(
-        (version) => {
-          if (!cancelled) show(info, version)
-        },
-        (err) => console.warn("[RemoteCompatNotice] check failed:", err)
-      )
-    })
-
     const onVisible = () => {
       if (document.visibilityState !== "visible") return
       if (Date.now() - lastCheck >= RECHECK_AFTER_MS) void check()
@@ -109,7 +81,6 @@ export function RemoteCompatNotice() {
     document.addEventListener("visibilitychange", onVisible)
     return () => {
       cancelled = true
-      unsubscribe?.()
       document.removeEventListener("visibilitychange", onVisible)
     }
   }, [])

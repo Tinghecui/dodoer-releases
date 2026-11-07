@@ -27,7 +27,6 @@ pub mod app_state;
 pub mod appimage_env;
 pub mod automation;
 pub mod backgrounds;
-pub mod boot;
 /// Built-in browser. Only its wire types and its grant rules compile in server
 /// mode — see `browser/mod.rs` for why those two, and only those two.
 pub mod browser;
@@ -51,13 +50,8 @@ pub mod folder_links;
 pub mod forge;
 pub mod git_credential;
 pub mod git_repo;
-/// Cowork fork: the desktop app's browser and computer use, served to its
-/// child daemon (`local_daemon`).
-pub mod host_bridge;
 pub mod intern;
 pub mod keyring_store;
-/// Cowork fork: the desktop app's own daemon, a `codeg-server` child process.
-pub mod local_daemon;
 pub mod logging;
 pub mod models;
 mod network;
@@ -191,17 +185,12 @@ mod tauri_app {
         if let Some(tm) = app.try_state::<TerminalManager>() {
             tm.kill_all();
         }
-        // Office watch previews and the Apps page's services codeg started
-        // itself (`workbench_apps`).
-        if let Some(services) = app.try_state::<crate::boot::DaemonServices>() {
-            services.stop();
-        }
+        crate::office_watch::stop_all_office_watches();
+        // The Apps page's services codeg started itself (`workbench_apps`).
+        crate::workbench_apps::stop_all();
         if let Some(cm) = app.try_state::<ConnectionManager>() {
             tauri::async_runtime::block_on(cm.disconnect_all());
         }
-        // The child daemon (`local_daemon`): SIGTERM, so it cancels running
-        // turns and closes as `codeg-server` does, then kill.
-        crate::commands::local_daemon::stop_on_exit(app);
     }
 
     /// `--open` on the desktop: the conversation opens in THIS process, by the
@@ -360,69 +349,6 @@ mod tauri_app {
                 format!("{}: {}", err.message, detail)
             }
             _ => err.message.clone(),
-        }
-    }
-
-    /// How long the app waits for its child daemon at launch before it runs
-    /// the daemon in-process instead. The database is migrated by then (the
-    /// app opened it first), so a start is a second or two.
-    const LOCAL_DAEMON_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
-    /// Cowork fork (`local_daemon`): start the bundled `codeg-server` as the
-    /// app's daemon, with the app's browser and computer use behind the host
-    /// bridge. `None` — logged — when there is no server in the bundle or it
-    /// does not come up; the caller then starts the daemon in-process, so the
-    /// app always opens.
-    fn start_local_daemon(
-        app: &tauri::App,
-        data_dir: &std::path::Path,
-        delegation: &crate::boot::DelegationStack,
-        computer_service: &std::sync::Arc<crate::commands::computer::ComputerService>,
-    ) -> Option<crate::local_daemon::LocalDaemon> {
-        let Some(server) = std::env::current_exe()
-            .ok()
-            .and_then(|exe| crate::local_daemon::server_beside(&exe))
-        else {
-            tracing::warn!(
-                "[local-daemon] no {} beside the app; the daemon runs in-process",
-                crate::local_daemon::SERVER_BIN
-            );
-            return None;
-        };
-        let bridge = match tauri::async_runtime::block_on(crate::host_bridge::HostBridgeServer::bind())
-        {
-            Ok(bridge) => bridge,
-            Err(e) => {
-                tracing::error!("[local-daemon] host bridge: {e}; the daemon runs in-process");
-                return None;
-            }
-        };
-        bridge.serve(crate::host_bridge::HostTools {
-            browser: std::sync::Arc::new(crate::commands::browser::McpBrowserTools::new(
-                app.handle().clone(),
-                delegation.browser_tools.clone(),
-            )),
-            computer: std::sync::Arc::new(crate::commands::computer::McpComputerTools::new(
-                computer_service.clone(),
-            )),
-        });
-        let config = crate::local_daemon::LaunchConfig {
-            server,
-            data_dir: data_dir.to_path_buf(),
-            token: crate::cli_run::hello::random_hex(32),
-            host_bridge: Some(bridge.env()),
-            start_timeout: LOCAL_DAEMON_START_TIMEOUT,
-        };
-        match tauri::async_runtime::block_on(crate::local_daemon::LocalDaemon::start(config)) {
-            Ok(daemon) => {
-                app.manage(bridge);
-                Some(daemon)
-            }
-            Err(e) => {
-                tracing::error!("[local-daemon] {e}; the daemon runs in-process");
-                bridge.shutdown();
-                None
-            }
         }
     }
 
@@ -647,16 +573,6 @@ mod tauri_app {
         // reader of the variable sees the value the in-process resolver
         // returns.
         let context = tauri::generate_context!();
-        // Cowork fork: `codeg --desktop-edition` prints which edition this is
-        // (full, or client-only without a daemon) and where it updates from,
-        // then exits — the desktop build checks its bundle with it.
-        if std::env::args().any(|a| a == "--desktop-edition") {
-            println!(
-                "{}",
-                crate::commands::local_daemon::edition_report(context.config())
-            );
-            std::process::exit(0);
-        }
         let desktop_data_dir = paths::desktop_data_dir(
             std::env::var_os("CODEG_DATA_DIR").as_deref(),
             dirs::data_dir().as_deref(),
@@ -1025,260 +941,596 @@ mod tauri_app {
                     tracing::error!("[Tray] failed to install tray icon: {err}");
                 }
 
-                // Cowork fork (`local_daemon`): the daemon runs as a
-                // `codeg-server` child process unless asked not to
-                // (`CODEG_DESKTOP_DAEMON=embedded`), or the web service is
-                // to start with the app — that one is served by the
-                // in-process daemon, which a child cannot stand in for. The
-                // client-only edition runs no daemon at all, whatever is
-                // asked (`decide_mode`).
-                let web_config = tauri::async_runtime::block_on(web::load_web_service_config(&db.conn));
-                let web_auto_start = matches!(&web_config, Ok(c) if c.auto_start);
-                let wanted_mode = crate::local_daemon::decide_mode(
-                    crate::local_daemon::CLIENT_ONLY_BUILD,
-                    std::env::var(crate::local_daemon::MODE_ENV).ok().as_deref(),
-                    web_auto_start,
-                );
-                tracing::info!(
-                    "[local-daemon] mode {}{}",
-                    wanted_mode.as_str(),
-                    match (web_auto_start, wanted_mode.has_local_daemon()) {
-                        (true, true) => " (the web service starts with the app)",
-                        (true, false) => {
-                            " (the web service is set to start, but this edition has no daemon to serve it)"
-                        }
-                        (false, _) => "",
-                    }
-                );
+                // Sweep stale ACP binary cache trash (rename-aside fallback
+                // artifacts). Detached OS thread: cannot block startup, panics
+                // are caught and dropped, errors are silenced, no subprocesses
+                // spawned. Anything still locked is left for next startup.
+                std::thread::spawn(|| {
+                    let _ = std::panic::catch_unwind(|| {
+                        crate::acp::binary_cache::migrate_legacy_root();
+                        crate::sweep_acp_binary_trash();
+                        crate::sweep_acp_scratch_dirs();
+                    });
+                });
 
-                // The daemon, started the same way `codeg-server` starts it
-                // (`boot`, steps in its order); what follows each step here is
-                // what only the desktop app has. Every `boot` call that spawns
-                // runs inside `block_on`, which gives it Tauri's tokio runtime.
-                let emitter = web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                // Reclaim scratch directories this process loses track of
+                // mid-session. Its own timer on purpose: the ACP idle sweep is
+                // not spawned at all when `CODEG_ACP_IDLE_TIMEOUT_SECS=0`, and
+                // turning off idle disconnects must not also turn off disk
+                // reclamation on a machine leaking gigabytes per launch.
+                tauri::async_runtime::spawn(crate::scratch_sweep_task());
+
+                // Install bundled expert skills into the central store
+                // (`~/.codeg/skills/`). Runs in the background and does
+                // not block startup; failures are logged but non-fatal.
+                tauri::async_runtime::spawn(async move {
+                    let report = crate::commands::experts::ensure_central_experts_installed().await;
+                    if !report.errors.is_empty() {
+                        tracing::error!(
+                            "[Experts] install finished with {} error(s): {:?}",
+                            report.errors.len(),
+                            report.errors
+                        );
+                    } else {
+                        tracing::info!(
+                            "[Experts] install ok: installed={} updated={} pending_review={}",
+                            report.installed_count,
+                            report.updated_count,
+                            report.pending_user_review.len()
+                        );
+                    }
+                });
+
+                // Install bundled scientific-research skills into the same
+                // central store (`~/.codeg/skills/`). Background, non-blocking;
+                // failures are logged but non-fatal.
+                tauri::async_runtime::spawn(async move {
+                    let report = crate::commands::science::ensure_central_science_installed().await;
+                    if !report.errors.is_empty() {
+                        tracing::error!(
+                            "[Science] install finished with {} error(s): {:?}",
+                            report.errors.len(),
+                            report.errors
+                        );
+                    } else {
+                        tracing::info!(
+                            "[Science] install ok: installed={} updated={} pending_review={}",
+                            report.installed_count,
+                            report.updated_count,
+                            report.pending_user_review.len()
+                        );
+                    }
+                });
+
+                // Reclaim orphaned chat scratch dirs (pre-send drafts that never
+                // bound to a conversation, plus dirs left behind by deleted chat
+                // conversations). Background, non-blocking; failures are logged
+                // but non-fatal — anything still in use is left for next startup.
+                {
+                    let gc_conn = app.state::<db::AppDatabase>().conn.clone();
+                    let gc_data_dir = effective_data_dir.clone();
+                    tauri::async_runtime::spawn(async move {
+                        match crate::commands::conversations::gc_orphan_chat_dirs_core(
+                            &gc_conn,
+                            &gc_data_dir,
+                        )
+                        .await
+                        {
+                            Ok(n) if n > 0 => tracing::info!(
+                                "[conversations] chat-dir GC: reclaimed {n} orphan scratch dir(s)"
+                            ),
+                            Ok(_) => {}
+                            Err(err) => {
+                                tracing::error!("[conversations] chat-dir GC failed: {err}")
+                            }
+                        }
+                    });
+                }
+
+                // Push the persisted terminal settings into their live
+                // runtimes BEFORE any background task that can spawn an agent
+                // (the chat-channel dispatcher below is one). For the shell
+                // handle a late seed would only ever be a narrow race, since
+                // it is read at terminal-create time; the command-color flag
+                // is read while BUILDING a launch's env, so a late seed there
+                // would silently hand the first agent of the run the wrong
+                // one. "Seeded before anything can connect" covers both, and
+                // matches server startup, which seeds before it binds.
+                {
+                    let db_for_shell = app.state::<db::AppDatabase>().conn.clone();
+                    let shell_config = app.state::<ConnectionManager>().terminal_shell_config();
+                    tauri::async_runtime::block_on(async move {
+                        crate::commands::system_settings::apply_persisted_terminal_settings(
+                            &db_for_shell,
+                            &shell_config,
+                        )
+                        .await;
+                    });
+                }
 
                 // Seed the close-behavior atomic. `CloseRequested` is a
                 // synchronous callback that reads the cache, not the database,
                 // so an unseeded cache would serve "ask" to a user who pinned
                 // a choice months ago. Blocking here keeps that impossible
                 // even for a close in the first moments after launch.
-                tauri::async_runtime::block_on(
-                    crate::commands::system_settings::apply_persisted_close_behavior(&db.conn),
-                );
-
-                // Delegation broker + per-tool configs, managed alongside the
-                // other per-resource states so commands (Tauri + web) resolve
-                // them by type. Built before the LifecycleSubscriber
-                // (`spawn_daemon_services`), which takes the broker. With a
-                // child daemon only the browser and computer-use configs are
-                // live here: the app serves those two tools to the child.
-                let delegation = crate::boot::DelegationStack::build(
-                    &app.state::<ConnectionManager>(),
-                    &db.conn,
-                    &effective_data_dir,
-                );
-                app.manage(delegation.broker.clone());
-                app.manage(delegation.tokens.clone());
-                app.manage(delegation.feedback.clone());
-                app.manage(delegation.question.clone());
-                app.manage(delegation.session_info.clone());
-                app.manage(delegation.chat_authoring.clone());
-                app.manage(delegation.browser_tools.clone());
-                // The desktop app always serves computer use (its service
-                // starts below): said now, before any session could be
-                // started and ask whether to offer the tools.
-                delegation.computer_tools.mark_served();
-                app.manage(delegation.computer_tools.clone());
-                app.manage(crate::commands::delegation::DelegationSocketPath(
-                    delegation.socket_path.clone(),
-                ));
-                // The two tool groups the app serves, in either mode.
-                tauri::async_runtime::block_on(async {
-                    crate::commands::browser_tools::apply_persisted_browser_tools_config(
-                        &db.conn,
-                        &delegation.browser_tools,
-                    )
-                    .await;
-                    crate::commands::computer_tools::apply_persisted_computer_tools_config(
-                        &db.conn,
-                        &delegation.computer_tools,
-                    )
-                    .await;
-                });
-
-                // Computer use: the helper, the window table, and the two
-                // background duties (end every grant when the group is
-                // switched off; end grants that go unused). Started after
-                // the persisted settings are applied, so the watcher's
-                // first view of the switch is the stored one.
-                let computer_service = crate::commands::computer::ComputerService::start(
-                    crate::commands::computer::ComputerHost::Desktop(app.handle().clone()),
-                    delegation.computer_tools.clone(),
-                );
-                app.manage(computer_service.clone());
-
-                let child = if wanted_mode == crate::local_daemon::Mode::Child {
-                    start_local_daemon(app, &effective_data_dir, &delegation, &computer_service)
-                } else {
-                    None
-                };
-                // A child that could not be started falls back to the
-                // in-process daemon; the client edition has nothing to fall
-                // back to and does not need to.
-                let mode = match wanted_mode {
-                    crate::local_daemon::Mode::Client => crate::local_daemon::Mode::Client,
-                    _ if child.is_some() => crate::local_daemon::Mode::Child,
-                    _ => crate::local_daemon::Mode::Embedded,
-                };
-                app.manage(crate::commands::local_daemon::DaemonModeState(mode));
-                // Every window learns the mode as it loads (`window.
-                // __CODEG_LOCAL_DAEMON__`), before any of its code asks for a
-                // transport: registered ahead of the first window.
-                if let Err(e) = app
-                    .handle()
-                    .plugin(crate::commands::local_daemon::init_script_plugin(mode))
                 {
-                    tracing::error!("[local-daemon] cannot tell the windows the mode: {e}");
+                    let db_for_close = app.state::<db::AppDatabase>().conn.clone();
+                    tauri::async_runtime::block_on(async move {
+                        crate::commands::system_settings::apply_persisted_close_behavior(
+                            &db_for_close,
+                        )
+                        .await;
+                    });
                 }
 
-                if let Some(daemon) = child {
-                    crate::local_daemon::register(daemon.clone());
-                    app.manage(crate::commands::local_daemon::LocalDaemonState(daemon));
-                } else if mode.has_local_daemon() {
-                    // Embedded: the daemon in this process, started the way
-                    // `codeg-server` starts it. (The client edition skips all
-                    // of this: its windows connect to saved servers only.)
-                    tauri::async_runtime::block_on(async {
-                        crate::boot::spawn_startup_housekeeping(
-                            &db.conn,
-                            &effective_data_dir,
-                            &emitter,
-                        )
-                    });
-
-                    // Persisted terminal and tool settings into their live
-                    // runtimes BEFORE any background task that can spawn an
-                    // agent (the chat-channel dispatcher below is one),
-                    // matching server startup, which seeds before it binds.
-                    tauri::async_runtime::block_on(crate::boot::apply_persisted_settings(
-                        &db.conn,
-                        &app.state::<ConnectionManager>(),
-                        &delegation,
+                // Start the config-sync uploader. Background and detached:
+                // it sleeps a minute before its first hash compare, reads its
+                // settings every tick (so toggling sync in the UI takes effect
+                // without a restart), and does nothing at all until the user
+                // configures a WebDAV endpoint.
+                {
+                    let db_for_sync = app.state::<db::AppDatabase>().conn.clone();
+                    let emitter = std::sync::Arc::new(web::event_bridge::EventEmitter::Tauri(
+                        app.handle().clone(),
                     ));
+                    tauri::async_runtime::spawn(async move {
+                        crate::commands::config_sync::auto_sync::run_auto_sync_loop(
+                            db_for_sync,
+                            emitter,
+                            env!("CARGO_PKG_VERSION").to_string(),
+                        )
+                        .await;
+                    });
+                }
 
-                    let pet_state = app
-                        .state::<crate::pet_state_mapper::PetStateHandle>()
+                // Label worktree folders registered before aliases were seeded at
+                // creation with the branch they have checked out, so the sidebar
+                // names them by branch rather than by their (long, derived)
+                // directory. Background, non-blocking; changed folders are
+                // broadcast, so a client that already fetched its folder list
+                // still picks them up.
+                {
+                    let db = db::AppDatabase {
+                        conn: app.state::<db::AppDatabase>().conn.clone(),
+                    };
+                    let emitter = web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                    tauri::async_runtime::spawn(async move {
+                        let n =
+                            crate::commands::folders::backfill_worktree_folder_aliases(&emitter, &db)
+                                .await;
+                        if n > 0 {
+                            tracing::info!("[folders] labeled {n} worktree folder(s) by branch");
+                        }
+                    });
+                }
+
+                // Hand the chat-channel manager to the connection manager
+                // BEFORE the chat background tasks below start accepting
+                // messages: a `/new` that lands first would write its live ACP
+                // title against an `install_chat_channel` that hasn't happened
+                // yet, and skip the topic rename for good (the later
+                // reconciliation passes only sync titles their own conditional
+                // UPDATE wrote, and this one already converged).
+                {
+                    let cm = app.state::<ConnectionManager>();
+                    let ccm = app.state::<ChatChannelManager>();
+                    cm.install_chat_channel(ccm.clone_ref());
+                }
+
+                // Start chat channel background tasks
+                {
+                    let ccm = app.state::<ChatChannelManager>();
+                    let broadcaster =
+                        app.state::<std::sync::Arc<web::event_bridge::WebEventBroadcaster>>();
+                    let db_conn = app.state::<db::AppDatabase>().conn.clone();
+                    let data_dir = effective_data_dir.clone();
+                    let ccm_ref = ccm.clone_ref();
+                    let br = broadcaster.inner().clone();
+                    let bus = app
+                        .state::<std::sync::Arc<crate::acp::InternalEventBus>>()
+                        .inner()
+                        .clone();
+                    let cm = app.state::<ConnectionManager>().clone_ref();
+                    let emitter = web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                    tauri::async_runtime::spawn(async move {
+                        ccm_ref
+                            .start_background(br, bus, db_conn, data_dir, cm, emitter)
+                            .await;
+                    });
+                }
+
+                // Spawn the desktop pet state mapper: subscribes to ACP events
+                // (typed envelopes via the in-process bus) AND folder/app
+                // side-channel notifications (JSON via the broadcaster), and
+                // emits `pet://state` whenever the aggregated pet state
+                // changes. The renderer in the floating pet window listens
+                // for these events to drive its sprite animation row.
+                {
+                    let bus = app
+                        .state::<std::sync::Arc<crate::acp::InternalEventBus>>()
                         .inner()
                         .clone();
                     let broadcaster = app
                         .state::<std::sync::Arc<web::event_bridge::WebEventBroadcaster>>()
                         .inner()
                         .clone();
+                    let emitter = web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                    let pet_state_handle = app
+                        .state::<crate::pet_state_mapper::PetStateHandle>()
+                        .inner()
+                        .clone();
+                    tauri::async_runtime::spawn(
+                        crate::pet_state_mapper::pet_state_subscriber_task(
+                            bus,
+                            broadcaster,
+                            emitter,
+                            pet_state_handle,
+                        ),
+                    );
+                }
+
+                // Spawn the pet panel active-session aggregator: rebuilds the
+                // `PetSessionsPayload` (running/waiting/error counts + per-
+                // session rows with titles and pending permissions) on ACP
+                // lifecycle events and emits `pet://sessions` for the sprite
+                // badge + panel window. Shares the same buses as the ambient
+                // mapper but is kept separate so the DB-free ambient task stays
+                // simple; desktop-only (server mode has no pet window).
+                {
                     let bus = app
                         .state::<std::sync::Arc<crate::acp::InternalEventBus>>()
                         .inner()
                         .clone();
-                    let daemon_services = {
-                        let connection_manager = app.state::<ConnectionManager>();
-                        let chat_channels = app.state::<ChatChannelManager>();
-                        let daemon = crate::boot::Daemon {
-                            conn: &db.conn,
-                            data_dir: &effective_data_dir,
-                            connection_manager: &connection_manager,
-                            chat_channels: &chat_channels,
-                            broadcaster: &broadcaster,
-                            bus: &bus,
-                            emitter: &emitter,
-                            pet_state: &pet_state,
-                            delegation: &delegation,
-                        };
-                        tauri::async_runtime::block_on(async {
-                            crate::boot::start_delegation_service(
-                                &daemon,
-                                std::sync::Arc::new(crate::commands::browser::McpBrowserTools::new(
-                                    app.handle().clone(),
-                                    delegation.browser_tools.clone(),
-                                )),
-                                std::sync::Arc::new(crate::commands::computer::McpComputerTools::new(
-                                    computer_service,
-                                )),
-                            );
-                            // Spawned rather than awaited: no window waits on
-                            // auto-connecting the chat channels.
-                            tauri::async_runtime::spawn(crate::boot::start_chat_channels(&daemon));
-                            crate::boot::spawn_daemon_services(
-                                &daemon,
-                                &crate::boot::DaemonOptions { config_sync: true },
-                            )
-                        })
-                    };
-                    app.manage(daemon_services);
+                    let broadcaster = app
+                        .state::<std::sync::Arc<web::event_bridge::WebEventBroadcaster>>()
+                        .inner()
+                        .clone();
+                    let emitter = web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                    let manager = app.state::<ConnectionManager>().inner().clone_ref();
+                    let db_conn = app.state::<db::AppDatabase>().conn.clone();
+                    tauri::async_runtime::spawn(
+                        crate::pet_sessions::pet_sessions_subscriber_task(
+                            bus,
+                            broadcaster,
+                            emitter,
+                            manager,
+                            db_conn,
+                        ),
+                    );
+                }
 
-                    // The pet panel's active-session aggregator: rebuilds the
-                    // `PetSessionsPayload` (running/waiting/error counts + per-
-                    // session rows with titles and pending permissions) on ACP
-                    // lifecycle events and emits `pet://sessions` for the sprite
-                    // badge + panel window. Shares the same buses as the ambient
-                    // mapper but is kept separate so the DB-free ambient task stays
-                    // simple; a child daemon runs it itself (`codeg_server.rs`).
-                    tauri::async_runtime::spawn(crate::pet_sessions::pet_sessions_subscriber_task(
-                        bus.clone(),
-                        broadcaster.clone(),
-                        emitter.clone(),
-                        app.state::<ConnectionManager>().inner().clone_ref(),
-                        db.conn.clone(),
+                // Delegation broker + UDS listener. Built from the managed
+                // ConnectionManager + DB so spawn / depth-lookup work against
+                // live state. Managed alongside the existing per-resource
+                // states so commands (Tauri + web) can resolve them by type.
+                // MUST run before the LifecycleSubscriber spawn below so the
+                // broker handle is available to it.
+                let broker_for_lifecycle = {
+                    let cm_state = app.state::<ConnectionManager>();
+                    let db_conn = app.state::<db::AppDatabase>().conn.clone();
+                    let (
+                        broker,
+                        tokens,
+                        socket_path,
+                        feedback_config,
+                        question_config,
+                        session_info_config,
+                        chat_authoring_config,
+                        browser_tools_config,
+                        computer_tools_config,
+                    ) = crate::app_state::build_delegation_stack(
+                        &cm_state,
+                        db_conn.clone(),
+                        effective_data_dir.clone(),
+                    );
+                    app.manage(broker.clone());
+                    app.manage(tokens.clone());
+                    app.manage(feedback_config.clone());
+                    app.manage(question_config.clone());
+                    app.manage(session_info_config.clone());
+                    app.manage(chat_authoring_config.clone());
+                    app.manage(browser_tools_config.clone());
+                    // The desktop app always serves computer use (its service
+                    // starts below): said now, before any session could be
+                    // started and ask whether to offer the tools.
+                    computer_tools_config.mark_served();
+                    app.manage(computer_tools_config.clone());
+                    app.manage(crate::commands::delegation::DelegationSocketPath(
+                        socket_path.clone(),
                     ));
 
-                    // Headless `codeg-cli` runs: the service and its loopback
-                    // access. Managed before the web service may start below,
-                    // which serves the same routes from this state. A child
-                    // daemon has its own and publishes its own discovery file.
-                    {
-                        let service = crate::cli_run::CliRunService::new(
-                            &app.state::<db::AppDatabase>(),
-                            &app.state::<ConnectionManager>(),
-                            emitter.clone(),
-                            bus.clone(),
-                            effective_data_dir.clone(),
-                            crate::cli_run::wire::RuntimeKind::Desktop,
-                        );
-                        service.set_opener(std::sync::Arc::new(DesktopSessionOpener(
-                            app.handle().clone(),
-                        )));
-                        let access = crate::cli_run::CliAccess::new(
-                            service.clone(),
-                            effective_data_dir.clone(),
-                        );
-                        app.manage(service.clone());
-                        app.manage(access.clone());
-                        let db_conn = db.conn.clone();
-                        tauri::async_runtime::spawn(async move {
-                            service.spawn_background();
-                            access.start_if_enabled(&db_conn).await;
-                        });
-                    }
+                    // Push persisted settings into the broker + feedback + question
+                    // + session-info config before listener accept.
+                    let broker_for_init = broker.clone();
+                    let db_for_init = db_conn.clone();
+                    let feedback_for_init = feedback_config.clone();
+                    let question_for_init = question_config.clone();
+                    let session_info_for_init = session_info_config.clone();
+                    let chat_authoring_for_init = chat_authoring_config.clone();
+                    let browser_tools_for_init = browser_tools_config.clone();
+                    let computer_tools_for_init = computer_tools_config.clone();
+                    tauri::async_runtime::block_on(async move {
+                        delegation_commands::apply_persisted_config(
+                            &db_for_init,
+                            &broker_for_init,
+                        )
+                        .await;
+                        crate::commands::feedback::apply_persisted_feedback_config(
+                            &db_for_init,
+                            &feedback_for_init,
+                        )
+                        .await;
+                        crate::commands::question::apply_persisted_question_config(
+                            &db_for_init,
+                            &question_for_init,
+                        )
+                        .await;
+                        crate::commands::session_info::apply_persisted_session_info_config(
+                            &db_for_init,
+                            &session_info_for_init,
+                        )
+                        .await;
+                        crate::commands::chat_authoring::apply_persisted_chat_authoring_config(
+                            &db_for_init,
+                            &chat_authoring_for_init,
+                        )
+                        .await;
+                        crate::commands::browser_tools::apply_persisted_browser_tools_config(
+                            &db_for_init,
+                            &browser_tools_for_init,
+                        )
+                        .await;
+                        crate::commands::computer_tools::apply_persisted_computer_tools_config(
+                            &db_for_init,
+                            &computer_tools_for_init,
+                        )
+                        .await;
+                        // The generative-UI skill's central copy, and the move
+                        // from 0.35.0's `json-render`: here, before any command
+                        // runs, so the move can never undo a change made on
+                        // the settings page.
+                        crate::commands::generative_ui::install_generative_ui_skill(
+                            &db_for_init,
+                        )
+                        .await;
+                    });
 
-                    match web_config {
-                        Ok(config) if config.auto_start => {
-                            let port = config.port.unwrap_or(web::DEFAULT_WEB_SERVICE_PORT);
-                            let ws = app.state::<web::WebServerState>();
-                            if let Err(err) =
-                                tauri::async_runtime::block_on(web::do_start_web_server_tauri(
+                    // Computer use: the helper, the window table, and the two
+                    // background duties (end every grant when the group is
+                    // switched off; end grants that go unused). Started after
+                    // the persisted settings are applied, so the watcher's
+                    // first view of the switch is the stored one.
+                    let computer_service = crate::commands::computer::ComputerService::start(
+                        crate::commands::computer::ComputerHost::Desktop(app.handle().clone()),
+                        computer_tools_config.clone(),
+                    );
+                    app.manage(computer_service.clone());
+
+                    let listener_broker = broker.clone();
+                    let listener = crate::acp::delegation::listener::DelegationListener::new(
+                        listener_broker,
+                        tokens,
+                        std::sync::Arc::new(
+                            crate::acp::manager::ConnectionManagerParentLookup {
+                                manager: std::sync::Arc::new(cm_state.clone_ref()),
+                            },
+                        ),
+                        std::sync::Arc::new(
+                            crate::acp::manager::ConnectionManagerFeedbackLookup {
+                                manager: std::sync::Arc::new(cm_state.clone_ref()),
+                            },
+                        ),
+                        std::sync::Arc::new(
+                            crate::acp::manager::ConnectionManagerQuestionLookup {
+                                manager: std::sync::Arc::new(cm_state.clone_ref()),
+                            },
+                        ),
+                        std::sync::Arc::new(
+                            crate::commands::session_info::DbSessionInfoLookup::new(
+                                std::sync::Arc::new(db::AppDatabase {
+                                    conn: db_conn.clone(),
+                                }),
+                            ),
+                        ),
+                        std::sync::Arc::new(crate::work_task::EngineWorkTaskTools),
+                        std::sync::Arc::new(
+                            crate::commands::chat_authoring::DbChatAuthoring::new(
+                                std::sync::Arc::new(db::AppDatabase {
+                                    conn: db_conn.clone(),
+                                }),
+                                crate::web::event_bridge::EventEmitter::Tauri(
                                     app.handle().clone(),
-                                    &ws,
-                                    config.port,
-                                    None,
-                                    config.token,
-                                ))
-                            {
-                                tracing::error!("[WEB] auto-start failed: {err}");
-                                notify_web_auto_start_failed(app.handle(), port, &err);
-                            }
+                                ),
+                                chat_authoring_config.clone(),
+                            ),
+                        ),
+                        std::sync::Arc::new(
+                            crate::commands::browser::McpBrowserTools::new(
+                                app.handle().clone(),
+                                browser_tools_config.clone(),
+                            ),
+                        ),
+                        std::sync::Arc::new(crate::commands::computer::McpComputerTools::new(
+                            computer_service,
+                        )),
+                        std::sync::Arc::new(
+                            crate::acp::result_tool::ConnectionManagerResultLookup {
+                                manager: std::sync::Arc::new(cm_state.clone_ref()),
+                            },
+                        ),
+                    );
+                    // Bind through the service handle rather than a bare
+                    // `listener.run` spawn: it keeps the bind error and the
+                    // accept-loop handle around, which is what lets the
+                    // workspace status indicator report why the broker socket
+                    // is down and rebind it without an app restart.
+                    let service = crate::acp::delegation::service::DelegationService::new(
+                        listener,
+                        socket_path,
+                    );
+                    crate::acp::delegation::service::install(service.clone());
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = service.start().await {
+                            tracing::error!("[delegation] listener failed to start: {e}");
                         }
-                        Ok(_) => {}
-                        Err(err) => {
-                            tracing::error!("[WEB] failed to load auto-start config: {err}")
+                    });
+                    broker
+                };
+
+                // Spawn the LifecycleSubscriber: persists cross-connection DB state
+                // (currently `external_id` on conversation rows when SessionStarted fires)
+                // off the emit hot path. `subscribe()` runs synchronously inside
+                // `lifecycle_subscriber_task` before the future is returned, so the
+                // subscribe-before-spawn invariant holds. The setup callback runs
+                // outside any tokio runtime, so we use `tauri::async_runtime::spawn`.
+                {
+                    let db_conn = app.state::<db::AppDatabase>().conn.clone();
+                    let cm = app.state::<ConnectionManager>().clone_ref();
+                    let bus = app
+                        .state::<std::sync::Arc<crate::acp::InternalEventBus>>()
+                        .inner()
+                        .clone();
+                    tauri::async_runtime::spawn(crate::acp::lifecycle_subscriber_task(
+                        db_conn,
+                        cm,
+                        bus,
+                        Some(broker_for_lifecycle),
+                    ));
+                }
+
+                // Headless `codeg-cli` runs: the service and its loopback
+                // access. Managed before the web service may start below,
+                // which serves the same routes from this state.
+                {
+                    let service = crate::cli_run::CliRunService::new(
+                        &app.state::<db::AppDatabase>(),
+                        &app.state::<ConnectionManager>(),
+                        crate::web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                        app.state::<std::sync::Arc<crate::acp::InternalEventBus>>()
+                            .inner()
+                            .clone(),
+                        effective_data_dir.clone(),
+                        crate::cli_run::wire::RuntimeKind::Desktop,
+                    );
+                    service.set_opener(std::sync::Arc::new(DesktopSessionOpener(
+                        app.handle().clone(),
+                    )));
+                    let access =
+                        crate::cli_run::CliAccess::new(service.clone(), effective_data_dir.clone());
+                    app.manage(service.clone());
+                    app.manage(access.clone());
+                    let db_conn = app.state::<db::AppDatabase>().conn.clone();
+                    tauri::async_runtime::spawn(async move {
+                        service.spawn_background();
+                        access.start_if_enabled(&db_conn).await;
+                    });
+                }
+
+                match tauri::async_runtime::block_on(web::load_web_service_config(&db.conn)) {
+                    Ok(config) if config.auto_start => {
+                        let port = config.port.unwrap_or(web::DEFAULT_WEB_SERVICE_PORT);
+                        let ws = app.state::<web::WebServerState>();
+                        if let Err(err) =
+                            tauri::async_runtime::block_on(web::do_start_web_server_tauri(
+                                app.handle().clone(),
+                                &ws,
+                                config.port,
+                                None,
+                                config.token,
+                            ))
+                        {
+                            tracing::error!("[WEB] auto-start failed: {err}");
+                            notify_web_auto_start_failed(app.handle(), port, &err);
                         }
+                    }
+                    Ok(_) => {}
+                    Err(err) => tracing::error!("[WEB] failed to load auto-start config: {err}"),
+                }
+
+                // Spawn the idle sweep so connections abandoned without an
+                // explicit disconnect (e.g. window/tab closed without
+                // teardown, panic survivors) are reaped. Override the
+                // 60-second default via `CODEG_ACP_IDLE_TIMEOUT_SECS`
+                // (set to `0` to disable).
+                if let Some(idle_timeout) = crate::acp::idle_timeout_from_env() {
+                    let cm = app.state::<ConnectionManager>().clone_ref();
+                    tauri::async_runtime::spawn(crate::acp::idle_sweep_task(
+                        cm,
+                        idle_timeout,
+                        std::time::Duration::from_secs(crate::acp::SWEEP_INTERVAL_SECS),
+                    ));
+                }
+
+                // Office watch preview servers: reap dead children + ref0
+                // stragglers (live previews are never swept). Override via
+                // `CODEG_OFFICE_WATCH_IDLE_TIMEOUT_SECS` (`0` disables).
+                if let Some(idle_timeout) = crate::office_watch::idle_timeout_from_env() {
+                    tauri::async_runtime::spawn(crate::office_watch::office_watch_idle_sweep_task(
+                        idle_timeout,
+                        std::time::Duration::from_secs(crate::office_watch::SWEEP_INTERVAL_SECS),
+                    ));
+                }
+
+                // jenny fork: one sidebar row per folder with Jenny Loops. Mirrored
+                // in `bin/codeg_server.rs`.
+                tauri::async_runtime::spawn(
+                    crate::commands::jenny_loop::loop_conversation_sync_task(
+                        app.state::<crate::db::AppDatabase>().conn.clone(),
+                        crate::web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                    ),
+                );
+
+                // Apps page: start every `auto` app's service and watch which
+                // ones answer. Mirrored in `bin/codeg_server.rs`.
+                tauri::async_runtime::spawn(crate::workbench_apps::boot(
+                    crate::db::AppDatabase {
+                        conn: app.state::<crate::db::AppDatabase>().conn.clone(),
+                    },
+                    crate::web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                ));
+
+                // Automation engine: drives manual + scheduled fires, settles
+                // runs off the event bus, reconciles, and recovers on boot. One
+                // per process; mirrored in `bin/codeg_server.rs`.
+                if let Some(engine) = crate::automation::build_engine(
+                    crate::db::AppDatabase {
+                        conn: app.state::<crate::db::AppDatabase>().conn.clone(),
+                    },
+                    app.state::<ConnectionManager>().clone_ref(),
+                    crate::web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                    app.state::<std::sync::Arc<crate::acp::InternalEventBus>>()
+                        .inner()
+                        .clone(),
+                    effective_data_dir.clone(),
+                ) {
+                    tauri::async_runtime::spawn(crate::automation::run_automation_engine(engine));
+                }
+
+                // Work-task engine: drives the todo→…→done pipeline, settles
+                // runs off the event bus, recovers merges from git truth on
+                // boot. One per process; mirrored in `bin/codeg_server.rs`.
+                if let Some(engine) = crate::work_task::build_task_engine(
+                    crate::db::AppDatabase {
+                        conn: app.state::<crate::db::AppDatabase>().conn.clone(),
+                    },
+                    app.state::<ConnectionManager>().clone_ref(),
+                    crate::web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                    app.state::<std::sync::Arc<crate::acp::InternalEventBus>>()
+                        .inner()
+                        .clone(),
+                    effective_data_dir.clone(),
+                ) {
+                    tauri::async_runtime::spawn(crate::work_task::run_task_engine(engine));
+                    // The repository panel's auto-processing mints tasks
+                    // unattended, so it runs only where the task engine does —
+                    // the one process holding this data directory's task lock.
+                    if let Some(processor) = crate::forge::auto::build(
+                        crate::db::AppDatabase {
+                            conn: app.state::<crate::db::AppDatabase>().conn.clone(),
+                        },
+                        crate::web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                    ) {
+                        tauri::async_runtime::spawn(crate::forge::auto::run(processor));
                     }
                 }
 
@@ -1814,8 +2066,6 @@ mod tauri_app {
                 remote_proxy_commands::remote_ws_subscribe,
                 remote_proxy_commands::remote_ws_unsubscribe,
                 remote_proxy_commands::remote_ws_send_text,
-                crate::commands::local_daemon::local_daemon_status,
-                crate::commands::local_daemon::local_daemon_attach_window,
                 windows::open_pet_window,
                 windows::close_pet_window,
                 windows::pet_window_record_position,

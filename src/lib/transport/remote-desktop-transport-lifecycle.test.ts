@@ -106,12 +106,9 @@ async function connectReady() {
 }
 
 function sentFrames() {
-  // Cowork fork: leaves out the WS `hello` after each ready, which has its own
-  // tests (`server-info.test.ts`).
   return invokeMock.mock.calls
     .filter(([command]) => command === "remote_ws_send_text")
     .map(([, args]) => JSON.parse(args!.text as string))
-    .filter((frame) => frame.action !== "hello")
 }
 
 function lastSentFrame() {

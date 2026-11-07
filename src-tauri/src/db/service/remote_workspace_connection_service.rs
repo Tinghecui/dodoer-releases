@@ -1,11 +1,10 @@
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 
-use sea_orm::sea_query::Expr;
 use sea_orm::DatabaseConnection;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter,
-    QueryOrder, Set, TransactionTrait,
+    ActiveModelTrait, ActiveValue::NotSet, EntityTrait, IntoActiveModel, QueryOrder, Set,
+    TransactionTrait,
 };
 
 use crate::app_error::AppCommandError;
@@ -35,255 +34,12 @@ const RESERVED_HEADER_NAMES: &[&str] = &[
     "sec-websocket-extensions",
 ];
 
-// ── Where the token lives ──
-//
-// On the desktop the `token` column holds `keychain:<key>`, a pointer to an
-// OS keychain entry, instead of the token itself. Everything outside this file
-// still sees the plain token in `RemoteWorkspaceConnectionInfo`: the pointer is
-// resolved on read, so callers, the IPC API and the settings form are
-// unchanged. Where there is no keychain (codeg-server, tests, a Linux desktop
-// without a secret service, a denied prompt) the token stays in the column as
-// before; a row is only switched to a pointer once its keychain write
-// succeeded, so a missing keychain never loses a connection.
-
-/// Marks a `token` column value as a keychain pointer rather than a token.
-const KEYCHAIN_REF_PREFIX: &str = "keychain:";
-
-/// Secret storage for connection tokens, keyed by an opaque random key.
-pub(crate) trait TokenVault: Send + Sync {
-    fn set(&self, key: &str, token: &str) -> Result<(), String>;
-    /// `Ok(None)` is "no such entry"; `Err` is "could not ask" (locked,
-    /// denied). Neither is ever written back, so the difference only shows
-    /// in the log.
-    fn get(&self, key: &str) -> Result<Option<String>, String>;
-    fn delete(&self, key: &str) -> Result<(), String>;
-}
-
-fn keychain_key(stored: &str) -> Option<&str> {
-    stored.strip_prefix(KEYCHAIN_REF_PREFIX)
-}
-
-/// The OS keychain, desktop builds only. Tests and codeg-server have none and
-/// keep tokens in the database as before.
-#[cfg(all(feature = "tauri-runtime", not(test)))]
-mod keychain {
-    use std::collections::HashMap;
-    use std::sync::{LazyLock, Mutex};
-
-    use super::TokenVault;
-
-    /// The remote proxy reads the connection on every request; one keychain
-    /// read per token per process is enough. `set` only invalidates, so the
-    /// next read (the migration's read-back included) really asks the keychain.
-    pub(super) struct Keychain {
-        cache: Mutex<HashMap<String, String>>,
-    }
-
-    pub(super) static KEYCHAIN: LazyLock<Keychain> = LazyLock::new(|| Keychain {
-        cache: Mutex::new(HashMap::new()),
-    });
-
-    fn secret_name(key: &str) -> String {
-        format!("remote-workspace:{key}")
-    }
-
-    impl TokenVault for Keychain {
-        fn set(&self, key: &str, token: &str) -> Result<(), String> {
-            self.cache.lock().unwrap().remove(key);
-            crate::keyring_store::set_secret(&secret_name(key), token)
-        }
-
-        fn get(&self, key: &str) -> Result<Option<String>, String> {
-            if let Some(token) = self.cache.lock().unwrap().get(key) {
-                return Ok(Some(token.clone()));
-            }
-            let token = crate::keyring_store::get_secret(&secret_name(key))?;
-            if let Some(token) = &token {
-                self.cache
-                    .lock()
-                    .unwrap()
-                    .insert(key.to_string(), token.clone());
-            }
-            Ok(token)
-        }
-
-        fn delete(&self, key: &str) -> Result<(), String> {
-            self.cache.lock().unwrap().remove(key);
-            crate::keyring_store::delete_secret(&secret_name(key))
-        }
-    }
-}
-
-#[cfg(all(feature = "tauri-runtime", not(test)))]
-fn vault() -> Option<&'static dyn TokenVault> {
-    Some(&*keychain::KEYCHAIN)
-}
-
-#[cfg(not(all(feature = "tauri-runtime", not(test))))]
-fn vault() -> Option<&'static dyn TokenVault> {
-    None
-}
-
-/// Move plaintext tokens left by older versions into the keychain, once per
-/// process, on the first read. Lazy rather than at startup so it needs no hook
-/// in app setup; the first read is the workspace restore or the settings list.
-async fn ensure_migrated(conn: &DatabaseConnection, vault: Option<&dyn TokenVault>) {
-    #[cfg(all(feature = "tauri-runtime", not(test)))]
-    {
-        static MIGRATED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-        if let Some(vault) = vault {
-            MIGRATED
-                .get_or_init(|| async {
-                    migrate_tokens(conn, vault).await;
-                })
-                .await;
-        }
-    }
-    #[cfg(not(all(feature = "tauri-runtime", not(test))))]
-    let _ = (conn, vault);
-}
-
-/// Move every plaintext token into `vault`, returning how many moved. Each row
-/// switches to a pointer only after the keychain read the token back
-/// unchanged, and only if the row was not edited meanwhile. The first keychain
-/// failure stops the run: the keychain is unavailable, and the remaining rows
-/// keep working from the database.
-#[cfg_attr(not(all(feature = "tauri-runtime", not(test))), allow(dead_code))]
-pub(crate) async fn migrate_tokens(conn: &DatabaseConnection, vault: &dyn TokenVault) -> usize {
-    let rows = match remote_workspace_connection::Entity::find().all(conn).await {
-        Ok(rows) => rows,
-        Err(err) => {
-            tracing::warn!("[remote-workspace] token migration: could not read connections: {err}");
-            return 0;
-        }
-    };
-    let mut moved = 0;
-    for row in rows {
-        if row.token.is_empty() || keychain_key(&row.token).is_some() {
-            continue;
-        }
-        let key = uuid::Uuid::new_v4().to_string();
-        if let Err(err) = vault.set(&key, &row.token) {
-            tracing::warn!(
-                "[remote-workspace] keychain unavailable, tokens stay in the database: {err}"
-            );
-            return moved;
-        }
-        match vault.get(&key) {
-            Ok(Some(read)) if read == row.token => {}
-            other => {
-                tracing::warn!(
-                    "[remote-workspace] keychain did not read back the token (connection {}): {:?}",
-                    row.id,
-                    other.map(|t| t.map(|_| "<different token>"))
-                );
-                let _ = vault.delete(&key);
-                return moved;
-            }
-        }
-        let updated = remote_workspace_connection::Entity::update_many()
-            .col_expr(
-                remote_workspace_connection::Column::Token,
-                Expr::value(format!("{KEYCHAIN_REF_PREFIX}{key}")),
-            )
-            .filter(remote_workspace_connection::Column::Id.eq(row.id))
-            .filter(remote_workspace_connection::Column::Token.eq(row.token.clone()))
-            .exec(conn)
-            .await;
-        match updated {
-            Ok(result) if result.rows_affected == 1 => moved += 1,
-            // Edited or deleted since the read: that write already decided
-            // where its token lives.
-            Ok(_) => {
-                let _ = vault.delete(&key);
-            }
-            Err(err) => {
-                tracing::warn!(
-                    "[remote-workspace] token migration: could not update connection {}: {err}",
-                    row.id
-                );
-                let _ = vault.delete(&key);
-                return moved;
-            }
-        }
-    }
-    if moved > 0 {
-        tracing::info!("[remote-workspace] moved {moved} connection token(s) into the keychain");
-    }
-    moved
-}
-
-/// The column value to store for `token`: a keychain pointer when the vault
-/// takes it, the token itself otherwise. `previous` is the current column
-/// value; an existing pointer keeps its key, so an update overwrites the same
-/// keychain entry instead of leaving the old one behind.
-fn store_token(vault: Option<&dyn TokenVault>, previous: &str, token: &str) -> String {
-    let Some(vault) = vault else {
-        return token.to_string();
-    };
-    let existing = keychain_key(previous);
-    let key = existing
-        .map(str::to_string)
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    match vault.set(&key, token) {
-        Ok(()) => format!("{KEYCHAIN_REF_PREFIX}{key}"),
-        Err(err) => {
-            tracing::warn!(
-                "[remote-workspace] keychain unavailable, storing the token in the database: {err}"
-            );
-            if existing.is_some() {
-                // The row stops pointing at it; do not leave the old token there.
-                let _ = vault.delete(&key);
-            }
-            token.to_string()
-        }
-    }
-}
-
-/// Drop the keychain entry a column value points at, if any. Best effort: a
-/// leftover entry is unreachable (keys are random and never reused).
-fn forget_token(vault: Option<&dyn TokenVault>, stored: &str) {
-    if let (Some(vault), Some(key)) = (vault, keychain_key(stored)) {
-        if let Err(err) = vault.delete(key) {
-            tracing::warn!("[remote-workspace] could not delete keychain entry: {err}");
-        }
-    }
-}
-
-fn resolve_token(vault: Option<&dyn TokenVault>, id: i32, stored: String) -> String {
-    let Some(key) = keychain_key(&stored) else {
-        return stored;
-    };
-    let found = match vault {
-        Some(vault) => vault.get(key),
-        None => Err("no keychain in this build".to_string()),
-    };
-    match found {
-        Ok(Some(token)) => token,
-        // An empty token fails the connection with an auth error; editing it
-        // or clicking the portal link again stores a new one.
-        Ok(None) => {
-            tracing::warn!("[remote-workspace] connection {id}: keychain entry is missing");
-            String::new()
-        }
-        Err(err) => {
-            tracing::warn!(
-                "[remote-workspace] connection {id}: could not read the keychain: {err}"
-            );
-            String::new()
-        }
-    }
-}
-
-fn to_info(
-    model: remote_workspace_connection::Model,
-    vault: Option<&dyn TokenVault>,
-) -> RemoteWorkspaceConnectionInfo {
+fn to_info(model: remote_workspace_connection::Model) -> RemoteWorkspaceConnectionInfo {
     RemoteWorkspaceConnectionInfo {
         id: model.id,
         name: model.name,
         base_url: model.base_url,
-        token: resolve_token(vault, model.id, model.token),
+        token: model.token,
         headers: serde_json::from_str(&model.headers).unwrap_or_default(),
         sort_order: model.sort_order,
         created_at: model.created_at,
@@ -359,51 +115,28 @@ fn validate_token(token: &str) -> Result<String, AppCommandError> {
             "Remote connection token is required",
         ));
     }
-    // Would be read back as a keychain pointer.
-    if trimmed.starts_with(KEYCHAIN_REF_PREFIX) {
-        return Err(AppCommandError::invalid_input(
-            "Remote connection token is invalid",
-        ));
-    }
     Ok(trimmed.to_string())
 }
 
 pub async fn list(
     conn: &DatabaseConnection,
 ) -> Result<Vec<RemoteWorkspaceConnectionInfo>, DbError> {
-    list_with(conn, vault()).await
-}
-
-pub(crate) async fn list_with(
-    conn: &DatabaseConnection,
-    vault: Option<&dyn TokenVault>,
-) -> Result<Vec<RemoteWorkspaceConnectionInfo>, DbError> {
-    ensure_migrated(conn, vault).await;
     let rows = remote_workspace_connection::Entity::find()
         .order_by_asc(remote_workspace_connection::Column::SortOrder)
         .order_by_asc(remote_workspace_connection::Column::Name)
         .all(conn)
         .await?;
-    Ok(rows.into_iter().map(|row| to_info(row, vault)).collect())
+    Ok(rows.into_iter().map(to_info).collect())
 }
 
 pub async fn get(
     conn: &DatabaseConnection,
     id: i32,
 ) -> Result<Option<RemoteWorkspaceConnectionInfo>, DbError> {
-    get_with(conn, id, vault()).await
-}
-
-pub(crate) async fn get_with(
-    conn: &DatabaseConnection,
-    id: i32,
-    vault: Option<&dyn TokenVault>,
-) -> Result<Option<RemoteWorkspaceConnectionInfo>, DbError> {
-    ensure_migrated(conn, vault).await;
     let row = remote_workspace_connection::Entity::find_by_id(id)
         .one(conn)
         .await?;
-    Ok(row.map(|row| to_info(row, vault)))
+    Ok(row.map(to_info))
 }
 
 pub async fn create(
@@ -412,17 +145,6 @@ pub async fn create(
     base_url: &str,
     token: &str,
     headers: &[RemoteWorkspaceHeader],
-) -> Result<RemoteWorkspaceConnectionInfo, AppCommandError> {
-    create_with(conn, name, base_url, token, headers, vault()).await
-}
-
-pub(crate) async fn create_with(
-    conn: &DatabaseConnection,
-    name: &str,
-    base_url: &str,
-    token: &str,
-    headers: &[RemoteWorkspaceHeader],
-    vault: Option<&dyn TokenVault>,
 ) -> Result<RemoteWorkspaceConnectionInfo, AppCommandError> {
     let now = Utc::now();
     let headers = serialize_headers(&validate_headers(headers)?)?;
@@ -434,28 +156,22 @@ pub(crate) async fn create_with(
         .map_err(AppCommandError::db)?
         .map(|m| m.sort_order)
         .unwrap_or(-1);
-    let name = validate_name(name)?;
-    let base_url = normalize_base_url(base_url)?;
-    let token = validate_token(token)?;
-    let stored = store_token(vault, "", &token);
     let active = remote_workspace_connection::ActiveModel {
         id: NotSet,
-        name: Set(name),
-        base_url: Set(base_url),
-        token: Set(stored.clone()),
+        name: Set(validate_name(name)?),
+        base_url: Set(normalize_base_url(base_url)?),
+        token: Set(validate_token(token)?),
         headers: Set(headers),
         sort_order: Set(max_order + 1),
         created_at: Set(now),
         updated_at: Set(now),
     };
-    let model = match active.insert(conn).await {
-        Ok(model) => model,
-        Err(err) => {
-            forget_token(vault, &stored);
-            return Err(AppCommandError::db(DbError::from(err)));
-        }
-    };
-    Ok(to_info(model, vault))
+    let model = active
+        .insert(conn)
+        .await
+        .map_err(DbError::from)
+        .map_err(AppCommandError::db)?;
+    Ok(to_info(model))
 }
 
 pub async fn update(
@@ -466,18 +182,6 @@ pub async fn update(
     token: &str,
     headers: &[RemoteWorkspaceHeader],
 ) -> Result<RemoteWorkspaceConnectionInfo, AppCommandError> {
-    update_with(conn, id, name, base_url, token, headers, vault()).await
-}
-
-pub(crate) async fn update_with(
-    conn: &DatabaseConnection,
-    id: i32,
-    name: &str,
-    base_url: &str,
-    token: &str,
-    headers: &[RemoteWorkspaceHeader],
-    vault: Option<&dyn TokenVault>,
-) -> Result<RemoteWorkspaceConnectionInfo, AppCommandError> {
     let headers = serialize_headers(&validate_headers(headers)?)?;
     let row = remote_workspace_connection::Entity::find_by_id(id)
         .one(conn)
@@ -486,14 +190,10 @@ pub(crate) async fn update_with(
         .map_err(AppCommandError::db)?
         .ok_or_else(|| AppCommandError::not_found(format!("Remote connection {id} not found")))?;
 
-    let name = validate_name(name)?;
-    let base_url = normalize_base_url(base_url)?;
-    let token = validate_token(token)?;
-    let stored = store_token(vault, &row.token, &token);
     let mut active = row.into_active_model();
-    active.name = Set(name);
-    active.base_url = Set(base_url);
-    active.token = Set(stored);
+    active.name = Set(validate_name(name)?);
+    active.base_url = Set(normalize_base_url(base_url)?);
+    active.token = Set(validate_token(token)?);
     active.headers = Set(headers);
     active.updated_at = Set(Utc::now());
     let model = active
@@ -501,27 +201,13 @@ pub(crate) async fn update_with(
         .await
         .map_err(DbError::from)
         .map_err(AppCommandError::db)?;
-    Ok(to_info(model, vault))
+    Ok(to_info(model))
 }
 
 pub async fn delete(conn: &DatabaseConnection, id: i32) -> Result<(), DbError> {
-    delete_with(conn, id, vault()).await
-}
-
-pub(crate) async fn delete_with(
-    conn: &DatabaseConnection,
-    id: i32,
-    vault: Option<&dyn TokenVault>,
-) -> Result<(), DbError> {
-    let row = remote_workspace_connection::Entity::find_by_id(id)
-        .one(conn)
-        .await?;
     remote_workspace_connection::Entity::delete_by_id(id)
         .exec(conn)
         .await?;
-    if let Some(row) = row {
-        forget_token(vault, &row.token);
-    }
     Ok(())
 }
 
@@ -824,272 +510,5 @@ mod tests {
             listed.iter().map(|item| item.id).collect::<Vec<_>>(),
             vec![first.id, second.id]
         );
-    }
-
-    // ── Keychain storage ──
-
-    /// In-memory stand-in for the OS keychain; `broken` makes every call fail
-    /// the way a Linux desktop without a secret service does.
-    #[derive(Default)]
-    struct MemoryVault {
-        entries: std::sync::Mutex<HashMap<String, String>>,
-        broken: bool,
-    }
-
-    impl MemoryVault {
-        fn broken() -> Self {
-            Self {
-                broken: true,
-                ..Self::default()
-            }
-        }
-
-        fn len(&self) -> usize {
-            self.entries.lock().unwrap().len()
-        }
-
-        fn fail(&self) -> Result<(), String> {
-            if self.broken {
-                Err("no secret service".to_string())
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    impl TokenVault for MemoryVault {
-        fn set(&self, key: &str, token: &str) -> Result<(), String> {
-            self.fail()?;
-            self.entries
-                .lock()
-                .unwrap()
-                .insert(key.to_string(), token.to_string());
-            Ok(())
-        }
-
-        fn get(&self, key: &str) -> Result<Option<String>, String> {
-            self.fail()?;
-            Ok(self.entries.lock().unwrap().get(key).cloned())
-        }
-
-        fn delete(&self, key: &str) -> Result<(), String> {
-            self.fail()?;
-            self.entries.lock().unwrap().remove(key);
-            Ok(())
-        }
-    }
-
-    async fn stored_token(conn: &DatabaseConnection, id: i32) -> String {
-        remote_workspace_connection::Entity::find_by_id(id)
-            .one(conn)
-            .await
-            .unwrap()
-            .unwrap()
-            .token
-    }
-
-    #[tokio::test]
-    async fn without_a_vault_the_token_stays_in_the_database() {
-        // codeg-server and every non-desktop build: unchanged behaviour.
-        let db = fresh_in_memory_db().await;
-        let created = create(&db.conn, "Server", "http://127.0.0.1:3080", "plain", &[])
-            .await
-            .unwrap();
-        assert_eq!(stored_token(&db.conn, created.id).await, "plain");
-        assert_eq!(
-            get(&db.conn, created.id).await.unwrap().unwrap().token,
-            "plain"
-        );
-    }
-
-    #[tokio::test]
-    async fn create_and_update_keep_the_token_in_the_vault() {
-        let db = fresh_in_memory_db().await;
-        let vault = MemoryVault::default();
-        let created = create_with(
-            &db.conn,
-            "Cowork",
-            "https://james.example.com",
-            "secret-a",
-            &[],
-            Some(&vault),
-        )
-        .await
-        .unwrap();
-        // Callers still see the token; the column only has a pointer.
-        assert_eq!(created.token, "secret-a");
-        let stored = stored_token(&db.conn, created.id).await;
-        assert!(stored.starts_with(KEYCHAIN_REF_PREFIX), "{stored}");
-        assert!(!stored.contains("secret-a"));
-        assert_eq!(vault.len(), 1);
-
-        let updated = update_with(
-            &db.conn,
-            created.id,
-            "Cowork",
-            "https://james.example.com",
-            "secret-b",
-            &[],
-            Some(&vault),
-        )
-        .await
-        .unwrap();
-        assert_eq!(updated.token, "secret-b");
-        // Same entry overwritten, not a second one left behind.
-        assert_eq!(stored_token(&db.conn, created.id).await, stored);
-        assert_eq!(vault.len(), 1);
-
-        let listed = list_with(&db.conn, Some(&vault)).await.unwrap();
-        assert_eq!(listed[0].token, "secret-b");
-
-        delete_with(&db.conn, created.id, Some(&vault))
-            .await
-            .unwrap();
-        assert_eq!(vault.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn a_broken_vault_falls_back_to_the_database() {
-        let db = fresh_in_memory_db().await;
-        let vault = MemoryVault::broken();
-        let created = create_with(
-            &db.conn,
-            "Cowork",
-            "https://james.example.com",
-            "secret-a",
-            &[],
-            Some(&vault),
-        )
-        .await
-        .unwrap();
-        assert_eq!(created.token, "secret-a");
-        assert_eq!(stored_token(&db.conn, created.id).await, "secret-a");
-        assert_eq!(
-            get_with(&db.conn, created.id, Some(&vault))
-                .await
-                .unwrap()
-                .unwrap()
-                .token,
-            "secret-a"
-        );
-        // Deleting still works when the keychain cannot be reached.
-        delete_with(&db.conn, created.id, Some(&vault))
-            .await
-            .unwrap();
-        assert!(list_with(&db.conn, Some(&vault)).await.unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn update_falls_back_when_the_vault_stops_working() {
-        let db = fresh_in_memory_db().await;
-        let working = MemoryVault::default();
-        let created = create_with(
-            &db.conn,
-            "Cowork",
-            "https://james.example.com",
-            "secret-a",
-            &[],
-            Some(&working),
-        )
-        .await
-        .unwrap();
-        let broken = MemoryVault::broken();
-        let updated = update_with(
-            &db.conn,
-            created.id,
-            "Cowork",
-            "https://james.example.com",
-            "secret-b",
-            &[],
-            Some(&broken),
-        )
-        .await
-        .unwrap();
-        assert_eq!(updated.token, "secret-b");
-        assert_eq!(stored_token(&db.conn, created.id).await, "secret-b");
-    }
-
-    #[tokio::test]
-    async fn migration_moves_plaintext_tokens_once() {
-        let db = fresh_in_memory_db().await;
-        // Rows written by an older version (no vault).
-        let a = create(&db.conn, "A", "http://127.0.0.1:3080", "token-a", &[])
-            .await
-            .unwrap();
-        let b = create(&db.conn, "B", "http://127.0.0.1:3081", "token-b", &[])
-            .await
-            .unwrap();
-        let vault = MemoryVault::default();
-
-        assert_eq!(migrate_tokens(&db.conn, &vault).await, 2);
-        for row in [&a, &b] {
-            let stored = stored_token(&db.conn, row.id).await;
-            assert!(stored.starts_with(KEYCHAIN_REF_PREFIX), "{stored}");
-        }
-        let listed = list_with(&db.conn, Some(&vault)).await.unwrap();
-        assert_eq!(
-            listed.iter().map(|c| c.token.as_str()).collect::<Vec<_>>(),
-            vec!["token-a", "token-b"]
-        );
-        // Idempotent: pointers are left alone.
-        assert_eq!(migrate_tokens(&db.conn, &vault).await, 0);
-        assert_eq!(vault.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn migration_without_a_keychain_leaves_rows_usable() {
-        let db = fresh_in_memory_db().await;
-        let a = create(&db.conn, "A", "http://127.0.0.1:3080", "token-a", &[])
-            .await
-            .unwrap();
-        assert_eq!(migrate_tokens(&db.conn, &MemoryVault::broken()).await, 0);
-        assert_eq!(stored_token(&db.conn, a.id).await, "token-a");
-        assert_eq!(get(&db.conn, a.id).await.unwrap().unwrap().token, "token-a");
-    }
-
-    #[tokio::test]
-    async fn a_missing_keychain_entry_reads_as_an_empty_token() {
-        // Removed in Keychain Access, or the database copied to another
-        // machine: the connection stays listed and the token can be re-entered.
-        let db = fresh_in_memory_db().await;
-        let vault = MemoryVault::default();
-        let created = create_with(
-            &db.conn,
-            "Cowork",
-            "https://james.example.com",
-            "secret-a",
-            &[],
-            Some(&vault),
-        )
-        .await
-        .unwrap();
-        vault.entries.lock().unwrap().clear();
-        let read = get_with(&db.conn, created.id, Some(&vault))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(read.token, "");
-        assert_eq!(read.name, "Cowork");
-        // Without any vault (codeg-server reading a desktop database) too.
-        assert_eq!(get(&db.conn, created.id).await.unwrap().unwrap().token, "");
-
-        let fixed = update_with(
-            &db.conn,
-            created.id,
-            "Cowork",
-            "https://james.example.com",
-            "secret-new",
-            &[],
-            Some(&vault),
-        )
-        .await
-        .unwrap();
-        assert_eq!(fixed.token, "secret-new");
-    }
-
-    #[test]
-    fn validate_token_rejects_a_value_that_looks_like_a_pointer() {
-        assert!(validate_token("keychain:abc").is_err());
-        assert_eq!(validate_token("  real-token ").unwrap(), "real-token");
     }
 }

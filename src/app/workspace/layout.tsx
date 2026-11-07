@@ -94,7 +94,6 @@ import {
 import { WorkspaceOpenFolderListener } from "@/components/workspace/workspace-open-folder-listener"
 import { WorkspaceRestoreNotices } from "@/components/workspace/workspace-restore-notices"
 import { RemoteCompatNotice } from "@/components/cowork/remote-compat-notice"
-import { ClientOnlyGate } from "@/components/cowork/client-only-home"
 import { HeavyPluginsWarmup } from "@/components/ai-elements/heavy-plugins-warmup"
 import {
   ResizableHandle,
@@ -1664,13 +1663,7 @@ export default function WorkspaceLayout({
     <Suspense>
       <RemoteConnectionGate>
         <UpdateProvider>
-          {/* Cowork fork: the client-only edition's local window has no
-              daemon behind it, so it shows the way to a server instead of a
-              workspace. Inside UpdateProvider: that window updates the app
-              like any other. */}
-          <ClientOnlyGate>
-            <WorkspaceLayoutInner>{children}</WorkspaceLayoutInner>
-          </ClientOnlyGate>
+          <WorkspaceLayoutInner>{children}</WorkspaceLayoutInner>
         </UpdateProvider>
       </RemoteConnectionGate>
     </Suspense>

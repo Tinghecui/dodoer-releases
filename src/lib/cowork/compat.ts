@@ -1,6 +1,4 @@
-// Client side of the server's `/api/health` contract (`src-tauri/src/compat.rs`),
-// which a server also sends as `server_info` on the event socket
-// (`src/lib/transport/server-info.ts`).
+// Client side of the server's `/api/health` contract (`src-tauri/src/compat.rs`).
 //
 // The desktop app and the server are released apart, so a remote window checks
 // once, when it connects, whether the two work together: a server too old for
@@ -11,10 +9,6 @@
 /** Raise when this client starts relying on what only a newer server has (the
  * server's `API_VERSION`). 0 accepts servers from before the contract. */
 export const MIN_SERVER_API_VERSION = 0
-
-/** The newest server `API_VERSION` this client knows, told to the server in the
- * WS `hello` (informational: the client still judges). Bump with the server's. */
-export const CLIENT_API_VERSION = 1
 
 export interface ServerCompat {
   apiVersion: number

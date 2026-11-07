@@ -235,9 +235,6 @@ pub struct RemoteProxyState {
     destroyed_window_instances: Mutex<HashSet<String>>,
     http: reqwest::Client,
     workspace_http: reqwest::Client,
-    /// Cowork fork: the same two, never through a proxy, for loopback URLs.
-    loopback_http: reqwest::Client,
-    loopback_workspace_http: reqwest::Client,
 }
 
 impl RemoteProxyState {
@@ -254,37 +251,6 @@ impl RemoteProxyState {
                 .redirect(connection_redirect_policy())
                 .build()
                 .expect("failed to build reqwest workspace client for remote proxy"),
-            loopback_http: reqwest::Client::builder()
-                .timeout(HTTP_TIMEOUT)
-                .redirect(connection_redirect_policy())
-                .no_proxy()
-                .build()
-                .expect("failed to build loopback reqwest client for remote proxy"),
-            loopback_workspace_http: reqwest::Client::builder()
-                .redirect(connection_redirect_policy())
-                .no_proxy()
-                .build()
-                .expect("failed to build loopback reqwest workspace client for remote proxy"),
-        }
-    }
-
-    /// The client for `url`: a loopback address — the app's own daemon
-    /// (`local_daemon`), or a server behind an SSH tunnel — never goes
-    /// through the user's proxy (reqwest does not bypass loopback for
-    /// `HTTP_PROXY`, so `127.0.0.1` would be sent to the proxy).
-    fn http_for(&self, url: &str) -> &reqwest::Client {
-        if is_loopback_url(url) {
-            &self.loopback_http
-        } else {
-            &self.http
-        }
-    }
-
-    fn workspace_http_for(&self, url: &str) -> &reqwest::Client {
-        if is_loopback_url(url) {
-            &self.loopback_workspace_http
-        } else {
-            &self.workspace_http
         }
     }
 
@@ -392,39 +358,6 @@ impl Default for RemoteProxyState {
 
 // ─── HTTP proxy command ────────────────────────────────────────────────
 
-/// The connection `connection_id` names: a saved remote workspace, or —
-/// Cowork fork — the app's own child daemon
-/// ([`LOCAL_CONNECTION_ID`](crate::local_daemon::LOCAL_CONNECTION_ID)), at
-/// whatever address it answers on now.
-async fn lookup_connection(
-    db: &DatabaseConnection,
-    connection_id: i32,
-) -> Result<Option<crate::models::remote_workspace_connection::RemoteWorkspaceConnectionInfo>, AppCommandError>
-{
-    if connection_id == crate::local_daemon::LOCAL_CONNECTION_ID {
-        return crate::local_daemon::connection_info()
-            .await
-            .map_err(|e| AppCommandError::network("Local daemon unavailable").with_detail(e));
-    }
-    remote_workspace_connection_service::get(db, connection_id)
-        .await
-        .map_err(AppCommandError::db)
-}
-
-/// Whether `url` names this machine's loopback.
-fn is_loopback_url(url: &str) -> bool {
-    reqwest::Url::parse(url)
-        .ok()
-        .and_then(|u| {
-            u.host().map(|h| match h {
-                url::Host::Domain(d) => d.eq_ignore_ascii_case("localhost"),
-                url::Host::Ipv4(ip) => ip.is_loopback(),
-                url::Host::Ipv6(ip) => ip.is_loopback(),
-            })
-        })
-        .unwrap_or(false)
-}
-
 /// Forward an HTTP API call to the remote codeg-server identified by
 /// `connection_id`. The frontend's `RemoteDesktopTransport.call(cmd, args)`
 /// delegates to this; it never opens a fetch from the webview.
@@ -450,8 +383,9 @@ pub async fn remote_http_call(
     args: Option<Value>,
     timeout_ms: Option<u64>,
 ) -> Result<Value, AppCommandError> {
-    let conn = lookup_connection(&db.conn, connection_id)
-        .await?
+    let conn = remote_workspace_connection_service::get(&db.conn, connection_id)
+        .await
+        .map_err(AppCommandError::db)?
         .ok_or_else(|| {
             AppCommandError::not_found(format!("Remote connection {connection_id} not found"))
         })?;
@@ -465,7 +399,7 @@ pub async fn remote_http_call(
     let body = args.unwrap_or(Value::Object(serde_json::Map::new()));
 
     let mut request = proxy
-        .http_for(&url)
+        .http
         .post(&url)
         .bearer_auth(conn.token.trim())
         .headers(conn.headers.to_header_map())
@@ -667,8 +601,9 @@ pub async fn remote_upload_attachment(
     session_id: Option<String>,
     data_base64: String,
 ) -> Result<Value, AppCommandError> {
-    let conn = lookup_connection(&db.conn, connection_id)
-        .await?
+    let conn = remote_workspace_connection_service::get(&db.conn, connection_id)
+        .await
+        .map_err(AppCommandError::db)?
         .ok_or_else(|| {
             AppCommandError::not_found(format!("Remote connection {connection_id} not found"))
         })?;
@@ -750,7 +685,7 @@ pub async fn remote_upload_attachment(
         conn.base_url.trim_end_matches('/'),
     );
     let response = proxy
-        .http_for(&url)
+        .http
         .post(&url)
         .bearer_auth(conn.token.trim())
         .headers(conn.headers.to_header_map())
@@ -896,8 +831,9 @@ pub async fn remote_upload_workspace_paths(
         ));
     }
 
-    let conn = lookup_connection(&db.conn, connection_id)
-        .await?
+    let conn = remote_workspace_connection_service::get(&db.conn, connection_id)
+        .await
+        .map_err(AppCommandError::db)?
         .ok_or_else(|| {
             AppCommandError::not_found(format!("Remote connection {connection_id} not found"))
         })?;
@@ -1115,7 +1051,7 @@ async fn upload_one_workspace_path(
         base_url.trim_end_matches('/'),
     );
     let response = proxy
-        .workspace_http_for(&url)
+        .workspace_http
         .post(&url)
         .bearer_auth(token)
         .headers(custom_headers.clone())
@@ -1310,8 +1246,9 @@ async fn remote_workspace_download_stream(
     path: String,
     save_path: String,
 ) -> Result<RemoteWorkspaceDownloadResult, AppCommandError> {
-    let conn = lookup_connection(&db.conn, connection_id)
-        .await?
+    let conn = remote_workspace_connection_service::get(&db.conn, connection_id)
+        .await
+        .map_err(AppCommandError::db)?
         .ok_or_else(|| {
             AppCommandError::not_found(format!("Remote connection {connection_id} not found"))
         })?;
@@ -1334,7 +1271,7 @@ async fn remote_workspace_download_stream(
             conn.base_url.trim_end_matches('/')
         );
         let ticket_response = proxy
-            .workspace_http_for(&ticket_url)
+            .workspace_http
             .post(ticket_url)
             .bearer_auth(conn.token.trim())
             .headers(custom_headers.clone())
@@ -1367,7 +1304,7 @@ async fn remote_workspace_download_stream(
             })?;
         let download_url = absolute_remote_ticket_url(&conn.base_url, &ticket.url)?;
         let response = proxy
-            .workspace_http_for(download_url.as_str())
+            .workspace_http
             .get(download_url)
             .headers(custom_headers.clone())
             .send()
@@ -1652,8 +1589,9 @@ pub async fn remote_ws_subscribe(
     }
 
     // Slow path: load credentials, create entry, spawn WS task.
-    let conn = lookup_connection(&db.conn, connection_id)
-        .await?
+    let conn = remote_workspace_connection_service::get(&db.conn, connection_id)
+        .await
+        .map_err(AppCommandError::db)?
         .ok_or_else(|| {
             AppCommandError::not_found(format!("Remote connection {connection_id} not found"))
         })?;
@@ -1877,16 +1815,7 @@ async fn stored_ws_target(
     connection_id: i32,
     last_known: WsTarget,
 ) -> Option<WsTarget> {
-    let stored = if connection_id == crate::local_daemon::LOCAL_CONNECTION_ID {
-        // The app's own daemon: its current address; while it restarts, the
-        // last one, retried until the new one is up.
-        crate::local_daemon::connection_info()
-            .await
-            .map_err(crate::db::error::DbError::NotFound)
-    } else {
-        remote_workspace_connection_service::get(&db, connection_id).await
-    };
-    match stored {
+    match remote_workspace_connection_service::get(&db, connection_id).await {
         Ok(Some(connection)) => Some(WsTarget::of(&connection)),
         Ok(None) => {
             tracing::info!(

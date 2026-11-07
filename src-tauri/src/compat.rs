@@ -1,5 +1,4 @@
-//! Cowork fork: what a server tells its clients about itself, on `/api/health`
-//! and as the `server_info` answer to a WS `hello` (`web/ws.rs`).
+//! Cowork fork: what a server tells its clients about itself, on `/api/health`.
 //!
 //! The desktop app and the server are released apart (the app updates itself
 //! from dodoer-releases, the server is upgraded by Cowork), so every mix of an
@@ -35,33 +34,12 @@ pub const FEATURES: &[&str] = &[
     "cowork_info",
 ];
 
-/// The contract as one value: the `server_info` frame carries it as is
-/// (`ServerMsg::ServerInfo`), `/api/health` as [`health_fields`].
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ServerInfo {
-    pub api_version: u32,
-    pub min_desktop_version: &'static str,
-    pub features: &'static [&'static str],
-}
-
-pub fn server_info() -> ServerInfo {
-    ServerInfo {
-        api_version: API_VERSION,
-        min_desktop_version: MIN_DESKTOP_VERSION,
-        features: FEATURES,
-    }
-}
-
 /// The fields `/api/health` adds for clients.
 pub fn health_fields() -> serde_json::Map<String, serde_json::Value> {
-    let info = server_info();
     let mut fields = serde_json::Map::new();
-    fields.insert("api_version".into(), info.api_version.into());
-    fields.insert(
-        "min_desktop_version".into(),
-        info.min_desktop_version.into(),
-    );
-    fields.insert("features".into(), info.features.into());
+    fields.insert("api_version".into(), API_VERSION.into());
+    fields.insert("min_desktop_version".into(), MIN_DESKTOP_VERSION.into());
+    fields.insert("features".into(), FEATURES.into());
     fields
 }
 
@@ -75,12 +53,6 @@ mod tests {
         assert_eq!(fields["api_version"], serde_json::json!(API_VERSION));
         assert_eq!(fields["min_desktop_version"], serde_json::json!("1.2.0"));
         assert_eq!(fields["features"], serde_json::json!(["cowork_info"]));
-    }
-
-    #[test]
-    fn server_info_and_health_say_the_same() {
-        let info = serde_json::to_value(server_info()).unwrap();
-        assert_eq!(info, serde_json::Value::Object(health_fields()));
     }
 
     #[test]

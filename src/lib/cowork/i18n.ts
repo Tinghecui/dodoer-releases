@@ -30,19 +30,6 @@ const en = {
   serverTooOldHint:
     "Ask an administrator to upgrade Cowork in the portal. Some features may not work until then.",
   checkForUpdate: "Check for update",
-  // The client-only edition's local window (`client-only-home.tsx`).
-  clientHomeTitle: "Connect to a server",
-  clientHomeIntro:
-    "This edition of {product} has no daemon of its own: conversations, agents and files live on a server. Open a saved workspace, or add a server.",
-  clientHomeSaved: "Saved workspaces",
-  clientHomeEmpty: "No server added yet.",
-  clientHomeOpen: "Open",
-  clientHomeManage: "Add or manage servers",
-  clientHomePortalHint:
-    'With Cowork: in the portal, open My account → Desktop → "Open in desktop app". This app asks once, then connects.',
-  clientHomeFullEdition:
-    "For a workspace on this computer, install the full edition of {product} instead — it comes with its own daemon.",
-  clientHomeFullEditionLink: "Full edition downloads",
 }
 
 export type CoworkTextKey = keyof typeof en
@@ -70,18 +57,6 @@ const zhCN: Record<CoworkTextKey, string> = {
   serverTooOld: "服务器版本太旧，和这个桌面 app 不匹配",
   serverTooOldHint: "请管理员在门户里升级 Cowork。升级之前有些功能可能用不了。",
   checkForUpdate: "检查更新",
-  clientHomeTitle: "连接服务器",
-  clientHomeIntro:
-    "这个版本的 {product} 不带自己的 daemon：对话、agent 和文件都在服务器上。打开一个已保存的工作区，或者添加服务器。",
-  clientHomeSaved: "已保存的工作区",
-  clientHomeEmpty: "还没有添加服务器。",
-  clientHomeOpen: "打开",
-  clientHomeManage: "添加或管理服务器",
-  clientHomePortalHint:
-    "用 Cowork：在门户「我的账户」的「桌面版」里点「在桌面 app 里打开」，这个 app 会问一句，然后自动连上。",
-  clientHomeFullEdition:
-    "想在这台电脑上跑本地工作区？改装完整版 {product}，它自带 daemon。",
-  clientHomeFullEditionLink: "完整版下载",
 }
 
 const zhTW: Record<CoworkTextKey, string> = {
@@ -108,18 +83,6 @@ const zhTW: Record<CoworkTextKey, string> = {
   serverTooOldHint:
     "請管理員在入口網站升級 Cowork。升級之前有些功能可能無法使用。",
   checkForUpdate: "檢查更新",
-  clientHomeTitle: "連接伺服器",
-  clientHomeIntro:
-    "這個版本的 {product} 不帶自己的 daemon：對話、agent 和檔案都在伺服器上。開啟一個已儲存的工作區，或者新增伺服器。",
-  clientHomeSaved: "已儲存的工作區",
-  clientHomeEmpty: "還沒有新增伺服器。",
-  clientHomeOpen: "開啟",
-  clientHomeManage: "新增或管理伺服器",
-  clientHomePortalHint:
-    "用 Cowork：在入口網站「我的帳戶」的「桌面版」裡點「在桌面 app 中開啟」，這個 app 會問一句，然後自動連上。",
-  clientHomeFullEdition:
-    "想在這台電腦上跑本機工作區？改裝完整版 {product}，它自帶 daemon。",
-  clientHomeFullEditionLink: "完整版下載",
 }
 
 const CATALOGS: Record<string, Record<CoworkTextKey, string>> = {

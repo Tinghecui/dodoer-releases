@@ -1,11 +1,9 @@
 import { detectEnvironment } from "./detect"
-import { localDaemonInfo } from "./local-daemon"
 import type { RemoteTransportConfig, Transport } from "./types"
 
 export type { RemoteTransportConfig, Transport, UnsubscribeFn } from "./types"
 
 let _shellTransport: Transport | null = null
-let _localTransport: Transport | null = null
 let _remoteTransport: Transport | null = null
 let _remoteConfig: RemoteTransportConfig | null = null
 
@@ -59,60 +57,8 @@ export function getActiveRemoteConnectionId(): number | null {
   return _remoteConfig?.id ?? null
 }
 
-function randomWindowInstanceId(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return `local-${globalThis.crypto.randomUUID()}`
-  }
-  return `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-}
-
-/// Cowork fork (daemon/client split): a local window of an app whose daemon
-/// is a child process talks to it as a remote window talks to its server,
-/// and to the app for what only the app does (`local-daemon-transport.ts`).
-function createLocalDaemonTransport(connectionId: number): Transport {
-  const shell = getShellTransport()
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { RemoteDesktopTransport } = require("./remote-desktop-transport") as {
-    RemoteDesktopTransport: new (config: RemoteTransportConfig) => Transport
-  }
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { LocalDaemonTransport } = require("./local-daemon-transport") as {
-    LocalDaemonTransport: new (shell: Transport, daemon: Transport) => Transport
-  }
-  const windowInstanceId = randomWindowInstanceId()
-  // The proxy drops this window's event subscriptions when it closes, as it
-  // does for a remote window's.
-  shell.call("local_daemon_attach_window", { windowInstanceId }).catch(() => {})
-  const daemon = new RemoteDesktopTransport({
-    id: connectionId,
-    name: "local",
-    // The proxy resolves the child's address itself (it changes on restart).
-    baseUrl: "",
-    token: "",
-    windowInstanceId,
-  })
-  return new LocalDaemonTransport(shell, daemon)
-}
-
-function getLocalTransport(): Transport {
-  if (detectEnvironment() === "tauri") {
-    const info = localDaemonInfo()
-    if (info?.mode === "child") {
-      if (!_localTransport) {
-        _localTransport = createLocalDaemonTransport(info.connectionId)
-      }
-      return _localTransport
-    }
-    // "embedded": the daemon is in the app, so the app's own commands are
-    // it. "client" (the client-only edition): there is no daemon, and the
-    // local window renders no workspace (`ClientOnlyGate`), so what little it
-    // calls — saved connections, windows, the updater — is the app's too.
-  }
-  return getShellTransport()
-}
-
 export function getTransport(): Transport {
-  return _remoteTransport ?? getLocalTransport()
+  return _remoteTransport ?? getShellTransport()
 }
 
 export function isDesktop(): boolean {
@@ -162,10 +108,8 @@ export function __resetTransportForTests(): void {
   // `return` in the prod bundle instead of reaching into module state.
   if (process.env.NODE_ENV !== "test") return
   _shellTransport?.destroy?.()
-  _localTransport?.destroy?.()
   _remoteTransport?.destroy?.()
   _shellTransport = null
-  _localTransport = null
   _remoteTransport = null
   _remoteConfig = null
 }

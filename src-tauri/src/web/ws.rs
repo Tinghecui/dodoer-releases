@@ -323,21 +323,6 @@ async fn handle_client_msg(
         ClientMsg::Ping => {
             let _ = outbound_tx.send(ServerMsg::Pong).await;
         }
-        ClientMsg::Hello {
-            client,
-            version,
-            api_version,
-        } => {
-            tracing::debug!(
-                "[WS] hello from {} {} (api {})",
-                client.as_deref().unwrap_or("?"),
-                version.as_deref().unwrap_or("?"),
-                api_version.map_or_else(|| "?".to_string(), |v| v.to_string())
-            );
-            let _ = outbound_tx
-                .send(ServerMsg::ServerInfo(crate::compat::server_info()))
-                .await;
-        }
     }
 }
 

@@ -7,18 +7,10 @@ const env = vi.hoisted(() => ({
   health: {} as unknown,
   version: "1.2.0",
   call: vi.fn(),
-  // The transport's WS `server_info` listeners (`server-info.ts`).
-  serverInfo: new Set<(info: unknown) => void>(),
 }))
 vi.mock("@/lib/transport", () => ({
   isRemoteDesktopMode: () => env.remote,
-  getTransport: () => ({
-    call: env.call,
-    onServerInfo: (cb: (info: unknown) => void) => {
-      env.serverInfo.add(cb)
-      return () => env.serverInfo.delete(cb)
-    },
-  }),
+  getTransport: () => ({ call: env.call }),
 }))
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => env.version }))
 
@@ -49,7 +41,6 @@ describe("RemoteCompatNotice", () => {
     toast.warning.mockReset()
     toast.dismiss.mockReset()
     update.checkNow.mockReset()
-    env.serverInfo.clear()
   })
 
   it("stays quiet when the app and the server match", async () => {
@@ -88,22 +79,5 @@ describe("RemoteCompatNotice", () => {
     await waitFor(() => expect(warn).toHaveBeenCalled())
     expect(toast.warning).not.toHaveBeenCalled()
     warn.mockRestore()
-  })
-
-  it("judges again on the server_info a reconnect brings", async () => {
-    env.health = { api_version: 1, min_desktop_version: "1.2.0" }
-    const { unmount } = renderNotice()
-    await waitFor(() => expect(toast.dismiss).toHaveBeenCalled())
-    expect(toast.warning).not.toHaveBeenCalled()
-
-    // Cowork upgraded the server; the socket came back with a new minimum.
-    for (const cb of env.serverInfo) {
-      cb({ apiVersion: 1, minDesktopVersion: "1.3.0", features: [] })
-    }
-    await waitFor(() => expect(toast.warning).toHaveBeenCalled())
-    expect(toast.warning.mock.calls[0][1].description).toContain("1.3.0")
-
-    unmount()
-    expect(env.serverInfo.size).toBe(0)
   })
 })

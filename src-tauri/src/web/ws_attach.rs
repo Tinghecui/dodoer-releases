@@ -35,12 +35,6 @@ pub const REPLAY_BATCH_THRESHOLD: usize = 32;
 /// memory blow up if the client stops reading.
 pub const OUTBOUND_CAPACITY: usize = 64;
 
-// Cowork fork: the optional handshake (`crate::compat`). MUST match
-// `WS_HELLO_ACTION` / `WS_SERVER_INFO_TYPE` in `src/lib/transport/constants.ts`;
-// the tests below hold the serde names to these.
-pub const WS_HELLO_ACTION: &str = "hello";
-pub const WS_SERVER_INFO_TYPE: &str = "server_info";
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ClientMsg {
@@ -57,21 +51,6 @@ pub enum ClientMsg {
     Detach { subscription_id: String },
     /// Liveness check. Server replies with `pong`.
     Ping,
-    /// Cowork fork: optional handshake, answered with `server_info`. Nothing
-    /// requires it and nothing else changes with it: a client that never sends
-    /// one (upstream codeg's desktop, iOS and Android clients) never sees a
-    /// `server_info`. The fields only say who is asking (logged); all are
-    /// optional and unknown ones are ignored, so a client may say more later.
-    /// A server from before this ignores the frame as malformed.
-    Hello {
-        #[serde(default)]
-        client: Option<String>,
-        #[serde(default)]
-        version: Option<String>,
-        /// The newest server API version this client knows.
-        #[serde(default)]
-        api_version: Option<u32>,
-    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -108,9 +87,6 @@ pub enum ServerMsg {
     },
     /// Liveness response.
     Pong,
-    /// Cowork fork: answer to `hello`. The same contract `/api/health`
-    /// carries (`crate::compat`), flattened next to `type`.
-    ServerInfo(crate::compat::ServerInfo),
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -297,63 +273,4 @@ pub fn spawn_forwarder(
             }
         }
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hello_parses_with_any_subset_of_fields() {
-        for text in [
-            r#"{"action":"hello"}"#,
-            r#"{"action":"hello","client":"dodoer-desktop","version":"1.2.5","api_version":1}"#,
-            r#"{"action":"hello","client":"x","some_future_field":{"a":1}}"#,
-        ] {
-            let msg: ClientMsg = serde_json::from_str(text).unwrap();
-            assert!(matches!(msg, ClientMsg::Hello { .. }), "{text}");
-        }
-        let hello = format!(r#"{{"action":"{WS_HELLO_ACTION}"}}"#);
-        assert!(matches!(
-            serde_json::from_str::<ClientMsg>(&hello).unwrap(),
-            ClientMsg::Hello { .. }
-        ));
-    }
-
-    #[test]
-    fn upstream_client_messages_parse_as_before() {
-        let attach: ClientMsg = serde_json::from_str(
-            r#"{"action":"attach","subscription_id":"s","connection_id":"c","since_seq":3}"#,
-        )
-        .unwrap();
-        assert!(matches!(
-            attach,
-            ClientMsg::Attach {
-                since_seq: Some(3),
-                ..
-            }
-        ));
-        assert!(matches!(
-            serde_json::from_str::<ClientMsg>(r#"{"action":"ping"}"#).unwrap(),
-            ClientMsg::Ping
-        ));
-        assert!(matches!(
-            serde_json::from_str::<ClientMsg>(r#"{"action":"detach","subscription_id":"s"}"#)
-                .unwrap(),
-            ClientMsg::Detach { .. }
-        ));
-    }
-
-    #[test]
-    fn server_info_frame_is_the_contract_next_to_its_type() {
-        let frame =
-            serde_json::to_value(ServerMsg::ServerInfo(crate::compat::server_info())).unwrap();
-        let mut expected = crate::compat::health_fields();
-        expected.insert("type".into(), WS_SERVER_INFO_TYPE.into());
-        assert_eq!(frame, serde_json::Value::Object(expected));
-        assert_eq!(
-            serde_json::to_value(ServerMsg::Pong).unwrap(),
-            serde_json::json!({ "type": "pong" })
-        );
-    }
 }

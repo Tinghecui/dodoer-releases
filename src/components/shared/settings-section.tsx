@@ -29,6 +29,12 @@ interface SettingsSectionProps {
   /** Small glyph in front of the heading; purely decorative. */
   icon?: LucideIcon
   title: React.ReactNode
+  /**
+   * Small tag beside the heading, outside the heading's label so it is not
+   * part of the control's name (where the section is kept,
+   * `SettingScopeBadge`). Not shown on a `collapsible` section.
+   */
+  badge?: React.ReactNode
   /** What this group of options is for, under the heading. */
   description?: React.ReactNode
   /**
@@ -81,6 +87,7 @@ interface SettingsSectionProps {
 export function SettingsSection({
   icon: Icon,
   title,
+  badge,
   description,
   control,
   htmlFor,
@@ -195,20 +202,27 @@ export function SettingsSection({
         )}
       >
         <div className="min-w-0 space-y-1">
-          <h2 className="text-sm font-semibold">
-            {htmlFor ? (
-              // A `<label>` inside the heading, so clicking the title works the
-              // control and the heading is still a heading to both roles.
-              <Label
-                htmlFor={htmlFor}
-                className="gap-2 text-sm leading-normal font-semibold"
-              >
-                {heading}
-              </Label>
-            ) : (
-              <span className="flex items-center gap-2">{heading}</span>
+          <div
+            className={cn(
+              badge && "flex flex-wrap items-center gap-x-2 gap-y-1"
             )}
-          </h2>
+          >
+            <h2 className="text-sm font-semibold">
+              {htmlFor ? (
+                // A `<label>` inside the heading, so clicking the title works the
+                // control and the heading is still a heading to both roles.
+                <Label
+                  htmlFor={htmlFor}
+                  className="gap-2 text-sm leading-normal font-semibold"
+                >
+                  {heading}
+                </Label>
+              ) : (
+                <span className="flex items-center gap-2">{heading}</span>
+              )}
+            </h2>
+            {badge}
+          </div>
           {descriptionNode}
         </div>
         {control ? <div className="shrink-0">{control}</div> : null}

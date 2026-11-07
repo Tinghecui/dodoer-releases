@@ -45,6 +45,7 @@ import { toErrorMessage } from "@/lib/app-error"
 import { CloseBehaviorSettingsSection } from "@/components/settings/close-behavior-settings"
 import { DesktopNotificationSettingsSection } from "@/components/settings/desktop-notification-settings"
 import { MentionPanelSettingsSection } from "@/components/settings/mention-panel-settings"
+import { SettingScopeBadge } from "@/components/settings/settings-scope"
 import { NotificationSoundSettingsSection } from "@/components/settings/notification-sound-settings"
 import { WindowAttentionSettingsSection } from "@/components/settings/window-attention-settings"
 
@@ -362,6 +363,7 @@ export function GeneralSettings() {
         <SettingsSection
           icon={SquareTerminal}
           title={t("terminalTitle")}
+          badge={<SettingScopeBadge scope="server" />}
           description={
             <>
               {t("terminalDescription")}
@@ -453,6 +455,7 @@ export function GeneralSettings() {
         <SettingsSection
           icon={Palette}
           title={t("colorizeCommandOutput")}
+          badge={<SettingScopeBadge scope="server" />}
           description={t("colorizeCommandOutputDescription")}
           htmlFor="colorize-command-output"
           control={

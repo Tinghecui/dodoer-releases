@@ -35,7 +35,7 @@
   },
   "SettingsShell": {
     "title": "设置",
-    "preferences": "偏好设置",
+    "titleWithServer": "设置 — {server}",
     "nav": {
       "general": "常规",
       "appearance": "外观",
@@ -57,6 +57,15 @@
       "computer_use": "电脑操作",
       "quick_messages": "快捷消息",
       "logs": "运行日志"
+    },
+    "scope": {
+      "thisApp": "这台电脑上的 app",
+      "thisBrowser": "这个浏览器",
+      "server": "服务器",
+      "localServer": "本机服务",
+      "both": "app 和{server}",
+      "bothHint": "app 和本机服务各存一份，在这里改会两边一起改。",
+      "serverHint": "存在这台服务器上（{url}），不在这台电脑上"
     }
   },
   "AppearanceSettings": {

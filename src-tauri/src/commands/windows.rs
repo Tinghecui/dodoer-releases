@@ -790,9 +790,23 @@ pub async fn open_settings_window(
         resolve_settings_target(section.as_deref(), agent_type.as_deref()),
         remote_connection_id,
     );
+    // A remote window's settings are titled with the server they edit, so the
+    // local and a remote settings window tell themselves apart (the page sets
+    // `document.title` the same way, `settings-shell.tsx`).
+    let title = match remote_connection_id {
+        Some(remote_id) => {
+            match crate::db::service::remote_workspace_connection_service::get(&db.conn, remote_id)
+                .await
+            {
+                Ok(Some(connection)) => format!("{} — {}", titles.settings, connection.name),
+                _ => titles.settings.to_string(),
+            }
+        }
+        None => titles.settings.to_string(),
+    };
     let url = WebviewUrl::App(target_route.into());
     let builder = WebviewWindowBuilder::new(&app, &settings_label, url)
-        .title(titles.settings)
+        .title(title)
         .inner_size(1080.0, 700.0)
         .min_inner_size(1080.0, 600.0)
         .center();

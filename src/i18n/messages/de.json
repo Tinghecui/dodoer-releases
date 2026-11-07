@@ -35,7 +35,7 @@
   },
   "SettingsShell": {
     "title": "Einstellungen",
-    "preferences": "Präferenzen",
+    "titleWithServer": "Einstellungen — {server}",
     "nav": {
       "general": "Allgemein",
       "appearance": "Darstellung",
@@ -57,6 +57,15 @@
       "computer_use": "Computernutzung",
       "quick_messages": "Schnellnachrichten",
       "logs": "Laufzeitprotokolle"
+    },
+    "scope": {
+      "thisApp": "App auf diesem Computer",
+      "thisBrowser": "Dieser Browser",
+      "server": "Server",
+      "localServer": "Lokaler Dienst",
+      "both": "App und {server}",
+      "bothHint": "App und lokaler Dienst speichern je eine Kopie; eine Änderung hier gilt für beide.",
+      "serverHint": "Auf diesem Server ({url}) gespeichert, nicht auf diesem Computer"
     }
   },
   "AppearanceSettings": {

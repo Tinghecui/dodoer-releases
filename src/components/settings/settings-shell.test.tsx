@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 
+import { settingsTargetFor } from "@/lib/settings-scope"
+
 import { settingsNavItemsFor } from "./settings-shell"
 
 describe("settingsNavItemsFor", () => {
@@ -20,13 +22,63 @@ describe("settingsNavItemsFor", () => {
     )
   })
 
-  it("keeps collaboration under General and the two Use pages together", () => {
-    const labels = settingsNavItemsFor("tauri").map((item) => item.labelKey)
-    const after = (label: (typeof labels)[number]) =>
-      labels[labels.indexOf(label) + 1]
-    expect(after("general")).toBe("collaboration")
-    expect(after("quick_messages")).toBe("browser")
-    expect(after("browser")).toBe("computer_use")
+  it("files this computer's app pages first, then the daemon's", () => {
+    const items = settingsNavItemsFor("tauri")
+    const scopes = items.map((item) => item.scope)
+    // Two runs, app then server: the nav renders one heading per run.
+    expect(scopes).toEqual([...scopes].sort())
+    const of = (scope: "app" | "server") =>
+      items.filter((item) => item.scope === scope).map((item) => item.labelKey)
+    expect(of("app")).toEqual([
+      "appearance",
+      "general",
+      "shortcuts",
+      "browser",
+      "computer_use",
+      "system",
+    ])
+    // What an agent on the daemon reads: changing these on a remote window
+    // changes them for that server.
+    expect(of("server")).toEqual(
+      expect.arrayContaining([
+        "agents",
+        "model_providers",
+        "mcp",
+        "skills",
+        "skill_packs",
+        "collaboration",
+        "chat_channels",
+        "web_service",
+      ])
+    )
+  })
+
+  it("shows only the app's pages in the client-only local window", () => {
+    const labels = settingsNavItemsFor(
+      "tauri",
+      settingsTargetFor("tauri", { mode: "client" }, null)
+    ).map((item) => item.labelKey)
+    expect(labels).toEqual([
+      "appearance",
+      "general",
+      "shortcuts",
+      "browser",
+      "computer_use",
+      "system",
+    ])
+    // A client-only window bound to a server edits that server's pages.
+    const remote = settingsNavItemsFor(
+      "tauri",
+      settingsTargetFor(
+        "tauri",
+        { mode: "client" },
+        {
+          name: "Cowork",
+          base_url: "https://ws.example",
+        }
+      )
+    )
+    expect(remote.map((item) => item.labelKey)).toContain("agents")
   })
 
   it("keeps every page on the desktop", () => {

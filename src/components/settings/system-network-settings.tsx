@@ -53,6 +53,7 @@ import {
   updateSystemProxySettings,
 } from "@/lib/api"
 import { isLocalDesktop, openUrl } from "@/lib/platform"
+import { SettingScopeBadge } from "@/components/settings/settings-scope"
 import type { AppLocale } from "@/lib/types"
 import { readLastCheck } from "@/lib/update-check-storage"
 import { describeAppUpdateError, usesTauriUpdater } from "@/lib/updater"
@@ -714,6 +715,7 @@ export function SystemNetworkSettings() {
           <div className="flex items-center gap-2">
             <Wifi className="h-4 w-4 text-muted-foreground" />
             <h2 className="text-sm font-semibold">{t("proxyTitle")}</h2>
+            <SettingScopeBadge scope="both" />
           </div>
 
           <p className="text-xs text-muted-foreground leading-5">
@@ -806,6 +808,7 @@ export function SystemNetworkSettings() {
           <div className="flex items-center gap-2">
             <Languages className="h-4 w-4 text-muted-foreground" />
             <h2 className="text-sm font-semibold">{t("languageTitle")}</h2>
+            <SettingScopeBadge scope="both" />
           </div>
 
           <p className="text-xs text-muted-foreground leading-5">

@@ -35,7 +35,7 @@
   },
   "SettingsShell": {
     "title": "Settings",
-    "preferences": "Preferences",
+    "titleWithServer": "Settings — {server}",
     "nav": {
       "general": "General",
       "appearance": "Appearance",
@@ -57,6 +57,15 @@
       "computer_use": "Computer Use",
       "quick_messages": "Quick Messages",
       "logs": "Runtime Logs"
+    },
+    "scope": {
+      "thisApp": "This computer's app",
+      "thisBrowser": "This browser",
+      "server": "Server",
+      "localServer": "Local service",
+      "both": "App and {server}",
+      "bothHint": "The app and its local service each keep a copy; changing it here updates both.",
+      "serverHint": "Kept on this server ({url}), not on this computer"
     }
   },
   "AppearanceSettings": {

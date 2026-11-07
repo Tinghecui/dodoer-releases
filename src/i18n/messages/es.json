@@ -35,7 +35,7 @@
   },
   "SettingsShell": {
     "title": "Configuración",
-    "preferences": "Preferencias",
+    "titleWithServer": "Ajustes — {server}",
     "nav": {
       "general": "General",
       "appearance": "Apariencia",
@@ -57,6 +57,15 @@
       "computer_use": "Uso del ordenador",
       "quick_messages": "Mensajes rápidos",
       "logs": "Registros de ejecución"
+    },
+    "scope": {
+      "thisApp": "App de este equipo",
+      "thisBrowser": "Este navegador",
+      "server": "Servidor",
+      "localServer": "Servicio local",
+      "both": "App y {server}",
+      "bothHint": "La app y su servicio local guardan cada uno una copia; cambiarlo aquí actualiza ambos.",
+      "serverHint": "Se guarda en este servidor ({url}), no en este equipo"
     }
   },
   "AppearanceSettings": {

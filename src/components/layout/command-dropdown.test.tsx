@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   GLOBAL_COMMANDS_STORAGE_KEY,
@@ -29,7 +30,10 @@ const h = vi.hoisted(() => ({
   t: (key: string) => key,
 }))
 
-vi.mock("next-intl", () => ({ useTranslations: () => h.t }))
+vi.mock("next-intl", () => ({
+  useTranslations: () => h.t,
+  useLocale: () => "en",
+}))
 vi.mock("sonner", () => ({ toast: { error: h.toastError } }))
 vi.mock("@/lib/transport", () => ({
   isDesktop: () => h.desktop,
@@ -306,5 +310,47 @@ describe("CommandDropdown", () => {
       window.dispatchEvent(new StorageEvent("storage", { key: null }))
     })
     expect(await screen.findByText("addCommand")).toBeInTheDocument()
+  })
+
+  describe("in the terminal strip", () => {
+    const openMenu = async () =>
+      userEvent.click(
+        await screen.findByRole("button", { name: "Run a command" })
+      )
+
+    it("runs a command from its menu into a terminal tab", async () => {
+      render(<CommandDropdown variant="terminal" />)
+      await openMenu()
+      await userEvent.click(
+        await screen.findByRole("menuitem", { name: /dev/ })
+      )
+      await waitFor(() =>
+        expect(h.create).toHaveBeenCalledWith("dev", "pnpm dev", 5)
+      )
+      expect(screen.queryByTitle("runCommandTitle")).toBeNull()
+    })
+
+    it("stops a running one from the same row", async () => {
+      h.tabs = [{ id: "running-terminal" }]
+      useCommandTerminalLinkStore.setState({
+        links: { [commandLinkKey(1, 5)]: "running-terminal" },
+      })
+      render(<CommandDropdown variant="terminal" />)
+      await openMenu()
+      await userEvent.click(await screen.findByTitle("stopCommandTitle"))
+      await waitFor(() =>
+        expect(h.stop).toHaveBeenCalledWith("running-terminal")
+      )
+      expect(h.create).not.toHaveBeenCalled()
+    })
+
+    it("offers to add a command when the folder has none", async () => {
+      h.hostCommands = []
+      render(<CommandDropdown variant="terminal" />)
+      await openMenu()
+      expect(
+        await screen.findByRole("menuitem", { name: "addCommand" })
+      ).toBeInTheDocument()
+    })
   })
 })

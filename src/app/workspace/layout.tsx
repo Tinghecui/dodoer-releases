@@ -1241,7 +1241,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
   // foot (handoff 6.2); the halves come in from here so the panels stay free
   // of the status bar's own contexts.
   const sidebarElement = useMemo(
-    () => <Sidebar footer={<StatusBarLeft />} />,
+    () => <Sidebar footer={<StatusBarLeft className="min-w-0 flex-1" />} />,
     []
   )
   const auxElement = useMemo(() => <AuxPanel footer={<StatusBarRight />} />, [])

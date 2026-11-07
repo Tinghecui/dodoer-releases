@@ -12,6 +12,7 @@ import { useImeGuard } from "@/hooks/use-ime-guard"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
 import { handleMiddleClickClose } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { CommandDropdown } from "@/components/layout/command-dropdown"
 import {
   ContextMenu,
   ContextMenuContent,
@@ -169,6 +170,9 @@ export function TerminalTabBar({
           )}
         </Tooltip>
       </TooltipProvider>
+      {/* Cowork: the folder's commands, run into terminal tabs like this one.
+          Renders nothing without an active folder. */}
+      <CommandDropdown variant="terminal" />
       {showKeybarToggle && onToggleKeybar && (
         <TooltipProvider>
           <Tooltip>

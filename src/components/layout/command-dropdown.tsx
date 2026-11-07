@@ -36,6 +36,7 @@ import {
   useCommandTerminalLinkStore,
 } from "@/stores/command-terminal-link-store"
 import { cn } from "@/lib/utils"
+import { useCoworkText } from "@/lib/cowork/i18n"
 import { CommandManageDialog } from "./command-manage-dialog"
 
 function getSelectedCommandId(folderId: number): number | null {
@@ -55,8 +56,21 @@ function setSelectedCommandId(folderId: number, cmdId: number) {
   }
 }
 
-export function CommandDropdown() {
+/**
+ * Cowork: `variant="terminal"` is the launcher's only desktop home — a ▶
+ * button beside the terminal strip's "+". Its menu runs a command on click
+ * (stops it if it is running; the command's own terminal tab shows that it
+ * is) and ends with "Manage commands…". The status bar's split button
+ * (`variant="status"`) is left to the mobile bar: in an agent workbench the
+ * launcher is a terminal shortcut, not top-level chrome.
+ */
+export function CommandDropdown({
+  variant = "status",
+}: {
+  variant?: "status" | "terminal"
+} = {}) {
   const t = useTranslations("Folder.commandDropdown")
+  const tCowork = useCoworkText()
   const { activeFolder: folder } = useActiveFolder()
   const {
     createTerminalWithCommand,
@@ -315,6 +329,96 @@ export function CommandDropdown() {
   )
 
   if (!folder) return null
+
+  if (variant === "terminal") {
+    return (
+      <>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 shrink-0"
+              data-terminal-commands=""
+              title={tCowork("runCommand")}
+              aria-label={tCowork("runCommand")}
+            >
+              <Play className="h-3 w-3" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="top" className="min-w-56">
+            {allCommands.map((cmd) => {
+              const running = Boolean(
+                resolveLiveCommandTerminalId(
+                  links,
+                  commandLinkKey(folderId, cmd.id),
+                  isTerminalLive
+                )
+              )
+              return (
+                <DropdownMenuItem
+                  key={cmd.id}
+                  onClick={() =>
+                    void (running ? stopCommand(cmd) : runCommand(cmd))
+                  }
+                  title={
+                    running
+                      ? t("stopCommandTitle", { command: cmd.command })
+                      : t("runCommandTitle", { command: cmd.command })
+                  }
+                  className="flex items-center justify-between gap-4"
+                >
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    {running ? (
+                      <Square className="h-3 w-3 shrink-0 text-destructive" />
+                    ) : (
+                      <Play className="h-3 w-3 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="truncate">{cmd.name}</span>
+                    {isLocalCommand(cmd) ? (
+                      <Monitor
+                        className="h-3 w-3 shrink-0 text-muted-foreground"
+                        aria-label={t("localCommand")}
+                      />
+                    ) : null}
+                    {isGlobalCommandId(cmd.id) ? (
+                      <Globe
+                        className="h-3 w-3 shrink-0 text-muted-foreground"
+                        aria-label={t("globalCommand")}
+                      />
+                    ) : null}
+                  </span>
+                  <span className="max-w-32 truncate font-mono text-xs text-muted-foreground">
+                    {cmd.command}
+                  </span>
+                </DropdownMenuItem>
+              )
+            })}
+            {allCommands.length > 0 && <DropdownMenuSeparator />}
+            <DropdownMenuItem
+              onClick={() => setManageOpen(true)}
+              disabled={bootstrapping}
+            >
+              {allCommands.length === 0 ? (
+                <>
+                  <Plus className="h-3 w-3" />
+                  {bootstrapping ? t("loading") : t("addCommand")}
+                </>
+              ) : (
+                t("manageCommands")
+              )}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <CommandManageDialog
+          open={manageOpen}
+          onOpenChange={setManageOpen}
+          folderId={folderId}
+          onChanged={refreshCommands}
+        />
+      </>
+    )
+  }
 
   // The trigger varies with command count, but the manage dialog is rendered
   // once outside the branch so saving the first command (which flips the

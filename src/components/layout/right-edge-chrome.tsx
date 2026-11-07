@@ -1,15 +1,10 @@
 "use client"
 
 import { useCallback, useLayoutEffect, useRef } from "react"
-import { Ellipsis, PanelRight, Settings, SquareTerminal } from "lucide-react"
+import { PanelRight, Settings, SquareTerminal } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { openSettingsWindow } from "@/lib/api"
 import { Button } from "@/components/ui/button"
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
 import { FilePanelToggle } from "@/components/files/file-panel-toggle"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
@@ -18,14 +13,11 @@ import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { WorkbenchRouteChromeActions } from "@/components/workbench/workbench-content"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
 import { useIsMac } from "@/hooks/use-is-mac"
-import { useMediaQuery } from "@/hooks/use-media-query"
-import { useCoworkText } from "@/lib/cowork/i18n"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
 import { GLASS_RAISED_CARD_CLASS, Glass } from "@/components/ui/glass"
 import { RightChromeSlot } from "@/components/layout/right-chrome-slot"
-import { StatusBarRight } from "@/components/layout/status-bar"
-import { CoworkAccountMenu } from "@/components/cowork/account-menu"
+import { StatusIndicator } from "@/components/cowork/status-indicator"
 import { useRightStatusCapsuleStore } from "@/stores/right-status-capsule-store"
 import { cn } from "@/lib/utils"
 
@@ -121,22 +113,16 @@ export function RightEdgeChrome() {
       >
         <Settings className="h-[0.9375rem] w-[0.9375rem]" />
       </Button>
-      {/* Cowork: the portal account menu, last in the corner so it never
-          moves with the aux panel; renders nothing outside Cowork. */}
-      <CoworkAccountMenu
-        className={btn}
-        iconClassName="h-[0.9375rem] w-[0.9375rem]"
-        side="bottom"
-      />
     </>
   )
 
   if (asCapsule) {
     // Aux panel collapsed (or a full-page route): one capsule at the top
     // bar's right end. jenny fork: it holds everything up there — the status
-    // items (commands, MCP, alerts …), the shown conversation's own buttons
-    // (RightChromeSlot), then the window buttons — in the sidebar's card look,
-    // centred on the traffic lights' line (15px down, like the left capsule).
+    // items (Cowork: folded into one button), the shown conversation's own
+    // buttons (RightChromeSlot), then the window buttons — in the sidebar's
+    // card look, centred on the traffic lights' line (15px down, like the left
+    // capsule).
     return (
       <div className="flex h-[3.25rem] items-center justify-end pt-2.5 pr-3">
         <Glass
@@ -165,46 +151,18 @@ export function RightEdgeChrome() {
 }
 
 /**
- * Cowork: below this window width the capsule's status items (commands, MCP,
- * alerts …, ~200px) fold behind one button. The column under the corner
- * reserves the capsule's whole width, so in a narrow window (or a narrow file
- * column in fusion) its tab strip was left with room for "+" alone: tabs —
- * browser tabs included — and their close buttons sat under the capsule.
- */
-export const COMPACT_CAPSULE_QUERY = "(max-width: 1439px)"
-
-function CompactStatusItems() {
-  const t = useCoworkText()
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          data-compact-status=""
-          className="lg-ib h-7 w-[1.875rem] shrink-0 rounded-full text-[var(--ink2)] hover:bg-[var(--g-hover)] hover:text-foreground"
-          title={t("statusItems")}
-          aria-label={t("statusItems")}
-        >
-          <Ellipsis className="h-[0.9375rem] w-[0.9375rem]" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-auto p-2">
-        <StatusBarRight className="justify-end" />
-      </PopoverContent>
-    </Popover>
-  )
-}
-
-/**
  * jenny fork: the capsule's lead — the right half of the status bar, then the
  * conversation's slot. It reports its width so the strips beneath reserve room
  * for it on top of the window buttons' fixed reserve, and 0 once it unmounts.
+ *
+ * Cowork: the status half is one button (StatusIndicator) at every window
+ * width, so the capsule stays narrow and the tab strip under it keeps its
+ * tabs. It used to fold only below 1440px, which missed wide windows with a
+ * narrow file column.
  */
 function CapsuleLead() {
   const ref = useRef<HTMLDivElement>(null)
   const setWidth = useRightStatusCapsuleStore((s) => s.setWidth)
-  const compact = useMediaQuery(COMPACT_CAPSULE_QUERY)
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
@@ -222,16 +180,10 @@ function CapsuleLead() {
     <div
       ref={ref}
       data-status-capsule="right"
-      className={cn(
-        "flex h-full shrink-0 items-center",
-        compact ? "pl-0.5" : "pl-3"
-      )}
+      className="flex h-full shrink-0 items-center pl-0.5"
     >
-      {compact ? <CompactStatusItems /> : <StatusBarRight />}
-      <span
-        aria-hidden
-        className="mr-1 ml-2.5 h-4 w-px shrink-0 bg-[var(--g-sep2)]"
-      />
+      <StatusIndicator className="lg-ib mx-[0.1875rem] h-7 w-[1.875rem] shrink-0 rounded-full text-[var(--ink2)] hover:bg-[var(--g-hover)] hover:text-foreground dark:hover:bg-[var(--g-hover)]" />
+      <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-[var(--g-sep2)]" />
       <RightChromeSlot />
     </div>
   )

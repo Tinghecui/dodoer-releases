@@ -49,6 +49,10 @@ export function StatusBar() {
 /**
  * Left half of the status bar: the quick-actions launcher and the workspace
  * stats. The launcher keeps the same glyph and size as before.
+ *
+ * Cowork: the portal account menu ends it, pushed to the sidebar foot's far
+ * end. The foot (or, with the sidebar collapsed, the bottom-left capsule) is
+ * always on screen, and it is where the workspace's name already sits.
  */
 export function StatusBarLeft({ className }: { className?: string }) {
   return (
@@ -61,6 +65,10 @@ export function StatusBarLeft({ className }: { className?: string }) {
     >
       <QuickActionsDropdown />
       <StatusBarStats />
+      <CoworkAccountMenu
+        className="ml-auto shrink-0 rounded-full hover:bg-[var(--g-hover)]"
+        side="top"
+      />
     </div>
   )
 }
@@ -81,8 +89,8 @@ export function StatusBarRight({ className }: { className?: string }) {
     >
       <StatusBarUpdate />
       <StatusBarTasks />
-      {/* Command launcher (moved from the aux "session details" tab). */}
-      <CommandDropdown />
+      {/* Cowork: the command launcher lives in the terminal strip on desktop
+          (CommandDropdown's "terminal" variant); the mobile bar keeps it. */}
       {/* Computer use: which windows agents may see right now. Renders
           nothing unless the desktop runtime has it switched on. */}
       <StatusBarComputer />
@@ -90,7 +98,7 @@ export function StatusBarRight({ className }: { className?: string }) {
           something wrong right now?". */}
       <StatusBarMcp />
       <StatusBarAlerts />
-      {/* Cowork's account menu lives in RightEdgeChrome on desktop widths. */}
+      {/* Cowork's account menu ends StatusBarLeft on desktop widths. */}
     </div>
   )
 }

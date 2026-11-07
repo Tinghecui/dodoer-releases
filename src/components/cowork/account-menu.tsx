@@ -24,9 +24,9 @@ import { cn } from "@/lib/utils"
 
 /**
  * Account menu, shown only when served behind the Cowork portal. On desktop
- * widths it is the last button of the fixed top-right chrome (RightEdgeChrome,
- * which passes its button classes in), so it stays put whether the aux panel
- * is open or not; on mobile it ends the status bar.
+ * widths it ends the status bar's left half (StatusBarLeft) at the sidebar's
+ * foot, or in the bottom-left capsule while the sidebar is collapsed, so it is
+ * on screen whatever the panels do; on mobile it ends the status bar.
  * The entries are full-page navigations to same-origin paths that Cowork's
  * nginx redirects to the portal. An admin with a newer cowork release waiting
  * also gets an "upgrade" entry (and a dot on the trigger) that opens the

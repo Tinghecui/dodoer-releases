@@ -1,5 +1,4 @@
-import { render, screen } from "@testing-library/react"
-import userEvent from "@testing-library/user-event"
+import { render } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -10,10 +9,6 @@ import { useRightStatusCapsuleStore } from "@/stores/right-status-capsule-store"
 const env = vi.hoisted(() => ({
   auxOpen: false,
   isConversations: true,
-  compact: false,
-}))
-vi.mock("@/hooks/use-media-query", () => ({
-  useMediaQuery: () => env.compact,
 }))
 
 vi.mock("@/contexts/aux-panel-context", () => ({
@@ -43,13 +38,11 @@ vi.mock("@/components/files/file-panel-toggle", () => ({
 vi.mock("@/components/workbench/workbench-content", () => ({
   WorkbenchRouteChromeActions: () => null,
 }))
-vi.mock("@/components/layout/status-bar", () => ({
-  StatusBarRight: () => <div data-testid="status-right" />,
+vi.mock("@/components/cowork/status-indicator", () => ({
+  StatusIndicator: () => <button data-testid="status-indicator" />,
 }))
 vi.mock("@/components/cowork/account-menu", () => ({
-  CoworkAccountMenu: ({ side }: { side?: string }) => (
-    <div data-testid="cowork-account" data-side={side} />
-  ),
+  CoworkAccountMenu: () => <div data-testid="cowork-account" />,
 }))
 
 function renderChrome() {
@@ -67,7 +60,6 @@ describe("RightEdgeChrome status capsule", () => {
   beforeEach(() => {
     env.auxOpen = false
     env.isConversations = true
-    env.compact = false
     useRightStatusCapsuleStore.setState({ width: 0 })
   })
 
@@ -75,7 +67,9 @@ describe("RightEdgeChrome status capsule", () => {
     renderChrome()
     const capsule = topCapsule()
     expect(capsule).not.toBeNull()
-    expect(capsule?.querySelector('[data-testid="status-right"]')).toBeTruthy()
+    expect(
+      capsule?.querySelector('[data-testid="status-indicator"]')
+    ).toBeTruthy()
     const corner = document.querySelector("[data-right-chrome-capsule]")
     expect(corner?.firstElementChild).toBe(capsule)
     expect(corner?.className).toContain("lg-raised")
@@ -105,27 +99,12 @@ describe("RightEdgeChrome status capsule", () => {
     expect(useRightStatusCapsuleStore.getState().width).toBe(0)
     rect.mockRestore()
   })
-  it("ends with the Cowork account menu whether the aux panel is open or not", () => {
+  it("leaves the account menu to the sidebar foot", () => {
     for (const auxOpen of [false, true]) {
       env.auxOpen = auxOpen
       const view = renderChrome()
-      const menu = view.getByTestId("cowork-account")
-      expect(menu.parentElement?.lastElementChild).toBe(menu)
-      expect(menu).toHaveAttribute("data-side", "bottom")
-      // Not inside the status items (they move to the aux panel's foot).
-      expect(topCapsule()?.contains(menu) ?? false).toBe(false)
+      expect(view.queryByTestId("cowork-account")).toBeNull()
       view.unmount()
     }
-  })
-  it("folds the status items behind one button in a narrow window", async () => {
-    env.compact = true
-    renderChrome()
-    const capsule = topCapsule()
-    expect(capsule?.querySelector('[data-testid="status-right"]')).toBeNull()
-    expect(capsule?.querySelector("[data-right-chrome-slot]")).toBeTruthy()
-    await userEvent.click(
-      screen.getByRole("button", { name: "Commands and status" })
-    )
-    expect(await screen.findByTestId("status-right")).toBeInTheDocument()
   })
 })

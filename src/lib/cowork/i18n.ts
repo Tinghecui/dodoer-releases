@@ -8,7 +8,11 @@ import { useLocale } from "next-intl"
 
 const en = {
   account: "Account",
-  statusItems: "Commands and status",
+  statusItems: "Status",
+  runCommand: "Run a command",
+  statusAlerts: "{count} alerts",
+  statusUpdate: "update available",
+  statusBusy: "working",
   myAccount: "My account",
   openInDesktop: "Open in desktop app",
   openInDesktopFailed: "Couldn't open the desktop app: {message}",
@@ -49,7 +53,11 @@ export type CoworkTextKey = keyof typeof en
 
 const zhCN: Record<CoworkTextKey, string> = {
   account: "账户",
-  statusItems: "命令和状态",
+  statusItems: "状态",
+  runCommand: "运行命令",
+  statusAlerts: "{count} 条提醒",
+  statusUpdate: "有新版本",
+  statusBusy: "后台任务进行中",
   myAccount: "我的账户",
   openInDesktop: "在桌面 app 里打开",
   openInDesktopFailed: "没能打开桌面 app：{message}",
@@ -86,7 +94,11 @@ const zhCN: Record<CoworkTextKey, string> = {
 
 const zhTW: Record<CoworkTextKey, string> = {
   account: "帳戶",
-  statusItems: "命令和狀態",
+  statusItems: "狀態",
+  runCommand: "執行命令",
+  statusAlerts: "{count} 則提醒",
+  statusUpdate: "有新版本",
+  statusBusy: "背景工作進行中",
   myAccount: "我的帳戶",
   openInDesktop: "在桌面 app 中開啟",
   openInDesktopFailed: "無法開啟桌面 app：{message}",

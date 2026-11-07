@@ -1,5 +1,5 @@
 #!/bin/bash
-# 编一种桌面版 dodoer.app（Apple Silicon，ad-hoc 签名），冒烟，打成发布用的文件。跑在 GitHub 托管的 macOS 机器上（公开镜像的 desktop-macos.yml）。
+# 在 mac-mini 上编一种桌面版 dodoer.app（Apple Silicon，ad-hoc 签名），冒烟，打成发布用的文件。
 # desktop-macos.yml 调两次：先 full（完整版，自带 codeg-server 子进程做本机 daemon），再 client（纯客户端版，
 # 不带 codeg-server、只连服务器，Cowork 用户装这个）。两种是同一份代码：client 多叠一个 Tauri 配置
 # （src-tauri/tauri.cowork-client.conf.json：externalBin 去掉 codeg-server、updater 指到 latest-client.json）
@@ -66,7 +66,7 @@ exe=$(defaults read "$app/Contents/Info.plist" CFBundleExecutable)
 ver=$(defaults read "$app/Contents/Info.plist" CFBundleShortVersionString)
 [[ "$ver" == "$VERSION" ]] || fail "编出来的版本 $ver 不是 $VERSION"
 # 包自己说它是哪一版、从哪更新（codeg --desktop-edition）：edition 来自 Cargo feature、更新地址来自 Tauri 配置，
-# 两样对不上就会把自己更新成另一种版本，所以两样都核对。用 node 解析（不依赖 jq）
+# 两样对不上就会把自己更新成另一种版本，所以两样都核对。用 node 解析（mac-mini 上不一定有 jq）
 report=$("$app/Contents/MacOS/$exe" --desktop-edition)
 echo "$report"
 REPORT="$report" EDITION="$edition" ENDPOINT="$expect_endpoint" node -e '
@@ -121,7 +121,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   echo "${edition}_updater=$upd" >> "$GITHUB_OUTPUT"
 fi
 rm -f "$bundle"/dodoer.app.tar.gz*
-# 打完包把 bundle 里的 .app 删掉并从 LaunchServices 注销：在自己的 Mac 上跑时，留着的话 Spotlight /
+# 打完包把 bundle 里的 .app 删掉并从 LaunchServices 注销：mac-mini 是日常用的机器，留着的话 Spotlight /
 # 「打开方式」里会多出一个 dodoer，codeg:// 链接也可能被它接走。编译缓存在 target/release 别处，不受影响
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$app" || true
 rm -rf "$app"

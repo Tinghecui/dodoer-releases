@@ -91,5 +91,6 @@ src-tauri/binaries/
 !/docs/images/
 !/docs/proxy-auth.md
 !/docs/readme/
+!/docs/remote-browser.md
 !/docs/releasing/
 !/docs/url-scheme.md

@@ -108,7 +108,7 @@ case "$cmd" in
     tree=$(write_tree "$tmp/export")
     msg="$subject
 
-source: cowork-codeg@${sha:0:12}"
+source: cowork-codeg@${sha}"
     if [[ "$branch" == main ]]; then
       if [[ "$tree" == "$(git -C "$PUBLIC_DIR" rev-parse "$base^{tree}")" ]]; then
         echo "公开 main 已经是这棵树（${base}），不用推"; commit=$base
@@ -147,7 +147,7 @@ source: cowork-codeg@${sha:0:12}"
       # tag 指的不是 product 分支最新的那次推送：单独做一个提交挂在 main 下面打 tag，不动 main
       commit=$(commit_tree "$tree" "$base" "$subject
 
-source: cowork-codeg@${sha:0:12}")
+source: cowork-codeg@${sha}")
     fi
     (cd "$PUBLIC_DIR" && GIT_COMMITTER_NAME=$AUTHOR_NAME GIT_COMMITTER_EMAIL=$AUTHOR_EMAIL git tag -a "$tag" -m "$tagmsg" "$commit" \
       && git push -q origin "refs/tags/$tag")

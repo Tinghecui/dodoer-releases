@@ -1,0 +1,46 @@
+# 公开镜像 Tinghecui/dodoer-releases 的 CI 结果报回私有仓库 cowork-codeg（文件在私有仓库 .github/public/workflows/ 里维护）。
+# 同步过来的提交说明最后一行是 `source: cowork-codeg@<40 位 sha>`；Test / cowork-release / desktop-macos 开始时给那个私有提交
+# 打 pending，结束时打 success / failure（context「公开 CI / <workflow 名>」），私有 PR 上就能直接看到公开这边的结果。
+# 要 Secret SOURCE_STATUS_TOKEN：只对 Tinghecui/cowork-codeg 有 Commit statuses 读写权限的 fine-grained token；没配就跳过。
+# workflow_run 用的是 main 上的这个文件，带 secrets；这里不 checkout、不执行触发它的 run 里的任何东西，提交说明只按正则取 sha。
+name: report-status
+
+on:
+  workflow_run:
+    workflows: [Test, cowork-release, desktop-macos]
+    types: [requested, completed]
+
+permissions: {}
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 报给私有仓库
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_STATUS_TOKEN }}
+          MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
+          NAME: ${{ github.event.workflow_run.name }}
+          STATUS: ${{ github.event.workflow_run.status }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          URL: ${{ github.event.workflow_run.html_url }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          [[ -n "$GH_TOKEN" ]] || { echo "::warning::没配 SOURCE_STATUS_TOKEN，不报"; exit 0; }
+          sha=$(printf '%s\n' "$MESSAGE" | sed -nE 's/^source: cowork-codeg@([0-9a-f]{40})$/\1/p' | tail -1)
+          [[ -n "$sha" ]] || { echo "提交说明里没有 40 位的 source sha，不报"; exit 0; }
+          if [[ "$STATUS" != completed ]]; then state=pending; desc="在跑（$BRANCH）"
+          else
+            case "$CONCLUSION" in
+              success|skipped|neutral) state=success ;;
+              cancelled) state=error ;;
+              *) state=failure ;;
+            esac
+            desc="$CONCLUSION（$BRANCH）"
+          fi
+          jq -n --arg s "$state" --arg u "$URL" --arg d "$desc" --arg c "公开 CI / $NAME" \
+            '{state:$s,target_url:$u,description:$d,context:$c}' \
+            | gh api -X POST "repos/Tinghecui/cowork-codeg/statuses/$sha" --input - >/dev/null
+          echo "cowork-codeg@${sha:0:12}：公开 CI / $NAME → $state"

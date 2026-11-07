@@ -35,6 +35,7 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       rust: ${{ steps.filter.outputs.rust }}
       install: ${{ steps.filter.outputs.install }}
+      editions: ${{ steps.filter.outputs.editions }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -55,6 +56,11 @@ jobs:
               - ".github/workflows/test.yml"
             rust:
               - "src-tauri/**"
+              - ".github/workflows/test.yml"
+            editions:
+              - "src-tauri/**"
+              - "scripts/cowork-desktop-build.sh"
+              - "scripts/check-desktop-editions.mjs"
               - ".github/workflows/test.yml"
             install:
               - "install.sh"
@@ -226,6 +232,21 @@ jobs:
             echo "::error::Web handlers must call commands/*_core, not services directly."
             exit 1
           fi
+
+  # 两种桌面包（完整版、纯客户端版）的 Tauri 配置叠法，和 client-only feature 只是一个 cfg! 常量（所以 Rust desktop 那一格编过的
+  # 就是纯客户端版的全部代码）。不编译，几秒。编出来的包在 desktop-macos.yml 核对：tag、每晚的 main、PR 打 macos-build 标签
+  desktop-editions:
+    name: Desktop editions
+    needs: changes
+    if: needs.changes.outputs.editions == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node scripts/check-desktop-editions.mjs
 
   install-sh:
     # install.sh stops what runs the files it replaces, and nothing else. The test runs the script's stop section

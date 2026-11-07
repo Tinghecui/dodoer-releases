@@ -1,6 +1,6 @@
 #!/bin/bash
 # 编一种桌面版 dodoer.app（Apple Silicon，ad-hoc 签名），冒烟，打成发布用的文件。跑在 GitHub 托管的 macOS 机器上（公开镜像的 desktop-macos.yml）。
-# desktop-macos.yml 调两次：先 full（完整版，自带 codeg-server 子进程做本机 daemon），再 client（纯客户端版，
+# desktop-macos.yml 在两台机器上各调一次：full（完整版，自带 codeg-server 子进程做本机 daemon）和 client（纯客户端版，
 # 不带 codeg-server、只连服务器，Cowork 用户装这个）。两种是同一份代码：client 多叠一个 Tauri 配置
 # （src-tauri/tauri.cowork-client.conf.json：externalBin 去掉 codeg-server、updater 指到 latest-client.json）
 # 和一个 Cargo feature（client-only，src-tauri/src/local_daemon.rs 的 CLIENT_ONLY_BUILD）。
@@ -9,8 +9,8 @@
 #   环境：VERSION（桌面版本号 1.Y.Z）、TAURI_SIGNING_PRIVATE_KEY（+ _PASSWORD）；
 #        GITHUB_OUTPUT 有就写 <edition>_name / <edition>_updater（client 还有 client_alias）
 #
-# full 先跑：它清空 dist/，并经 beforeBuildCommand 编前端（out/）和 sidecar（src-tauri/binaries/）。client 后跑，
-# 复用这两样（beforeBuildCommand 换成 true），只重编 Rust（feature 变了）。产物都在 dist/：
+# 每一种都经 beforeBuildCommand 编前端（out/）和 sidecar（src-tauri/binaries/）。在同一台机器上先 full 后 client（自己的 Mac 上）
+# 时，client 复用 full 编好的这两样（beforeBuildCommand 换成 true），只重编 Rust（feature 变了）。full 清空 dist/，产物都在 dist/：
 #   dodoer-<ver>-<sha8>-macos-arm64.zip(.sha256)             完整版安装包
 #   dodoer-<ver>-macos-arm64.app.tar.gz(.sig)                完整版自动更新包  ← latest.json
 #   dodoer-client-<ver>-<sha8>-macos-arm64.zip(.sha256)      纯客户端版安装包
@@ -41,11 +41,12 @@ case "$edition" in
     prefix=dodoer-client
     expect_endpoint="$releases/latest-client.json"
     configs+=(--config src-tauri/tauri.cowork-client.conf.json)
-    # 前端和 sidecar 是 full 那次编好的；没有就说明顺序错了
-    triple=$(rustc -vV | sed -n 's/^host: //p')
-    test -d out || fail "没有 out/：先跑 $0 full"
-    test -s "src-tauri/binaries/codeg-mcp-$triple" || fail "没有编好的 sidecar：先跑 $0 full"
-    configs+=(--config '{"build":{"beforeBuildCommand":"true"}}')
+    # 同一台机器上 full 刚编过前端和 sidecar 就复用；单独跑（CI 的 matrix）就照常经 beforeBuildCommand 编。
+    # 判断用 full 留下的记号，不只看文件在不在：out/ 和占位的 sidecar 可能是别的命令留下的
+    if [[ -f dist/.full-built && "$(cat dist/.full-built)" == "$(git rev-parse HEAD)" ]]; then
+      echo "==> [client] 复用 full 编好的 out/ 和 sidecar"
+      configs+=(--config '{"build":{"beforeBuildCommand":"true"}}')
+    fi
     features=(--features client-only)
     ;;
   *) fail "不认识的版本 ${edition}（full|client）" ;;
@@ -99,6 +100,7 @@ name="$prefix-$ver-$(git rev-parse --short=8 HEAD)-macos-arm64"
 if [[ "$edition" == full ]]; then
   # clean: false 下 dist/ 不会被清，先删掉，不然 artifact 里夹着以前每次的 zip
   rm -rf dist && mkdir dist
+  git rev-parse HEAD > dist/.full-built
 else
   mkdir -p dist
 fi

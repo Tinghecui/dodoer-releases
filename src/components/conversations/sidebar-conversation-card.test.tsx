@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest"
@@ -30,12 +31,22 @@ import {
   ATTACH_SESSION_TO_SESSION_EVENT,
   type AttachSessionToSessionDetail,
 } from "@/lib/session-attachment-events"
-import type { DbConversationSummary } from "@/lib/types"
+import type { DbConversationSummary, MessageTurn } from "@/lib/types"
 import enMessages from "@/i18n/messages/en.json"
 import {
   resetAssistantsStore,
   useAssistantsStore,
 } from "@/stores/assistants-store"
+import * as api from "@/lib/api"
+import { resetConversationRuntimeStore } from "@/stores/conversation-runtime-store"
+import { resetConversationGoalSnapshotStore } from "@/stores/conversation-goal-snapshot-store"
+
+// The goal lookup of never-opened rows goes through the API; every other test
+// here leaves it answering "no goal".
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  getConversationGoalMarkers: vi.fn(async () => []),
+}))
 
 // AgentIcon renders exactly once per card body execution, so counting its
 // renders counts how many cards actually re-rendered (a card that bails out via
@@ -1145,5 +1156,190 @@ describe("SidebarConversationCard waiting on background work", () => {
     )
     const { container } = renderCard(ended)
     expect(badge(container)).toBeNull()
+  })
+})
+
+// Issue #83: after a reload the sidebar must show the goal badge on every
+// session that holds one — not only on the rows this client happens to have a
+// runtime copy of (the selected tab, the running session).
+describe("SidebarConversationCard goal badge on never-opened rows", () => {
+  const goalMarkers = vi.mocked(api.getConversationGoalMarkers)
+
+  beforeEach(() => {
+    localStorage.clear()
+    resetConversationRuntimeStore()
+    resetConversationGoalSnapshotStore()
+    goalMarkers.mockReset()
+  })
+
+  function goalTurn(
+    id: string,
+    toolName: "create_goal" | "update_goal",
+    goal: { status: string; objective: string } | null
+  ): MessageTurn {
+    return {
+      id,
+      role: "assistant",
+      timestamp: "2026-11-04T00:00:00Z",
+      blocks: [
+        {
+          type: "tool_use",
+          tool_use_id: `${id}-call`,
+          tool_name: toolName,
+          input_preview: JSON.stringify(goal ?? {}),
+        },
+        {
+          type: "tool_result",
+          tool_use_id: `${id}-call`,
+          output_preview: JSON.stringify({ goal }),
+          is_error: false,
+        },
+      ],
+    }
+  }
+
+  function session(id: number): DbConversationSummary {
+    return {
+      ...conv(id),
+      status: "pending_review",
+      external_id: `sess-${id}`,
+    }
+  }
+
+  const badge = (container: HTMLElement, id: number) =>
+    container
+      .querySelector(`[data-conversation-row="${id}"]`)
+      ?.querySelector("[data-goal-status]") ?? null
+
+  function rows(list: DbConversationSummary[]) {
+    return (
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        {list.map((c) => (
+          <div key={c.id} data-conversation-row={c.id}>
+            <SidebarConversationCard
+              conversation={c}
+              isSelected={false}
+              timeLabel="46m"
+              onSelect={onSelect}
+              onDoubleClick={onDoubleClick}
+              onRename={onRename}
+              onDelete={onDelete}
+              onStatusChange={onStatusChange}
+            />
+          </div>
+        ))}
+      </NextIntlClientProvider>
+    )
+  }
+
+  it("shows the badge on every row holding an open goal, none of them opened", async () => {
+    goalMarkers.mockResolvedValue([
+      {
+        conversation_id: 31,
+        turns: [
+          goalTurn("t1", "create_goal", {
+            status: "active",
+            objective: "ship the release",
+          }),
+        ],
+      },
+      {
+        conversation_id: 32,
+        turns: [
+          goalTurn("t1", "create_goal", {
+            status: "active",
+            objective: "fix the flaky test",
+          }),
+          goalTurn("t2", "update_goal", {
+            status: "paused",
+            objective: "fix the flaky test",
+          }),
+        ],
+      },
+      { conversation_id: 33, turns: [] },
+    ])
+    const { container } = render(rows([session(31), session(32), session(33)]))
+
+    await waitFor(() => {
+      expect(badge(container, 31)?.getAttribute("data-goal-status")).toBe(
+        "active"
+      )
+    })
+    expect(badge(container, 31)?.getAttribute("title")).toContain(
+      "ship the release"
+    )
+    expect(badge(container, 32)?.getAttribute("data-goal-status")).toBe(
+      "paused"
+    )
+    expect(badge(container, 33)).toBeNull()
+    // One batched lookup for the whole list, not one request per row.
+    expect(goalMarkers).toHaveBeenCalledTimes(1)
+    expect([...goalMarkers.mock.calls[0]![0]].sort()).toEqual([31, 32, 33])
+  })
+
+  it("a goal that already completed or was cleared shows no badge", async () => {
+    goalMarkers.mockResolvedValue([
+      {
+        conversation_id: 34,
+        turns: [
+          goalTurn("t1", "update_goal", {
+            status: "complete",
+            objective: "done",
+          }),
+        ],
+      },
+      {
+        conversation_id: 35,
+        turns: [goalTurn("t1", "update_goal", null)],
+      },
+    ])
+    const { container } = render(rows([session(34), session(35)]))
+    await waitFor(() => expect(goalMarkers).toHaveBeenCalledTimes(1))
+    await act(async () => {})
+    expect(badge(container, 34)).toBeNull()
+    expect(badge(container, 35)).toBeNull()
+  })
+
+  it("re-checks a row when it changes, without refetching unchanged rows", async () => {
+    goalMarkers.mockResolvedValueOnce([{ conversation_id: 36, turns: [] }])
+    const row = session(36)
+    const other = session(38)
+    const { container, rerender } = render(rows([row, other]))
+    await waitFor(() => expect(goalMarkers).toHaveBeenCalledTimes(1))
+    await act(async () => {})
+    expect(badge(container, 36)).toBeNull()
+
+    goalMarkers.mockReset()
+    goalMarkers.mockResolvedValueOnce([
+      {
+        conversation_id: 36,
+        turns: [
+          goalTurn("t1", "create_goal", {
+            status: "active",
+            objective: "new goal",
+          }),
+        ],
+      },
+    ])
+    const changed = {
+      ...row,
+      updated_at: new Date(Date.parse(row.updated_at) + MINUTE).toISOString(),
+    }
+    rerender(rows([changed, other]))
+    await waitFor(() =>
+      expect(badge(container, 36)?.getAttribute("data-goal-status")).toBe(
+        "active"
+      )
+    )
+    expect(goalMarkers).toHaveBeenCalledTimes(1)
+    expect(goalMarkers.mock.calls[0]![0]).toEqual([36])
+  })
+
+  it("a row with no session file is never looked up", async () => {
+    render(rows([{ ...session(37), external_id: null }]))
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10))
+    })
+    expect(goalMarkers).not.toHaveBeenCalled()
   })
 })

@@ -167,6 +167,25 @@ pub async fn get_folder_conversation(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetConversationGoalMarkersParams {
+    pub conversation_ids: Vec<i32>,
+}
+
+pub async fn get_conversation_goal_markers(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<GetConversationGoalMarkersParams>,
+) -> Result<Json<Vec<ConversationGoalMarkers>>, AppCommandError> {
+    Ok(Json(
+        conv_commands::get_conversation_goal_markers_core(
+            &state.db.conn,
+            params.conversation_ids,
+        )
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetFolderConversationTurnsParams {
     pub conversation_id: i32,
     pub before_index: usize,

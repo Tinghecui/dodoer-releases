@@ -78,6 +78,7 @@ import type {
   ConversationDetail,
   ConversationOutline,
   ConversationTurnsPage,
+  ConversationGoalMarkers,
   DbConversationDetail,
   FolderInfo,
   AgentStats,
@@ -2610,6 +2611,20 @@ export async function getFolderConversation(
     conversationId,
     ...(window?.tailTurns != null ? { tailTurns: window.tailTurns } : {}),
     ...(window?.fromIndex != null ? { fromIndex: window.fromIndex } : {}),
+  })
+}
+
+/**
+ * The goal markers (`create_goal` / `update_goal` tool calls and their
+ * results) of each of `conversationIds`' transcripts — every other block is
+ * dropped server-side. Lets the sidebar run `findLatestGoalStatus` for rows
+ * this client never opened. Rows the backend cannot read are left out.
+ */
+export async function getConversationGoalMarkers(
+  conversationIds: number[]
+): Promise<ConversationGoalMarkers[]> {
+  return getTransport().call("get_conversation_goal_markers", {
+    conversationIds,
   })
 }
 

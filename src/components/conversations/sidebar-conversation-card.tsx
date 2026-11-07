@@ -371,7 +371,14 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   // The goal the agent still holds once the turn ended: `in_progress` (and
   // its running colour) only lasts a turn, but an armed goal means the
   // session will wake itself up again — keep saying so until it closes.
-  const goal = useConversationGoalStatus(conversation.id)
+  // Rows never opened here are looked up from the backend; a row with no
+  // session file (a fresh draft, a Loop) has nothing to look up.
+  const goal = useConversationGoalStatus(
+    conversation.id,
+    conversation.external_id != null && conversation.kind !== "loop"
+      ? conversation.updated_at
+      : null
+  )
   const goalOpen = isGoalOpen(goal)
   // A status set by hand from the sidebar bumps `updated_at`; that alone must
   // neither turn the row unread nor clear an unread it already has.

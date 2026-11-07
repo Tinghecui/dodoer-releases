@@ -193,6 +193,17 @@ pub struct DbConversationDetail {
     pub uncovered_prefix_max_ts: Option<DateTime<Utc>>,
 }
 
+/// One conversation's goal markers for the sidebar's goal badge: its turns
+/// reduced to the `create_goal` / `update_goal` tool calls and their results
+/// (turns left empty are dropped), oldest first. The frontend resolves the
+/// current goal from them with the same `findLatestGoalStatus` it runs on an
+/// opened tab's timeline.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationGoalMarkers {
+    pub conversation_id: i32,
+    pub turns: Vec<MessageTurn>,
+}
+
 /// One page of older history for the reverse-infinite-scroll path:
 /// `full[turns_offset .. turns_offset + turns.len())`, ending just before the
 /// `beforeIndex` the client asked for. Light-path response — no summary, no

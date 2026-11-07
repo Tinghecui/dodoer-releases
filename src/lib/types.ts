@@ -1234,6 +1234,14 @@ export interface DbConversationDetail {
   uncovered_prefix_max_ts?: string | null
 }
 
+/** One conversation's goal markers: its transcript's turns reduced to the
+ *  `create_goal` / `update_goal` calls and their results (empty turns
+ *  dropped), oldest first — enough for `findLatestGoalStatus`. */
+export interface ConversationGoalMarkers {
+  conversation_id: number
+  turns: MessageTurn[]
+}
+
 /** One page of older history for reverse infinite scroll:
  *  `full[turns_offset .. turns_offset + turns.length)`. */
 export interface ConversationTurnsPage {

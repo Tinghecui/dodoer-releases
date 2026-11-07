@@ -248,6 +248,10 @@ pub fn build_router_with_proxy_auth(
             post(handlers::conversations::get_folder_conversation_outline),
         )
         .route(
+            "/get_conversation_goal_markers",
+            post(handlers::conversations::get_conversation_goal_markers),
+        )
+        .route(
             "/list_opened_tabs",
             post(handlers::conversations::list_opened_tabs),
         )

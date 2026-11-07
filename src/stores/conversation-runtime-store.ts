@@ -5187,6 +5187,18 @@ export function selectConversationGoalStatus(
   return goal
 }
 
+/**
+ * Whether this client holds a runtime copy of `conversationId` (DB id, or a
+ * draft tab bound to it) — i.e. whether `selectConversationGoalStatus`'s
+ * `null` means "no goal" rather than "unknown here".
+ */
+export function selectHasConversationRuntime(
+  state: ConversationRuntimeState,
+  conversationId: number
+): boolean {
+  return resolveViewerRuntimeId(state.byConversationId, conversationId) !== null
+}
+
 /** Stable action bundle — reference never changes (reducer merges only the
  *  state slices, never `actions`), so consumers re-render zero times. */
 export function useConversationRuntimeActions(): RuntimeActions {

@@ -2143,6 +2143,85 @@ pub async fn get_folder_conversation_outline_core(
     })
 }
 
+/// Upper bound on one goal-marker batch: the sidebar asks for the rows it
+/// renders, and each one is a full session-file parse.
+const GOAL_MARKERS_BATCH_MAX: usize = 200;
+
+/// Whether `tool_name` can be a goal marker. Deliberately loose — every
+/// spelling the frontend's `normalizeToolName` maps to `create_goal` /
+/// `update_goal` (`create_goal`, `functions.update_goal`,
+/// `mcp__x__create_goal`, a `Goal updated (…): …` title) contains "goal"; the
+/// exact resolution stays in `findLatestGoalStatus`.
+fn is_goal_marker_name(tool_name: &str) -> bool {
+    tool_name.to_ascii_lowercase().contains("goal")
+}
+
+/// `turns` reduced to their goal markers: the goal tool calls and the results
+/// paired with them. Turns left with no block are dropped.
+fn goal_marker_turns(turns: Vec<MessageTurn>) -> Vec<MessageTurn> {
+    turns
+        .into_iter()
+        .filter_map(|mut turn| {
+            let ids: HashSet<String> = turn
+                .blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::ToolUse {
+                        tool_use_id: Some(id),
+                        tool_name,
+                        ..
+                    } if is_goal_marker_name(tool_name) => Some(id.clone()),
+                    _ => None,
+                })
+                .collect();
+            turn.blocks.retain(|b| match b {
+                ContentBlock::ToolUse { tool_name, .. } => is_goal_marker_name(tool_name),
+                ContentBlock::ToolResult {
+                    tool_use_id: Some(id),
+                    ..
+                } => ids.contains(id),
+                _ => false,
+            });
+            (!turn.blocks.is_empty()).then_some(turn)
+        })
+        .collect()
+}
+
+/// The goal markers of each of `conversation_ids` (see
+/// [`ConversationGoalMarkers`]), so the sidebar can show the goal badge on
+/// rows the client never opened. A row that cannot be read (deleted, session
+/// file gone, parse error) is left out rather than failing the batch.
+pub async fn get_conversation_goal_markers_core(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_ids: Vec<i32>,
+) -> Result<Vec<ConversationGoalMarkers>, AppCommandError> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for id in conversation_ids
+        .into_iter()
+        .filter(|id| seen.insert(*id))
+        .take(GOAL_MARKERS_BATCH_MAX)
+    {
+        match get_folder_conversation_core(conn, id).await {
+            Ok((detail, _)) => out.push(ConversationGoalMarkers {
+                conversation_id: id,
+                turns: goal_marker_turns(detail.turns),
+            }),
+            Err(e) => tracing::debug!("[conversations] goal markers skipped for {id}: {e}"),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_conversation_goal_markers(
+    db: tauri::State<'_, AppDatabase>,
+    conversation_ids: Vec<i32>,
+) -> Result<Vec<ConversationGoalMarkers>, AppCommandError> {
+    get_conversation_goal_markers_core(&db.conn, conversation_ids).await
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn get_folder_conversation(

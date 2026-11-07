@@ -77,6 +77,16 @@ pub struct CodegMcpToolGroup {
     /// render this list cannot disagree about which switch gates which.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requires: Option<String>,
+    /// Cowork fork: whether this runtime can answer the group at all. False
+    /// for computer use on a server that shares no screen: the switch still
+    /// stores the choice, and the popover says where the tools work instead
+    /// of offering a switch that hands an agent nothing.
+    #[serde(default = "served_by_default")]
+    pub served: bool,
+}
+
+fn served_by_default() -> bool {
+    true
 }
 
 impl CodegMcpToolGroup {
@@ -85,6 +95,7 @@ impl CodegMcpToolGroup {
             key: key.to_string(),
             enabled,
             requires: None,
+            served: true,
         }
     }
 
@@ -93,7 +104,13 @@ impl CodegMcpToolGroup {
             key: key.to_string(),
             enabled,
             requires: Some(parent.to_string()),
+            served: true,
         }
+    }
+
+    fn served(mut self, served: bool) -> Self {
+        self.served = served;
+        self
     }
 }
 
@@ -181,7 +198,8 @@ pub async fn codeg_mcp_service_status_core(
         CodegMcpToolGroup::group("sessions", sources.session_info.is_enabled().await),
         CodegMcpToolGroup::group("automations", authoring_cfg.automations_enabled),
         CodegMcpToolGroup::group("taskboard", authoring_cfg.work_tasks_enabled),
-        CodegMcpToolGroup::group("browser", browser_cfg.enabled),
+        CodegMcpToolGroup::group("browser", browser_cfg.enabled)
+            .served(sources.browser.is_served()),
         // `browser_eval` reports what the runtime would actually hand an
         // agent, which is the pair ANDed: a stored `true` under a group that
         // is off is not a switch anyone can act on, and showing it on would
@@ -190,8 +208,10 @@ pub async fn codeg_mcp_service_status_core(
             "browser_eval",
             "browser",
             browser_cfg.enabled && browser_cfg.eval,
-        ),
-        CodegMcpToolGroup::group("computer", sources.computer.is_enabled().await),
+        )
+        .served(sources.browser.is_served()),
+        CodegMcpToolGroup::group("computer", sources.computer.is_enabled().await)
+            .served(sources.computer.is_served()),
     ];
     // Only the groups proper. A dependent switch cannot be on with its group
     // off, so counting them changes nothing today — but "is anything live"
@@ -432,7 +452,8 @@ pub async fn set_codeg_mcp_tool_group(
     {
         // `app.emit` fans out to every window, so the settings window's own
         // switch for this group converges with the one just flipped here.
-        let emitter = EventEmitter::Tauri(app);
+        let emitter = EventEmitter::Tauri(app.clone());
+        let lends = key.starts_with("browser");
         set_codeg_mcp_tool_group_core(
             &db.conn,
             CodegMcpToolGroupTargets {
@@ -448,7 +469,13 @@ pub async fn set_codeg_mcp_tool_group(
             &key,
             enabled,
         )
-        .await
+        .await?;
+        // Cowork fork: servers this app lends its tabs to learn the switch
+        // moved (`docs/remote-browser.md`).
+        if lends {
+            crate::commands::remote_proxy::refresh_host_registrations(&app);
+        }
+        Ok(())
     }
     #[cfg(not(feature = "tauri-runtime"))]
     {
@@ -608,6 +635,41 @@ mod tests {
         assert_eq!(status.depth_limit, 5);
         // `tasks` is per-spawn, never a switch — it must not appear.
         assert!(status.tool_groups.iter().all(|g| g.key != "tasks"));
+    }
+
+    /// Cowork fork: each row says whether this runtime can serve it at all,
+    /// so a popover can tell "switched off" from "not here".
+    #[tokio::test]
+    async fn rows_say_whether_this_runtime_serves_them() {
+        let f = Fixture::new();
+        let served = |status: &CodegMcpServiceStatus, key: &str| {
+            status
+                .tool_groups
+                .iter()
+                .find(|g| g.key == key)
+                .unwrap_or_else(|| panic!("missing group {key}"))
+                .served
+        };
+        let status = f.status().await;
+        assert!(!served(&status, "browser"));
+        assert!(!served(&status, "browser_eval"));
+        assert!(!served(&status, "computer"));
+        assert!(
+            served(&status, "delegation"),
+            "codeg's own groups always are"
+        );
+
+        f.browser.mark_served();
+        let status = f.status().await;
+        assert!(served(&status, "browser"));
+        assert!(served(&status, "browser_eval"));
+        assert!(!served(&status, "computer"));
+
+        // A client from before the field reads every row as served.
+        let old: CodegMcpToolGroup =
+            serde_json::from_value(serde_json::json!({"key": "computer", "enabled": true}))
+                .unwrap();
+        assert!(old.served);
     }
 
     /// `browser_eval` is reported as a switch of its own so both surfaces that

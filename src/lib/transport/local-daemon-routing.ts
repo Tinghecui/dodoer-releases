@@ -164,6 +164,9 @@ export const BOTH_COMMANDS: ReadonlySet<string> = new Set([
   "update_system_proxy_settings",
   "set_log_settings",
   "set_browser_tools_settings",
+  // The status popover's switches: the browser and computer-use groups are
+  // served by the app, which reads its own copy of them.
+  "set_codeg_mcp_tool_group",
   "set_computer_tools_enabled",
   "set_computer_tools_settings",
   "set_computer_tools_preferences",

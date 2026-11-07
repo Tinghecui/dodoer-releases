@@ -1085,6 +1085,8 @@ mod tauri_app {
                 app.manage(delegation.question.clone());
                 app.manage(delegation.session_info.clone());
                 app.manage(delegation.chat_authoring.clone());
+                // The desktop app always has its own browser tabs.
+                delegation.browser_tools.mark_served();
                 app.manage(delegation.browser_tools.clone());
                 // The desktop app always serves computer use (its service
                 // starts below): said now, before any session could be

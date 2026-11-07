@@ -72,6 +72,7 @@ use crate::app_error::{
 };
 use crate::db::service::remote_workspace_connection_service;
 use crate::db::AppDatabase;
+use crate::host_bridge::ws_host::{self, WsHost};
 use crate::models::{RemoteWorkspaceConnectionInfo, ToHeaderMap};
 use crate::workspace_transfer::{
     TransferDirection, TransferState, WorkspaceTransferManager, WorkspaceTransferProgress,
@@ -116,6 +117,10 @@ const WS_EVENTS_PATH: &str = "/ws/events";
 /// `__disconnected__` / `__unauthorized__` literals in
 /// `src/lib/transport/remote-desktop-transport.ts`.
 const WS_READY_CHANNEL: &str = "__ready__";
+
+/// Cowork fork: answers to `host_call`s waiting for the socket. Calls are
+/// few (an agent's browser tools) and each waits for its own answer.
+const HOST_OUT_CAPACITY: usize = 16;
 const WS_DISCONNECTED_CHANNEL: &str = "__disconnected__";
 const WS_UNAUTHORIZED_CHANNEL: &str = "__unauthorized__";
 
@@ -142,6 +147,11 @@ struct WsTaskEntry {
     /// attach frames on every `__ready__` so a transient WS gap is recovered
     /// automatically.
     outbound_tx: mpsc::Sender<String>,
+    /// Cowork fork: the server on the current socket takes this app as a
+    /// host for its agents' browser calls (`server_info` named
+    /// `host_bridge_ws`), and the app has registered. Cleared on every new
+    /// socket until the server says so again.
+    lends_host: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone)]
@@ -1669,6 +1679,7 @@ pub async fn remote_ws_subscribe(
         ready: RwLock::new(false),
         shutdown_tx,
         outbound_tx,
+        lends_host: Default::default(),
     });
 
     // Insert under the proxy lock. If a concurrent subscribe raced us, fold
@@ -1827,6 +1838,12 @@ async fn run_ws_task(
     mut outbound_rx: mpsc::Receiver<String>,
 ) {
     let event_name = format!("remote-ws-event-{connection_id}");
+    // The app's own daemon reaches the tabs over its loopback host bridge.
+    let host = if connection_id == crate::local_daemon::LOCAL_CONNECTION_ID {
+        None
+    } else {
+        DesktopWsHost::new(&app, connection_id).map(|host| Arc::new(host) as Arc<dyn WsHost>)
+    };
     run_ws_connection(
         target,
         |last_known| stored_ws_target(db.clone(), connection_id, last_known),
@@ -1834,6 +1851,7 @@ async fn run_ws_task(
         &mut shutdown_rx,
         &mut outbound_rx,
         |frame| forward_frame(&app, &entry, &event_name, frame),
+        host,
     )
     .await;
 
@@ -1914,6 +1932,10 @@ async fn run_ws_connection<R, RFut, F, Fut>(
     shutdown_rx: &mut watch::Receiver<bool>,
     outbound_rx: &mut mpsc::Receiver<String>,
     mut emit: F,
+    // Cowork fork: what this app lends the server's agents, when the server
+    // takes it (`host_bridge::ws_host`). `None` for the app's own daemon,
+    // which reaches the tabs over its loopback host bridge.
+    host: Option<Arc<dyn WsHost>>,
 ) where
     R: FnMut(WsTarget) -> RFut,
     RFut: Future<Output = Option<WsTarget>>,
@@ -1921,6 +1943,8 @@ async fn run_ws_connection<R, RFut, F, Fut>(
     Fut: Future<Output = ()>,
 {
     let mut fail_count: u32 = 0;
+    // Answers to `host_call`s, from the tasks that run them.
+    let (host_out_tx, mut host_out_rx) = mpsc::channel::<String>(HOST_OUT_CAPACITY);
 
     'reconnect: loop {
         if *shutdown_rx.borrow() {
@@ -1976,6 +2000,12 @@ async fn run_ws_connection<R, RFut, F, Fut>(
         // next ready reissues attaches with the current cursor; stale detach
         // frames must not cancel those renewed subscriptions.
         while outbound_rx.try_recv().is_ok() {}
+        // Answers for the old socket's calls: the server failed those when
+        // it went away.
+        while host_out_rx.try_recv().is_ok() {}
+        entry
+            .lends_host
+            .store(false, std::sync::atomic::Ordering::Release);
         let mut last_received = tokio::time::Instant::now();
         let mut ping = tokio::time::interval_at(last_received + WS_PING_INTERVAL, WS_PING_INTERVAL);
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -2008,11 +2038,51 @@ async fn run_ws_connection<R, RFut, F, Fut>(
                         break 'reconnect;
                     }
                 },
+                // Never `None`: this loop holds a sender.
+                Some(text) = host_out_rx.recv() => {
+                    if !send_ws_message(&mut socket, Message::Text(text.into())).await {
+                        break;
+                    }
+                }
                 msg = socket.next() => match msg {
                     Some(Ok(Message::Text(text))) => {
                         last_received = tokio::time::Instant::now();
                         match serde_json::from_str::<Value>(&text) {
                             Ok(frame) => {
+                                if let Some(host) = &host {
+                                    // A call for this app runs on its own
+                                    // task (`eval` waits on the person) and
+                                    // is not the webview's business.
+                                    if let Some((call_id, call)) = ws_host::parse_call(&frame) {
+                                        let host = Arc::clone(host);
+                                        let answers = host_out_tx.clone();
+                                        tokio::spawn(async move {
+                                            let outcome = match call {
+                                                Some(call) => host.dispatch(call).await,
+                                                None => Value::Null,
+                                            };
+                                            let _ = answers
+                                                .send(ws_host::result_frame(call_id, outcome))
+                                                .await;
+                                        });
+                                        continue;
+                                    }
+                                    // The server takes hosts: register. The
+                                    // frame still goes on to the webview,
+                                    // which asked for it.
+                                    if ws_host::server_takes_hosts(&frame) {
+                                        let register = ws_host::register_frame(
+                                            &host.capabilities().await,
+                                            &host.window(),
+                                        );
+                                        if !send_ws_message(&mut socket, Message::Text(register.into())).await {
+                                            break;
+                                        }
+                                        entry
+                                            .lends_host
+                                            .store(true, std::sync::atomic::Ordering::Release);
+                                    }
+                                }
                                 if frame.get("channel").and_then(Value::as_str) == Some(WS_READY_CHANNEL) {
                                     *entry.ready.write().await = true;
                                 }
@@ -2293,6 +2363,137 @@ pub(crate) fn http_url_to_ws_url(base_url: &str, path: &str) -> String {
     }
 }
 
+/// Cowork fork: what this app lends a remote server's agents
+/// (`docs/remote-browser.md`): the built-in browser tabs of that server's
+/// window, run by the same tools the app's own agents use — the per-tab
+/// share and the `browser_eval` prompt included. Computer use is not lent.
+struct DesktopWsHost {
+    window: String,
+    config: crate::acp::browser_tools::BrowserToolsRuntimeConfig,
+    tools: crate::host_bridge::HostTools,
+}
+
+impl DesktopWsHost {
+    fn new(app: &AppHandle, connection_id: i32) -> Option<Self> {
+        use tauri::Manager;
+        let config = app
+            .try_state::<crate::acp::browser_tools::BrowserToolsRuntimeConfig>()?
+            .inner()
+            .clone();
+        let window = remote_window_label(connection_id);
+        let browser = crate::commands::browser::McpBrowserTools::scoped(
+            app.clone(),
+            config.clone(),
+            window.clone(),
+        );
+        Some(Self {
+            window,
+            config,
+            tools: crate::host_bridge::HostTools {
+                browser: Arc::new(browser),
+                computer: Arc::new(crate::acp::computer_tools::NoComputerDesktop),
+            },
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl WsHost for DesktopWsHost {
+    async fn capabilities(&self) -> Vec<String> {
+        host_capabilities(&self.config).await
+    }
+
+    fn window(&self) -> String {
+        self.window.clone()
+    }
+
+    async fn dispatch(&self, call: crate::host_bridge::BridgeCall) -> Value {
+        crate::host_bridge::dispatch(&self.tools, call).await
+    }
+}
+
+fn remote_window_label(connection_id: i32) -> String {
+    format!(
+        "{}{connection_id}",
+        crate::commands::workspace_windows::REMOTE_WORKSPACE_LABEL_PREFIX
+    )
+}
+
+/// The app's own browser-tools switch decides what it lends: the tabs are on
+/// this computer, so a server cannot turn their use on for it.
+async fn host_capabilities(
+    config: &crate::acp::browser_tools::BrowserToolsRuntimeConfig,
+) -> Vec<String> {
+    if config.is_enabled().await {
+        vec![crate::web::host_registry::CAPABILITY_BROWSER.to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Queue `text` on every remote socket whose server took this app as a host
+/// (only `connection_id`'s, when given). Best effort: a full queue or a
+/// socket between connections drops it, and the next registration — every
+/// reconnect sends one — puts things right.
+fn send_to_hosting_sockets(app: &AppHandle, connection_id: Option<i32>, text: String) {
+    use tauri::Manager;
+    let Some(proxy) = app.try_state::<Arc<RemoteProxyState>>() else {
+        return;
+    };
+    let proxy = Arc::clone(proxy.inner());
+    tauri::async_runtime::spawn(async move {
+        let entries: Vec<Arc<WsTaskEntry>> = {
+            let tasks = proxy.tasks.lock().await;
+            tasks
+                .iter()
+                .filter(|(id, _)| connection_id.is_none_or(|wanted| **id == wanted))
+                .filter(|(_, entry)| entry.lends_host.load(std::sync::atomic::Ordering::Acquire))
+                .map(|(_, entry)| Arc::clone(entry))
+                .collect()
+        };
+        for entry in entries {
+            let _ = entry.outbound_tx.try_send(text.clone());
+        }
+    });
+}
+
+/// Cowork fork: the remote workspace window of `connection_id` got focus —
+/// its server sends its agents' next browser call here.
+pub fn notify_host_focus(app: &AppHandle, connection_id: i32) {
+    send_to_hosting_sockets(app, Some(connection_id), ws_host::FOCUS_FRAME.to_string());
+}
+
+/// Cowork fork: the app's browser-tools switch changed — tell every server
+/// that takes this app as a host what it lends now.
+pub fn refresh_host_registrations(app: &AppHandle) {
+    use tauri::Manager;
+    let Some(config) = app.try_state::<crate::acp::browser_tools::BrowserToolsRuntimeConfig>()
+    else {
+        return;
+    };
+    let config = config.inner().clone();
+    let Some(proxy) = app.try_state::<Arc<RemoteProxyState>>() else {
+        return;
+    };
+    let proxy = Arc::clone(proxy.inner());
+    tauri::async_runtime::spawn(async move {
+        let capabilities = host_capabilities(&config).await;
+        let entries: Vec<(i32, Arc<WsTaskEntry>)> = {
+            let tasks = proxy.tasks.lock().await;
+            tasks
+                .iter()
+                .filter(|(id, _)| **id != crate::local_daemon::LOCAL_CONNECTION_ID)
+                .filter(|(_, entry)| entry.lends_host.load(std::sync::atomic::Ordering::Acquire))
+                .map(|(id, entry)| (*id, Arc::clone(entry)))
+                .collect()
+        };
+        for (id, entry) in entries {
+            let text = ws_host::register_frame(&capabilities, &remote_window_label(id));
+            let _ = entry.outbound_tx.try_send(text);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2312,6 +2513,7 @@ mod tests {
             ready: RwLock::new(false),
             shutdown_tx,
             outbound_tx,
+            lends_host: Default::default(),
         })
     }
 
@@ -2624,6 +2826,7 @@ mod tests {
             ready: RwLock::new(false),
             shutdown_tx,
             outbound_tx,
+            lends_host: Default::default(),
         });
         proxy.tasks.lock().await.insert(1, entry);
 
@@ -2658,6 +2861,7 @@ mod tests {
             ready: RwLock::new(false),
             shutdown_tx,
             outbound_tx,
+            lends_host: Default::default(),
         });
         (entry, outbound_rx)
     }
@@ -2764,6 +2968,18 @@ mod tests {
         R: FnMut(WsTarget) -> RFut + Send + 'static,
         RFut: Future<Output = Option<WsTarget>> + Send,
     {
+        start_test_socket_loop_hosting(target, refresh_target, None)
+    }
+
+    fn start_test_socket_loop_hosting<R, RFut>(
+        target: WsTarget,
+        refresh_target: R,
+        host: Option<Arc<dyn WsHost>>,
+    ) -> TestSocketLoop
+    where
+        R: FnMut(WsTarget) -> RFut + Send + 'static,
+        RFut: Future<Output = Option<WsTarget>> + Send,
+    {
         let (entry, mut outbound_rx) = entry_with_outbound(8);
         let outbound = entry.outbound_tx.clone();
         let (shutdown, mut shutdown_rx) = watch::channel(false);
@@ -2779,6 +2995,7 @@ mod tests {
                     let _ = tx.send(frame);
                     std::future::ready(())
                 },
+                host,
             )
             .await;
         });
@@ -2893,6 +3110,101 @@ mod tests {
             next_test_frame(&mut client.frames).await["envelope"]["seq"],
             12
         );
+        client.shutdown.send(true).unwrap();
+        client.task.await.unwrap();
+        server.await.unwrap();
+    }
+
+    /// Cowork fork: answers every browser call with the call it got.
+    struct EchoHost;
+
+    #[async_trait::async_trait]
+    impl WsHost for EchoHost {
+        async fn capabilities(&self) -> Vec<String> {
+            vec!["browser".to_string()]
+        }
+
+        fn window(&self) -> String {
+            "remote-workspace-7".to_string()
+        }
+
+        async fn dispatch(&self, call: crate::host_bridge::BridgeCall) -> Value {
+            serde_json::json!({ "echo": call })
+        }
+    }
+
+    async fn next_test_text(
+        socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) -> String {
+        loop {
+            if let Message::Text(text) = socket.next().await.unwrap().unwrap() {
+                return text.to_string();
+            }
+        }
+    }
+
+    /// A server that takes hosts gets a registration after its
+    /// `server_info`, and an answer to its `host_call` — which the webview
+    /// never sees.
+    #[tokio::test]
+    async fn ws_loop_lends_a_host_to_a_server_that_takes_hosts() {
+        use crate::web::ws_attach::{ClientMsg, ServerMsg};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_test_socket(stream).await;
+            let info =
+                serde_json::to_value(ServerMsg::ServerInfo(crate::compat::server_info())).unwrap();
+            for frame in [lifecycle_frame(WS_READY_CHANNEL), info] {
+                socket
+                    .send(Message::Text(frame.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+            let register = next_test_text(&mut socket).await;
+            assert!(matches!(
+                serde_json::from_str::<ClientMsg>(&register).unwrap(),
+                ClientMsg::HostRegister { ref capabilities, window: Some(ref w) }
+                    if capabilities == &["browser"] && w == "remote-workspace-7"
+            ));
+            let call = ServerMsg::HostCall {
+                call_id: 3,
+                call: crate::host_bridge::BridgeCall::Browser(
+                    crate::host_bridge::BrowserCall::ListTabs,
+                ),
+            };
+            socket
+                .send(Message::Text(serde_json::to_string(&call).unwrap().into()))
+                .await
+                .unwrap();
+            let result: Value = serde_json::from_str(&next_test_text(&mut socket).await).unwrap();
+            assert_eq!(result["action"], "host_result");
+            assert_eq!(result["call_id"], 3);
+            assert_eq!(result["outcome"]["echo"]["call"]["method"], "list_tabs");
+            // Sent after the call: the webview sees this next, so not the call.
+            socket
+                .send(Message::Text(
+                    serde_json::json!({"type": "pong"}).to_string().into(),
+                ))
+                .await
+                .unwrap();
+            while socket.next().await.is_some() {}
+        });
+        let mut client = start_test_socket_loop_hosting(
+            test_ws_target(format!("ws://{address}/ws/events")),
+            |last| std::future::ready(Some(last)),
+            Some(Arc::new(EchoHost)),
+        );
+        assert_eq!(
+            next_test_frame(&mut client.frames).await["channel"],
+            WS_READY_CHANNEL
+        );
+        assert_eq!(
+            next_test_frame(&mut client.frames).await["type"],
+            "server_info"
+        );
+        assert_eq!(next_test_frame(&mut client.frames).await["type"], "pong");
         client.shutdown.send(true).unwrap();
         client.task.await.unwrap();
         server.await.unwrap();

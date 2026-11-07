@@ -2912,6 +2912,9 @@ pub async fn agent_open_tab_core(
     registry: &BrowserRegistry,
     requests: &open_request::OpenRequests,
     raw_url: &str,
+    // Cowork fork: the window to open it in (`McpBrowserTools::scoped`);
+    // `None` leaves it to the workspace, as before.
+    owner_window: Option<String>,
 ) -> Result<(agent::AgentTabSummary, Option<String>), AppCommandError> {
     let url = address_refusal(app, raw_url)?;
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -2922,7 +2925,7 @@ pub async fn agent_open_tab_core(
             url: url.to_string(),
             source: "agent".to_string(),
             activate: true,
-            owner_window: None,
+            owner_window,
             opener_tab_id: None,
             profile: None,
             request_id: Some(request_id.clone()),
@@ -3332,11 +3335,46 @@ fn console_handoff(
 pub struct McpBrowserTools {
     app: AppHandle,
     config: crate::acp::browser_tools::BrowserToolsRuntimeConfig,
+    /// Cowork fork: the one window whose tabs these tools reach, for a remote
+    /// server's agents (`docs/remote-browser.md`): they see the tabs of the
+    /// window they work in, never the local workspace's or another server's.
+    /// `None` for the app's own agents, who see every tab.
+    scope: Option<String>,
 }
 
 impl McpBrowserTools {
     pub fn new(app: AppHandle, config: crate::acp::browser_tools::BrowserToolsRuntimeConfig) -> Self {
-        Self { app, config }
+        Self {
+            app,
+            config,
+            scope: None,
+        }
+    }
+
+    /// Cowork fork: tools that reach only the tabs of `window`, and open new
+    /// tabs there.
+    pub fn scoped(
+        app: AppHandle,
+        config: crate::acp::browser_tools::BrowserToolsRuntimeConfig,
+        window: String,
+    ) -> Self {
+        Self {
+            app,
+            config,
+            scope: Some(window),
+        }
+    }
+
+    /// Whether `tab_id` is open in a window outside the scope. Such a tab is
+    /// answered as one that does not exist: these agents are not told it is
+    /// there. A tab that does not exist at all is left to the core, which
+    /// says so itself.
+    fn out_of_scope(&self, registry: &BrowserRegistry, tab_id: &str) -> bool {
+        self.scope.as_deref().is_some_and(|window| {
+            registry
+                .read(tab_id, |tab| tab.state.owner_window != window)
+                .unwrap_or(false)
+        })
     }
 
     /// The registry, or `None` when this build has no browser to speak of.
@@ -3348,6 +3386,12 @@ impl McpBrowserTools {
     }
 }
 
+/// What an out-of-scope tab is answered with: the words the core uses for a
+/// tab that is not open, so the two cannot be told apart.
+fn scope_refusal_note(tab_id: &str) -> String {
+    format!("No browser tab {tab_id} is open. Call browser_list_tabs for the ids that are.")
+}
+
 #[async_trait::async_trait]
 impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
     async fn list_tabs(&self) -> crate::acp::browser_tools::BrowserTabsOutcome {
@@ -3355,10 +3399,15 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         let Some(registry) = self.registry().await else {
             return BrowserTabsOutcome::unavailable(NO_BROWSER_NOTE);
         };
-        BrowserTabsOutcome {
-            tabs: agent_list_tabs_core(&registry),
-            note: None,
-        }
+        let tabs = match self.scope.as_deref() {
+            Some(window) => registry
+                .list_for_owner(window)
+                .iter()
+                .filter_map(agent::summarize_tab)
+                .collect(),
+            None => agent_list_tabs_core(&registry),
+        };
+        BrowserTabsOutcome { tabs, note: None }
     }
 
     async fn snapshot(
@@ -3373,6 +3422,13 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         let Some(registry) = self.registry().await else {
             return BrowserSnapshotOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
         };
+        if self.out_of_scope(&registry, tab_id) {
+            return BrowserSnapshotOutcome::refused(
+                tab_id,
+                crate::acp::browser_tools::ERROR_NO_SUCH_TAB,
+                scope_refusal_note(tab_id),
+            );
+        }
         // `Some(0)` is the caller asking for the whole page, and is passed
         // through as such; only an absent cap becomes the default.
         let request = agent::SnapshotRequest {
@@ -3419,6 +3475,13 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         let Some(registry) = self.registry().await else {
             return BrowserActOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
         };
+        if self.out_of_scope(&registry, tab_id) {
+            return BrowserActOutcome::refused(
+                tab_id,
+                crate::acp::browser_tools::ERROR_NO_SUCH_TAB,
+                scope_refusal_note(tab_id),
+            );
+        }
         match agent_act_core(&self.app, &registry, tab_id, &request).await {
             Ok(outcome) => BrowserActOutcome::done(tab_id, outcome),
             Err(err) => match err.i18n_key.as_deref() {
@@ -3454,6 +3517,13 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         let Some(registry) = self.registry().await else {
             return BrowserConsoleOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
         };
+        if self.out_of_scope(&registry, tab_id) {
+            return BrowserConsoleOutcome::refused(
+                tab_id,
+                crate::acp::browser_tools::ERROR_NO_SUCH_TAB,
+                scope_refusal_note(tab_id),
+            );
+        }
         match agent_console_core(&self.app, &registry, tab_id, &query).await {
             Ok(readout) => BrowserConsoleOutcome::lines(tab_id, readout),
             Err(err) if err.i18n_key.as_deref() == Some(BROWSER_I18N_KEY_GRANT_REQUIRED) => {
@@ -3485,6 +3555,13 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         let Some(registry) = self.registry().await else {
             return BrowserCaptureOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
         };
+        if self.out_of_scope(&registry, tab_id) {
+            return BrowserCaptureOutcome::refused(
+                tab_id,
+                crate::acp::browser_tools::ERROR_NO_SUCH_TAB,
+                scope_refusal_note(tab_id),
+            );
+        }
         match agent_capture_core(&self.app, &registry, tab_id, &request).await {
             Ok(capture) => BrowserCaptureOutcome::image(tab_id, capture),
             Err(err) => match err.i18n_key.as_deref() {
@@ -3521,6 +3598,13 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         let Some(registry) = self.registry().await else {
             return BrowserEvalOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
         };
+        if self.out_of_scope(&registry, tab_id) {
+            return BrowserEvalOutcome::refused(
+                tab_id,
+                crate::acp::browser_tools::ERROR_NO_SUCH_TAB,
+                scope_refusal_note(tab_id),
+            );
+        }
         // Its own switch, re-read here rather than trusted from injection
         // time. `tools/list` hides the tool when it is off, so an agent only
         // reaches this line if the user turned it off mid-session — which is
@@ -3574,13 +3658,20 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         let Some(registry) = self.registry().await else {
             return BrowserTabOutcome::refused(op.tab_id(), ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
         };
+        if let Some(tab_id) = op.tab_id().filter(|id| self.out_of_scope(&registry, id)) {
+            return BrowserTabOutcome::refused(
+                Some(tab_id),
+                ERROR_NO_SUCH_TAB,
+                scope_refusal_note(tab_id),
+            );
+        }
         let named = op.tab_id().map(str::to_string);
         let answer = match &op {
             BrowserTabOp::Open { url } => {
                 let Some(requests) = self.app.try_state::<open_request::OpenRequests>() else {
                     return BrowserTabOutcome::refused(None, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
                 };
-                agent_open_tab_core(&self.app, &registry, &requests, url)
+                agent_open_tab_core(&self.app, &registry, &requests, url, self.scope.clone())
                     .await
                     .map(|(tab, load_error)| BrowserTabOutcome::tab(tab, load_error))
             }

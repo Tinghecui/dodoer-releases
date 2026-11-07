@@ -24,6 +24,8 @@ import {
   AGENT_TOOL_GROUPS,
 } from "@/lib/agent-tool-groups"
 import { toErrorMessage } from "@/lib/app-error"
+import { useCoworkText } from "@/lib/cowork/i18n"
+import { lendBrowserSwitch } from "@/lib/cowork/remote-browser"
 import { cn } from "@/lib/utils"
 
 /** Background refresh cadence. The status is a real socket round-trip plus a
@@ -85,6 +87,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 export function StatusBarMcp() {
   const t = useTranslations("Folder.statusBar.mcp")
   const tools = useTranslations(AGENT_TOOLS_NAMESPACE)
+  const cowork = useCoworkText()
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<CodegMcpServiceStatus | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -148,6 +151,13 @@ export function StatusBarMcp() {
     setActionError(null)
     try {
       await setCodegMcpToolGroup(key, next)
+      // Cowork fork: in a remote window, turning on a browser switch for the
+      // server turns it on for this computer's tabs too.
+      if (next) {
+        await lendBrowserSwitch(key).catch((e: unknown) => {
+          console.warn("[StatusBarMcp] browser switch not lent:", e)
+        })
+      }
       // Re-read before releasing the optimistic value, so the switch hands
       // over to a `status` that already reflects the write.
       await refresh()
@@ -282,11 +292,15 @@ export function StatusBarMcp() {
               // than as a nested one. Being off and untouchable while the
               // group is off already says where it belongs.
               const parent = group.requires
+              // Cowork fork: a group this runtime cannot answer (computer use
+              // on a server) is shown off, with where it does work.
+              const served = group.served !== false
               const available =
-                !parent ||
-                (pending[parent] ??
-                  status.tool_groups.find((g) => g.key === parent)?.enabled ??
-                  false)
+                served &&
+                (!parent ||
+                  (pending[parent] ??
+                    status.tool_groups.find((g) => g.key === parent)?.enabled ??
+                    false))
               const checked = available && (pending[group.key] ?? group.enabled)
               return (
                 <label
@@ -310,7 +324,7 @@ export function StatusBarMcp() {
                     </span>
                     {meta && (
                       <span className="block text-3xs leading-snug text-muted-foreground">
-                        {tools(meta.short)}
+                        {served ? tools(meta.short) : cowork("notServedHere")}
                       </span>
                     )}
                   </span>

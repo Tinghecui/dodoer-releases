@@ -629,6 +629,9 @@ pub struct BrowserToolsConfig {
 #[derive(Clone, Default)]
 pub struct BrowserToolsRuntimeConfig {
     inner: Arc<RwLock<BrowserToolsConfig>>,
+    /// Whether this process can answer the tools at all (see
+    /// [`mark_served`](Self::mark_served)).
+    served: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl BrowserToolsRuntimeConfig {
@@ -648,6 +651,24 @@ impl BrowserToolsRuntimeConfig {
         self.inner.read().await.enabled
     }
 
+    /// Cowork fork: note that this process can answer the browser tools —
+    /// the desktop app (its own tabs), or a codeg-server that reaches a
+    /// desktop app's tabs (the host bridge of the app's own daemon). Until
+    /// then the tools are offered to no agent, whatever the switch says: a
+    /// build without tabs to reach would only ever answer "no tabs". The
+    /// runtime twin of `ComputerToolsRuntimeConfig::mark_served`; it replaced
+    /// a compile-time `cfg!(feature = "tauri-runtime")`, which also hid the
+    /// tools from the desktop app's own daemon, a codeg-server.
+    pub fn mark_served(&self) {
+        self.served
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// See [`mark_served`](Self::mark_served).
+    pub fn is_served(&self) -> bool {
+        self.served.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Whether `browser_eval` exists right now. Read at call time as well as
     /// at injection, for the same reason as the group: someone reaching for
     /// this switch means the session in front of them.
@@ -660,6 +681,24 @@ impl BrowserToolsRuntimeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Served is its own fact, independent of the switch, and shared by every
+    /// clone — the injection and the access impl hold clones of one handle.
+    #[tokio::test]
+    async fn served_is_shared_by_clones_and_independent_of_the_switch() {
+        let config = BrowserToolsRuntimeConfig::new();
+        let clone = config.clone();
+        assert!(!config.is_served());
+        config
+            .set(BrowserToolsConfig {
+                enabled: true,
+                eval: false,
+            })
+            .await;
+        assert!(!clone.is_served(), "turning the switch on serves nothing");
+        clone.mark_served();
+        assert!(config.is_served());
+    }
 
     /// A refusal has to name the tab and carry a slug the agent can branch on
     /// — the prose is for the user, the slug is for the model.

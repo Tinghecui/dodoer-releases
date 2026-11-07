@@ -499,6 +499,80 @@ impl ComputerToolAccess for HostBridgeClient {
     }
 }
 
+/// Cowork fork: the desktop side of the host bridge a remote server carries
+/// on its `/ws/events` (`web::host_registry`, `docs/remote-browser.md`). The
+/// frames only; the socket loop that uses them (`commands::remote_proxy`)
+/// stays testable without a Tauri runtime.
+pub mod ws_host {
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    use super::BridgeCall;
+
+    /// What a desktop app lends a server: its tabs, scoped to one window.
+    #[async_trait]
+    pub trait WsHost: Send + Sync {
+        /// What to register with: `["browser"]`, or nothing while the app's
+        /// own switch is off.
+        async fn capabilities(&self) -> Vec<String>;
+        /// The window behind the socket, for the server's logs.
+        fn window(&self) -> String;
+        /// Run one call; the outcome as `super::dispatch` gives it.
+        async fn dispatch(&self, call: BridgeCall) -> Value;
+    }
+
+    /// The window behind the socket got focus.
+    pub const FOCUS_FRAME: &str = r#"{"action":"host_focus"}"#;
+
+    /// Whether `frame` is a `server_info` saying the server takes hosts.
+    pub fn server_takes_hosts(frame: &Value) -> bool {
+        frame.get("type").and_then(Value::as_str) == Some("server_info")
+            && frame
+                .get("features")
+                .and_then(Value::as_array)
+                .is_some_and(|features| {
+                    features
+                        .iter()
+                        .any(|f| f.as_str() == Some(crate::web::host_registry::FEATURE))
+                })
+    }
+
+    pub fn register_frame(capabilities: &[String], window: &str) -> String {
+        json!({
+            "action": "host_register",
+            "capabilities": capabilities,
+            "window": window,
+        })
+        .to_string()
+    }
+
+    /// A `host_call`: its id, and the call — `None` when this app cannot
+    /// read it (a newer server's method), which is still answered, so the
+    /// server does not wait out its timeout.
+    pub fn parse_call(frame: &Value) -> Option<(u64, Option<BridgeCall>)> {
+        if frame.get("type").and_then(Value::as_str) != Some("host_call") {
+            return None;
+        }
+        let call_id = frame.get("call_id")?.as_u64()?;
+        let call = frame
+            .get("call")
+            .cloned()
+            .and_then(|call| serde_json::from_value(call).ok());
+        Some((call_id, call))
+    }
+
+    /// The answer to call `call_id`. `null` for a call this app could not
+    /// read: the server answers that as a runtime without a browser.
+    pub fn result_frame(call_id: u64, outcome: Value) -> String {
+        json!({
+            "action": "host_result",
+            "call_id": call_id,
+            "outcome": outcome,
+        })
+        .to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,5 +643,67 @@ mod tests {
             ComputerToolAccess::list_apps(&client).await,
             NoComputerDesktop.list_apps().await
         );
+    }
+
+    /// The frames the app sends are the ones the server parses, and the call
+    /// the server sends is the one the app reads — both sides' own types.
+    #[test]
+    fn ws_host_frames_match_the_servers_messages() {
+        use crate::web::ws_attach::{ClientMsg, ServerMsg};
+        let register = ws_host::register_frame(&["browser".to_string()], "remote-workspace-3");
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(&register).unwrap(),
+            ClientMsg::HostRegister { ref capabilities, window: Some(ref w) }
+                if capabilities == &["browser"] && w == "remote-workspace-3"
+        ));
+        let result = ws_host::result_frame(9, serde_json::json!({"tabs": []}));
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(&result).unwrap(),
+            ClientMsg::HostResult { call_id: 9, .. }
+        ));
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(ws_host::FOCUS_FRAME).unwrap(),
+            ClientMsg::HostFocus
+        ));
+
+        let call = BridgeCall::Browser(BrowserCall::Snapshot {
+            tab_id: "t1".into(),
+            max_chars: Some(5),
+        });
+        let frame = serde_json::to_value(ServerMsg::HostCall {
+            call_id: 4,
+            call: call.clone(),
+        })
+        .unwrap();
+        assert_eq!(ws_host::parse_call(&frame), Some((4, Some(call))));
+        // A method this app does not know is still a call to answer.
+        let newer = serde_json::json!({
+            "type": "host_call",
+            "call_id": 5,
+            "call": {"tool": "browser", "call": {"method": "from_the_future"}}
+        });
+        assert_eq!(ws_host::parse_call(&newer), Some((5, None)));
+        assert_eq!(
+            ws_host::parse_call(&serde_json::json!({"type": "pong"})),
+            None
+        );
+    }
+
+    #[test]
+    fn only_a_server_info_naming_the_feature_takes_hosts() {
+        let info = serde_json::to_value(crate::web::ws_attach::ServerMsg::ServerInfo(
+            crate::compat::server_info(),
+        ))
+        .unwrap();
+        assert!(ws_host::server_takes_hosts(&info));
+        assert!(!ws_host::server_takes_hosts(&serde_json::json!({
+            "type": "server_info", "features": ["cowork_info"]
+        })));
+        assert!(!ws_host::server_takes_hosts(
+            &serde_json::json!({"type": "server_info"})
+        ));
+        assert!(!ws_host::server_takes_hosts(&serde_json::json!({
+            "channel": "server_info", "features": ["host_bridge_ws"]
+        })));
     }
 }

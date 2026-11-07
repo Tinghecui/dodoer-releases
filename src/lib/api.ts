@@ -5655,6 +5655,10 @@ export interface CodegMcpToolGroup {
    * surfaces that render this list cannot disagree about which switch gates
    * which. Absent for a group proper. */
   requires?: string | null
+  /** Cowork fork: whether this runtime can answer the group at all — false
+   * for computer use on a server that shares no screen. Absent from servers
+   * from before it, which means served. */
+  served?: boolean
 }
 
 /** Mirror of Rust `CodegMcpServiceStatus`. */

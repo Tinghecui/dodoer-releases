@@ -1,6 +1,6 @@
 # 远端智能体借用桌面 app 的内置浏览器
 
-状态：设计已确认，分步实现中（见第 7 节）。
+状态：已实现（第 7 节列了各步的 PR）。改动清单见 `COWORK.md`「远端智能体借用桌面 app 的内置浏览器」。
 
 ## 1. 问题
 
@@ -48,7 +48,7 @@
    {"action": "host_register", "capabilities": ["browser"], "window": "remote-workspace-3"}
    ```
 
-   `capabilities` 按桌面端**本机**的浏览器工具开关决定：开关关着就不注册。
+   `capabilities` 按桌面端**本机**的浏览器工具开关决定：开关关着就报空列表，服务器不会选它。本机开关一改，app 就向所有借出的服务器重新发一次 `host_register`。
 3. 服务器把这条 socket 登记进 `HostRegistry`（新模块 `web/host_registry.rs`），由服务器分配 `host_id`。socket 断开就注销。重连后会再收到 `server_info`，于是重新注册，不用另外处理。
 4. 老服务器没有这个 feature，桌面端就不注册，什么都不变。老客户端和网页版不发 `host_register`，也什么都不变。
 5. 本机 daemon（连接 id `-1`）跳过注册，它已经有 HTTP 的 host bridge。
@@ -91,7 +91,7 @@
 
 这样一台电脑同时连两个服务器时，A 的智能体看不到 B 窗口的标签，也看不到本机工作区的标签。
 
-开关以桌面端本机的设置为准（`McpBrowserTools` 本来就读它）。理由是浏览器在谁的电脑上，开关就归谁，服务器不能替人打开别人电脑上的 eval。
+开关以桌面端本机的设置为准（`McpBrowserTools` 本来就读它）。理由是浏览器在谁的电脑上，开关就归谁，服务器不能替人打开别人电脑上的 eval。为了不让人开两次，远端窗口的 MCP 弹层里**打开**浏览器开关时，会同时打开本机的开关；**关闭**只关服务器的，本机工作区的设置不受影响（服务器开关关了就不会有调用过来）。
 
 ### 4.4 选哪个 host
 
@@ -128,7 +128,14 @@ companion 的 feature 在智能体启动时就定死了（`companion_features_ar
 2. **服务器端反向通道**。`HostRegistry`；`ClientMsg::HostRegister / HostResult / HostFocus`；`ServerMsg::HostCall`；`RemoteHostBrowser`；`compat::FEATURES` 加 `host_bridge_ws`；`codeg_server.rs` 没有本机 bridge 时改用 `RemoteHostBrowser`，并标记 served。单元测试用假 host 跑往返、超时、断开。
 3. **桌面端处理**。`remote_proxy.rs` 读循环识别 `server_info` → 注册，识别 `host_call` → spawn `dispatch` → 回 `host_result`；`McpBrowserTools` 加窗口范围；窗口获得焦点时发 `host_focus`。
 4. **前端**。放开远端窗口里的共享按钮，改掉「远程工作区无法使用这台电脑的浏览器」的提示；MCP 弹层里「查看和操作桌面窗口」在服务器没有提供电脑操作时置灰，并注明只能在本机工作区用。
-5. **收尾**。`COWORK.md` 改动清单；`docs/CLIENT-PRIVACY.md` 补一句远端智能体能读到用户共享的页面。
+5. **收尾**。`COWORK.md` 改动清单，本文档按实现更新。
+
+对应的 PR（Tinghecui/cowork-codeg，依次叠在前一个上）：设计 #65，第 1 步 #66，第 2 步 #67，第 3 步 #76，第 4 步 #81，第 5 步见本文档所在的 PR。
+
+实现时多做的两件事：
+
+- 第 4 步顺带修了本机 daemon 模式下 MCP 弹层的开关不生效：弹层的 `set_codeg_mcp_tool_group` 原来只发给子进程，而浏览器和电脑操作由 app 提供、读 app 自己那份开关。现在两边都发（`BOTH_COMMANDS`）。
+- 工具组状态多了 `served` 字段，服务器上没有电脑操作时弹层置灰并写明「只能在本机工作区里用」。
 
 ## 8. 以后：用户自己的 Chrome
 
@@ -145,3 +152,9 @@ companion 的 feature 在智能体启动时就定死了（`companion_features_ar
 5. 关掉远端窗口再调用：返回没有标签，note 里让用户打开桌面窗口。
 6. 同一台电脑打开一个本机工作区的标签：服务器上的智能体看不到它。
 7. 本机工作区（子进程 daemon）里：智能体拿到 `browser_*` 工具，能读共享的标签（第 1 步的回归验证）。
+
+## 10. 已知局限
+
+- 服务器选 host 只看「最近注册或获得焦点」。同一个人在两台电脑上同时开着同一个工作区时，调用会去最近点过的那台。
+- 桌面 app 的开关从别处改（配置导入、直接改数据库）不会触发重新注册，要等下次重连。
+- 截图结果走 WS 文本帧（base64）。axum 和 tungstenite 默认的消息上限都是 64 MiB，够用，没有另外缩图。

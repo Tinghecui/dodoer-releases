@@ -4,6 +4,7 @@ pub mod browser_tunnel;
 pub mod compression;
 pub mod event_bridge;
 pub mod handlers;
+pub mod host_registry;
 pub mod port_probe;
 pub mod proxy_auth;
 pub mod router;
@@ -925,6 +926,8 @@ pub(crate) async fn do_start_web_server_tauri(
         // Never set here: the desktop's screen is shared from its own
         // window, not by the clients of its web service.
         computer_service: std::sync::OnceLock::new(),
+        // Never asked here: the desktop app has its own tabs.
+        host_registry: Default::default(),
         system_op_lock: crate::app_state::default_system_op_lock(),
         // Reuse the same handle the desktop `app_update` commands write to so
         // HTTP and webview readers see the identical update snapshot.

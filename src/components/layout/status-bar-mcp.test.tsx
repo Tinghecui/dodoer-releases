@@ -188,6 +188,30 @@ describe("StatusBarMcp", () => {
     )
   })
 
+  it("shows a group this runtime cannot serve as off, with where it works", async () => {
+    getCodegMcpServiceStatus.mockResolvedValue(
+      makeStatus({
+        tool_groups: [
+          { key: "sessions", enabled: false },
+          { key: "computer", enabled: true, served: false },
+        ],
+      })
+    )
+    await mount()
+    await openPopover()
+
+    const computer = toolSwitch("See and use your desktop's windows")
+    expect(computer).toBeDisabled()
+    expect(computer).not.toBeChecked()
+    expect(
+      screen.getByText(
+        "Not on this server — only in a workspace on your computer."
+      )
+    ).toBeInTheDocument()
+    fireEvent.click(computer)
+    expect(setCodegMcpToolGroup).not.toHaveBeenCalled()
+  })
+
   it("writes a group toggle through and re-reads the status", async () => {
     await mount()
     await openPopover()

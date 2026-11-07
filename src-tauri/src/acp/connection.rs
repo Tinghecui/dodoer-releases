@@ -7391,14 +7391,15 @@ where
         result: groups.result,
         automations: authoring.automations_enabled,
         taskboard: authoring.work_tasks_enabled,
-        // `cfg!` rather than a runtime probe: a browser tab is a native
-        // webview owned by this process, and the server binary has no such
-        // thing — what a web user sees in a "browser tab" is an iframe their
-        // own browser renders, which nothing here can read. Advertising the
-        // tools there would promise a capability that cannot exist, and the
-        // agent would find out by being told "no tabs" forever.
-        browser: cfg!(feature = "tauri-runtime") && injection.browser.is_enabled().await,
-        browser_eval: cfg!(feature = "tauri-runtime") && injection.browser.is_eval_enabled().await,
+        // Only where this process can reach browser tabs: the desktop app,
+        // and codeg-server where a desktop app serves it its tabs (Cowork
+        // fork: the app's own daemon, over the host bridge). What a web user
+        // sees in a "browser tab" is an iframe their own browser renders,
+        // which nothing here can read; advertising the tools there would
+        // promise a capability that cannot exist, and the agent would find
+        // out by being told "no tabs" forever.
+        browser: injection.browser.is_served() && injection.browser.is_enabled().await,
+        browser_eval: injection.browser.is_served() && injection.browser.is_eval_enabled().await,
         // Only where this process serves computer use: the desktop app, and
         // codeg-server where the person who runs it has let it share the
         // screen it runs on (`CODEG_COMPUTER_USE`). Elsewhere there are no
@@ -37129,6 +37130,62 @@ mod tests {
             .map(|i| server.args[i + 1].clone());
         assert_eq!(features.as_deref(), Some("result"));
         assert!(injection.tokens.lookup(&injected.token).await.is_some());
+    }
+
+    /// Cowork fork: the browser group follows `is_served`, not the build. The
+    /// switch alone offers nothing (a codeg-server with no tabs to reach);
+    /// served and switched on, it is offered — in codeg-server too, where the
+    /// desktop app's own daemon reaches the app's tabs over the host bridge.
+    #[tokio::test]
+    async fn the_browser_group_is_offered_where_it_is_served() {
+        let injection = test_delegation_injection(
+            Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+        );
+        injection
+            .browser
+            .set(crate::acp::browser_tools::BrowserToolsConfig {
+                enabled: true,
+                eval: true,
+            })
+            .await;
+        async fn inject(
+            servers: &mut Vec<McpServer>,
+            injection: &DelegationInjection,
+        ) -> Option<CompanionInjection> {
+            inject_codeg_mcp_with_binary_locator(
+                servers,
+                injection,
+                "browser-root",
+                std::path::Path::new("/tmp"),
+                LaunchGroups {
+                    tasks: false,
+                    result: false,
+                },
+                HostToolsPolicy::Agent,
+                || Some(PathBuf::from("/opt/codeg/codeg-mcp")),
+            )
+            .await
+        }
+        let mut servers: Vec<McpServer> = Vec::new();
+        assert!(
+            inject(&mut servers, &injection).await.is_none(),
+            "switched on but not served: no companion at all"
+        );
+        assert!(servers.is_empty());
+
+        injection.browser.mark_served();
+        inject(&mut servers, &injection)
+            .await
+            .expect("served and switched on");
+        let McpServer::Stdio(server) = &servers[0] else {
+            panic!("a stdio server: {servers:?}");
+        };
+        let features = server
+            .args
+            .iter()
+            .position(|a| a == "--features")
+            .map(|i| server.args[i + 1].clone());
+        assert_eq!(features.as_deref(), Some("browser,browser_eval"));
     }
 
     // ─── delegate_target_args: enable-toggle filtering ──────────

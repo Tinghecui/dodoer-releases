@@ -86,6 +86,10 @@ pub struct AppState {
     /// after the persisted settings are applied. Never set in the desktop
     /// app's web service: its screen is shared from the desktop window.
     pub computer_service: std::sync::OnceLock<Arc<crate::commands::computer::ComputerService>>,
+    /// Cowork fork: desktop apps registered on this server's event sockets
+    /// to lend it their built-in browser (`web::host_registry`). Only
+    /// codeg-server without a desktop app of its own asks them.
+    pub host_registry: Arc<crate::web::host_registry::HostRegistry>,
     /// Serializes mutually-exclusive system operations — in-place
     /// self-update, restart, rollback — so a second click can't race a
     /// download/swap already in flight. Handlers `try_lock` and reject when
@@ -298,6 +302,7 @@ impl AppState {
             browser_tools_config,
             computer_tools_config,
             computer_service: std::sync::OnceLock::new(),
+            host_registry: Default::default(),
             system_op_lock: default_system_op_lock(),
             update_state: default_update_state(),
             cli_runs,

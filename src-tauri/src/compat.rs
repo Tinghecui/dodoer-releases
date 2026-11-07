@@ -33,6 +33,9 @@ pub const MIN_DESKTOP_VERSION: &str = "1.2.0";
 pub const FEATURES: &[&str] = &[
     // `/api/cowork_info` (and the Cowork UI it unlocks).
     "cowork_info",
+    // A desktop app may lend this server its built-in browser over
+    // `/ws/events` (`web::host_registry`, `docs/remote-browser.md`).
+    "host_bridge_ws",
 ];
 
 /// The contract as one value: the `server_info` frame carries it as is
@@ -74,7 +77,10 @@ mod tests {
         let fields = health_fields();
         assert_eq!(fields["api_version"], serde_json::json!(API_VERSION));
         assert_eq!(fields["min_desktop_version"], serde_json::json!("1.2.0"));
-        assert_eq!(fields["features"], serde_json::json!(["cowork_info"]));
+        assert_eq!(
+            fields["features"],
+            serde_json::json!(["cowork_info", "host_bridge_ws"])
+        );
     }
 
     #[test]

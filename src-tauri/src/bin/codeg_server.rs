@@ -369,6 +369,7 @@ async fn async_main(
         browser_tools_config: delegation.browser_tools.clone(),
         computer_tools_config: delegation.computer_tools.clone(),
         computer_service: std::sync::OnceLock::new(),
+        host_registry: Default::default(),
         system_op_lock: codeg_lib::app_state::default_system_op_lock(),
         update_state: codeg_lib::app_state::default_update_state(),
         cli_runs,
@@ -446,16 +447,24 @@ async fn async_main(
         state.computer_tools_config.mark_served();
         tracing::info!("[SERVER] browser and computer use come from the desktop app (host bridge)");
     }
+    // Browser tabs, either way: the desktop app's own daemon reaches the
+    // app's over the host bridge; any other server, those of a desktop app
+    // connected to it (`host_register` on `/ws/events`). With none connected
+    // the tools answer that the person should open the workspace there.
+    state.browser_tools_config.mark_served();
     codeg_lib::boot::start_delegation_service(
         &daemon,
         match &host_bridge {
             Some(bridge) => {
                 Arc::new(bridge.clone()) as Arc<dyn codeg_lib::acp::browser_tools::BrowserToolAccess>
             }
-            // No native webviews in this process: what a web user sees in a
-            // "browser tab" is an iframe their own browser renders, which
-            // nothing here can reach.
-            None => Arc::new(codeg_lib::acp::browser_tools::NoBrowserTabs),
+            // No native webviews in this process: the tabs of a desktop app
+            // connected to it, when one lends them (Cowork fork). What a web
+            // user sees in a "browser tab" is an iframe their own browser
+            // renders, which nothing here can reach.
+            None => Arc::new(codeg_lib::web::host_registry::RemoteHostBrowser::new(
+                Arc::clone(&state.host_registry),
+            )) as Arc<dyn codeg_lib::acp::browser_tools::BrowserToolAccess>,
         },
         match (&host_bridge, state.computer_service.get()) {
             (Some(bridge), _) => Arc::new(bridge.clone())

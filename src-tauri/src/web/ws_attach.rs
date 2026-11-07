@@ -72,6 +72,28 @@ pub enum ClientMsg {
         #[serde(default)]
         api_version: Option<u32>,
     },
+    /// Cowork fork: a desktop app lending this server its built-in browser
+    /// (`web::host_registry`). Sent after a `server_info` naming
+    /// `host_bridge_ws`; again whenever its capabilities change. Empty
+    /// capabilities leave the socket registered but never asked.
+    HostRegister {
+        #[serde(default)]
+        capabilities: Vec<String>,
+        /// The app window behind this socket (`remote-workspace-<id>`), for
+        /// the logs.
+        #[serde(default)]
+        window: Option<String>,
+    },
+    /// Cowork fork: a host's answer to `host_call` — the host bridge's
+    /// outcome for that call, as `host_bridge::dispatch` returns it.
+    HostResult {
+        call_id: u64,
+        #[serde(default)]
+        outcome: serde_json::Value,
+    },
+    /// Cowork fork: the host's window got focus, so it is the one the person
+    /// is in front of — the next call goes to it.
+    HostFocus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -111,6 +133,13 @@ pub enum ServerMsg {
     /// Cowork fork: answer to `hello`. The same contract `/api/health`
     /// carries (`crate::compat`), flattened next to `type`.
     ServerInfo(crate::compat::ServerInfo),
+    /// Cowork fork: a browser-tool call for the desktop app registered on
+    /// this socket (`web::host_registry`). Answered by `host_result` with the
+    /// same `call_id`.
+    HostCall {
+        call_id: u64,
+        call: crate::host_bridge::BridgeCall,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -342,6 +371,54 @@ mod tests {
                 .unwrap(),
             ClientMsg::Detach { .. }
         ));
+    }
+
+    #[test]
+    fn host_messages_parse_and_serialize_as_documented() {
+        let register: ClientMsg = serde_json::from_str(
+            r#"{"action":"host_register","capabilities":["browser"],"window":"remote-workspace-3"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            register,
+            ClientMsg::HostRegister { ref capabilities, window: Some(ref w) }
+                if capabilities == &["browser"] && w == "remote-workspace-3"
+        ));
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(r#"{"action":"host_register"}"#).unwrap(),
+            ClientMsg::HostRegister { ref capabilities, window: None } if capabilities.is_empty()
+        ));
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(
+                r#"{"action":"host_result","call_id":7,"outcome":{"tabs":[]}}"#
+            )
+            .unwrap(),
+            ClientMsg::HostResult { call_id: 7, .. }
+        ));
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(r#"{"action":"host_focus"}"#).unwrap(),
+            ClientMsg::HostFocus
+        ));
+        let call = ServerMsg::HostCall {
+            call_id: 7,
+            call: crate::host_bridge::BridgeCall::Browser(
+                crate::host_bridge::BrowserCall::Snapshot {
+                    tab_id: "t1".into(),
+                    max_chars: None,
+                },
+            ),
+        };
+        assert_eq!(
+            serde_json::to_value(call).unwrap(),
+            serde_json::json!({
+                "type": "host_call",
+                "call_id": 7,
+                "call": {
+                    "tool": "browser",
+                    "call": {"method": "snapshot", "args": {"tab_id": "t1", "max_chars": null}}
+                }
+            })
+        );
     }
 
     #[test]

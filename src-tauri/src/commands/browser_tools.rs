@@ -194,8 +194,12 @@ pub async fn set_browser_tools_settings(
 ) -> Result<BrowserToolsSettings, AppCommandError> {
     #[cfg(feature = "tauri-runtime")]
     {
-        let emitter = EventEmitter::Tauri(app);
-        set_browser_tools_settings_core(&db.conn, &config, &emitter, settings).await
+        let emitter = EventEmitter::Tauri(app.clone());
+        let saved = set_browser_tools_settings_core(&db.conn, &config, &emitter, settings).await?;
+        // Cowork fork: servers this app lends its tabs to learn the switch
+        // moved (`docs/remote-browser.md`).
+        crate::commands::remote_proxy::refresh_host_registrations(&app);
+        Ok(saved)
     }
     #[cfg(not(feature = "tauri-runtime"))]
     {

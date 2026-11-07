@@ -452,6 +452,14 @@ pub fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
             if window.is_visible().unwrap_or(false) {
                 note_opened(window.app_handle(), workspace);
             }
+            // Cowork fork: the remote window in front of the person is the
+            // one its server's agents should reach (`docs/remote-browser.md`).
+            if let WorkspaceWindow::Remote { connection_id } = workspace {
+                crate::commands::remote_proxy::notify_host_focus(
+                    window.app_handle(),
+                    connection_id,
+                );
+            }
         }
         tauri::WindowEvent::Destroyed => {
             let app = window.app_handle();

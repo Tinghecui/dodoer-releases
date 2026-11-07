@@ -38,7 +38,7 @@ import type {
   GrantLevel,
 } from "@/lib/browser/types"
 import { browserTabBackendId } from "@/lib/file-tab-id"
-import { isRemoteDesktopMode } from "@/lib/transport"
+import { useCanShareWithAgents } from "@/lib/cowork/remote-browser"
 import { cn } from "@/lib/utils"
 
 import { FIELD_BTN, FIELD_PILL } from "./browser-toolbar-buttons"
@@ -98,6 +98,9 @@ export function BrowserAgentShareControl({
   const grant = state?.agentGrant ?? null
   const origin = shareableOrigin(state)
   const defaultLevel = useBrowserPrefs().defaultAgentGrant
+  // Cowork fork: a remote window's tabs reach its server's agents only when
+  // that server takes them (`docs/remote-browser.md`).
+  const canShare = useCanShareWithAgents()
 
   const share = (level: GrantLevel) => {
     if (!backendId) return
@@ -116,10 +119,10 @@ export function BrowserAgentShareControl({
   }
 
   if (!grant) {
-    // The agents of a remote workspace run on its host, and their browser
-    // tools reach that host's codeg — which has no browser. Sharing a page
-    // of this window would hand it to nobody who works here.
-    const remoteWindow = isRemoteDesktopMode()
+    // The agents of a remote workspace run on its host. A host that takes
+    // this app's tabs sends their browser calls here; on one from before
+    // that, sharing a page of this window would hand it to nobody.
+    const remoteWindow = !canShare
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>

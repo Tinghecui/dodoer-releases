@@ -9,6 +9,7 @@ use axum::{
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use super::host_registry::HostRegistration;
 use super::shutdown::ShutdownSignal;
 use super::ws_attach::{self, ClientMsg, DetachReason, ServerMsg, OUTBOUND_CAPACITY};
 use crate::app_state::AppState;
@@ -103,6 +104,10 @@ async fn handle_ws_connection(
     // epoch (see cleanup channel above) alongside the JoinHandle.
     let mut subscriptions: HashMap<String, ActiveSubscription> = HashMap::new();
     let mut next_epoch: u64 = 0;
+
+    // Cowork fork: set once this socket's desktop app registers as a host
+    // (`host_register`); dropped — unregistering it — when the socket ends.
+    let mut host: Option<HostRegistration> = None;
 
     // Server→client ready handshake (legacy `__ready__` frame). Phase 1
     // keeps this so unmigrated transports still gate `acp_connect` on the
@@ -228,6 +233,7 @@ async fn handle_ws_connection(
                                     &cleanup_tx,
                                     &mut subscriptions,
                                     &mut next_epoch,
+                                    &mut host,
                                 ).await;
                             }
                             Err(e) => {
@@ -258,6 +264,7 @@ async fn handle_client_msg(
     cleanup_tx: &mpsc::Sender<(String, u64)>,
     subscriptions: &mut HashMap<String, ActiveSubscription>,
     next_epoch: &mut u64,
+    host: &mut Option<HostRegistration>,
 ) {
     match msg {
         ClientMsg::Attach {
@@ -337,6 +344,32 @@ async fn handle_client_msg(
             let _ = outbound_tx
                 .send(ServerMsg::ServerInfo(crate::compat::server_info()))
                 .await;
+        }
+        ClientMsg::HostRegister {
+            capabilities,
+            window,
+        } => match host {
+            Some(registration) => registration.update(capabilities, window),
+            None => {
+                *host = Some(state.host_registry.register(
+                    outbound_tx.clone(),
+                    capabilities,
+                    window,
+                ))
+            }
+        },
+        ClientMsg::HostResult { call_id, outcome } => {
+            let answered = host
+                .as_ref()
+                .is_some_and(|registration| registration.answer(call_id, outcome));
+            if !answered {
+                tracing::debug!("[WS] host_result {call_id} answers no waiting call");
+            }
+        }
+        ClientMsg::HostFocus => {
+            if let Some(registration) = host {
+                registration.focus();
+            }
         }
     }
 }

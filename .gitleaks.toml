@@ -1,0 +1,49 @@
+title = "dodoer secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Keyboard notation in a UI comment"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''src/lib/computer/stop-shortcut\.ts$''']
+regexTarget = "secret"
+regexes = ['''^Ctrl\+Alt\+Shift\+Key$''']
+
+[[allowlists]]
+description = "Translation key identifier, not a credential"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''src/components/forge/forge-page\.tsx$''']
+regexTarget = "secret"
+regexes = ['''^WRONG_FORGE_I18N_KEY$''']
+
+[[allowlists]]
+description = "Synthetic repository name in a merge test"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''src-tauri/src/forge/github\.rs$''']
+regexTarget = "secret"
+regexes = ['''^acme/halfblind$''']
+
+[[allowlists]]
+description = "RFC 6455 example WebSocket handshake nonce"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''src-tauri/tests/browser_egress\.rs$''']
+regexes = ['''^dGhlIHNhbXBsZSBub25jZQ==$''']
+
+[[allowlists]]
+description = "Deliberately fake credential used to test redaction"
+targetRules = ["stripe-access-token"]
+condition = "AND"
+paths = ['''src-tauri/src/acp/stderr_tail\.rs$''']
+regexes = ['''^sk_live_abcdefghijkl$''']
+
+[[allowlists]]
+description = "Literal placeholder in historical local API examples"
+targetRules = ["curl-auth-header"]
+condition = "AND"
+paths = ['''docs/PK-TEST-CASES\.md$''']
+regexes = ['''^test-token-123$''']

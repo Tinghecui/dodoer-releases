@@ -1,28 +1,24 @@
-# 编桌面版 dodoer.app（macOS arm64，ad-hoc 签名）并发到本仓库的 Release。用 GitHub 托管的 macOS 机器：公开仓库不收费。
-# 源码在私有仓库 Tinghecui/cowork-codeg，用 SOURCE_DEPLOY_KEY（那边的只读 deploy key）拉；本仓库只放这个 workflow 和 Release。
-# 编法、冒烟、打包都在源码的 scripts/cowork-desktop-build.sh 里，这里只管拉代码、装工具、发布。
+# 公开镜像 Tinghecui/dodoer-releases 的桌面版 dodoer.app（macOS arm64，ad-hoc 签名；文件在私有仓库 cowork-codeg 的
+# .github/public/workflows/ 里维护）。跑在 GitHub 托管的 macOS 机器上，公开仓库不收费。
+# 编法、冒烟、打包都在 scripts/cowork-desktop-build.sh 里，两种包（完整版、纯客户端版）各编一次。
 #
-# 两种触发：
-# - repository_dispatch（build-desktop）：cowork-codeg 推 cowork-codeg-vX.Y.Z tag 时，它的 desktop-macos.yml 发过来，
-#   client_payload 带 ref / publish / product_name
-# - 手动（Actions → desktop-macos → Run workflow）：编任意分支只放 artifact；ref 填正式版 tag 并勾 publish 可以补发
+# - tag cowork-codeg-vX.Y.Z 同步过来：编正式版，版本号 1.Y.Z，发到本仓库的 Release v1.Y.Z：两种包各自的安装 zip、
+#   自动更新用的 .app.tar.gz + .sig、latest.json 和 latest-client.json。装好的 app 从 releases/latest/download/latest(-client).json 查更新
+# - 手动触发（Actions → desktop-macos → Run workflow）：编任意分支只放 artifact；ref 填正式版 tag 并勾 publish 可以补发
 #
-# 公开仓库的日志和 artifact 谁都能看：不要在步骤里打印源码之外的东西（密钥都走 secrets，会被打码）。
-# 这里没有 pull_request 触发，fork 来的 PR 拿不到 secrets，也跑不了这个 workflow。
-#
-# 秘钥：TAURI_SIGNING_PRIVATE_KEY（+ _PASSWORD）签自动更新包，备份在生产机 /root/dodoer-updater/；
-# 丢了已经装好的 app 就再也收不到更新。
+# 自动更新包用 TAURI_SIGNING_PRIVATE_KEY（+ _PASSWORD）签，签名绑定版本号（requireSignedVersion）。私钥丢了已经装好的 app 就再也收不到更新。
+# 公开仓库的日志和 artifact 谁都能看：步骤里别打印代码之外的东西（密钥都走 secrets，会被打码）。
 name: desktop-macos
 
 on:
-  repository_dispatch:
-    types: [build-desktop]
+  push:
+    tags: ["cowork-codeg-v*"]
   workflow_dispatch:
     inputs:
       ref:
-        description: "cowork-codeg 要编的分支 / tag / 提交"
+        description: "要编的分支 / tag / 提交"
         required: false
-        default: product/v0.40.0
+        default: main
       product_name:
         description: "界面上的产品名"
         required: false
@@ -48,27 +44,25 @@ jobs:
     env:
       CI: "true"
       NEXT_TELEMETRY_DISABLED: "1"
-      SOURCE_REPO: Tinghecui/cowork-codeg
-      REF: ${{ github.event.client_payload.ref || inputs.ref || 'product/v0.40.0' }}
-      PUBLISH_INPUT: ${{ github.event.client_payload.publish || inputs.publish || false }}
-      NEXT_PUBLIC_PRODUCT_NAME: ${{ github.event.client_payload.product_name || inputs.product_name || 'dodoer' }}
+      NEXT_PUBLIC_PRODUCT_NAME: ${{ inputs.product_name || 'dodoer' }}
       NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ env.SOURCE_REPO }}
-          ref: ${{ env.REF }}
-          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          ref: ${{ inputs.ref || github.ref }}
 
       # 桌面版本号 = 1.<次>.<修订>，跟着 cowork-codeg 的 tag 走（v0.2.5 → 1.2.5）：自动更新按 semver 比大小，只能往上走
       - id: meta
         name: 版本号、发不发
+        env:
+          REF: ${{ inputs.ref || github.ref_name }}
+          PUBLISH_INPUT: ${{ inputs.publish }}
         run: |
           set -euo pipefail
           tag_re='^cowork-codeg-v([0-9]+)\.([0-9]+)\.([0-9]+)$'
           if [[ "$REF" =~ $tag_re ]]; then
             tag="$REF"
-            if [[ "$PUBLISH_INPUT" == true ]]; then publish=true; else publish=false; fi
+            if [[ "$GITHUB_EVENT_NAME" == push || "$PUBLISH_INPUT" == true ]]; then publish=true; else publish=false; fi
           else
             # 开发版：用最近一个正式版的号，不发
             tag=$(git ls-remote --tags --refs origin 'cowork-codeg-v*' | sed 's#.*refs/tags/##' \
@@ -88,10 +82,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-
       - uses: dtolnay/rust-toolchain@stable
-
-      # 只缓存依赖和 target 里的第三方 crate；codeg_lib 每次都重编
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
@@ -105,17 +96,14 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           node --version; pnpm --version; rustc --version
           echo "PNPM_STORE=$(pnpm store path --silent)" >> "$GITHUB_ENV"
-
       - uses: actions/cache@v4
         with:
           path: ${{ env.PNPM_STORE }}
           key: pnpm-macos-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: pnpm-macos-
+      - run: pnpm install --frozen-lockfile
 
-      - name: 依赖
-        run: pnpm install --frozen-lockfile
-
-      # 两种包各自：tauri build → 冒烟 → 打 zip、自动更新包重签（绑定版本号）。完整版先，纯客户端版复用它的前端和 sidecar
+      # 两种包各自：tauri build → 冒烟 → 打 zip、自动更新包重签。完整版先，纯客户端版复用它的前端和 sidecar
       - id: full
         name: 完整版：tauri build、冒烟（codeg-server 子进程）、打包
         env:
@@ -156,7 +144,6 @@ jobs:
         run: |
           set -euo pipefail
           rel="v$VERSION"
-          git fetch -q --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG" || true
           subject=$(git tag -l --format='%(contents:subject)' "$TAG" 2>/dev/null || true)
           notes="${subject:-$TAG}"
           for pair in "$UPDATER:latest.json" "$CLIENT_UPDATER:latest-client.json"; do
@@ -170,7 +157,7 @@ jobs:
                             "darwin-aarch64-app": {signature: $signature, url: $url}}}' > "dist/$out"
             echo "== $out"; cat "dist/$out"
           done
-          body=$(printf '%s\n\n对应 cowork-codeg 的 %s。\n\n两种包，装一种就行：\n\n- **纯客户端版** `%s`（也叫 `%s`）：不带本机 daemon，只连 Cowork 服务器；工作在服务器上的人装这个，门户「桌面版」的下载链接就是它。\n- **完整版** `%s.zip`：自带 codeg-server 做本机 daemon，可以在这台电脑上开本地工作区。\n\n两种包各自更新：已经装了 dodoer 的，app 里会提示更新，点更新、重启就是这一版（装的是哪种就更新成哪种）。\n第一次装：解压后把 dodoer.app 拖进「应用程序」，再在终端执行 `xattr -dr com.apple.quarantine /Applications/dodoer.app`（没有 Apple 开发者签名）。\n' \
+          body=$(printf '%s\n\n对应 %s。\n\n两种包，装一种就行：\n\n- **纯客户端版** `%s`（也叫 `%s`）：不带本机 daemon，只连 Cowork 服务器；工作在服务器上的人装这个，门户「桌面版」的下载链接就是它。\n- **完整版** `%s.zip`：自带 codeg-server 做本机 daemon，可以在这台电脑上开本地工作区。\n\n两种包各自更新：已经装了 dodoer 的，app 里会提示更新，点更新、重启就是这一版（装的是哪种就更新成哪种）。\n第一次装：解压后把 dodoer.app 拖进「应用程序」，再在终端执行 `xattr -dr com.apple.quarantine /Applications/dodoer.app`（没有 Apple 开发者签名）。\n' \
             "$notes" "$TAG" "$CLIENT_NAME.zip" "$CLIENT_ALIAS" "$NAME")
           files=("dist/$NAME.zip" "dist/$NAME.zip.sha256" "dist/$UPDATER" "dist/$UPDATER.sig" dist/latest.json
                  "dist/$CLIENT_NAME.zip" "dist/$CLIENT_NAME.zip.sha256" "dist/$CLIENT_ALIAS" "dist/$CLIENT_ALIAS.sha256"

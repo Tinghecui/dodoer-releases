@@ -1,0 +1,619 @@
+/* ===========================================================================
+   Liquid Glass（液态玻璃）材质层
+
+   设计真源：codeg液态玻璃方案.html + 落地交接文档（6.3 至 6.10、附录 B / C）。
+   只有浮在内容上的东西才是玻璃（侧栏、辅助面板、顶栏按钮、窗口按钮组、
+   收起的小胶囊、状态胶囊、回到底部、实时统计、输入框、权限卡、菜单和弹层）；
+   内容层（对话、代码、改动、终端、文件、设置页内容）不用玻璃，玻璃也不套玻璃。
+
+   分两层写：
+   1. 材质层：blur() saturate() 加亮边、高光环和影子，所有浏览器和桌面版都有。
+   2. 折射层：按尺寸生成的位移贴图 + SVG 滤镜（lib/liquid-glass-refraction.ts
+      写到元素的 --f 上），只在 Chromium 系出现。它包在
+      @supports (-webkit-app-region: drag) 里：只有 Chromium 认这个条件，
+      Safari / Firefox / macOS 桌面版（WKWebView）会跳过整条规则，材质层不受影响。
+      还没登记滤镜（--f 未设置）时退回同样的模糊，玻璃不会变透明。
+
+   四种外观（常规、着色、实色、高对比）只换变量：
+   - 着色：<html data-glass-style="tinted">（外观设置）。
+   - 实色：系统“降低透明度”（prefers-reduced-transparency；桌面版由 Tauri 读系统
+     设置后写 data-glass-reduce-system="on"），或外观设置里的手动开关
+     （data-glass-reduce="on"，给不认这条媒体查询的 Safari / Firefox 网页版）。
+   - 高对比：系统“提高对比度”（prefers-contrast: more；桌面版另写
+     data-glass-contrast-system="on" 兜底）。
+
+   全部放在 @layer components 里：Tailwind 的工具类（absolute、rounded-* 等）在
+   utilities 层，仍然能覆盖这里的默认值。
+   ========================================================================= */
+
+@layer components {
+  :root {
+    /* 小玻璃（控件） */
+    --g-fill: rgba(255, 255, 255, 0.4);
+    --g-blur: 4px;
+    --g-sat: 1.8;
+    --g-bri: 1.04;
+    --g-rim: rgba(255, 255, 255, 0.75);
+    --g-glow: rgba(255, 255, 255, 0.55);
+    --g-sh: rgba(0, 0, 0, 0.12);
+    --g-sy: 8px;
+    --g-sb: 22px;
+    --g-edge: rgba(0, 0, 0, 0.06);
+    --g-edge-w: 0.5px;
+    --g-spec: 1;
+    --g-lit: 0.6;
+    /* 大玻璃（面板） */
+    --p-fill: rgba(242, 242, 246, 0.56);
+    --p-blur: 12px;
+    --p-sb: 30px;
+    --p-sy: 10px;
+    /* 着色外观 */
+    --t-fill: rgba(250, 250, 252, 0.8);
+    --t-sh: rgba(0, 0, 0, 0.16);
+    /* 实色、高对比 */
+    --solid: #f2f2f4;
+    --hair: rgba(0, 0, 0, 0.16);
+    --hc-fill: #ffffff;
+    --hc-line: #000000;
+    --hc-sep: rgba(0, 0, 0, 0.5);
+    /* 玻璃上的文字（附录 C）：正文沿用主题前景色，次要文字按 4.5:1 取值 */
+    --ink2: rgba(60, 60, 67, 0.84);
+    --ink3: rgba(60, 60, 67, 0.74);
+    --ink-hc3: rgba(60, 60, 67, 0.92);
+    /* 玻璃上的控件底色：悬停 / 选中 / 浅灰底 / 分隔线 */
+    --g-hover: rgba(0, 0, 0, 0.05);
+    --g-sel: rgba(0, 0, 0, 0.075);
+    --g-fill1: rgba(120, 120, 128, 0.08);
+    --g-fill2: rgba(120, 120, 128, 0.14);
+    --g-fill3: rgba(120, 120, 128, 0.2);
+    --g-sep: rgba(60, 60, 67, 0.13);
+    --g-sep2: rgba(60, 60, 67, 0.2);
+    /* 滚动边缘：窗口底色 86% → 透明，再加 5px 模糊 */
+    --edge-c: color-mix(in srgb, var(--background) 86%, transparent);
+    --edge-blur: 5px;
+  }
+
+  .dark {
+    --g-fill: rgba(48, 48, 52, 0.44);
+    --g-sat: 1.6;
+    --g-bri: 0.92;
+    --g-rim: rgba(255, 255, 255, 0.07);
+    --g-glow: rgba(255, 255, 255, 0.05);
+    --g-sh: rgba(0, 0, 0, 0.42);
+    --g-sb: 24px;
+    --g-edge: rgba(0, 0, 0, 0.5);
+    --g-spec: 0.5;
+    --g-lit: 0.16;
+    --p-fill: rgba(46, 46, 50, 0.54);
+    --p-sb: 34px;
+    --p-sy: 12px;
+    --t-fill: rgba(36, 36, 40, 0.82);
+    /* 勘误 E3：深色的着色外观沿用常规的黑 42% */
+    --t-sh: rgba(0, 0, 0, 0.42);
+    --solid: #2c2c2f;
+    --hair: rgba(255, 255, 255, 0.18);
+    --hc-fill: #000000;
+    --hc-line: #ffffff;
+    --hc-sep: rgba(255, 255, 255, 0.5);
+    --ink2: rgba(235, 235, 245, 0.72);
+    --ink3: rgba(235, 235, 245, 0.58);
+    --ink-hc3: rgba(235, 235, 245, 0.86);
+    --g-hover: rgba(255, 255, 255, 0.07);
+    --g-sel: rgba(255, 255, 255, 0.1);
+    --g-fill1: rgba(120, 120, 128, 0.16);
+    --g-fill2: rgba(120, 120, 128, 0.24);
+    --g-fill3: rgba(120, 120, 128, 0.32);
+    --g-sep: rgba(255, 255, 255, 0.09);
+    --g-sep2: rgba(255, 255, 255, 0.15);
+  }
+
+  /* 状态色（6.8，附录 C）：不随主题色变。只给状态角点、未读点和计数用；
+     标签颜色由用户自己选，不碰。 */
+  :root {
+    --st-unread: #0088ff;
+    --st-unread-ink: #0062c4;
+    --st-run: #e08a00;
+    --st-run-ink: #8f5200;
+    --st-run-dot: #ffcc00;
+    --st-fail: #ff383c;
+    --st-fail-ink: #c00013;
+    --st-ok: #34c759;
+    --st-ok-ink: #18732f;
+  }
+  .dark {
+    --st-unread: #2b9bff;
+    --st-unread-ink: #4aa8ff;
+    --st-run: #ffa53d;
+    --st-run-ink: #ffb55c;
+    --st-run-dot: #ffcc00;
+    --st-fail: #ff4245;
+    --st-fail-ink: #ff7a7c;
+    --st-ok: #30d158;
+    --st-ok-ink: #4cd964;
+  }
+
+  /* jenny fork：卡片一家（侧栏、输入框、顶栏右上角的容器、应用列表）共用的
+     底色、立体边和悬浮投影（用法见文件末尾的 .lg-raised）。
+     立体边＝里圈一道亮线（--sb-rim）＋外圈一道细线（--sb-line，宽 --sb-line-w；
+     输入框用 .lg-raised-firm 稍粗一点）。投影大而淡、略往下落，往右铺进对话区
+     慢慢淡掉：侧栏那一栏和外层留白都不裁切（见 workspace layout 的侧栏
+     Panel），所以右边没有硬边。 */
+  :root {
+    --sb-card: color-mix(in srgb, var(--foreground) 5%, var(--background));
+    --sb-line: color-mix(in srgb, var(--foreground) 12%, transparent);
+    --sb-line-w: 1.5px;
+    --sb-rim: rgba(255, 255, 255, 0.95);
+    --sb-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 6px 24px rgba(0, 0, 0, 0.1);
+  }
+  .dark {
+    --sb-card: color-mix(in srgb, var(--foreground) 7%, var(--background));
+    --sb-line: color-mix(in srgb, var(--foreground) 15%, transparent);
+    --sb-rim: rgba(255, 255, 255, 0.06);
+    --sb-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 24px rgba(0, 0, 0, 0.45);
+  }
+
+  /* ---------- 玻璃元素 ---------- */
+  .lg {
+    /* 材质层的 backdrop-filter。必须在 .lg 自己身上声明：自定义属性在声明处就
+       代入 var()，写在 :root 上会把 4px 的小玻璃模糊继承给大玻璃和着色玻璃。
+       实色和高对比用更具体的 :root[…] .lg 把它换成 none；Chromium 在下面加折射和
+       brightness()（6.3：亮度只在 Chromium）。 */
+    --g-bf: blur(var(--g-blur)) saturate(var(--g-sat));
+    position: relative;
+    isolation: isolate;
+    box-sizing: border-box;
+    color: var(--foreground);
+    background: var(--g-fill);
+    -webkit-backdrop-filter: var(--g-bf);
+    backdrop-filter: var(--g-bf);
+    box-shadow:
+      0 var(--g-sy) var(--g-sb) var(--g-sh),
+      0 0 0 var(--g-edge-w) var(--g-edge),
+      inset 0 0 0 1px var(--g-rim),
+      inset 0 0 6px 1px var(--g-glow);
+    /* 玻璃上的次要文字：codeg 的 text-muted-foreground 在玻璃里取 6.10 的值 */
+    --muted-foreground: var(--ink2);
+  }
+  /* 高光环：1.25px 宽的锥形渐变，左上和右下最亮 */
+  .lg::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1.25px;
+    pointer-events: none;
+    opacity: var(--g-spec);
+    background: conic-gradient(
+      from 315deg,
+      #fff,
+      rgba(255, 255, 255, 0.18) 16%,
+      rgba(255, 255, 255, 0.06) 30%,
+      rgba(255, 255, 255, 0.62) 50%,
+      rgba(255, 255, 255, 0.06) 70%,
+      rgba(255, 255, 255, 0.18) 84%,
+      #fff
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask-composite: exclude;
+  }
+
+  /* 大玻璃：侧栏、辅助面板、权限卡、输入框、菜单和弹层 */
+  .lg-pane {
+    --g-fill: var(--p-fill);
+    --g-blur: var(--p-blur);
+    --g-sb: var(--p-sb);
+    --g-sy: var(--p-sy);
+  }
+
+  /* jenny fork：侧栏卡片。默认的大玻璃在白色窗口上只差 7 级灰，影子又被
+     侧栏列边上 8px 的留白裁掉，圆角卡片几乎看不出来。这里把底色加灰一点、
+     换成贴近的短影子（落在 8px 留白里），让卡片的圆角矩形明显。只改底色和
+     影子：实色、高对比外观照样由更具体的 :root[…] .lg 规则接管底色。 */
+  .lg-card {
+    --p-fill: rgba(230, 230, 236, 0.74);
+    --p-sb: 12px;
+    --p-sy: 2px;
+    --g-sh: rgba(0, 0, 0, 0.08);
+  }
+  .dark .lg-card {
+    --p-fill: rgba(58, 58, 64, 0.62);
+    --g-sh: rgba(0, 0, 0, 0.36);
+  }
+
+  /* 贴边大玻璃（勘误 E6）：辅助面板。圆角 0，没有高光环、内发光和四周投影；
+     只在左边有 0.5px 外细边、1px 里圈亮线，再往左一道很淡的投影。 */
+  .lg-edge {
+    border-radius: 0;
+    box-shadow:
+      calc(var(--g-edge-w) * -1) 0 0 var(--g-edge),
+      inset 1px 0 0 var(--g-rim),
+      -10px 0 30px rgba(0, 0, 0, 0.035);
+  }
+  .lg-edge::after {
+    display: none;
+  }
+
+  /* 窗口顶部贴边的工具栏（设置窗口）：大玻璃，圆角 0，没有高光环；只在下边
+     有一道外细边和很淡的投影。 */
+  .lg-bar {
+    border-radius: 0;
+    box-shadow:
+      0 var(--g-edge-w) 0 var(--g-edge),
+      0 10px 30px rgba(0, 0, 0, 0.035);
+  }
+  .lg-bar::after {
+    display: none;
+  }
+
+  /* 回到底部：更近的影子（两种主题相同） */
+  .lg-fab {
+    --g-sh: rgba(0, 0, 0, 0.2);
+    --g-sy: 4px;
+    --g-sb: 14px;
+  }
+
+  /* 可点的玻璃：鼠标放上去从指针位置亮起来（250ms）；按下时只缩小里面的图标
+     （到 92%），玻璃本身不缩放、不位移，位移贴图才对得上（H10）。 */
+  .lg-ia::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.25s;
+    background: radial-gradient(
+      circle at var(--mx, 50%) var(--my, 40%),
+      rgba(255, 255, 255, var(--g-lit)),
+      rgba(255, 255, 255, 0) 62%
+    );
+  }
+  .lg-ia:hover::before {
+    opacity: 1;
+  }
+  .lg-ia svg {
+    transition: transform 0.18s cubic-bezier(0.3, 0.7, 0.4, 1.4);
+  }
+  .lg-ia :is(button, [role="button"], a):active > svg,
+  .lg-ia:is(button, [role="button"], a):active > svg {
+    transform: scale(0.92);
+  }
+
+  /* ---------- 着色外观 ---------- */
+  :root[data-glass-style="tinted"] .lg {
+    --g-fill: var(--t-fill);
+    --g-blur: 16px;
+    --g-sh: var(--t-sh);
+  }
+
+  /* 浅色模式下压在深色内容（终端等）上的小玻璃：换成深玻璃。liquid-glass-init
+     按背后的亮度加减这个类；实色、高对比和深色模式不加。里面的图标和字跟着
+     换成深色玻璃上的墨色。放在着色之后：着色也照样翻。选择器本身排除深色、实色
+     和高对比，切换外观的那一刻也不会出现浅底白字。 */
+  :root:not(.dark):not([data-glass-reduce="on"]):not(
+      [data-glass-reduce-system="on"]
+    ):not([data-glass-contrast-system="on"])
+    .lg.lg-flip {
+    --g-fill: rgba(44, 44, 48, 0.42);
+    --g-rim: rgba(255, 255, 255, 0.1);
+    --g-glow: rgba(255, 255, 255, 0.05);
+    --g-spec: 0.6;
+    --foreground: #f2f2f7;
+    --ink2: rgba(235, 235, 245, 0.72);
+    --ink3: rgba(235, 235, 245, 0.58);
+    --g-hover: rgba(255, 255, 255, 0.07);
+    --g-sel: rgba(255, 255, 255, 0.1);
+    color: #f2f2f7;
+  }
+
+  /* ---------- 玻璃上的控件（不是玻璃） ---------- */
+  /* 图标按钮：放在玻璃上，悬停和选中是中性灰 */
+  .lg-ib {
+    color: var(--ink2);
+    transition:
+      background-color 0.15s,
+      color 0.15s;
+  }
+  .lg-ib:hover {
+    background: var(--g-hover);
+    color: var(--foreground);
+  }
+  .lg-ib[aria-pressed="true"],
+  .lg-ib[data-state="open"],
+  .lg-ib.is-on {
+    background: var(--g-sel);
+    color: var(--foreground);
+  }
+
+  /* ---------- 滚动边缘 ---------- */
+  .glass-scroll-edge {
+    pointer-events: none;
+    background: linear-gradient(
+      var(--edge-c) 0%,
+      var(--edge-c) 50%,
+      transparent
+    );
+    -webkit-mask: linear-gradient(#000 55%, transparent);
+    mask: linear-gradient(#000 55%, transparent);
+    -webkit-backdrop-filter: blur(var(--edge-blur));
+    backdrop-filter: blur(var(--edge-blur));
+  }
+
+  /* 侧栏列表底部渐隐，不画分隔线 */
+  .glass-fade-bottom {
+    -webkit-mask: linear-gradient(#000 calc(100% - 28px), transparent);
+    mask: linear-gradient(#000 calc(100% - 28px), transparent);
+  }
+  /* 菜单与弹层（6.9）：大玻璃，圆角 13、内边距 5、13px 字；行圆角 8，悬停和
+     键盘高亮是主题主色实底（.mi.on），分隔线 --g-sep2。 */
+  .lg-menu {
+    font-size: 0.8125rem;
+  }
+
+  /* 浮在会话底部（输入坞、实时统计上方 12px）的东西：回到底部按钮、加载后台
+     活动按钮。--glass-above-extra 让它再往上让一格。 */
+  .glass-above-dock {
+    bottom: calc(
+      var(--glass-dock-h, 0px) + 0.75rem + var(--glass-above-extra, 0px)
+    );
+  }
+  .chat-motion-scope:has([data-live-turn-stats]) .glass-above-dock {
+    bottom: calc(
+      var(--glass-dock-h, 0px) + 0.625rem + 1.875rem + 0.75rem +
+        var(--glass-above-extra, 0px)
+    );
+  }
+}
+
+/* 分屏时标出当前格子的流光边框（codeg-composer-flow，状态提示，保留）：输入框
+   成了圆角 22 的玻璃板，板子裁掉了画在外面 1px 的那圈，所以在玻璃里改画在
+   边里面一圈，压在玻璃亮线上；聚焦时照旧隐藏。 */
+.lg .codeg-composer-flow::before {
+  inset: 0;
+}
+
+/* 实时统计浮在输入坞上方时，会话末尾再让出它的高度（30 + 10），最后一行不压在
+   玻璃下。变量写在会话外壳上，这里在消息列表里就近覆盖。 */
+.chat-motion-scope:has(> [data-live-turn-stats]) {
+  --glass-dock-inset: calc(var(--glass-dock-h, 0px) + 0.75rem + 2.5rem);
+}
+
+/* 玻璃里需要挡住下面滚动内容的条（侧栏的吸顶文件夹头）：画成和所在玻璃一样的
+   颜色，但不透明（玻璃底色叠在窗口底色上），不另加一层玻璃。不放进 layer：要压过
+   移动端抽屉用的 bg-sidebar 工具类。 */
+.lg-pane .lg-occlude {
+  background: linear-gradient(var(--p-fill), var(--p-fill)) var(--background);
+}
+
+/* ---------- 折射层：只给 Chromium ---------- */
+@supports (-webkit-app-region: drag) {
+  @layer components {
+    .lg {
+      --g-bf: var(--f, blur(var(--g-blur))) saturate(var(--g-sat))
+        brightness(var(--g-bri));
+    }
+  }
+}
+
+/* ---------- 实色：降低透明度 ---------- */
+@layer components {
+  :root[data-glass-reduce="on"],
+  :root[data-glass-reduce-system="on"] {
+    --g-blur: 0px;
+    --p-blur: 0px;
+    --g-fill: var(--solid);
+    --p-fill: var(--solid);
+    --t-fill: var(--solid);
+    --g-spec: 0;
+    --g-rim: transparent;
+    --g-glow: transparent;
+    --g-edge: var(--hair);
+    --g-edge-w: 1px;
+    --edge-c: var(--background);
+    --edge-blur: 0px;
+  }
+  :root[data-glass-reduce="on"] .lg,
+  :root[data-glass-reduce-system="on"] .lg {
+    --g-fill: var(--solid);
+    --g-bf: none;
+  }
+  :root[data-glass-reduce="on"] .glass-scroll-edge,
+  :root[data-glass-reduce-system="on"] .glass-scroll-edge {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  @layer components {
+    :root {
+      --g-blur: 0px;
+      --p-blur: 0px;
+      --g-fill: var(--solid);
+      --p-fill: var(--solid);
+      --t-fill: var(--solid);
+      --g-spec: 0;
+      --g-rim: transparent;
+      --g-glow: transparent;
+      --g-edge: var(--hair);
+      --g-edge-w: 1px;
+      --edge-c: var(--background);
+      --edge-blur: 0px;
+    }
+    :root .lg {
+      --g-fill: var(--solid);
+      --g-bf: none;
+    }
+    .glass-scroll-edge {
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+  }
+}
+
+/* ---------- 高对比：提高对比度（排在实色后面，两者都开时以它为准） ---------- */
+@layer components {
+  :root[data-glass-contrast-system="on"] {
+    --g-blur: 0px;
+    --p-blur: 0px;
+    --g-fill: var(--hc-fill);
+    --p-fill: var(--hc-fill);
+    --t-fill: var(--hc-fill);
+    --g-spec: 0;
+    --g-rim: transparent;
+    --g-glow: transparent;
+    --g-edge: var(--hc-line);
+    --g-edge-w: 1px;
+    --edge-c: var(--background);
+    --edge-blur: 0px;
+    --ink2: var(--foreground);
+    --ink3: var(--ink-hc3);
+    --g-sep2: var(--hc-sep);
+  }
+  :root[data-glass-contrast-system="on"] .lg {
+    --g-fill: var(--hc-fill);
+    --g-bf: none;
+  }
+  :root[data-glass-contrast-system="on"] .glass-scroll-edge {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  @layer components {
+    :root {
+      --g-blur: 0px;
+      --p-blur: 0px;
+      --g-fill: var(--hc-fill);
+      --p-fill: var(--hc-fill);
+      --t-fill: var(--hc-fill);
+      --g-spec: 0;
+      --g-rim: transparent;
+      --g-glow: transparent;
+      --g-edge: var(--hc-line);
+      --g-edge-w: 1px;
+      --edge-c: var(--background);
+      --edge-blur: 0px;
+      --ink2: var(--foreground);
+      --ink3: var(--ink-hc3);
+      --g-sep2: var(--hc-sep);
+    }
+    :root .lg {
+      --g-fill: var(--hc-fill);
+      --g-bf: none;
+    }
+    .glass-scroll-edge {
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+  }
+}
+
+/* 新加的按下缩小在减少动态效果时去掉（勘误 E1：只去掉玻璃版自己新加的；
+   悬停变亮保留）。codeg 原有动效的处理一律不变。 */
+@media (prefers-reduced-motion: reduce) {
+  @layer components {
+    .lg-ia svg {
+      transition: none;
+    }
+    .lg-ia :is(button, [role="button"], a):active > svg,
+    .lg-ia:is(button, [role="button"], a):active > svg {
+      transform: none;
+    }
+  }
+}
+
+/* 玻璃上的次要文字不低于 4.5:1（6.10）：codeg 有些地方把次要文字再调淡
+   （text-muted-foreground/40…/90），压在玻璃上会掉到 4.5:1 以下。玻璃里把它们
+   统一提到第二级次要文字 --ink3（浅色 4.81:1、深色 5.02:1）。:not(:hover) 让
+   悬停时原来的 hover: 颜色照旧生效；禁用的控件仍按自己的 opacity 变淡。 */
+@layer utilities {
+  :where(.lg) [class*="text-muted-foreground/"]:not(:hover) {
+    color: var(--ink3);
+  }
+}
+
+/* 聚焦环不能吃掉玻璃：Tailwind 的 ring-*（输入框的 focus-within:ring、按钮的
+   focus-visible:ring、拖入时的 ring-1）会整条换掉 box-shadow，聚焦时玻璃的投影、
+   细边、亮线和内发光一起消失。这里在 utilities 层把 ring 的两层接在玻璃投影前面；
+   不聚焦时这两层是 0 0 #0000，看不出来。贴边面板和顶栏有自己的投影，不在此列。
+   注意：这条规则也会盖掉加在玻璃上的 shadow-* / inset-shadow-*，玻璃的投影只改 --g-* 变量。 */
+@layer utilities {
+  .lg.lg:not(.lg-edge):not(.lg-bar) {
+    box-shadow:
+      var(--tw-ring-offset-shadow, 0 0 #0000),
+      var(--tw-ring-shadow, 0 0 #0000),
+      0 var(--g-sy) var(--g-sb) var(--g-sh),
+      0 0 0 var(--g-edge-w) var(--g-edge),
+      inset 0 0 0 1px var(--g-rim),
+      inset 0 0 6px 1px var(--g-glow);
+  }
+}
+
+/* jenny fork：卡片一家（.lg-raised：侧栏、输入框、顶栏右上角的容器、应用列表）
+   是实色浅灰圆角卡，带立体边（里圈亮线、外圈细线）和往右铺开的悬浮投影；没有
+   玻璃和模糊。窗口和对话区保持白色。颜色从主题的 --foreground / --background
+   混出（--sb-card、--sb-line），换主题色、切深色会跟着变。写在上面那条通用规则
+   之后、选择器更具体，才压得过它；ring 的两层照样接在最前面。 */
+@layer utilities {
+  .lg.lg.lg-raised:not(.lg-edge):not(.lg-bar) {
+    --g-fill: var(--sb-card);
+    --g-spec: 0;
+    --g-sel: rgba(0, 0, 0, 0.065);
+    --g-hover: rgba(0, 0, 0, 0.035);
+    background: var(--sb-card);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow:
+      var(--tw-ring-offset-shadow, 0 0 #0000),
+      var(--tw-ring-shadow, 0 0 #0000),
+      inset 0 0 0 1px var(--sb-rim),
+      0 0 0 var(--sb-line-w) var(--sb-line),
+      var(--sb-shadow);
+  }
+  .lg-raised-firm {
+    --sb-line-w: 2px;
+  }
+  .dark .lg.lg.lg-raised:not(.lg-edge):not(.lg-bar) {
+    --g-sel: rgba(255, 255, 255, 0.08);
+    --g-hover: rgba(255, 255, 255, 0.05);
+  }
+  /* 提高对比度：实色高对比底，1px 实线。 */
+  :root[data-glass-contrast-system="on"]
+    .lg.lg.lg-raised:not(.lg-edge):not(.lg-bar) {
+    --g-fill: var(--hc-fill);
+    background: var(--hc-fill);
+    box-shadow:
+      var(--tw-ring-offset-shadow, 0 0 #0000),
+      var(--tw-ring-shadow, 0 0 #0000),
+      0 0 0 1px var(--hc-line);
+  }
+  @media (prefers-contrast: more) {
+    :root .lg.lg.lg-raised:not(.lg-edge):not(.lg-bar) {
+      --g-fill: var(--hc-fill);
+      background: var(--hc-fill);
+      box-shadow:
+        var(--tw-ring-offset-shadow, 0 0 #0000),
+        var(--tw-ring-shadow, 0 0 #0000),
+        0 0 0 1px var(--hc-line);
+    }
+  }
+  /* 工作区背景图：和 .ws-surface-sidebar 一样转半透明磨砂，透出背景图。 */
+  :root[data-workspace-bg="on"] .lg.lg.lg-raised:not(.lg-edge):not(.lg-bar) {
+    background: color-mix(
+      in oklch,
+      var(--sb-card) calc(var(--ws-surface-alpha) * 100%),
+      transparent
+    );
+    -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+    backdrop-filter: blur(var(--ws-surface-blur));
+  }
+}

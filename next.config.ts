@@ -1,0 +1,51 @@
+import type { NextConfig } from "next"
+import createNextIntlPlugin from "next-intl/plugin"
+import packageJson from "./package.json"
+
+const isProd = process.env.NODE_ENV === "production"
+const internalHost = process.env.TAURI_DEV_HOST || "localhost"
+// Development assets must use the same port as the development server.
+const devPort = process.env.PORT || "3000"
+const withNextIntl = createNextIntlPlugin({
+  requestConfig: "./src/i18n/request.ts",
+  experimental: {
+    messages: {
+      path: "./src/i18n/messages",
+      format: "json",
+      locales: [
+        "en",
+        "zh-CN",
+        "zh-TW",
+        "ja",
+        "ko",
+        "es",
+        "de",
+        "fr",
+        "pt",
+        "ar",
+      ],
+      precompile: true,
+    },
+  },
+})
+
+const nextConfig: NextConfig = {
+  output: "export",
+  // Development-only pages (`page.gallery.tsx`, e.g. the activity timeline
+  // gallery) are routes only when CODEG_GALLERY=1, so release builds never
+  // ship them.
+  ...(process.env.CODEG_GALLERY === "1"
+    ? { pageExtensions: ["gallery.tsx", "tsx", "ts", "jsx", "js"] }
+    : {}),
+  env: {
+    // The service worker's caches are keyed to the release; see
+    // serviceWorkerUrl() in src/lib/service-worker.ts.
+    CODEG_APP_VERSION: packageJson.version,
+  },
+  images: {
+    unoptimized: true,
+  },
+  assetPrefix: isProd ? undefined : `http://${internalHost}:${devPort}`,
+}
+
+export default withNextIntl(nextConfig)

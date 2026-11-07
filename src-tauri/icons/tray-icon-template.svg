@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- dodoer (jenny fork): the Dodo mark for the macOS menu bar, both tags in
+       one ink with heavier strokes so they survive 22pt. Built into
+       tray-icon-template.png by tray-icon-template.gen.py. -->
+  <g fill="none" stroke="#000" stroke-linejoin="round" transform="translate(-140 -170) scale(1.05)">
+    <path d="M257 231H400C470 231 545 290 582 361C545 432 470 491 400 491H257Q235 491 235 469V253Q235 231 257 231Z" stroke-width="56"/>
+    <circle cx="482" cy="356" r="26" stroke-width="30"/>
+    <g transform="translate(210 304)">
+      <path d="M257 231H400C470 231 545 290 582 361C545 432 470 491 400 491H257Q235 491 235 469V253Q235 231 257 231Z" stroke-width="56"/>
+      <circle cx="482" cy="356" r="26" stroke-width="30"/>
+    </g>
+  </g>
+</svg>

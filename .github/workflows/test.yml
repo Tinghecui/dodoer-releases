@@ -1,0 +1,297 @@
+# 公开镜像 Tinghecui/dodoer-releases 的测试（这个文件在私有仓库 cowork-codeg 的 .github/public/workflows/ 里维护，
+# 同步时挪到 .github/workflows/；规则见那边的 COWORK.md「公开镜像」）。
+# 只跑 GitHub 托管的机器（公开仓库不收费，Linux 4 核 16G）。分支：main 对应私有的 product 分支，pr/<n> 对应私有的 PR #n。
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+      - "pr/**"
+
+env:
+  RUST_BACKTRACE: short
+  # Refuse to silently regenerate snapshots in CI — any drift must be
+  # accepted locally with `cargo insta review` and committed.
+  INSTA_UPDATE: "no"
+  # Debuginfo as line tables only (`test` inherits `dev`): backtraces keep
+  # their file:line, and the type and variable records no CI step reads are
+  # not built.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 按改动范围决定跑哪些 job。pr/<n> 分支和 main 比（merge-base），main 上和上一次推送比；工作流文件自己改了就全跑
+  changes:
+    name: Changed areas
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      rust: ${{ steps.filter.outputs.rust }}
+      install: ${{ steps.filter.outputs.install }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          base: main
+          filters: |
+            frontend:
+              - "src/**"
+              - "browser-agent/**"
+              - "public/**"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "pnpm-workspace.yaml"
+              - "*.config.*"
+              - "tsconfig.json"
+              - "components.json"
+              - ".github/workflows/test.yml"
+            rust:
+              - "src-tauri/**"
+              - ".github/workflows/test.yml"
+            install:
+              - "install.sh"
+              - "install.ps1"
+              - "scripts/test-install-stop.sh"
+              - ".github/workflows/test.yml"
+
+  frontend-lint:
+    name: Frontend lint
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint .
+      - name: Browser agent bundle matches its source
+        # `src-tauri/src/browser/js/agent.bundle.js` is committed so that a
+        # cargo build needs no node — `include_str!` reads it at compile time.
+        run: pnpm browser:agent:check
+      - name: Browser agent typecheck
+        run: pnpm browser:agent:types
+
+  frontend-build:
+    name: Frontend build
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Static export build
+        # next build 的类型检查在这个代码量下超过 Node 默认的 2G 堆
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: pnpm build
+
+  # vitest 几百个文件、jsdom，单机十几分钟：切成 6 片并行，每片独占一台机器
+  vitest:
+    name: Frontend vitest (${{ matrix.shard }}/6)
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Unit tests (vitest)
+        run: pnpm vitest run --shard=${{ matrix.shard }}/6
+
+  rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    # Cowork fork：只交付 Linux 上的 codeg-server，上游的 3 平台 × desktop/server 矩阵裁成 Linux 上的 server + cli + desktop 三格。
+    # desktop 不出包，但桌面改动只有这里编过。要恢复上游矩阵看 upstream 的 test.yml
+    name: Rust ${{ matrix.mode }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      # 托管机器 4 核 16G。`--bin codeg-server --lib` 要编两份主 crate（bin 用的 lib 和测试版 lib），一个 rustc 高峰 7～9G，
+      # 两个并行刚好顶到 16G，再多就会被杀（"hosted runner lost communication"），所以限 2。增量编译关掉：每次都是新机器用不上
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [server]
+        include:
+          - mode: desktop
+            # 桌面（`tauri-runtime`，默认 feature）那一侧：只做类型检查（cargo check + clippy，`--tests` 把单元测试也检查了），
+            # 不 `cargo test`：桌面 crate 的测试二进制要 codegen + 链接，太重。`test-utils` 开着是因为没有它 `db::test_helpers` 等不编
+            check_only: true
+            cargo_args: "--features test-utils --lib --tests"
+            clippy_args: "--features test-utils --lib --tests"
+          - mode: server
+            cargo_args: "--no-default-features --features server-bin --bin codeg-server --lib"
+            clippy_args: "--no-default-features --features server-bin --bin codeg-server --lib"
+          - mode: cli
+            cargo_args: "--no-default-features --features cli-bin --lib cli::"
+            clippy_args: "--no-default-features --features cli-bin --bin codeg-cli --lib"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust cache
+        # 只缓存依赖；慢的是 codeg_lib 这一个大 crate，每个 PR 都改它，每次重编
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          shared-key: test-ubuntu-22.04-${{ matrix.mode }}
+          # 失败了也存缓存：不然一直过不了就一直是冷编译
+          cache-on-failure: true
+
+      - name: Install Linux desktop dependencies
+        if: matrix.mode == 'desktop'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Prepare Tauri frontendDist placeholder
+        # Tauri 的 build script 会检查 `frontendDist` 存在；真的静态导出归 frontend job，这里只要路径在
+        if: matrix.mode == 'desktop'
+        run: |
+          mkdir -p out
+          printf '<!doctype html><html><body></body></html>\n' > out/index.html
+
+      - name: 腾磁盘（target 目录大；不加 swap——内存不够时宁可快点失败）
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1; free -h | sed -n '2p'
+
+      - name: cargo check
+        if: matrix.check_only
+        working-directory: src-tauri
+        run: cargo check ${{ matrix.cargo_args }}
+
+      - name: cargo test
+        if: ${{ !matrix.check_only }}
+        working-directory: src-tauri
+        run: cargo test ${{ matrix.cargo_args }}
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy ${{ matrix.clippy_args }} -- -D warnings
+
+      - name: Web handlers must route through commands/*_core
+        # web/handlers/{folders,conversations}.rs must not call DB services directly: they delegate to a
+        # `_core` function in `commands/*.rs` so the Tauri command and HTTP entrypoints share one implementation.
+        working-directory: src-tauri
+        run: |
+          if grep -nE 'folder_service::|conversation_service::|tab_service::|import_service::' \
+             src/web/handlers/folders.rs \
+             src/web/handlers/conversations.rs; then
+            echo "::error::Web handlers must call commands/*_core, not services directly."
+            exit 1
+          fi
+
+  install-sh:
+    # install.sh stops what runs the files it replaces, and nothing else. The test runs the script's stop section
+    # against fake programs; the installer itself is not run. Linux runs it once more as root.
+    name: install.sh on ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.install == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh parses
+        run: /bin/bash -n install.sh
+      - name: install.sh stops only what runs the files it replaces
+        env:
+          CODEG_INSTALL_TEST_STRICT: "1"
+        run: /bin/bash scripts/test-install-stop.sh install.sh
+      - name: The same, as root
+        if: runner.os == 'Linux'
+        run: sudo CODEG_INSTALL_TEST_STRICT=1 /bin/bash scripts/test-install-stop.sh install.sh
+
+  install-ps1:
+    # Two Windows PowerShell 5.1 traps that PowerShell 7 never hits: a script without a BOM read in the ANSI code
+    # page, and Join-Path with a third path.
+    name: install.ps1 in Windows PowerShell 5.1
+    needs: changes
+    if: needs.changes.outputs.install == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check install.ps1 as Windows PowerShell 5.1 reads and runs it
+        shell: powershell
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes((Join-Path $PWD "install.ps1"))
+          if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+            $text = [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
+          } else {
+            $text = [System.Text.Encoding]::Default.GetString($bytes)
+          }
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$tokens, [ref]$errors)
+          if ($errors) {
+            foreach ($e in $errors) {
+              Write-Host "::error file=install.ps1,line=$($e.Extent.StartLineNumber)::$($e.Message)"
+            }
+            exit 1
+          }
+          $bad = $false
+          $calls = $ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+              $node.GetCommandName() -eq "Join-Path"
+          }, $true)
+          foreach ($call in $calls) {
+            $paths = @($call.CommandElements | Select-Object -Skip 1 | Where-Object {
+              $_ -isnot [System.Management.Automation.Language.CommandParameterAst]
+            })
+            if ($paths.Count -gt 2) {
+              Write-Host "::error file=install.ps1,line=$($call.Extent.StartLineNumber)::Join-Path with $($paths.Count) paths fails in Windows PowerShell 5.1"
+              $bad = $true
+            }
+          }
+          if ($bad) { exit 1 }

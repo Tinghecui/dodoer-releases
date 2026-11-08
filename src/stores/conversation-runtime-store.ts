@@ -5189,14 +5189,18 @@ export function selectConversationGoalStatus(
 
 /**
  * Whether this client holds a runtime copy of `conversationId` (DB id, or a
- * draft tab bound to it) — i.e. whether `selectConversationGoalStatus`'s
- * `null` means "no goal" rather than "unknown here".
+ * draft tab bound to it) with its persisted history loaded — i.e. whether
+ * `selectConversationGoalStatus`'s `null` means "no goal" rather than
+ * "unknown here". A copy that background activity materialized for a row
+ * never opened here (a `/goal` session the Stop hook keeps running) holds
+ * only the turns since, not the one that set the goal.
  */
-export function selectHasConversationRuntime(
+export function selectHasConversationHistory(
   state: ConversationRuntimeState,
   conversationId: number
 ): boolean {
-  return resolveViewerRuntimeId(state.byConversationId, conversationId) !== null
+  const key = resolveViewerRuntimeId(state.byConversationId, conversationId)
+  return key !== null && state.byConversationId.get(key)!.detail !== null
 }
 
 /** Stable action bundle — reference never changes (reducer merges only the

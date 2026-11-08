@@ -51,11 +51,13 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// "declined" — is what the agent gets.
 const EVAL_TIMEOUT: Duration = Duration::from_secs(150);
 
-/// What an agent is told when no desktop app can take the call.
+/// What an agent is told when no desktop app can take the call. No product
+/// name: the server runs under either brand (dodoer, or Cowork's overlay, which
+/// only rewrites the web UI's messages).
 pub const NO_DESKTOP_NOTE: &str =
-    "No dodoer desktop app is lending this session its built-in browser right now. Ask the \
-     user to open this workspace in the dodoer desktop app and to share the tab with agents \
-     from the browser toolbar, then try again.";
+    "No desktop app is lending this session its built-in browser right now. Ask the user to \
+     open this workspace in the desktop app and to share the tab with agents from the \
+     browser toolbar, then try again.";
 
 /// Why a call got no answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

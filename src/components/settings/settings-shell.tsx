@@ -2,7 +2,6 @@
 
 import {
   useCallback,
-  useEffect,
   useState,
   type ComponentType,
   type ReactNode,
@@ -43,6 +42,7 @@ import { AppTitleBar } from "@/components/layout/app-title-bar"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 import { brandTitle } from "@/lib/cowork/brand"
+import { useDocumentTitle } from "@/lib/cowork/document-title"
 import {
   hasServerSettings,
   settingsTargetFor,
@@ -246,13 +246,9 @@ export function SettingsShell({ children }: SettingsShellProps) {
       ? t("titleWithServer", { server: serverLabel })
       : t("title")
 
-  // After every render, not only when the title changes: a client-side
-  // navigation puts the root layout's metadata title (just the product name)
-  // back, and this shell is a layout that stays mounted across those
-  // navigations (it re-renders on them, `usePathname`).
-  useEffect(() => {
-    document.title = brandTitle(windowTitle)
-  })
+  // Held, not set once: a client-side navigation puts the root layout's
+  // metadata title back, and this shell is a layout that stays mounted.
+  useDocumentTitle(brandTitle(windowTitle))
 
   const navigateTo = useCallback(
     (href: string) => {

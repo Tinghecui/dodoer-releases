@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react"
+import { render, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { describe, expect, it, vi } from "vitest"
 
@@ -27,14 +27,28 @@ const shell = () => (
 
 describe("SettingsShell document title", () => {
   // Next puts the root layout's metadata title back on a client-side
-  // navigation; the shell is a layout and stays mounted across it.
-  it("is put back after moving to another settings page", () => {
-    const { rerender } = render(shell())
+  // navigation, on most pages after the shell (a layout, still mounted) has
+  // rendered for it — so the title is rewritten with no render to follow.
+  it("is put back when the title is rewritten after a navigation", async () => {
+    const { rerender, unmount } = render(shell())
     expect(document.title).toBe("Settings - dodoer")
 
-    document.title = "dodoer"
     nav.pathname = "/settings/system"
     rerender(shell())
-    expect(document.title).toBe("Settings - dodoer")
+    document.title = "dodoer"
+    await waitFor(() => expect(document.title).toBe("Settings - dodoer"))
+
+    // A replaced <title> element, not only its text.
+    document.querySelector("title")?.remove()
+    const next = document.createElement("title")
+    next.textContent = "dodoer"
+    document.head.append(next)
+    await waitFor(() => expect(document.title).toBe("Settings - dodoer"))
+
+    // Gone with the shell: the next page owns the title.
+    unmount()
+    document.title = "dodoer"
+    await Promise.resolve()
+    expect(document.title).toBe("dodoer")
   })
 })

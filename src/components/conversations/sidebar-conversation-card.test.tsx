@@ -38,7 +38,10 @@ import {
   useAssistantsStore,
 } from "@/stores/assistants-store"
 import * as api from "@/lib/api"
-import { resetConversationRuntimeStore } from "@/stores/conversation-runtime-store"
+import {
+  resetConversationRuntimeStore,
+  useConversationRuntimeStore,
+} from "@/stores/conversation-runtime-store"
 import { resetConversationGoalSnapshotStore } from "@/stores/conversation-goal-snapshot-store"
 
 // The goal lookup of never-opened rows goes through the API; every other test
@@ -1333,6 +1336,44 @@ describe("SidebarConversationCard goal badge on never-opened rows", () => {
     )
     expect(goalMarkers).toHaveBeenCalledTimes(1)
     expect(goalMarkers.mock.calls[0]![0]).toEqual([36])
+  })
+
+  // A `/goal` session keeps running (the Stop hook), so on a client that
+  // never opened it its background activity still reaches the runtime store:
+  // that copy holds the turns since, not the one that set the goal.
+  it("a row only background activity reached is still looked up", async () => {
+    goalMarkers.mockResolvedValue([
+      {
+        conversation_id: 39,
+        turns: [
+          goalTurn("t1", "create_goal", {
+            status: "active",
+            objective: "keep going",
+          }),
+        ],
+      },
+    ])
+    act(() => {
+      useConversationRuntimeStore.getState().actions.applyBackgroundActivity(
+        39,
+        [
+          {
+            id: "bg1",
+            role: "assistant",
+            timestamp: "2026-11-04T00:05:00Z",
+            blocks: [{ type: "text", text: "still working on it" }],
+          },
+        ],
+        0
+      )
+    })
+    const { container } = render(rows([session(39)]))
+    await waitFor(() =>
+      expect(badge(container, 39)?.getAttribute("data-goal-status")).toBe(
+        "active"
+      )
+    )
+    expect(goalMarkers.mock.calls[0]![0]).toEqual([39])
   })
 
   it("a row with no session file is never looked up", async () => {

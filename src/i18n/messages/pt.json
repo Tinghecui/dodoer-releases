@@ -3592,7 +3592,7 @@
           "tokenUsage": "Clique no número de conversas na barra de status para abrir o Uso de tokens, detalhado por dia, agente, modelo e pasta.",
           "mentionTargets": "@ não traz só arquivos: mencione outro agente para delegar uma subtarefa, ou referencie uma sessão anterior, um commit ou uma habilidade.",
           "splitGroups": "Clique com o botão direito em uma aba e escolha Dividir à direita ou Dividir abaixo para manter duas conversas em painéis próprios.",
-          "worktrees": "Abra o botão de branch e escolha Novo worktree para vários agentes trabalharem no mesmo repositório sem sobrescrever os arquivos uns dos outros.",
+          "worktrees": "Abra o botão de branch e escolha “Começar em um novo worktree” para vários agentes trabalharem no mesmo repositório sem sobrescrever os arquivos uns dos outros.",
           "importSessions": "Já rodou sessões no terminal? O menu de uma pasta tem Importar sessões locais para trazer esse histórico para o dodoer.",
           "subSessions": "Quando um agente delega, a subsessão aparece aninhada abaixo dele na barra lateral — expanda a linha para acompanhar o que cada uma fez.",
           "liveFeedback": "Feedback ao vivo, no menu +, insere uma nota no turno que o agente já está executando, sem interrompê-lo.",

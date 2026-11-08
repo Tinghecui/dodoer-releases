@@ -3592,7 +3592,7 @@
           "tokenUsage": "Click the conversation count in the status bar to open Token Usage — spend broken down by day, agent, model, and folder.",
           "mentionTargets": "@ pulls in more than files — mention another agent to hand off a subtask, or reference a past session, a commit, or a skill.",
           "splitGroups": "Right-click a tab and pick Split Right or Split Down to keep two conversations open in their own panes.",
-          "worktrees": "Open the branch button and pick New worktree so several agents can work the same repo without overwriting each other's files.",
+          "worktrees": "Open the branch button and pick “Start in a new worktree” so several agents can work the same repo without overwriting each other's files.",
           "importSessions": "Already ran sessions in the terminal? A folder's menu has Import local sessions — bring that history into dodoer.",
           "subSessions": "When an agent delegates, the sub-session appears nested under it in the sidebar — expand the row to follow what each one did.",
           "liveFeedback": "Live feedback in the + menu drops a note into the turn the agent is already running, without interrupting it.",

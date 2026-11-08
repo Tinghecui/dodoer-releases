@@ -3592,7 +3592,7 @@
           "tokenUsage": "Klicke auf die Konversationszahl in der Statusleiste, um den Token-Verbrauch zu öffnen – aufgeschlüsselt nach Tag, Agent, Modell und Ordner.",
           "mentionTargets": "@ holt mehr als Dateien: Erwähne einen anderen Agenten, um eine Teilaufgabe abzugeben, oder verweise auf eine frühere Sitzung, einen Commit oder einen Skill.",
           "splitGroups": "Rechtsklick auf einen Tab, dann Nach rechts teilen oder Nach unten teilen – so bleiben zwei Konversationen in eigenen Bereichen offen.",
-          "worktrees": "Öffne die Branch-Schaltfläche und wähle Neuer Worktree, damit mehrere Agenten dasselbe Repository bearbeiten, ohne sich gegenseitig die Dateien zu überschreiben.",
+          "worktrees": "Öffne die Branch-Schaltfläche und wähle „In neuem Worktree starten“, damit mehrere Agenten dasselbe Repository bearbeiten, ohne sich gegenseitig die Dateien zu überschreiben.",
           "importSessions": "Schon Sitzungen im Terminal gelaufen? Im Menü eines Ordners holt Lokale Sitzungen importieren diesen Verlauf nach dodoer.",
           "subSessions": "Delegiert ein Agent, erscheint die Untersitzung in der Seitenleiste verschachtelt darunter – klapp die Zeile auf, um jeder einzeln zu folgen.",
           "liveFeedback": "Live-Feedback im +-Menü schiebt eine Notiz in den Zug, den der Agent gerade ausführt – ohne ihn zu unterbrechen.",

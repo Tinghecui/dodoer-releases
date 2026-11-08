@@ -3592,7 +3592,7 @@
           "tokenUsage": "Cliquez sur le nombre de conversations dans la barre d'état pour ouvrir la Consommation de tokens, détaillée par jour, agent, modèle et dossier.",
           "mentionTargets": "@ ne sert pas qu'aux fichiers : mentionnez un autre agent pour lui confier une sous-tâche, ou référencez une session passée, un commit ou une compétence.",
           "splitGroups": "Faites un clic droit sur un onglet et choisissez Diviser à droite ou Diviser en bas pour garder deux conversations dans leurs propres volets.",
-          "worktrees": "Ouvrez le bouton de branche et choisissez Nouveau worktree pour que plusieurs agents travaillent sur le même dépôt sans écraser les fichiers des autres.",
+          "worktrees": "Ouvrez le bouton de branche et choisissez « Démarrer dans un nouveau worktree » pour que plusieurs agents travaillent sur le même dépôt sans écraser les fichiers des autres.",
           "importSessions": "Vous avez déjà lancé des sessions dans le terminal ? Le menu d'un dossier propose Importer les sessions locales pour récupérer cet historique dans dodoer.",
           "subSessions": "Quand un agent délègue, la sous-session apparaît imbriquée sous lui dans la barre latérale : dépliez la ligne pour suivre ce que chacune a fait.",
           "liveFeedback": "Retour en direct, dans le menu +, glisse une note dans le tour que l'agent exécute déjà, sans l'interrompre.",

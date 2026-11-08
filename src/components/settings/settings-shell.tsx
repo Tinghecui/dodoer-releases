@@ -246,9 +246,13 @@ export function SettingsShell({ children }: SettingsShellProps) {
       ? t("titleWithServer", { server: serverLabel })
       : t("title")
 
+  // After every render, not only when the title changes: a client-side
+  // navigation puts the root layout's metadata title (just the product name)
+  // back, and this shell is a layout that stays mounted across those
+  // navigations (it re-renders on them, `usePathname`).
   useEffect(() => {
     document.title = brandTitle(windowTitle)
-  }, [windowTitle])
+  })
 
   const navigateTo = useCallback(
     (href: string) => {

@@ -1,3 +1,4 @@
+import type { AbstractIntlMessages } from "next-intl"
 import { describe, expect, it } from "vitest"
 
 import en from "@/i18n/messages/en.json"
@@ -102,6 +103,36 @@ describe("brand overlay", () => {
     expect(en.LoginPage.brand).toBe("dodoer")
     expect(JSON.stringify(branded)).not.toMatch(/\bCodeg\b/)
     expect(JSON.stringify(branded)).not.toMatch(/(?<![-\w])[Dd]odoer(?![-\w])/)
+  })
+
+  // The app's catalogs are precompiled by next-intl (`precompile: true`):
+  // messages with arguments, plurals or tags are icu-minify arrays, which
+  // `AbstractIntlMessages` does not describe.
+  it("keeps precompiled messages as arrays and only rewrites their text", () => {
+    const branded = brandMessages(
+      {
+        plain: "Open dodoer",
+        arg: ["Starts in ", ["branch"], " in dodoer"],
+        tag: ["Open ", ["dodoer"], " in ", ["highlight", "Codeg"]],
+        plural: [
+          ["count", 2, { one: [0, " dodoer window"], other: [0, " windows"] }],
+        ],
+        select: [["kind", 1, { app: "the dodoer app", other: ["x"] }]],
+        number: [["n", 4, "percent"], " of Codeg"],
+      } as unknown as AbstractIntlMessages,
+      "Cowork"
+    )
+    expect(branded).toEqual({
+      plain: "Open Cowork",
+      arg: ["Starts in ", ["branch"], " in Cowork"],
+      tag: ["Open ", ["dodoer"], " in ", ["highlight", "Cowork"]],
+      plural: [
+        ["count", 2, { one: [0, " Cowork window"], other: [0, " windows"] }],
+      ],
+      select: [["kind", 1, { app: "the Cowork app", other: ["x"] }]],
+      number: [["n", 4, "percent"], " of Cowork"],
+    })
+    expect(Array.isArray(branded.arg)).toBe(true)
   })
 
   it("builds document titles", () => {

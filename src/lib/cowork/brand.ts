@@ -66,14 +66,42 @@ export function brandText(text: string, name: string = PRODUCT_NAME): string {
  * "dodoer", the capitalised word "Codeg" and prose "codeg" (see
  * {@link brandText}). Paths, binary names and config keys (`~/.codeg`,
  * `codeg-mcp`, `dodoer-managed`) stay as they are.
+ *
+ * The catalogs the app imports are precompiled (`precompile: true` in
+ * `next.config.ts`): a message with arguments, plurals or tags is not a
+ * string but an icu-minify array such as `["Hello ", ["name"], "!"]`. Only
+ * its literal text is rewritten; the arrays stay arrays (copying them as
+ * objects made every such message fail with "e is not iterable" and show
+ * its key) and argument, tag and option names are kept.
  */
 export function brandMessages<T extends AbstractIntlMessages>(
   messages: T,
   name: string = PRODUCT_NAME
 ): T {
   if (name === SOURCE_PRODUCT_NAME) return messages
+  // A compiled message or plural/select branch: literals, `#` (0) and nodes.
+  const part = (p: unknown): unknown =>
+    typeof p === "string"
+      ? brandText(p, name)
+      : Array.isArray(p)
+        ? compiledNode(p)
+        : p
+  const compiled = (m: unknown): unknown =>
+    Array.isArray(m) ? m.map(part) : part(m)
+  // `[arg]`, `[tag, ...children]`, `[arg, 1-3 select/plural, {options}]` or
+  // `[arg, 4-6 number/date/time, style?]` (icu-minify's format).
+  const compiledNode = ([nodeName, type, ...rest]: unknown[]): unknown[] => {
+    if (type === undefined) return [nodeName]
+    if (typeof type !== "number" || type === 0)
+      return [nodeName, part(type), ...rest.map(part)]
+    if (type > 3) return [nodeName, type, ...rest]
+    const options: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(rest[0] as object))
+      options[key] = compiled(value)
+    return [nodeName, type, options]
+  }
   const walk = (node: unknown): unknown => {
-    if (typeof node === "string") return brandText(node, name)
+    if (typeof node === "string" || Array.isArray(node)) return compiled(node)
     if (node && typeof node === "object") {
       const out: Record<string, unknown> = {}
       for (const [key, value] of Object.entries(node)) out[key] = walk(value)

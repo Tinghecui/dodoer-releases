@@ -1,0 +1,18 @@
+# 公开镜像 Tinghecui/dodoer-releases：给私有仓库 cowork-codeg 的 AI QA 编被测的 server 包（文件在私有仓库 .github/public/workflows/ 里维护）。
+# AI QA 的「改动验收」要测还没发版的代码（PR 的 head、product 分支的最新提交），就用 deploy key 把那个提交同步成这边的 qa/<私有 run 号> 分支，
+# 这里调 cowork-release.yml 编到冒烟为止（分支推送 → 不发布），产物 cowork-codeg-server-linux-x64 留 14 天。
+# AI QA 那边等这个 run 结束、用只读 Actions 的 token 下载产物，然后删掉分支（.cowork/ai-qa/build-package.sh）。
+# 不报 commit status：report-status.yml 只认 Test、cowork-release、desktop-macos 三个名字。
+name: qa-package
+
+on:
+  push:
+    branches: ["qa/**"]
+
+# cowork-release.yml 顶层要 contents: write（发 Release 那步用，分支推送不会走到）；调用方给的权限不能比它小
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/cowork-release.yml

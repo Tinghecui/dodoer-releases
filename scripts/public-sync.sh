@@ -8,6 +8,7 @@
 #        scripts/public-sync.sh push <ref> main                       推到公开仓库的 main（树没变就不推）
 #        scripts/public-sync.sh push <ref> pr/<n>                     以公开 main 为父做一个提交，强推到 pr/<n>
 #        scripts/public-sync.sh push <ref> macos/pr/<n>               同上，推到 macos/pr/<n>（PR 打了 macos-build 标签，那边的 desktop-macos 编它）
+#        scripts/public-sync.sh push <ref> qa/<run>                   同上，推到 qa/<run>（AI QA 要测没发版的代码，那边的 qa-package 编包；.cowork/ai-qa/build-package.sh）
 #        scripts/public-sync.sh tag <tag>                             同步 tag（树和公开 main 一样就打在 main 上）
 #        scripts/public-sync.sh delete pr/<n>|macos/pr/<n>            删公开仓库的分支
 #   环境：PUBLIC_REPO（默认 git@github.com:Tinghecui/dodoer-releases.git）、PUBLIC_DIR（公开仓库的 clone 放哪，默认临时目录）；
@@ -99,7 +100,7 @@ case "$cmd" in
     echo "导出到 ${out}，扫描通过"
     ;;
   push)
-    ref="${2:?ref}"; branch="${3:?main、pr/<n> 或 macos/pr/<n>}"
+    ref="${2:?ref}"; branch="${3:?main、pr/<n>、macos/pr/<n> 或 qa/<run>}"
     sha=$(git rev-parse "$ref")
     subject=$(git log -1 --format=%s "$sha")
     export_tree "$sha" "$tmp/export"
@@ -118,13 +119,13 @@ source: cowork-codeg@${sha}"
         git -C "$PUBLIC_DIR" push -q origin "$commit:refs/heads/main"
         echo "推到公开 main：$commit"
       fi
-    elif [[ "$branch" == pr/* || "$branch" == macos/pr/* ]]; then
+    elif [[ "$branch" == pr/* || "$branch" == macos/pr/* || "$branch" == qa/* ]]; then
       # 总是做一个新提交（树和 main 一样也做，CI 要有东西跑），父是公开 main，强推
       commit=$(commit_tree "$tree" "$base" "$msg")
       git -C "$PUBLIC_DIR" push -q -f origin "$commit:refs/heads/$branch"
       echo "推到公开 ${branch}：${commit}（父 ${base}）"
     else
-      fail "分支只能是 main、pr/<n> 或 macos/pr/<n>：$branch"
+      fail "分支只能是 main、pr/<n>、macos/pr/<n> 或 qa/<run>：$branch"
     fi
     # 写成 if，别写 `[[ ]] && echo`：GITHUB_OUTPUT 为空时（workflow 推 macos/pr/<n> 那次）它是最后一条命令，返回 1，整个脚本就算失败
     if [[ -n "${GITHUB_OUTPUT:-}" ]]; then echo "commit=$commit" >> "$GITHUB_OUTPUT"; fi

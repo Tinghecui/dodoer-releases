@@ -1,5 +1,6 @@
 # 公开镜像 Tinghecui/dodoer-releases 的 Linux x64 服务端包（文件在私有仓库 cowork-codeg 的 .github/public/workflows/ 里维护）：
 # tag cowork-codeg-vX.Y.Z 同步过来就出包、冒烟、发到本仓库的 Release；改了打包脚本、依赖清单的 pr/<n> 分支也跑一遍（到冒烟为止，不发布）。
+# qa-package.yml 也调它（workflow_call）：私有仓库的 AI QA 要测还没发版的代码时推 qa/<run> 分支过来，编到冒烟为止、不发布，产物给 AI QA 下载。
 # 发完给 cowork 开 runtime.lock 的 PR（最后一步，要 Secret COWORK_REPO_TOKEN，没配就跳过）。
 # 全部在 GitHub 托管的 ubuntu-22.04 上（glibc 2.35），编出来的二进制要求 glibc >= 2.35。
 name: cowork-release
@@ -20,6 +21,13 @@ on:
     inputs:
       version:
         description: "Release 的 tag 名（cowork-codeg-vX.Y.Z）；要已经存在。不填只构建、冒烟，不发布"
+        required: false
+        default: ""
+  workflow_call:
+    inputs:
+      version:
+        description: "同 workflow_dispatch；qa-package.yml 不传，只构建、冒烟"
+        type: string
         required: false
         default: ""
 

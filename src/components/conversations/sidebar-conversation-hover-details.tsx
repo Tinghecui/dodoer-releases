@@ -11,6 +11,7 @@ import { FolderAliasLabel } from "./folder-alias-label"
 import { InfoItem, SessionIdentityChips } from "./session-details-content"
 import { ConversationTagChip } from "./conversation-tag-chip"
 import { useResolvedTags } from "@/hooks/use-conversation-tags"
+import { SidebarPrDetails } from "./sidebar-pr-status"
 
 interface SidebarConversationHoverDetailsProps {
   conversation: DbConversationSummary
@@ -168,6 +169,10 @@ export function SidebarConversationHoverDetails({
         <InfoItem label={t("gitBranch")}>
           <LtrValue>{branch || none}</LtrValue>
         </InfoItem>
+        {/* Worktrees only: the branch's pull request, or how to see it. */}
+        {isWorktree && conversation.parent_id == null && (
+          <SidebarPrDetails folderId={folderId} />
+        )}
         <InfoItem label={t("folderPath")}>
           <LtrValue>{folder?.path || none}</LtrValue>
         </InfoItem>

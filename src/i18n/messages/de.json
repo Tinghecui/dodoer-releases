@@ -2127,6 +2127,30 @@
     }
   },
   "Folder": {
+    "prStatus": {
+      "sectionLabel": "Pull Request",
+      "stateOpen": "Offen",
+      "stateDraft": "Entwurf",
+      "stateMerged": "Zusammengeführt",
+      "stateClosed": "Geschlossen",
+      "rowLabel": "Pull Request #{number}, {state}",
+      "checksPassed": "Checks bestanden",
+      "checksFailed": "{count, plural, one {# Check fehlgeschlagen} other {# Checks fehlgeschlagen}}",
+      "checksRunning": "Checks laufen, {done} von {total} fertig",
+      "checksSuccessCount": "{count} bestanden",
+      "checksFailureCount": "{count} fehlgeschlagen",
+      "checksPendingCount": "{count} laufen",
+      "checksNeutralCount": "{count} übersprungen",
+      "checksUnavailable": "Mit diesem Token lassen sich die Checks nicht lesen",
+      "reviewApproved": "genehmigt",
+      "reviewChangesRequested": "Änderungen angefordert",
+      "conflicts": "Hat Merge-Konflikte",
+      "openInBrowser": "Im Browser öffnen",
+      "noPr": "Für diesen Branch gibt es noch keinen Pull Request",
+      "noAccountGithub": "Führe gh auth login auf dem Rechner aus, auf dem codeg läuft, oder füge unter Einstellungen → Versionskontrolle ein GitHub-Konto hinzu, um den Pull Request dieses Worktrees zu sehen.",
+      "noAccountOther": "Füge unter Einstellungen → Versionskontrolle ein {provider}-Konto für {host} hinzu, um den Pull Request dieses Worktrees zu sehen.",
+      "showPrStatus": "Pull-Request-Status anzeigen"
+    },
     "workspaceStatus": {
       "degradedTitle": "Live-Aktualisierungen nicht verfügbar",
       "degradedHint": "Beobachter konnte nicht gestartet werden (z. B. Berechtigung verweigert). Aktualisiere manuell, um Änderungen zu sehen.",

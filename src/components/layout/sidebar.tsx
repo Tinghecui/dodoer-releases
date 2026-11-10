@@ -100,6 +100,8 @@ import {
 import { SidebarSectionOrderControl } from "./sidebar-section-order-control"
 import { cn } from "@/lib/utils"
 import { SidebarBell } from "@/components/conversations/sidebar-bell"
+import { PrStatusPoller } from "@/components/conversations/pr-status-poller"
+import { setPrStatusEnabled, usePrStatusStore } from "@/stores/pr-status-store"
 import { formatBadgeCount } from "@/components/conversations/sidebar-unread-badge"
 
 // Keyboard-shortcut hint at the trailing edge of the New chat row.
@@ -288,6 +290,9 @@ export function Sidebar({
   footer?: ReactNode
 } = {}) {
   const t = useTranslations("Folder.sidebar")
+  const tPr = useTranslations("Folder.prStatus")
+  // Hydrated from localStorage by `PrStatusPoller` on mount.
+  const showPrStatus = usePrStatusStore((s) => s.enabled)
   const { isOpen, toggle } = useSidebarContext()
   const { activeFolder } = useActiveFolder()
   const { openNewConversationTab, openChatModeTab } = useTabActions()
@@ -699,6 +704,13 @@ export function Sidebar({
                   >
                     {t("showRecent")}
                   </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={showPrStatus}
+                    onCheckedChange={setPrStatusEnabled}
+                    onSelect={(event) => event.preventDefault()}
+                  >
+                    {tPr("showPrStatus")}
+                  </DropdownMenuCheckboxItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
               <DropdownMenuSub>
@@ -927,6 +939,7 @@ export function Sidebar({
           tagFilter={tagFilter}
           sessionActivity={sessionActivity}
         />
+        <PrStatusPoller />
       </div>
       {/* Glass: the status bar's left half (quick actions, conversation
           count) sits at the foot of the pane. */}

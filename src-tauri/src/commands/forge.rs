@@ -1276,6 +1276,25 @@ pub async fn folder_forge_remote(
     folder_forge_remote_core(&db, folder_id).await
 }
 
+/// Pull-request status of the given worktree folders, for the sidebar — see
+/// [`forge::pr_status`].
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn folder_pr_statuses(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    folder_ids: Vec<i32>,
+    force: Option<bool>,
+) -> Result<Vec<forge::pr_status::FolderPrStatusEntry>, AppCommandError> {
+    Ok(forge::pr_status::folder_pr_statuses_core(
+        &db,
+        &EventEmitter::Tauri(app),
+        folder_ids,
+        force.unwrap_or(false),
+    )
+    .await)
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn forge_list_issues(

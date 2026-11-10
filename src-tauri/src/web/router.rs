@@ -1845,6 +1845,10 @@ pub fn build_router_with_proxy_auth(
             post(handlers::forge::folder_forge_remote),
         )
         .route(
+            "/folder_pr_statuses",
+            post(handlers::forge::folder_pr_statuses),
+        )
+        .route(
             "/forge_list_issues",
             post(handlers::forge::forge_list_issues),
         )

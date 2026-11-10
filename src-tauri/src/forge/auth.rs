@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
+use std::time::{Duration, Instant};
 
 use sea_orm::DatabaseConnection;
 
@@ -723,6 +724,106 @@ fn server_origin(host: &str, server_url: &str) -> String {
         return trimmed.to_string();
     }
     format!("https://{trimmed}")
+}
+
+/// What [`ResolvedAuth::account_id`] says when the token came from the `gh`
+/// CLI rather than from an account stored in codeg.
+pub const GH_CLI_ACCOUNT_ID: &str = "gh-cli";
+
+/// A token `gh` handed out is reused for this long before asking again —
+/// `gh auth token` is a process spawn, and the sidebar asks every few seconds.
+const GH_TOKEN_TTL: Duration = Duration::from_secs(300);
+/// A host `gh` has no login for is asked again after this long, so running
+/// `gh auth login` shows up in the sidebar without restarting anything.
+const GH_MISS_TTL: Duration = Duration::from_secs(60);
+
+/// Host → when `gh` was asked, and what it answered.
+type GhTokenCache = HashMap<String, (Instant, Option<String>)>;
+
+static GH_TOKENS: LazyLock<RwLock<GhTokenCache>> = LazyLock::new(Default::default);
+
+/// [`resolve_forge_auth`] with no pinned account, for READS only — the
+/// sidebar's pull-request status — plus one more place to look: when nothing is
+/// configured for a GitHub host, the token `gh auth login` stored for it.
+///
+/// Reads only, because the gh token is not an identity the user handed to
+/// codeg: nothing that writes (a delivery, a comment, a merge) may go through
+/// here, so a task can never act as an account its settings do not name. Only
+/// [`ForgeError::NoAccount`] falls through to gh — a pinned-id miss, a missing
+/// keyring token or an unsupported host mean the same thing they always did.
+pub async fn resolve_read_auth(
+    conn: &DatabaseConnection,
+    provider: ForgeProvider,
+    server_host: &str,
+) -> Result<ResolvedAuth, ForgeError> {
+    match resolve_forge_auth(conn, provider, server_host, None).await {
+        Err(ForgeError::NoAccount { provider, host }) if provider == ForgeProvider::GitHub => {
+            match gh_cli_token(&host).await {
+                Some(token) => Ok(ResolvedAuth {
+                    // No stored server URL to go by: github.com gets its API
+                    // host and an Enterprise host its `/api/v3`, exactly as an
+                    // account whose URL was left blank would.
+                    api_base: api_base_for(provider, &host, ""),
+                    provider,
+                    server_host: host,
+                    account_id: GH_CLI_ACCOUNT_ID.to_string(),
+                    username: String::new(),
+                    avatar_url: None,
+                    token,
+                    scopes: Vec::new(),
+                }),
+                None => Err(ForgeError::NoAccount { provider, host }),
+            }
+        }
+        other => other,
+    }
+}
+
+async fn gh_cli_token(host: &str) -> Option<String> {
+    let cached = GH_TOKENS.read().ok().and_then(|map| map.get(host).cloned());
+    if let Some((at, token)) = cached {
+        let ttl = if token.is_some() {
+            GH_TOKEN_TTL
+        } else {
+            GH_MISS_TTL
+        };
+        if at.elapsed() < ttl {
+            return token;
+        }
+    }
+    let token = read_gh_token(host).await;
+    if let Ok(mut map) = GH_TOKENS.write() {
+        map.insert(host.to_string(), (Instant::now(), token.clone()));
+    }
+    token
+}
+
+/// `gh auth token --hostname <host>`. `None` for anything short of a token on
+/// stdout: gh not installed, not logged in to that host, or slow to answer.
+async fn read_gh_token(host: &str) -> Option<String> {
+    // An argument, never a shell word — but gh would read a leading `-` as a
+    // flag, and a host never starts with one.
+    if host.is_empty() || host.starts_with('-') {
+        return None;
+    }
+    let mut command = crate::process::tokio_command("gh");
+    command
+        .args(["auth", "token", "--hostname", host])
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(10), command.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() || token.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(token)
 }
 
 #[cfg(test)]

@@ -88,6 +88,7 @@ import { ConversationActivityBadge } from "./conversation-activity-badge"
 import { useBackgroundPending } from "@/stores/background-pending-store"
 import { SessionDetailsDialog } from "./session-details-dialog"
 import { SidebarConversationHoverDetails } from "./sidebar-conversation-hover-details"
+import { SidebarPrIndicator } from "./sidebar-pr-status"
 import { ConversationTagChips } from "./conversation-tag-chip"
 import {
   ConversationTagContextSubmenu,
@@ -671,6 +672,13 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                         <span className="mr-1.5 inline-flex">
                           <SidebarGoalBadge goal={goal} />
                         </span>
+                      )}
+                      {/* The worktree branch's pull request — nothing for a
+                      folder that is not a worktree. Its own store, so a row
+                      re-renders only when its folder's status changes. Like
+                      the branch chip, sub-sessions leave it to their parent. */}
+                      {!isSubsession && (
+                        <SidebarPrIndicator folderId={conversation.folder_id} />
                       )}
                       <ConversationActivityBadge
                         running={isRunning}

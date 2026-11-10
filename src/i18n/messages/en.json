@@ -2127,6 +2127,30 @@
     }
   },
   "Folder": {
+    "prStatus": {
+      "sectionLabel": "Pull request",
+      "stateOpen": "Open",
+      "stateDraft": "Draft",
+      "stateMerged": "Merged",
+      "stateClosed": "Closed",
+      "rowLabel": "Pull request #{number}, {state}",
+      "checksPassed": "checks passed",
+      "checksFailed": "{count, plural, one {# check failed} other {# checks failed}}",
+      "checksRunning": "checks running, {done} of {total} done",
+      "checksSuccessCount": "{count} passed",
+      "checksFailureCount": "{count} failed",
+      "checksPendingCount": "{count} running",
+      "checksNeutralCount": "{count} skipped",
+      "checksUnavailable": "Checks can't be read with this token",
+      "reviewApproved": "approved",
+      "reviewChangesRequested": "changes requested",
+      "conflicts": "Has merge conflicts",
+      "openInBrowser": "Open in browser",
+      "noPr": "No pull request for this branch yet",
+      "noAccountGithub": "Run gh auth login on the machine codeg runs on, or add a GitHub account under Settings → Version Control, to see this worktree's pull request.",
+      "noAccountOther": "Add a {provider} account for {host} under Settings → Version Control to see this worktree's pull request.",
+      "showPrStatus": "Show pull request status"
+    },
     "workspaceStatus": {
       "degradedTitle": "Live updates unavailable",
       "degradedHint": "Watcher failed to start (e.g. permission denied). Refresh manually to see changes.",

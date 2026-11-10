@@ -2127,6 +2127,30 @@
     }
   },
   "Folder": {
+    "prStatus": {
+      "sectionLabel": "プルリクエスト",
+      "stateOpen": "オープン",
+      "stateDraft": "下書き",
+      "stateMerged": "マージ済み",
+      "stateClosed": "クローズ",
+      "rowLabel": "プルリクエスト #{number}、{state}",
+      "checksPassed": "チェック成功",
+      "checksFailed": "{count} 件のチェックが失敗",
+      "checksRunning": "チェック実行中、{total} 件中 {done} 件完了",
+      "checksSuccessCount": "{count} 件成功",
+      "checksFailureCount": "{count} 件失敗",
+      "checksPendingCount": "{count} 件実行中",
+      "checksNeutralCount": "{count} 件スキップ",
+      "checksUnavailable": "このトークンではチェック結果を読み取れません",
+      "reviewApproved": "承認済み",
+      "reviewChangesRequested": "変更をリクエスト",
+      "conflicts": "マージの競合があります",
+      "openInBrowser": "ブラウザで開く",
+      "noPr": "このブランチにはまだプルリクエストがありません",
+      "noAccountGithub": "codeg が動いているマシンで gh auth login を実行するか、「設定 → バージョン管理」で GitHub アカウントを追加すると、このワークツリーのプルリクエストが表示されます。",
+      "noAccountOther": "「設定 → バージョン管理」で {host} の {provider} アカウントを追加すると、このワークツリーのプルリクエストが表示されます。",
+      "showPrStatus": "プルリクエストの状態を表示"
+    },
     "workspaceStatus": {
       "degradedTitle": "リアルタイム更新は利用できません",
       "degradedHint": "ウォッチャーの起動に失敗しました（アクセス権限エラーなど）。最新の変更を反映するには手動で更新してください。",

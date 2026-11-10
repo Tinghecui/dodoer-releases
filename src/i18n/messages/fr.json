@@ -2127,6 +2127,30 @@
     }
   },
   "Folder": {
+    "prStatus": {
+      "sectionLabel": "Pull request",
+      "stateOpen": "Ouverte",
+      "stateDraft": "Brouillon",
+      "stateMerged": "Fusionnée",
+      "stateClosed": "Fermée",
+      "rowLabel": "Pull request #{number}, {state}",
+      "checksPassed": "vérifications réussies",
+      "checksFailed": "{count, plural, one {# vérification en échec} other {# vérifications en échec}}",
+      "checksRunning": "vérifications en cours, {done} sur {total} terminées",
+      "checksSuccessCount": "{count} réussies",
+      "checksFailureCount": "{count} en échec",
+      "checksPendingCount": "{count} en cours",
+      "checksNeutralCount": "{count} ignorées",
+      "checksUnavailable": "Ce jeton ne permet pas de lire les vérifications",
+      "reviewApproved": "approuvée",
+      "reviewChangesRequested": "modifications demandées",
+      "conflicts": "A des conflits de fusion",
+      "openInBrowser": "Ouvrir dans le navigateur",
+      "noPr": "Pas encore de pull request pour cette branche",
+      "noAccountGithub": "Lancez gh auth login sur la machine où tourne codeg, ou ajoutez un compte GitHub dans Paramètres → Contrôle de version, pour voir la pull request de ce worktree.",
+      "noAccountOther": "Ajoutez un compte {provider} pour {host} dans Paramètres → Contrôle de version pour voir la pull request de ce worktree.",
+      "showPrStatus": "Afficher l'état des pull requests"
+    },
     "workspaceStatus": {
       "degradedTitle": "Mises à jour en temps réel indisponibles",
       "degradedHint": "L’observateur n’a pas pu démarrer (par ex. permission refusée). Actualisez manuellement pour voir les modifications.",

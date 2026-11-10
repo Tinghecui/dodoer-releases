@@ -11,6 +11,7 @@ pub mod envelope;
 pub mod gitea;
 pub mod github;
 pub mod gitlab;
+pub mod pr_status;
 pub mod settings;
 
 use std::sync::RwLock;

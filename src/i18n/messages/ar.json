@@ -2127,6 +2127,30 @@
     }
   },
   "Folder": {
+    "prStatus": {
+      "sectionLabel": "طلب السحب",
+      "stateOpen": "مفتوح",
+      "stateDraft": "مسودة",
+      "stateMerged": "مدمج",
+      "stateClosed": "مغلق",
+      "rowLabel": "طلب السحب #{number}، {state}",
+      "checksPassed": "نجحت الفحوصات",
+      "checksFailed": "{count, plural, one {فشل فحص واحد} two {فشل فحصان} few {فشلت # فحوصات} many {فشل # فحصًا} other {فشل # فحص}}",
+      "checksRunning": "الفحوصات قيد التشغيل، اكتمل {done} من {total}",
+      "checksSuccessCount": "نجح {count}",
+      "checksFailureCount": "فشل {count}",
+      "checksPendingCount": "{count} قيد التشغيل",
+      "checksNeutralCount": "تم تخطي {count}",
+      "checksUnavailable": "لا يمكن قراءة الفحوصات بهذا الرمز المميز",
+      "reviewApproved": "تمت الموافقة",
+      "reviewChangesRequested": "طُلبت تغييرات",
+      "conflicts": "توجد تعارضات دمج",
+      "openInBrowser": "فتح في المتصفح",
+      "noPr": "لا يوجد طلب سحب لهذا الفرع بعد",
+      "noAccountGithub": "شغّل gh auth login على الجهاز الذي يعمل عليه codeg، أو أضف حساب GitHub من الإعدادات ← التحكم بالإصدارات، لعرض طلب السحب الخاص بهذه الـ worktree.",
+      "noAccountOther": "أضف حساب {provider} للمضيف {host} من الإعدادات ← التحكم بالإصدارات لعرض طلب السحب الخاص بهذه الـ worktree.",
+      "showPrStatus": "عرض حالة طلبات السحب"
+    },
     "workspaceStatus": {
       "degradedTitle": "التحديثات الفورية غير متاحة",
       "degradedHint": "فشل تشغيل المراقب (مثل رفض الإذن). قم بالتحديث يدويًا لرؤية التغييرات.",

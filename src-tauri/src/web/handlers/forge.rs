@@ -163,6 +163,29 @@ pub async fn folder_forge_remote(
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrStatusesParams {
+    pub folder_ids: Vec<i32>,
+    #[serde(default)]
+    pub force: bool,
+}
+
+pub async fn folder_pr_statuses(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<PrStatusesParams>,
+) -> Result<Json<Vec<crate::forge::pr_status::FolderPrStatusEntry>>, AppCommandError> {
+    Ok(Json(
+        crate::forge::pr_status::folder_pr_statuses_core(
+            &state.db,
+            &state.emitter,
+            params.folder_ids,
+            params.force,
+        )
+        .await,
+    ))
+}
+
 pub async fn forge_list_issues(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ListIssuesParams>,

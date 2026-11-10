@@ -2127,6 +2127,30 @@
     }
   },
   "Folder": {
+    "prStatus": {
+      "sectionLabel": "拉取請求",
+      "stateOpen": "開啟中",
+      "stateDraft": "草稿",
+      "stateMerged": "已合併",
+      "stateClosed": "已關閉",
+      "rowLabel": "拉取請求 #{number}，{state}",
+      "checksPassed": "檢查已通過",
+      "checksFailed": "{count} 項檢查失敗",
+      "checksRunning": "檢查進行中，已完成 {done}/{total}",
+      "checksSuccessCount": "{count} 項通過",
+      "checksFailureCount": "{count} 項失敗",
+      "checksPendingCount": "{count} 項進行中",
+      "checksNeutralCount": "{count} 項略過",
+      "checksUnavailable": "目前的權杖無法讀取檢查結果",
+      "reviewApproved": "已核准",
+      "reviewChangesRequested": "要求修改",
+      "conflicts": "有合併衝突",
+      "openInBrowser": "在瀏覽器中開啟",
+      "noPr": "這個分支還沒有拉取請求",
+      "noAccountGithub": "在執行 codeg 的機器上執行 gh auth login，或在「設定 → 版本控制」中新增 GitHub 帳號，即可顯示這個工作樹的拉取請求。",
+      "noAccountOther": "在「設定 → 版本控制」中為 {host} 新增 {provider} 帳號，即可顯示這個工作樹的拉取請求。",
+      "showPrStatus": "顯示拉取請求狀態"
+    },
     "workspaceStatus": {
       "degradedTitle": "即時更新不可用",
       "degradedHint": "監聽器啟動失敗（如目錄無讀取權限）。請手動重新整理以取得最新變更。",

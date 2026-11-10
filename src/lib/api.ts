@@ -61,6 +61,7 @@ import type {
   ForgeMergeOptions,
   ForgePanelSettings,
   ForgeRemote,
+  FolderPrStatusEntry,
   ForgeSettingsStore,
   ForgeSort,
   ForgeStateAction,
@@ -6284,6 +6285,17 @@ export async function folderForgeRemote(
   folderId: number
 ): Promise<ForgeRemote | null> {
   return getTransport().call("folder_forge_remote", { folderId })
+}
+
+/** Pull-request status of worktree folders, for the sidebar. Answers from the
+ *  backend's cache except for folders that are due (or, with `force`, all of
+ *  them not looked up in the last few seconds); changes are also pushed as
+ *  `folder://pr-status`. */
+export async function folderPrStatuses(
+  folderIds: number[],
+  force = false
+): Promise<FolderPrStatusEntry[]> {
+  return getTransport().call("folder_pr_statuses", { folderIds, force })
 }
 
 /** Everything the client gets to decide about a list request. The REPOSITORY

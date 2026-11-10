@@ -99,6 +99,11 @@ vi.mock("@/components/conversations/sidebar-conversation-list", async () => {
     },
   }
 })
+// Polls the backend and subscribes to its pushes; this file is about the
+// sidebar's own controls, and its `@/lib/platform` mock has no transport.
+vi.mock("@/components/conversations/pr-status-poller", () => ({
+  PrStatusPoller: () => null,
+}))
 vi.mock("@/components/conversations/conversation-tags-manager", () => ({
   openConversationTagsManager: spies.openConversationTagsManager,
 }))

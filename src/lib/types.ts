@@ -2609,6 +2609,50 @@ export interface ForgeRemote {
   supported: boolean
 }
 
+/** The head commit's checks, counted (mirrors Rust `pr_status::PrChecksSummary`).
+ *  `available: false` means the forge would not say — not "no checks". */
+export interface PrChecksSummary {
+  available: boolean
+  total: number
+  success: number
+  failure: number
+  /** Skipped, cancelled, neutral, and failures the forge allows. */
+  neutral: number
+  /** Queued or running. */
+  pending: number
+}
+
+/** A worktree branch's pull request (mirrors Rust `pr_status::PrHint`). */
+export interface PrHint {
+  provider: ForgeProviderId
+  number: number
+  url: string
+  state: "open" | "closed" | "merged"
+  draft: boolean
+  branch: string
+  base_ref: string
+  /** null = the forge has not worked it out yet, not "cannot merge". */
+  mergeable: boolean | null
+  merge_state: string | null
+  /** From each reviewer's latest review; GitHub only, open only. */
+  review_decision: "approved" | "changes_requested" | null
+  checks: PrChecksSummary
+}
+
+/** What the sidebar shows for one worktree folder (mirrors Rust
+ *  `pr_status::FolderPrStatus`). Only `pr` draws in the row; `no_account` is
+ *  explained in the hover bubble; `unavailable` draws nothing. */
+export type FolderPrStatus =
+  | ({ kind: "pr" } & PrHint)
+  | { kind: "no_pr"; branch: string }
+  | { kind: "no_account"; provider: ForgeProviderId; host: string }
+  | { kind: "unavailable" }
+
+export interface FolderPrStatusEntry {
+  folder_id: number
+  status: FolderPrStatus
+}
+
 /** Latest task (any state) for a source key — the row chip's data. */
 export interface ForgeTaskLink {
   source_key: string

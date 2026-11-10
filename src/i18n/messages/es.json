@@ -2127,6 +2127,30 @@
     }
   },
   "Folder": {
+    "prStatus": {
+      "sectionLabel": "Pull request",
+      "stateOpen": "Abierta",
+      "stateDraft": "Borrador",
+      "stateMerged": "Fusionada",
+      "stateClosed": "Cerrada",
+      "rowLabel": "Pull request #{number}, {state}",
+      "checksPassed": "comprobaciones superadas",
+      "checksFailed": "{count, plural, one {# comprobación fallida} other {# comprobaciones fallidas}}",
+      "checksRunning": "comprobaciones en curso, {done} de {total} terminadas",
+      "checksSuccessCount": "{count} superadas",
+      "checksFailureCount": "{count} fallidas",
+      "checksPendingCount": "{count} en curso",
+      "checksNeutralCount": "{count} omitidas",
+      "checksUnavailable": "Este token no puede leer las comprobaciones",
+      "reviewApproved": "aprobada",
+      "reviewChangesRequested": "cambios solicitados",
+      "conflicts": "Tiene conflictos de fusión",
+      "openInBrowser": "Abrir en el navegador",
+      "noPr": "Esta rama aún no tiene pull request",
+      "noAccountGithub": "Ejecuta gh auth login en la máquina donde corre codeg, o añade una cuenta de GitHub en Configuración → Control de versiones, para ver la pull request de este worktree.",
+      "noAccountOther": "Añade una cuenta de {provider} para {host} en Configuración → Control de versiones para ver la pull request de este worktree.",
+      "showPrStatus": "Mostrar estado de las pull requests"
+    },
     "workspaceStatus": {
       "degradedTitle": "Actualizaciones en vivo no disponibles",
       "degradedHint": "El observador no pudo iniciarse (por ejemplo, permiso denegado). Actualiza manualmente para ver los cambios.",

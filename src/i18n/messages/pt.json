@@ -2127,6 +2127,30 @@
     }
   },
   "Folder": {
+    "prStatus": {
+      "sectionLabel": "Pull request",
+      "stateOpen": "Aberta",
+      "stateDraft": "Rascunho",
+      "stateMerged": "Mesclada",
+      "stateClosed": "Fechada",
+      "rowLabel": "Pull request #{number}, {state}",
+      "checksPassed": "verificações aprovadas",
+      "checksFailed": "{count, plural, one {# verificação falhou} other {# verificações falharam}}",
+      "checksRunning": "verificações em andamento, {done} de {total} concluídas",
+      "checksSuccessCount": "{count} aprovadas",
+      "checksFailureCount": "{count} falharam",
+      "checksPendingCount": "{count} em andamento",
+      "checksNeutralCount": "{count} ignoradas",
+      "checksUnavailable": "Este token não consegue ler as verificações",
+      "reviewApproved": "aprovada",
+      "reviewChangesRequested": "alterações solicitadas",
+      "conflicts": "Tem conflitos de mesclagem",
+      "openInBrowser": "Abrir no navegador",
+      "noPr": "Este branch ainda não tem pull request",
+      "noAccountGithub": "Execute gh auth login na máquina onde o codeg roda, ou adicione uma conta do GitHub em Configurações → Controle de versão, para ver a pull request deste worktree.",
+      "noAccountOther": "Adicione uma conta {provider} para {host} em Configurações → Controle de versão para ver a pull request deste worktree.",
+      "showPrStatus": "Mostrar status das pull requests"
+    },
     "workspaceStatus": {
       "degradedTitle": "Atualizações em tempo real indisponíveis",
       "degradedHint": "O observador falhou ao iniciar (por exemplo, permissão negada). Atualize manualmente para ver as mudanças.",

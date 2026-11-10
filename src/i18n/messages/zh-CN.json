@@ -2127,6 +2127,30 @@
     }
   },
   "Folder": {
+    "prStatus": {
+      "sectionLabel": "拉取请求",
+      "stateOpen": "开启中",
+      "stateDraft": "草稿",
+      "stateMerged": "已合并",
+      "stateClosed": "已关闭",
+      "rowLabel": "拉取请求 #{number}，{state}",
+      "checksPassed": "检查已通过",
+      "checksFailed": "{count} 项检查失败",
+      "checksRunning": "检查进行中，已完成 {done}/{total}",
+      "checksSuccessCount": "{count} 项通过",
+      "checksFailureCount": "{count} 项失败",
+      "checksPendingCount": "{count} 项进行中",
+      "checksNeutralCount": "{count} 项跳过",
+      "checksUnavailable": "当前令牌无法读取检查结果",
+      "reviewApproved": "已批准",
+      "reviewChangesRequested": "要求修改",
+      "conflicts": "有合并冲突",
+      "openInBrowser": "在浏览器中打开",
+      "noPr": "这个分支还没有拉取请求",
+      "noAccountGithub": "在运行 codeg 的机器上执行 gh auth login，或在「设置 → 版本控制」中添加 GitHub 账号，即可显示这个工作树的拉取请求。",
+      "noAccountOther": "在「设置 → 版本控制」中为 {host} 添加 {provider} 账号，即可显示这个工作树的拉取请求。",
+      "showPrStatus": "显示拉取请求状态"
+    },
     "workspaceStatus": {
       "degradedTitle": "实时更新不可用",
       "degradedHint": "监听器启动失败（如目录无读取权限）。请手动刷新以获取最新变更。",

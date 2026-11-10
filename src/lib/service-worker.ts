@@ -32,13 +32,14 @@ export const CACHEABLE_PREFIXES = [
 ]
 
 /**
- * The script URL to register. It carries the app version (inlined at build
- * by next.config.ts) because the worker names its caches after it: a new
+ * The script URL to register. It carries the release version (inlined at
+ * build by next.config.ts; the Cowork tag, else the app version) because the worker names its caches after it: a new
  * release changes the URL, which installs a new worker, which retires the
  * old release's caches. Without it the caches would never turn over.
  */
 export function serviceWorkerUrl(
-  version: string | undefined = process.env.CODEG_APP_VERSION
+  version: string | undefined = process.env.CODEG_RELEASE_VERSION ||
+    process.env.CODEG_APP_VERSION
 ): string {
   return version
     ? `${SERVICE_WORKER_PATH}?v=${encodeURIComponent(version)}`

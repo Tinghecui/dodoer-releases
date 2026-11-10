@@ -31,7 +31,7 @@ frontend() {
   "${D[@]}" run --rm --name cowork-codeg-release-fe --memory 6g \
     -v "$DIR":/app -v cowork-codeg-pnpm-store:/pnpm-store -v cowork-codeg-fe-nm:/app/node_modules \
     -e CI=true -e NEXT_TELEMETRY_DISABLED=1 -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
-    -e NODE_OPTIONS=--max-old-space-size=4096 \
+    -e NODE_OPTIONS=--max-old-space-size=4096 -e COWORK_VERSION="${COWORK_VERSION:-}" \
     -w /app node:24-bookworm bash -c \
     'corepack enable >/dev/null 2>&1 && pnpm config set store-dir /pnpm-store >/dev/null &&
      pnpm install --frozen-lockfile && rm -rf out && pnpm build && test -f out/index.html'

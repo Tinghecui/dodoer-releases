@@ -116,6 +116,12 @@ describe("serviceWorkerUrl", () => {
     vi.stubEnv("CODEG_APP_VERSION", "9.8.7")
     expect(serviceWorkerUrl()).toBe("/sw.js?v=9.8.7")
   })
+
+  it("prefers the Cowork release tag over the base app version", () => {
+    vi.stubEnv("CODEG_APP_VERSION", "0.40.0")
+    vi.stubEnv("CODEG_RELEASE_VERSION", "cowork-codeg-v0.3.1")
+    expect(serviceWorkerUrl()).toBe("/sw.js?v=cowork-codeg-v0.3.1")
+  })
 })
 
 describe("registerAppServiceWorker", () => {

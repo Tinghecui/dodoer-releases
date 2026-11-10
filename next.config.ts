@@ -38,9 +38,13 @@ const nextConfig: NextConfig = {
     ? { pageExtensions: ["gallery.tsx", "tsx", "ts", "jsx", "js"] }
     : {}),
   env: {
-    // The service worker's caches are keyed to the release; see
-    // serviceWorkerUrl() in src/lib/service-worker.ts.
+    // Compared with the server's version (web-version-notice, web-transport).
     CODEG_APP_VERSION: packageJson.version,
+    // The service worker's caches are keyed to the release; see
+    // serviceWorkerUrl() in src/lib/service-worker.ts. package.json stays at
+    // the upstream base version, so a Cowork release passes its tag
+    // (cowork-release-build.sh) and every release turns the caches over.
+    CODEG_RELEASE_VERSION: process.env.COWORK_VERSION ?? "",
   },
   images: {
     unoptimized: true,

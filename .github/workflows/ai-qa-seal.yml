@@ -1,0 +1,33 @@
+# 公开镜像 Tinghecui/dodoer-releases：ai-qa 每次运行结束后核对它的日志（文件在源仓库 .github/public/workflows/ 里维护）。
+# ai-qa 的输出应该全在文件里，日志只有固定格式的进度行。这里把那次运行的日志下载下来交给源仓库的脚本逐行核对，
+# 不合格就删掉那次运行的全部日志，并在源仓库开 issue。workflow_run 用的是 main 上的这个文件。
+name: ai-qa-seal
+
+on:
+  workflow_run:
+    workflows: [ai-qa]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    environment: ai-qa
+    timeout-minutes: 10
+    steps:
+      - name: check
+        env:
+          GH_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+          PUBLIC_TOKEN: ${{ github.token }}
+          SOURCE_REPO: Tinghecui/cowork-codeg
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git fetch -q --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE_REPO}.git" HEAD 2>/dev/null \
+            || { echo "fetch failed"; exit 1; }
+          git checkout -q --detach FETCH_HEAD
+          exec bash .cowork/ai-qa/seal-check.sh "$GITHUB_REPOSITORY" "$RUN_ID"

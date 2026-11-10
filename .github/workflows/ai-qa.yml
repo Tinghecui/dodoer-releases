@@ -1,0 +1,99 @@
+# 公开镜像 Tinghecui/dodoer-releases：跑源仓库的 QA（文件在源仓库 .github/public/workflows/ 里维护）。
+# 这里只是个壳：把源仓库克隆下来、执行里面的脚本。脚本的输出全部进文件、结果传回源仓库，
+# 这份日志里只有每个阶段一行的进度；运行结束后 ai-qa-seal.yml 会核对这一点。
+# 凭证在 Environment「ai-qa」里，只有 main 分支用得到。
+name: ai-qa
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "源仓库的分支（空 = 默认分支）"
+        default: ""
+      pr:
+        description: "源仓库的 PR 号（填了就验收这个 PR）"
+        default: ""
+      stories:
+        description: "故事编号，逗号分隔（空 = 默认）"
+        default: ""
+      explore:
+        description: "探索区域（空 = 默认）"
+        default: ""
+      version:
+        description: "版本 tag（空 = 最新）"
+        default: ""
+      changes:
+        description: "改动验收：PR 号逗号分隔，或 new"
+        default: ""
+      real_agent:
+        type: boolean
+        default: false
+      agent_model:
+        default: "claude-haiku-4-5"
+      max_turns:
+        default: "2000"
+      model:
+        default: "claude-fable-5-2"
+      pm_model:
+        default: "claude-fable-5-2"
+      env:
+        type: choice
+        options: [cowork, bare]
+        default: cowork
+      setup_only:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ai-qa-${{ inputs.pr && format('pr-{0}', inputs.pr) || (inputs.setup_only && 'setup' || 'run') }}
+  cancel-in-progress: false
+
+jobs:
+  qa:
+    runs-on: ubuntu-24.04
+    environment: ai-qa
+    timeout-minutes: 340
+    env:
+      SOURCE_REPO: Tinghecui/cowork-codeg
+      PUBLIC_REPO: ${{ github.repository }}
+      W: /home/runner/ai-qa-work
+      EVENT: ${{ github.event_name }}
+      REF: ${{ inputs.ref }}
+      PR: ${{ inputs.pr }}
+      NIGHTLY: "false"
+      REAL_AGENT: ${{ inputs.real_agent && 'true' || 'false' }}
+      AIQA_ENV: ${{ inputs.env || 'cowork' }}
+      SETUP_ONLY: ${{ inputs.setup_only && 'true' || 'false' }}
+      CHANGES: ${{ inputs.changes }}
+      INPUT_VERSION: ${{ inputs.version }}
+      INPUT_STORIES: ${{ inputs.stories }}
+      INPUT_EXPLORE: ${{ inputs.explore }}
+      MAX_TURNS: ${{ inputs.max_turns || '2000' }}
+      MODEL: ${{ inputs.model || 'claude-fable-5-2' }}
+      PM_MODEL: ${{ inputs.pm_model || 'claude-fable-5-2' }}
+      AGENT_MODEL: ${{ inputs.agent_model || 'claude-haiku-4-5' }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: run
+        env:
+          AIQA_PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+          PUBLIC_TOKEN: ${{ github.token }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CODEG_AGENT_ANTHROPIC_KEY: ${{ secrets.CODEG_AGENT_ANTHROPIC_KEY }}
+          COWORK_RELEASE_TOKEN: ${{ secrets.COWORK_RELEASE_TOKEN }}
+          PUBLIC_SYNC_DEPLOY_KEY: ${{ secrets.PUBLIC_SYNC_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          src="${PR:+refs/pull/$PR/merge}"; src="${src:-${REF:-HEAD}}"
+          git init -q .
+          git fetch -q --depth 1 "https://x-access-token:${AIQA_PRIVATE_TOKEN}@github.com/${SOURCE_REPO}.git" "$src" 2>/dev/null \
+            || { echo "fetch failed"; exit 1; }
+          git checkout -q --detach FETCH_HEAD
+          exec bash .cowork/ai-qa/sealed.sh

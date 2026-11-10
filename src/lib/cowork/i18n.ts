@@ -35,19 +35,24 @@ const en = {
   serverTooOldHint:
     "Ask an administrator to upgrade Cowork in the portal. Some features may not work until then.",
   checkForUpdate: "Check for update",
-  // The client-only edition's local window (`client-only-home.tsx`).
-  clientHomeTitle: "Connect to a server",
-  clientHomeIntro:
-    "This edition of {product} has no daemon of its own: conversations, agents and files live on a server. Open a saved workspace, or add a server.",
-  clientHomeSaved: "Saved workspaces",
-  clientHomeEmpty: "No server added yet.",
-  clientHomeOpen: "Open",
-  clientHomeManage: "Add or manage servers",
-  clientHomePortalHint:
+  // The main window's start page (`start-home.tsx`).
+  startTitle: "Where do you want to work?",
+  startIntro:
+    "Work on this computer, or on a server — each server opens in its own window, and the local workspace can stay open next to them.",
+  startLocalTitle: "Work on this computer",
+  startLocalHint:
+    "Folders, conversations and agents on this computer, run by {product} itself.",
+  startLocalOpen: "Open local workspace",
+  startSaved: "Servers",
+  startEmpty: "No server added yet.",
+  startOpen: "Open",
+  startManage: "Add or manage servers",
+  startPortalHint:
     'With Cowork: in the portal, open My account → Desktop → "Open in desktop app". This app asks once, then connects.',
-  clientHomeFullEdition:
-    "For a workspace on this computer, install the full edition of {product} instead — it comes with its own daemon.",
-  clientHomeFullEditionLink: "Full edition downloads",
+  startNoLocal:
+    "This app was started without a local daemon (CODEG_DESKTOP_DAEMON=client), so only servers can be opened.",
+  // Quick actions in the local workspace: back to the start page.
+  backToStart: "Back to start page",
 }
 
 export type CoworkTextKey = keyof typeof en
@@ -80,18 +85,21 @@ const zhCN: Record<CoworkTextKey, string> = {
   serverTooOld: "服务器版本太旧，和这个桌面 app 不匹配",
   serverTooOldHint: "请管理员在门户里升级 Cowork。升级之前有些功能可能用不了。",
   checkForUpdate: "检查更新",
-  clientHomeTitle: "连接服务器",
-  clientHomeIntro:
-    "这个版本的 {product} 不带自己的 daemon：对话、agent 和文件都在服务器上。打开一个已保存的工作区，或者添加服务器。",
-  clientHomeSaved: "已保存的工作区",
-  clientHomeEmpty: "还没有添加服务器。",
-  clientHomeOpen: "打开",
-  clientHomeManage: "添加或管理服务器",
-  clientHomePortalHint:
+  startTitle: "在哪里工作？",
+  startIntro:
+    "在这台电脑上，或者在服务器上。每台服务器在自己的窗口里打开，本机工作区可以和它们同时开着。",
+  startLocalTitle: "在这台电脑上工作",
+  startLocalHint: "这台电脑上的文件夹、对话和 agent，由 {product} 自己运行。",
+  startLocalOpen: "打开本机工作区",
+  startSaved: "服务器",
+  startEmpty: "还没有添加服务器。",
+  startOpen: "打开",
+  startManage: "添加或管理服务器",
+  startPortalHint:
     "用 Cowork：在门户「我的账户」的「桌面版」里点「在桌面 app 里打开」，这个 app 会问一句，然后自动连上。",
-  clientHomeFullEdition:
-    "想在这台电脑上跑本地工作区？改装完整版 {product}，它自带 daemon。",
-  clientHomeFullEditionLink: "完整版下载",
+  startNoLocal:
+    "这次启动没有本机 daemon（CODEG_DESKTOP_DAEMON=client），只能打开服务器。",
+  backToStart: "回到开始页",
 }
 
 const zhTW: Record<CoworkTextKey, string> = {
@@ -123,18 +131,21 @@ const zhTW: Record<CoworkTextKey, string> = {
   serverTooOldHint:
     "請管理員在入口網站升級 Cowork。升級之前有些功能可能無法使用。",
   checkForUpdate: "檢查更新",
-  clientHomeTitle: "連接伺服器",
-  clientHomeIntro:
-    "這個版本的 {product} 不帶自己的 daemon：對話、agent 和檔案都在伺服器上。開啟一個已儲存的工作區，或者新增伺服器。",
-  clientHomeSaved: "已儲存的工作區",
-  clientHomeEmpty: "還沒有新增伺服器。",
-  clientHomeOpen: "開啟",
-  clientHomeManage: "新增或管理伺服器",
-  clientHomePortalHint:
+  startTitle: "在哪裡工作？",
+  startIntro:
+    "在這台電腦上，或者在伺服器上。每台伺服器在自己的視窗裡開啟，本機工作區可以和它們同時開著。",
+  startLocalTitle: "在這台電腦上工作",
+  startLocalHint: "這台電腦上的資料夾、對話和 agent，由 {product} 自己執行。",
+  startLocalOpen: "開啟本機工作區",
+  startSaved: "伺服器",
+  startEmpty: "還沒有新增伺服器。",
+  startOpen: "開啟",
+  startManage: "新增或管理伺服器",
+  startPortalHint:
     "用 Cowork：在入口網站「我的帳戶」的「桌面版」裡點「在桌面 app 中開啟」，這個 app 會問一句，然後自動連上。",
-  clientHomeFullEdition:
-    "想在這台電腦上跑本機工作區？改裝完整版 {product}，它自帶 daemon。",
-  clientHomeFullEditionLink: "完整版下載",
+  startNoLocal:
+    "這次啟動沒有本機 daemon（CODEG_DESKTOP_DAEMON=client），只能開啟伺服器。",
+  backToStart: "回到開始頁",
 }
 
 const CATALOGS: Record<string, Record<CoworkTextKey, string>> = {

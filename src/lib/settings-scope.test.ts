@@ -35,7 +35,7 @@ describe("settingsTargetFor", () => {
 })
 
 describe("hasServerSettings", () => {
-  it("is false only for the client-only edition's local window", () => {
+  it("is false only for the app's own window without a local daemon", () => {
     expect(
       hasServerSettings(settingsTargetFor("tauri", { mode: "client" }, null))
     ).toBe(false)

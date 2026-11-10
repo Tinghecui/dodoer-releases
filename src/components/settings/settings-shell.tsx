@@ -208,8 +208,8 @@ export function settingsNavItemsFor(
   return SETTINGS_NAV_ITEMS.filter(
     (item) =>
       !(item.labelKey === "web_service" && env === "web") &&
-      // The client-only edition's local window has no daemon: only the
-      // app's own pages are anyone's settings there.
+      // An app running without a local daemon (`CODEG_DESKTOP_DAEMON=
+      // client`): only the app's own pages are anyone's settings there.
       (item.scope === "app" || hasServerSettings(target))
   )
 }

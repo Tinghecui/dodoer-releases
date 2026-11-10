@@ -233,8 +233,8 @@ jobs:
             exit 1
           fi
 
-  # 两种桌面包（完整版、纯客户端版）的 Tauri 配置叠法，和 client-only feature 只是一个 cfg! 常量（所以 Rust desktop 那一格编过的
-  # 就是纯客户端版的全部代码）。不编译，几秒。编出来的包在 desktop-macos.yml 核对：tag、每晚的 main、PR 打 macos-build 标签
+  # 桌面包（只有一种，完整版）的 Tauri 配置叠法：externalBin、updater、identifier，以及去掉的纯客户端版没有留下 feature / 配置。
+  # 不编译，几秒。编出来的包在 desktop-macos.yml 核对：tag、每晚的 main、PR 打 macos-build 标签
   desktop-editions:
     name: Desktop editions
     needs: changes

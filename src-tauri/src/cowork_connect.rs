@@ -18,8 +18,8 @@
 //! 3. saves it as a Remote Workspace connection, or refreshes the token of an
 //!    existing connection to the same address (so re-linking after a revoke
 //!    or a password change is the same click);
-//! 4. opens that connection's window, which then takes the place of the local
-//!    one like any remote workspace opened from `main`.
+//! 4. opens that connection's window (or brings it to the front), next to
+//!    whatever else is open, like any remote workspace opened from `main`.
 //!
 //! The parser lives in `deep_link` (`DeepLink::CoworkConnect`); only the
 //! desktop runtime acts on it.
@@ -266,9 +266,6 @@ mod desktop {
                 .await
                 .map_err(|e| e.to_string())?;
             build_remote_workspace_window(app, &connection, true).map_err(|e| e.to_string())?;
-        }
-        if crate::commands::windows::can_hide_to_tray() {
-            crate::commands::windows::hide_main_to_tray(app);
         }
         Ok(())
     }

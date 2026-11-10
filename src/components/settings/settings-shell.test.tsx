@@ -53,7 +53,7 @@ describe("settingsNavItemsFor", () => {
     )
   })
 
-  it("shows only the app's pages in the client-only local window", () => {
+  it("shows only the app's pages in an app without a local daemon", () => {
     const labels = settingsNavItemsFor(
       "tauri",
       settingsTargetFor("tauri", { mode: "client" }, null)
@@ -66,7 +66,7 @@ describe("settingsNavItemsFor", () => {
       "computer_use",
       "system",
     ])
-    // A client-only window bound to a server edits that server's pages.
+    // A window of that app bound to a server edits that server's pages.
     const remote = settingsNavItemsFor(
       "tauri",
       settingsTargetFor(

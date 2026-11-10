@@ -1,25 +1,22 @@
 #!/bin/bash
-# 编一种桌面版 dodoer.app（Apple Silicon，ad-hoc 签名），冒烟，打成发布用的文件。跑在 GitHub 托管的 macOS 机器上（公开镜像的 desktop-macos.yml）。
-# desktop-macos.yml 在两台机器上各调一次：full（完整版，自带 codeg-server 子进程做本机 daemon）和 client（纯客户端版，
-# 不带 codeg-server、只连服务器，Cowork 用户装这个）。两种是同一份代码：client 多叠一个 Tauri 配置
-# （src-tauri/tauri.cowork-client.conf.json：externalBin 去掉 codeg-server、updater 指到 latest-client.json）
-# 和一个 Cargo feature（client-only，src-tauri/src/local_daemon.rs 的 CLIENT_ONLY_BUILD）。
+# 编桌面版 dodoer.app（Apple Silicon，ad-hoc 签名），冒烟，打成发布用的文件。跑在 GitHub 托管的 macOS 机器上（公开镜像的 desktop-macos.yml）。
+# 只有一种包：完整版，自带 codeg-server 子进程做本机 daemon；主窗口是开始页，本机工作区和服务器上的工作区都从那里开
+# （COWORK.md「桌面端：一种包、开始页」）。2026-11-09 以前还有一种纯客户端版，已经去掉。
 #
-#   用法：scripts/cowork-desktop-build.sh full|client
+#   用法：scripts/cowork-desktop-build.sh [full]（参数可省，只认 full）
 #   环境：VERSION（桌面版本号 1.Y.Z）、TAURI_SIGNING_PRIVATE_KEY（+ _PASSWORD）；
-#        GITHUB_OUTPUT 有就写 <edition>_name / <edition>_updater（client 还有 client_alias）
+#        GITHUB_OUTPUT 有就写 full_name / full_updater
 #
-# 每一种都经 beforeBuildCommand 编前端（out/）和 sidecar（src-tauri/binaries/）。在同一台机器上先 full 后 client（自己的 Mac 上）
-# 时，client 复用 full 编好的这两样（beforeBuildCommand 换成 true），只重编 Rust（feature 变了）。full 清空 dist/，产物都在 dist/：
-#   dodoer-<ver>-<sha8>-macos-arm64.zip(.sha256)             完整版安装包
-#   dodoer-<ver>-macos-arm64.app.tar.gz(.sig)                完整版自动更新包  ← latest.json
-#   dodoer-client-<ver>-<sha8>-macos-arm64.zip(.sha256)      纯客户端版安装包
-#   dodoer-client-macos-arm64.zip(.sha256)                   同一个文件、名字不带版本：门户的下载链接指这个（releases/latest/download/…）
-#   dodoer-client-<ver>-macos-arm64.app.tar.gz(.sig)         纯客户端版自动更新包  ← latest-client.json
-# 两条更新线各自的 latest*.json 由 workflow 在发布时生成。装了哪种就只会更新成哪种：endpoint 编在各自的包里。
+# 经 beforeBuildCommand 编前端（out/）和 sidecar（src-tauri/binaries/）。清空 dist/，产物都在 dist/：
+#   dodoer-<ver>-<sha8>-macos-arm64.zip(.sha256)             安装包
+#   dodoer-macos-arm64.zip(.sha256)                          同一个文件、名字不带版本（releases/latest/download/… 直接指它）
+#   dodoer-client-macos-arm64.zip(.sha256)                   还是同一个文件：门户「桌面版」的下载链接（以前给纯客户端版）指这个名字，留着不让它 404
+#   dodoer-<ver>-macos-arm64.app.tar.gz(.sig)                自动更新包  ← latest.json 和 latest-client.json
+# latest.json / latest-client.json 由 workflow 在发布时生成，两个都指这个自动更新包：装过纯客户端版的 app 从 latest-client.json
+# 查更新（endpoint 编在它自己的包里），这样它就更新成完整版。
 set -euo pipefail
 
-edition="${1:?用法：$0 full|client}"
+edition="${1:-full}"
 : "${VERSION:?VERSION=1.Y.Z}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
@@ -30,27 +27,9 @@ bundle="$root/src-tauri/target/release/bundle/macos"
 app="$bundle/dodoer.app"
 releases=https://github.com/Tinghecui/dodoer-releases/releases/latest/download
 configs=(--config src-tauri/tauri.jenny.conf.json --config src-tauri/tauri.cowork-desktop.conf.json)
-# mac 自带的 bash 3.2 在 set -u 下展开空数组会报 unbound variable，所以下面用 ${features[@]+"${features[@]}"}
-features=()
-case "$edition" in
-  full)
-    prefix=dodoer
-    expect_endpoint="$releases/latest.json"
-    ;;
-  client)
-    prefix=dodoer-client
-    expect_endpoint="$releases/latest-client.json"
-    configs+=(--config src-tauri/tauri.cowork-client.conf.json)
-    # 同一台机器上 full 刚编过前端和 sidecar 就复用；单独跑（CI 的 matrix）就照常经 beforeBuildCommand 编。
-    # 判断用 full 留下的记号，不只看文件在不在：out/ 和占位的 sidecar 可能是别的命令留下的
-    if [[ -f dist/.full-built && "$(cat dist/.full-built)" == "$(git rev-parse HEAD)" ]]; then
-      echo "==> [client] 复用 full 编好的 out/ 和 sidecar"
-      configs+=(--config '{"build":{"beforeBuildCommand":"true"}}')
-    fi
-    features=(--features client-only)
-    ;;
-  *) fail "不认识的版本 ${edition}（full|client）" ;;
-esac
+[[ "$edition" == full ]] || fail "不认识的版本 ${edition}：只有 full（纯客户端版 2026-11-09 已经去掉）"
+prefix=dodoer
+expect_endpoint="$releases/latest.json"
 
 echo "==> [$edition] tauri build（只出 .app，ad-hoc 签名，版本 ${VERSION}）"
 rm -f "$bundle"/dodoer.app.tar.gz*
@@ -58,16 +37,15 @@ rm -rf "$app"
 # tauri.cowork-desktop.conf.json 打开自动更新（我们的公钥和 dodoer-releases 的 latest.json），
 # createUpdaterArtifacts 让 bundle 里多出 dodoer.app.tar.gz + .sig
 pnpm tauri build --bundles app "${configs[@]}" \
-  --config "{\"version\":\"$VERSION\",\"bundle\":{\"macOS\":{\"signingIdentity\":\"-\"}}}" \
-  ${features[@]+"${features[@]}"}
+  --config "{\"version\":\"$VERSION\",\"bundle\":{\"macOS\":{\"signingIdentity\":\"-\"}}}"
 test -d "$app" || fail "没编出 $app"
 
 echo "==> [$edition] 冒烟"
 exe=$(defaults read "$app/Contents/Info.plist" CFBundleExecutable)
 ver=$(defaults read "$app/Contents/Info.plist" CFBundleShortVersionString)
 [[ "$ver" == "$VERSION" ]] || fail "编出来的版本 $ver 不是 $VERSION"
-# 包自己说它是哪一版、从哪更新（codeg --desktop-edition）：edition 来自 Cargo feature、更新地址来自 Tauri 配置，
-# 两样对不上就会把自己更新成另一种版本，所以两样都核对。用 node 解析（不依赖 jq）
+# 包自己说它是哪一版、从哪更新（codeg --desktop-edition）：更新地址来自 Tauri 配置，叠错了就会从别处更新，所以核对。
+# 用 node 解析（不依赖 jq）
 report=$("$app/Contents/MacOS/$exe" --desktop-edition)
 echo "$report"
 REPORT="$report" EDITION="$edition" ENDPOINT="$expect_endpoint" node -e '
@@ -79,31 +57,21 @@ REPORT="$report" EDITION="$edition" ENDPOINT="$expect_endpoint" node -e '
     fail(`updater endpoints 是 ${JSON.stringify(ep)}，要的是 ${process.env.ENDPOINT}`);
   if (r.version !== process.env.VERSION) fail(`包里的版本 ${r.version} 不是 ${process.env.VERSION}`);
 '
+# daemon 是 app 里自带的 codeg-server 子进程（src-tauri/src/local_daemon.rs）。用打好的 .app 自己跑一遍：
+# 起子进程（临时数据目录）、/api/health 带 token 200、错 token 401、kill -9 之后自动重启、停掉后进程不在。
+# 不开窗口，不碰这台机器上真的 dodoer 数据
 server="$app/Contents/MacOS/codeg-server"
-if [[ "$edition" == full ]]; then
-  # 完整版：daemon 是 app 里自带的 codeg-server 子进程（src-tauri/src/local_daemon.rs）。用打好的 .app 自己跑一遍：
-  # 起子进程（临时数据目录）、/api/health 带 token 200、错 token 401、kill -9 之后自动重启、停掉后进程不在。
-  # 不开窗口，不碰这台机器上真的 dodoer 数据
-  test -x "$server" || { ls -la "$app/Contents/MacOS"; fail "$server 不在 bundle 里"; }
-  [[ $(stat -f %z "$server") -gt 1000000 ]] || fail "$server 是占位文件，prepare-sidecars 没编它"
-  "$app/Contents/MacOS/$exe" --local-daemon-smoke
-else
-  # 纯客户端版：不能带 codeg-server（带了就是配置叠错了）
-  [[ ! -e "$server" ]] || fail "纯客户端版的 bundle 里不该有 codeg-server"
-  for other in codeg-mcp codeg-cli; do
-    test -x "$app/Contents/MacOS/$other" || fail "$other 不在 bundle 里"
-  done
-fi
+test -x "$server" || { ls -la "$app/Contents/MacOS"; fail "$server 不在 bundle 里"; }
+[[ $(stat -f %z "$server") -gt 1000000 ]] || fail "$server 是占位文件，prepare-sidecars 没编它"
+for other in codeg-mcp codeg-cli; do
+  test -x "$app/Contents/MacOS/$other" || fail "$other 不在 bundle 里"
+done
+"$app/Contents/MacOS/$exe" --local-daemon-smoke
 
 echo "==> [$edition] 打成 zip，自动更新包重签（绑定版本号）"
 name="$prefix-$ver-$(git rev-parse --short=8 HEAD)-macos-arm64"
-if [[ "$edition" == full ]]; then
-  # clean: false 下 dist/ 不会被清，先删掉，不然 artifact 里夹着以前每次的 zip
-  rm -rf dist && mkdir dist
-  git rev-parse HEAD > dist/.full-built
-else
-  mkdir -p dist
-fi
+# clean: false 下 dist/ 不会被清，先删掉，不然 artifact 里夹着以前每次的 zip
+rm -rf dist && mkdir dist
 ditto -c -k --keepParent "$app" "dist/$name.zip"
 # 在 dist 里算，.sha256 里只写文件名，下载解压后直接 `shasum -a 256 -c` 就能核对
 (cd dist && shasum -a 256 "$name.zip" | tee "$name.zip.sha256")
@@ -112,12 +80,11 @@ upd="$prefix-$ver-macos-arm64.app.tar.gz"
 cp "$bundle/dodoer.app.tar.gz" "dist/$upd"
 pnpm tauri signer sign --app-version "$ver" "dist/$upd" >/dev/null
 base64 -d < "dist/$upd.sig" | grep -q "version:$ver" || fail "$upd.sig 里没有 version:$ver"
-if [[ "$edition" == client ]]; then
-  alias="$prefix-macos-arm64.zip"
+# 不带版本号的两个名字：dodoer-macos-arm64.zip，和门户下载链接用的 dodoer-client-macos-arm64.zip，内容都是这个安装包
+for alias in "$prefix-macos-arm64.zip" "$prefix-client-macos-arm64.zip"; do
   cp "dist/$name.zip" "dist/$alias"
   (cd dist && shasum -a 256 "$alias" | tee "$alias.sha256")
-  [[ -n "${GITHUB_OUTPUT:-}" ]] && echo "client_alias=$alias" >> "$GITHUB_OUTPUT"
-fi
+done
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   echo "${edition}_name=$name" >> "$GITHUB_OUTPUT"
   echo "${edition}_updater=$upd" >> "$GITHUB_OUTPUT"

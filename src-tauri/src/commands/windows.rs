@@ -2460,9 +2460,8 @@ pub fn show_main_window(app: &AppHandle) {
 }
 
 /// Send `main` to the tray: what the close button does under the `minimize`
-/// preference, and what opening a remote workspace from the local one does so
-/// the remote window takes its place instead of piling up next to it. The
-/// local ACP connections and terminals live on; only the window goes.
+/// preference. The local ACP connections and terminals live on; only the
+/// window goes.
 ///
 /// Callers check [`can_hide_to_tray`] first — where the tray is not usable
 /// nothing could bring a hidden `main` back. Drains macOS native fullscreen

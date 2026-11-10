@@ -104,9 +104,10 @@ function getLocalTransport(): Transport {
       return _localTransport
     }
     // "embedded": the daemon is in the app, so the app's own commands are
-    // it. "client" (the client-only edition): there is no daemon, and the
-    // local window renders no workspace (`ClientOnlyGate`), so what little it
-    // calls — saved connections, windows, the updater — is the app's too.
+    // it. "client" (`CODEG_DESKTOP_DAEMON=client`): there is no daemon, and
+    // the main window renders only its start page (`StartGate`), so what
+    // little it calls — saved connections, windows, the updater — is the
+    // app's too.
   }
   return getShellTransport()
 }

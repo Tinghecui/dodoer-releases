@@ -650,8 +650,8 @@ mod tauri_app {
         // returns.
         let context = tauri::generate_context!();
         // Cowork fork: `codeg --desktop-edition` prints which edition this is
-        // (full, or client-only without a daemon) and where it updates from,
-        // then exits — the desktop build checks its bundle with it.
+        // (there is one, the full one) and where it updates from, then exits
+        // — the desktop build checks its bundle with it.
         if std::env::args().any(|a| a == "--desktop-edition") {
             println!(
                 "{}",
@@ -1031,25 +1031,21 @@ mod tauri_app {
                 // `codeg-server` child process unless asked not to
                 // (`CODEG_DESKTOP_DAEMON=embedded`), or the web service is
                 // to start with the app — that one is served by the
-                // in-process daemon, which a child cannot stand in for. The
-                // client-only edition runs no daemon at all, whatever is
-                // asked (`decide_mode`).
+                // in-process daemon, which a child cannot stand in for
+                // (`decide_mode`). `CODEG_DESKTOP_DAEMON=client` runs none.
                 let web_config = tauri::async_runtime::block_on(web::load_web_service_config(&db.conn));
                 let web_auto_start = matches!(&web_config, Ok(c) if c.auto_start);
                 let wanted_mode = crate::local_daemon::decide_mode(
-                    crate::local_daemon::CLIENT_ONLY_BUILD,
                     std::env::var(crate::local_daemon::MODE_ENV).ok().as_deref(),
                     web_auto_start,
                 );
                 tracing::info!(
                     "[local-daemon] mode {}{}",
                     wanted_mode.as_str(),
-                    match (web_auto_start, wanted_mode.has_local_daemon()) {
-                        (true, true) => " (the web service starts with the app)",
-                        (true, false) => {
-                            " (the web service is set to start, but this edition has no daemon to serve it)"
-                        }
-                        (false, _) => "",
+                    if web_auto_start {
+                        " (the web service starts with the app)"
+                    } else {
+                        ""
                     }
                 );
 
@@ -1127,8 +1123,8 @@ mod tauri_app {
                     None
                 };
                 // A child that could not be started falls back to the
-                // in-process daemon; the client edition has nothing to fall
-                // back to and does not need to.
+                // in-process daemon; client mode has nothing to fall back to
+                // and does not need to.
                 let mode = match wanted_mode {
                     crate::local_daemon::Mode::Client => crate::local_daemon::Mode::Client,
                     _ if child.is_some() => crate::local_daemon::Mode::Child,
@@ -1150,7 +1146,7 @@ mod tauri_app {
                     app.manage(crate::commands::local_daemon::LocalDaemonState(daemon));
                 } else if mode.has_local_daemon() {
                     // Embedded: the daemon in this process, started the way
-                    // `codeg-server` starts it. (The client edition skips all
+                    // `codeg-server` starts it. (Client mode skips all
                     // of this: its windows connect to saved servers only.)
                     tauri::async_runtime::block_on(async {
                         crate::boot::spawn_startup_housekeeping(

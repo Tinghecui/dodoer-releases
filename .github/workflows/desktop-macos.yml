@@ -1,11 +1,13 @@
 # 公开镜像 Tinghecui/dodoer-releases 的桌面版 dodoer.app（macOS arm64，ad-hoc 签名；文件在私有仓库 cowork-codeg 的
 # .github/public/workflows/ 里维护）。跑在 GitHub 托管的 macOS 机器上，公开仓库不收费。
-# 编法、冒烟、打包都在 scripts/cowork-desktop-build.sh 里。两种包（完整版、纯客户端版）在两台机器上同时编（matrix），
-# 各自编前端、sidecar 和主程序（不共用：纯客户端版换了 feature 和编进二进制的 Tauri 配置，主程序反正要重编），最后 publish 汇总发版。
+# 编法、冒烟、打包都在 scripts/cowork-desktop-build.sh 里。只有一种包（完整版，自带 codeg-server；2026-11-09 去掉了纯客户端版），
+# 一台机器编前端、sidecar 和主程序，最后 publish 发版。
 #
-# - tag cowork-codeg-vX.Y.Z 同步过来：编正式版，版本号 1.Y.Z，发到本仓库的 Release v1.Y.Z：两种包各自的安装 zip、
-#   自动更新用的 .app.tar.gz + .sig、latest.json 和 latest-client.json。装好的 app 从 releases/latest/download/latest(-client).json 查更新
-# - 每晚（北京时间 02:37）编一次 main，两种包都冒烟、不发：PR 上只查配置（test.yml 的 Desktop editions），编出来的包最晚第二天知道。
+# - tag cowork-codeg-vX.Y.Z 同步过来：编正式版，版本号 1.Y.Z，发到本仓库的 Release v1.Y.Z：安装 zip（带版本号的一份，
+#   加上不带版本号的 dodoer-macos-arm64.zip 和门户下载链接用的 dodoer-client-macos-arm64.zip，内容一样）、
+#   自动更新用的 .app.tar.gz + .sig、latest.json 和 latest-client.json（两个都指这个包：装过纯客户端版的 app 从
+#   latest-client.json 查更新，这样就更新成完整版）。装好的 app 从 releases/latest/download/latest(-client).json 查更新
+# - 每晚（北京时间 02:37）编一次 main，冒烟、不发：PR 上只查配置（test.yml 的 Desktop editions），编出来的包最晚第二天知道。
 #   main 的这个提交已经有一次成功的 desktop-macos（前一晚、或者打 tag 发版那次）就跳过
 # - 私有 PR 打了 macos-build 标签：public-sync 把它同步到 macos/pr/<n>，这里编、冒烟、不发，结果报回那个 PR（「公开 CI / desktop-macos」）。
 #   PR 再推会重编（上一次没编完的取消），去掉标签或关掉 PR 就删 macos/pr/<n>
@@ -105,21 +107,17 @@ jobs:
               --json databaseId,event -q '.[0] | select(.) | "\(.databaseId)（\(.event)）"')
             if [[ -n "$prev" ]]; then
               build=false
-              echo "main 的 ${GITHUB_SHA:0:12} 已经编过：run $prev，今晚不编" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "main 的 ${GITHUB_SHA:0:12} 已经编过：run ${prev}，今晚不编" | tee -a "$GITHUB_STEP_SUMMARY"
             fi
           fi
           echo "build=$build" >> "$GITHUB_OUTPUT"
 
   build:
-    name: dodoer.app ${{ matrix.edition }} (macOS arm64)
+    name: dodoer.app (macOS arm64)
     needs: prepare
     if: needs.prepare.outputs.build == 'true'
     runs-on: macos-15
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        edition: [full, client]
     env:
       CI: "true"
       NEXT_TELEMETRY_DISABLED: "1"
@@ -137,7 +135,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
-          # 两种包的依赖一样，共用一份；只缓存依赖，codeg 每次重编
+          # 只缓存依赖，codeg 每次重编
           shared-key: desktop-macos
 
       - name: pnpm（corepack，按 package.json 的 packageManager）
@@ -156,23 +154,24 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - id: build
-        name: tauri build、冒烟、打包（${{ matrix.edition }}）
+        name: tauri build、冒烟、打包
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VERSION: ${{ needs.prepare.outputs.version }}
-        run: scripts/cowork-desktop-build.sh ${{ matrix.edition }}
+        run: scripts/cowork-desktop-build.sh full
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.build.outputs[format('{0}_name', matrix.edition)] }}
+          name: ${{ steps.build.outputs.full_name }}
           path: dist/
           retention-days: 7
           if-no-files-found: error
 
-  # latest.json（完整版）和 latest-client.json（纯客户端版）各指向这次 Release 里自己那个 .app.tar.gz。
+  # latest.json 和 latest-client.json 内容一样，都指向这次 Release 的 .app.tar.gz：装过纯客户端版（1.3.0 起有过）的 app
+  # 从 latest-client.json 查更新，同一把签名私钥、同一个 identifier（app.codeg）、同一个数据目录，所以它就地更新成完整版。
   # 两个 json 在每个 Release 里都放一份，补发旧版本时不会把已经装了新版的人「更新」回去（app 只认更大的号）。
-  # 两种包都编过、冒烟过才发（matrix 任何一边失败这里就不跑）
+  # 编过、冒烟过才发
   publish:
     name: 发 Release
     needs: [prepare, build]
@@ -197,35 +196,33 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          # 文件名按 cowork-desktop-build.sh 的规则找（两台机器各编一种，文件名不经 job outputs 传）
+          # 文件名按 cowork-desktop-build.sh 的规则找（不经 job outputs 传）
           one() { local f; f=$(cd dist && ls $1 2>/dev/null) || true
                   [[ $(printf '%s\n' "$f" | grep -c .) == 1 ]] || { echo "::error::dist/ 里 $1 要正好一个，现在：${f:-没有}" >&2; ls -la dist >&2; exit 1; }
                   printf '%s' "$f"; }
           NAME=$(one "dodoer-$VERSION-*-macos-arm64.zip"); NAME="${NAME%.zip}"
           UPDATER=$(one "dodoer-$VERSION-macos-arm64.app.tar.gz")
-          CLIENT_NAME=$(one "dodoer-client-$VERSION-*-macos-arm64.zip"); CLIENT_NAME="${CLIENT_NAME%.zip}"
-          CLIENT_UPDATER=$(one "dodoer-client-$VERSION-macos-arm64.app.tar.gz")
+          ALIAS=$(one "dodoer-macos-arm64.zip")
           CLIENT_ALIAS=$(one "dodoer-client-macos-arm64.zip")
           rel="v$VERSION"
           git fetch -q --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG" 2>/dev/null || true
           subject=$(git tag -l --format='%(contents:subject)' "$TAG" 2>/dev/null || true)
           notes="${subject:-$TAG}"
-          for pair in "$UPDATER:latest.json" "$CLIENT_UPDATER:latest-client.json"; do
-            upd="${pair%%:*}"; out="${pair##*:}"
+          for out in latest.json latest-client.json; do
             jq -n --arg version "$VERSION" --arg notes "$notes" \
               --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              --arg signature "$(cat "dist/$upd.sig")" \
-              --arg url "https://github.com/$RELEASE_REPO/releases/download/$rel/$upd" \
+              --arg signature "$(cat "dist/$UPDATER.sig")" \
+              --arg url "https://github.com/$RELEASE_REPO/releases/download/$rel/$UPDATER" \
               '{version: $version, notes: $notes, pub_date: $pub_date,
                 platforms: {"darwin-aarch64": {signature: $signature, url: $url},
                             "darwin-aarch64-app": {signature: $signature, url: $url}}}' > "dist/$out"
             echo "== $out"; cat "dist/$out"
           done
-          body=$(printf '%s\n\n对应 %s。\n\n两种包，装一种就行：\n\n- **纯客户端版** `%s`（也叫 `%s`）：不带本机 daemon，只连 Cowork 服务器；工作在服务器上的人装这个，门户「桌面版」的下载链接就是它。\n- **完整版** `%s.zip`：自带 codeg-server 做本机 daemon，可以在这台电脑上开本地工作区。\n\n两种包各自更新：已经装了 dodoer 的，app 里会提示更新，点更新、重启就是这一版（装的是哪种就更新成哪种）。\n第一次装：解压后把 dodoer.app 拖进「应用程序」，再在终端执行 `xattr -dr com.apple.quarantine /Applications/dodoer.app`（没有 Apple 开发者签名）。\n' \
-            "$notes" "$TAG" "$CLIENT_NAME.zip" "$CLIENT_ALIAS" "$NAME")
-          files=("dist/$NAME.zip" "dist/$NAME.zip.sha256" "dist/$UPDATER" "dist/$UPDATER.sig" dist/latest.json
-                 "dist/$CLIENT_NAME.zip" "dist/$CLIENT_NAME.zip.sha256" "dist/$CLIENT_ALIAS" "dist/$CLIENT_ALIAS.sha256"
-                 "dist/$CLIENT_UPDATER" "dist/$CLIENT_UPDATER.sig" dist/latest-client.json)
+          body=$(printf '%s\n\n对应 %s。\n\n安装包 `%s.zip`（也叫 `%s`；`%s` 是同一个文件，给门户的下载链接用）。打开后在开始页选「在这台电脑上工作」或者一台服务器，本机和服务器上的工作区可以同时开着。\n\n已经装了 dodoer 的（包括以前的纯客户端版），app 里会提示更新，点更新、重启就是这一版。\n第一次装：解压后把 dodoer.app 拖进「应用程序」，再在终端执行 `xattr -dr com.apple.quarantine /Applications/dodoer.app`（没有 Apple 开发者签名）。\n' \
+            "$notes" "$TAG" "$NAME" "$ALIAS" "$CLIENT_ALIAS")
+          files=("dist/$NAME.zip" "dist/$NAME.zip.sha256" "dist/$ALIAS" "dist/$ALIAS.sha256"
+                 "dist/$CLIENT_ALIAS" "dist/$CLIENT_ALIAS.sha256"
+                 "dist/$UPDATER" "dist/$UPDATER.sig" dist/latest.json dist/latest-client.json)
           if gh release view "$rel" -R "$RELEASE_REPO" >/dev/null 2>&1; then
             gh release upload "$rel" -R "$RELEASE_REPO" --clobber "${files[@]}"
           else

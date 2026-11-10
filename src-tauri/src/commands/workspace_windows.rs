@@ -464,10 +464,10 @@ pub fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
         tauri::WindowEvent::Destroyed => {
             let app = window.app_handle();
             record(app, |state| state.mark_closed(workspace));
-            // Opening a remote workspace from `main` hides `main` to the tray
-            // (`remote_workspace::leave_local_workspace`). Closing the last
-            // remote window must then bring it back, or the app is left with
-            // no window at all — a Dock icon and nothing behind it.
+            // `main` may be in the tray (its close button, or a launch that
+            // restored only remote windows) while remote windows are open.
+            // Closing the last of them must then bring it back, or the app is
+            // left with no window at all — a Dock icon and nothing behind it.
             if matches!(workspace, WorkspaceWindow::Remote { .. }) && closed_last_workspace(app) {
                 crate::commands::windows::show_main_window(app);
             }
@@ -947,9 +947,9 @@ mod tests {
         assert_eq!(session.lock().snapshot(), vec![remote(1), LOCAL, remote(2)]);
     }
 
-    // The local workspace is hidden to the tray when a remote one is opened
-    // from it, so closing the last remote window has to notice that nothing
-    // is left — and only then.
+    // The local workspace can be in the tray while remote ones are open (its
+    // close button), so closing the last remote window has to notice that
+    // nothing is left — and only then.
     #[test]
     fn closing_the_last_remote_window_notices_a_hidden_local_workspace() {
         let mut state = SessionState::default();

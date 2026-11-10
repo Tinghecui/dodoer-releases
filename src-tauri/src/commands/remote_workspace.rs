@@ -204,7 +204,6 @@ pub async fn reorder_remote_workspace_connections(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn open_remote_workspace(
     app: AppHandle,
-    window: tauri::WebviewWindow,
     db: tauri::State<'_, AppDatabase>,
     id: i32,
 ) -> Result<(), AppCommandError> {
@@ -216,7 +215,6 @@ pub async fn open_remote_workspace(
     let label = WorkspaceWindow::Remote { connection_id: id }.label();
     if app.get_webview_window(&label).is_some() {
         crate::commands::windows::show_and_focus_window(&app, &label);
-        leave_local_workspace(&app, &window);
         return Ok(());
     }
 
@@ -225,30 +223,9 @@ pub async fn open_remote_workspace(
     // An overlapping open / restore may have built it during the health check.
     if app.get_webview_window(&label).is_some() {
         crate::commands::windows::show_and_focus_window(&app, &label);
-        leave_local_workspace(&app, &window);
         return Ok(());
     }
-    build_remote_workspace_window(&app, &connection, true)?;
-    leave_local_workspace(&app, &window);
-    Ok(())
-}
-
-/// A remote workspace opened from the local one takes its place: `main` goes
-/// to the tray rather than staying up behind the new window, so the user is
-/// not left with two workspaces when they wanted to switch. Only from `main`
-/// — a remote window opening another remote leaves the local one alone — and
-/// only where the tray can bring `main` back. The way back is the remote
-/// window's "Open local workspace", the tray / Dock, or closing the last
-/// remote window (`workspace_windows::on_window_event`).
-#[cfg(feature = "tauri-runtime")]
-fn leave_local_workspace(app: &AppHandle, caller: &tauri::WebviewWindow) {
-    if caller.label() != crate::commands::workspace_windows::LOCAL_WORKSPACE_LABEL {
-        return;
-    }
-    if !crate::commands::windows::can_hide_to_tray() {
-        return;
-    }
-    crate::commands::windows::hide_main_to_tray(app);
+    build_remote_workspace_window(&app, &connection, true)
 }
 
 /// Build a workspace for a saved connection. Manual opens validate health;

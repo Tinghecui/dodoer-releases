@@ -16,7 +16,7 @@ use serde::Serialize;
 use tauri::{Manager, State, WebviewWindow};
 
 use crate::commands::remote_proxy::RemoteProxyState;
-use crate::local_daemon::{LocalDaemon, Mode, CLIENT_ONLY_BUILD, LOCAL_CONNECTION_ID};
+use crate::local_daemon::{LocalDaemon, Mode, LOCAL_CONNECTION_ID};
 
 /// The child daemon, managed when it runs.
 pub struct LocalDaemonState(pub LocalDaemon);
@@ -25,13 +25,13 @@ pub struct LocalDaemonState(pub LocalDaemon);
 /// the fall-back from child to embedded), managed in every mode.
 pub struct DaemonModeState(pub Mode);
 
-/// `codeg --desktop-edition`: which edition this binary is — full, or the
-/// client-only one without a daemon (`CLIENT_ONLY_BUILD`) — and where it
+/// `codeg --desktop-edition`: which edition this binary is and where it
 /// updates from, as one line of JSON on stdout. The desktop build checks the
-/// bundle it just made with it (`scripts/cowork-desktop-build.sh`): the
-/// edition comes from a Cargo feature and the update line from a Tauri config
-/// file, and a bundle made with one but not the other would update itself
-/// into the other edition.
+/// bundle it just made with it (`scripts/cowork-desktop-build.sh`): the update
+/// line comes from a Tauri config file, and a bundle that picked up the wrong
+/// one would update itself from somewhere else. There is one edition, the
+/// full one; `edition` and `clientOnly` stay in the report for the scripts
+/// that read it (the client-only edition was dropped on 2026-11-09).
 pub fn edition_report(config: &tauri::Config) -> serde_json::Value {
     let endpoints = config
         .plugins
@@ -41,8 +41,8 @@ pub fn edition_report(config: &tauri::Config) -> serde_json::Value {
         .cloned()
         .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
     serde_json::json!({
-        "edition": if CLIENT_ONLY_BUILD { "client" } else { "full" },
-        "clientOnly": CLIENT_ONLY_BUILD,
+        "edition": "full",
+        "clientOnly": false,
         "productName": config.product_name,
         "identifier": config.identifier,
         "version": config.version,

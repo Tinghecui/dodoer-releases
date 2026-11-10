@@ -43,6 +43,7 @@ import { useBrowserCapabilities } from "@/lib/browser/use-browser-capabilities"
 import { openPetWindow } from "@/lib/pet/api"
 import { isRemoteDesktopWindow } from "@/lib/platform"
 import { openLocalWorkspace } from "@/lib/remote-workspace"
+import { BackToStartMenuItem } from "@/components/cowork/start-home"
 import { CloneDialog } from "./clone-dialog"
 import { RemoteWorkspaceManageDialog } from "./remote-workspace-manage-dialog"
 import { WorkspaceFolderDialog } from "./workspace-folder-dialog"
@@ -188,6 +189,8 @@ export function QuickActionsDropdown() {
               {tRemote("openLocalWorkspace")}
             </DropdownMenuItem>
           )}
+          {/* Cowork fork: the main window's way back to its start page. */}
+          <BackToStartMenuItem />
           {desktop && (
             <DropdownMenuSub
               onOpenChange={(open) => open && void refreshRemote()}

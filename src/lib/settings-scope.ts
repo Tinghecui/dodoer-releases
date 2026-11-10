@@ -13,7 +13,8 @@ import type { LocalDaemonInfo } from "@/lib/transport/local-daemon"
  * - `remote`: a desktop window bound to a saved server connection;
  * - `child`: the app's own `codeg-server` child process;
  * - `embedded`: the daemon inside the app (the fallback; one process);
- * - `client`: the client-only edition's local window — no daemon at all;
+ * - `client`: the app's own window when it runs no daemon at all
+ *   (`CODEG_DESKTOP_DAEMON=client`);
  * - `web`: a browser talking to the server that served the page.
  */
 export type SettingsTargetKind =
@@ -60,9 +61,10 @@ export function settingsTargetFor(
 export type SettingsScope = "app" | "server"
 
 /**
- * Whether the window has a daemon whose settings it can edit. The
- * client-only edition's local window has none: its app-side commands would
- * answer the server pages, but against a database nothing ever reads.
+ * Whether the window has a daemon whose settings it can edit. An app running
+ * without a local daemon (`CODEG_DESKTOP_DAEMON=client`) has none for its own
+ * windows: its app-side commands would answer the server pages, but against a
+ * database nothing ever reads.
  */
 export function hasServerSettings(target: SettingsTarget): boolean {
   return target.kind !== "client"

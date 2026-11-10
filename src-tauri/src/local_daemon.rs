@@ -14,10 +14,10 @@
 //! - [`Mode`]: child (the default), embedded (the old in-process start,
 //!   kept for one release as the way back — `CODEG_DESKTOP_DAEMON=embedded`,
 //!   and taken on its own when the child cannot be started), or client: no
-//!   daemon of its own at all. That last one is an edition of the app
-//!   ([`CLIENT_ONLY_BUILD`], the `client-only` feature, step 3 of the split):
-//!   built without `codeg-server`, for people whose work is on a Cowork
-//!   server. [`decide_mode`] picks between them.
+//!   daemon of its own at all, only on request (`CODEG_DESKTOP_DAEMON=client`;
+//!   step 3 of the split shipped it as an edition of its own, which is gone —
+//!   there is one edition, and its main window offers the local workspace or
+//!   a server's). [`decide_mode`] picks between them.
 //! - [`ChildSpec`]: the environment the child is started with. Same data
 //!   directory (and `CODEG_HOME`) as the embedded daemon had, so every local
 //!   conversation, setting and session file is where it was.
@@ -44,16 +44,8 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-/// `child`, `embedded` or `client`; unset means [`DEFAULT_MODE`]. Not read
-/// by a client-only build, which is always [`Mode::Client`].
+/// `child`, `embedded` or `client`; unset means [`DEFAULT_MODE`].
 pub const MODE_ENV: &str = "CODEG_DESKTOP_DAEMON";
-
-/// Whether this binary is the client-only edition (Cargo feature
-/// `client-only`): it ships no `codeg-server` and runs no daemon of its own,
-/// in-process or otherwise. Decided at compile time so a client-only app can
-/// never be talked into starting a daemon, and a full app never mistakes a
-/// missing sidecar for being one (that one falls back to embedded).
-pub const CLIENT_ONLY_BUILD: bool = cfg!(feature = "client-only");
 
 /// Set on the child: it is a desktop app's own daemon. Lets the server take
 /// its desktop-only defaults (the host bridge below) without guessing.
@@ -91,9 +83,8 @@ pub enum Mode {
     /// The daemon inside the app's own process, as before.
     Embedded,
     /// No daemon of its own: the windows open saved remote workspaces only,
-    /// and the local one shows how to connect. The client-only edition is
-    /// always in this mode; a full build takes it on request
-    /// (`CODEG_DESKTOP_DAEMON=client`), to try that edition's windows.
+    /// and the main one shows the start page without its local workspace.
+    /// Only on request (`CODEG_DESKTOP_DAEMON=client`).
     Client,
 }
 
@@ -135,15 +126,9 @@ impl Mode {
 /// desktop) is set to start with the app — that one is served by the
 /// in-process daemon, which a child cannot stand in for.
 ///
-/// A client-only build is `Client` whatever the environment or settings say:
-/// there is no `codeg-server` to start and the in-process daemon is not to be
-/// used (the web-service setting is left over from a full edition and is
-/// ignored, logged by the caller). A full build honours the web service
-/// first, then the variable.
-pub fn decide_mode(client_only_build: bool, requested: Option<&str>, web_auto_start: bool) -> Mode {
-    if client_only_build {
-        Mode::Client
-    } else if web_auto_start {
+/// The web service comes first, then the variable.
+pub fn decide_mode(requested: Option<&str>, web_auto_start: bool) -> Mode {
+    if web_auto_start {
         Mode::Embedded
     } else {
         Mode::parse(requested)
@@ -885,26 +870,16 @@ mod tests {
     }
 
     #[test]
-    fn client_only_build_is_client_whatever_is_asked() {
-        assert_eq!(decide_mode(true, None, false), Mode::Client);
-        assert_eq!(decide_mode(true, Some("embedded"), false), Mode::Client);
-        assert_eq!(decide_mode(true, Some("child"), false), Mode::Client);
-        // A web-service setting left over from a full edition does not bring
-        // the in-process daemon back.
-        assert_eq!(decide_mode(true, None, true), Mode::Client);
-        assert!(!Mode::Client.has_local_daemon());
-    }
-
-    #[test]
-    fn full_build_honours_the_web_service_then_the_variable() {
-        assert_eq!(decide_mode(false, None, false), Mode::Child);
-        assert_eq!(decide_mode(false, Some("embedded"), false), Mode::Embedded);
-        assert_eq!(decide_mode(false, Some("client"), false), Mode::Client);
-        assert_eq!(decide_mode(false, None, true), Mode::Embedded);
-        assert_eq!(decide_mode(false, Some("child"), true), Mode::Embedded);
-        assert_eq!(decide_mode(false, Some("client"), true), Mode::Embedded);
+    fn decide_mode_honours_the_web_service_then_the_variable() {
+        assert_eq!(decide_mode(None, false), Mode::Child);
+        assert_eq!(decide_mode(Some("embedded"), false), Mode::Embedded);
+        assert_eq!(decide_mode(Some("client"), false), Mode::Client);
+        assert_eq!(decide_mode(None, true), Mode::Embedded);
+        assert_eq!(decide_mode(Some("child"), true), Mode::Embedded);
+        assert_eq!(decide_mode(Some("client"), true), Mode::Embedded);
         assert!(Mode::Child.has_local_daemon());
         assert!(Mode::Embedded.has_local_daemon());
+        assert!(!Mode::Client.has_local_daemon());
     }
 
     #[test]

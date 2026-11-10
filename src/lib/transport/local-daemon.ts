@@ -2,11 +2,11 @@
 // has. Set by the app before any page code runs (`window.__CODEG_LOCAL_DAEMON__`,
 // `src-tauri/src/commands/local_daemon.rs`): "child" — a `codeg-server` child
 // process the window reaches through the remote-workspace proxy, as connection
-// `connectionId` — "embedded", the daemon inside the app, or "client" (step
-// 3): none at all — the client-only edition, whose windows open saved remote
-// workspaces only and whose local window shows how to connect
-// (`src/components/cowork/client-only-home.tsx`). Absent outside the app (web
-// build) and in an app from before the split, which is embedded.
+// `connectionId` — "embedded", the daemon inside the app, or "client": none
+// at all (`CODEG_DESKTOP_DAEMON=client`), so the windows open saved remote
+// workspaces only and the main one shows its start page without the local
+// workspace (`src/components/cowork/start-home.tsx`). Absent outside the app
+// (web build) and in an app from before the split, which is embedded.
 
 export type LocalDaemonMode = "child" | "embedded" | "client"
 
@@ -37,12 +37,4 @@ export function localDaemonInfo(): LocalDaemonInfo | null {
 /** Whether this window's daemon is the app's child process. */
 export function isLocalChildDaemon(): boolean {
   return localDaemonInfo()?.mode === "child"
-}
-
-/**
- * Whether this app is the client-only edition: no daemon of its own, so the
- * local window has no workspace to show — only the way to a server's.
- */
-export function isClientOnlyApp(): boolean {
-  return localDaemonInfo()?.mode === "client"
 }

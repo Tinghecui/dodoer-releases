@@ -28,14 +28,15 @@ on:
       real_agent:
         type: boolean
         default: false
+      # 三个模型空着时用这个仓库的变量 AIQA_AGENT_MODEL、AIQA_MODEL、AIQA_PM_MODEL，再没有用下面 env 里写的默认
       agent_model:
-        default: "claude-haiku-4-5"
+        default: ""
       max_turns:
         default: "2000"
       model:
-        default: "claude-opus-5-5"
+        default: ""
       pm_model:
-        default: "claude-opus-5-5"
+        default: ""
       env:
         type: choice
         options: [cowork, bare]
@@ -73,9 +74,9 @@ jobs:
       INPUT_STORIES: ${{ inputs.stories }}
       INPUT_EXPLORE: ${{ inputs.explore }}
       MAX_TURNS: ${{ inputs.max_turns || '2000' }}
-      MODEL: ${{ inputs.model || 'claude-opus-5-5' }}
-      PM_MODEL: ${{ inputs.pm_model || 'claude-opus-5-5' }}
-      AGENT_MODEL: ${{ inputs.agent_model || 'claude-haiku-4-5' }}
+      MODEL: ${{ inputs.model || vars.AIQA_MODEL || 'claude-opus-5-5' }}
+      PM_MODEL: ${{ inputs.pm_model || vars.AIQA_PM_MODEL || vars.AIQA_MODEL || 'claude-opus-5-5' }}
+      AGENT_MODEL: ${{ inputs.agent_model || vars.AIQA_AGENT_MODEL || 'claude-haiku-4-5' }}
     steps:
       - uses: actions/setup-node@v4
         with:

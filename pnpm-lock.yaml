@@ -14,6 +14,11 @@ overrides:
   fast-uri@>=3 <3.1.9: ^3.1.9
   '@hono/node-server@<2.1.3': ^2.1.3
 
+patchedDependencies:
+  '@tauri-apps/api@2.12.4': cb5d7a9395e8e570985347e12bb9ec386e8ac4e2981f4cc5d9d3351452b5e2ce
+  overlayscrollbars@2.15.1: d31b0912d157c6838f7cea20573a5917730580b13fceaa2c7c53b4856f605328
+  streamdown@2.7.0: a95674a8c1b7844cde8968d64842e7b842d1368955e880ab223766cb318e13ea
+
 importers:
 
   .:
@@ -68,7 +73,7 @@ importers:
         version: 1.0.3(react@19.2.4)
       '@tauri-apps/api':
         specifier: ^2.12.4
-        version: 2.12.4
+        version: 2.12.4(patch_hash=cb5d7a9395e8e570985347e12bb9ec386e8ac4e2981f4cc5d9d3351452b5e2ce)
       '@tauri-apps/plugin-dialog':
         specifier: ^2.8.3
         version: 2.8.3
@@ -170,10 +175,10 @@ importers:
         version: 0.4.6(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       overlayscrollbars:
         specifier: ^2.15.1
-        version: 2.15.1
+        version: 2.15.1(patch_hash=d31b0912d157c6838f7cea20573a5917730580b13fceaa2c7c53b4856f605328)
       overlayscrollbars-react:
         specifier: ^0.5.6
-        version: 0.5.6(overlayscrollbars@2.15.1)(react@19.2.4)
+        version: 0.5.6(overlayscrollbars@2.15.1(patch_hash=d31b0912d157c6838f7cea20573a5917730580b13fceaa2c7c53b4856f605328))(react@19.2.4)
       pdfjs-dist:
         specifier: 6.4.299
         version: 6.4.299
@@ -227,7 +232,7 @@ importers:
         version: 2.0.8(@types/react@19.2.13)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       streamdown:
         specifier: ^2.7.0
-        version: 2.7.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        version: 2.7.0(patch_hash=a95674a8c1b7844cde8968d64842e7b842d1368955e880ab223766cb318e13ea)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       tailwind-merge:
         specifier: ^3.4.0
         version: 3.4.0
@@ -9412,7 +9417,7 @@ snapshots:
       postcss: 8.5.30
       tailwindcss: 4.1.18
 
-  '@tauri-apps/api@2.12.4': {}
+  '@tauri-apps/api@2.12.4(patch_hash=cb5d7a9395e8e570985347e12bb9ec386e8ac4e2981f4cc5d9d3351452b5e2ce)': {}
 
   '@tauri-apps/cli-darwin-arm64@2.12.3':
     optional: true
@@ -9463,23 +9468,23 @@ snapshots:
 
   '@tauri-apps/plugin-dialog@2.8.3':
     dependencies:
-      '@tauri-apps/api': 2.12.4
+      '@tauri-apps/api': 2.12.4(patch_hash=cb5d7a9395e8e570985347e12bb9ec386e8ac4e2981f4cc5d9d3351452b5e2ce)
 
   '@tauri-apps/plugin-opener@2.7.2':
     dependencies:
-      '@tauri-apps/api': 2.12.4
+      '@tauri-apps/api': 2.12.4(patch_hash=cb5d7a9395e8e570985347e12bb9ec386e8ac4e2981f4cc5d9d3351452b5e2ce)
 
   '@tauri-apps/plugin-process@2.4.0':
     dependencies:
-      '@tauri-apps/api': 2.12.4
+      '@tauri-apps/api': 2.12.4(patch_hash=cb5d7a9395e8e570985347e12bb9ec386e8ac4e2981f4cc5d9d3351452b5e2ce)
 
   '@tauri-apps/plugin-updater@2.14.0':
     dependencies:
-      '@tauri-apps/api': 2.12.4
+      '@tauri-apps/api': 2.12.4(patch_hash=cb5d7a9395e8e570985347e12bb9ec386e8ac4e2981f4cc5d9d3351452b5e2ce)
 
   '@tauri-apps/plugin-window-state@2.5.0':
     dependencies:
-      '@tauri-apps/api': 2.12.4
+      '@tauri-apps/api': 2.12.4(patch_hash=cb5d7a9395e8e570985347e12bb9ec386e8ac4e2981f4cc5d9d3351452b5e2ce)
 
   '@testing-library/dom@10.4.1':
     dependencies:
@@ -13025,12 +13030,12 @@ snapshots:
 
   outvariant@1.4.3: {}
 
-  overlayscrollbars-react@0.5.6(overlayscrollbars@2.15.1)(react@19.2.4):
+  overlayscrollbars-react@0.5.6(overlayscrollbars@2.15.1(patch_hash=d31b0912d157c6838f7cea20573a5917730580b13fceaa2c7c53b4856f605328))(react@19.2.4):
     dependencies:
-      overlayscrollbars: 2.15.1
+      overlayscrollbars: 2.15.1(patch_hash=d31b0912d157c6838f7cea20573a5917730580b13fceaa2c7c53b4856f605328)
       react: 19.2.4
 
-  overlayscrollbars@2.15.1: {}
+  overlayscrollbars@2.15.1(patch_hash=d31b0912d157c6838f7cea20573a5917730580b13fceaa2c7c53b4856f605328): {}
 
   own-keys@1.0.1:
     dependencies:
@@ -13943,7 +13948,7 @@ snapshots:
       es-errors: 1.3.0
       internal-slot: 1.1.0
 
-  streamdown@2.7.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
+  streamdown@2.7.0(patch_hash=a95674a8c1b7844cde8968d64842e7b842d1368955e880ab223766cb318e13ea)(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
     dependencies:
       clsx: 2.1.1
       hast-util-to-jsx-runtime: 2.3.6

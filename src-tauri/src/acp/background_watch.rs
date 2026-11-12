@@ -661,6 +661,17 @@ pub(crate) struct WatchState {
     /// Task ids that have settled at least once — a later `SendMessage` to
     /// such an id re-arms it (the resumed sub-agent will notify again).
     settled_ids: HashSet<String>,
+    /// Record uuids of the launch acks and `task_status` attachments
+    /// ([`replay_guarded_uuid`]) this watch has accounted, or that sit in the
+    /// history its arm baseline skipped (`seed_titles_from_history`). Claude
+    /// Code re-appends old records, uuids unchanged, when it compacts — 595
+    /// of them in the transcript this was found on (2026-11-12) — and such a
+    /// record must not be accounted a second time: the ack's task ended long
+    /// ago, and the notification that would settle it again is not always
+    /// re-appended with it, so the row sat at "background work pending" until
+    /// the max-age valve. Not carried across `rearm`: the baseline it sets
+    /// re-seeds this from the history it skips.
+    replay_guard: HashSet<String>,
     /// Task ids launched (an `async_launched`/`backgroundTaskId` ack seen)
     /// while the connection's CURRENTLY (or most recently) active turn was
     /// `Prompting`. An `async_launched` (sub-agent) id is inserted here;
@@ -784,6 +795,7 @@ impl WatchState {
             episode: None,
             tasks: HashMap::new(),
             settled_ids: HashSet::new(),
+            replay_guard: HashSet::new(),
             current_turn_launched_ids: HashSet::new(),
             was_prompting: false,
             foreground_awaiting_reply: false,
@@ -1228,6 +1240,12 @@ impl WatchState {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim_end()) else {
                 continue;
             };
+            // Not a title, but the same one pass over the skipped history:
+            // its launch acks must not register if the CLI re-appends them
+            // later (see `replay_guard`).
+            if let Some(uuid) = replay_guarded_uuid(&value) {
+                self.replay_guard.insert(uuid.to_string());
+            }
             let Some(record_type) = value.get("type").and_then(|t| t.as_str()) else {
                 continue;
             };
@@ -1299,9 +1317,17 @@ impl WatchState {
     /// `TaskOutput` result reaching a terminal `task.status`, or a
     /// `TaskStop`/`KillShell` call; and `SendMessage` re-arms of settled
     /// sub-agents. An interim notification settles nothing
-    /// ([`Self::keep_interim_task`]).
+    /// ([`Self::keep_interim_task`]). A launch ack or `task_status` attachment
+    /// read a second time is not accounted again (see `replay_guard`).
     fn account(&mut self, value: &serde_json::Value, settled: &mut Vec<BackgroundSettledInfo>) {
         let record_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let replayed = replay_guarded_uuid(value)
+            .is_some_and(|uuid| !self.replay_guard.insert(uuid.to_string()));
+        if replayed {
+            tracing::info!(
+                "[bg-watch] {record_type} record re-appended by the CLI, not accounted again"
+            );
+        }
         match record_type {
             // A task that settled while a turn ran: its notification is folded
             // into that turn (see `queued_task_notification`), and this is the
@@ -1324,6 +1350,19 @@ impl WatchState {
                         }
                     }
                 }
+                // The task list Claude Code writes after a compaction: a task
+                // it reports as ended is gone, whether or not a notification
+                // was ever written for it. A sub-agent that was stopped gets
+                // none (observed 2026-11-12, status `killed`), and this record
+                // is the first the transcript says about it.
+                if let Some((id, status)) = task_status_attachment(value).filter(|_| !replayed) {
+                    if is_terminal_task_status(status) && self.tasks.remove(id).is_some() {
+                        self.settled_ids.insert(id.to_string());
+                        tracing::info!(
+                            "[bg-watch] settled task={id} via task_status attachment status={status}"
+                        );
+                    }
+                }
             }
             "user" => {
                 if let Some(tur) = value.get("toolUseResult") {
@@ -1332,6 +1371,7 @@ impl WatchState {
                             .get("agentId")
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
+                            .filter(|_| !replayed)
                         {
                             // `entry().or_insert_with()`, not a blind `insert`:
                             // a re-observed id (e.g. a resumed sub-agent's ack
@@ -1362,6 +1402,7 @@ impl WatchState {
                         .get("backgroundTaskId")
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
+                        .filter(|_| !replayed)
                     {
                         // Same first-seen rationale as the agent branch above —
                         // doubly important here since a still-running shell is
@@ -1901,6 +1942,47 @@ fn baseline_offset_since(path: &PathBuf, epoch: std::time::SystemTime) -> Option
         }
     }
     Some(offset)
+}
+
+/// The record uuid of the two record kinds `WatchState::replay_guard` keeps
+/// from being accounted twice: a background launch ack (a `user` record whose
+/// `toolUseResult` is an `async_launched` sub-agent or names a
+/// `backgroundTaskId`) and a `task_status` attachment. `None` for every other
+/// record, and for one of these that carries no uuid.
+fn replay_guarded_uuid(value: &serde_json::Value) -> Option<&str> {
+    let guarded = match value.get("type").and_then(|t| t.as_str()) {
+        Some("user") => value.get("toolUseResult").is_some_and(|tur| {
+            tur.get("status").and_then(|s| s.as_str()) == Some("async_launched")
+                || tur
+                    .get("backgroundTaskId")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty())
+        }),
+        Some("attachment") => task_status_attachment(value).is_some(),
+        _ => false,
+    };
+    if !guarded {
+        return None;
+    }
+    value
+        .get("uuid")
+        .and_then(|u| u.as_str())
+        .filter(|u| !u.is_empty())
+}
+
+/// `(taskId, status)` of a `task_status` attachment — one entry of the task
+/// list Claude Code writes after a compaction.
+fn task_status_attachment(value: &serde_json::Value) -> Option<(&str, &str)> {
+    let attachment = value.get("attachment")?;
+    if attachment.get("type").and_then(|t| t.as_str()) != Some("task_status") {
+        return None;
+    }
+    let id = attachment
+        .get("taskId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?;
+    let status = attachment.get("status").and_then(|s| s.as_str())?;
+    Some((id, status))
 }
 
 /// Whether a `TaskOutput` `task.status` is terminal — the task has stopped and
@@ -3195,6 +3277,126 @@ mod tests {
         assert_eq!(
             first_seen, second_seen,
             "started_at must reflect first-seen (launch), not reset on a repeat observation"
+        );
+    }
+
+    /// Real-shape `task_status` attachment (one entry of the task list Claude
+    /// Code writes after a compaction, as captured on 2026-11-12).
+    fn task_status(uuid: &str, task_id: &str, status: &str) -> String {
+        format!(
+            r#"{{"type":"attachment","timestamp":"2026-07-07T03:49:30.000Z","uuid":"{uuid}","attachment":{{"type":"task_status","taskId":"{task_id}","taskType":"local_agent","description":"Run pnpm build","status":"{status}","deltaSummary":null,"canContinueAgent":true}}}}"#
+        )
+    }
+
+    /// Claude Code re-appends old records, uuids unchanged, when it compacts.
+    /// A launch ack among them names a task that ended long ago, and its
+    /// settling notification is not always re-appended with it — registered
+    /// again, it held the row at "background work pending" for the whole
+    /// max-age window (2026-11-12: a sub-agent launched at 16:22 and stopped
+    /// at 16:57 came back at the 18:39 compaction).
+    #[test]
+    fn a_reappended_launch_ack_does_not_register_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&agent_ack("agent1"), &bash_ack("bash1")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("launch event"));
+        assert_eq!(outstanding, 2);
+
+        // The sub-agent settles by notification; the shell leaves the count
+        // with no record written, as the max-age valve drops it.
+        write_lines(&path, &[&notification("agent1", "completed")]);
+        let _ = tick_now(&mut ws, &ledger);
+        ws.tasks.remove("bash1");
+        assert!(ws.tasks.is_empty());
+
+        // The compaction: both acks come back, neither notification does.
+        write_lines(
+            &path,
+            &[
+                &agent_ack("agent1"),
+                &bash_ack("bash1"),
+                &agent_ack("agent2"),
+            ],
+        );
+        let _ = tick_now(&mut ws, &ledger);
+        assert!(
+            !ws.tasks.contains_key("agent1") && !ws.tasks.contains_key("bash1"),
+            "a re-appended ack must not register its task again"
+        );
+        assert!(
+            ws.tasks.contains_key("agent2"),
+            "a launch read for the first time still registers"
+        );
+    }
+
+    /// The same re-append for an ack this watch never accounted: it sat in the
+    /// history the arm baseline skipped (a session resumed after a restart).
+    #[test]
+    fn a_reappended_launch_ack_from_skipped_history_does_not_register() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        let ledger = PromptLedger::shared();
+        write_lines(&path, &[&agent_ack("stale-old"), &bash_ack("stale-shell")]);
+
+        let mut ws = WatchState::new();
+        ws.session_id = Some("s1".into());
+        ws.epoch = Some(epoch("2030-01-01T00:00:00Z"));
+        ws.adopt_file(path.clone());
+        assert!(
+            tick_now(&mut ws, &ledger).is_none(),
+            "pure history yields no event"
+        );
+
+        write_lines(
+            &path,
+            &[
+                &agent_ack("stale-old"),
+                &bash_ack("stale-shell"),
+                &agent_ack("fresh"),
+            ],
+        );
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("launch event"));
+        assert_eq!(outstanding, 1, "only the launch written after the baseline");
+        assert!(ws.tasks.contains_key("fresh"));
+    }
+
+    /// A stopped sub-agent gets no notification; the task list written after
+    /// a compaction is the first record that says it ended. A task the list
+    /// reports as still running stays, and an old list re-appended later must
+    /// not take a since-resumed sub-agent back out of the count.
+    #[test]
+    fn a_task_status_attachment_settles_an_ended_task_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&agent_ack("agent1"), &agent_ack("agent2")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(ws.tasks.len(), 2);
+
+        write_lines(
+            &path,
+            &[
+                &task_status("ts-1", "agent1", "killed"),
+                &task_status("ts-2", "agent2", "running"),
+            ],
+        );
+        let (_, outstanding, settled, _) =
+            unpack(tick_now(&mut ws, &ledger).expect("accounting event"));
+        assert_eq!(outstanding, 1);
+        assert!(settled.is_empty(), "nothing to announce out of turn");
+        assert!(ws.tasks.contains_key("agent2"));
+        assert!(ws.settled_ids.contains("agent1"));
+
+        // Resumed, then the old list comes back with a later compaction.
+        let resume = r#"{"type":"assistant","timestamp":"2026-07-07T03:53:00.000Z","uuid":"a-send-ts","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_10","name":"SendMessage","input":{"to":"agent1","summary":"continue","message":"go on"}}]}}"#;
+        write_lines(&path, &[resume, &task_status("ts-1", "agent1", "killed")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert!(
+            ws.tasks.contains_key("agent1"),
+            "a re-appended task list must not settle the resumed sub-agent"
         );
     }
 

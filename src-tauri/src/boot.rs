@@ -407,6 +407,14 @@ pub fn spawn_daemon_services(daemon: &Daemon<'_>, options: &DaemonOptions) -> Da
         ));
     }
 
+    // Keeps the Codex model list codeg published current (a provider list
+    // past its age, a codex upgraded outside codeg) and clears what a release
+    // left behind. One per process: upstream spawns it from the desktop setup
+    // and from `codeg-server` separately; both come through here.
+    if let Some(scheduler) = crate::acp::codex_catalog_refresh::build(daemon.emitter.clone()) {
+        tokio::spawn(crate::acp::codex_catalog_refresh::run(scheduler));
+    }
+
     tokio::spawn(crate::workbench_apps::boot(
         daemon.db(),
         daemon.emitter.clone(),

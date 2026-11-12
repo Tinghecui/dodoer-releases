@@ -124,6 +124,12 @@ fn main() -> ExitCode {
     let _log_guard = codeg_lib::logging::init::init_server();
     codeg_lib::cowork::log_startup();
 
+    // macOS must not pause the process every agent session runs through when
+    // memory runs out. Upstream does this in the desktop app, where the daemon
+    // is in-process; here the app's daemon is this server, started as a child.
+    #[cfg(target_os = "macos")]
+    codeg_lib::process::opt_out_of_low_swap_suspension();
+
     // `CODEG_HOME` overrides `CODEG_DATA_DIR` for uploads/pets inside
     // `paths::codeg_*_root` (legacy `~/.codeg/` layout). If both are set
     // and resolve to different roots, the database and uploads land on

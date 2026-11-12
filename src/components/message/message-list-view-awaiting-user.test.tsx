@@ -212,23 +212,25 @@ afterEach(() => {
 })
 
 describe("MessageListView: the live capsule while the agent waits on the user", () => {
-  it("names the wait while a permission request is up, and streams again once answered", () => {
+  // Upstream 0.43: the capsule has no word for what the agent is doing, so
+  // "not waiting" is the capsule on screen without the wait's name.
+  it("names the wait while a permission request is up, and drops it once answered", () => {
     const capsule = renderLiveTranscript()
-    expect(capsule()).toContain("streaming")
+    expect(capsule()).not.toBeNull()
+    expect(capsule()).not.toContain("statusAwaiting")
 
     act(() => askPermission(SESSION_ID))
     expect(capsule()).toContain("statusAwaitingPermissionBadge")
-    expect(capsule()).not.toContain("streaming")
 
     act(() => publishAwaitingUser([]))
-    expect(capsule()).toContain("streaming")
-    expect(capsule()).not.toContain("statusAwaitingPermissionBadge")
+    expect(capsule()).not.toBeNull()
+    expect(capsule()).not.toContain("statusAwaiting")
   })
 
   it("is not touched by another session's request", () => {
     const capsule = renderLiveTranscript()
     act(() => askPermission("some-other-session"))
-    expect(capsule()).toContain("streaming")
-    expect(capsule()).not.toContain("statusAwaitingPermissionBadge")
+    expect(capsule()).not.toBeNull()
+    expect(capsule()).not.toContain("statusAwaiting")
   })
 })

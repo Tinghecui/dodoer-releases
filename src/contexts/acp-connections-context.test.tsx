@@ -28,6 +28,7 @@ import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { parsePermissionToolCall } from "@/lib/permission-request"
 import { subscribe } from "@/lib/platform"
 import { saveConfigPreference } from "@/lib/selector-prefs-storage"
+import { inferLiveToolName } from "@/lib/tool-call-normalization"
 import type { AttachHandlers } from "@/lib/transport/types"
 import {
   resetAppWorkspaceStore,
@@ -313,6 +314,7 @@ function snapshotBase() {
     configStale: false,
     configStaleKind: null,
     backgroundOutstanding: 0,
+    backgroundTasks: [],
     activeDelegations: [],
     delegatedChildren: [],
     lastError: null as string | null,
@@ -2252,6 +2254,103 @@ describe("AcpConnectionsProvider abandoned connect tears down only what it creat
   })
 })
 
+describe("AcpConnectionsProvider retained tool output", () => {
+  it.each([
+    "opening",
+    "repeated opening",
+    "replacement",
+    "append",
+    "unannounced update",
+    "out-of-turn opening",
+  ])("bounds a large plain-text %s frame", async (route) => {
+    const originalRaf = globalThis.requestAnimationFrame
+    const originalCancelRaf = globalThis.cancelAnimationFrame
+    const frames = new Map<number, FrameRequestCallback>()
+    let nextFrame = 0
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.set(++nextFrame, callback)
+      return nextFrame
+    })
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id))
+    try {
+      await mountProvider()
+      await act(async () => {
+        await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+      })
+      const handlers = latestAttachHandlers()
+      let seq = 0
+      const large = "old output\n".repeat(30_000) + "LATEST"
+      const opening = (rawOutput: string | null) =>
+        emitAcpEvent(handlers, {
+          seq: ++seq,
+          connection_id: "spawned-conn",
+          type: "tool_call",
+          tool_call_id: "large-call",
+          title: "Bash",
+          kind: "execute",
+          status: "in_progress",
+          content: null,
+          raw_input: '{"command":"build"}',
+          raw_output: rawOutput,
+        })
+      if (route !== "out-of-turn opening") {
+        emitAcpEvent(handlers, {
+          seq: ++seq,
+          connection_id: "spawned-conn",
+          type: "status_changed",
+          status: "prompting",
+        })
+      }
+      if (
+        route === "opening" ||
+        route === "out-of-turn opening" ||
+        route === "repeated opening"
+      ) {
+        if (route === "repeated opening") opening("small")
+        opening(large)
+      } else {
+        if (route !== "unannounced update") opening("small")
+        emitAcpEvent(handlers, {
+          seq: ++seq,
+          connection_id: "spawned-conn",
+          type: "tool_call_update",
+          tool_call_id: "large-call",
+          title: "Bash",
+          status: "in_progress",
+          content: null,
+          raw_input: null,
+          raw_output: large,
+          raw_output_append: route === "append",
+        })
+        act(() => {
+          const pending = [...frames.values()]
+          frames.clear()
+          for (const frame of pending) frame(0)
+        })
+      }
+      const connection = h.store!.getConnection(TAB)!
+      const block = connection.liveMessage?.content.find(
+        (item) =>
+          item.type === "tool_call" && item.info.tool_call_id === "large-call"
+      )
+      const info =
+        route === "out-of-turn opening"
+          ? connection.outOfTurnToolCalls?.get("large-call")
+          : block?.type === "tool_call"
+            ? block.info
+            : null
+      expect(info).toBeTruthy()
+      expect(info?.raw_output_total_bytes).toBe(200_000)
+      expect(info?.raw_output_chunks.join("")).toBe(large.slice(-200_000))
+      expect(info?.title).toBe("Bash")
+      expect(info?.status).toBe("in_progress")
+    } finally {
+      vi.stubGlobal("requestAnimationFrame", originalRaf)
+      vi.stubGlobal("cancelAnimationFrame", originalCancelRaf)
+    }
+  })
+})
+
 describe("AcpConnectionsProvider permission request details", () => {
   it("hydrates a permission request from an existing live tool call input", async () => {
     await mountProvider()
@@ -2345,6 +2444,514 @@ describe("AcpConnectionsProvider permission request details", () => {
       oldText: "const value = 1;",
       newText: "const value = 2;",
     })
+  })
+
+  it("tells a sandbox network request by the live call it is about", async () => {
+    // claude-agent-acp 0.98.0, recorded: the call is announced first, with
+    // its tool name; the request after it names only the host.
+    await mountProvider()
+
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+    })
+
+    const handlers = latestAttachHandlers()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "tool_call",
+      tool_call_id: "net-1",
+      title: "SandboxNetworkAccess",
+      kind: "other",
+      status: "pending",
+      content: null,
+      raw_input: JSON.stringify({ host: "example.com" }),
+      raw_output: null,
+      meta: { claudeCode: { toolName: "SandboxNetworkAccess" } },
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "permission_request",
+      request_id: "req-net",
+      tool_call: {
+        toolCallId: "net-1",
+        title: "example.com",
+        rawInput: { host: "example.com" },
+        _meta: { permission: { version: 1, title: "example.com" } },
+      },
+      options: [],
+    })
+
+    const parsed = parsePermissionToolCall(
+      h.store!.getConnection(TAB)!.pendingPermission?.tool_call
+    )
+    expect(parsed.networkHost).toBe("example.com")
+    // The request's own block is kept.
+    expect(parsed.description).toBe("example.com")
+  })
+
+  it("tells a sandbox network request whose call arrives after it", async () => {
+    const originalRaf = globalThis.requestAnimationFrame
+    const originalCancelRaf = globalThis.cancelAnimationFrame
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      cb(0)
+      return 1
+    })
+    vi.stubGlobal("cancelAnimationFrame", () => {})
+
+    try {
+      await mountProvider()
+
+      await act(async () => {
+        await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+      })
+
+      const handlers = latestAttachHandlers()
+      emitAcpEvent(handlers, {
+        seq: 1,
+        connection_id: "spawned-conn",
+        type: "permission_request",
+        request_id: "req-net",
+        tool_call: {
+          toolCallId: "net-1",
+          title: "example.com",
+          rawInput: { host: "example.com" },
+        },
+        options: [],
+      })
+      expect(
+        parsePermissionToolCall(
+          h.store!.getConnection(TAB)!.pendingPermission?.tool_call
+        ).networkHost
+      ).toBeNull()
+
+      emitAcpEvent(handlers, {
+        seq: 2,
+        connection_id: "spawned-conn",
+        type: "tool_call",
+        tool_call_id: "net-1",
+        title: "SandboxNetworkAccess",
+        kind: "other",
+        status: "pending",
+        content: null,
+        raw_input: JSON.stringify({ host: "example.com" }),
+        raw_output: null,
+        meta: { claudeCode: { toolName: "SandboxNetworkAccess" } },
+      })
+
+      expect(
+        parsePermissionToolCall(
+          h.store!.getConnection(TAB)!.pendingPermission?.tool_call
+        ).networkHost
+      ).toBe("example.com")
+    } finally {
+      vi.stubGlobal("requestAnimationFrame", originalRaf)
+      vi.stubGlobal("cancelAnimationFrame", originalCancelRaf)
+    }
+  })
+
+  it("keeps the tool name of a call announced after its request drew it", async () => {
+    // Recorded in a browser against claude-agent-acp 0.98.0: in a turn, the
+    // request can reach the store first and draw a placeholder call; the
+    // announcement that follows is the only frame naming the tool.
+    const originalRaf = globalThis.requestAnimationFrame
+    const originalCancelRaf = globalThis.cancelAnimationFrame
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      cb(0)
+      return 1
+    })
+    vi.stubGlobal("cancelAnimationFrame", () => {})
+
+    try {
+      await mountProvider()
+
+      await act(async () => {
+        await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+      })
+
+      const handlers = latestAttachHandlers()
+      emitAcpEvent(handlers, {
+        seq: 1,
+        connection_id: "spawned-conn",
+        type: "status_changed",
+        status: "prompting",
+      })
+      emitAcpEvent(handlers, {
+        seq: 2,
+        connection_id: "spawned-conn",
+        type: "permission_request",
+        request_id: "req-net",
+        tool_call: {
+          toolCallId: "net-2",
+          title: "example.org",
+          rawInput: { host: "example.org" },
+        },
+        options: [],
+      })
+      emitAcpEvent(handlers, {
+        seq: 3,
+        connection_id: "spawned-conn",
+        type: "tool_call",
+        tool_call_id: "net-2",
+        title: "SandboxNetworkAccess",
+        kind: "other",
+        status: "pending",
+        content: null,
+        raw_input: JSON.stringify({ host: "example.org" }),
+        raw_output: null,
+        meta: { claudeCode: { toolName: "SandboxNetworkAccess" } },
+      })
+
+      const conn = h.store!.getConnection(TAB)!
+      const block = conn.liveMessage?.content.find(
+        (b) => b.type === "tool_call" && b.info.tool_call_id === "net-2"
+      )
+      expect(block?.type === "tool_call" ? block.info.meta : null).toEqual({
+        claudeCode: { toolName: "SandboxNetworkAccess" },
+      })
+      expect(
+        parsePermissionToolCall(conn.pendingPermission?.tool_call).networkHost
+      ).toBe("example.org")
+    } finally {
+      vi.stubGlobal("requestAnimationFrame", originalRaf)
+      vi.stubGlobal("cancelAnimationFrame", originalCancelRaf)
+    }
+  })
+
+  it("exposes Kimi OAuth status before the tool settles and retires its link", async () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      frames.push(cb)
+      return frames.length
+    })
+    vi.stubGlobal("cancelAnimationFrame", () => {})
+    try {
+      await mountProvider()
+      await act(async () => {
+        await h.actions!.connect(TAB, "kimi_code", "/tmp/x", "sess-1")
+      })
+      const handlers = latestAttachHandlers()
+      let seq = 0
+      const emit = (event: Omit<EventEnvelope, "seq" | "connection_id">) => {
+        emitAcpEvent(handlers, {
+          ...event,
+          seq: ++seq,
+          connection_id: "spawned-conn",
+        } as EventEnvelope)
+        act(() => {
+          while (frames.length) frames.shift()!(0)
+        })
+      }
+      const call = () => {
+        const block = h
+          .store!.getConnection(TAB)!
+          .liveMessage?.content.find(
+            (b) => b.type === "tool_call" && b.info.tool_call_id === "auth-1"
+          )
+        return block?.type === "tool_call" ? block.info : null
+      }
+      emit({ type: "status_changed", status: "prompting" } as EventEnvelope)
+      emit({
+        type: "tool_call",
+        tool_call_id: "auth-1",
+        title: "mcp__notion__authenticate",
+        kind: "other",
+        status: "pending",
+        content: null,
+        raw_input: null,
+        raw_output: null,
+      } as EventEnvelope)
+      emit({
+        type: "tool_call_update",
+        tool_call_id: "auth-1",
+        title: "Authenticating notion",
+        status: "inprogress",
+        content: null,
+        raw_input: "{}",
+        raw_output: null,
+      } as EventEnvelope)
+      const url =
+        "https://auth.example.test/authorize?state=a%2Bb&code_challenge=x_y&redirect_uri=http%3A%2F%2F127.0.0.1%3A43127%2Fcallback"
+      const progress = `Open this URL in your browser to authorize "notion":\n\n${url}\n\nWaiting for the OAuth callback (timeout 15 min). If you cancel, call this tool again to restart the flow.`
+      const update = (title: string | null, status: string | null = null) =>
+        emit({
+          type: "tool_call_update",
+          tool_call_id: "auth-1",
+          title,
+          status,
+          content: null,
+          raw_input: null,
+          raw_output: null,
+        } as EventEnvelope)
+      update(progress)
+      expect(call()?.status).toBe("inprogress")
+      expect(call()?.title).toBe("mcp__notion__authenticate")
+      expect(call()?.meta?.["codeg.kimiMcpOAuth"]).toMatchObject({
+        phase: "waiting",
+        url,
+      })
+      const { buildStreamingTurnsFromLiveMessage } =
+        await import("@/stores/conversation-runtime-store")
+      const { adaptMessageTurn } =
+        await import("@/lib/adapters/ai-elements-adapter")
+      const { MOCKUP_ADAPTER_TEXT } =
+        await import("@/lib/activity/__fixtures__/mockup-turn")
+      const built = buildStreamingTurnsFromLiveMessage(
+        42,
+        h.store!.getConnection(TAB)!.liveMessage!
+      )
+      const adapted = adaptMessageTurn(
+        built.turns[0]!,
+        MOCKUP_ADAPTER_TEXT,
+        true,
+        new Set(["auth-1"])
+      )
+      expect(adapted.content.find((p) => p.type === "tool-call")).toMatchObject(
+        {
+          toolName: "mcp__notion__authenticate",
+          meta: { "codeg.kimiMcpOAuth": { phase: "waiting", url } },
+        }
+      )
+      update("Authorized — reconnecting notion…")
+      expect(call()?.meta?.["codeg.kimiMcpOAuth"]).toMatchObject({
+        phase: "reconnecting",
+        url: null,
+      })
+      update(null, "failed")
+      expect(call()?.meta?.["codeg.kimiMcpOAuth"]).toBeNull()
+      update(progress)
+      expect(call()?.meta?.["codeg.kimiMcpOAuth"]).toBeNull()
+      emit({
+        type: "tool_call_update",
+        tool_call_id: "late-auth",
+        title: "mcp__notion__authenticate",
+        status: "inprogress",
+        content: null,
+        raw_input: "{}",
+        raw_output: null,
+        meta: {
+          "codeg.kimiMcpOAuth": {
+            toolName: "mcp__notion__authenticate",
+            server: "notion",
+            phase: "waiting",
+            url,
+          },
+        },
+      } as EventEnvelope)
+      const late = h
+        .store!.getConnection(TAB)!
+        .liveMessage?.content.find(
+          (b) => b.type === "tool_call" && b.info.tool_call_id === "late-auth"
+        )
+      expect(
+        late?.type === "tool_call"
+          ? late.info.meta?.["codeg.kimiMcpOAuth"]
+          : undefined
+      ).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("keeps a seen Kimi OAuth binding across a newer snapshot and re-derives its link", async () => {
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "kimi_code", "/tmp/x", "sess-1")
+    })
+    const handlers = latestAttachHandlers()
+    const url =
+      "https://auth.example.test/authorize?state=a%2Bb&redirect_uri=http%3A%2F%2F127.0.0.1%3A43127%2Fcallback"
+    const progress = `Open this URL in your browser to authorize "notion":\n\n${url}\n\nWaiting for the OAuth callback (timeout 15 min). If you cancel, call this tool again to restart the flow.`
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    } as EventEnvelope)
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "tool_call",
+      tool_call_id: "auth-1",
+      title: "mcp__notion__authenticate",
+      kind: "other",
+      status: "pending",
+      content: null,
+      raw_input: null,
+      raw_output: null,
+    } as EventEnvelope)
+    const info = (
+      id: string,
+      title: string,
+      status: string,
+      meta: Record<string, unknown> | null = null
+    ) => ({
+      type: "tool_call" as const,
+      info: {
+        tool_call_id: id,
+        title,
+        kind: "other",
+        status,
+        content: "{}",
+        raw_input: "{}",
+        raw_output_chunks: [],
+        raw_output_total_bytes: 0,
+        locations: null,
+        meta,
+        images: [],
+      },
+    })
+    const hydrate = (eventSeq: number, content: unknown[]) => {
+      h.denormalizeSnapshot.mockReturnValue({
+        ...snapshotBase(),
+        status: "prompting",
+        hasPrompted: true,
+        eventSeq,
+        liveMessage: { id: "lm", role: "assistant", content, startedAt: 1 },
+      })
+      hydrateSnapshot(handlers, {
+        event_seq: eventSeq,
+      } as unknown as LiveSessionSnapshot)
+    }
+    const call = (id: string) => {
+      const block = h
+        .store!.getConnection(TAB)!
+        .liveMessage?.content.find(
+          (b) => b.type === "tool_call" && b.info.tool_call_id === id
+        )
+      return block?.type === "tool_call" ? block.info : null
+    }
+    // The snapshot keeps Kimi's latest status as the title (the backend's
+    // `KimiToolTitles`); the URL comes from it, not from earlier local state.
+    hydrate(10, [
+      info("auth-1", progress, "in_progress", { keep: 1 }),
+      // Never seen opening: fails closed even with the very same status text.
+      info("auth-2", progress, "in_progress"),
+    ])
+    expect(call("auth-1")?.title).toBe("mcp__notion__authenticate")
+    expect(call("auth-1")?.meta).toMatchObject({
+      keep: 1,
+      "codeg.kimiMcpOAuth": { phase: "waiting", url, server: "notion" },
+    })
+    expect(call("auth-2")?.meta?.["codeg.kimiMcpOAuth"]).toBeUndefined()
+    hydrate(20, [
+      info("auth-1", "Authorized — reconnecting notion…", "in_progress"),
+    ])
+    expect(call("auth-1")?.meta?.["codeg.kimiMcpOAuth"]).toMatchObject({
+      phase: "reconnecting",
+      url: null,
+    })
+    hydrate(30, [info("auth-1", "Authenticating notion", "completed")])
+    expect(call("auth-1")?.meta?.["codeg.kimiMcpOAuth"]).toBeNull()
+    hydrate(40, [info("auth-1", progress, "in_progress")])
+    expect(call("auth-1")?.meta?.["codeg.kimiMcpOAuth"]).toBeUndefined()
+  })
+
+  it("keeps a Monitor a monitor through the frames that announce it", async () => {
+    // claude-agent-acp 0.98.0, recorded: the call is announced by its tool
+    // name with no input, and the input follows in an update that names no
+    // tool. That input's `command` alone would read as a shell command.
+    const originalRaf = globalThis.requestAnimationFrame
+    const originalCancelRaf = globalThis.cancelAnimationFrame
+    // Tool-call updates flush on the next frame; run frames by hand.
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      frames.push(cb)
+      return frames.length
+    })
+    vi.stubGlobal("cancelAnimationFrame", () => {})
+    const runFrames = () =>
+      act(() => {
+        while (frames.length > 0) frames.shift()!(0)
+      })
+
+    try {
+      await mountProvider()
+
+      await act(async () => {
+        await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+      })
+
+      const handlers = latestAttachHandlers()
+      const liveCall = () => {
+        const block = h
+          .store!.getConnection(TAB)!
+          .liveMessage?.content.find(
+            (b) => b.type === "tool_call" && b.info.tool_call_id === "toolu_m"
+          )
+        return block?.type === "tool_call" ? block.info : null
+      }
+      const liveName = () => {
+        const call = liveCall()
+        return call
+          ? inferLiveToolName({
+              title: call.title,
+              kind: call.kind,
+              rawInput: call.raw_input,
+              meta: call.meta,
+            })
+          : null
+      }
+      emitAcpEvent(handlers, {
+        seq: 1,
+        connection_id: "spawned-conn",
+        type: "status_changed",
+        status: "prompting",
+      })
+      emitAcpEvent(handlers, {
+        seq: 2,
+        connection_id: "spawned-conn",
+        type: "tool_call",
+        tool_call_id: "toolu_m",
+        title: "Monitor",
+        kind: "other",
+        status: "pending",
+        content: null,
+        raw_input: null,
+        raw_output: null,
+        meta: { claudeCode: { toolName: "Monitor" } },
+      })
+      runFrames()
+      expect(liveName()).toBe("monitor")
+
+      emitAcpEvent(handlers, {
+        seq: 3,
+        connection_id: "spawned-conn",
+        type: "tool_call_update",
+        tool_call_id: "toolu_m",
+        title: null,
+        status: null,
+        content: null,
+        raw_input: JSON.stringify({
+          command: "for i in 1 2 3; do echo event-$i; sleep 2; done",
+          description: "probe monitor",
+        }),
+        raw_output: null,
+      })
+      runFrames()
+      expect(liveCall()?.raw_input).toContain("echo event-$i")
+      expect(liveName()).toBe("monitor")
+
+      emitAcpEvent(handlers, {
+        seq: 4,
+        connection_id: "spawned-conn",
+        type: "tool_call_update",
+        tool_call_id: "toolu_m",
+        title: null,
+        status: "completed",
+        content:
+          "Monitor started (task bttyx34fg, expires in 5m unless the source ends first; you get one notice at expiry — re-arm if you still need the watch). You will be notified on each event.",
+        raw_input: null,
+        raw_output: null,
+      })
+      runFrames()
+      expect(liveCall()?.status).toBe("completed")
+      expect(liveName()).toBe("monitor")
+    } finally {
+      vi.stubGlobal("requestAnimationFrame", originalRaf)
+      vi.stubGlobal("cancelAnimationFrame", originalCancelRaf)
+    }
   })
 
   it("never lends a permission request another file's edit text", async () => {
@@ -3259,6 +3866,16 @@ describe("out-of-turn wire guard + background activity", () => {
         },
       ],
       outstanding: 2,
+      outstanding_tasks: [
+        {
+          task_id: "agent2",
+          kind: "agent",
+          tool_use_id: "toolu_02",
+          description: "Survey the runners",
+          started_at_ms: 1_000,
+        },
+        { task_id: "shell1", kind: "shell", started_at_ms: 2_000 },
+      ],
       settled: [
         {
           task_id: "agent1",
@@ -3271,9 +3888,12 @@ describe("out-of-turn wire guard + background activity", () => {
       watermark: 4096,
     })
 
-    // 1. outstanding mirrored onto the connection (teardown gates only —
-    //    nothing renders the count).
+    // 1. outstanding mirrored onto the connection: the count for the teardown
+    //    gates, the tasks one by one for the composer's running list.
     expect(h.store!.getConnection(TAB)?.backgroundOutstanding).toBe(2)
+    expect(
+      h.store!.getConnection(TAB)?.backgroundTasks.map((t) => t.task_id)
+    ).toEqual(["agent2", "shell1"])
 
     // 2. overlay turn upserted into the runtime session — under the RUNTIME
     //    key (that's the session the panel renders).
@@ -3323,6 +3943,8 @@ describe("out-of-turn wire guard + background activity", () => {
       watermark: 4200,
     })
     expect(h.store!.getConnection(TAB)?.backgroundOutstanding).toBe(0)
+    // Each event is the whole set: one that omits it lists nothing.
+    expect(h.store!.getConnection(TAB)?.backgroundTasks).toEqual([])
     expect(
       useConversationRuntimeStore.getState().byConversationId.get(VIRTUAL)
         ?.backgroundTurns
@@ -7719,6 +8341,7 @@ describe("AcpConnectionsProvider mid-turn steering messages", () => {
       configStale: false,
       configStaleKind: null,
       backgroundOutstanding: 0,
+      backgroundTasks: [],
       activeDelegations: [],
       delegatedChildren: [],
       lastError: null,
@@ -8616,6 +9239,56 @@ describe("AcpConnectionsProvider remembers advertised commands", () => {
       "/tmp/x",
       []
     )
+  })
+
+  // claude-agent-acp 0.99.1 sends the list again once it has read Claude
+  // Code's skill list: the same commands, only their skill marks added.
+  it("takes a list that differs only in its skill marks", async () => {
+    const handlers = await connectOwner()
+    const SIMPLIFY = { name: "simplify", description: "Review the code" }
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "available_commands",
+      commands: [REVIEW, SIMPLIFY],
+    })
+    const read = [
+      { ...REVIEW, skill: true, skill_path: "/p/review/SKILL.md" },
+      { ...SIMPLIFY, skill: true },
+    ]
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "available_commands",
+      commands: read,
+    })
+    expect(h.store!.getConnection(TAB)!.availableCommands).toEqual(read)
+
+    // A path alone changing is a change too.
+    const moved = [
+      { ...REVIEW, skill: true, skill_path: "/q/review/SKILL.md" },
+      { ...SIMPLIFY, skill: true },
+    ]
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "available_commands",
+      commands: moved,
+    })
+    expect(h.store!.getConnection(TAB)!.availableCommands).toEqual(moved)
+
+    // The same marks again, spelled with the absent keys explicit, are not.
+    const kept = h.store!.getConnection(TAB)!.availableCommands
+    emitAcpEvent(handlers, {
+      seq: 4,
+      connection_id: "spawned-conn",
+      type: "available_commands",
+      commands: [
+        { ...REVIEW, skill: true, skill_path: "/q/review/SKILL.md" },
+        { ...SIMPLIFY, skill: true, skill_path: null },
+      ],
+    })
+    expect(h.store!.getConnection(TAB)!.availableCommands).toBe(kept)
   })
 
   it("files the list a snapshot carries, which is the only copy after a refresh", async () => {

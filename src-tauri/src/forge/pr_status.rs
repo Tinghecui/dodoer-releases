@@ -25,7 +25,7 @@ use serde::Serialize;
 
 use super::deliver::ForgePr;
 use super::{
-    auth, deliver, gitea, github, gitlab, ForgeChangeDetail, ForgeCheckList, ForgeCheckState,
+    auth, cnb, deliver, gitea, github, gitlab, ForgeChangeDetail, ForgeCheckList, ForgeCheckState,
     ForgeError, ForgeProvider, ResolvedAuth,
 };
 use crate::commands::folders::get_folder_core;
@@ -314,6 +314,7 @@ async fn lookup(db: &AppDatabase, folder_id: i32) -> Result<FolderPrStatus, Forg
             gitlab::find_merge_requests(&auth, &remote.owner_repo, &branch).await?
         }
         ForgeProvider::Gitea => gitea::find_pulls(&auth, &remote.owner_repo, &branch).await?,
+        ForgeProvider::Cnb => cnb::find_pulls(&auth, &remote.owner_repo, &branch).await?,
     };
     let Some(pull) = pick_pull(&pulls, &branch).cloned() else {
         return Ok(FolderPrStatus::NoPr { branch });
@@ -349,12 +350,13 @@ async fn lookup(db: &AppDatabase, folder_id: i32) -> Result<FolderPrStatus, Forg
         ForgeProvider::Gitea => {
             gitea::change_detail(&auth, &remote.owner_repo, pull.number).await?
         }
+        ForgeProvider::Cnb => cnb::change_detail(&auth, &remote.owner_repo, pull.number).await?,
     };
     let review_decision = match remote.provider {
         ForgeProvider::GitHub => {
             github_review_decision(&auth, &remote.owner_repo, pull.number).await
         }
-        ForgeProvider::GitLab | ForgeProvider::Gitea => None,
+        ForgeProvider::GitLab | ForgeProvider::Gitea | ForgeProvider::Cnb => None,
     };
 
     Ok(FolderPrStatus::Pr(PrHint {

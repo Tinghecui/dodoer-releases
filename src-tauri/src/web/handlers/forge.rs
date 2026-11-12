@@ -15,9 +15,9 @@ use serde::Deserialize;
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::forge as core;
-use crate::forge::settings::{ForgePanelSettings, ForgeSettingsStore};
+use crate::forge::settings::ForgeSettingsStore;
 use crate::forge::{
-    ChangeFilesQuery, ChangeMergeRequest, ChangeQuery, CommentDraft, CommentFilters, CountFilters,
+    ApproveWorkflowsRequest, CheckSummariesQuery, ChangeFilesQuery, ChangeMergeRequest, ChangeQuery, CommentDraft, CommentFilters, CountFilters,
     ListFilters, NewIssueDraft, StateChangeRequest,
 };
 
@@ -43,6 +43,15 @@ pub struct ListIssuesParams {
     /// flattened so the trust boundary stays visible: the repository is not in
     /// here, and cannot be.
     pub query: ListFilters,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueDetailParams {
+    pub folder_id: i32,
+    pub number: i64,
+    #[serde(default)]
+    pub account_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -93,6 +102,20 @@ pub struct CreateIssueParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CheckSummariesParams {
+    pub folder_id: i32,
+    pub query: CheckSummariesQuery,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApproveWorkflowsParams {
+    pub folder_id: i32,
+    pub request: ApproveWorkflowsRequest,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChangeDetailParams {
     pub folder_id: i32,
     pub query: ChangeQuery,
@@ -136,6 +159,12 @@ pub struct CreateFromForgeParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CreateFromForgeIssuesParams {
+    pub draft: core::ForgeIssuesTaskDraft,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LookupParams {
     pub source_keys: Vec<String>,
 }
@@ -150,8 +179,12 @@ pub struct SettingsParams {
     /// it follows the global one again (see `forge::settings::save`). Its
     /// FIELDS keep their snake_case wire names: this is the same blob that goes
     /// into storage, not a request DTO built around it.
+    ///
+    /// Cowork fork: taken as JSON and read by `legacy_client::forge_settings`,
+    /// which can tell a field an older dialog never sent from one set to its
+    /// default.
     #[serde(default)]
-    pub settings: Option<ForgePanelSettings>,
+    pub settings: Option<serde_json::Value>,
 }
 
 pub async fn folder_forge_remote(
@@ -192,6 +225,16 @@ pub async fn forge_list_issues(
 ) -> Result<Json<crate::forge::ForgeIssueList>, AppCommandError> {
     Ok(Json(
         core::forge_list_issues_core(&state.db, params.folder_id, params.query).await?,
+    ))
+}
+
+pub async fn forge_issue_detail(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<IssueDetailParams>,
+) -> Result<Json<crate::forge::ForgeIssueRow>, AppCommandError> {
+    Ok(Json(
+        core::forge_issue_detail_core(&state.db, params.folder_id, params.number, params.account_id)
+            .await?,
     ))
 }
 
@@ -258,6 +301,24 @@ pub async fn forge_change_detail(
     ))
 }
 
+pub async fn forge_check_summaries(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<CheckSummariesParams>,
+) -> Result<Json<crate::forge::ForgeCheckSummaryList>, AppCommandError> {
+    Ok(Json(
+        core::forge_check_summaries_core(&state.db, params.folder_id, params.query).await?,
+    ))
+}
+
+pub async fn forge_approve_workflows(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ApproveWorkflowsParams>,
+) -> Result<Json<crate::forge::ForgeApproveResult>, AppCommandError> {
+    Ok(Json(
+        core::forge_approve_workflows_core(&state.db, params.folder_id, params.request).await?,
+    ))
+}
+
 pub async fn forge_change_files(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ChangeFilesParams>,
@@ -303,6 +364,16 @@ pub async fn work_task_create_from_forge(
     ))
 }
 
+pub async fn work_task_create_from_forge_issues(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<CreateFromForgeIssuesParams>,
+) -> Result<Json<core::ForgeIssuesCreateResult>, AppCommandError> {
+    Ok(Json(
+        core::work_task_create_from_forge_issues_core(&state.emitter, &state.db, params.draft)
+            .await?,
+    ))
+}
+
 pub async fn work_task_lookup_by_source(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<LookupParams>,
@@ -322,8 +393,11 @@ pub async fn forge_settings_set(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<SettingsParams>,
 ) -> Result<Json<ForgeSettingsStore>, AppCommandError> {
+    let settings =
+        crate::legacy_client::forge_settings(&state.db.conn, params.folder_id, params.settings)
+            .await?;
     Ok(Json(
-        core::forge_settings_set_core(&state.db, params.folder_id, params.settings).await?,
+        core::forge_settings_set_core(&state.db, params.folder_id, settings).await?,
     ))
 }
 

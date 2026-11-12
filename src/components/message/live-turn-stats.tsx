@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { useLocale, useTranslations } from "next-intl"
 import type {
   LiveContentBlock,
@@ -13,20 +13,20 @@ import {
   estimateChangedLineStats,
 } from "@/lib/line-change-stats"
 import { FilePenLine, Plane, Timer } from "lucide-react"
-import type { AgentType } from "@/lib/types"
-import { AgentIcon } from "@/components/agent-icon"
 import { useTokenOutputSpeed } from "@/hooks/use-token-output-speed"
 import type { AwaitingUserKind } from "@/stores/awaiting-user-store"
 
 interface LiveTurnStatsProps {
-  message: LiveMessage
-  agentType: AgentType
-  isStreaming?: boolean
+  /** The running turn; `null` once it has ended while `trailing` still has
+   *  something to say (work the turn left running). */
+  message: LiveMessage | null
+  /** Drawn after the figures, at the row's end — the "N running" chip. */
+  trailing?: ReactNode
   /**
-   * What the agent is parked on the user for (`useAwaitingUser`, the source
-   * of the sidebar's "needs your answer" mark). The turn is still running
-   * while it waits, so without this the capsule keeps saying "Streaming" for
-   * as long as a permission request sits unanswered.
+   * Cowork: what the agent is parked on the user for (`useAwaitingUser`, the
+   * source of the sidebar's "needs your answer" mark). The one state this row
+   * names: the turn is still running while it waits, its clock included, and
+   * nothing in the figures says it is the user's move.
    */
   awaitingUser?: AwaitingUserKind | null
 }
@@ -328,15 +328,58 @@ export function extractLiveEditStats(message: LiveMessage): LiveEditStats {
   return { files: files.size, additions, deletions }
 }
 
+/**
+ * The live activity row above the composer: the running turn's figures — how
+ * long the turn has run, the files it has changed and how fast it is writing —
+ * then whatever `trailing` adds (the "N running" chip), which can outlast the
+ * turn. That the agent is at work, and at what — thinking, running a step,
+ * writing — the transcript's own timeline says ("Working" on the reply's
+ * header, a shimmer on the step, a turning ring at the foot of its rail), so
+ * this row carries neither a word for it nor a pulsing mark. (Cowork: a wait
+ * on the user is the exception — see `awaitingUser`.)
+ *
+ * Narrow, the row sheds the edit figures first, then the speed; the time and
+ * the trailing chip stay.
+ */
 export function LiveTurnStats({
   message,
-  agentType,
-  isStreaming = true,
+  trailing,
   awaitingUser = null,
 }: LiveTurnStatsProps) {
+  const tSidebar = useTranslations("Folder.sidebar")
+  return (
+    // jenny fork (Liquid Glass): a glass capsule floating just above the
+    // composer dock, not a row of its own under the transcript.
+    <div
+      data-live-turn-stats=""
+      className="@container/turnstats pointer-events-none absolute inset-x-0 bottom-[calc(var(--glass-dock-h,0px)+0.625rem)] z-10 flex justify-center px-4"
+    >
+      <div className="lg pointer-events-auto flex min-h-[1.875rem] max-w-full flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-full px-3.5 py-1 text-xs leading-none text-muted-foreground tabular-nums">
+        {message && awaitingUser ? (
+          // It is the user's move. The timer keeps counting — it is the
+          // turn's age, which the wait is part of.
+          <>
+            <span data-awaiting-user={awaitingUser}>
+              {tSidebar(AWAITING_USER_LABEL[awaitingUser])}
+            </span>
+            <span className="text-border leading-none">|</span>
+          </>
+        ) : null}
+        {/* Keyed by its turn: a turn that starts while the last one's figures
+            are still on screen gets figures of its own, its clock from zero. */}
+        {message && <LiveTurnFigures key={message.id} message={message} />}
+        {message && trailing ? (
+          <span className="text-border leading-none">|</span>
+        ) : null}
+        {trailing}
+      </div>
+    </div>
+  )
+}
+
+function LiveTurnFigures({ message }: { message: LiveMessage }) {
   const locale = useLocale()
   const t = useTranslations("Folder.chat.liveTurnStats")
-  const tSidebar = useTranslations("Folder.sidebar")
   const [elapsed, setElapsed] = useState(() => Date.now() - message.startedAt)
   const editStats = useMemo(() => extractLiveEditStats(message), [message])
   const tps = useTokenOutputSpeed(message)
@@ -356,79 +399,48 @@ export function LiveTurnStats({
     return () => clearInterval(timer)
   }, [message.startedAt])
 
-  const hasThinkingBlock = message.content.some((b) => b.type === "thinking")
-
-  // Only active streams should show thinking/streaming state.
-  const lastBlock = message.content[message.content.length - 1]
-  const isThinking =
-    isStreaming &&
-    hasThinkingBlock &&
-    message.content.length <= 1 &&
-    lastBlock?.type === "thinking"
-
   const elapsedLabel = formatElapsedLabel(elapsed, t)
 
   return (
-    <div
-      data-live-turn-stats=""
-      className="@container/turnstats pointer-events-none absolute inset-x-0 bottom-[calc(var(--glass-dock-h,0px)+0.625rem)] z-10 flex justify-center px-4"
-    >
-      <div className="lg pointer-events-auto flex min-h-[1.875rem] max-w-full flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-full px-3.5 py-1 text-xs leading-none text-muted-foreground tabular-nums">
-        <AgentIcon
-          agentType={agentType}
-          className="h-3.5 w-3.5 animate-pulse"
-        />
-        {awaitingUser ? (
-          // It is the user's move: say so instead of "Streaming". The timer
-          // keeps counting — it is the turn's age, which the wait is part of.
-          <span data-awaiting-user={awaitingUser}>
-            {tSidebar(AWAITING_USER_LABEL[awaitingUser])}
+    <>
+      <span className="inline-flex items-center gap-1 leading-none">
+        <Timer className="h-3 w-3 shrink-0" />
+        {elapsedLabel}
+      </span>
+      {editStats.files > 0 && (
+        <>
+          <span className="hidden text-border leading-none @[24rem]/turnstats:inline">
+            |
           </span>
-        ) : isThinking ? (
-          <span>{t("thinking")}</span>
-        ) : (
-          <span>{t("streaming")}</span>
-        )}
-        <span className="text-border leading-none">|</span>
-        <span className="inline-flex items-center gap-1 leading-none">
-          <Timer className="h-3 w-3 shrink-0" />
-          {elapsedLabel}
-        </span>
-        {editStats.files > 0 && (
-          <>
-            <span className="hidden text-border leading-none @[24rem]/turnstats:inline">
-              |
-            </span>
-            <span className="hidden items-center gap-1 leading-none @[24rem]/turnstats:inline-flex">
-              <FilePenLine className="h-3 w-3 shrink-0" />
-              {editStats.files}F +
-              {formatCompactInt(editStats.additions, compactNumberFormatter)}/-
-              {formatCompactInt(editStats.deletions, compactNumberFormatter)}
-            </span>
-          </>
-        )}
-        {tps != null && (
-          <>
-            <span className="hidden text-border leading-none @[30rem]/turnstats:inline">
-              |
-            </span>
-            {/* `tabular-nums` so the digits stop shimmering as the rate moves. */}
-            <span
-              className="hidden items-center gap-1 leading-none tabular-nums @[30rem]/turnstats:inline-flex"
-              title={t("outputSpeedTooltip")}
-            >
-              {/* Name hangs off the icon, matching `ComposerContextUsage` —
+          <span className="hidden items-center gap-1 leading-none @[24rem]/turnstats:inline-flex">
+            <FilePenLine className="h-3 w-3 shrink-0" />
+            {editStats.files}F +
+            {formatCompactInt(editStats.additions, compactNumberFormatter)}/-
+            {formatCompactInt(editStats.deletions, compactNumberFormatter)}
+          </span>
+        </>
+      )}
+      {tps != null && (
+        <>
+          <span className="hidden text-border leading-none @[30rem]/turnstats:inline">
+            |
+          </span>
+          {/* `tabular-nums` so the digits stop shimmering as the rate moves. */}
+          <span
+            className="hidden items-center gap-1 leading-none tabular-nums @[30rem]/turnstats:inline-flex"
+            title={t("outputSpeedTooltip")}
+          >
+            {/* Name hangs off the icon, matching `ComposerContextUsage` —
                   `aria-label` on the bare wrapper span carries no role and
                   isn't reliably exposed. */}
-              <Plane
-                aria-label={t("outputSpeedAria")}
-                className="h-3 w-3 shrink-0"
-              />
-              {tps.toFixed(1)} tok/s
-            </span>
-          </>
-        )}
-      </div>
-    </div>
+            <Plane
+              aria-label={t("outputSpeedAria")}
+              className="h-3 w-3 shrink-0"
+            />
+            {tps.toFixed(1)} tok/s
+          </span>
+        </>
+      )}
+    </>
   )
 }

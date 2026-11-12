@@ -71,7 +71,7 @@ use crate::acp::delegation::transport::{
     BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerFeedbackRequest,
     BrokerListAssistantsRequest, BrokerRequest, BrokerResponse, BrokerResultSchemaRequest,
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest, BrokerSubmitResultRequest,
-    BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
+    BrokerTaskCompleteRequest, BrokerTaskProgressRequest, ThreadReply,
 };
 use crate::acp::delegation::assistants::{roster_for_schema, AssistantRosterEntry};
 use crate::acp::question::parse_questions;
@@ -1425,10 +1425,12 @@ async fn build_tools_call_spawn(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
+            let thread_replies = parse_thread_replies(&arguments);
             let req = BrokerTaskCompleteRequest {
                 token: ctx.token.clone(),
                 verdict: verdict.to_string(),
                 summary,
+                thread_replies,
             };
             let round_trip =
                 Box::pin(async move { client_task_complete_round_trip(&socket, &req).await });
@@ -4233,6 +4235,32 @@ pub fn render_computer_act_result(outcome: &Value) -> Value {
     })
 }
 
+/// `task_complete`'s `thread_replies`, leniently: an entry without a number
+/// or a body is dropped rather than failing the verdict that came with it —
+/// the verdict is what settles the task, the replies are only drafts. A
+/// number sent as a string (`"7"`, `"#7"`) is still a number.
+fn parse_thread_replies(arguments: &Value) -> Vec<ThreadReply> {
+    let Some(entries) = arguments.get("thread_replies").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let number = entry.get("number").and_then(|n| {
+                n.as_i64().or_else(|| {
+                    n.as_str()
+                        .and_then(|s| s.trim().trim_start_matches('#').parse().ok())
+                })
+            })?;
+            let body = entry.get("body").and_then(|b| b.as_str())?;
+            Some(ThreadReply {
+                number,
+                body: body.to_string(),
+            })
+        })
+        .collect()
+}
+
 /// Map a `task_progress` / `task_complete` round-trip outcome (a
 /// `{ recorded, note? }` ack) into an MCP `tools/call` result. A report that
 /// could not be attributed (no active work task for this session) is readable
@@ -4469,6 +4497,29 @@ pub fn render_task_report(report: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn thread_replies_are_read_leniently() {
+        let args = serde_json::json!({
+            "verdict": "success",
+            "thread_replies": [
+                { "number": 7, "body": "Fixed." },
+                { "number": "#9", "body": "Same cause." },
+                { "number": 3 },
+                { "body": "no number" },
+                "junk",
+            ],
+        });
+        assert_eq!(
+            parse_thread_replies(&args),
+            vec![
+                ThreadReply { number: 7, body: "Fixed.".to_string() },
+                ThreadReply { number: 9, body: "Same cause.".to_string() },
+            ]
+        );
+        assert!(parse_thread_replies(&serde_json::json!({ "verdict": "success" })).is_empty());
+        assert!(parse_thread_replies(&serde_json::json!({ "thread_replies": "x" })).is_empty());
+    }
+
     use super::*;
 
     fn ctx() -> CompanionContext {
@@ -4578,6 +4629,12 @@ mod tests {
         assert!(agents.iter().any(|a| a == "zcode"));
         assert!(agents.iter().any(|a| a == "trae"));
         assert!(agents.iter().any(|a| a == "command_code"));
+        assert!(agents.iter().any(|a| a == "minimax_code"));
+        for agent in crate::models::agent::BUILTIN_AGENT_TYPES {
+            assert!(agents
+                .iter()
+                .any(|a| a.as_str() == Some(agent.as_wire().as_ref())));
+        }
         // get_delegation_status takes a single id param — task_ids (required) —
         // plus wait_ms. The legacy single `task_id` param is gone.
         let status = tools
@@ -4602,6 +4659,7 @@ mod tests {
             "custom:amp".into(),
             "custom:goose".into(),
             "codex".into(),
+            "minimax_code".into(),
         ];
         let line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
         let resp = unwrap_respond(dispatch_line(&ctx, Arc::new(InflightCalls::new()), line).await);
@@ -4641,7 +4699,12 @@ mod tests {
     #[tokio::test]
     async fn disabled_agents_are_subtracted_from_the_delegate_enum() {
         let mut ctx = ctx();
-        ctx.disabled_agents = vec!["codex".into(), "grok".into(), "not-an-agent".into()];
+        ctx.disabled_agents = vec![
+            "codex".into(),
+            "grok".into(),
+            "minimax_code".into(),
+            "not-an-agent".into(),
+        ];
         ctx.custom_agents = vec!["custom:goose".into()];
         let line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
         let resp = unwrap_respond(dispatch_line(&ctx, Arc::new(InflightCalls::new()), line).await);
@@ -4659,10 +4722,11 @@ mod tests {
             .clone();
         assert_eq!(
             agents.len(),
-            crate::models::agent::BUILTIN_AGENT_TYPES.len() - 2 + 1
+            crate::models::agent::BUILTIN_AGENT_TYPES.len() - 3 + 1
         );
         assert!(!agents.contains(&serde_json::json!("codex")));
         assert!(!agents.contains(&serde_json::json!("grok")));
+        assert!(!agents.contains(&serde_json::json!("minimax_code")));
         // Survivors keep the embedded order, customs still come last.
         assert_eq!(agents[0], "claude_code");
         assert_eq!(agents[1], "open_code");
@@ -4698,6 +4762,7 @@ mod tests {
         assert_eq!(agents[16], "zcode");
         assert_eq!(agents[17], "trae");
         assert_eq!(agents[18], "command_code");
+        assert_eq!(agents[19], "minimax_code");
     }
 
     #[tokio::test]

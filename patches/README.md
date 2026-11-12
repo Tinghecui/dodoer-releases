@@ -72,7 +72,7 @@ Playwright WebKit passed all eight horizontal/vertical LTR/RTL drag and track
 click cases. These are focused reproducer results, not a claim about all of
 Codeg's long-running memory usage.
 
-## Streamdown 2.7.0 highlighting lifecycle
+## Streamdown 2.7.1 highlighting lifecycle
 
 The `HighlightedCodeBlockBody` effect now supplies an optional `AbortSignal`
 to its highlighter plugin and aborts it on a code/language/theme change or

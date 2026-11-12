@@ -67,6 +67,15 @@ async function pickDay(day: Date) {
 
 beforeEach(() => {
   scheduleMock.mockClear()
+  // Pin "today" to mid-month: this calendar opens on the current month, so a
+  // wall-clock run on a month's last days can look for a day cell (+2) outside
+  // the grid. Fake only Date so userEvent and waitFor keep using real timers.
+  vi.useFakeTimers({ toFake: ["Date"] })
+  vi.setSystemTime(new Date(2026, 6, 15, 12, 0))
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 afterEach(() => {
@@ -83,11 +92,14 @@ describe("TaskScheduleDialog", () => {
   })
 
   it("fills the hour once a day is picked, and sends it as its own instant", async () => {
-    // Mid-month, so the day two out sits in the month the calendar opens on;
-    // near a month's end it would be on the next page. Only the clock is
-    // faked: timers stay real for userEvent and waitFor.
+    // The calendar opens on the current month and shows the next month's days
+    // only up to the end of its last week. Near a month's end, two days out
+    // can fall past that week: October 2026 ends on a Saturday, so on the
+    // 30th the target, November 1st, has no cell. A mid-month clock keeps the
+    // target in view. Only `Date` is faked, so user-event and `waitFor` keep
+    // their real timers.
     vi.useFakeTimers({ toFake: ["Date"] })
-    vi.setSystemTime(new Date(2026, 7, 12, 10, 0))
+    vi.setSystemTime(new Date(2026, 7, 12, 15, 0))
     renderDialog()
     // Two days out, so the seeded time is the fixed 09:00 rather than a
     // wall-clock-dependent "next hour".

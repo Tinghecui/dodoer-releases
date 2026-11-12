@@ -92,6 +92,12 @@ jobs:
         run: pnpm browser:agent:check
       - name: Browser agent typecheck
         run: pnpm browser:agent:types
+      - name: Typecheck (tests included)
+        # 上游 0.43 起 `next build` 用 tsconfig.build.json，不再检查 *.test.ts(x)；vitest 不查类型、ESLint 也不带类型信息，
+        # 测试文件的类型只有这一步查。堆同 build：整个程序超过 Node 默认的 2G
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: pnpm exec tsc --noEmit
 
   frontend-build:
     name: Frontend build
@@ -220,6 +226,12 @@ jobs:
       - name: cargo clippy
         working-directory: src-tauri
         run: cargo clippy ${{ matrix.clippy_args }} -- -D warnings
+
+      - name: Superpowers standalone skill helper layouts
+        # executing-plans ships local copies of its sibling helpers so the skill works when codeg has to copy only one
+        # skill on Windows. Pure bash + git, once is enough.
+        if: matrix.mode == 'desktop'
+        run: bash scripts/test-superpowers-skill-layouts.sh
 
       - name: Web handlers must route through commands/*_core
         # web/handlers/{folders,conversations}.rs must not call DB services directly: they delegate to a

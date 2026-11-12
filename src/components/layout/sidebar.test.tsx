@@ -21,6 +21,7 @@ import {
   resetConversationTagsStore,
   useConversationTagsStore,
 } from "@/stores/conversation-tags-store"
+import { resetFolderTabsStore } from "@/stores/folder-tabs-store"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
   useAwaitingUserStore,
@@ -676,6 +677,28 @@ describe("Sidebar — Show Recent group toggle", () => {
     // trips back through the trigger.
     expect(
       screen.getByRole("menuitemcheckbox", { name: "Show Recent group" })
+    ).toBeTruthy()
+  })
+})
+
+describe("Sidebar — Tabs follow folder", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    resetFolderTabsStore()
+    mockState.activeFolder = { id: 7, path: "/x" }
+  })
+
+  // jenny fork: without the conversation tab bar the mode has nothing to act
+  // on, so View options does not offer it.
+  it("is not offered in View options", async () => {
+    renderSidebar()
+    await userEvent.click(screen.getByRole("button", { name: "View options" }))
+    expect(
+      screen.queryByRole("menuitemcheckbox", { name: "Tabs follow folder" })
+    ).toBeNull()
+    // Control: the menu is open, so the row above is absent, not unrendered.
+    expect(
+      screen.getByRole("menuitemradio", { name: "Created time" })
     ).toBeTruthy()
   })
 })

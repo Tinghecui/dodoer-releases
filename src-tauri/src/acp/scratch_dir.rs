@@ -21,8 +21,29 @@
 //!
 //! macOS is the same bug two orders of magnitude smaller: that build is not
 //! PyInstaller, but it still drops ~172 KB of read-only resource files into
-//! `TMPDIR` per launch and still leaks them when killed. So the isolation is
-//! applied to every agent launch on every platform rather than special-cased.
+//! `TMPDIR` per launch and still leaks them when killed. So off Windows the
+//! isolation is applied to every agent launch rather than special-cased.
+//!
+//! # Why Windows isolates only the agents that need it
+//!
+//! On Windows `TMP` does not stay inside the process tree that was given it.
+//! Git for Windows' default `/etc/fstab` mounts `/tmp` as `usertemp`, which the
+//! MSYS2 runtime resolves with `GetTempPathW` in whichever MSYS process of the
+//! user starts FIRST, then keeps in per-user shared memory until the last one
+//! exits. An agent that runs shell commands itself starts them with its own
+//! `TMP`, so whenever one of them was the user's first MSYS process, the launch
+//! directory became `/tmp` for every MSYS program the user ran — other
+//! sessions' shells and the user's own Git Bash included — and pointed at
+//! nothing once that launch was reclaimed, for as long as any MSYS process
+//! lived (#1025: `bash.exe: warning: could not find /tmp, please create!` on
+//! every command, and what had been written to `/tmp` deleted with the launch).
+//!
+//! Every agent paid that, and only one that unpacks itself into the temp
+//! directory gained anything, so on Windows [`isolates`] keeps the redirect for
+//! those alone ([`unpacks_into_temp_on_windows`]). For them it is still the only
+//! lever there is: the bootloader and MSYS read the same `GetTempPathW`, so such
+//! a session whose tree starts the user's first MSYS process still lends `/tmp`
+//! its launch directory.
 //!
 //! # Invariants
 //!
@@ -46,6 +67,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+use crate::models::agent::AgentType;
 
 /// Directory under the temp root that codeg owns outright. Every sweep is
 /// confined to this subtree, which is what makes it safe to delete without
@@ -142,6 +165,81 @@ pub fn isolation_enabled() -> bool {
         std::env::var(ISOLATION_ENV).as_deref(),
         Ok("0") | Ok("false") | Ok("FALSE") | Ok("off")
     )
+}
+
+/// Whether a launch of `agent` gets a scratch directory: never with
+/// [`ISOLATION_ENV`] off, always off Windows, and on Windows only for an agent
+/// that unpacks itself into the temp directory — the module docs say what a
+/// per-launch `TMP` costs everyone else there.
+fn isolates(agent: AgentType) -> bool {
+    isolation_enabled() && isolates_on(cfg!(windows), agent)
+}
+
+/// [`isolates`] with the platform handed in and the escape hatch left out, so
+/// both platforms' answers are testable on either.
+fn isolates_on(windows: bool, agent: AgentType) -> bool {
+    !windows || unpacks_into_temp_on_windows(agent)
+}
+
+/// Returns true if the command binary matches the Antigravity ACP server executable.
+///
+/// Strips any leading directory path (`/` or `\`), ignores case, and strips an optional
+/// `.exe` extension before checking if the file stem equals `agy_acp_server`.
+fn is_antigravity_server_cmd(cmd: &str) -> bool {
+    let file_name = cmd.rsplit(['/', '\\']).next().unwrap_or("");
+    let stem = if file_name
+        .get(file_name.len().saturating_sub(4)..)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(".exe"))
+    {
+        &file_name[..file_name.len() - 4]
+    } else {
+        file_name
+    };
+    stem.eq_ignore_ascii_case("agy_acp_server")
+}
+
+/// Agents whose Windows build unpacks itself into the temp directory on every
+/// launch and cleans up only on a graceful exit: the leak this module exists
+/// for. Antigravity's server is a PyInstaller onefile (its registry entry
+/// records each version checked).
+///
+/// A custom agent that runs the same server binary (a user-registered
+/// Antigravity) leaks the same way, so it is matched by its Windows launch
+/// entry: a binary distribution whose entry (the nested `dir_entry` path, else
+/// `cmd` — on Windows hydration takes `cmd` from the `windows-*` spec) is
+/// named `agy_acp_server`. Any other custom agent keeps the ambient temp dir.
+///
+/// An allowlist rather than a list of agents that run Git Bash, because what a
+/// redirect breaks depends on which programs a session happens to start, not on
+/// the agent: any agent's commands can start Git's `bash.exe`, or `git` itself
+/// can start its `ssh.exe`.
+fn unpacks_into_temp_on_windows(agent: AgentType) -> bool {
+    match agent {
+        AgentType::Antigravity => true,
+        AgentType::Custom(id) => {
+            let Some(meta) = crate::acp::custom_registry::get(id) else {
+                return false;
+            };
+            match &meta.distribution {
+                crate::acp::registry::AgentDistribution::Binary {
+                    platforms,
+                    dir_entry,
+                    cmd,
+                    ..
+                } => {
+                    let has_windows_platform =
+                        platforms.iter().any(|p| p.platform.starts_with("windows-"));
+                    if !has_windows_platform {
+                        return false;
+                    }
+                    let win_cmd = dir_entry.map(|e| e.windows).unwrap_or(*cmd);
+                    is_antigravity_server_cmd(win_cmd)
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
 }
 
 /// A scratch root is only usable if a child can still bind a unix socket
@@ -449,8 +547,9 @@ async fn remove_with_retries(name: String, path: PathBuf) {
     }
 }
 
-/// Create a scratch directory for one launch, or `None` when isolation is off
-/// or the directory cannot be created.
+/// Create a scratch directory for one launch of `agent`, or `None` when that
+/// launch is not isolated (see [`isolates`]) or the directory cannot be
+/// created.
 ///
 /// `None` is a normal outcome, not an error: the caller leaves
 /// `TMP`/`TEMP`/`TMPDIR` alone and the child uses the system temp directory
@@ -458,8 +557,8 @@ async fn remove_with_retries(name: String, path: PathBuf) {
 /// make a scratch directory — and it WOULD fail if the variables were set to a
 /// path that does not exist, because the PyInstaller bootloader only creates
 /// its own `_MEIxxxxxx` leaf, not the parents above it.
-pub fn create() -> Option<LaunchScratch> {
-    if !isolation_enabled() {
+pub fn create(agent: AgentType) -> Option<LaunchScratch> {
+    if !isolates(agent) {
         return None;
     }
     let root = scratch_root();
@@ -1386,6 +1485,46 @@ mod tests {
         }
     }
 
+    /// #1025. On Windows a per-launch `TMP` becomes Git Bash's `/tmp` for the
+    /// user's whole session and dangles once the launch is reclaimed, so there
+    /// only an agent that unpacks itself into temp is given one: a single
+    /// built-in, and no custom agent.
+    #[test]
+    fn on_windows_only_an_agent_that_unpacks_into_temp_is_isolated() {
+        let isolated: Vec<AgentType> = crate::models::agent::BUILTIN_AGENT_TYPES
+            .iter()
+            .copied()
+            .filter(|agent| isolates_on(true, *agent))
+            .collect();
+        assert_eq!(isolated, [AgentType::Antigravity]);
+        assert!(!isolates_on(true, AgentType::Custom("custom-agent")));
+    }
+
+    /// Off Windows `TMPDIR` reaches nothing beyond the launch's own process
+    /// tree, so every agent keeps its scratch directory there.
+    #[test]
+    fn off_windows_every_agent_is_isolated() {
+        for agent in crate::models::agent::BUILTIN_AGENT_TYPES
+            .iter()
+            .copied()
+            .chain([AgentType::Custom("custom-agent")])
+        {
+            assert!(
+                isolates_on(false, agent),
+                "{agent:?} must keep its scratch dir"
+            );
+        }
+    }
+
+    /// Where the rule takes effect: a Windows launch of an agent that does not
+    /// unpack into temp is handed no directory, so its `TMP` reaches the child
+    /// untouched. `create` answers before touching the disk.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_launch_that_is_not_isolated_gets_no_scratch_dir() {
+        assert!(create(AgentType::ClaudeCode).is_none());
+    }
+
     #[test]
     fn apply_to_env_sets_all_three_names() {
         let mut env = std::collections::BTreeMap::new();
@@ -1419,5 +1558,110 @@ mod tests {
 
         assert!(remove_dir_robust(&target).is_ok());
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn matches_antigravity_server_cmd_names() {
+        assert!(is_antigravity_server_cmd("agy_acp_server.exe"));
+        assert!(is_antigravity_server_cmd("./agy_acp_server.exe"));
+        assert!(is_antigravity_server_cmd("bin\\AGY_ACP_SERVER.EXE"));
+        assert!(is_antigravity_server_cmd("dist/agy_acp_server"));
+
+        assert!(!is_antigravity_server_cmd("agy_acp_server_real.exe"));
+        assert!(!is_antigravity_server_cmd("goose.exe"));
+        assert!(!is_antigravity_server_cmd(""));
+        assert!(!is_antigravity_server_cmd("agy_acp_server.exe.bak"));
+    }
+
+    #[test]
+    fn custom_antigravity_agent_is_isolated_on_windows() {
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, BinaryPlatformSpec, CustomAgentDef, CustomAgentSpec,
+            CustomDistributionKind, NpxSpec,
+        };
+        use std::collections::BTreeMap;
+
+        fn custom_binary_def(id: &str, win_cmd: &str) -> CustomAgentDef {
+            let mut binary = BTreeMap::new();
+            for platform in [
+                "darwin-aarch64",
+                "darwin-x86_64",
+                "linux-aarch64",
+                "linux-x86_64",
+                "windows-aarch64",
+                "windows-x86_64",
+            ] {
+                binary.insert(
+                    platform.to_string(),
+                    BinaryPlatformSpec {
+                        archive: format!("https://example.com/{id}-{platform}.zip"),
+                        cmd: win_cmd.to_string(),
+                        args: vec![],
+                        env: BTreeMap::new(),
+                        sha256: None,
+                    },
+                );
+            }
+            CustomAgentDef {
+                registry_id: id.to_string(),
+                name: id.to_string(),
+                description: "test custom agent".to_string(),
+                version: "1.0.0".to_string(),
+                distribution_kind: CustomDistributionKind::Binary,
+                spec: CustomAgentSpec {
+                    binary,
+                    ..Default::default()
+                },
+                icon_url: None,
+                skills_shared_store: false,
+                skills_dir: None,
+                source: Default::default(),
+                version_probe: None,
+                supports_mcp: true,
+            }
+        }
+
+        let _guard = hydrate_test_guard();
+        let agy = custom_binary_def("custom-antigravity", "agy_acp_server.exe");
+        // A nested entry is published as `dir_entry` and matched by its
+        // Windows path rather than the bare `cmd`.
+        let nested = custom_binary_def("custom-antigravity-nested", "./bin/agy_acp_server.exe");
+        let other = custom_binary_def("custom-other", "goose.exe");
+        // Only a binary distribution can be the onefile server: an npx package
+        // whose console script happens to share the name is not matched.
+        let npx = CustomAgentDef {
+            registry_id: "custom-antigravity-npx".to_string(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: "agy-acp-server@1.0.0".to_string(),
+                    args: vec![],
+                    env: BTreeMap::new(),
+                    cmd: Some("agy_acp_server".to_string()),
+                    node_required: None,
+                }),
+                ..Default::default()
+            },
+            ..custom_binary_def("custom-antigravity-npx", "unused")
+        };
+
+        let errors = hydrate(&[agy, nested, other, npx]);
+        assert!(errors.is_empty(), "hydration should succeed: {errors:?}");
+
+        assert!(isolates_on(true, AgentType::Custom("custom-antigravity")));
+        assert!(isolates_on(
+            true,
+            AgentType::Custom("custom-antigravity-nested")
+        ));
+        assert!(!isolates_on(true, AgentType::Custom("custom-other")));
+        assert!(!isolates_on(
+            true,
+            AgentType::Custom("custom-antigravity-npx")
+        ));
+        // Not registered at all: the lookup misses and nothing changes.
+        assert!(!isolates_on(true, AgentType::Custom("custom-unregistered")));
+
+        let cleanup_errors = hydrate(&[]);
+        assert!(cleanup_errors.is_empty());
     }
 }

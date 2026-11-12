@@ -110,6 +110,7 @@ impl codeg_lib::acp::work_task_tools::WorkTaskToolAccess for NoTaskTools {
         _parent: &str,
         _verdict: &str,
         _summary: Option<&str>,
+        _thread_replies: &[codeg_lib::acp::delegation::transport::ThreadReply],
     ) -> codeg_lib::acp::work_task_tools::TaskReportAck {
         codeg_lib::acp::work_task_tools::TaskReportAck::rejected("no engine")
     }
@@ -557,6 +558,7 @@ async fn end_to_end_uds_ask_question_round_trip() {
                     },
                 ],
                 is_secret: false,
+                allow_other: true,
             }],
         };
         client_ask_round_trip(&socket_str, &req).await
@@ -701,6 +703,7 @@ async fn end_to_end_uds_ask_revoked_after_register_declines() {
                 },
             ],
             is_secret: false,
+            allow_other: true,
         }],
     };
     let resp = client_ask_round_trip(&socket.to_string_lossy(), &req)

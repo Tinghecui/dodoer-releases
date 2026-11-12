@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
 } from "react"
 import {
   isLiveTurnId,
@@ -33,6 +34,7 @@ import {
   mergeAdjacentBackgroundTaskGroups,
   type AdaptedContentPart,
   type AdaptedMessage,
+  type AdaptedToolCallPart,
   type MessageTurnAdapter,
   type ToolCallState,
   type UserImageDisplay,
@@ -40,6 +42,7 @@ import {
 } from "@/lib/adapters/ai-elements-adapter"
 import { TurnStats } from "./turn-stats"
 import { LiveTurnStats } from "./live-turn-stats"
+import { LiveRunsChip, type LiveRunsList } from "./live-runs-chip"
 import { ModelLabelProvider } from "./model-label-context"
 import { KnownInvocationsProvider } from "./known-invocations-context"
 import { DelegationStatusIndexProvider } from "./delegation-status-index-context"
@@ -56,6 +59,7 @@ import { SessionViewerHost } from "@/components/message/session-viewer-host"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
 import { parseResumeTaskId } from "@/lib/codeg-mcp-tool"
 import {
+  isCodeModeDelegationCall,
   isDelegateToAgentToolName,
   isRefusedResume,
   parseDelegateTaskId,
@@ -90,12 +94,23 @@ import {
 } from "@/lib/agent-plan"
 import type {
   AgentType,
+  AsyncTaskRecord,
   AvailableCommandInfo,
+  BackgroundOutstandingTask,
   ConnectionStatus,
   MessageTurn,
   PlanEntryInfo,
 } from "@/lib/types"
-import { copyTextToClipboard } from "@/lib/utils"
+import {
+  collectLiveRuns,
+  runningSubAgentCalls,
+  subAgentCallsById,
+} from "@/lib/live-runs"
+import {
+  useOptionalDelegation,
+  type DelegationBinding,
+} from "@/contexts/delegation-context"
+import { cn, copyTextToClipboard } from "@/lib/utils"
 import { ConversationMessageThread } from "@/components/message/conversation-message-thread"
 import {
   VirtualizedMessageThread,
@@ -116,6 +131,7 @@ import {
   useTranscriptNavDemanded,
   type TranscriptInsights,
   type TranscriptInsightsActions,
+  type TranscriptRunningRound,
 } from "@/stores/transcript-insights-store"
 import { useModelLabels } from "@/hooks/use-model-labels"
 import { useChatAnimationsEnabled } from "@/hooks/use-appearance"
@@ -123,7 +139,10 @@ import { usePageHandoffName } from "@/lib/browser/use-page-handoff-name"
 import { unescapeComposerText } from "@/lib/composer-copy-text"
 import { useStickToBottomContext } from "use-stick-to-bottom"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useAwaitingUser } from "@/stores/awaiting-user-store"
+import {
+  useAwaitingUser,
+  type AwaitingUserKind,
+} from "@/stores/awaiting-user-store"
 import { MarkdownImageProvider } from "@/components/ai-elements/markdown-local-image"
 
 interface MessageListViewProps {
@@ -214,6 +233,29 @@ interface MessageListViewProps {
    * (see `forkBusy`) rather than making every reply's footer flicker.
    */
   onForkFromTurn?: (turnId: string) => void
+  /**
+   * The connection's work that can outlive a turn, for the "N running" chip
+   * on the live activity row above the composer (see `LiveRunsChip`). Every
+   * surface with a connection passes it — the conversation page, a canvas
+   * card, the read-only sub-agent and task drawers (those without the stop).
+   * Omitted, the row shows the running turn's figures only. MUST be
+   * referentially stable while its contents are unchanged.
+   */
+  liveRuns?: LiveRunsSource | null
+}
+
+/** What `MessageListView` lists under its "N running" chip. */
+export interface LiveRunsSource {
+  /** The backend connection id: whose delegations these are. */
+  connectionId: string | null
+  asyncTasks: readonly AsyncTaskRecord[]
+  backgroundTasks: readonly BackgroundOutstandingTask[]
+  delegatedChildren: readonly string[]
+  /** Stops one async task. Omitted on read-only surfaces — a viewer has no
+   *  connection to send the stop on, so no row offers one. */
+  onStopAsyncTask?: (taskId: string) => Promise<boolean>
+  /** The agent's display name, for the row of a turn it started on its own. */
+  agentName?: string
 }
 
 export interface ResolvedMessageGroup {
@@ -450,6 +492,13 @@ const EMPTY_NAV_ENTRIES: MessageNavEntry[] = []
 // Stable empty reference for "the live reply has no plan".
 const EMPTY_PLAN_ENTRIES: PlanEntryInfo[] = []
 
+// Stable empty references for the running list's inputs.
+const EMPTY_ASYNC_TASKS: readonly AsyncTaskRecord[] = []
+const EMPTY_BACKGROUND_TASKS: readonly BackgroundOutstandingTask[] = []
+const EMPTY_IDS: readonly string[] = []
+const EMPTY_BINDINGS: readonly DelegationBinding[] = []
+const EMPTY_AGENT_CALLS: readonly AdaptedToolCallPart[] = []
+
 // A single turn's `sourceTurns` is just `[turn]`. Cache the wrapper per turn
 // object so an unchanged historical turn keeps a stable `sourceTurns` reference
 // across streaming-token re-renders — that's the last prop preventing
@@ -475,8 +524,8 @@ export function singletonSourceTurns(turn: MessageTurn): MessageTurn[] {
 //   - `resume_delegation`, which brought an interrupted one BACK. Its own
 //     tool_call_id is not a binding key (the broker re-binds the child to the
 //     original delegate call, usually in an earlier turn), so it is keyed by
-//     the task id in its arguments — `taskIdHint`, exactly as
-//     `ResumedDelegationCard` does. Without this arm a resumed sub-agent would
+//     the task id in its arguments — `taskIdHint`, exactly as the timeline's
+//     `DelegationResumeRow` does. Without this arm a resumed sub-agent would
 //     be missing from the overlay while it runs, because the reply that
 //     resumed it contains no `delegate_to_agent` call at all.
 //
@@ -491,7 +540,13 @@ function collectDelegationSources(
     if (part.type === "tool-call") {
       if (!part.toolCallId) continue
       const name = normalizeToolName(part.toolName)
-      if (isDelegateToAgentToolName(name)) {
+      // Code-mode payloads (opencode's `execute`, which normalizes to `bash`)
+      // reach this arm by their INPUT — the delegation call lives inside the
+      // `code` string, so the tool name alone can't classify them.
+      if (
+        isDelegateToAgentToolName(name) ||
+        isCodeModeDelegationCall(name, part.input ?? null)
+      ) {
         out.push({
           parentToolUseId: part.toolCallId,
           input: part.input ?? null,
@@ -503,7 +558,7 @@ function collectDelegationSources(
       } else if (name === "resume_delegation") {
         // A refusal names the task's agent and child but revived nothing —
         // listing it would put a sub-agent in the overlay that is not running
-        // on this turn's behalf. Same judgement as `ResumedDelegationCard`,
+        // on this turn's behalf. Same judgement as `DelegationResumeRow`,
         // which falls back to the plain tool card here.
         if (isRefusedResume(part.output ?? null, part.errorText ?? null)) {
           continue
@@ -518,7 +573,7 @@ function collectDelegationSources(
           taskIdHint: taskId,
           // Deliberately not the resume's `{task_id, reason}` arguments —
           // `parseInput` looks for `task`/`agent_type`/`working_dir` and would
-          // only warn about an unrecognized shape. See `ResumedDelegationCard`.
+          // only warn about an unrecognized shape. See `DelegationResumeRow`.
           input: null,
           output: part.output ?? null,
           errorText: part.errorText ?? null,
@@ -1021,7 +1076,11 @@ export function mergeConsecutiveAssistantTurns(
 
       const merged: AssistantTurnItem = {
         ...last,
-        key: `merged-${first.key}`,
+        // The run is drawn where its first turn was, and it stays that row: a
+        // reply goes from one turn to two the moment the agent answers its
+        // first tool, mid-stream, and a key of its own for the merged run
+        // re-mounted the whole reply right then.
+        key: first.key,
         isResponseComplete: buffer.every((it) => it.isResponseComplete),
         // Concatenate every sub-turn's raw turns so the artifacts card sees all
         // file edits across the merged reply, not just the last sub-turn.
@@ -1225,6 +1284,10 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
    *  a turn the backend cannot name still forks where the user pointed. */
   isThreadTail?: boolean
 }) {
+  // A message the user has just sent rises into the thread. Decided once, as
+  // it mounts on its way (`dimmed`): the virtual list bringing a stored one
+  // back never replays it.
+  const [risesIn] = useState(dimmed && group.role === "user")
   if (group.role === "system") {
     // A failed turn's line is the agent's account of the failure, not a
     // message the system sent: it closes the round in place, unboxed.
@@ -1242,8 +1305,15 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   const forkPointUnnamed = isForkPointUnnamed(forkPoint, isThreadTail)
 
   return (
-    <div className={dimmed ? "opacity-70" : undefined}>
-      <Message from={group.role}>
+    // Dimmed while the message is on its way (not yet stored); it brightens
+    // into place rather than at once.
+    <div
+      className={cn("transition-opacity duration-300", dimmed && "opacity-70")}
+    >
+      <Message
+        from={group.role}
+        className={risesIn ? "chat-enter-rise" : undefined}
+      >
         {group.role === "user" && group.images.length > 0 ? (
           <UserImageAttachments images={group.images} className="self-end" />
         ) : null}
@@ -1312,19 +1382,88 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   )
 })
 
-const PendingTypingIndicator = memo(function PendingTypingIndicator() {
+/** No parts yet: the reply the pending one stands for has said nothing. */
+const NO_PARTS: AdaptedContentPart[] = []
+
+/**
+ * What stands in the thread between a send and the first thing the agent says:
+ * the reply itself, before it has anything in it — its "Working" header and
+ * the turning ring under it, where the reply will draw them. So when the reply
+ * arrives it takes over in place, its first words appearing between the two
+ * (the ring moving down to make room, see `ReplyMotion`), rather than a row of
+ * dots giving way to a header a line lower. It fades in a beat after the send,
+ * as the sent message settles.
+ */
+const PendingReply = memo(function PendingReply() {
   return (
-    <Message from="assistant">
-      <MessageContent>
-        <div className="flex items-center gap-1.5 py-1">
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground/60 animate-[pulse_1.4s_ease-in-out_infinite]" />
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground/60 animate-[pulse_1.4s_ease-in-out_0.2s_infinite]" />
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground/60 animate-[pulse_1.4s_ease-in-out_0.4s_infinite]" />
-        </div>
-      </MessageContent>
-    </Message>
+    <div className="chat-enter-late">
+      <Message from="assistant">
+        <MessageContent>
+          <CompletedTurnContent parts={NO_PARTS} completed={false} pending />
+        </MessageContent>
+      </Message>
+    </div>
   )
 })
+
+type LiveStatsMessage = ComponentProps<typeof LiveTurnStats>["message"]
+
+interface LiveActivityContent {
+  /** The running turn, `null` when none runs. */
+  message: LiveStatsMessage
+  runs: LiveRunsList
+}
+
+/**
+ * The live activity row above the composer: the running turn's figures and the
+ * "N running" chip. While it shows (`show`) it draws what is live — so a turn
+ * that ends with work still running leaves the chip alone on the row. While it
+ * slides away it keeps its last content, so that leaves with the row instead
+ * of blanking it first. Mounted only while the row is, so a new turn starts
+ * from its own.
+ */
+function HeldLiveActivityBar({
+  show,
+  message,
+  runs,
+  onStopAsyncTask,
+  agentName,
+  awaitingUser,
+}: LiveActivityContent & {
+  show: boolean
+  onStopAsyncTask?: (taskId: string) => Promise<boolean>
+  agentName?: string
+  /** Cowork: see `LiveTurnStats`. Live only — not part of what is held. */
+  awaitingUser?: AwaitingUserKind | null
+}) {
+  const [held, setHeld] = useState<LiveActivityContent>(() => ({
+    message,
+    runs,
+  }))
+  if (show && (held.message !== message || held.runs !== runs)) {
+    setHeld({ message, runs })
+  }
+  const shown = show ? { message, runs } : held
+  // jenny fork: the row floats (see `activityRow`), so an empty one keeps no
+  // height in flow.
+  if (!shown.message && shown.runs.count === 0) return null
+  return (
+    <LiveTurnStats
+      message={shown.message}
+      awaitingUser={show ? awaitingUser : null}
+      trailing={
+        shown.runs.count > 0 ? (
+          <LiveRunsChip
+            runs={shown.runs}
+            interactive={show}
+            onStopAsyncTask={onStopAsyncTask}
+            agentName={agentName}
+          />
+        ) : null
+      }
+    />
+  )
+}
 
 const AutoScrollOnSend = memo(function AutoScrollOnSend({
   signal,
@@ -1374,6 +1513,7 @@ export function MessageListView({
   onAskSelection,
   onSaveNoteSelection,
   onForkFromTurn,
+  liveRuns = null,
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
@@ -1733,7 +1873,13 @@ export function MessageListView({
           )
         }
         case "typing":
-          return <PendingTypingIndicator />
+          // Where the reply will be: under the sent message, as far down as
+          // a reply after a message is (`isRoleTransition`).
+          return (
+            <div style={{ paddingTop: 16 }}>
+              <PendingReply />
+            </div>
+          )
         case "compaction":
           // Chrome-less centered divider between turns (no avatar / stats footer).
           return (
@@ -1970,6 +2116,31 @@ export function MessageListView({
       : null
   const navRevealingTurnId = navJump.revealingTurnId
   const replyStreaming = connStatus === "prompting"
+  // The round the agent is on, which the navigator lists first while it runs:
+  // from the send (the prompt is in, no word back yet) to the reply settling,
+  // for a passive viewer too. Its message is the last user turn — a walk back
+  // from the end, cheap enough for every batch; the store keeps the value
+  // while it is unchanged.
+  const roundRunning = replyStreaming || lastAssistantRunning
+  const liveStartedAt = liveMessage?.startedAt ?? null
+  const runningUserTurn = useMemo(() => {
+    if (!insightsInSidebar || !roundRunning) return null
+    for (let i = timelineTurns.length - 1; i >= 0; i--) {
+      const turn = timelineTurns[i].turn
+      if (turn.role === "user") return turn
+    }
+    return null
+  }, [insightsInSidebar, roundRunning, timelineTurns])
+  const runningRound = useMemo<TranscriptRunningRound | null>(() => {
+    if (!runningUserTurn) return null
+    const sentAt = Date.parse(runningUserTurn.timestamp)
+    return {
+      turnId: runningUserTurn.id,
+      // The composer's live timer counts from the live reply's start; agree
+      // with it while one is streaming.
+      startedAt: liveStartedAt ?? (Number.isNaN(sentAt) ? null : sentAt),
+    }
+  }, [runningUserTurn, liveStartedAt])
   const transcriptInsights = useMemo<TranscriptInsights | null>(
     () =>
       insightsInSidebar
@@ -1980,6 +2151,7 @@ export function MessageListView({
               earlier: navEarlier,
               revealingTurnId: navRevealingTurnId,
               currentTurnId: currentNavTurnId,
+              running: runningRound,
             },
             plan: { entries: sidebarPlanEntries, streaming: replyStreaming },
             actions: insightsActions,
@@ -1992,6 +2164,7 @@ export function MessageListView({
       navEarlier,
       navRevealingTurnId,
       currentNavTurnId,
+      runningRound,
       sidebarPlanEntries,
       replyStreaming,
       insightsActions,
@@ -2009,16 +2182,108 @@ export function MessageListView({
     return () => retractTranscriptInsights(conversationId, insightsOwner)
   }, [insightsInSidebar, conversationId, insightsOwner])
 
+  // --- The live activity row ------------------------------------------------
+  const turnLive = liveMessage !== null && connStatus === "prompting"
+  // The streaming reply's sub-agents still at work. Only while the turn runs:
+  // a foreground sub-agent blocks its turn, and a reply that ended keeps its
+  // frozen calls (a background one is the producer's to report, below).
+  const foregroundAgents = useMemo(() => {
+    if (!turnLive) return EMPTY_AGENT_CALLS
+    const out: AdaptedToolCallPart[] = []
+    for (const item of threadItems) {
+      if (
+        item.kind === "turn" &&
+        item.phase === "streaming" &&
+        item.group.role === "assistant"
+      ) {
+        out.push(...runningSubAgentCalls(item.group.parts))
+      }
+    }
+    return out.length > 0 ? out : EMPTY_AGENT_CALLS
+  }, [turnLive, threadItems])
+  const delegation = useOptionalDelegation()
+  const runsConnectionId = liveRuns?.connectionId ?? null
+  const delegationBindings = useMemo(
+    () =>
+      delegation && runsConnectionId
+        ? delegation.bindingsForParent(runsConnectionId)
+        : EMPTY_BINDINGS,
+    [delegation, runsConnectionId]
+  )
+  const backgroundTasks = liveRuns?.backgroundTasks ?? EMPTY_BACKGROUND_TASKS
+  // A background sub-agent's row takes its title from its launch card. The
+  // thread is only searched while there is one, so the list is not rebuilt on
+  // every streaming batch for nothing.
+  const cardThread = backgroundTasks.some((task) => task.kind === "agent")
+    ? threadItems
+    : null
+  const liveRunList = useMemo<LiveRunsList>(
+    () =>
+      collectLiveRuns({
+        asyncTasks: liveRuns?.asyncTasks ?? EMPTY_ASYNC_TASKS,
+        foregroundAgents,
+        backgroundTasks,
+        findLaunchCard: (toolCallId) => {
+          if (!cardThread) return null
+          for (let i = cardThread.length - 1; i >= 0; i -= 1) {
+            const item = cardThread[i]
+            if (item.kind !== "turn" || item.group.role !== "assistant")
+              continue
+            const part = subAgentCallsById(item.group.parts).get(toolCallId)
+            if (part) return part
+          }
+          return null
+        },
+        delegatedChildren: liveRuns?.delegatedChildren ?? EMPTY_IDS,
+        delegationBindings,
+      }),
+    [
+      liveRuns?.asyncTasks,
+      liveRuns?.delegatedChildren,
+      foregroundAgents,
+      backgroundTasks,
+      cardThread,
+      delegationBindings,
+    ]
+  )
+  const activityShown = turnLive || liveRunList.count > 0
+  // Shown over the composer while a turn runs or work runs past one. Drawn
+  // under the loading and load-error states too: what runs is the
+  // connection's, not the transcript's, and its stop must not wait on the
+  // history loading.
+  //
+  // jenny fork (Liquid Glass): the row is a glass capsule floating 10px above
+  // the composer dock (`LiveTurnStats`), not a row in flow — upstream slides
+  // it open in a `SlideSlot` so the transcript eases up, and here there is
+  // nothing in flow to slide. It has to stay a DIRECT child of
+  // `.chat-motion-scope`: liquid-glass.css keys on that to end the transcript
+  // above it and to lift the scroll button.
+  const activityRow = activityShown ? (
+    <HeldLiveActivityBar
+      show
+      message={turnLive ? liveMessage : null}
+      runs={liveRunList}
+      onStopAsyncTask={liveRuns?.onStopAsyncTask}
+      agentName={liveRuns?.agentName}
+      awaitingUser={awaitingUser}
+    />
+  ) : null
+
   const hasRenderableContent = threadItems.length > 0 || Boolean(liveMessage)
 
   if (detailLoading && !hasRenderableContent) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          <span>{t("loading")}</span>
+      <SessionViewerHost>
+        <div className="relative flex h-full min-h-0 flex-col">
+          <div className="flex min-h-0 flex-1 items-center justify-center">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>{t("loading")}</span>
+            </div>
+          </div>
+          {activityRow}
         </div>
-      </div>
+      </SessionViewerHost>
     )
   }
 
@@ -2036,48 +2301,59 @@ export function MessageListView({
     const showActions = Boolean(onReload || onNewSession)
     const reloading = detailLoading
     return (
-      <div role="alert" className="flex h-full items-center justify-center p-6">
-        <div className="flex max-w-md flex-col items-center gap-4 text-center">
-          <AlertCircle
-            aria-hidden="true"
-            className="h-8 w-8 text-destructive"
-          />
-          <div className="space-y-1">
-            <h3 className="text-sm font-medium">{t("errorTitle")}</h3>
-            <p className="text-sm text-muted-foreground break-words">
-              {renderedLoadError}
-            </p>
-          </div>
-          {showActions && (
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              {onReload && (
-                <Button
-                  size="sm"
-                  onClick={onReload}
-                  disabled={reloading}
-                  aria-busy={reloading}
-                >
-                  {reloading ? (
-                    <Loader2
-                      aria-hidden="true"
-                      className="me-1.5 h-4 w-4 animate-spin"
-                    />
-                  ) : (
-                    <RefreshCw aria-hidden="true" className="me-1.5 h-4 w-4" />
+      <SessionViewerHost>
+        <div className="relative flex h-full min-h-0 flex-col">
+          <div
+            role="alert"
+            className="flex min-h-0 flex-1 items-center justify-center p-6"
+          >
+            <div className="flex max-w-md flex-col items-center gap-4 text-center">
+              <AlertCircle
+                aria-hidden="true"
+                className="h-8 w-8 text-destructive"
+              />
+              <div className="space-y-1">
+                <h3 className="text-sm font-medium">{t("errorTitle")}</h3>
+                <p className="text-sm text-muted-foreground break-words">
+                  {renderedLoadError}
+                </p>
+              </div>
+              {showActions && (
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {onReload && (
+                    <Button
+                      size="sm"
+                      onClick={onReload}
+                      disabled={reloading}
+                      aria-busy={reloading}
+                    >
+                      {reloading ? (
+                        <Loader2
+                          aria-hidden="true"
+                          className="me-1.5 h-4 w-4 animate-spin"
+                        />
+                      ) : (
+                        <RefreshCw
+                          aria-hidden="true"
+                          className="me-1.5 h-4 w-4"
+                        />
+                      )}
+                      {t("errorActionReload")}
+                    </Button>
                   )}
-                  {t("errorActionReload")}
-                </Button>
-              )}
-              {onNewSession && (
-                <Button size="sm" variant="outline" onClick={onNewSession}>
-                  <Plus aria-hidden="true" className="me-1.5 h-4 w-4" />
-                  {t("errorActionNewSession")}
-                </Button>
+                  {onNewSession && (
+                    <Button size="sm" variant="outline" onClick={onNewSession}>
+                      <Plus aria-hidden="true" className="me-1.5 h-4 w-4" />
+                      {t("errorActionNewSession")}
+                    </Button>
+                  )}
+                </div>
               )}
             </div>
-          )}
+          </div>
+          {activityRow}
         </div>
-      </div>
+      </SessionViewerHost>
     )
   }
 
@@ -2146,16 +2422,7 @@ export function MessageListView({
             </Button>
           )}
         </ConversationMessageThread>
-        {/* Floats 10px above the composer dock as a small-glass capsule;
-            while it shows, the transcript and the scroll button make room. */}
-        {liveMessage && connStatus === "prompting" && (
-          <LiveTurnStats
-            message={liveMessage}
-            agentType={agentType}
-            isStreaming={connStatus === "prompting"}
-            awaitingUser={awaitingUser}
-          />
-        )}
+        {activityRow}
         {/* Overlay stack pinned to the inline-start edge (top-left in LTR,
         top-right in RTL) — only where the plan and sub-agents have no side
         panel to go to (see `insightsInSidebar`). A flex column keeps the order

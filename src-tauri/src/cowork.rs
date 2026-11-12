@@ -882,6 +882,11 @@ pub fn api_routes() -> Router {
             "/get_system_resources",
             post(crate::system_resources::get_system_resources_http),
         )
+        // Dropped by the 0.43 base; desktop apps up to 1.4.0 still call it.
+        .route(
+            "/acp_fetch_kimi_models",
+            post(crate::legacy_client::acp_fetch_kimi_models),
+        )
 }
 
 // ─── Secret redaction (cowork mode) ──────────────────────────────────────
@@ -1231,7 +1236,6 @@ pub fn redact_agent(info: &mut crate::acp::types::AcpAgentInfo) {
     for json in [
         &mut info.config_json,
         &mut info.codex_auth_json,
-        &mut info.opencode_auth_json,
         &mut info.cursor_cli_config_json,
         &mut info.cline_secrets_json,
     ]
@@ -1301,7 +1305,6 @@ async fn agent_restore_context(
 pub struct AgentWrite<'a> {
     pub env: Option<&'a mut BTreeMap<String, String>>,
     pub config_json: Option<&'a mut Option<String>>,
-    pub opencode_auth_json: Option<&'a mut Option<String>>,
     pub codex_auth_json: Option<&'a mut Option<String>>,
     pub codex_config_toml: Option<&'a mut Option<String>>,
     pub codex_model_catalog: Option<&'a mut Option<String>>,
@@ -1320,7 +1323,6 @@ fn write_mentions_placeholder(w: &AgentWrite<'_>) -> bool {
         .as_deref()
         .is_some_and(|e| e.values().any(|v| v == REDACTED))
         || text(&w.config_json)
-        || text(&w.opencode_auth_json)
         || text(&w.codex_auth_json)
         || text(&w.codex_config_toml)
         || text(&w.codex_model_catalog)
@@ -1351,12 +1353,9 @@ pub async fn restore_agent_write(
         *env = restore_env(incoming, stored.map(|a| &a.env), &source)?;
     }
     type Pick = fn(&crate::acp::types::AcpAgentInfo) -> Option<&String>;
-    let json_fields: [(&str, Option<&mut Option<String>>, Pick); 4] = [
+    let json_fields: [(&str, Option<&mut Option<String>>, Pick); 3] = [
         ("configJson", w.config_json.take(), |a| {
             a.config_json.as_ref()
-        }),
-        ("opencodeAuthJson", w.opencode_auth_json.take(), |a| {
-            a.opencode_auth_json.as_ref()
         }),
         ("codexAuthJson", w.codex_auth_json.take(), |a| {
             a.codex_auth_json.as_ref()
@@ -1411,6 +1410,36 @@ pub async fn restore_agent_write(
 /// stored key as [`REDACTED`], which means "use the stored one" (`None`).
 pub fn probe_key(api_key: Option<String>) -> Option<String> {
     api_key.filter(|k| !(redact_enabled() && k.trim() == REDACTED))
+}
+
+/// `list_provider_models` request filter. A saved provider's dialog asks with
+/// "the key typed into the dialog", which wins over the stored one — and the
+/// dialog holds the stored key as [`REDACTED`], so that is what it sends until
+/// someone types a new one. As in [`probe_key`], it means the stored key.
+pub fn models_key_source(
+    source: crate::commands::model_provider::ModelsKeySource,
+) -> crate::commands::model_provider::ModelsKeySource {
+    use crate::commands::model_provider::ModelsKeySource;
+    match source {
+        ModelsKeySource::Provider {
+            provider_id,
+            api_key,
+        } => ModelsKeySource::Provider {
+            provider_id,
+            api_key: probe_key(api_key),
+        },
+        other => other,
+    }
+}
+
+/// `acp_update_agent_config` request filter for the agent's global
+/// instructions file (`system_instructions_content` and the path it was shown
+/// at): behind the portal it is not edited through codeg. The Cowork build
+/// does not offer the editor (`src/lib/cowork/features.ts`), and the panel
+/// sends the text it loaded along with every config save — so the field is
+/// dropped (`None`: leave the file alone) rather than the save refused.
+pub fn instructions_write(value: Option<String>) -> Option<String> {
+    value.filter(|_| !redact_enabled())
 }
 
 /// `Err` (403) in portal mode for endpoints that hand out codeg.db or the
@@ -2186,6 +2215,7 @@ mod tests {
         );
         assert!(check_new_provider_key(REDACTED).is_ok());
         assert_eq!(probe_key(Some(REDACTED.into())), Some(REDACTED.into()));
+        assert_eq!(instructions_write(Some("be brief".into())), Some("be brief".into()));
         assert!(ensure_not_portal("Config export").is_ok());
         assert!(is_secret_key("anthropic_auth_token"));
         assert!(!is_secret_toml_key("env_key"));

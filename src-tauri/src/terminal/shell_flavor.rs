@@ -28,7 +28,7 @@ pub(crate) fn shell_basename(shell: &str) -> String {
 /// narrower question.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShellFamily {
-    /// `pwsh` / `powershell`: `-NoLogo -NoProfile -Command <script>`.
+    /// `pwsh` / `powershell`: `-Command <script>`.
     PowerShell,
     /// `cmd.exe` and cmd-compatible replacements: `/D /S /C <line>`.
     Cmd,
@@ -95,7 +95,8 @@ pub(crate) enum ShellInvocation {
 /// command travels in `$CODEG_CMD` rather than argv to sidestep quoting — the
 /// same indirection the built-in terminal uses. POSIX shells get `-l` so the
 /// user's login profile (PATH for `zed`, `code`, …) applies; no `-i`, as there
-/// is no TTY here.
+/// is no TTY here. PowerShell runs the user's `$PROFILE` for the same reason:
+/// it has no login mode, so that only means leaving out `-NoProfile`.
 ///
 /// cmd.exe is the exception: it expands `%VAR%` once, over its own command
 /// line, and never inside a value it expanded, so behind `%CODEG_CMD%` the
@@ -107,12 +108,7 @@ pub(crate) enum ShellInvocation {
 /// `reject_cmd_syntax` guard.
 pub(crate) fn shell_invocation(shell: &str, command: &str) -> ShellInvocation {
     let args: Vec<&str> = match classify_shell_family(shell) {
-        ShellFamily::PowerShell => vec![
-            "-NoLogo",
-            "-NoProfile",
-            "-Command",
-            "Invoke-Expression $env:CODEG_CMD",
-        ],
+        ShellFamily::PowerShell => vec!["-NoLogo", "-Command", "Invoke-Expression $env:CODEG_CMD"],
         ShellFamily::Cmd => {
             return ShellInvocation::CmdLine(format!("/D /V:OFF /S /C \"{command}\""))
         }
@@ -166,6 +162,16 @@ mod tests {
         assert_eq!(
             shell_invocation("/bin/zsh", "zed ."),
             args(&["-l", "-c", "eval \"$CODEG_CMD\""])
+        );
+    }
+
+    #[test]
+    fn powershell_runs_the_users_profile_like_a_login_shell() {
+        // No `-NoProfile`: the PATH that fnm, conda, … set up in `$PROFILE`
+        // applies to the command, as the login profile does for POSIX shells.
+        assert_eq!(
+            shell_invocation("pwsh.exe", "code ."),
+            args(&["-NoLogo", "-Command", "Invoke-Expression $env:CODEG_CMD"])
         );
     }
 

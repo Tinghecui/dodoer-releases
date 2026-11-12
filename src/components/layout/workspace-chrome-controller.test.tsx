@@ -59,6 +59,14 @@ vi.mock("@/contexts/aux-panel-context", () => ({
 vi.mock("@/contexts/terminal-context", () => ({
   useTerminalContext: () => ({ toggle: vi.fn() }),
 }))
+vi.mock("@/stores/tab-store", () => ({
+  // jenny fork: with `conversationId`, which the mark-unread shortcut reads
+  // off the active tab.
+  useVisibleConversationTabs: () =>
+    state.activeTabId
+      ? [{ id: state.activeTabId, conversationId: state.activeConversationId }]
+      : [],
+}))
 vi.mock("@/contexts/tab-context", () => ({
   useTabActions: () => ({
     openNewConversationTab: vi.fn(),

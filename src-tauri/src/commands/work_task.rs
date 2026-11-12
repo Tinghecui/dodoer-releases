@@ -635,28 +635,47 @@ pub async fn work_task_merge_unqueue_core(
     Ok(())
 }
 
-/// Accept a reviewed forge-sourced task by pushing it back to the repository
-/// it came from: an issue's task opens (or adopts) a pull request for its own
-/// branch, a pull request's task pushes onto that pull request's branch.
-/// Returns the pull request URL.
+/// Accept a reviewed task by delivering it to a forge: an issue's task opens
+/// (or adopts) a pull request for its own branch, a pull request's task pushes
+/// onto that pull request's branch, and a task without forge provenance opens
+/// one on the repository its project's `origin` names. Returns the pull
+/// request URL.
 ///
 /// Unlike the merge dispatch this awaits the WHOLE operation — a push plus two
 /// REST calls, no agent — so both success and failure land in the caller's
 /// dialog. Every gate is inside the engine, where a direct API call cannot
 /// route around it.
 ///
-/// `delete_worktree` takes the checkout along once the delivery lands, the
-/// same offer the merge and complete acceptances make. It never changes the
-/// result: a removal that fails leaves a retryable `cleanup_state` on the card
-/// and the delivered URL still comes back.
+/// `mark_done` (default `true`: what every delivery did before the choice
+/// existed) finishes the task; `false` keeps it in review with the pull
+/// request recorded, for another round that pushes into the same pull request.
+///
+/// `delete_worktree` takes the checkout along once a delivery that finishes
+/// the task lands, the same offer the merge and complete acceptances make. It
+/// never changes the result: a removal that fails leaves a retryable
+/// `cleanup_state` on the card and the delivered URL still comes back.
+///
+/// `closes` is which issues the pull request closes, for a task made from
+/// several related issues only — chosen at its first delivery and fixed from
+/// then on (see `engine::closing_list`). `None` keeps the list already fixed,
+/// or closes them all on a first delivery.
 pub async fn work_task_deliver_pr_core(
     id: i32,
     pr_title: Option<String>,
     draft: bool,
     delete_worktree: bool,
+    mark_done: Option<bool>,
+    closes: Option<Vec<i64>>,
 ) -> Result<String, DbError> {
     engine()?
-        .deliver_pr(id, pr_title, draft, delete_worktree)
+        .deliver_pr_closing(
+            id,
+            pr_title,
+            draft,
+            delete_worktree,
+            mark_done.unwrap_or(true),
+            closes,
+        )
         .await
         .map_err(DbError::Validation)
 }
@@ -669,6 +688,64 @@ pub async fn work_task_complete_core(id: i32, delete_worktree: bool) -> Result<(
         .complete_task(id, delete_worktree)
         .await
         .map_err(DbError::Validation)
+}
+
+/// The user's answer about the thread comment of a forge-sourced task in
+/// review, given in the acceptance dialog right before the acceptance itself:
+/// whether a comment is posted when the task finishes, and the reply it
+/// carries for each of the task's items (an item left out, or left blank,
+/// gets the outcome line alone). Pure DB, like the trigger dialog's own
+/// switch it overrides.
+///
+/// The text is the user's: kept as typed (normalized and capped, see
+/// `forge::thread_reply::normalize_user_reply`), never re-sanitized — what they
+/// see in the dialog is what gets posted. Replies for numbers the task does not
+/// handle are dropped.
+///
+/// `run_seq` is the generation the dialog was showing. The dialogs send their
+/// answer before EVERY acceptance, changed or not, so this is also what binds
+/// an acceptance to the reply on screen: a task sent back and reviewed again
+/// meanwhile has a newer draft, and the answer is refused rather than letting
+/// the acceptance post a reply nobody read.
+pub async fn work_task_set_writeback_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    id: i32,
+    run_seq: i32,
+    writeback: bool,
+    drafts: std::collections::BTreeMap<i64, String>,
+) -> Result<(), DbError> {
+    let task = work_task_service::get_model(&db.conn, id).await?;
+    let items = task
+        .source_meta
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<crate::forge::ForgeSourceMeta>(s).ok())
+        .map(|meta| meta.item_numbers())
+        .ok_or_else(|| {
+            DbError::Validation("this task did not come from an issue or pull request".to_string())
+        })?;
+    let drafts = crate::forge::thread_reply::drafts_json(
+        drafts,
+        &items,
+        crate::forge::thread_reply::normalize_user_reply,
+    )
+    // Cowork fork: the user's answer is what marks a reply as read.
+    .map(|json| crate::forge::thread_reply::mark_reviewed(&json));
+    if !work_task_service::set_writeback(&db.conn, id, run_seq, writeback, drafts.as_deref())
+        .await?
+    {
+        return Err(DbError::Validation(
+            "the task changed since this dialog opened (it left review or ran again) — \
+             nothing was accepted; reopen it to see the current reply"
+                .to_string(),
+        ));
+    }
+    emit_event(
+        emitter,
+        WORK_TASK_CHANGED_EVENT,
+        WorkTaskChange::Upsert { id },
+    );
+    Ok(())
 }
 
 /// Archive / unarchive a terminal task (pure DB; no engine needed). Archived
@@ -1069,14 +1146,30 @@ pub async fn work_task_deliver_pr(
     pr_title: Option<String>,
     draft: bool,
     delete_worktree: bool,
+    mark_done: Option<bool>,
+    closes: Option<Vec<i64>>,
 ) -> Result<String, DbError> {
-    work_task_deliver_pr_core(id, pr_title, draft, delete_worktree).await
+    work_task_deliver_pr_core(id, pr_title, draft, delete_worktree, mark_done, closes).await
 }
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn work_task_complete(id: i32, delete_worktree: bool) -> Result<(), DbError> {
     work_task_complete_core(id, delete_worktree).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn work_task_set_writeback(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    id: i32,
+    run_seq: i32,
+    writeback: bool,
+    drafts: std::collections::BTreeMap<i64, String>,
+) -> Result<(), DbError> {
+    work_task_set_writeback_core(&EventEmitter::Tauri(app), &db, id, run_seq, writeback, drafts)
+        .await
 }
 
 #[cfg(feature = "tauri-runtime")]

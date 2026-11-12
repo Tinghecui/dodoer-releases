@@ -41,7 +41,7 @@ describe("readServerCompat", () => {
 })
 
 describe("judgeCompat", () => {
-  const server = { apiVersion: 1, minDesktopVersion: "1.2.0", features: [] }
+  const server = { apiVersion: 2, minDesktopVersion: "1.2.0", features: [] }
 
   it("is fine when both sides are new enough", () => {
     expect(judgeCompat(server, "1.2.0")).toEqual({ kind: "ok" })
@@ -65,13 +65,28 @@ describe("judgeCompat", () => {
     })
   })
 
-  it("accepts a server from before the contract by default", () => {
+  it("accepts a server from before the contract when asked for nothing", () => {
     expect(
       judgeCompat(
         { apiVersion: 0, minDesktopVersion: null, features: [] },
-        "1.1.0"
+        "1.1.0",
+        0
       )
     ).toEqual({ kind: "ok" })
+  })
+
+  it("needs a server on the 0.43 base by default", () => {
+    const server = (apiVersion: number) => ({
+      apiVersion,
+      minDesktopVersion: null,
+      features: [],
+    })
+    expect(judgeCompat(server(1), "1.5.0")).toEqual({
+      kind: "server_too_old",
+      apiVersion: 1,
+      required: 2,
+    })
+    expect(judgeCompat(server(2), "1.5.0")).toEqual({ kind: "ok" })
   })
 })
 

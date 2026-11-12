@@ -55,6 +55,7 @@ const PROVIDER_NAME: Record<ForgeProviderId, string> = {
   github: "GitHub",
   gitlab: "GitLab",
   gitea: "Gitea",
+  cnb: "CNB",
 }
 
 /** Where a pie slice of `fraction` ends on a circle of radius `r` around

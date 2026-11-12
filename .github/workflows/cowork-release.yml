@@ -52,6 +52,21 @@ jobs:
           # 分支推送按提交 sha 取代码，不按分支名：PR 用 auto-merge 合得比这里跑完早，合并时公开的 pr/<n> 已经删了，
           # 后面的 job 再按分支名取就是 couldn't find remote ref（2026-11-12 #117）。sha 在分支删掉后还取得到。tag 照旧按 tag
           ref: ${{ inputs.version || (github.ref_type == 'branch' && github.sha) || github.ref }}
+      # server 会叫比 MIN_DESKTOP_VERSION 旧的桌面 app 去更新（src-tauri/src/compat.rs）。这个 tag 自己编出来的桌面 app
+      # 是 1.<次>.<修订>（desktop-macos.yml），它要是比这个最低版本还旧，用户点「检查更新」就永远更新不到够新的版本
+      - name: 这个 tag 的桌面 app 不低于 server 要求的最低版本
+        if: github.ref_type == 'tag'
+        run: |
+          min=$(sed -n 's/^pub const MIN_DESKTOP_VERSION: &str = "\(.*\)";$/\1/p' src-tauri/src/compat.rs)
+          tag="${GITHUB_REF_NAME#cowork-codeg-v}"
+          desktop="1.${tag#*.}"
+          [[ "$min" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$desktop" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::读不出版本：MIN_DESKTOP_VERSION=$min，tag=$GITHUB_REF_NAME"; exit 1; }
+          if [[ "$(printf '%s\n%s\n' "$min" "$desktop" | sort -V | head -1)" != "$min" ]]; then
+            echo "::error::$GITHUB_REF_NAME 的桌面 app 是 $desktop，比 compat.rs 的 MIN_DESKTOP_VERSION（$min）旧。换一个更高的 tag，或者调低 MIN_DESKTOP_VERSION"
+            exit 1
+          fi
+          echo "桌面 app $desktop ≥ MIN_DESKTOP_VERSION $min"
       - uses: pnpm/action-setup@v4
         with:
           run_install: false

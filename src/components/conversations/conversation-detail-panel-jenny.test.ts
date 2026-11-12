@@ -51,7 +51,7 @@ describe("jenny fork: send before the agent is ready", () => {
       "diffConfigPreferences("
     )
     const send = source.indexOf("const handleSend = useCallback(")
-    expect(source.slice(send, send + 6000)).toContain(
+    expect(source.slice(send, send + 8000)).toContain(
       "if (!fromQueueFlush) reconcileSessionPrefs(false)"
     )
   })

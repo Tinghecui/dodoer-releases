@@ -53,7 +53,7 @@ describe("RemoteCompatNotice", () => {
   })
 
   it("stays quiet when the app and the server match", async () => {
-    env.health = { api_version: 1, min_desktop_version: "1.2.0" }
+    env.health = { api_version: 2, min_desktop_version: "1.2.0" }
     renderNotice()
     await waitFor(() => expect(toast.dismiss).toHaveBeenCalled())
     expect(env.call).toHaveBeenCalledWith("health", {}, { timeoutMs: 8000 })
@@ -61,7 +61,7 @@ describe("RemoteCompatNotice", () => {
   })
 
   it("asks to update an app older than the server's minimum", async () => {
-    env.health = { api_version: 1, min_desktop_version: "1.3.0" }
+    env.health = { api_version: 2, min_desktop_version: "1.3.0" }
     renderNotice()
     await waitFor(() => expect(toast.warning).toHaveBeenCalled())
     const [title, opts] = toast.warning.mock.calls[0]
@@ -70,6 +70,16 @@ describe("RemoteCompatNotice", () => {
     expect(opts.duration).toBe(Infinity)
     opts.action.onClick()
     expect(update.checkNow).toHaveBeenCalledWith({ silent: false })
+  })
+
+  it("asks for a server upgrade when the server is from before the 0.43 base", async () => {
+    env.health = { api_version: 1, min_desktop_version: "1.2.0" }
+    renderNotice()
+    await waitFor(() => expect(toast.warning).toHaveBeenCalled())
+    const [, opts] = toast.warning.mock.calls[0]
+    expect(opts.duration).toBe(Infinity)
+    // Updating the app would not help, so there is no update button.
+    expect(opts.action).toBeUndefined()
   })
 
   it("does nothing outside a remote-desktop window", async () => {
@@ -91,14 +101,14 @@ describe("RemoteCompatNotice", () => {
   })
 
   it("judges again on the server_info a reconnect brings", async () => {
-    env.health = { api_version: 1, min_desktop_version: "1.2.0" }
+    env.health = { api_version: 2, min_desktop_version: "1.2.0" }
     const { unmount } = renderNotice()
     await waitFor(() => expect(toast.dismiss).toHaveBeenCalled())
     expect(toast.warning).not.toHaveBeenCalled()
 
     // Cowork upgraded the server; the socket came back with a new minimum.
     for (const cb of env.serverInfo) {
-      cb({ apiVersion: 1, minDesktopVersion: "1.3.0", features: [] })
+      cb({ apiVersion: 2, minDesktopVersion: "1.3.0", features: [] })
     }
     await waitFor(() => expect(toast.warning).toHaveBeenCalled())
     expect(toast.warning.mock.calls[0][1].description).toContain("1.3.0")

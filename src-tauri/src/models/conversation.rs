@@ -65,7 +65,8 @@ pub struct DbConversationSummary {
     pub delegation_call_id: Option<String>,
     /// Mirror of `conversation.origin_cwd`: the working directory this
     /// conversation actually ran in when it differs from its current folder's
-    /// path (set when a removed task worktree's conversations were re-parented).
+    /// path (set when a removed task worktree's conversations were re-parented,
+    /// or the user moved the conversation to another project).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin_cwd: Option<String>,
     /// Mirror of `conversation.assistant_id`: the assistant a delegation child
@@ -294,7 +295,9 @@ pub struct ImportResult {
 pub enum ScanSessionStatus {
     /// Not in the DB — importable.
     New,
-    /// At least one live (non-deleted) row exists — already imported.
+    /// At least one live (non-deleted) row exists — already imported. Also a
+    /// Claude Code session whose usage a live conversation of a custom agent
+    /// on the official Claude adapter counts: the import skips it.
     Imported,
     /// Only soft-deleted rows exist. Deletion is a soft delete, so the row (and
     /// its whole history) is still there: the picker offers such a session for

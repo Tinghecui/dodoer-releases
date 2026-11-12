@@ -22,12 +22,25 @@
 //! version 0, no minimum and no features.
 
 /// The server's API revision (see the module docs).
-pub const API_VERSION: u32 = 1;
+///
+/// * 1: the contract itself (codeg 0.40).
+/// * 2: the codeg 0.43 base. Its frontend calls some thirty routes a 0.40
+///   server lacks (search, moving conversations, forge write-back, …), in
+///   ordinary flows rather than behind one entry a feature could hide.
+pub const API_VERSION: u32 = 2;
 
-/// The oldest desktop app this server works with: the first one released
-/// through dodoer-releases (`1.<minor>.<patch>` of the cowork-codeg tag), so
-/// the first one that can update itself.
-pub const MIN_DESKTOP_VERSION: &str = "1.2.0";
+/// The oldest desktop app this server works with (`1.<minor>.<patch>` of the
+/// cowork-codeg tag).
+///
+/// * 1.2.0: the first one released through dodoer-releases, so the first one
+///   that can update itself.
+/// * 1.5.0: the first one with the 0.43 frontend. An older app runs a 0.40
+///   frontend against this server; `legacy_client` keeps that from going wrong
+///   quietly, and this tells its user to update. The release workflow refuses
+///   a tag whose own desktop app would be older than this
+///   (`.github/public/workflows/cowork-release.yml`), so the app asked for
+///   always exists by the time a server carrying this is installed.
+pub const MIN_DESKTOP_VERSION: &str = "1.5.0";
 
 /// Optional abilities a client may check (see the module docs).
 pub const FEATURES: &[&str] = &[
@@ -79,7 +92,10 @@ mod tests {
     fn health_fields_carry_the_contract() {
         let fields = health_fields();
         assert_eq!(fields["api_version"], serde_json::json!(API_VERSION));
-        assert_eq!(fields["min_desktop_version"], serde_json::json!("1.2.0"));
+        assert_eq!(
+            fields["min_desktop_version"],
+            serde_json::json!(MIN_DESKTOP_VERSION)
+        );
         assert_eq!(
             fields["features"],
             serde_json::json!(["cowork_info", "host_bridge_ws", "system_resources"])

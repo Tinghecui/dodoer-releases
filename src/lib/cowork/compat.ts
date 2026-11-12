@@ -9,12 +9,13 @@
 // none of the fields: API version 0, no minimum, no features.
 
 /** Raise when this client starts relying on what only a newer server has (the
- * server's `API_VERSION`). 0 accepts servers from before the contract. */
-export const MIN_SERVER_API_VERSION = 0
+ * server's `API_VERSION`). 0 would accept servers from before the contract;
+ * 2 is the codeg 0.43 base, whose frontend this is. */
+export const MIN_SERVER_API_VERSION = 2
 
 /** The newest server `API_VERSION` this client knows, told to the server in the
  * WS `hello` (informational: the client still judges). Bump with the server's. */
-export const CLIENT_API_VERSION = 1
+export const CLIENT_API_VERSION = 2
 
 export interface ServerCompat {
   apiVersion: number

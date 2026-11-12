@@ -194,10 +194,12 @@ pub struct AsyncTaskRecord {
     pub name: String,
     /// Already FRIENDLY, not the SDK's raw type: claude maps
     /// `local_bash`→`"shell"`, `local_workflow`→`"workflow"`,
-    /// `local_monitor`/`mcp`→`"monitor"`, and anything else to `"task"`; codex
-    /// publishes `"shell"` for every background terminal. Kept a plain string so
-    /// an unmapped future type renders as itself instead of failing to
-    /// deserialize.
+    /// `local_monitor`/`mcp`→`"monitor"`, and anything else to `"task"`; from
+    /// 0.97.0 it names a turn Claude Code started on its own `"turn"`, and from
+    /// 0.98.0 the task of a `Monitor` call (which the SDK reports as
+    /// `local_bash`) `"monitor"`. codex publishes `"shell"` for every
+    /// background terminal. Kept a plain string so an unmapped future type
+    /// renders as itself instead of failing to deserialize.
     pub task_type: String,
     pub description: String,
     /// Whether this task earns its own transcript card upstream. codeg renders
@@ -207,9 +209,10 @@ pub struct AsyncTaskRecord {
     /// distinguish a task already drawn as an ordinary tool call (a background
     /// `Bash` is one) from a standalone job doesn't need a wire change.
     pub show_in_transcript: bool,
-    /// Whether `_session/async_task/stop` is offered. The adapter announces
-    /// `true` for every task it publishes; it is carried rather than assumed so
-    /// a future adapter can withdraw the affordance without a codeg release.
+    /// Whether `_session/async_task/stop` is offered. Carried rather than
+    /// assumed: claude-agent-acp 0.98.0 announces `false` for a monitor
+    /// (stopping one would only end the agent's wait) and refuses the request,
+    /// while every other task it publishes is `true`.
     pub can_stop: bool,
     /// `running` | `paused` | `completed` | `failed` | `stopped`. Plain string
     /// for the same forward-compatibility reason as `task_type`; treat anything
@@ -710,7 +713,9 @@ pub enum AcpEvent {
         /// Stable machine-readable identifier: `"resource_not_found"` for
         /// JSON-RPC -32002, `"session_busy"` for codex-acp's typed
         /// `data.reason: "thread_active_writer"` (2.1.0+; matched on the wire
-        /// message before that), or `"session_unavailable"` /
+        /// message before that), `"provider_mismatch"` for codex 0.166's
+        /// refusal of a thread bound to another model provider (`message` is
+        /// then codex's own sentence), or `"session_unavailable"` /
         /// `"session_archived"` matched on the wire message. See
         /// `classify_session_load_error`.
         code: String,
@@ -763,6 +768,15 @@ pub enum AcpEvent {
         /// into `SessionState` to exempt the connection from both idle sweeps
         /// while work is pending.
         outstanding: u32,
+        /// The same tasks one by one, for the composer's "N running" list: a
+        /// count alone cannot say WHICH background sub-agents still run once
+        /// their launching turn has ended, and the launch cards cannot either
+        /// (a transcript can't tell a live task from one whose CLI died).
+        /// Every emission carries the producer's WHOLE current set, like
+        /// `outstanding` — state, not a delta — so an absent field means none.
+        /// `outstanding` stays its length, for older readers.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        outstanding_tasks: Vec<BackgroundOutstandingTask>,
         /// Tasks settled by `<task-notification>` records in this batch — the
         /// frontend raises one OS notification per entry.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -772,6 +786,27 @@ pub enum AcpEvent {
         /// `transcript_watermark` catches up (`>=`), closing the emit/refetch
         /// race without cross-namespace id dedup.
         watermark: u64,
+    },
+    /// A live progress tick for a background sub-agent whose launch card has
+    /// already left the live message: its launching turn ended (the usual case
+    /// — a background launch returns at once and the turn answers), or a later
+    /// turn is running. A `ToolCallUpdate` cannot reach that card, since the
+    /// frontend diverts out-of-turn wire updates and `SessionState` would
+    /// recreate a ghost live message for one. The frontend merges `meta` into
+    /// the launch card's own `meta` in memory, the way a settle rewrites its
+    /// lifecycle marker. Nothing is persisted: the tick is the only record.
+    ///
+    /// Grok only (`subagent_progress`): its background children report while
+    /// they run, and almost always after the parent's turn has ended.
+    BackgroundTaskProgress {
+        session_id: String,
+        /// The launching tool call — the card to update.
+        tool_use_id: String,
+        /// The sub-agent's own id.
+        task_id: String,
+        /// Keys to merge into the card's `meta` (for Grok,
+        /// `grokSubagentSession` + `grokSubagentProgress`).
+        meta: serde_json::Value,
     },
     /// A `delegate_to_agent` MCP tool call from the parent agent has spawned a
     /// child sub-session and the child's prompt is in flight. Emitted as soon
@@ -914,6 +949,54 @@ pub enum AcpEvent {
         stale: bool,
         kind: ConfigStaleKind,
     },
+}
+
+/// What kind of work a [`BackgroundOutstandingTask`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundTaskKind {
+    /// A sub-agent running in the background (Claude Code's async `Agent`,
+    /// an OpenCode background `subagent`, a Grok background `spawn_subagent`).
+    Agent,
+    /// A background shell (Claude Code's `Bash(run_in_background)`). The AIR
+    /// async-task channel reports these too, with a stop; the frontend lists
+    /// them from there.
+    Shell,
+}
+
+impl BackgroundTaskKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Shell => "shell",
+        }
+    }
+}
+
+/// Cap on [`BackgroundOutstandingTask::description`]: a row title, not the
+/// prompt. Keeps every emission of the set — each one carries it whole —
+/// small whatever the agent wrote.
+pub const BACKGROUND_TASK_DESCRIPTION_MAX_CHARS: usize = 200;
+
+/// One launched-but-unresolved background task, as the producer of
+/// [`AcpEvent::BackgroundActivity`] accounts it: the Claude transcript
+/// watcher, or the OpenCode / Grok live state. Leaves the set when it settles
+/// (or, for the watcher, when its keep-alive expires).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundOutstandingTask {
+    /// The id its settle will carry (`BackgroundSettledInfo::task_id`).
+    pub task_id: String,
+    pub kind: BackgroundTaskKind,
+    /// The tool call that launched it, when known — the card the frontend
+    /// takes the row's title from. `None` for a task whose launch this
+    /// producer never saw (a Claude interim notification is the one case).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+    /// The launch's own description of the task, the row's fallback title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// When the producer first saw it launched (or resumed), Unix ms.
+    pub started_at_ms: i64,
 }
 
 /// One background task settled by a `<task-notification>` transcript record,
@@ -1735,7 +1818,8 @@ pub struct AcpAgentInfo {
     pub host_tools_agent_mode: bool,
     pub config_json: Option<String>,
     pub config_file_path: Option<String>,
-    pub opencode_auth_json: Option<String>,
+    pub system_instructions_file_path: Option<String>,
+    pub system_instructions_content: Option<String>,
     pub codex_auth_json: Option<String>,
     pub codex_config_toml: Option<String>,
     /// Compact structured codex model-catalog source (the `codeg` custom-model
@@ -1766,6 +1850,10 @@ pub struct AcpAgentInfo {
     /// permission mode is a launch flag, not a config key). Only populated
     /// for `AgentType::Cursor`. Derived from `cursor_cli_config_json`.
     pub cursor_settings: Option<CursorSettings>,
+    /// The `/model` picker ids codeg adds for codeg's Claude sessions when no
+    /// model provider is bound (`acp::claude_model_picker`). Only populated
+    /// for `AgentType::ClaudeCode`.
+    pub claude_model_picker: Option<Vec<String>>,
     pub model_provider_id: Option<i32>,
     /// Display icon for a custom ACP agent — normally an inlined
     /// `data:image/…;base64,…` URL (see
@@ -1961,6 +2049,11 @@ pub struct GrokSettings {
     /// so the composer offers no effort selector for it.
     #[serde(default)]
     pub custom_reasoning_efforts: Vec<String>,
+    /// The endpoint's other models codeg added beside the managed one, in file
+    /// order: the `[model.<id>]` tables naming `model_provider = "codeg"`,
+    /// whose `[model_providers.codeg]` carries the managed endpoint and key.
+    #[serde(default)]
+    pub custom_extra_models: Vec<String>,
     /// `[session].auto_compact_threshold_percent` — auto-compact trigger, 0–100
     /// (Grok's default is 85).
     pub auto_compact_threshold_percent: Option<i64>,
@@ -1995,6 +2088,12 @@ pub struct GrokStructuredConfig {
     /// client that predates the field may undo that. `Some(empty)` removes the
     /// key; a non-empty list writes it.
     pub custom_reasoning_efforts: Option<Vec<String>>,
+    /// The endpoint's other models to offer beside the managed one, each a
+    /// `[model.<id>]` on codeg's `[model_providers.codeg]`. `None` keeps the
+    /// ones codeg added (following the endpoint's URL, key and backend); a list
+    /// makes them exactly those. Ignored without `custom_model_id`.
+    #[serde(default)]
+    pub custom_extra_models: Option<Vec<String>>,
     pub auto_compact_threshold_percent: Option<i64>,
 }
 
@@ -2261,6 +2360,16 @@ pub struct AvailableCommandInfo {
     pub name: String,
     pub description: String,
     pub input_hint: Option<String>,
+    /// The agent marks the command as a skill (JetBrains AIR's command
+    /// `_meta.jetbrains.air.kind = "skill"`, read by `air_command_skill` in
+    /// `connection.rs`). Left off the wire when false, so a command of an agent
+    /// that marks nothing serializes exactly as before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skill: bool,
+    /// The skill's `SKILL.md`, when the agent sent its path. Only ever set
+    /// together with `skill`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_path: Option<String>,
 }
 
 /// Claude Code's Remote Control for a session that has it on: the session can

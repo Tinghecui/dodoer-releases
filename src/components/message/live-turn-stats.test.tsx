@@ -11,9 +11,6 @@ import type { AwaitingUserKind } from "@/stores/awaiting-user-store"
 import enMessages from "@/i18n/messages/en.json"
 import zhCNMessages from "@/i18n/messages/zh-CN.json"
 
-// The capsule's icon is beside the point here; its wording is what is tested.
-vi.mock("@/components/agent-icon", () => ({ AgentIcon: () => null }))
-
 // --- fixtures --------------------------------------------------------------
 
 let toolIdCounter = 0
@@ -112,9 +109,43 @@ describe("extractLiveEditStats", () => {
   })
 })
 
+describe("LiveTurnStats", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // That the agent is at work, and at what — thinking, running a step,
+  // writing — is the transcript's to say: its header reads "Working", the step
+  // shimmers and a ring turns at the foot of its rail. The row above the
+  // composer keeps only its figures: no word, and no pulsing agent mark.
+  it("opens on the time, with no mark or word for what the agent is doing", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(65_000)
+    for (const content of [
+      [{ type: "thinking", text: "Checking the logs" } as LiveContentBlock],
+      [textBlock("Writing the fix")],
+    ]) {
+      const view = render(
+        <NextIntlClientProvider locale="en" messages={enMessages}>
+          <LiveTurnStats message={msg(content)} />
+        </NextIntlClientProvider>
+      )
+      const row = view.container.firstElementChild!.firstElementChild!
+      expect(row.children).toHaveLength(1)
+      expect(
+        row.firstElementChild!.querySelector("svg.lucide-timer")
+      ).toBeTruthy()
+      expect(row.querySelectorAll("svg")).toHaveLength(1)
+      expect(row.querySelector(".animate-pulse")).toBeNull()
+      expect(row.textContent).toBe("1m 5s")
+      view.unmount()
+    }
+  })
+})
+
 // AI QA #98: with a permission request left unanswered the capsule above the
-// composer went on saying "Streaming" — the turn is still running then, but it
-// is the user's move.
+// composer went on as if the agent were at work — the turn is still running
+// then, but it is the user's move. The one state the row names.
 describe("LiveTurnStats while the agent waits on the user", () => {
   afterEach(cleanup)
 
@@ -135,20 +166,17 @@ describe("LiveTurnStats while the agent waits on the user", () => {
         locale={locale}
         messages={locale === "zh-CN" ? zhCNMessages : enMessages}
       >
-        <LiveTurnStats
-          message={liveMessage()}
-          agentType="claude_code"
-          awaitingUser={awaitingUser}
-        />
+        <LiveTurnStats message={liveMessage()} awaitingUser={awaitingUser} />
       </NextIntlClientProvider>
     )
     return container.querySelector("[data-live-turn-stats]")?.textContent ?? ""
   }
 
-  it("says it is streaming while nothing waits on the user", () => {
+  // Upstream 0.43: the row has no word for what the agent is doing (the
+  // transcript says it), so there is no "Streaming" left to replace.
+  it("names nothing while nothing waits on the user", () => {
     const text = renderCapsule(null)
-    expect(text).toContain("Streaming")
-    expect(text).not.toContain("Needs your")
+    expect(text).toBe("1m 5s")
   })
 
   it.each([
@@ -176,7 +204,6 @@ describe("LiveTurnStats while the agent waits on the user", () => {
             content: [{ type: "thinking", text: "" }],
             startedAt: Date.now(),
           }}
-          agentType="claude_code"
           awaitingUser="question"
         />
       </NextIntlClientProvider>

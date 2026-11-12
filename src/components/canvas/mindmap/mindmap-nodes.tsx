@@ -46,6 +46,7 @@ import {
 import { formatConversationTitle } from "@/lib/conversation-title"
 import type { DbConversationSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
+import { useAwaitingUser } from "@/stores/awaiting-user-store"
 import { useIsConversationUnread } from "@/stores/conversation-seen-store"
 import type { MindMapCategory } from "./mindmap-model"
 
@@ -269,6 +270,7 @@ export const MindMapLeaf = memo(function MindMapLeaf({
   // title), running or cancelled, else how long ago it last moved.
   const isUnread = useIsConversationUnread(conversation)
   const running = conversation.status === "in_progress"
+  const awaiting = useAwaitingUser(conversation.external_id)
   const cancelled = conversation.status === "cancelled"
   const timeLabel =
     now > 0 ? formatRelative(conversation.updated_at, now) : undefined
@@ -317,6 +319,7 @@ export const MindMapLeaf = memo(function MindMapLeaf({
               <SourceMark assignment={assignment} />
               {isUnread && <UnreadDot />}
               <ConversationActivityBadge
+                awaiting={awaiting}
                 running={running}
                 cancelled={cancelled}
                 timeLabel={timeLabel}

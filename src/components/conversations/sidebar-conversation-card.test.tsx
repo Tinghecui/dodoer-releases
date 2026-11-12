@@ -20,6 +20,10 @@ import {
 import { useTabStore, type TabItem } from "@/stores/tab-store"
 import { useConversationSeenStore } from "@/stores/conversation-seen-store"
 import {
+  publishAwaitingUser,
+  useAwaitingUserStore,
+} from "@/stores/awaiting-user-store"
+import {
   publishBackgroundPending,
   useBackgroundPendingStore,
 } from "@/stores/background-pending-store"
@@ -31,7 +35,11 @@ import {
   ATTACH_SESSION_TO_SESSION_EVENT,
   type AttachSessionToSessionDetail,
 } from "@/lib/session-attachment-events"
-import type { DbConversationSummary, MessageTurn } from "@/lib/types"
+import type {
+  DbConversationSummary,
+  MessageTurn,
+  QuestionSpec,
+} from "@/lib/types"
 import enMessages from "@/i18n/messages/en.json"
 import {
   resetAssistantsStore,
@@ -1159,6 +1167,93 @@ describe("SidebarConversationCard waiting on background work", () => {
     )
     const { container } = renderCard(ended)
     expect(badge(container)).toBeNull()
+  })
+})
+
+// Mid-turn the agent stopped to ask the user something: the row is still
+// `in_progress`, but it is the user's move.
+describe("SidebarConversationCard awaiting the user", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useAwaitingUserStore.setState({ bySession: new Map() })
+  })
+
+  const asking = { ...conv(31), status: "in_progress", external_id: "sess-31" }
+
+  function renderCard(c: DbConversationSummary) {
+    return renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={false}
+        timeLabel="5m"
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+      />
+    )
+  }
+
+  const publish = (
+    sessionId: string,
+    prompt: Partial<
+      Parameters<typeof publishAwaitingUser>[0] extends Iterable<infer C>
+        ? C
+        : never
+    >
+  ) =>
+    publishAwaitingUser([
+      {
+        connectionId: "c",
+        sessionId,
+        parentConnectionId: null,
+        pendingPermission: null,
+        pendingAskQuestion: null,
+        pendingPlanApproval: null,
+        ...prompt,
+      },
+    ])
+  const question = {
+    pendingAskQuestion: {
+      question_id: "q",
+      questions: [{} as QuestionSpec],
+      created_at: "2026-11-12T00:00:00Z",
+    },
+  }
+
+  const mark = (container: HTMLElement) =>
+    container.querySelector("[data-awaiting-user]")
+
+  it("swaps the spinner for the question mark, and back once answered", () => {
+    const { container } = renderCard(asking)
+    expect(mark(container)).toBeNull()
+    expect(container.querySelector('[title="Running"]')).not.toBeNull()
+
+    act(() => publish("sess-31", question))
+    expect(mark(container)?.getAttribute("data-awaiting-user")).toBe("question")
+    expect(mark(container)?.getAttribute("title")).toBe("Needs your answer")
+    expect(container.querySelector('[title="Running"]')).toBeNull()
+
+    act(() => publishAwaitingUser([]))
+    expect(mark(container)).toBeNull()
+    expect(container.querySelector('[title="Running"]')).not.toBeNull()
+  })
+
+  it("says which decision it waits for", () => {
+    act(() =>
+      publish("sess-31", {
+        pendingPermission: { request_id: "r", tool_call: null, options: [] },
+      })
+    )
+    const { container } = renderCard(asking)
+    expect(mark(container)?.getAttribute("title")).toBe("Needs your approval")
+  })
+
+  it("another session's question does not touch this row", () => {
+    act(() => publish("other", question))
+    const { container } = renderCard(asking)
+    expect(mark(container)).toBeNull()
   })
 })
 

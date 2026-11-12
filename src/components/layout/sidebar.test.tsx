@@ -22,6 +22,10 @@ import {
   useConversationTagsStore,
 } from "@/stores/conversation-tags-store"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import {
+  useAwaitingUserStore,
+  type AwaitingUserKind,
+} from "@/stores/awaiting-user-store"
 import { useConversationSeenStore } from "@/stores/conversation-seen-store"
 import type { DbConversationSummary, FolderDetail } from "@/lib/types"
 
@@ -260,6 +264,60 @@ describe("Sidebar — fixed nav region", () => {
     })
     expect(bell.querySelector("[data-global-running-count]")).toBeNull()
     expect(bell.querySelector("[data-global-unread-count]")).toBeNull()
+    unmount()
+    useAppWorkspaceStore.setState({ conversations: [], folders: [] })
+  })
+
+  it("counts the sessions waiting on the user, a sub-agent under its parent", () => {
+    const row = (c: Partial<DbConversationSummary>) =>
+      ({
+        id: 0,
+        folder_id: 10,
+        title: "session",
+        title_locked: false,
+        agent_type: "claude_code",
+        status: "in_progress",
+        kind: "regular",
+        model: null,
+        git_branch: null,
+        external_id: null,
+        message_count: 0,
+        child_count: 0,
+        created_at: "2026-01-01",
+        pinned_at: null,
+        updated_at: "2026-01-02",
+        ...c,
+      }) as DbConversationSummary
+    useAppWorkspaceStore.setState({
+      conversations: [
+        row({ id: 1, external_id: "a" }),
+        row({ id: 2, external_id: "b" }),
+        // The sub-agent that asks: its parent (id 1) already stands for it.
+        row({ id: 3, external_id: "a-child", parent_id: 1 }),
+        // A closed folder has no row to answer from.
+        row({ id: 4, external_id: "c", folder_id: 50 }),
+      ],
+      folders: [{ id: 10 }] as FolderDetail[],
+    })
+    const { container, unmount } = renderSidebar()
+    const bell = container.querySelector("[data-sidebar-bell]")!
+    expect(bell.querySelector("[data-global-awaiting-count]")).toBeNull()
+    act(() => {
+      useAwaitingUserStore.setState({
+        bySession: new Map<string, AwaitingUserKind>([
+          ["a", "question"],
+          ["a-child", "question"],
+          ["c", "permission"],
+        ]),
+      })
+    })
+    expect(
+      bell.querySelector('[data-global-awaiting-count="1"]')
+    ).not.toBeNull()
+    act(() => {
+      useAwaitingUserStore.setState({ bySession: new Map() })
+    })
+    expect(bell.querySelector("[data-global-awaiting-count]")).toBeNull()
     unmount()
     useAppWorkspaceStore.setState({ conversations: [], folders: [] })
   })

@@ -68,6 +68,31 @@ export function RunningCountBadge({
   )
 }
 
+/** Bell chip: number of sessions whose agent is parked on the user (a
+ *  question, a permission, a plan approval). Solid, where the running and
+ *  unread chips are tinted — these are the ones that need the user now.
+ *  Renders nothing at zero. */
+export function AwaitingCountBadge({ count }: { count: number }) {
+  const t = useTranslations("Folder.sidebar")
+  if (count <= 0) return null
+  const label = t("awaitingCountBadge", { count })
+  return (
+    <span
+      title={label}
+      data-global-awaiting-count={count}
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center",
+        "h-4 min-w-4 rounded-full px-[0.3125rem]",
+        "text-[0.65625rem] font-semibold leading-none tabular-nums",
+        "bg-[var(--st-run-dot)] text-black"
+      )}
+    >
+      <span aria-hidden>{formatBadgeCount(count)}</span>
+      <span className="sr-only">{label}</span>
+    </span>
+  )
+}
+
 /** Session row marker for an UNREAD session: a solid blue dot. */
 export function UnreadDot() {
   const t = useTranslations("Folder.sidebar")

@@ -85,6 +85,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ConversationStatusDot } from "./conversation-status-dot"
 import { ConversationActivityBadge } from "./conversation-activity-badge"
+import { useAwaitingUser } from "@/stores/awaiting-user-store"
 import { useBackgroundPending } from "@/stores/background-pending-store"
 import { SessionDetailsDialog } from "./session-details-dialog"
 import { SidebarConversationHoverDetails } from "./sidebar-conversation-hover-details"
@@ -366,6 +367,10 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   // holds back the unread dot until the work is in.
   const background = useBackgroundPending(conversation.external_id)
   const isWaiting = !isRunning && background != null
+  // The agent stopped mid-turn to ask the user something (a question, a
+  // permission, a plan approval): still `in_progress`, but it is the user's
+  // move, so the spinner gives way to a "needs you" mark.
+  const awaiting = useAwaitingUser(conversation.external_id)
   // jenny fork: turn ended (or marked unread by hand) since the user last
   // accepted this session.
   const isUnread = useIsConversationUnread(conversation)
@@ -681,6 +686,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                         <SidebarPrIndicator folderId={conversation.folder_id} />
                       )}
                       <ConversationActivityBadge
+                        awaiting={awaiting}
                         running={isRunning}
                         waiting={isWaiting ? background : null}
                         cancelled={isCancelled}

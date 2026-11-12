@@ -49,6 +49,7 @@ import {
   getConversationIdByExternalIdFromStore,
   useConversationRuntimeStore,
 } from "@/stores/conversation-runtime-store"
+import { publishAwaitingUser } from "@/stores/awaiting-user-store"
 import { publishBackgroundPending } from "@/stores/background-pending-store"
 import type {
   AgentType,
@@ -3405,6 +3406,30 @@ function backgroundPendingChanged(
   return false
 }
 
+/** Whether a dispatch touched anything `publishAwaitingUser` reads. */
+function awaitingUserChanged(
+  prev: Map<string, ConnectionState>,
+  next: Map<string, ConnectionState>
+): boolean {
+  if (prev.size !== next.size) return true
+  for (const [key, conn] of next) {
+    const before = prev.get(key)
+    if (before === conn) continue
+    if (
+      !before ||
+      before.pendingPermission !== conn.pendingPermission ||
+      before.pendingAskQuestion !== conn.pendingAskQuestion ||
+      before.pendingPlanApproval !== conn.pendingPlanApproval ||
+      before.sessionId !== conn.sessionId ||
+      before.connectionId !== conn.connectionId ||
+      before.parentConnectionId !== conn.parentConnectionId
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
 const ConnectionStoreContext = createContext<ConnectionStoreApi | null>(null)
 
 export function useConnectionStore(): ConnectionStoreApi {
@@ -4297,6 +4322,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // connections and nothing more.
       if (backgroundPendingChanged(prev, next)) {
         publishBackgroundPending(next.values())
+      }
+      // Likewise the sessions parked on the user (a question, a permission, a
+      // plan approval): the sidebar's "needs your answer" mark.
+      if (awaitingUserChanged(prev, next)) {
+        publishAwaitingUser(next.values())
       }
 
       // Mirror a changed liveMessage into the runtime store OUTSIDE React, so

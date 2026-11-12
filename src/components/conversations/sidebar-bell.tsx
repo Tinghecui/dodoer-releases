@@ -5,12 +5,17 @@ import { Bell } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useShallow } from "zustand/react/shallow"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { useAwaitingUserStore } from "@/stores/awaiting-user-store"
 import {
   countUnreadByGroup,
   useConversationSeenStore,
 } from "@/stores/conversation-seen-store"
 import { Button } from "@/components/ui/button"
-import { RunningCountBadge, UnreadCountBadge } from "./sidebar-unread-badge"
+import {
+  AwaitingCountBadge,
+  RunningCountBadge,
+  UnreadCountBadge,
+} from "./sidebar-unread-badge"
 
 export function SidebarBell({
   pressed,
@@ -39,6 +44,14 @@ export function SidebarBell({
       markedUnread: s.markedUnread,
     }))
   )
+  const awaitingBySession = useAwaitingUserStore((s) => s.bySession)
+  // Roots only: a sub-agent's prompt already marks its parent's session.
+  const awaiting = conversations.filter(
+    (c) =>
+      c.parent_id == null &&
+      c.external_id != null &&
+      awaitingBySession.has(c.external_id)
+  ).length
   const running = conversations.filter((c) => c.status === "in_progress").length
   const unread =
     countUnreadByGroup(conversations, seenState, () => 0).get(0) ?? 0
@@ -56,6 +69,7 @@ export function SidebarBell({
       onClick={onClick}
     >
       <Bell aria-hidden="true" className="h-[0.9375rem] w-[0.9375rem]" />
+      <AwaitingCountBadge count={awaiting} />
       <RunningCountBadge count={running} global />
       <UnreadCountBadge count={unread} global />
     </Button>

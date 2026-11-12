@@ -33,6 +33,7 @@ import {
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
 } from "@/stores/app-workspace-store"
+import { useAwaitingUserStore } from "@/stores/awaiting-user-store"
 import type {
   DbConversationSummary,
   EventEnvelope,
@@ -8907,6 +8908,51 @@ describe("taskbar / Dock attention rides along with every desktop alert", () => 
       questions: [],
     })
     expect(h.requestWindowAttention).toHaveBeenCalledWith("question_request")
+  })
+})
+
+describe("sessions waiting on the user are published for the sidebar", () => {
+  const awaiting = () => useAwaitingUserStore.getState().bySession
+
+  it("marks the session while a question is up, and clears it once answered", async () => {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    const handlers = latestAttachHandlers()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_started",
+      session_id: "sess-1",
+    })
+    expect(awaiting().size).toBe(0)
+
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "question_request",
+      question_id: "q-1",
+      questions: [
+        {
+          id: "q-1-0",
+          question: "Which one?",
+          header: "Pick",
+          multi_select: false,
+          options: [],
+        },
+      ],
+    })
+    expect(awaiting().get("sess-1")).toBe("question")
+
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "question_resolved",
+      question_id: "q-1",
+    })
+    expect(awaiting().size).toBe(0)
   })
 })
 

@@ -184,7 +184,8 @@ jobs:
           gh release upload "$VERSION" "dist/$NAME.tar.gz" "dist/$NAME.tar.gz.sha256" --clobber
           cat "dist/$NAME.tar.gz.sha256"
 
-      # 发完顺手给 cowork 开 PR：deploy/runtime.lock 指到这个 tag 和包的 sha256、package.json 的 patch 版本 +1、CHANGELOG「未发布」归到新版本下并加一条。
+      # 发完顺手给 cowork 开 PR：deploy/runtime.lock 指到这个 tag 和包的 sha256、package.json 的 patch 版本 +1、CHANGELOG 里新建这个版本的一节并加一条，
+      # 再把 cowork 攒在 changelog.d/ 里还没发版的条目收进去。
       # 需要 secret COWORK_REPO_TOKEN：对 Tinghecui/cowork 有 Contents、Pull requests 写权限的 fine-grained token；没配就跳过这一步
       - name: 给 cowork 开 runtime.lock 的 PR
         if: steps.meta.outputs.publish == 'true' && env.COWORK_REPO_TOKEN != ''
@@ -216,6 +217,12 @@ jobs:
             }
             skip && /^$/ { skip = 0; next }
             { skip = 0; print }' CHANGELOG.md > CHANGELOG.md.new && mv CHANGELOG.md.new CHANGELOG.md
+          # cowork 还没发版的更新记录一条一个文件放在 changelog.d/（2026-11-12 起，那边的 changelog.d/README.md）：用它自己的脚本收到上面
+          # 刚建的这一节后面、删掉文件。没收的话那边 release.yml 的 meta 会把这个 PR 拦住。老的 cowork（没有这个脚本）照旧只靠上面的 awk
+          if [ -f tools/changelog.mjs ]; then
+            node tools/changelog.mjs "$new" --date "$today"
+            git add -A changelog.d
+          fi
           git add deploy/runtime.lock package.json CHANGELOG.md
           git commit -q -m "codeg runtime 升到 $VERSION（cowork $new）" -m "runtime.lock 的 codeg= 和 sha256 由 dodoer-releases 的 cowork-release 工作流写入。合并即发 cowork $new。"
           git push -q origin "$branch"
@@ -224,5 +231,5 @@ jobs:
             --body "$(printf '%s\n\n%s\n%s\n\n%s' \
               "dodoer-releases 的 \`cowork-release\` 自动开的：$release_url" \
               "- \`deploy/runtime.lock\`：\`codeg=$VERSION\`，sha256 \`$sha\`" \
-              "- \`package.json\` $old → $new，CHANGELOG 的「未发布」归到 $new 下并加了 codeg 这一条——按需要改改说明" \
+              "- \`package.json\` $old → $new，CHANGELOG 新建了 $new 一节：codeg 这一条，加上 changelog.d/ 里攒的条目——按需要改改说明" \
               "合并到 main 就发 cowork $new（release.yml 看到 version 没有 tag 就打包、发 Release、打 tag）。")"

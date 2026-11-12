@@ -105,6 +105,12 @@ case "$cmd" in
     subject=$(git log -1 --format=%s "$sha")
     export_tree "$sha" "$tmp/export"
     scan "$tmp/export" "$subject"
+    # qa/<run> 推上去就是为了让公开仓库编包，标题里的 [skip ci] 之类要拿掉，不然 GitHub 不触发 qa-package：
+    # AI QA 提交测试记忆的标题带 [skip ci]，紧接着再跑一轮时它正好是分支最新的提交（2026-11-12 run 43252995910，等了十分钟没有 run）
+    if [[ "$branch" == qa/* ]]; then
+      subject=$(printf '%s\n' "$subject" | sed -E 's/ *\[(skip ci|ci skip|no ci|skip actions|actions skip)\]//Ig')
+      subject="${subject:-qa}"
+    fi
     public_clone
     base=$(git -C "$PUBLIC_DIR" rev-parse origin/main)
     tree=$(write_tree "$tmp/export")

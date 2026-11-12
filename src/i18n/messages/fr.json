@@ -2883,7 +2883,8 @@
         "startWorktreeDescription": "La branche et son worktree sont créés à l'envoi du premier message ; rien ne change dans le dépôt avant.",
         "branchNameAutoPlaceholder": "Laisser vide pour la nommer d'après votre premier message",
         "baseLabel": "Point de départ",
-        "baseCurrent": "{branch} (actuelle)"
+        "baseCurrent": "{branch} (actuelle)",
+        "branchNameInvalid": "Nom de branche invalide. Il ne peut pas contenir d’espace, « .. », ~ ^ : ? * [ ou \\, ni commencer par - ou /, ni se terminer par /, . ou .lock."
       },
       "conflict": {
         "title": "Conflits de fusion",
@@ -3578,7 +3579,11 @@
         "steerItemAsNote": "Envoyer comme note pour la prochaine vérification",
         "sendFailed": "Échec de l’envoi",
         "retry": "Réessayer",
-        "retryItem": "Renvoyer ce message"
+        "retryItem": "Renvoyer ce message",
+        "failedHeadHint": "Le premier message n’a pas pu être envoyé et les messages suivants l’attendent. Réessayez ou supprimez-le pour continuer.",
+        "failedSingleHint": "Ce message n’a pas pu être envoyé. Réessayez ou supprimez-le.",
+        "agentNotInstalledHint": "{agent} n’est pas encore installé ou activé.",
+        "agentConnectFailedHint": "Échec de la connexion de {agent}."
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "Paramètres > Agents",

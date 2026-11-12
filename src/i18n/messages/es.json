@@ -2883,7 +2883,8 @@
         "startWorktreeDescription": "La rama y su worktree se crean al enviar el primer mensaje; antes no cambia nada en el repositorio.",
         "branchNameAutoPlaceholder": "Déjalo vacío para nombrarla a partir de tu primer mensaje",
         "baseLabel": "Punto de partida",
-        "baseCurrent": "{branch} (actual)"
+        "baseCurrent": "{branch} (actual)",
+        "branchNameInvalid": "Nombre de rama no válido. No puede contener espacios, «..», ~ ^ : ? * [ ni \\; ni empezar por - o /; ni terminar en /, . o .lock."
       },
       "conflict": {
         "title": "Conflictos de fusión",
@@ -3578,7 +3579,11 @@
         "steerItemAsNote": "Enviar como nota para la próxima comprobación",
         "sendFailed": "Error al enviar",
         "retry": "Reintentar",
-        "retryItem": "Enviar este mensaje de nuevo"
+        "retryItem": "Enviar este mensaje de nuevo",
+        "failedHeadHint": "El primer mensaje no se pudo enviar y los de abajo lo están esperando. Reinténtalo o elimínalo para continuar.",
+        "failedSingleHint": "Este mensaje no se pudo enviar. Reinténtalo o elimínalo.",
+        "agentNotInstalledHint": "{agent} aún no está instalado o habilitado.",
+        "agentConnectFailedHint": "Falló la conexión de {agent}."
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "Ajustes > Agentes",

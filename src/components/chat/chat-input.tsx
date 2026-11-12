@@ -27,7 +27,10 @@ import {
   MessageInput,
   type ComposerInjectContent,
 } from "@/components/chat/message-input"
-import { MessageQueueDisplay } from "@/components/chat/message-queue-display"
+import {
+  MessageQueueDisplay,
+  type QueueFailedHeadNotice,
+} from "@/components/chat/message-queue-display"
 import { cn } from "@/lib/utils"
 import { buildSessionSettings, modelBrief } from "@/lib/session-settings"
 import { AgentIcon } from "@/components/agent-icon"
@@ -94,6 +97,9 @@ interface ChatInputProps {
   onQueueDelete?: (id: string) => void
   /** jenny fork: send a failed queued item again. */
   onQueueRetry?: (id: string) => void
+  /** Cowork fork: why the failed head is stuck and where to fix it; threaded
+   *  straight through to the queue list's hint. */
+  queueFailedHeadNotice?: QueueFailedHeadNotice | null
   /** Insert one queued item into the RUNNING turn over the session's
    *  live-feedback channel (see `MessageQueueDisplayProps.onSteerItem`).
    *  Threaded straight through; present only while a turn is in flight and
@@ -172,6 +178,7 @@ export const ChatInput = memo(function ChatInput({
   onQueueEdit,
   onQueueDelete,
   onQueueRetry,
+  queueFailedHeadNotice,
   onQueueSteer,
   editingItemId,
   editingDraftText,
@@ -511,6 +518,9 @@ export const ChatInput = memo(function ChatInput({
           <div>
             {queue &&
               queue.length > 0 &&
+              // Cowork fork: a failed head is not waiting for the agent — it
+              // waits for the user's retry, and the queue's own hint says so.
+              !queue[0].failed &&
               ((!isConnected && !isPrompting) || selectorsLoading) && (
                 <div
                   className="px-1 pb-1 text-xs text-muted-foreground"
@@ -530,6 +540,7 @@ export const ChatInput = memo(function ChatInput({
                   onEdit={onQueueEdit}
                   onDelete={onQueueDelete}
                   onRetry={onQueueRetry}
+                  failedHeadNotice={queueFailedHeadNotice}
                   editingItemId={editingItemId ?? null}
                   onSteerItem={onQueueSteer}
                   steerChannel={steerChannel}

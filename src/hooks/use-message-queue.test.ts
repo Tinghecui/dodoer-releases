@@ -179,3 +179,97 @@ describe("useMessageQueue bounce FIFO ordering", () => {
     expect(texts(result.current.queue)).toEqual(["B"])
   })
 })
+
+// Cowork fork: a message that never went out and, as things are, never will
+// (no usable agent, its worktree could not be created).
+describe("useMessageQueue failHead", () => {
+  it("flags the head failed where it stands, keeping its id and the order", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => {
+      result.current.enqueue(draft("A"), "plan", { adoptSendTimeMode: true })
+      result.current.enqueue(draft("B"), null)
+    })
+    const [a, b] = result.current.queue
+    act(() => result.current.failHead())
+    expect(texts(result.current.queue)).toEqual(["A", "B"])
+    expect(result.current.queue[0]).toEqual({ ...a, failed: true })
+    // The item behind it is untouched — it just waits, like behind any failed
+    // head.
+    expect(result.current.queue[1]).toBe(b)
+    let next: ReturnType<typeof result.current.dequeue>
+    act(() => {
+      next = result.current.dequeue()
+    })
+    expect(next!).toBeUndefined()
+    expect(result.current.getQueueLength()).toBe(2)
+  })
+
+  it("is sendable again after retry, with what the item had before", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => result.current.enqueue(draft("A"), "plan"))
+    const id = result.current.queue[0].id
+    act(() => result.current.failHead())
+    act(() => result.current.retry(id))
+    let next: ReturnType<typeof result.current.dequeue>
+    act(() => {
+      next = result.current.dequeue()
+    })
+    expect(next!).toMatchObject({ id, modeId: "plan", failed: false })
+    expect(next!.draft.displayText).toBe("A")
+    expect(result.current.queue).toEqual([])
+  })
+
+  it("does nothing on an empty queue or an already failed head", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => result.current.failHead())
+    expect(result.current.queue).toEqual([])
+
+    act(() => result.current.requeueFailed(draft("A"), null, "auth"))
+    const before = result.current.queue
+    act(() => result.current.failHead())
+    // Same array: no state change, and the recorded kind is not wiped.
+    expect(result.current.queue).toBe(before)
+    expect(result.current.queue[0].failure).toBe("auth")
+  })
+
+  it("only ever touches the head", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => {
+      result.current.enqueue(draft("A"), null)
+      result.current.enqueue(draft("B"), null)
+    })
+    act(() => result.current.failHead())
+    act(() => result.current.failHead())
+    expect(result.current.queue.map((item) => item.failed === true)).toEqual([
+      true,
+      false,
+    ])
+  })
+})
+
+describe("useMessageQueue failure kind", () => {
+  it("records why a send failed and forgets it on retry", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => result.current.requeueFailed(draft("A"), null, "auth"))
+    expect(result.current.queue[0]).toMatchObject({
+      failed: true,
+      failure: "auth",
+    })
+    act(() => result.current.retry(result.current.queue[0].id))
+    expect(result.current.queue[0].failed).toBe(false)
+    expect(result.current.queue[0].failure).toBeUndefined()
+  })
+
+  it("leaves the kind off when none is given", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => result.current.requeueFailed(draft("A"), null))
+    expect("failure" in result.current.queue[0]).toBe(false)
+    act(() => result.current.enqueue(draft("B"), null))
+    act(() => result.current.remove(result.current.queue[0].id))
+    act(() => result.current.failHead("auth"))
+    expect(result.current.queue[0]).toMatchObject({
+      failed: true,
+      failure: "auth",
+    })
+  })
+})

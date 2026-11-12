@@ -2883,7 +2883,8 @@
         "startWorktreeDescription": "The branch and its worktree are created when you send the first message; nothing in the repository changes before that.",
         "branchNameAutoPlaceholder": "Leave empty to name it from your first message",
         "baseLabel": "Start from",
-        "baseCurrent": "{branch} (current)"
+        "baseCurrent": "{branch} (current)",
+        "branchNameInvalid": "Not a valid branch name. It cannot contain spaces, \"..\", ~ ^ : ? * [ or \\; start with - or /; or end with /, . or .lock."
       },
       "conflict": {
         "title": "Merge Conflicts",
@@ -3578,7 +3579,11 @@
         "steerItemAsNote": "Send as note for next check",
         "sendFailed": "Send failed",
         "retry": "Retry",
-        "retryItem": "Send this message again"
+        "retryItem": "Send this message again",
+        "failedHeadHint": "The first message failed to send, and the messages below are waiting for it. Retry it or remove it to continue.",
+        "failedSingleHint": "This message failed to send. Retry it or remove it.",
+        "agentNotInstalledHint": "{agent} is not installed or enabled yet.",
+        "agentConnectFailedHint": "{agent} failed to connect."
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "Settings > Agents",

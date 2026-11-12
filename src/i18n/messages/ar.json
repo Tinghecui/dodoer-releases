@@ -2883,7 +2883,8 @@
         "startWorktreeDescription": "يُنشأ الفرع وشجرة العمل عند إرسال أول رسالة؛ لا يتغير شيء في المستودع قبل ذلك.",
         "branchNameAutoPlaceholder": "اتركه فارغًا لتسميته من رسالتك الأولى",
         "baseLabel": "نقطة البداية",
-        "baseCurrent": "{branch} (الحالي)"
+        "baseCurrent": "{branch} (الحالي)",
+        "branchNameInvalid": "اسم الفرع غير صالح. لا يجوز أن يحتوي على مسافات أو «..» أو ~ ^ : ? * [ أو \\، ولا أن يبدأ بـ - أو /، ولا أن ينتهي بـ / أو . أو .lock."
       },
       "conflict": {
         "title": "تعارضات الدمج",
@@ -3578,7 +3579,11 @@
         "steerItemAsNote": "إرسال كملاحظة للفحص التالي",
         "sendFailed": "فشل الإرسال",
         "retry": "إعادة المحاولة",
-        "retryItem": "إرسال هذه الرسالة مرة أخرى"
+        "retryItem": "إرسال هذه الرسالة مرة أخرى",
+        "failedHeadHint": "فشل إرسال الرسالة الأولى، والرسائل التي تليها تنتظرها. أعد المحاولة أو احذفها للمتابعة.",
+        "failedSingleHint": "فشل إرسال هذه الرسالة. أعد المحاولة أو احذفها.",
+        "agentNotInstalledHint": "{agent} غير مثبّت أو غير مفعّل بعد.",
+        "agentConnectFailedHint": "فشل اتصال {agent}."
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "الإعدادات > الوكلاء",

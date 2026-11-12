@@ -2883,7 +2883,8 @@
         "startWorktreeDescription": "发送第一条消息时才创建分支和工作树，此前不会改动仓库。",
         "branchNameAutoPlaceholder": "留空则由 AI 根据第一条消息起名",
         "baseLabel": "起点",
-        "baseCurrent": "{branch}（当前）"
+        "baseCurrent": "{branch}（当前）",
+        "branchNameInvalid": "分支名不合法：不能含空格、“..”、~ ^ : ? * [ 或 \\，不能以 - 或 / 开头，也不能以 /、. 或 .lock 结尾。"
       },
       "conflict": {
         "title": "合并冲突",
@@ -3578,7 +3579,11 @@
         "steerItemAsNote": "作为留言，供下次检查时读取",
         "sendFailed": "发送失败",
         "retry": "重试",
-        "retryItem": "重新发送这条消息"
+        "retryItem": "重新发送这条消息",
+        "failedHeadHint": "第 1 条消息发送失败，后面的消息在等它。重试或删除它，才会继续发送。",
+        "failedSingleHint": "这条消息发送失败。可以重试，或删除它。",
+        "agentNotInstalledHint": "{agent} 还没有安装或启用。",
+        "agentConnectFailedHint": "{agent} 连接失败。"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "设置 > Agents",

@@ -2883,7 +2883,8 @@
         "startWorktreeDescription": "送出第一則訊息時才建立分支和工作樹，之前不會變更儲存庫。",
         "branchNameAutoPlaceholder": "留空則由 AI 根據第一則訊息命名",
         "baseLabel": "起點",
-        "baseCurrent": "{branch}（目前）"
+        "baseCurrent": "{branch}（目前）",
+        "branchNameInvalid": "分支名稱不合法：不能包含空格、「..」、~ ^ : ? * [ 或 \\，不能以 - 或 / 開頭，也不能以 /、. 或 .lock 結尾。"
       },
       "conflict": {
         "title": "合併衝突",
@@ -3578,7 +3579,11 @@
         "steerItemAsNote": "作為留言，供下次檢查時讀取",
         "sendFailed": "傳送失敗",
         "retry": "重試",
-        "retryItem": "重新傳送這則訊息"
+        "retryItem": "重新傳送這則訊息",
+        "failedHeadHint": "第 1 則訊息傳送失敗，後面的訊息在等它。重試或刪除它，才會繼續傳送。",
+        "failedSingleHint": "這則訊息傳送失敗。可以重試，或刪除它。",
+        "agentNotInstalledHint": "{agent} 尚未安裝或啟用。",
+        "agentConnectFailedHint": "{agent} 連線失敗。"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "設定 > Agents",

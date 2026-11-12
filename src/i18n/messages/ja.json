@@ -2883,7 +2883,8 @@
         "startWorktreeDescription": "最初のメッセージを送信したときにブランチとワークツリーを作成します。それまでリポジトリは変更されません。",
         "branchNameAutoPlaceholder": "空欄なら最初のメッセージから名前を付けます",
         "baseLabel": "開始元",
-        "baseCurrent": "{branch}（現在）"
+        "baseCurrent": "{branch}（現在）",
+        "branchNameInvalid": "ブランチ名が正しくありません。空白、「..」、~ ^ : ? * [ \\ は使えません。- や / で始めること、/、.、.lock で終えることもできません。"
       },
       "conflict": {
         "title": "マージコンフリクト",
@@ -3578,7 +3579,11 @@
         "steerItemAsNote": "メモとして送信し次回チェック時に読ませる",
         "sendFailed": "送信失敗",
         "retry": "再試行",
-        "retryItem": "このメッセージを再送信"
+        "retryItem": "このメッセージを再送信",
+        "failedHeadHint": "1 件目のメッセージの送信に失敗したため、後ろのメッセージが待機しています。再試行するか削除すると、続きが送信されます。",
+        "failedSingleHint": "このメッセージの送信に失敗しました。再試行するか、削除してください。",
+        "agentNotInstalledHint": "{agent} はまだインストールまたは有効化されていません。",
+        "agentConnectFailedHint": "{agent} の接続に失敗しました。"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "設定 > エージェント",

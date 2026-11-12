@@ -2883,7 +2883,8 @@
         "startWorktreeDescription": "첫 메시지를 보낼 때 브랜치와 워크트리를 만듭니다. 그 전에는 저장소가 바뀌지 않습니다.",
         "branchNameAutoPlaceholder": "비워 두면 첫 메시지를 보고 이름을 정합니다",
         "baseLabel": "시작 지점",
-        "baseCurrent": "{branch} (현재)"
+        "baseCurrent": "{branch} (현재)",
+        "branchNameInvalid": "올바른 브랜치 이름이 아닙니다. 공백, “..”, ~ ^ : ? * [ \\ 문자는 쓸 수 없고, - 또는 /로 시작하거나 /, ., .lock으로 끝날 수 없습니다."
       },
       "conflict": {
         "title": "병합 충돌",
@@ -3578,7 +3579,11 @@
         "steerItemAsNote": "메모로 보내 다음 점검 때 읽도록 함",
         "sendFailed": "전송 실패",
         "retry": "다시 시도",
-        "retryItem": "이 메시지를 다시 보내기"
+        "retryItem": "이 메시지를 다시 보내기",
+        "failedHeadHint": "첫 번째 메시지 전송에 실패해 뒤의 메시지가 기다리고 있습니다. 다시 시도하거나 삭제해야 계속 전송됩니다.",
+        "failedSingleHint": "이 메시지 전송에 실패했습니다. 다시 시도하거나 삭제하세요.",
+        "agentNotInstalledHint": "{agent}이(가) 아직 설치되지 않았거나 사용 설정되지 않았습니다.",
+        "agentConnectFailedHint": "{agent} 연결에 실패했습니다."
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "설정 > 에이전트",

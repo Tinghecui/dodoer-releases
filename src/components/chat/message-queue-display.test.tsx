@@ -226,3 +226,139 @@ describe("MessageQueueDisplay click-to-insert", () => {
     expect(buttons[1]).toBeEnabled()
   })
 })
+
+// Cowork fork: a failed head holds everything behind it, so the generic
+// "sent after this turn ends" would be untrue.
+describe("MessageQueueDisplay with a failed head", () => {
+  const failed = (id: string, text: string): QueuedMessage => ({
+    ...item(id, text),
+    failed: true,
+  })
+
+  it("says the first message failed and the rest wait for it", () => {
+    const { container } = renderDisplay({
+      queue: [failed("q1", "use pnpm"), item("q2", "run the tests")],
+      onRetry: vi.fn(),
+    })
+    const hints = container.querySelectorAll("[data-queue-hint]")
+    expect(hints).toHaveLength(1)
+    expect(hints[0]).toHaveTextContent(TQ.failedHeadHint)
+    expect(hints[0]).not.toHaveTextContent(TQ.hint)
+    expect(hints[0]).toHaveAttribute("data-queue-blocked")
+    // Nothing more to offer without a notice from the host.
+    expect(container.querySelector("[data-queue-blocked-reason]")).toBeNull()
+    expect(container.querySelector("[data-queue-blocked-action]")).toBeNull()
+  })
+
+  it("does not speak of messages below when the failed one is alone", () => {
+    const { container } = renderDisplay({
+      queue: [failed("q1", "use pnpm")],
+      onRetry: vi.fn(),
+    })
+    const hint = container.querySelector("[data-queue-hint]")
+    expect(hint).toHaveTextContent(TQ.failedSingleHint)
+    expect(hint).not.toHaveTextContent(TQ.failedHeadHint)
+  })
+
+  it("keeps the generic hint while only a later item is failed", () => {
+    // Dragged behind another row: the head still sends, so nothing is held.
+    const { container } = renderDisplay({
+      queue: [item("q1", "use pnpm"), failed("q2", "run the tests")],
+      onRetry: vi.fn(),
+      failedHeadNotice: { reason: "should not show" },
+    })
+    const hint = container.querySelector("[data-queue-hint]")
+    expect(hint).toHaveTextContent(TQ.hint)
+    expect(hint).not.toHaveAttribute("data-queue-blocked")
+    expect(hint).not.toHaveTextContent("should not show")
+  })
+
+  it("goes back to the generic hint once the head is retried", () => {
+    const { container, rerender } = renderDisplay({
+      queue: [failed("q1", "use pnpm"), item("q2", "run the tests")],
+    })
+    expect(container.querySelector("[data-queue-hint]")).toHaveTextContent(
+      TQ.failedHeadHint
+    )
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <MessageQueueDisplay
+          queue={[item("q1", "use pnpm"), item("q2", "run the tests")]}
+          onReorder={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          editingItemId={null}
+        />
+      </NextIntlClientProvider>
+    )
+    expect(container.querySelector("[data-queue-hint]")).toHaveTextContent(
+      TQ.hint
+    )
+  })
+
+  it("shows the host's reason and its fix link, and the link works", async () => {
+    const onClick = vi.fn()
+    const { container } = renderDisplay({
+      queue: [failed("q1", "use pnpm")],
+      onRetry: vi.fn(),
+      failedHeadNotice: {
+        reason: "Claude Code is not installed or enabled yet.",
+        action: { label: "Open Agents settings", onClick },
+      },
+    })
+    expect(
+      container.querySelector("[data-queue-blocked-reason]")
+    ).toHaveTextContent("Claude Code is not installed or enabled yet.")
+    expect(container.querySelector("[data-queue-hint]")).toHaveTextContent(
+      TQ.failedSingleHint
+    )
+    await userEvent.click(
+      screen.getByRole("button", { name: "Open Agents settings" })
+    )
+    expect(onClick).toHaveBeenCalledTimes(1)
+  })
+
+  it("offers a link alone, for a failure that needs no second explanation", async () => {
+    // A turn refused for credentials: the transcript already says so.
+    const onClick = vi.fn()
+    const { container } = renderDisplay({
+      queue: [failed("q1", "use pnpm"), item("q2", "run the tests")],
+      onRetry: vi.fn(),
+      failedHeadNotice: { action: { label: "Sign in", onClick } },
+    })
+    expect(container.querySelector("[data-queue-blocked-reason]")).toBeNull()
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }))
+    expect(onClick).toHaveBeenCalledTimes(1)
+  })
+
+  it("still offers retry and remove on the failed row", async () => {
+    const onRetry = vi.fn()
+    const onDelete = vi.fn()
+    renderDisplay({
+      queue: [failed("q1", "use pnpm"), item("q2", "run the tests")],
+      onRetry,
+      onDelete,
+    })
+    await userEvent.click(screen.getByRole("button", { name: TQ.retry }))
+    expect(onRetry).toHaveBeenCalledWith("q1")
+    await userEvent.click(screen.getAllByTitle(TQ.deleteItem)[0])
+    expect(onDelete).toHaveBeenCalledWith("q1")
+  })
+
+  it("renders the Chinese hint", () => {
+    const { container } = render(
+      <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+        <MessageQueueDisplay
+          queue={[failed("q1", "use pnpm"), item("q2", "run the tests")]}
+          onReorder={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          editingItemId={null}
+        />
+      </NextIntlClientProvider>
+    )
+    expect(container.querySelector("[data-queue-hint]")).toHaveTextContent(
+      "第 1 条消息发送失败，后面的消息在等它。重试或删除它，才会继续发送。"
+    )
+  })
+})

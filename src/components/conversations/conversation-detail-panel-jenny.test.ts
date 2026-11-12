@@ -62,7 +62,8 @@ describe("jenny fork: send before the agent is ready", () => {
     const start = source.indexOf("const lastSentRef = useRef<")
     const block = source.slice(start, start + 900)
     expect(block).toContain('block.type === "turn_error"')
-    expect(block).toContain("mqRequeueFailed(sent.draft, sent.modeId)")
+    // Cowork fork: the call also says when the failure was a sign-in refusal.
+    expect(block).toContain("mqRequeueFailed(sent.draft, sent.modeId,")
   })
 
   it("wires the queue into the welcome composer", () => {

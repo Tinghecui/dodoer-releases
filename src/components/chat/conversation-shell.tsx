@@ -27,6 +27,7 @@ import type {
 } from "@/contexts/acp-connections-context"
 import type { QueuedMessage } from "@/hooks/use-message-queue"
 import { ChatInput } from "@/components/chat/chat-input"
+import type { QueueFailedHeadNotice } from "@/components/chat/message-queue-display"
 import { ChatWidthHandles } from "@/components/chat/chat-width-handles"
 import { chatGutterStyle } from "@/lib/chat-content-width"
 import { cn } from "@/lib/utils"
@@ -132,6 +133,9 @@ interface ConversationShellProps {
   onQueueDelete?: (id: string) => void
   /** jenny fork: send a failed queued item again. */
   onQueueRetry?: (id: string) => void
+  /** Cowork fork: threaded straight through to the composer's queue list.
+   *  See `ChatInputProps.queueFailedHeadNotice`. */
+  queueFailedHeadNotice?: QueueFailedHeadNotice | null
   /** Insert one queued item into the RUNNING turn over the session's
    *  live-feedback channel; threaded straight through to the composer's
    *  queue list. See `ChatInputProps.onQueueSteer`. */
@@ -224,6 +228,7 @@ export function ConversationShell({
   onQueueEdit,
   onQueueDelete,
   onQueueRetry,
+  queueFailedHeadNotice,
   onQueueSteer,
   editingItemId,
   editingDraftText,
@@ -395,6 +400,7 @@ export function ConversationShell({
               onQueueEdit={onQueueEdit}
               onQueueDelete={onQueueDelete}
               onQueueRetry={onQueueRetry}
+              queueFailedHeadNotice={queueFailedHeadNotice}
               onQueueSteer={onQueueSteer}
               editingItemId={editingItemId}
               editingDraftText={editingDraftText}

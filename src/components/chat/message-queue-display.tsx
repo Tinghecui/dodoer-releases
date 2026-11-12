@@ -8,6 +8,17 @@ import { cn } from "@/lib/utils"
 import { draftRidesBlocks } from "@/lib/prompt-draft"
 import type { QueuedMessage } from "@/hooks/use-message-queue"
 
+/**
+ * Cowork fork: what the host knows about a failed head, shown with the hint
+ * that replaces the generic one while the head is failed.
+ */
+export interface QueueFailedHeadNotice {
+  /** One sentence saying why it failed (no usable agent, say). */
+  reason?: string
+  /** Where the user can fix it — a link after the hint. */
+  action?: { label: string; onClick: () => void }
+}
+
 interface MessageQueueDisplayProps {
   queue: QueuedMessage[]
   onReorder: (items: QueuedMessage[]) => void
@@ -28,6 +39,9 @@ interface MessageQueueDisplayProps {
    *  mirroring the composer's split-button (`Zap` = instant insert,
    *  `Clock` = note the agent reads on its next check). */
   steerChannel?: "native" | "pull"
+  /** Cowork fork: see {@link QueueFailedHeadNotice}. Ignored unless the head
+   *  is failed. */
+  failedHeadNotice?: QueueFailedHeadNotice | null
 }
 
 interface QueueItemProps {
@@ -172,6 +186,7 @@ export function MessageQueueDisplay({
   editingItemId,
   onSteerItem,
   steerChannel = "pull",
+  failedHeadNotice,
 }: MessageQueueDisplayProps) {
   const t = useTranslations("Folder.chat.messageQueue")
   // The id whose insert is in flight. A per-row `steering` would let a
@@ -202,14 +217,44 @@ export function MessageQueueDisplay({
 
   if (queue.length === 0) return null
 
+  // Cowork fork: a failed head holds everything behind it (the jenny rule in
+  // `useMessageQueue.dequeue`), so "sent after this turn ends" would be
+  // untrue. Say what is holding the queue and how to release it.
+  const headFailed = queue[0].failed === true
+
   return (
     <div className="pb-1">
-      <p
-        data-queue-hint
-        className="mb-1 text-xs leading-relaxed text-muted-foreground"
-      >
-        {t("hint")}
-      </p>
+      {headFailed ? (
+        <p
+          data-queue-hint
+          data-queue-blocked=""
+          className="mb-1 text-xs leading-relaxed text-destructive"
+        >
+          {failedHeadNotice?.reason ? (
+            <span data-queue-blocked-reason="" className="mr-1">
+              {failedHeadNotice.reason}
+            </span>
+          ) : null}
+          {t(queue.length > 1 ? "failedHeadHint" : "failedSingleHint")}
+          {failedHeadNotice?.action ? (
+            <button
+              type="button"
+              data-queue-blocked-action=""
+              onClick={failedHeadNotice.action.onClick}
+              className="ml-1 underline underline-offset-2 hover:text-destructive/80"
+            >
+              {failedHeadNotice.action.label}
+            </button>
+          ) : null}
+        </p>
+      ) : (
+        <p
+          data-queue-hint
+          className="mb-1 text-xs leading-relaxed text-muted-foreground"
+        >
+          {t("hint")}
+        </p>
+      )}
       <Reorder.Group
         as="div"
         axis="y"

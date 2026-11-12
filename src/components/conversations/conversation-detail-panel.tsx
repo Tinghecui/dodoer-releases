@@ -58,6 +58,7 @@ import {
 } from "@/lib/ask-selection-handoff"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { useMessageQueue, type QueuedMessage } from "@/hooks/use-message-queue"
+import type { QueueFailedHeadNotice } from "@/components/chat/message-queue-display"
 import { MessageListView } from "@/components/message/message-list-view"
 import {
   GoalControlProvider,
@@ -122,6 +123,7 @@ import {
 import { TurnBusyError } from "@/lib/turn-busy"
 import { deliverQueuedSteer } from "@/lib/queued-steer"
 import { toErrorMessage } from "@/lib/app-error"
+import { commandErrorReason } from "@/lib/cowork/worktree-start"
 import { blockingPrompts } from "@/lib/blocking-prompts"
 import { notify } from "@/lib/notify"
 import {
@@ -308,6 +310,8 @@ const ConversationTabView = memo(function ConversationTabView({
   const tCmp = useTranslations("Folder.chat.messageInput")
   const tWelcome = useTranslations("Folder.chat.welcomeInputPanel")
   const tJenny = useTranslations("JennyFork")
+  const tQueue = useTranslations("Folder.chat.messageQueue")
+  const tAgentSelector = useTranslations("Folder.chat.agentSelector")
   const tDiag = useTranslations("DiagnosticsSettings")
   const sharedT = useTranslations("Folder.chat.shared")
   const tMessageList = useTranslations("Folder.chat.messageList")
@@ -761,6 +765,7 @@ const ConversationTabView = memo(function ConversationTabView({
     enqueue: mqEnqueue,
     requeueFront: mqRequeueFront,
     requeueFailed: mqRequeueFailed,
+    failHead: mqFailHead,
     retry: mqRetry,
     getQueueLength: mqGetQueueLength,
     dequeue: mqDequeue,
@@ -896,6 +901,41 @@ const ConversationTabView = memo(function ConversationTabView({
       )
     : (autoConnectError ?? agentConnectError)
 
+  // Cowork fork: "no usable agent" as a settled fact rather than a wait.
+  // Nothing the queue's auto-flush is waiting for will happen by itself, so a
+  // message left waiting on it would wait forever (it is flagged failed
+  // instead, see the effect next to the auto-flush):
+  //   * a draft with no enabled agent at all, or whose picked agent is not
+  //     installed — `canAutoConnect` skips the connect for both;
+  //   * a connection in the error state, or a connect that failed and left no
+  //     live connection behind (`autoConnectError` is what it failed with).
+  // Deliberately NOT: `connecting` (the agent is coming up — the wait the
+  // queue exists for), `prompting`, a merely dropped or not-yet-attempted
+  // connection with no failure on record (a send reconnects those), and a
+  // draft whose agent list is still loading.
+  const connectFailed =
+    connStatus === "error" ||
+    ((connStatus == null || connStatus === "disconnected") &&
+      autoConnectError != null)
+  const agentUnavailable: "not_installed" | "connect_failed" | null =
+    !hasPersistedConversation &&
+    (selectedAgentNotInstalled || (agentsLoaded && usableAgentCount === 0))
+      ? "not_installed"
+      : connectFailed
+        ? selectedAgentNotInstalled
+          ? "not_installed"
+          : "connect_failed"
+        : null
+  const agentUnavailableReason =
+    agentUnavailable == null
+      ? null
+      : tQueue(
+          agentUnavailable === "not_installed"
+            ? "agentNotInstalledHint"
+            : "agentConnectFailedHint",
+          { agent: getAgentLabel(selectedAgent) }
+        )
+
   useEffect(() => {
     if (connSessionId) {
       sessionIdRef.current = connSessionId
@@ -915,6 +955,12 @@ const ConversationTabView = memo(function ConversationTabView({
   // an ordering constraint against a setLiveMessage cleanup: the liveMessage
   // sink writes the runtime store from the connection dispatch, not a React
   // effect — see registerLiveMessageSink.)
+  // Cowork fork: whether the turn in flight was refused for credentials
+  // (`turn_failed_auth_required`), so the failed message can point at where
+  // the agent signs in. The failure line in the transcript carries no code;
+  // the error event does, and it lands inside the turn — set there (see the
+  // `useAcpEvent` below), read and cleared when the turn ends.
+  const turnAuthFailedRef = useRef(false)
   const prevConnStatusRef = useRef(connStatus)
   // jenny fork: the message this tab sent last, until its turn ends. When the
   // turn fails (for example the agent quits mid-reply), it goes back to the
@@ -930,10 +976,14 @@ const ConversationTabView = memo(function ConversationTabView({
 
     const sent = lastSentRef.current
     lastSentRef.current = null
+    const authFailed = turnAuthFailedRef.current
+    turnAuthFailedRef.current = false
     const failed = getRuntimeSession(
       effectiveConversationId
     )?.liveMessage?.content.some((block) => block.type === "turn_error")
-    if (sent && failed) mqRequeueFailed(sent.draft, sent.modeId)
+    if (sent && failed) {
+      mqRequeueFailed(sent.draft, sent.modeId, authFailed ? "auth" : undefined)
+    }
 
     // Turn completed — promote liveMessage + optimisticTurns to localTurns.
     // Don't pass conn.liveMessage: this panel no longer subscribes to it (the
@@ -1129,6 +1179,20 @@ const ConversationTabView = memo(function ConversationTabView({
     reconcileSessionPrefs,
   ])
 
+  // Cowork fork: with no usable agent (see `agentUnavailable`) the flush above
+  // never runs, and a waiting message would sit under "waiting for the agent"
+  // for good. Flag the head failed instead: it shows the queue's retry /
+  // delete row, the hint above it says why, and the rest wait behind it like
+  // behind any failed head. Level-triggered on purpose, so it covers a message
+  // sent while the agent is unusable AND one that was waiting on a connect
+  // that then failed. A connection that is still coming up is not
+  // "unavailable", so that wait is untouched.
+  useEffect(() => {
+    if (agentUnavailable == null) return
+    if (msgQueue.length === 0 || queueHeadFailed) return
+    mqFailHead()
+  }, [agentUnavailable, msgQueue.length, queueHeadFailed, mqFailHead])
+
   // Mirror the connection's liveMessage into the runtime session OUTSIDE React.
   // The connection dispatch invokes this sink synchronously whenever liveMessage
   // changes (streaming deltas, tool updates, the prompt-start reset), so the
@@ -1179,6 +1243,20 @@ const ConversationTabView = memo(function ConversationTabView({
         )
       },
       [conn.connectionId, effectiveConversationId, appendViewerUserTurn]
+    )
+  )
+
+  // Cowork fork: note a turn refused for credentials (see `turnAuthFailedRef`).
+  useAcpEvent(
+    useCallback(
+      (envelope: EventEnvelope) => {
+        if (envelope.type !== "error") return
+        if (envelope.connection_id !== conn.connectionId) return
+        if (envelope.code === "turn_failed_auth_required") {
+          turnAuthFailedRef.current = true
+        }
+      },
+      [conn.connectionId]
     )
   )
 
@@ -1280,6 +1358,25 @@ const ConversationTabView = memo(function ConversationTabView({
     }
   }, [effectiveConversationId, groupId, setPendingCleanup, tabId])
 
+  // Cowork fork: the worktree a draft was to start in could not be created
+  // (see the `pendingWorktree` branch of handleSend). Say WHY — the shared
+  // `toErrorMessage` would show only the detail, which here is the branch name
+  // the user typed — and stop the message waiting for a worktree that is not
+  // coming. The send parked it at the head of the queue (or behind an older
+  // head that is just as stuck); flagged failed, it offers retry / delete.
+  // Retry runs that branch again with whatever the draft's worktree choice is
+  // by then: a corrected name creates the worktree, a cleared choice sends
+  // from the folder the draft is in.
+  const failWorktreeStart = useCallback(
+    (error: unknown) => {
+      toast.error(tBranch("toasts.worktreeCreateFailed"), {
+        description: commandErrorReason(error),
+      })
+      mqFailHead()
+    },
+    [tBranch, mqFailHead]
+  )
+
   const handleSend = useCallback(
     (
       draft: PromptDraft,
@@ -1365,9 +1462,7 @@ const ConversationTabView = memo(function ConversationTabView({
             refreshConversations()
           } catch (e) {
             worktreeCreatePendingRef.current = false
-            toast.error(tBranch("toasts.worktreeCreateFailed"), {
-              description: toErrorMessage(e),
-            })
+            failWorktreeStart(e)
           }
         })()
         return
@@ -1440,6 +1535,7 @@ const ConversationTabView = memo(function ConversationTabView({
       // turn completes, identical to enqueuing while already prompting. Stamp
       // the bounce so the flush backs off instead of immediately retrying.
       lastSentRef.current = { draft, modeId: selectedModeIdArg ?? null }
+      turnAuthFailedRef.current = false
       const onTurnInProgress = () => {
         lastSentRef.current = null
         lastFlushBounceAtRef.current = Date.now()
@@ -1629,6 +1725,7 @@ const ConversationTabView = memo(function ConversationTabView({
       setBranch,
       tBranch,
       mqRequeueFailed,
+      failWorktreeStart,
       mqGetQueueLength,
       bindConversationTab,
       canAutoConnect,
@@ -2508,6 +2605,76 @@ const ConversationTabView = memo(function ConversationTabView({
     [feedbackSteer]
   )
 
+  // Cowork fork: the queue's retry button. With a usable agent it is the
+  // plain retry (clear the flag, the auto-flush sends). While there is still
+  // no usable agent, un-failing the message would only put it back under
+  // "waiting for the agent" until the effect by the auto-flush flagged it
+  // again, so it stays failed: say why, with the way to fix it, and give a
+  // failed connection another try (as focusing the composer does) so that the
+  // next click can go through.
+  const handleQueueRetry = useCallback(
+    (id: string) => {
+      if (agentUnavailableReason == null) {
+        mqRetry(id)
+        return
+      }
+      handleFocus()
+      toast.error(agentUnavailableReason, {
+        id: `queue-agent-unavailable:${tabId}`,
+        action: {
+          label: tAgentSelector("openAgentsSettings"),
+          onClick: handleOpenAgentsSettings,
+        },
+      })
+    },
+    [
+      agentUnavailableReason,
+      mqRetry,
+      handleFocus,
+      tabId,
+      tAgentSelector,
+      handleOpenAgentsSettings,
+    ]
+  )
+
+  // Cowork fork: what the queue's hint adds while its head is failed (the
+  // hint itself — "the first message failed, the rest wait for it" — is the
+  // queue's own). No usable agent: the reason, and the Agents settings the
+  // install banner opens. A turn the agent refused for credentials: the same
+  // settings page, which is where an agent signs in (the failure notice's
+  // "Sign in" button goes there too).
+  const queueHeadFailure = queueHeadFailed
+    ? (msgQueue[0]?.failure ?? null)
+    : null
+  const queueFailedHeadNotice = useMemo<QueueFailedHeadNotice | null>(() => {
+    if (!queueHeadFailed) return null
+    if (agentUnavailableReason != null) {
+      return {
+        reason: agentUnavailableReason,
+        action: {
+          label: tAgentSelector("openAgentsSettings"),
+          onClick: handleOpenAgentsSettings,
+        },
+      }
+    }
+    if (queueHeadFailure === "auth") {
+      return {
+        action: {
+          label: tSessionFailure("action.login"),
+          onClick: handleOpenAgentsSettings,
+        },
+      }
+    }
+    return null
+  }, [
+    queueHeadFailed,
+    queueHeadFailure,
+    agentUnavailableReason,
+    tAgentSelector,
+    tSessionFailure,
+    handleOpenAgentsSettings,
+  ])
+
   // Click-to-insert for a queued row: send THAT item into the running turn
   // over the same live-feedback channel the composer's mid-turn dropdown uses.
   // The block/text encoding is the shared `buildSteerPayload` — one call site,
@@ -2648,7 +2815,8 @@ const ConversationTabView = memo(function ConversationTabView({
       onQueueReorder={mqReorder}
       onQueueEdit={handleQueueEdit}
       onQueueDelete={mqRemove}
-      onQueueRetry={mqRetry}
+      onQueueRetry={handleQueueRetry}
+      queueFailedHeadNotice={queueFailedHeadNotice}
       onQueueSteer={
         // Same gate as the composer's mid-turn send, plus a turn actually in
         // flight: a queued row can only be inserted into a RUNNING turn —
@@ -2777,7 +2945,8 @@ const ConversationTabView = memo(function ConversationTabView({
                 onQueueReorder={mqReorder}
                 onQueueEdit={handleQueueEdit}
                 onQueueDelete={mqRemove}
-                onQueueRetry={mqRetry}
+                onQueueRetry={handleQueueRetry}
+                queueFailedHeadNotice={queueFailedHeadNotice}
                 editingItemId={mqEditingItemId}
                 editingDraftText={editingQueueDraftText}
                 editingDraftBlocks={editingQueueDraftBlocks}

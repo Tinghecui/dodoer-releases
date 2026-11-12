@@ -75,6 +75,7 @@ import type {
   GitBranchList,
 } from "@/lib/types"
 import { defaultConversationBranch } from "@/lib/worktree-slug"
+import { isValidBranchName } from "@/lib/cowork/worktree-start"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { useGitCredential } from "@/contexts/git-credential-context"
@@ -229,6 +230,8 @@ export function BranchDropdown({
   // draft; the first send creates the branch and worktree.
   const [startWorktreeOpen, setStartWorktreeOpen] = useState(false)
   const [startBranchName, setStartBranchName] = useState("")
+  // Cowork fork: the name typed into the dialog is one git would refuse.
+  const [startBranchInvalid, setStartBranchInvalid] = useState(false)
   const [startBase, setStartBase] = useState("")
 
   // Task running, credential retry, pull/fetch/window openers and the
@@ -451,6 +454,7 @@ export function BranchDropdown({
     if (pendingWorktree?.kind !== "branch_off") return
     setStartBranchName(pendingWorktree.auto_name ? "" : pendingWorktree.branch)
     setStartBase(pendingWorktree.base ?? branch ?? "")
+    setStartBranchInvalid(false)
     // The base picker lists every branch; the popup may not have loaded them
     // yet (the operation can be reached by keyboard before the list renders).
     if (branchList.local.length === 0) void loadAllBranches()
@@ -460,6 +464,13 @@ export function BranchDropdown({
   function handleStartWorktree() {
     if (!draftTabId) return
     const name = startBranchName.trim()
+    // Cowork fork: refuse a name git would refuse while the dialog is still
+    // open. The backend only checks it when the first message is sent, long
+    // after the name was typed, and by then the message is already on its way.
+    if (name && !isValidBranchName(name)) {
+      setStartBranchInvalid(true)
+      return
+    }
     const base = startBase.trim() || null
     setStartWorktreeOpen(false)
     // Left empty: the agent names it after the first message.
@@ -920,7 +931,14 @@ export function BranchDropdown({
                 id="start-wt-branch"
                 placeholder={t("dialogs.branchNameAutoPlaceholder")}
                 value={startBranchName}
-                onChange={(e) => setStartBranchName(e.target.value)}
+                onChange={(e) => {
+                  setStartBranchName(e.target.value)
+                  setStartBranchInvalid(false)
+                }}
+                aria-invalid={startBranchInvalid || undefined}
+                aria-describedby={
+                  startBranchInvalid ? "start-wt-branch-error" : undefined
+                }
                 {...ime.props}
                 onKeyDown={(e) => {
                   if (ime.isComposing(e)) return
@@ -928,6 +946,15 @@ export function BranchDropdown({
                 }}
                 autoFocus
               />
+              {startBranchInvalid ? (
+                <p
+                  id="start-wt-branch-error"
+                  role="alert"
+                  className="text-xs text-destructive"
+                >
+                  {t("dialogs.branchNameInvalid")}
+                </p>
+              ) : null}
             </div>
             <div className="space-y-2">
               <Label htmlFor="start-wt-base">{t("dialogs.baseLabel")}</Label>

@@ -33,7 +33,16 @@ export interface QueuedMessage {
    * the items behind it so they do not overtake it. Retry clears the flag.
    */
   failed?: boolean
+  /**
+   * Cowork fork: what kind of failure it was, when the panel knows and the
+   * queue's hint has something to offer for it. `auth` — the agent refused
+   * the turn for credentials, so the hint links to where the agent signs in.
+   * Only ever set together with `failed`; retry clears both.
+   */
+  failure?: QueueFailureKind
 }
+
+export type QueueFailureKind = "auth"
 
 export interface UseMessageQueueReturn {
   queue: QueuedMessage[]
@@ -49,7 +58,19 @@ export interface UseMessageQueueReturn {
    */
   requeueFront: (draft: PromptDraft, modeId: string | null) => void
   /** Put a draft whose send failed back at the FRONT, flagged `failed`. */
-  requeueFailed: (draft: PromptDraft, modeId: string | null) => void
+  requeueFailed: (
+    draft: PromptDraft,
+    modeId: string | null,
+    failure?: QueueFailureKind
+  ) => void
+  /**
+   * Cowork fork: flag the item at the head `failed` where it stands (same id,
+   * same place). For a message that never went out and, as things are, never
+   * will — no usable agent, or the worktree it was to start in could not be
+   * created — so it shows the retry / delete row instead of waiting forever.
+   * Does nothing on an empty queue or a head that is already failed.
+   */
+  failHead: (failure?: QueueFailureKind) => void
   /** Clear an item's `failed` flag so the auto-flush sends it again. */
   retry: (id: string) => void
   /** Returns nothing while the head is a failed item: it waits for retry. */
@@ -119,10 +140,28 @@ export function useMessageQueue(): UseMessageQueueReturn {
   )
 
   const requeueFailed = useCallback(
-    (draft: PromptDraft, modeId: string | null) => {
+    (draft: PromptDraft, modeId: string | null, failure?: QueueFailureKind) => {
       commit([
-        { id: randomUUID(), draft, modeId, failed: true },
+        {
+          id: randomUUID(),
+          draft,
+          modeId,
+          failed: true,
+          ...(failure ? { failure } : {}),
+        },
         ...queueRef.current,
+      ])
+    },
+    [commit]
+  )
+
+  const failHead = useCallback(
+    (failure?: QueueFailureKind) => {
+      const current = queueRef.current
+      if (current.length === 0 || current[0].failed) return
+      commit([
+        { ...current[0], failed: true, ...(failure ? { failure } : {}) },
+        ...current.slice(1),
       ])
     },
     [commit]
@@ -132,7 +171,7 @@ export function useMessageQueue(): UseMessageQueueReturn {
     (id: string) => {
       commit(
         queueRef.current.map((item) =>
-          item.id === id ? { ...item, failed: false } : item
+          item.id === id ? { ...item, failed: false, failure: undefined } : item
         )
       )
     },
@@ -219,6 +258,7 @@ export function useMessageQueue(): UseMessageQueueReturn {
     enqueue,
     requeueFront,
     requeueFailed,
+    failHead,
     retry,
     dequeue,
     remove,

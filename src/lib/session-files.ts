@@ -2,6 +2,7 @@ import type { ContentBlock, MessageTurn } from "./types"
 import { normalizeToolName } from "./tool-call-normalization"
 import { estimateChangedLineStats } from "./line-change-stats"
 import { generateUnifiedDiff } from "./unified-diff-generator"
+import { approvalFromMeta } from "./activity/approval"
 
 export type FileOperation = "read" | "edit" | "write" | "apply_patch"
 
@@ -907,6 +908,52 @@ export function extractSessionFilesGrouped(
   return groups
 }
 
+/** The ids of the tool calls in `turns` whose result is an error. */
+function collectErroredToolUseIds(turns: readonly MessageTurn[]): Set<string> {
+  const ids = new Set<string>()
+  for (const turn of turns) {
+    for (const block of turn.blocks) {
+      if (block.type === "tool_result" && block.is_error && block.tool_use_id) {
+        ids.add(block.tool_use_id)
+      }
+    }
+  }
+  return ids
+}
+
+/**
+ * Whether a write-type tool call is known NOT to have changed its file: the
+ * user turned its permission request down, or it ran and failed. Either way
+ * the agent's proposed content never reached the disk, so listing it as a
+ * change (a "new file" that does not exist) is wrong.
+ *
+ * The signals, any one of which settles it:
+ *  - the call's ACP status is `failed` (live and just-promoted turns; a
+ *    rejected permission request ends the call as failed too);
+ *  - a reopened conversation's detail load stamped a rejection on the call
+ *    (`meta["codeg.approval"]`);
+ *  - its `tool_result` is an error: matched by id anywhere in the reply, or,
+ *    for an id-less pair, the result right after the call (the pairing the
+ *    message adapter uses).
+ *
+ * A call with no result (still running, or a transcript that records none)
+ * is not known to have failed and keeps counting, as it always has.
+ */
+function writeDidNotLand(
+  block: Extract<ContentBlock, { type: "tool_use" }>,
+  nextBlock: ContentBlock | undefined,
+  erroredToolUseIds: ReadonlySet<string>
+): boolean {
+  if (block.status === "failed") return true
+  if (approvalFromMeta(block.meta)?.decision === "rejected") return true
+  if (block.tool_use_id) return erroredToolUseIds.has(block.tool_use_id)
+  return (
+    nextBlock?.type === "tool_result" &&
+    !nextBlock.tool_use_id &&
+    nextBlock.is_error
+  )
+}
+
 /**
  * Aggregate an assistant reply's write operations into ONE `FileChangeStat`
  * per file path. Unlike `extractSessionFilesGrouped` (which groups by user
@@ -914,6 +961,9 @@ export function extractSessionFilesGrouped(
  * summing line counts and concatenating diff chunks per file — the shape the
  * per-reply "artifacts" card needs. Pass only the raw turns that compose a
  * single reply (the assistant sub-turns merged into one visual reply).
+ *
+ * Only writes that went through count: a call the user turned down or that
+ * failed changed nothing on disk (see `writeDidNotLand`).
  */
 export function extractReplyFileChanges(
   turns: MessageTurn[]
@@ -926,15 +976,19 @@ export function extractReplyFileChanges(
   }
   const byPath = new Map<string, Acc>()
   const order: string[] = []
+  const erroredToolUseIds = collectErroredToolUseIds(turns)
 
   for (const turn of turns) {
     if (turn.role !== "assistant") continue
 
-    for (const block of turn.blocks) {
+    for (const [index, block] of turn.blocks.entries()) {
       if (block.type !== "tool_use") continue
 
       const normalized = normalizeToolName(block.tool_name)
       if (!WRITE_OPS.has(normalized)) continue
+      if (writeDidNotLand(block, turn.blocks[index + 1], erroredToolUseIds)) {
+        continue
+      }
 
       const filePaths = extractFilePaths(block.input_preview)
       if (filePaths.length === 0) continue

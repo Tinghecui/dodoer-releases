@@ -123,6 +123,7 @@ import { usePageHandoffName } from "@/lib/browser/use-page-handoff-name"
 import { unescapeComposerText } from "@/lib/composer-copy-text"
 import { useStickToBottomContext } from "use-stick-to-bottom"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { useAwaitingUser } from "@/stores/awaiting-user-store"
 import { MarkdownImageProvider } from "@/components/ai-elements/markdown-local-image"
 
 interface MessageListViewProps {
@@ -1388,6 +1389,10 @@ export function MessageListView({
     (s) => s.byConversationId.get(conversationId) ?? null
   )
   const liveMessage = session?.liveMessage ?? null
+  // Cowork: what this conversation's agent is parked on the user for — the
+  // sidebar's "needs your answer" source, by the same external session id —
+  // so the live capsule below stops saying it is streaming meanwhile.
+  const awaitingUser = useAwaitingUser(session?.externalId)
   const timelineTurns = useConversationRuntimeStore((s) =>
     selectTimelineTurns(s, conversationId)
   )
@@ -2148,6 +2153,7 @@ export function MessageListView({
             message={liveMessage}
             agentType={agentType}
             isStreaming={connStatus === "prompting"}
+            awaitingUser={awaitingUser}
           />
         )}
         {/* Overlay stack pinned to the inline-start edge (top-left in LTR,

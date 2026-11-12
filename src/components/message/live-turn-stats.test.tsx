@@ -1,10 +1,18 @@
-import { describe, expect, it } from "vitest"
+import { cleanup, render } from "@testing-library/react"
+import { NextIntlClientProvider, type Locale } from "next-intl"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { extractLiveEditStats } from "./live-turn-stats"
+import { extractLiveEditStats, LiveTurnStats } from "./live-turn-stats"
 import type {
   LiveContentBlock,
   LiveMessage,
 } from "@/contexts/acp-connections-context"
+import type { AwaitingUserKind } from "@/stores/awaiting-user-store"
+import enMessages from "@/i18n/messages/en.json"
+import zhCNMessages from "@/i18n/messages/zh-CN.json"
+
+// The capsule's icon is beside the point here; its wording is what is tested.
+vi.mock("@/components/agent-icon", () => ({ AgentIcon: () => null }))
 
 // --- fixtures --------------------------------------------------------------
 
@@ -101,5 +109,85 @@ describe("extractLiveEditStats", () => {
     const added = toolBlock(writeInput("p\nq", "z.ts"))
     const after = extractLiveEditStats(msg([shared, added]))
     expect(after).toEqual({ files: 2, additions: 5, deletions: 0 })
+  })
+})
+
+// AI QA #98: with a permission request left unanswered the capsule above the
+// composer went on saying "Streaming" — the turn is still running then, but it
+// is the user's move.
+describe("LiveTurnStats while the agent waits on the user", () => {
+  afterEach(cleanup)
+
+  // A turn that started 65 seconds ago: the timer reads "1m 5s".
+  const liveMessage = (): LiveMessage => ({
+    id: "m1",
+    role: "assistant",
+    content: [textBlock("About to write notes.txt")],
+    startedAt: Date.now() - 65_000,
+  })
+
+  function renderCapsule(
+    awaitingUser: AwaitingUserKind | null,
+    locale: Locale = "en"
+  ): string {
+    const { container } = render(
+      <NextIntlClientProvider
+        locale={locale}
+        messages={locale === "zh-CN" ? zhCNMessages : enMessages}
+      >
+        <LiveTurnStats
+          message={liveMessage()}
+          agentType="claude_code"
+          awaitingUser={awaitingUser}
+        />
+      </NextIntlClientProvider>
+    )
+    return container.querySelector("[data-live-turn-stats]")?.textContent ?? ""
+  }
+
+  it("says it is streaming while nothing waits on the user", () => {
+    const text = renderCapsule(null)
+    expect(text).toContain("Streaming")
+    expect(text).not.toContain("Needs your")
+  })
+
+  it.each([
+    ["permission", "Needs your approval"],
+    ["question", "Needs your answer"],
+    ["plan", "Plan needs your approval"],
+  ] as const)("names a pending %s instead of streaming", (kind, wording) => {
+    const text = renderCapsule(kind)
+    expect(text).toContain(wording)
+    expect(text).not.toContain("Streaming")
+    expect(text).not.toContain("Thinking")
+  })
+
+  it("keeps the turn's elapsed time next to the wait", () => {
+    expect(renderCapsule("permission")).toContain("1m 5s")
+  })
+
+  it("outranks the thinking state", () => {
+    const { container } = render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <LiveTurnStats
+          message={{
+            id: "m1",
+            role: "assistant",
+            content: [{ type: "thinking", text: "" }],
+            startedAt: Date.now(),
+          }}
+          agentType="claude_code"
+          awaitingUser="question"
+        />
+      </NextIntlClientProvider>
+    )
+    expect(container.textContent).toContain("Needs your answer")
+    expect(container.textContent).not.toContain("Thinking")
+  })
+
+  it("uses the sidebar badge's wording in Chinese too", () => {
+    const text = renderCapsule("permission", "zh-CN")
+    expect(text).toContain("等你批准操作")
+    expect(text).not.toContain("生成中")
   })
 })

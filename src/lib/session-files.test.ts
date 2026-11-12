@@ -508,3 +508,181 @@ describe("extractReplyFileChanges", () => {
     ])
   })
 })
+
+// AI QA #96: a Write the user declined was listed under "new files" although
+// the file never existed. Only writes that went through belong in the card.
+describe("extractReplyFileChanges: declined and failed writes", () => {
+  /** `turn` with the result of its (only) tool call appended, as the parsers
+   *  and the live path both do: result in the same turn, paired by id. */
+  function withResult(
+    turn: MessageTurn,
+    result: { isError: boolean; output?: string }
+  ): MessageTurn {
+    const call = turn.blocks.find((block) => block.type === "tool_use")
+    if (!call || call.type !== "tool_use") throw new Error("no tool call")
+    return {
+      ...turn,
+      blocks: [
+        ...turn.blocks,
+        {
+          type: "tool_result",
+          tool_use_id: call.tool_use_id,
+          output_preview: result.output ?? null,
+          is_error: result.isError,
+        },
+      ],
+    }
+  }
+
+  const DECLINED =
+    "The user doesn't want to proceed with this tool use. The tool use was rejected."
+
+  it("leaves out a write the user declined", () => {
+    const files = extractReplyFileChanges([
+      withResult(writeTurn("a1", "t1", "/repo/notes.txt", "apple\n"), {
+        isError: true,
+        output: DECLINED,
+      }),
+    ])
+
+    expect(files).toEqual([])
+  })
+
+  it("leaves out a call a reopened conversation stamps as rejected", () => {
+    const turn = writeTurn("a1", "t1", "/repo/notes.txt", "apple\n")
+    const [call] = turn.blocks
+    if (call.type !== "tool_use") throw new Error("no tool call")
+
+    const files = extractReplyFileChanges([
+      {
+        ...turn,
+        blocks: [
+          {
+            ...call,
+            meta: {
+              "codeg.approval": {
+                option_kind: "reject_once",
+                option_name: "No",
+                origin: "user",
+                decided_at: "2024-01-01T00:00:02Z",
+              },
+            },
+          },
+        ],
+      },
+    ])
+
+    expect(files).toEqual([])
+  })
+
+  it("leaves out an edit that failed", () => {
+    const files = extractReplyFileChanges([
+      withResult(editTurn("a1", "t1", "/repo/src/a.ts", "old", "new"), {
+        isError: true,
+        output: "String to replace not found in file.",
+      }),
+    ])
+
+    expect(files).toEqual([])
+  })
+
+  it("leaves out a call whose live status is failed, result or not", () => {
+    const turn = editTurn("a1", "t1", "/repo/src/a.ts", "old", "new")
+    const [call] = turn.blocks
+    if (call.type !== "tool_use") throw new Error("no tool call")
+
+    const files = extractReplyFileChanges([
+      { ...turn, blocks: [{ ...call, status: "failed" }] },
+    ])
+
+    expect(files).toEqual([])
+  })
+
+  it("leaves out an id-less call whose result, right after it, is an error", () => {
+    const files = extractReplyFileChanges([
+      {
+        id: "a1",
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            tool_use_id: null,
+            tool_name: "Write",
+            input_preview: JSON.stringify({
+              file_path: "/repo/notes.txt",
+              content: "apple\n",
+            }),
+          },
+          {
+            type: "tool_result",
+            tool_use_id: null,
+            output_preview: DECLINED,
+            is_error: true,
+          },
+        ],
+        timestamp: "2024-01-01T00:00:01Z",
+      },
+    ])
+
+    expect(files).toEqual([])
+  })
+
+  it("keeps a write that succeeded", () => {
+    const files = extractReplyFileChanges([
+      withResult(writeTurn("a1", "t1", "/repo/notes.txt", "apple\npear\n"), {
+        isError: false,
+        output: "File created successfully at: /repo/notes.txt",
+      }),
+    ])
+
+    expect(files).toHaveLength(1)
+    expect(files[0].path).toBe("/repo/notes.txt")
+    expect(files[0].additions).toBeGreaterThan(0)
+    expect(isAddedFileDiff(files[0].diff)).toBe(true)
+  })
+
+  // A call with no result is not known to have failed: transcripts that
+  // record no result for a write, and a call still in flight, count as before.
+  it("keeps a write that has no result", () => {
+    const files = extractReplyFileChanges([
+      writeTurn("a1", "t1", "/repo/notes.txt", "apple\n"),
+    ])
+
+    expect(files.map((f) => f.path)).toEqual(["/repo/notes.txt"])
+  })
+
+  it("counts only the attempt that succeeded when a file failed first", () => {
+    const succeeded = withResult(
+      editTurn("a2", "t2", "/repo/src/a.ts", "const a = 1", "const a = 2"),
+      { isError: false, output: "The file has been updated." }
+    )
+    const failed = withResult(
+      editTurn("a1", "t1", "/repo/src/a.ts", "missing", "one\ntwo\nthree"),
+      { isError: true, output: "String to replace not found in file." }
+    )
+
+    const alone = extractReplyFileChanges([succeeded])
+    const both = extractReplyFileChanges([failed, succeeded])
+
+    expect(both).toHaveLength(1)
+    expect(both[0].path).toBe("/repo/src/a.ts")
+    expect(both[0].additions).toBe(alone[0].additions)
+    expect(both[0].deletions).toBe(alone[0].deletions)
+    expect(both[0].diff).toBe(alone[0].diff)
+    expect(both[0].diff ?? "").not.toContain("three")
+  })
+
+  it("keeps the other files of a reply when one write was declined", () => {
+    const files = extractReplyFileChanges([
+      withResult(writeTurn("a1", "t1", "/repo/notes.txt", "apple\n"), {
+        isError: true,
+        output: DECLINED,
+      }),
+      withResult(writeTurn("a2", "t2", "/repo/kept.txt", "pear\n"), {
+        isError: false,
+      }),
+    ])
+
+    expect(files.map((f) => f.path)).toEqual(["/repo/kept.txt"])
+  })
+})

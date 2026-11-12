@@ -16,11 +16,32 @@ import { FilePenLine, Plane, Timer } from "lucide-react"
 import type { AgentType } from "@/lib/types"
 import { AgentIcon } from "@/components/agent-icon"
 import { useTokenOutputSpeed } from "@/hooks/use-token-output-speed"
+import type { AwaitingUserKind } from "@/stores/awaiting-user-store"
 
 interface LiveTurnStatsProps {
   message: LiveMessage
   agentType: AgentType
   isStreaming?: boolean
+  /**
+   * What the agent is parked on the user for (`useAwaitingUser`, the source
+   * of the sidebar's "needs your answer" mark). The turn is still running
+   * while it waits, so without this the capsule keeps saying "Streaming" for
+   * as long as a permission request sits unanswered.
+   */
+  awaitingUser?: AwaitingUserKind | null
+}
+
+/** The sidebar badge's wording (`Folder.sidebar`), so both places name the
+ *  wait alike in every locale. */
+const AWAITING_USER_LABEL: Record<
+  AwaitingUserKind,
+  | "statusAwaitingQuestionBadge"
+  | "statusAwaitingPermissionBadge"
+  | "statusAwaitingPlanBadge"
+> = {
+  question: "statusAwaitingQuestionBadge",
+  permission: "statusAwaitingPermissionBadge",
+  plan: "statusAwaitingPlanBadge",
 }
 
 interface LineChangeStats {
@@ -311,9 +332,11 @@ export function LiveTurnStats({
   message,
   agentType,
   isStreaming = true,
+  awaitingUser = null,
 }: LiveTurnStatsProps) {
   const locale = useLocale()
   const t = useTranslations("Folder.chat.liveTurnStats")
+  const tSidebar = useTranslations("Folder.sidebar")
   const [elapsed, setElapsed] = useState(() => Date.now() - message.startedAt)
   const editStats = useMemo(() => extractLiveEditStats(message), [message])
   const tps = useTokenOutputSpeed(message)
@@ -355,7 +378,13 @@ export function LiveTurnStats({
           agentType={agentType}
           className="h-3.5 w-3.5 animate-pulse"
         />
-        {isThinking ? (
+        {awaitingUser ? (
+          // It is the user's move: say so instead of "Streaming". The timer
+          // keeps counting — it is the turn's age, which the wait is part of.
+          <span data-awaiting-user={awaitingUser}>
+            {tSidebar(AWAITING_USER_LABEL[awaitingUser])}
+          </span>
+        ) : isThinking ? (
           <span>{t("thinking")}</span>
         ) : (
           <span>{t("streaming")}</span>

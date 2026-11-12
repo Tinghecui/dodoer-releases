@@ -60,6 +60,31 @@ const en = {
     "This app was started without a local daemon (CODEG_DESKTOP_DAEMON=client), so only servers can be opened.",
   // Quick actions in the local workspace: back to the start page.
   backToStart: "Back to start page",
+  // The resource meter (`resource-meter.tsx`).
+  resources: "System resources",
+  resourcesThisComputer: "This computer",
+  resourcesServer: "Server",
+  resourcesSummary: "CPU {cpu} · Memory {memory}",
+  resourcesCpu: "CPU",
+  resourcesCores: "{count} cores",
+  resourcesLoad: "{count} cores · load {load}",
+  resourcesMemory: "Memory",
+  resourcesAvailable: "{value} available",
+  resourcesSwap: "Swap",
+  resourcesDisk: "Disk",
+  resourcesFree: "{value} free",
+  resourcesWorkspace: "This workspace",
+  resourcesWorkspaceHint: "Its own processes: agents, terminals, builds",
+  resourcesLimit: "Memory limit",
+  resourcesPressureNormal: "Normal",
+  resourcesPressureWarning: "Tight",
+  resourcesPressureCritical: "Almost full",
+  resourcesWarningHint:
+    "Memory is getting tight. A big job (a build, a full test run) may not fit.",
+  resourcesCriticalHint:
+    "Memory is almost full, and the system may start killing processes. Stop what you don't need before starting anything big.",
+  resourcesCriticalTitle: "Memory is almost full",
+  resourcesCriticalDetail: "{where}: {available} left of {total}.",
 }
 
 export type CoworkTextKey = keyof typeof en
@@ -111,6 +136,29 @@ const zhCN: Record<CoworkTextKey, string> = {
   startNoLocal:
     "这次启动没有本机 daemon（CODEG_DESKTOP_DAEMON=client），只能打开服务器。",
   backToStart: "回到开始页",
+  resources: "资源占用",
+  resourcesThisComputer: "这台电脑",
+  resourcesServer: "服务器",
+  resourcesSummary: "CPU {cpu} · 内存 {memory}",
+  resourcesCpu: "CPU",
+  resourcesCores: "{count} 核",
+  resourcesLoad: "{count} 核 · 负载 {load}",
+  resourcesMemory: "内存",
+  resourcesAvailable: "可用 {value}",
+  resourcesSwap: "交换区",
+  resourcesDisk: "磁盘",
+  resourcesFree: "剩余 {value}",
+  resourcesWorkspace: "本工作区",
+  resourcesWorkspaceHint: "它自己的进程：agent、终端、编译",
+  resourcesLimit: "内存上限",
+  resourcesPressureNormal: "正常",
+  resourcesPressureWarning: "偏紧",
+  resourcesPressureCritical: "快满了",
+  resourcesWarningHint: "内存偏紧。再起大任务（编译、全量测试）可能放不下。",
+  resourcesCriticalHint:
+    "内存快用完了，系统可能开始杀进程。先停掉不用的任务，再起大任务。",
+  resourcesCriticalTitle: "内存快用完了",
+  resourcesCriticalDetail: "{where}只剩 {available}（共 {total}）。",
 }
 
 const zhTW: Record<CoworkTextKey, string> = {
@@ -161,6 +209,30 @@ const zhTW: Record<CoworkTextKey, string> = {
   startNoLocal:
     "這次啟動沒有本機 daemon（CODEG_DESKTOP_DAEMON=client），只能開啟伺服器。",
   backToStart: "回到開始頁",
+  resources: "資源用量",
+  resourcesThisComputer: "這台電腦",
+  resourcesServer: "伺服器",
+  resourcesSummary: "CPU {cpu} · 記憶體 {memory}",
+  resourcesCpu: "CPU",
+  resourcesCores: "{count} 核心",
+  resourcesLoad: "{count} 核心 · 負載 {load}",
+  resourcesMemory: "記憶體",
+  resourcesAvailable: "可用 {value}",
+  resourcesSwap: "交換空間",
+  resourcesDisk: "磁碟",
+  resourcesFree: "剩餘 {value}",
+  resourcesWorkspace: "本工作區",
+  resourcesWorkspaceHint: "它自己的行程：agent、終端機、編譯",
+  resourcesLimit: "記憶體上限",
+  resourcesPressureNormal: "正常",
+  resourcesPressureWarning: "偏緊",
+  resourcesPressureCritical: "快滿了",
+  resourcesWarningHint:
+    "記憶體偏緊。再啟動大型工作（編譯、完整測試）可能放不下。",
+  resourcesCriticalHint:
+    "記憶體快用完了，系統可能開始終止行程。先停掉不用的工作，再啟動大型工作。",
+  resourcesCriticalTitle: "記憶體快用完了",
+  resourcesCriticalDetail: "{where}只剩 {available}（共 {total}）。",
 }
 
 const CATALOGS: Record<string, Record<CoworkTextKey, string>> = {

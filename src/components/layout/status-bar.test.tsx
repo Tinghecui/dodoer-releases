@@ -13,6 +13,10 @@ vi.mock("@/components/cowork/account-menu", () => ({
   ),
 }))
 
+vi.mock("@/components/cowork/resource-meter", () => ({
+  ResourceMeter: () => <div data-testid="resource-meter" />,
+}))
+
 import { StatusBarLeft } from "./status-bar"
 
 describe("StatusBarLeft", () => {
@@ -21,5 +25,15 @@ describe("StatusBarLeft", () => {
     const menu = screen.getByTestId("cowork-account")
     expect(menu.parentElement?.lastElementChild).toBe(menu)
     expect(menu).toHaveAttribute("data-side", "top")
+  })
+
+  it("puts the resource meter beside it, at the far end", () => {
+    render(<StatusBarLeft />)
+    const meter = screen.getByTestId("resource-meter")
+    expect(meter.nextElementSibling).toBe(screen.getByTestId("cowork-account"))
+    expect(meter.parentElement?.className).toContain("ml-auto")
+    expect(meter.parentElement?.parentElement?.lastElementChild).toBe(
+      meter.parentElement
+    )
   })
 })

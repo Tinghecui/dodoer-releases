@@ -74,6 +74,8 @@ pub mod process;
 mod relaunch;
 pub mod runtime_lock;
 pub mod supervise;
+// Cowork fork: CPU / memory / disk of this machine, for the resource meter.
+pub mod system_resources;
 pub mod taxonomy;
 mod terminal;
 pub mod turn_timings;
@@ -1817,6 +1819,7 @@ mod tauri_app {
                 remote_proxy_commands::remote_ws_send_text,
                 crate::commands::local_daemon::local_daemon_status,
                 crate::commands::local_daemon::local_daemon_attach_window,
+                crate::system_resources::get_system_resources,
                 windows::open_pet_window,
                 windows::close_pet_window,
                 windows::pet_window_record_position,

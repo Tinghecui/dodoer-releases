@@ -11,6 +11,7 @@ import { QuickActionsDropdown } from "@/components/layout/quick-actions-dropdown
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
 import { CoworkAccountMenu } from "@/components/cowork/account-menu"
+import { ResourceMeter } from "@/components/cowork/resource-meter"
 
 export function StatusBar() {
   const isMobile = useIsMobile()
@@ -31,6 +32,7 @@ export function StatusBar() {
           <CommandDropdown />
           <StatusBarMcp />
           <StatusBarAlerts />
+          <ResourceMeter />
           <CoworkAccountMenu />
         </div>
       </div>
@@ -50,9 +52,10 @@ export function StatusBar() {
  * Left half of the status bar: the quick-actions launcher and the workspace
  * stats. The launcher keeps the same glyph and size as before.
  *
- * Cowork: the portal account menu ends it, pushed to the sidebar foot's far
- * end. The foot (or, with the sidebar collapsed, the bottom-left capsule) is
- * always on screen, and it is where the workspace's name already sits.
+ * Cowork: the resource meter and the portal account menu end it, pushed to
+ * the sidebar foot's far end. The foot (or, with the sidebar collapsed, the
+ * bottom-left capsule) is always on screen, and it is where the workspace's
+ * name already sits — the meter says how that machine is doing.
  */
 export function StatusBarLeft({ className }: { className?: string }) {
   return (
@@ -65,10 +68,13 @@ export function StatusBarLeft({ className }: { className?: string }) {
     >
       <QuickActionsDropdown />
       <StatusBarStats />
-      <CoworkAccountMenu
-        className="ml-auto shrink-0 rounded-full hover:bg-[var(--g-hover)]"
-        side="top"
-      />
+      <div className="ml-auto flex shrink-0 items-center gap-0.5">
+        <ResourceMeter />
+        <CoworkAccountMenu
+          className="shrink-0 rounded-full hover:bg-[var(--g-hover)]"
+          side="top"
+        />
+      </div>
     </div>
   )
 }

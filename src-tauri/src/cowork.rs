@@ -876,6 +876,12 @@ pub fn api_routes() -> Router {
     Router::new()
         .route("/cowork_info", post(cowork_info))
         .route("/cowork_create_project", post(cowork_create_project))
+        // The resource meter (`system_resources`); the desktop app has it as
+        // a command too.
+        .route(
+            "/get_system_resources",
+            post(crate::system_resources::get_system_resources_http),
+        )
 }
 
 // ─── Secret redaction (cowork mode) ──────────────────────────────────────

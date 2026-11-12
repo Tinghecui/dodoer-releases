@@ -31,10 +31,13 @@ export function StatusBarStats() {
   if (!remoteConnection && !stats) return null
 
   return (
-    <div className="flex items-center gap-3">
+    // Cowork: the server's name gives way first (`min-w-0`) when the sidebar
+    // foot is narrow, so the resource meter and the account menu at its far
+    // end stay inside it.
+    <div className="flex min-w-0 items-center gap-3">
       {remoteConnection && (
         <span
-          className="flex max-w-40 items-center gap-1.5"
+          className="flex max-w-40 min-w-0 items-center gap-1.5"
           // Name on the first line, service URL on the second — the same two
           // lines the tooltip used to stack.
           title={`${remoteConnection.name}\n${remoteConnection.base_url}`}
@@ -49,7 +52,7 @@ export function StatusBarStats() {
           onClick={() => setRoute("tokenUsage")}
           title={t("openUsage")}
           className={cn(
-            "flex items-center gap-1.5 transition-colors hover:text-foreground",
+            "flex shrink-0 items-center gap-1.5 whitespace-nowrap transition-colors hover:text-foreground",
             routeId === "tokenUsage" && "text-foreground"
           )}
         >

@@ -36,6 +36,9 @@ pub const FEATURES: &[&str] = &[
     // A desktop app may lend this server its built-in browser over
     // `/ws/events` (`web::host_registry`, `docs/remote-browser.md`).
     "host_bridge_ws",
+    // `/api/get_system_resources`: CPU, memory and disk of the server's
+    // machine (`system_resources`).
+    "system_resources",
 ];
 
 /// The contract as one value: the `server_info` frame carries it as is
@@ -79,7 +82,7 @@ mod tests {
         assert_eq!(fields["min_desktop_version"], serde_json::json!("1.2.0"));
         assert_eq!(
             fields["features"],
-            serde_json::json!(["cowork_info", "host_bridge_ws"])
+            serde_json::json!(["cowork_info", "host_bridge_ws", "system_resources"])
         );
     }
 

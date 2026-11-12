@@ -30,6 +30,9 @@ const en = {
   nameEmpty: "Enter a project name",
   nameInvalid: "A project name can't contain / or \\, or start with .",
   createFailed: "Couldn't create the project",
+  // `next` is the label of the dialog's button that opens the selected folder.
+  projectExists:
+    'There is already a project named {name}. Pick another name; to open the existing one, select it in the list below and click "{next}".',
   portalSignIn: "Sign in through the Cowork portal",
   upgradeAvailable: "Cowork {version} is available — upgrade in the portal",
   desktopTooOld: "This desktop app is too old for the server",
@@ -83,6 +86,8 @@ const zhCN: Record<CoworkTextKey, string> = {
   nameEmpty: "请输入项目名称",
   nameInvalid: "项目名称不能包含 / 或 \\，也不能以 . 开头",
   createFailed: "创建项目失败",
+  projectExists:
+    "已经有一个叫 {name} 的项目了，换个名称；要打开已有的项目，在下面的列表里选中它，再点「{next}」。",
   portalSignIn: "通过 Cowork 门户登录",
   upgradeAvailable: "Cowork {version} 可以升级，去门户升级",
   desktopTooOld: "桌面 app 版本太旧，和服务器不匹配",
@@ -130,6 +135,8 @@ const zhTW: Record<CoworkTextKey, string> = {
   nameEmpty: "請輸入專案名稱",
   nameInvalid: "專案名稱不能包含 / 或 \\，也不能以 . 開頭",
   createFailed: "建立專案失敗",
+  projectExists:
+    "已經有一個叫 {name} 的專案了，換個名稱；要開啟現有的專案，在下面的清單裡選取它，再按「{next}」。",
   portalSignIn: "透過 Cowork 入口網站登入",
   upgradeAvailable: "Cowork {version} 可以升級，到入口網站升級",
   desktopTooOld: "桌面 app 版本太舊，和伺服器不相容",

@@ -22,8 +22,10 @@ vi.mock("@/lib/transport/web-connection-store", () => ({
 
 import {
   INFO_RETRY_MIN_MS,
+  PROJECT_EXISTS_I18N_KEY,
   coworkCreateProject,
   getCachedCoworkInfo,
+  isProjectExistsError,
   loadCoworkInfo,
   normalizeCoworkInfo,
   resetCoworkInfoForTests,
@@ -180,5 +182,26 @@ describe("projects", () => {
     expect(call).toHaveBeenCalledWith("cowork_create_project", {
       name: "demo",
     })
+  })
+
+  it("recognizes the server's name-taken error by its i18n key", () => {
+    // The literal `prepare_project_dir` stamps (src-tauri/src/cowork.rs).
+    expect(PROJECT_EXISTS_I18N_KEY).toBe("cowork.projectExists")
+    expect(
+      isProjectExistsError({
+        code: "already_exists",
+        message: 'A project named "demo" already exists',
+        i18n_key: "cowork.projectExists",
+        i18n_params: { name: "demo" },
+      })
+    ).toBe(true)
+    // A file in the way is a conflict too, but not an existing project.
+    expect(
+      isProjectExistsError({
+        code: "already_exists",
+        message: "/home/cw-a/work/afile already exists and is not a directory",
+      })
+    ).toBe(false)
+    expect(isProjectExistsError(new Error("Request timed out"))).toBe(false)
   })
 })

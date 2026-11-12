@@ -6,7 +6,7 @@
 #   apt-get update -qq && bash /app/scripts/cowork-server-smoke.sh
 # It creates a user `tester` (uid 1500) and listens on 127.0.0.1:6899.
 set -u
-apt-get install -y -qq curl procps >/dev/null 2>&1
+apt-get install -y -qq curl procps git >/dev/null 2>&1
 BIN=/app/src-tauri/target/debug/codeg-server
 id -u tester >/dev/null 2>&1 || useradd -m -u 1500 tester
 H=/home/tester
@@ -29,7 +29,15 @@ echo "health real token:  $(c -H "$A" http://127.0.0.1:6899/api/health)"
 echo "cowork_info noauth: $(c -d '{}' http://127.0.0.1:6899/api/cowork_info)"
 echo "cowork_info:        $(c -H "$A" -d '{}' http://127.0.0.1:6899/api/cowork_info)"
 echo "create demo:        $(c -H "$A" -d '{"name":"demo"}' http://127.0.0.1:6899/api/cowork_create_project)"
+# A new project is a git repository: HEAD on main, one empty "Initial commit"
+# by the fallback identity (tester <tester@localhost>: no git config here).
+echo "demo HEAD:          $(cat $H/work/demo/.git/HEAD 2>&1)"
+echo "demo commits:       $(setpriv --reuid=1500 --regid=1500 --clear-groups env HOME=$H git -C $H/work/demo log --format='%s <%an %ae>' 2>&1 | tr '\n' ' ')"
+echo "demo git config:    $(grep -c '^\[user\]' $H/work/demo/.git/config 2>&1) [user] section(s), $(test -e $H/.gitconfig && echo "a ~/.gitconfig" || echo "no ~/.gitconfig")"
+# The same name again is a conflict (409 already_exists, i18n_key
+# cowork.projectExists): the existing directory is not reused or touched.
 echo "create demo again:  $(c -H "$A" -d '{"name":"demo"}' http://127.0.0.1:6899/api/cowork_create_project)"
+echo "demo after 409:     $(ls -A $H/work/demo | tr '\n' ' ')"
 echo "create ../x:        $(c -H "$A" -d '{"name":"../x"}' http://127.0.0.1:6899/api/cowork_create_project)"
 touch $H/work/afile
 echo "create afile:       $(c -H "$A" -d '{"name":"afile"}' http://127.0.0.1:6899/api/cowork_create_project)"

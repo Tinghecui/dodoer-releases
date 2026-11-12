@@ -7,6 +7,7 @@
 // to a remote workspace asks that server, like the browser does.
 
 import { useEffect, useSyncExternalStore } from "react"
+import { extractAppCommandError } from "@/lib/app-error"
 import { isDesktop, isRemoteDesktopWindow } from "@/lib/platform"
 import { getTransport } from "@/lib/transport"
 import {
@@ -171,11 +172,23 @@ export function validateProjectName(name: string): ProjectNameIssue | null {
 }
 
 /**
- * Create `<projectsRoot>/<name>` on the server and open it as a workspace
- * folder (the server does both, like `open_folder`).
+ * Create `<projectsRoot>/<name>` on the server (a new git repository) and
+ * open it as a workspace folder (the server does both, like `open_folder`).
+ * Rejects when the name is taken: see `isProjectExistsError`.
  */
 export function coworkCreateProject(name: string): Promise<FolderDetail> {
   return getTransport().call<FolderDetail>("cowork_create_project", {
     name: name.trim(),
   })
+}
+
+// Must mirror `PROJECT_EXISTS_I18N_KEY` in src-tauri/src/cowork.rs.
+export const PROJECT_EXISTS_I18N_KEY = "cowork.projectExists"
+
+/**
+ * Whether `coworkCreateProject` failed because a project directory of that
+ * name already exists (409; the server no longer reuses it).
+ */
+export function isProjectExistsError(error: unknown): boolean {
+  return extractAppCommandError(error)?.i18n_key === PROJECT_EXISTS_I18N_KEY
 }

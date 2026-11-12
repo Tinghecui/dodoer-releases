@@ -44,6 +44,12 @@ vi.mock("@/stores/app-workspace-store", () => ({
   useAppWorkspaceStore: (selector: (state: unknown) => unknown) =>
     selector({ openFolder }),
 }))
+// Cowork: the dialog's "switch to the created project" hook reads the tab
+// store, which cannot load against the store mock above.
+vi.mock("@/stores/tab-store", () => ({
+  useTabStore: (selector: (state: unknown) => unknown) =>
+    selector({ openNewConversationTab: vi.fn() }),
+}))
 
 const toast = vi.hoisted(() => ({
   error: vi.fn(),

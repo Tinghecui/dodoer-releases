@@ -633,9 +633,17 @@ pub fn validate_project_name(name: &str) -> Result<&str, AppCommandError> {
     Ok(name)
 }
 
-/// Create (or reuse) `<root>/<name>` and return its path. An existing real
-/// directory is reused; anything else there (a file, a symlink — even one to
-/// a directory) is an error, and the result must resolve inside the root.
+/// `i18n_key` of the "a project with this name already exists" error (its
+/// `name` param is the project name). The web UI matches it to show its own
+/// localized message; keep in sync with `PROJECT_EXISTS_I18N_KEY` in
+/// `src/lib/cowork/info.ts`.
+pub const PROJECT_EXISTS_I18N_KEY: &str = "cowork.projectExists";
+
+/// Create `<root>/<name>` and return its path. `Ok` means this call created
+/// the directory: anything already there is an `already_exists` error (HTTP
+/// 409) and is left alone — an existing project directory (the error carries
+/// [`PROJECT_EXISTS_I18N_KEY`]) as much as a file or a symlink, even one to a
+/// directory. The result must resolve inside the root.
 pub fn prepare_project_dir(root: &Path, name: &str) -> Result<PathBuf, AppCommandError> {
     let name = validate_project_name(name)?;
     std::fs::create_dir_all(root).map_err(AppCommandError::io)?;
@@ -652,6 +660,15 @@ pub fn prepare_project_dir(root: &Path, name: &str) -> Result<PathBuf, AppComman
                     dir.display()
                 )));
             }
+            // Never reuse it silently: the caller asked for a new project and
+            // would end up in somebody's existing files.
+            return Err(AppCommandError::already_exists(format!(
+                "A project named \"{name}\" already exists"
+            ))
+            .with_i18n(
+                PROJECT_EXISTS_I18N_KEY,
+                BTreeMap::from([("name".to_string(), name.to_string())]),
+            ));
         }
         Err(e) => return Err(AppCommandError::io(e)),
     }
@@ -670,14 +687,184 @@ pub async fn cowork_info() -> Json<CoworkInfo> {
     Json(CoworkInfo::from(&settings()))
 }
 
+// A new project is a git repository from the start (branch `main`, one empty
+// first commit), so `git rev-parse HEAD`, tasks and worktrees work right away.
+
+/// How long the git bootstrap of a new project may take before it is given
+/// up (a hook or a prompt waiting for a terminal that is not there).
+const PROJECT_GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The name of the system user this server runs as.
+fn os_user_name() -> Option<String> {
+    ["USER", "LOGNAME", "USERNAME"]
+        .iter()
+        .find_map(|name| non_empty(std::env::var(name).ok()))
+}
+
+/// The Cowork domain, when `request_host` (`Host` / `X-Forwarded-Host`, port
+/// allowed) is this employee's own subdomain `<employee>.<domain>`.
+fn employee_domain(employee: &str, request_host: &str) -> Option<String> {
+    let lower = request_host.trim().to_ascii_lowercase();
+    let host = match lower.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
+        _ => lower.as_str(),
+    };
+    let prefix = employee.to_ascii_lowercase();
+    let domain = host.strip_prefix(prefix.as_str())?.strip_prefix('.')?;
+    let labels_ok = domain
+        .split('.')
+        .all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    // A numeric last label is an IP address, not a domain.
+    let named = domain
+        .rsplit('.')
+        .next()
+        .is_some_and(|tld| tld.chars().any(|c| c.is_ascii_alphabetic()));
+    (labels_ok && named).then(|| domain.to_string())
+}
+
+/// Author `(name, email)` for the first commit of a new project when git has
+/// no identity of its own for it. Cowork's system users are `cw-<employee>`
+/// and each employee is served at `<employee>.<domain>`, so a request that
+/// came in through that subdomain gives `<employee>` / `<employee>@<domain>`
+/// (what the Cowork platform configures in shared projects). Otherwise (a
+/// call on 127.0.0.1, not a Cowork deployment) it is the system user and
+/// `<user>@localhost`.
+pub fn fallback_git_identity(os_user: Option<&str>, request_hosts: &[&str]) -> (String, String) {
+    let user = os_user
+        .map(str::trim)
+        .filter(|u| {
+            !u.is_empty()
+                && u.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
+        .unwrap_or("cowork");
+    let employee = user
+        .strip_prefix("cw-")
+        .filter(|name| !name.is_empty())
+        .unwrap_or(user);
+    let domain = request_hosts
+        .iter()
+        .find_map(|host| employee_domain(employee, host));
+    match domain {
+        Some(domain) => (employee.to_string(), format!("{employee}@{domain}")),
+        None => (user.to_string(), format!("{user}@localhost")),
+    }
+}
+
+/// One git command in a new project's directory, spawned like the other git
+/// helpers (`commands/folders.rs`). Never prompts or reads stdin, and dies
+/// with the caller's timeout.
+async fn project_git(dir: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    crate::process::tokio_command("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|e| format!("cannot run git: {e}"))
+}
+
+fn project_git_failure(step: &str, output: &std::process::Output) -> String {
+    format!(
+        "git {step} failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    )
+}
+
+/// `git init` on branch `main` plus one empty "Initial commit" in `dir`.
+async fn init_project_repo(dir: &Path, fallback: &(String, String)) -> Result<(), String> {
+    // `-b` needs git 2.28; older ones get HEAD pointed at `main` by hand.
+    let init = project_git(dir, &["init", "-b", "main"]).await?;
+    if !init.status.success() {
+        let plain = project_git(dir, &["init"]).await?;
+        if !plain.status.success() {
+            return Err(project_git_failure("init", &plain));
+        }
+        let head = project_git(dir, &["symbolic-ref", "HEAD", "refs/heads/main"]).await?;
+        if !head.status.success() {
+            return Err(project_git_failure("symbolic-ref", &head));
+        }
+    }
+    // The identity git already resolves for this directory is used as it is.
+    // Only what is missing is filled in, for this one commit: no config file
+    // is written.
+    let mut args: Vec<String> = Vec::new();
+    for (key, value) in [("user.name", &fallback.0), ("user.email", &fallback.1)] {
+        let configured = project_git(dir, &["config", "--get", key]).await?;
+        let resolved = configured.status.success()
+            && !String::from_utf8_lossy(&configured.stdout)
+                .trim()
+                .is_empty();
+        if !resolved {
+            args.push("-c".to_string());
+            args.push(format!("{key}={value}"));
+        }
+    }
+    // Not signed: nobody is there to unlock a key, and the commit is ours.
+    // No hooks either: a global pre-commit / commit-msg hook that turns this
+    // empty commit down would leave the project without a HEAD.
+    args.extend(
+        [
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "--no-verify",
+            "-m",
+            "Initial commit",
+        ]
+        .map(String::from),
+    );
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let commit = project_git(dir, &argv).await?;
+    if !commit.status.success() {
+        return Err(project_git_failure("commit", &commit));
+    }
+    Ok(())
+}
+
+/// Create the project directory ([`prepare_project_dir`]) and make it a git
+/// repository. Git is best effort: when it is missing, fails or hangs, the
+/// project is still created (a warning is logged, and the UI's "No branch"
+/// menu still offers to initialize it).
+async fn create_project_dir(
+    root: &Path,
+    name: &str,
+    fallback: &(String, String),
+) -> Result<PathBuf, AppCommandError> {
+    // `Ok` = created by this call, so git never touches an existing directory.
+    let dir = prepare_project_dir(root, name)?;
+    match tokio::time::timeout(PROJECT_GIT_TIMEOUT, init_project_repo(&dir, fallback)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(reason)) => tracing::warn!(
+            "[cowork] new project {}: {reason}; created without a git repository or first commit",
+            dir.display()
+        ),
+        Err(_) => tracing::warn!(
+            "[cowork] new project {}: git did not finish in {}s; created without a git repository or first commit",
+            dir.display(),
+            PROJECT_GIT_TIMEOUT.as_secs()
+        ),
+    }
+    Ok(dir)
+}
+
 pub async fn cowork_create_project(
     Extension(state): Extension<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(params): Json<CreateProjectParams>,
 ) -> Result<Json<FolderDetail>, AppCommandError> {
     let root = settings().projects_root.ok_or_else(|| {
         AppCommandError::configuration_missing("No projects root configured (CODEG_PROJECTS_ROOT)")
     })?;
-    let dir = prepare_project_dir(&root, &params.name)?;
+    let hosts: Vec<&str> = ["host", "x-forwarded-host"]
+        .iter()
+        .filter_map(|name| first_header(&headers, name))
+        .collect();
+    let fallback = fallback_git_identity(os_user_name().as_deref(), &hosts);
+    let dir = create_project_dir(&root, &params.name, &fallback).await?;
     let path = dir.to_string_lossy().into_owned();
     Ok(Json(
         crate::commands::folders::open_folder_core(&state.db, path).await?,
@@ -1481,6 +1668,7 @@ pub fn secure_db_files(_data_dir: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_error::AppErrorCode;
     use std::collections::HashMap;
 
     // 停机找「正在跑的 turn」要看 SessionState：list_connections() 的状态是建连接时的值，不跟着变
@@ -1716,19 +1904,150 @@ mod tests {
     }
 
     #[test]
-    fn prepare_project_dir_creates_reuses_and_rejects_files() {
+    fn prepare_project_dir_creates_and_rejects_what_is_already_there() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("work");
         let dir = prepare_project_dir(&root, "demo").unwrap();
         assert_eq!(dir, root.join("demo"));
         assert!(dir.is_dir());
-        // Existing directory: reused.
-        assert_eq!(prepare_project_dir(&root, "demo").unwrap(), dir);
-        // Existing file: rejected.
+        // Existing directory: a name conflict the UI can explain, never reused.
+        let err = prepare_project_dir(&root, " demo ").unwrap_err();
+        assert!(matches!(err.code, AppErrorCode::AlreadyExists));
+        assert_eq!(PROJECT_EXISTS_I18N_KEY, "cowork.projectExists");
+        assert_eq!(err.i18n_key.as_deref(), Some(PROJECT_EXISTS_I18N_KEY));
+        assert_eq!(
+            err.i18n_params
+                .as_ref()
+                .and_then(|params| params.get("name"))
+                .map(String::as_str),
+            Some("demo")
+        );
+        // Existing file: rejected too, but it is not a project.
         std::fs::write(root.join("file"), b"x").unwrap();
-        assert!(prepare_project_dir(&root, "file").is_err());
+        let err = prepare_project_dir(&root, "file").unwrap_err();
+        assert!(matches!(err.code, AppErrorCode::AlreadyExists));
+        assert!(err.i18n_key.is_none());
         assert!(prepare_project_dir(&root, "../escape").is_err());
         assert!(!tmp.path().join("escape").exists());
+    }
+
+    fn identity(name: &str, email: &str) -> (String, String) {
+        (name.to_string(), email.to_string())
+    }
+
+    #[test]
+    fn fallback_git_identity_is_the_employee_at_the_cowork_domain() {
+        // Served at the employee's own subdomain (port and case do not matter;
+        // `X-Forwarded-Host` is looked at after `Host`).
+        assert_eq!(
+            fallback_git_identity(Some("cw-erin"), &["erin.work.example.com"]),
+            identity("erin", "erin@work.example.com")
+        );
+        assert_eq!(
+            fallback_git_identity(
+                Some("cw-erin"),
+                &["127.0.0.1:6801", "Erin.Work.Example.com:443"]
+            ),
+            identity("erin", "erin@work.example.com")
+        );
+        // Somebody else's subdomain, an IP address, a bare host: the system user.
+        assert_eq!(
+            fallback_git_identity(
+                Some("cw-erin"),
+                &[
+                    "bob.work.example.com",
+                    "127.0.0.1:6801",
+                    "erin",
+                    "erin.10.0.0.7"
+                ]
+            ),
+            identity("cw-erin", "cw-erin@localhost")
+        );
+        assert_eq!(
+            fallback_git_identity(Some("tester"), &[]),
+            identity("tester", "tester@localhost")
+        );
+        // No usable system user name at all.
+        assert_eq!(
+            fallback_git_identity(None, &["erin.work.example.com"]),
+            identity("cowork", "cowork@localhost")
+        );
+        assert_eq!(
+            fallback_git_identity(Some("a b"), &[]),
+            identity("cowork", "cowork@localhost")
+        );
+    }
+
+    /// Trimmed stdout of a git command that must succeed in `dir`.
+    async fn git_stdout(dir: &Path, args: &[&str]) -> String {
+        let output = project_git(dir, args).await.unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    // Needs git on the PATH (CI has it). Works with or without a git identity
+    // configured on the machine: the fallback fills in whatever is missing.
+    #[tokio::test]
+    async fn new_project_is_a_git_repo_on_main_with_one_empty_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("work");
+        let fallback = identity("erin", "erin@work.example.com");
+        let dir = create_project_dir(&root, "demo", &fallback).await.unwrap();
+        assert_eq!(dir, root.join("demo"));
+        assert!(dir.join(".git").is_dir());
+        assert_eq!(
+            git_stdout(&dir, &["symbolic-ref", "--short", "HEAD"]).await,
+            "main"
+        );
+        assert_eq!(
+            git_stdout(&dir, &["rev-list", "--count", "HEAD"]).await,
+            "1"
+        );
+        assert_eq!(
+            git_stdout(&dir, &["log", "-1", "--format=%s"]).await,
+            "Initial commit"
+        );
+        assert!(!git_stdout(&dir, &["log", "-1", "--format=%an <%ae>"])
+            .await
+            .starts_with(" <"));
+        // Nothing but `.git` in the directory, and the identity was passed
+        // for that one commit only: no config was written.
+        assert!(git_stdout(&dir, &["status", "--porcelain"])
+            .await
+            .is_empty());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        for key in ["user.name", "user.email"] {
+            let local = project_git(&dir, &["config", "--local", "--get", key])
+                .await
+                .unwrap();
+            assert!(!local.status.success(), "{key} written to .git/config");
+        }
+    }
+
+    #[tokio::test]
+    async fn existing_project_dir_is_a_conflict_and_left_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("work");
+        let existing = root.join("demo");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::fs::write(existing.join("notes.txt"), "mine").unwrap();
+        let fallback = identity("erin", "erin@work.example.com");
+        let err = create_project_dir(&root, "demo", &fallback)
+            .await
+            .unwrap_err();
+        assert!(matches!(err.code, AppErrorCode::AlreadyExists));
+        assert_eq!(err.i18n_key.as_deref(), Some(PROJECT_EXISTS_I18N_KEY));
+        // Not turned into a repository, nothing added or changed.
+        assert!(!existing.join(".git").exists());
+        assert_eq!(std::fs::read_dir(&existing).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(existing.join("notes.txt")).unwrap(),
+            "mine"
+        );
     }
 
     #[test]

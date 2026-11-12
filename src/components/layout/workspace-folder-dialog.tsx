@@ -71,7 +71,10 @@ import type {
 } from "@/lib/types"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useCoworkInfo } from "@/lib/cowork/info"
-import { CoworkNewProjectForm } from "@/components/cowork/new-project-form"
+import {
+  CoworkNewProjectForm,
+  useCoworkCreatedProject,
+} from "@/components/cowork/new-project-form"
 
 type View = "pick-root" | "links" | "add-targets"
 
@@ -135,6 +138,8 @@ export function WorkspaceFolderDialog({
   // Cowork: new projects live under one root — offer "New project" (name
   // only) first and start browsing there instead of $HOME.
   const coworkProjectsRoot = useCoworkInfo()?.projectsRoot ?? null
+  // Cowork: "Done" after creating a project there switches over to it.
+  const coworkCreated = useCoworkCreatedProject(open)
 
   const nativePickerAvailable =
     isDesktop() && getActiveRemoteConnectionId() === null
@@ -410,7 +415,10 @@ export function WorkspaceFolderDialog({
               <CoworkNewProjectForm
                 projectsRoot={coworkProjectsRoot}
                 disabled={openingRoot}
-                onCreated={(created) => commitRoot(created.path)}
+                onCreated={(created) => {
+                  coworkCreated.remember(created)
+                  return commitRoot(created.path)
+                }}
               />
             ) : null}
             <DirectoryBrowser
@@ -663,7 +671,13 @@ export function WorkspaceFolderDialog({
                   </Button>
                 </>
               ) : (
-                <Button type="button" onClick={() => onOpenChange(false)}>
+                <Button
+                  type="button"
+                  onClick={() => {
+                    coworkCreated.openIfCreated(rootFolder)
+                    onOpenChange(false)
+                  }}
+                >
                   {t("done")}
                 </Button>
               )}

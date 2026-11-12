@@ -78,6 +78,7 @@ jobs:
       PM_MODEL: ${{ inputs.pm_model || vars.AIQA_PM_MODEL || vars.AIQA_MODEL || 'claude-opus-5-5' }}
       AGENT_MODEL: ${{ inputs.agent_model || vars.AIQA_AGENT_MODEL || 'claude-haiku-4-5' }}
       ROTATE: ${{ vars.AIQA_ROTATE || '8' }}
+      TRIAGE: ${{ vars.AIQA_TRIAGE || '12' }}
     steps:
       - uses: actions/setup-node@v4
         with:

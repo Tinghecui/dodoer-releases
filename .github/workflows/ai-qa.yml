@@ -33,9 +33,9 @@ on:
       max_turns:
         default: "2000"
       model:
-        default: "claude-fable-5-2"
+        default: "claude-opus-5-5"
       pm_model:
-        default: "claude-fable-5-2"
+        default: "claude-opus-5-5"
       env:
         type: choice
         options: [cowork, bare]
@@ -73,8 +73,8 @@ jobs:
       INPUT_STORIES: ${{ inputs.stories }}
       INPUT_EXPLORE: ${{ inputs.explore }}
       MAX_TURNS: ${{ inputs.max_turns || '2000' }}
-      MODEL: ${{ inputs.model || 'claude-fable-5-2' }}
-      PM_MODEL: ${{ inputs.pm_model || 'claude-fable-5-2' }}
+      MODEL: ${{ inputs.model || 'claude-opus-5-5' }}
+      PM_MODEL: ${{ inputs.pm_model || 'claude-opus-5-5' }}
       AGENT_MODEL: ${{ inputs.agent_model || 'claude-haiku-4-5' }}
     steps:
       - uses: actions/setup-node@v4

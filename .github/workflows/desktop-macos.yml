@@ -65,7 +65,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          # 分支推送按提交 sha 取：macos/pr/<n> 在 PR 合并、关闭时就删了，比这里跑完早（同 cowork-release.yml）
+          ref: ${{ inputs.ref || (github.ref_type == 'branch' && github.sha) || github.ref }}
 
       # 桌面版本号 = 1.<次>.<修订>，跟着 cowork-codeg 的 tag 走（v0.2.5 → 1.2.5）：自动更新按 semver 比大小，只能往上走
       - id: meta
@@ -126,7 +127,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || (github.ref_type == 'branch' && github.sha) || github.ref }}
 
       - uses: actions/setup-node@v4
         with:

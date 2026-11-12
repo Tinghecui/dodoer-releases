@@ -23,7 +23,7 @@ on:
         description: "版本 tag（空 = 最新）"
         default: ""
       changes:
-        description: "改动验收：PR 号逗号分隔，或 new"
+        description: "改动验收：PR 号逗号分隔，或 new、untested"
         default: ""
       real_agent:
         type: boolean
@@ -77,6 +77,7 @@ jobs:
       MODEL: ${{ inputs.model || vars.AIQA_MODEL || 'claude-opus-5-5' }}
       PM_MODEL: ${{ inputs.pm_model || vars.AIQA_PM_MODEL || vars.AIQA_MODEL || 'claude-opus-5-5' }}
       AGENT_MODEL: ${{ inputs.agent_model || vars.AIQA_AGENT_MODEL || 'claude-haiku-4-5' }}
+      ROTATE: ${{ vars.AIQA_ROTATE || '8' }}
     steps:
       - uses: actions/setup-node@v4
         with:

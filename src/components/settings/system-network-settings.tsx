@@ -59,6 +59,11 @@ import { readLastCheck } from "@/lib/update-check-storage"
 import { describeAppUpdateError, usesTauriUpdater } from "@/lib/updater"
 import { useAppUpdate } from "@/components/providers/update-provider"
 import { APP_LOCALES } from "@/lib/i18n"
+import {
+  SoftwareUpdateSection,
+  updatesAreManaged,
+} from "@/components/cowork/managed-updates"
+import { loadCoworkInfo, useCoworkInfo } from "@/lib/cowork/info"
 import { toErrorMessage } from "@/lib/app-error"
 import type { AppCommandError } from "@/lib/types"
 
@@ -140,6 +145,9 @@ export function SystemNetworkSettings() {
   // workspace status bar always agree and only one manifest fetch happens. It
   // is always mounted inside the provider, hence the non-null assertion.
   const update = useAppUpdate()!
+  // Cowork: the administrator upgrades the server, so the update section
+  // (version label included) is left out there. See `managed-updates.tsx`.
+  const updatesManaged = updatesAreManaged(useCoworkInfo())
   const {
     state: updateState,
     isUpdating,
@@ -270,6 +278,9 @@ export function SystemNetworkSettings() {
               }
             )
           : Promise.resolve(null),
+        // Cowork: known before the page leaves its spinner, so the update
+        // section never shows for a moment where it is managed. Never rejects.
+        loadCoworkInfo(),
       ])
 
       setEnabled(proxySettings.enabled)
@@ -300,11 +311,16 @@ export function SystemNetworkSettings() {
     // checked (read from storage, not from provider state, which the provider
     // seeds in its own effect and therefore may not have applied yet), or the
     // last attempt failed, in which case opening this page is a natural retry.
-    if (!readLastCheck() || checkError) {
-      checkNow({ silent: true }).catch((err) => {
-        console.error("[Settings] auto check update failed:", err)
-      })
-    }
+    // Cowork: skipped where updates are managed, which the server says
+    // (`cowork_info`, cached after the first answer; this never rejects).
+    void loadCoworkInfo().then((info) => {
+      if (updatesAreManaged(info)) return
+      if (!readLastCheck() || checkError) {
+        checkNow({ silent: true }).catch((err) => {
+          console.error("[Settings] auto check update failed:", err)
+        })
+      }
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -467,7 +483,10 @@ export function SystemNetworkSettings() {
           </p>
         </section>
 
-        <section className="rounded-xl border bg-card p-4 space-y-4">
+        <SoftwareUpdateSection
+          managed={updatesManaged}
+          className="rounded-xl border bg-card p-4 space-y-4"
+        >
           <div className="flex items-center gap-2">
             {checkingUpdate ? (
               <RefreshCw className="h-4 w-4 text-muted-foreground animate-spin" />
@@ -677,7 +696,7 @@ export function SystemNetworkSettings() {
               {t("updateError", { message: bannerError })}
             </div>
           )}
-        </section>
+        </SoftwareUpdateSection>
 
         {/* Titled by the option itself: the section *is* the one switch, so a
             card holding a single row would only say the heading back one line

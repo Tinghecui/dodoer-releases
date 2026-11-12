@@ -14,6 +14,10 @@ const en = {
   statusUpdate: "update available",
   statusBusy: "working",
   notServedHere: "Not on this server — only in a workspace on your computer.",
+  // A settings page the nav hides here, opened by its address
+  // (`settings-page-unavailable.tsx`).
+  settingsPageUnavailable: "This settings page isn't available here.",
+  settingsPageManaged: "This server is managed by your administrator.",
   myAccount: "My account",
   openInDesktop: "Open in desktop app",
   openInDesktopFailed: "Couldn't open the desktop app: {message}",
@@ -65,6 +69,8 @@ const zhCN: Record<CoworkTextKey, string> = {
   statusUpdate: "有新版本",
   statusBusy: "后台任务进行中",
   notServedHere: "这台服务器上不可用，只能在本机工作区里用。",
+  settingsPageUnavailable: "这个设置页在这里不可用。",
+  settingsPageManaged: "这台服务器由管理员管理。",
   myAccount: "我的账户",
   openInDesktop: "在桌面 app 里打开",
   openInDesktopFailed: "没能打开桌面 app：{message}",
@@ -110,6 +116,8 @@ const zhTW: Record<CoworkTextKey, string> = {
   statusUpdate: "有新版本",
   statusBusy: "背景工作進行中",
   notServedHere: "這台伺服器上不可用，只能在本機工作區裡用。",
+  settingsPageUnavailable: "這個設定頁在這裡無法使用。",
+  settingsPageManaged: "這台伺服器由管理員管理。",
   myAccount: "我的帳戶",
   openInDesktop: "在桌面 app 中開啟",
   openInDesktopFailed: "無法開啟桌面 app：{message}",

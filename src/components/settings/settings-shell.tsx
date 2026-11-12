@@ -41,6 +41,7 @@ import {
 import { AppTitleBar } from "@/components/layout/app-title-bar"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
+import { SettingsPageUnavailable } from "@/components/cowork/settings-page-unavailable"
 import { brandTitle } from "@/lib/cowork/brand"
 import { useDocumentTitle } from "@/lib/cowork/document-title"
 import {
@@ -220,6 +221,26 @@ function normalizePath(path: string): string {
   return noTrailingSlash || "/"
 }
 
+/**
+ * Cowork fork: whether `pathname` is a page the nav leaves out for this
+ * runtime. The nav only hides the entry; the route is still there for anyone
+ * who types it, so the shell asks the same filter before it mounts the page
+ * (`SettingsPageUnavailable`). A route the nav never lists is not hidden.
+ */
+export function isSettingsPageHidden(
+  pathname: string,
+  env: TransportEnvironment,
+  target: SettingsTarget = settingsTargetFor(env, null, null)
+): boolean {
+  const path = normalizePath(pathname)
+  const isPage = (item: SettingsNavItem) =>
+    path === item.href || path.startsWith(`${item.href}/`)
+  return (
+    SETTINGS_NAV_ITEMS.some(isPage) &&
+    !settingsNavItemsFor(env, target).some(isPage)
+  )
+}
+
 function isWindowsRuntime(): boolean {
   if (typeof navigator === "undefined") return false
   const platform = navigator.platform.toLowerCase()
@@ -279,7 +300,9 @@ export function SettingsShell({ children }: SettingsShellProps) {
     [router, setNavOpen]
   )
 
-  const filteredNavItems = settingsNavItemsFor(detectEnvironment(), target)
+  const env = detectEnvironment()
+  const filteredNavItems = settingsNavItemsFor(env, target)
+  const pageHidden = isSettingsPageHidden(pathname, env, target)
   const navGroups: { scope: SettingsScope; label: string }[] = [
     { scope: "app", label: appLabel },
     { scope: "server", label: serverLabel },
@@ -409,7 +432,11 @@ export function SettingsShell({ children }: SettingsShellProps) {
         )}
 
         <section className="flex-1 min-w-0 min-h-0 overflow-hidden">
-          {children}
+          {pageHidden ? (
+            <SettingsPageUnavailable managed={env === "web"} />
+          ) : (
+            children
+          )}
         </section>
       </div>
       <AppToaster position="bottom-right" closeButton duration={4000} />

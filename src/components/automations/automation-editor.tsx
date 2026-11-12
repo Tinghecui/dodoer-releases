@@ -34,6 +34,7 @@ import { Label } from "@/components/ui/label"
 import { FolderSelect } from "@/components/shared/folder-select"
 import { cn } from "@/lib/utils"
 import { automationComputeNextRun } from "@/lib/api"
+import { toErrorMessage } from "@/lib/app-error"
 import type {
   AgentType,
   Automation,
@@ -125,6 +126,9 @@ export function AutomationEditor({
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [nextRun, setNextRun] = useState<string | null>(null)
+  // Why there is no next run to preview: what the evaluator said about the
+  // expression (or the timezone), shown beside the "—".
+  const [nextRunError, setNextRunError] = useState<string | null>(null)
   const [cronBuilderOpen, setCronBuilderOpen] = useState(false)
 
   const editorRef = useRef<RichComposerHandle>(null)
@@ -190,16 +194,21 @@ export function AutomationEditor({
   useEffect(() => {
     if (trigger !== "schedule" || !cron.trim()) {
       setNextRun(null)
+      setNextRunError(null)
       return
     }
     let cancelled = false
     const handle = setTimeout(() => {
       automationComputeNextRun(cron.trim(), timezone)
         .then((r) => {
-          if (!cancelled) setNextRun(r)
+          if (cancelled) return
+          setNextRun(r)
+          setNextRunError(null)
         })
-        .catch(() => {
-          if (!cancelled) setNextRun(null)
+        .catch((e) => {
+          if (cancelled) return
+          setNextRun(null)
+          setNextRunError(toErrorMessage(e))
         })
     }, 300)
     return () => {
@@ -323,7 +332,8 @@ export function AutomationEditor({
       }
       await onSubmit(draft)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      // A server-mode rejection is the parsed error body, not an `Error`.
+      setError(toErrorMessage(e))
     } finally {
       setSaving(false)
     }
@@ -617,6 +627,12 @@ export function AutomationEditor({
               <span>
                 {t("nextRun")}:{" "}
                 {nextRun ? new Date(nextRun).toLocaleString() : "—"}
+                {nextRunError ? (
+                  <span className="text-destructive" role="status">
+                    {" "}
+                    {nextRunError}
+                  </span>
+                ) : null}
               </span>
               <span className="text-muted-foreground/40" aria-hidden="true">
                 ·

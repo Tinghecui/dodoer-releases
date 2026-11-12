@@ -1412,14 +1412,36 @@ pub fn redact_web_service_config(
     config
 }
 
-/// `update_web_service_config` input: an echoed [`REDACTED`] keeps the
-/// persisted token.
+/// Whether a token sent to `update_web_service_config` is one of the two
+/// placeholders the read endpoints answer with instead of a real token:
+/// [`REDACTED`] (the persisted token) or [`SSO_PLACEHOLDER_TOKEN`] (the status
+/// response, which the settings page copies into its token field and saves
+/// back without anyone editing it).
+pub fn is_web_token_placeholder(token: Option<&str>) -> bool {
+    token.is_some_and(|t| {
+        let t = t.trim();
+        t == REDACTED || t == SSO_PLACEHOLDER_TOKEN
+    })
+}
+
+/// A placeholder coming back from the client means "keep": it is never what
+/// gets stored.
+fn keep_web_token(incoming: Option<String>, current: Option<&str>) -> Option<String> {
+    if is_web_token_placeholder(incoming.as_deref()) {
+        current.map(str::to_string)
+    } else {
+        incoming
+    }
+}
+
+/// `update_web_service_config` input: an echoed placeholder (see
+/// [`is_web_token_placeholder`]) keeps the persisted token.
 pub fn restore_web_service_token(
     incoming: Option<String>,
     current: Option<&str>,
 ) -> Option<String> {
     if hide_token() {
-        restore_opt(incoming, current)
+        keep_web_token(incoming, current)
     } else {
         incoming
     }
@@ -1843,6 +1865,37 @@ mod tests {
         assert!(is_secret_key("anthropic_auth_token"));
         assert!(!is_secret_toml_key("env_key"));
         assert!(!is_secret_key("HOME"));
+    }
+
+    #[test]
+    fn web_token_placeholders_are_never_stored() {
+        // The settings page fills its token field from `get_web_server_status`
+        // (`cowork-sso`) and auto-saves it; the config read answers `********`.
+        for placeholder in [REDACTED, SSO_PLACEHOLDER_TOKEN] {
+            assert!(is_web_token_placeholder(Some(placeholder)));
+            assert_eq!(
+                keep_web_token(Some(placeholder.into()), Some("real")),
+                Some("real".into())
+            );
+            // Nothing persisted: still nothing, not the placeholder.
+            assert_eq!(keep_web_token(Some(placeholder.into()), None), None);
+        }
+        // `update_web_service_config_core` trims before it stores.
+        assert!(is_web_token_placeholder(Some(" cowork-sso ")));
+        assert!(!is_web_token_placeholder(Some("real")));
+        assert!(!is_web_token_placeholder(Some("")));
+        assert!(!is_web_token_placeholder(None));
+        // A real token replaces the stored one; no token clears it.
+        assert_eq!(
+            keep_web_token(Some("new".into()), Some("real")),
+            Some("new".into())
+        );
+        assert_eq!(keep_web_token(None, Some("real")), None);
+        // Outside cowork mode nothing is hidden, so nothing is a placeholder.
+        assert_eq!(
+            restore_web_service_token(Some(SSO_PLACEHOLDER_TOKEN.into()), Some("real")),
+            Some(SSO_PLACEHOLDER_TOKEN.into())
+        );
     }
 
     #[test]

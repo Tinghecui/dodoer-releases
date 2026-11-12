@@ -39,7 +39,8 @@ pub async fn update_web_service_config(
     Json(params): Json<UpdateWebServiceConfigParams>,
 ) -> Result<Json<WebServiceConfig>, AppCommandError> {
     let mut config = params.config;
-    if config.token.as_deref() == Some(crate::cowork::REDACTED) {
+    // Cowork: neither placeholder a read endpoint hands out is ever stored.
+    if crate::cowork::is_web_token_placeholder(config.token.as_deref()) {
         let current = load_web_service_config(&state.db.conn).await?.token;
         config.token =
             crate::cowork::restore_web_service_token(config.token.take(), current.as_deref());

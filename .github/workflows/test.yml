@@ -26,25 +26,45 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # 按改动范围决定跑哪些 job。pr/<n> 分支和 main 比（merge-base），main 上和上一次推送比；工作流文件自己改了就全跑
+  # 按改动范围决定跑哪些 job。pr/<n> 分支和 main 比（merge-base），main 上和「上一次 Test 通过的提交」比；工作流文件自己改了就全跑
   changes:
     name: Changed areas
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
       rust: ${{ steps.filter.outputs.rust }}
       install: ${{ steps.filter.outputs.install }}
       editions: ${{ steps.filter.outputs.editions }}
+      workflows: ${{ steps.filter.outputs.workflows }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # main 要和更早的提交比，得有历史
+          fetch-depth: ${{ github.ref == 'refs/heads/main' && '0' || '1' }}
+      # main 上不和「上一次推送」比，和上一次 Test 通过的那个提交比：连着合并时，concurrency 只留一个排队的，
+      # 更新的推送会把还在排队的那次顶掉（cancel-in-progress: false 也一样），只和上一次推送比的话，被顶掉那次的改动就没人测了
+      # （2026-11-13 #191 的前端改动就这样漏掉：它那次在排队时被 #188 顶掉，#188 只改了 Rust）。找不到或不是祖先就退回上一次推送
+      - id: base
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          green=$(gh api "repos/${{ github.repository }}/actions/workflows/test.yml/runs?branch=main&event=push&status=success&per_page=1" -q '.workflow_runs[0].head_sha // empty' 2>/dev/null || true)
+          if [ -n "$green" ] && git merge-base --is-ancestor "$green" HEAD 2>/dev/null; then base=$green; else base=$BEFORE; fi
+          echo "和 $base 比（上一次通过的：${green:-没找到}，上一次推送：$BEFORE）"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
       - uses: dorny/paths-filter@v3
         id: filter
         with:
-          base: main
+          base: ${{ steps.base.outputs.base || 'main' }}
           filters: |
+            workflows:
+              - ".github/workflows/**"
             frontend:
               - "src/**"
               - "browser-agent/**"
@@ -69,6 +89,21 @@ jobs:
               - "install.ps1"
               - "scripts/test-install-stop.sh"
               - ".github/workflows/test.yml"
+
+  # 工作流文件本身的语法：2026-11-13 ai-qa.yml 的 run-name 里一个没加引号的「 #」让整个文件失效，PR 上的 Test 一点没发现
+  workflow-lint:
+    name: Workflow lint
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          # 不查 shell 脚本（shellcheck 另说）；choice 里的空字符串 "" 是故意的（「不选」），GitHub 认
+          ./actionlint -shellcheck= -pyflakes= -ignore 'string should not be empty' .github/workflows/*.yml
 
   frontend-lint:
     name: Frontend lint

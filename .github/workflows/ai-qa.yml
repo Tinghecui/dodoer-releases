@@ -87,7 +87,7 @@ jobs:
       MAX_TURNS: ${{ inputs.max_turns || '2000' }}
       MODEL: ${{ inputs.model || vars.AIQA_MODEL || 'claude-opus-5-5' }}
       PM_MODEL: ${{ inputs.pm_model || vars.AIQA_PM_MODEL || vars.AIQA_MODEL || 'claude-opus-5-5' }}
-      AGENT_MODEL: ${{ inputs.agent_model || vars.AIQA_AGENT_MODEL || 'claude-haiku-4-5' }}
+      AGENT_MODEL: ${{ inputs.agent_model || vars.AIQA_AGENT_MODEL || 'claude-haiku-5-5' }}
       CLAUDE_AUTH: ${{ inputs.claude_auth || vars.AIQA_CLAUDE_AUTH || 'oauth' }}
       ROTATE: ${{ vars.AIQA_ROTATE || '8' }}
       TRIAGE: ${{ vars.AIQA_TRIAGE || '12' }}

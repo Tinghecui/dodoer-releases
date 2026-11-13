@@ -505,3 +505,112 @@ describe("WebTransport opened without any credential", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
+
+// #71: a browser gone offline keeps an established WebSocket open, so the
+// socket alone never noticed and every request just failed with the engine's
+// "Failed to fetch". A call that gets no response now drops into the same
+// reconnecting state (and dialog grace period) as a dropped socket.
+describe("WebTransport when an HTTP call cannot reach the server", () => {
+  const offline = () => new TypeError("Failed to fetch")
+
+  it("drops the socket, enters reconnecting and probes health at once", async () => {
+    const { t, ws } = connectReady()
+    fetchMock.mockRejectedValueOnce(offline()).mockReturnValue(
+      new Promise(() => {}) // the probe stays in flight
+    )
+
+    await expect(t.call("save_task")).rejects.toThrow("Failed to fetch")
+
+    expect(t.getConnectionSnapshot()).toBe("reconnecting")
+    expect(ws.readyState).toBe(MockWebSocket.CLOSED)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[1][0]).toBe("http://localhost/api/health")
+  })
+
+  it("comes back on its own once the probe answers, refreshing consumers", async () => {
+    const { t } = connectReady()
+    const onReconnect = vi.fn()
+    t.onReconnect(onReconnect)
+    fetchMock.mockRejectedValueOnce(offline()).mockResolvedValue(ok200())
+
+    await expect(t.call("save_task")).rejects.toThrow()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(MockWebSocket.instances).toHaveLength(2)
+    lastWs().open()
+    lastWs().ready()
+    expect(t.getConnectionSnapshot()).toBe("connected")
+    expect(onReconnect).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps backing off while the server stays unreachable", async () => {
+    const { t } = connectReady()
+    fetchMock.mockRejectedValue(offline())
+
+    await expect(t.call("save_task")).rejects.toThrow()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2) // the call + one probe
+
+    await vi.advanceTimersByTimeAsync(1000) // first backoff tick
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(t.getConnectionSnapshot()).toBe("reconnecting")
+  })
+
+  it("starts one cycle for a burst of failures, none while already reconnecting", async () => {
+    const { t } = connectReady()
+    fetchMock
+      .mockRejectedValueOnce(offline())
+      .mockRejectedValueOnce(offline())
+      .mockReturnValue(new Promise(() => {}))
+
+    await Promise.allSettled([t.call("a"), t.call("b")])
+    // Two calls, one probe; the second failure found the link already down.
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/health"))
+    ).toHaveLength(1)
+    expect(MockWebSocket.instances).toHaveLength(1)
+  })
+
+  it("leaves the link alone for a timeout or an error status", async () => {
+    const { t, ws } = connectReady()
+    fetchMock.mockRejectedValueOnce(new DOMException("Aborted", "AbortError"))
+    await expect(t.call("slow")).rejects.toThrow("Request timed out")
+    fetchMock.mockResolvedValueOnce({
+      status: 500,
+      ok: false,
+      json: async () => ({ code: "internal", message: "boom" }),
+    })
+    await expect(t.call("broken")).rejects.toMatchObject({ message: "boom" })
+
+    expect(t.getConnectionSnapshot()).toBe("connected")
+    expect(ws.readyState).not.toBe(MockWebSocket.CLOSED)
+    expect(fetchMock).toHaveBeenCalledTimes(2) // no health probe
+  })
+
+  it("ignores a request the browser refused to build", async () => {
+    const { t } = connectReady()
+    fetchMock.mockRejectedValueOnce(
+      new TypeError("Failed to read the 'headers' property from 'RequestInit'")
+    )
+    await expect(t.call("x")).rejects.toThrow()
+    expect(t.getConnectionSnapshot()).toBe("connected")
+  })
+
+  it("does nothing before the event socket exists", async () => {
+    const t = new WebTransport("http://localhost")
+    fetchMock.mockRejectedValue(offline())
+    await expect(t.call("x")).rejects.toThrow()
+    expect(t.getConnectionSnapshot()).toBe("connected")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("noteNetworkLost() (the browser's offline event) does the same", async () => {
+    const { t, ws } = connectReady()
+    fetchMock.mockReturnValue(new Promise(() => {}))
+    t.noteNetworkLost()
+    expect(t.getConnectionSnapshot()).toBe("reconnecting")
+    expect(ws.readyState).toBe(MockWebSocket.CLOSED)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})

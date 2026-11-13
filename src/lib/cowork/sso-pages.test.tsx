@@ -86,4 +86,51 @@ describe("login page", () => {
     )
     expect(container).toBeEmptyDOMElement()
   })
+
+  // #74: a sign-in link (for a server without the portal in front) wins over
+  // the portal redirect; a rejected token keeps the form instead.
+  it("signs in with the token of a sign-in link, without the SSO probe", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    window.history.replaceState(null, "", "/login?token=good")
+    try {
+      renderLogin()
+      expect(window.location.search).toBe("?token")
+      await waitFor(() =>
+        expect(router.replace).toHaveBeenCalledWith("/workspace")
+      )
+      expect(localStorage.getItem("codeg_token")).toBe("good")
+      expect(sso.probeCoworkSso).not.toHaveBeenCalled()
+      expect(sso.sendToPortalLogin).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+      window.history.replaceState(null, "", "/")
+    }
+  })
+
+  it("keeps the form, not the portal, when the link's token is rejected", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        headers: new Headers({ "WWW-Authenticate": 'Bearer realm="codeg"' }),
+      })
+    )
+    window.history.replaceState(null, "", "/login?token=bad")
+    try {
+      renderLogin()
+      expect(
+        await screen.findByText("Invalid token. Please check and try again.")
+      ).toBeInTheDocument()
+      expect(sso.sendToPortalLogin).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+      window.history.replaceState(null, "", "/")
+    }
+  })
 })

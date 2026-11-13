@@ -85,6 +85,9 @@ const en = {
     "Memory is almost full, and the system may start killing processes. Stop what you don't need before starting anything big.",
   resourcesCriticalTitle: "Memory is almost full",
   resourcesCriticalDetail: "{where}: {available} left of {total}.",
+  // A request that got no response at all (`toErrorMessage`, #71).
+  networkUnreachable:
+    "Can't reach the server. Check your network connection; it reconnects on its own once the network is back.",
 }
 
 export type CoworkTextKey = keyof typeof en
@@ -159,6 +162,7 @@ const zhCN: Record<CoworkTextKey, string> = {
     "内存快用完了，系统可能开始杀进程。先停掉不用的任务，再起大任务。",
   resourcesCriticalTitle: "内存快用完了",
   resourcesCriticalDetail: "{where}只剩 {available}（共 {total}）。",
+  networkUnreachable: "连不上服务器，请检查网络。网络恢复后会自动重连。",
 }
 
 const zhTW: Record<CoworkTextKey, string> = {
@@ -233,6 +237,7 @@ const zhTW: Record<CoworkTextKey, string> = {
     "記憶體快用完了，系統可能開始終止行程。先停掉不用的工作，再啟動大型工作。",
   resourcesCriticalTitle: "記憶體快用完了",
   resourcesCriticalDetail: "{where}只剩 {available}（共 {total}）。",
+  networkUnreachable: "連不上伺服器，請檢查網路。網路恢復後會自動重新連線。",
 }
 
 const CATALOGS: Record<string, Record<CoworkTextKey, string>> = {

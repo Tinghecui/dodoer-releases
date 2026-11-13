@@ -11,6 +11,7 @@ import type {
 import type { ServerCompat } from "@/lib/cowork/compat"
 import { buildCodegWebSocketProtocols } from "./ws-auth"
 import { parseJsonOrThrow } from "../json-parse-error"
+import { isFetchNetworkError } from "../app-error"
 import {
   codegAuthHeaders,
   getCodegToken,
@@ -199,6 +200,12 @@ export class WebTransport implements Transport {
       if (err instanceof DOMException && err.name === "AbortError") {
         throw new Error("Request timed out")
       }
+      // Cowork fork: no response came back at all (offline, DNS, connection
+      // refused). The event socket may not notice for a long while — a
+      // browser gone offline keeps an established WebSocket open — so treat
+      // it as the link going down. A timeout (above), any HTTP status (below)
+      // or a request the browser refused to build is not a network failure.
+      if (isFetchNetworkError(err)) this.noteNetworkLost()
       throw err
     } finally {
       window.clearTimeout(timeout)
@@ -310,6 +317,27 @@ export class WebTransport implements Transport {
     }
     this.teardownWs()
     this.wsFailCount = 0
+    this.setConnState("reconnecting")
+    void this.probeHealth()
+  }
+
+  /**
+   * Cowork fork: evidence the link is down that the event socket has not
+   * seen yet — an HTTP call that got no response, or the browser's `offline`
+   * event. Acts only while "connected" with a live socket, so a burst of
+   * failing calls, or one landing mid-reconnect, starts a single cycle and
+   * never fights the backoff already running. Drops the socket (a browser
+   * gone offline keeps it open) and probes `/api/health` right away: if the
+   * server answers, the socket is rebuilt and the dialog never shows (it waits
+   * out its grace period); if not, the usual backoff takes over.
+   */
+  noteNetworkLost(): void {
+    if (this.destroyed || this.connState !== "connected" || !this.ws) return
+    if (!hasCodegCredentials()) return
+    this.teardownWs()
+    // teardownWs detaches onclose, which is where this normally happens:
+    // anything subscribing from now on waits for the next `__ready__`.
+    this.resetReady()
     this.setConnState("reconnecting")
     void this.probeHealth()
   }

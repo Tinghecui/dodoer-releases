@@ -29,6 +29,12 @@ const store = vi.hoisted(() => {
       listeners.clear()
     },
     reconnectWebNow: vi.fn(),
+    // Stands in for WebTransport.noteNetworkLost: only a live link drops.
+    noteWebNetworkLost: vi.fn(() => {
+      if (state !== "connected") return
+      state = "reconnecting"
+      for (const l of listeners) l()
+    }),
     redirectToCodegLogin: vi.fn(),
   }
 })
@@ -38,6 +44,7 @@ vi.mock("@/lib/transport/web-connection-store", () => ({
   getWebConnectionSnapshot: store.getState,
   getWebConnectionServerSnapshot: () => "connected",
   reconnectWebNow: store.reconnectWebNow,
+  noteWebNetworkLost: store.noteWebNetworkLost,
   notifyWebUnauthorized: vi.fn(),
 }))
 
@@ -61,6 +68,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   store.reset()
   store.reconnectWebNow.mockClear()
+  store.noteWebNetworkLost.mockClear()
   store.redirectToCodegLogin.mockClear()
 })
 
@@ -160,5 +168,36 @@ describe("WebConnectionGuard", () => {
       window.dispatchEvent(new Event("online"))
     })
     expect(store.reconnectWebNow).not.toHaveBeenCalled()
+  })
+
+  // #71: an offline browser keeps the event socket open, so the link would
+  // never leave "connected" on its own.
+  it("shows the reconnecting dialog after the grace window when the browser goes offline, and clears it once back", () => {
+    renderGuard()
+    act(() => {
+      window.dispatchEvent(new Event("offline"))
+    })
+    expect(store.noteWebNetworkLost).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText("Connection lost")).not.toBeInTheDocument()
+
+    act(() => {
+      vi.advanceTimersByTime(4000)
+    })
+    expect(screen.getByText("Connection lost")).toBeInTheDocument()
+
+    act(() => {
+      window.dispatchEvent(new Event("online"))
+    })
+    expect(store.reconnectWebNow).toHaveBeenCalledTimes(1)
+    // The probe answered and the socket is back.
+    act(() => store.setState("connected"))
+    expect(screen.queryByText("Connection lost")).not.toBeInTheDocument()
+  })
+
+  it("stops listening for offline once unmounted", () => {
+    const { unmount } = renderGuard()
+    unmount()
+    window.dispatchEvent(new Event("offline"))
+    expect(store.noteWebNetworkLost).not.toHaveBeenCalled()
   })
 })

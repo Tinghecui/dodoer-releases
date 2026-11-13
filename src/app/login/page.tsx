@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { useTranslations } from "next-intl"
 import { isDesktop } from "@/lib/platform"
@@ -18,6 +18,38 @@ import {
 import { COWORK_ACCOUNT_URL } from "@/lib/cowork/account"
 import { COWORK_BUILD } from "@/lib/cowork/brand"
 import { useCoworkText } from "@/lib/cowork/i18n"
+import { takeLinkToken } from "@/lib/cowork/token-link"
+
+type TokenCheck =
+  | { kind: "ok" }
+  | { kind: "invalid" }
+  | { kind: "proxy" }
+  | { kind: "status"; status: number }
+  | { kind: "network" }
+
+// Validate a token by calling a lightweight API endpoint.
+async function checkToken(token: string): Promise<TokenCheck> {
+  try {
+    const res = await fetch("/api/health", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...codegAuthHeaders(token),
+      },
+      body: "{}",
+    })
+    if (res.ok) return { kind: "ok" }
+    if (res.status === 401) {
+      // A proxy in front of Codeg may refuse before the token is checked.
+      return unauthorizedSource(res.headers.get("www-authenticate")) === "proxy"
+        ? { kind: "proxy" }
+        : { kind: "invalid" }
+    }
+    return { kind: "status", status: res.status }
+  } catch {
+    return { kind: "network" }
+  }
+}
 
 export default function LoginPage() {
   const router = useRouter()
@@ -25,8 +57,12 @@ export default function LoginPage() {
   const tConnection = useTranslations("WebConnection")
   const ct = useCoworkText()
   const [token, setToken] = useState("")
-  const [error, setError] = useState("")
+  const [failure, setFailure] = useState<TokenCheck | null>(null)
   const [loading, setLoading] = useState(false)
+  // Cowork fork: the token of a sign-in link (`/login?token=<value>`, #74),
+  // read once — the address no longer carries it afterwards. undefined = not
+  // read yet; kept in a ref so a re-run effect (Strict Mode) still has it.
+  const linkToken = useRef<string | null | undefined>(undefined)
 
   // Cowork portal SSO: hold the form back until the credential-less probe has
   // answered, so a proxied session never flashes the token prompt. An
@@ -42,6 +78,30 @@ export default function LoginPage() {
   useEffect(() => {
     if (isDesktop()) return
     let cancelled = false
+    if (linkToken.current === undefined) linkToken.current = takeLinkToken()
+    const fromLink = linkToken.current
+    if (fromLink) {
+      // An explicit sign-in link wins over the SSO / proxy probes: check its
+      // token right away, with the form on screen saying so, and leave it in
+      // the form with the reason should it be rejected.
+      setToken(fromLink)
+      setSsoChecking(false)
+      setLoading(true)
+      void checkToken(fromLink).then((result) => {
+        if (cancelled) return
+        linkToken.current = null
+        setLoading(false)
+        if (result.kind === "ok") {
+          localStorage.setItem("codeg_token", fromLink)
+          router.replace("/workspace")
+        } else {
+          setFailure(result)
+        }
+      })
+      return () => {
+        cancelled = true
+      }
+    }
     if (!COWORK_BUILD) {
       // Signed in through a proxy in front of Codeg (CODEG_AUTH=proxy-jwt),
       // there is no token to ask for.
@@ -84,40 +144,28 @@ export default function LoginPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    setError("")
+    setFailure(null)
     setLoading(true)
-
-    try {
-      // Validate token by calling a lightweight API endpoint
-      const res = await fetch("/api/health", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...codegAuthHeaders(token),
-        },
-        body: "{}",
-      })
-
-      if (res.ok) {
-        localStorage.setItem("codeg_token", token)
-        router.replace("/workspace")
-      } else if (
-        res.status === 401 &&
-        unauthorizedSource(res.headers.get("www-authenticate")) === "proxy"
-      ) {
-        // The proxy in front of Codeg refused before the token was checked.
-        setError(tConnection("proxySignInDescription"))
-      } else if (res.status === 401) {
-        setError(t("invalidToken"))
-      } else {
-        setError(t("connectionFailed", { status: res.status }))
-      }
-    } catch {
-      setError(t("networkError"))
-    } finally {
-      setLoading(false)
+    const result = await checkToken(token)
+    setLoading(false)
+    if (result.kind === "ok") {
+      localStorage.setItem("codeg_token", token)
+      router.replace("/workspace")
+    } else {
+      setFailure(result)
     }
   }
+
+  const error =
+    failure?.kind === "proxy"
+      ? tConnection("proxySignInDescription")
+      : failure?.kind === "invalid"
+        ? t("invalidToken")
+        : failure?.kind === "status"
+          ? t("connectionFailed", { status: failure.status })
+          : failure?.kind === "network"
+            ? t("networkError")
+            : ""
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background">

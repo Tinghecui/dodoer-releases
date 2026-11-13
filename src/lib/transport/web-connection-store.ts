@@ -72,3 +72,13 @@ export function reconnectWebNow(): void {
 export function notifyWebUnauthorized(source: UnauthorizedSource): void {
   webTransport()?.markUnauthorized(source)
 }
+
+/**
+ * Cowork fork: the browser reports the network gone (`offline`). Enters the
+ * same reconnecting state as a dropped socket — an offline browser keeps an
+ * established WebSocket open, so without this nothing would notice. No-op off
+ * the web shell and unless the link is currently "connected".
+ */
+export function noteWebNetworkLost(): void {
+  webTransport()?.noteNetworkLost()
+}

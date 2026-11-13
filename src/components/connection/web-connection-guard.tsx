@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button"
 import {
   getWebConnectionServerSnapshot,
   getWebConnectionSnapshot,
+  noteWebNetworkLost,
   reconnectWebNow,
   subscribeWebConnection,
 } from "@/lib/transport/web-connection-store"
@@ -78,9 +79,14 @@ export function WebConnectionGuard() {
       if (document.visibilityState === "visible") nudgeIfReconnecting()
     }
     window.addEventListener("online", nudgeIfReconnecting)
+    // Cowork fork: the other direction. An offline browser keeps the event
+    // socket open, so the link would stay "connected" with every request
+    // failing; this drops into "reconnecting" (and its grace period) at once.
+    window.addEventListener("offline", noteWebNetworkLost)
     document.addEventListener("visibilitychange", onVisible)
     return () => {
       window.removeEventListener("online", nudgeIfReconnecting)
+      window.removeEventListener("offline", noteWebNetworkLost)
       document.removeEventListener("visibilitychange", onVisible)
     }
   }, [])

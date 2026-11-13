@@ -1,5 +1,6 @@
 import { NOT_A_GIT_REPO_PATTERNS } from "@/i18n/git-error-patterns"
 import type { AppCommandError } from "@/lib/types"
+import { coworkText } from "@/lib/cowork/i18n"
 
 type ObjectLike = Record<string, unknown>
 
@@ -87,10 +88,31 @@ export function isNotFoundError(error: unknown): boolean {
   return extractAppCommandError(error)?.code === "not_found"
 }
 
+/**
+ * Cowork fork: whether `fetch` rejected without any response — the server
+ * could not be reached at all. Each engine words it differently (Chrome,
+ * Firefox, Safari); a response with an error status never lands here.
+ */
+export function isFetchNetworkError(error: unknown): boolean {
+  return (
+    error instanceof TypeError &&
+    /^(Failed to fetch|NetworkError\b|Load failed)/.test(error.message.trim())
+  )
+}
+
 export function toErrorMessage(error: unknown): string {
   const appError = extractAppCommandError(error)
   if (appError) {
     return appError.detail?.trim() || appError.message
+  }
+
+  // Cowork fork: say what happened instead of the engine's bare "Failed to
+  // fetch" (#71). In the language the page is shown in; it is set on <html>
+  // by the i18n provider.
+  if (isFetchNetworkError(error)) {
+    const locale =
+      typeof document === "undefined" ? "en" : document.documentElement.lang
+    return coworkText(locale, "networkUnreachable")
   }
 
   if (error instanceof Error) {

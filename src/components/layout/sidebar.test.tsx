@@ -390,6 +390,15 @@ describe("Sidebar — fixed nav region", () => {
     expect(pane.className).not.toContain("ring-[3px]")
   })
 
+  // Cowork: the workspace's two <aside> landmarks (this and the aux panel)
+  // carry names, so assistive tech — and role lookups — can tell them apart.
+  it("names its landmark", () => {
+    renderSidebar()
+    expect(
+      screen.getByRole("complementary", { name: "Conversations" })
+    ).toBeInTheDocument()
+  })
+
   it("has no Active loops row and no conversation-list fold", () => {
     renderSidebar()
     expect(screen.queryByRole("button", { name: "Active loops" })).toBeNull()

@@ -334,6 +334,33 @@ describe("AgentSelector", () => {
     expect(selected).toHaveTextContent(getAgentLabel("cursor"))
   })
 
+  // Cowork: each AgentIcon carries an SVG <title> with the agent's name, so a
+  // pill or option holding icon + label used to be named "Claude Code Claude
+  // Code" — role+name lookups (assistive tech, the AI QA tester) missed it.
+  it("names every agent once, not again through the icon's SVG title", async () => {
+    stubLayout()
+    mockUseAcpAgents.mockReturnValue({
+      agents: MANY_AGENTS.map((type) => agent(type)),
+      fresh: true,
+      refresh: async () => {},
+    })
+    renderWithIntl(
+      <AgentSelector defaultAgentType="claude_code" onSelect={() => {}} />
+    )
+    // The selected pill and an unselected one (its label is folded, not gone).
+    expect(
+      screen.getByRole("button", { name: getAgentLabel("claude_code") })
+    ).toHaveAttribute("aria-pressed", "true")
+    expect(
+      screen.getByRole("button", { name: getAgentLabel("codex") })
+    ).toHaveAttribute("aria-pressed", "false")
+
+    fireEvent.click(screen.getByLabelText("More agents (7)"))
+    expect(
+      await screen.findByRole("button", { name: getAgentLabel("deepseek") })
+    ).toHaveAttribute("data-slot", "agent-option")
+  })
+
   it("selects a collapsed agent from the more popover", async () => {
     stubLayout()
     mockUseAcpAgents.mockReturnValue({
@@ -354,8 +381,8 @@ describe("AgentSelector", () => {
     ).toBe(false)
 
     fireEvent.click(screen.getByLabelText("More agents (7)"))
-    // Queried by slot, not by accessible name: each AgentIcon carries an SVG
-    // <title> with the same agent name, so a role+name lookup sees it twice.
+    // Queried by slot; the accessible names are covered by "names every agent
+    // once" below.
     await waitFor(() => {
       expect(
         document.querySelectorAll('[data-slot="agent-option"]').length

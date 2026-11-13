@@ -599,6 +599,11 @@ export const ChatInput = memo(function ChatInput({
                     ? t("agentResponding", { agent: agentName ?? "Agent" })
                     : t("sendMessage")
               }
+              // Cowork: one name for the textbox whatever the hint above says.
+              // It used to be the hint itself, so the box was renamed every
+              // time a turn started or the agent reconnected, and a lookup by
+              // name (assistive tech, the AI QA tester) lost it mid-session.
+              ariaLabel={t("sendMessage")}
               // The floor goes through `tall`, not through a `min-h-*` here: the box
               // and its editable area carry two halves of the same number, and only
               // MessageInput knows the action row that divides them.

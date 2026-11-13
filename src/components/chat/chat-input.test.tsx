@@ -221,6 +221,21 @@ describe("ChatInput automatic collapse", () => {
     expect(container).toHaveAttribute("data-composer-state", "collapsed")
   })
 
+  // Cowork: the editor's name used to be the hint itself, so it turned into
+  // "connecting" / "agentResponding" as the session moved and a lookup by name
+  // lost the textbox mid-session. The hint still changes; the name does not.
+  it("hands the editor one fixed name while the hint follows the session", () => {
+    const { update } = setup({ status: "connecting" })
+    expect(lastProps.current?.placeholder).toBe("connecting")
+    expect(lastProps.current?.ariaLabel).toBe("sendMessage")
+    update({ status: "prompting" })
+    expect(lastProps.current?.placeholder).toBe("agentResponding")
+    expect(lastProps.current?.ariaLabel).toBe("sendMessage")
+    update({ status: "connected" })
+    expect(lastProps.current?.placeholder).toBe("sendMessage")
+    expect(lastProps.current?.ariaLabel).toBe("sendMessage")
+  })
+
   it("collapses into an input-shaped bar rather than a bare icon", () => {
     const { container } = setup()
     const bar = container.querySelector("[data-composer-collapsed-bar]")!

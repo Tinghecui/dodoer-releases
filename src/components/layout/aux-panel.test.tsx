@@ -277,6 +277,14 @@ describe("AuxPanel", () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  // Cowork: named, so it is not a second anonymous <aside> beside the sidebar.
+  it("names its landmark", () => {
+    renderPanel()
+    expect(
+      screen.getByRole("complementary", { name: "Auxiliary panel" })
+    ).toBeInTheDocument()
+  })
+
   it("lists every tab on the vertical rail, in the built-in order by default", () => {
     renderPanel()
     expect(railTabs()).toEqual(BUILT_IN)

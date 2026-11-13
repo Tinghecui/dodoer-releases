@@ -2664,6 +2664,7 @@
       }
     },
     "auxPanel": {
+      "label": "Painel auxiliar",
       "tabs": {
         "files": "Arquivos",
         "changes": "Alterações",
@@ -2730,6 +2731,8 @@
       "closeAll": "Fechar tudo",
       "hideTerminal": "Ocultar terminal ({shortcut})",
       "openFolderFirst": "Abra primeiro uma pasta",
+      "newTerminal": "Novo terminal",
+      "closeTab": "Fechar {title}",
       "processExited": "Processo encerrado",
       "processExitedWithCode": "Processo encerrado (código {code})",
       "unavailable": "Sessão do terminal indisponível. Ela pode ter terminado ou o servidor pode ter reiniciado.",

@@ -43,6 +43,11 @@ import { ActivityLiveProvider } from "@/components/message/activity/activity-liv
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import {
+  isStrandedTurn,
+  STRANDED_TURN_GRACE_MS,
+  type SentTurnWatch,
+} from "@/components/conversations/stranded-turn"
 import { FolderTabsEmptyState } from "@/components/conversations/folder-tabs-empty-state"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import {
@@ -993,6 +998,8 @@ const ConversationTabView = memo(function ConversationTabView({
   const lastSentRef = useRef<{
     draft: PromptDraft
     modeId: string | null
+    // Cowork fork (#172): see `isStrandedTurn`.
+    watch: SentTurnWatch
   } | null>(null)
   useEffect(() => {
     const wasPrompting = prevConnStatusRef.current === "prompting"
@@ -1036,6 +1043,63 @@ const ConversationTabView = memo(function ConversationTabView({
     effectiveConversationId,
     mqRequeueFailed,
     syncTurnMetadata,
+  ])
+
+  // Cowork fork (#172): settle a turn this tab never saw run. The effect above
+  // needs the prompting→idle edge; when the reply's events miss this tab it
+  // never comes, and the sent message sat under "进行中" until a reload. The
+  // sidebar row, fed by its own channel, still learns the turn is over — so
+  // once it says so, take the saved conversation as the answer: settle the
+  // turn and reload the detail, which is what the reload did by hand.
+  const rowStatus = useAppWorkspaceStore((s) =>
+    dbConversationId == null
+      ? null
+      : (s.conversations.find((c) => c.id === dbConversationId)?.status ?? null)
+  )
+  const rowUpdatedAt = useAppWorkspaceStore((s) =>
+    dbConversationId == null
+      ? null
+      : (s.conversations.find((c) => c.id === dbConversationId)?.updated_at ??
+        null)
+  )
+  const rowUpdatedAtRef = useRef(rowUpdatedAt)
+  useEffect(() => {
+    rowUpdatedAtRef.current = rowUpdatedAt
+  }, [rowUpdatedAt])
+  useEffect(() => {
+    if (connStatus === "prompting" && lastSentRef.current) {
+      lastSentRef.current.watch.sawPrompting = true
+    }
+  }, [connStatus])
+  useEffect(() => {
+    const row =
+      rowStatus != null && rowUpdatedAt != null
+        ? { status: rowStatus, updated_at: rowUpdatedAt }
+        : null
+    if (!isStrandedTurn(lastSentRef.current?.watch ?? null, connStatus, row)) {
+      return
+    }
+    const timer = setTimeout(() => {
+      const sent = lastSentRef.current
+      if (!isStrandedTurn(sent?.watch ?? null, connStatusRef.current, row)) {
+        return
+      }
+      lastSentRef.current = null
+      console.warn(
+        "[conversation] turn finished without reaching this tab; reloading it",
+        effectiveConversationId
+      )
+      completeTurn(effectiveConversationId)
+      refetchDetail(effectiveConversationId)
+    }, STRANDED_TURN_GRACE_MS)
+    return () => clearTimeout(timer)
+  }, [
+    completeTurn,
+    connStatus,
+    effectiveConversationId,
+    refetchDetail,
+    rowStatus,
+    rowUpdatedAt,
   ])
 
   // Auto-send queued messages when agent finishes responding.
@@ -1563,7 +1627,14 @@ const ConversationTabView = memo(function ConversationTabView({
       // into the queue above the input box — it auto-sends when the current
       // turn completes, identical to enqueuing while already prompting. Stamp
       // the bounce so the flush backs off instead of immediately retrying.
-      lastSentRef.current = { draft, modeId: selectedModeIdArg ?? null }
+      lastSentRef.current = {
+        draft,
+        modeId: selectedModeIdArg ?? null,
+        watch: {
+          summaryUpdatedAt: rowUpdatedAtRef.current,
+          sawPrompting: false,
+        },
+      }
       turnAuthFailedRef.current = false
       const onTurnInProgress = () => {
         lastSentRef.current = null

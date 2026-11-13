@@ -130,6 +130,7 @@ export function AuxPanel({
   footer?: ReactNode
 } = {}) {
   const t = useTranslations("Folder.auxPanel.tabs")
+  const tPanel = useTranslations("Folder.auxPanel")
   const tDetails = useTranslations("Folder.sessionDetails")
   const tAutomations = useTranslations("Automations")
   const tTasks = useTranslations("Tasks")
@@ -309,6 +310,9 @@ export function AuxPanel({
     // Mobile (Drawer) is unchanged — keep the sidebar shade.
     <aside
       ref={paneRef}
+      // Cowork: named, so it is not a second anonymous <aside> next to the
+      // conversation sidebar.
+      aria-label={tPanel("label")}
       data-glass={isMobile ? undefined : "pane"}
       className={cn(
         "group/aux-panel flex h-full min-h-0 flex-col overflow-hidden text-sidebar-foreground select-none",

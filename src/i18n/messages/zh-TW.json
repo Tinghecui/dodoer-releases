@@ -2664,6 +2664,7 @@
       }
     },
     "auxPanel": {
+      "label": "輔助面板",
       "tabs": {
         "files": "檔案",
         "changes": "變更",
@@ -2730,6 +2731,8 @@
       "closeAll": "關閉所有",
       "hideTerminal": "隱藏終端（{shortcut}）",
       "openFolderFirst": "請先開啟一個資料夾",
+      "newTerminal": "新增終端",
+      "closeTab": "關閉 {title}",
       "processExited": "程序已結束",
       "processExitedWithCode": "程序已結束（代碼 {code}）",
       "unavailable": "終端工作階段無法使用。它可能已結束，或後端已重新啟動。",

@@ -408,6 +408,11 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
           role: "textbox",
           "aria-multiline": "true",
           ...(ariaLabel ? { "aria-label": ariaLabel } : {}),
+          // Cowork: the shown hint, for assistive tech, when it says more than
+          // the name (a state like "Connecting...", a predicted follow-up).
+          ...(placeholder && placeholder !== ariaLabel
+            ? { "aria-placeholder": placeholder }
+            : {}),
         },
         handleKeyDown: (view, event) => {
           // Mid-IME-composition every key belongs to the input method, so hand

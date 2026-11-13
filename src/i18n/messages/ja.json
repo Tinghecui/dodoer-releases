@@ -2664,6 +2664,7 @@
       }
     },
     "auxPanel": {
+      "label": "補助パネル",
       "tabs": {
         "files": "ファイル",
         "changes": "変更",
@@ -2730,6 +2731,8 @@
       "closeAll": "すべて閉じる",
       "hideTerminal": "ターミナルを隠す ({shortcut})",
       "openFolderFirst": "先にフォルダを開いてください",
+      "newTerminal": "新しいターミナル",
+      "closeTab": "{title} を閉じる",
       "processExited": "プロセスが終了しました",
       "processExitedWithCode": "プロセスが終了しました（コード {code}）",
       "unavailable": "ターミナルセッションを利用できません。終了したか、バックエンドが再起動した可能性があります。",

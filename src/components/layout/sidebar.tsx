@@ -518,6 +518,9 @@ export function Sidebar({
 
   return (
     <aside
+      // Cowork: the workspace has two <aside> landmarks (this list and the
+      // right-hand aux panel); unnamed, assistive tech could not tell them apart.
+      aria-label={t("title")}
       data-glass={isMobile ? undefined : "pane"}
       className={cn(
         "@container/sidebar flex h-full min-h-0 flex-col overflow-hidden text-sidebar-foreground select-none",

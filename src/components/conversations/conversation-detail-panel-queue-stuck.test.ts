@@ -137,7 +137,7 @@ describe("a failed head says what to do about it", () => {
     expect(listener).toContain('"turn_failed_auth_required"')
     // A new send must not inherit the previous turn's verdict.
     const send = between(
-      "lastSentRef.current = { draft, modeId: selectedModeIdArg ?? null }",
+      "lastSentRef.current = {",
       "const onTurnInProgress = () => {"
     )
     expect(send).toContain("turnAuthFailedRef.current = false")

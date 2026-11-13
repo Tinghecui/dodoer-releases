@@ -2664,6 +2664,7 @@
       }
     },
     "auxPanel": {
+      "label": "Panel auxiliar",
       "tabs": {
         "files": "Archivos",
         "changes": "Cambios",
@@ -2730,6 +2731,8 @@
       "closeAll": "Cerrar todo",
       "hideTerminal": "Ocultar terminal ({shortcut})",
       "openFolderFirst": "Abre primero una carpeta",
+      "newTerminal": "Nueva terminal",
+      "closeTab": "Cerrar {title}",
       "processExited": "Proceso finalizado",
       "processExitedWithCode": "Proceso finalizado (código {code})",
       "unavailable": "La sesión de terminal no está disponible. Puede haber terminado o el servidor se ha reiniciado.",

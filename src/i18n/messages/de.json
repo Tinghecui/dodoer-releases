@@ -2664,6 +2664,7 @@
       }
     },
     "auxPanel": {
+      "label": "Hilfspaneel",
       "tabs": {
         "files": "Dateien",
         "changes": "Änderungen",
@@ -2730,6 +2731,8 @@
       "closeAll": "Alle schließen",
       "hideTerminal": "Terminal ausblenden ({shortcut})",
       "openFolderFirst": "Öffnen Sie zuerst einen Ordner",
+      "newTerminal": "Neues Terminal",
+      "closeTab": "{title} schließen",
       "processExited": "Prozess beendet",
       "processExitedWithCode": "Prozess beendet (Code {code})",
       "unavailable": "Terminalsitzung nicht verfügbar. Sie wurde möglicherweise beendet oder das Backend neu gestartet.",

@@ -183,6 +183,14 @@ interface MessageInputProps {
   suppressAutoFocus?: boolean
   onSend: (draft: PromptDraft, modeId?: string | null) => void
   placeholder?: string
+  /**
+   * Cowork: the editor's accessible name, when it must not follow
+   * `placeholder`. A host whose hint changes with the session's state (the
+   * chat composer shows "Connecting..." / "<agent> is responding...") passes a
+   * fixed name here, so the textbox keeps one name while the hint changes.
+   * Defaults to the placeholder.
+   */
+  ariaLabel?: string
   defaultPath?: string
   disabled?: boolean
   autoFocus?: boolean
@@ -341,6 +349,7 @@ export function MessageInput({
   suppressAutoFocus = false,
   onSend,
   placeholder,
+  ariaLabel,
   defaultPath,
   disabled = false,
   autoFocus = false,
@@ -2173,7 +2182,7 @@ export function MessageInput({
               <RichComposer
                 ref={editorRef}
                 placeholder={shownPlaceholder}
-                ariaLabel={resolvedPlaceholder}
+                ariaLabel={ariaLabel ?? resolvedPlaceholder}
                 promptSuggestion={offeredSuggestion}
                 autoFocus={autoFocus}
                 referenceSearch={referenceSearch}

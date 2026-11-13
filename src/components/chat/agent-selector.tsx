@@ -430,7 +430,14 @@ export function AgentSelector({
                     a flex container drops the line box entirely: its height is
                     the icon's, so icon and label share one centerline. Keep it a
                     flex box if this markup is ever touched. */}
-                <span className="relative inline-flex shrink-0 items-center">
+                {/* Cowork: the mark is decorative here — the label below is
+                    always in the DOM (only faded and folded when unselected),
+                    and the icon's SVG <title> would otherwise name the pill
+                    "Claude Code Claude Code". */}
+                <span
+                  aria-hidden
+                  className="relative inline-flex shrink-0 items-center"
+                >
                   <AgentIcon agentType={agent.agent_type} className="h-4 w-4" />
                   {notInstalled ? (
                     <span
@@ -517,7 +524,11 @@ export function AgentSelector({
                         : "cursor-pointer hover:bg-accent hover:text-accent-foreground"
                     )}
                   >
-                    <span className="relative flex shrink-0 items-center">
+                    {/* Cowork: decorative next to the label (see the pills). */}
+                    <span
+                      aria-hidden
+                      className="relative flex shrink-0 items-center"
+                    >
                       <AgentIcon
                         agentType={agent.agent_type}
                         className="h-4 w-4"

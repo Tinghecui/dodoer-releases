@@ -2664,6 +2664,7 @@
       }
     },
     "auxPanel": {
+      "label": "Auxiliary panel",
       "tabs": {
         "files": "Files",
         "changes": "Changes",
@@ -2730,6 +2731,8 @@
       "closeAll": "Close All",
       "hideTerminal": "Hide Terminal ({shortcut})",
       "openFolderFirst": "Open a folder first",
+      "newTerminal": "New Terminal",
+      "closeTab": "Close {title}",
       "processExited": "Process exited",
       "processExitedWithCode": "Process exited (code {code})",
       "unavailable": "Terminal session unavailable. It may have ended or the backend restarted.",

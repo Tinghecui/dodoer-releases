@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::{
@@ -48,6 +50,12 @@ fn apply_cleanup_signal(
 // clients (web / remote desktop) continue to work while transports migrate.
 // Phase 4 will retire this channel.
 const WS_READY_CHANNEL: &str = "__ready__";
+
+// Cowork fork (#172): numbers each socket in the logs, so an open, the
+// attaches made on it and its close can be read together. A reply that never
+// reached a browser left nothing in the logs to say whether its socket had
+// dropped or its attach had come back as a snapshot.
+static NEXT_WS_ID: AtomicU64 = AtomicU64::new(1);
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -129,6 +137,10 @@ async fn handle_ws_connection(
             return;
         }
     }
+
+    let ws_id = NEXT_WS_ID.fetch_add(1, Ordering::Relaxed);
+    let opened_at = Instant::now();
+    tracing::info!("[WS] socket {ws_id} open");
 
     // Throttles the per-connection global-firehose lag WARN so a slow client
     // reading behind a steady side-channel stream can't trickle near-duplicate
@@ -227,6 +239,7 @@ async fn handle_ws_connection(
                         match serde_json::from_str::<ClientMsg>(&text) {
                             Ok(cmsg) => {
                                 handle_client_msg(
+                                    ws_id,
                                     cmsg,
                                     &state,
                                     &outbound_tx,
@@ -250,6 +263,12 @@ async fn handle_ws_connection(
         }
     }
 
+    tracing::info!(
+        "[WS] socket {ws_id} closed after {}s with {} attach(es) live",
+        opened_at.elapsed().as_secs(),
+        subscriptions.len()
+    );
+
     // Cleanup: abort all active forwarder tasks. Their broadcast receivers
     // will be dropped, freeing the per-connection broadcaster slot.
     for (_, sub) in subscriptions.drain() {
@@ -257,7 +276,9 @@ async fn handle_ws_connection(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_client_msg(
+    ws_id: u64,
     msg: ClientMsg,
     state: &Arc<AppState>,
     outbound_tx: &mpsc::Sender<ServerMsg>,
@@ -279,6 +300,7 @@ async fn handle_client_msg(
                 old.handle.abort();
             }
 
+            let attach_conn = connection_id.clone();
             match ws_attach::handle_attach(
                 &state.connection_manager,
                 state.acp_event_bus.metrics(),
@@ -289,6 +311,21 @@ async fn handle_client_msg(
             .await
             {
                 Ok(outcome) => {
+                    let answer = match &outcome.initial_msg {
+                        ServerMsg::Snapshot { event_seq, .. } => {
+                            format!("snapshot at seq {event_seq}")
+                        }
+                        ServerMsg::Replay {
+                            events,
+                            high_water_seq,
+                            ..
+                        } => format!("replay of {} up to seq {high_water_seq}", events.len()),
+                        _ => "other".to_string(),
+                    };
+                    tracing::info!(
+                        "[WS] socket {ws_id} attach sub={subscription_id} conn={attach_conn} \
+                         since={since_seq:?} → {answer}"
+                    );
                     // Send the initial frame (snapshot or replay) BEFORE
                     // spawning the forwarder so the client sees state
                     // before the first live event.
@@ -313,6 +350,10 @@ async fn handle_client_msg(
                     subscriptions.insert(subscription_id, ActiveSubscription { handle, epoch });
                 }
                 Err(reason) => {
+                    tracing::info!(
+                        "[WS] socket {ws_id} attach sub={subscription_id} conn={attach_conn} \
+                         since={since_seq:?} → detached {reason:?}"
+                    );
                     let _ = outbound_tx
                         .send(ServerMsg::Detached {
                             subscription_id,

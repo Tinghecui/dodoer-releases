@@ -2664,6 +2664,7 @@
       }
     },
     "auxPanel": {
+      "label": "اللوحة المساعدة",
       "tabs": {
         "files": "الملفات",
         "changes": "التغييرات",
@@ -2730,6 +2731,8 @@
       "closeAll": "إغلاق الكل",
       "hideTerminal": "إخفاء الطرفية ({shortcut})",
       "openFolderFirst": "افتح مجلدا أولا",
+      "newTerminal": "طرفية جديدة",
+      "closeTab": "إغلاق {title}",
       "processExited": "انتهت العملية",
       "processExitedWithCode": "انتهت العملية (الرمز {code})",
       "unavailable": "جلسة الطرفية غير متاحة. ربما انتهت أو أُعيد تشغيل الخادم.",

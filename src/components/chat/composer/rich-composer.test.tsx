@@ -39,6 +39,44 @@ describe("RichComposer", () => {
     expect(textbox).toHaveAttribute("aria-label", "Message")
   })
 
+  // Cowork: a host whose hint changes with its state (connecting, the agent
+  // responding) keeps the textbox's name fixed; the hint goes to
+  // aria-placeholder, and only while it says something the name does not.
+  it("keeps its name while the hint changes, exposing the hint as aria-placeholder", async () => {
+    const { ref, container, rerender } = await mount({
+      ariaLabel: "Send a message...",
+      placeholder: "Connecting...",
+    })
+    const textbox = container.querySelector('[role="textbox"]')
+    expect(textbox).toHaveAttribute("aria-label", "Send a message...")
+    expect(textbox).toHaveAttribute("aria-placeholder", "Connecting...")
+
+    rerender(
+      <RichComposer
+        ref={ref}
+        ariaLabel="Send a message..."
+        placeholder="Send a message..."
+      />
+    )
+    await waitFor(() => expect(textbox).not.toHaveAttribute("aria-placeholder"))
+    expect(textbox).toHaveAttribute("aria-label", "Send a message...")
+
+    rerender(
+      <RichComposer
+        ref={ref}
+        ariaLabel="Send a message..."
+        placeholder="Claude Code is responding..."
+      />
+    )
+    await waitFor(() =>
+      expect(textbox).toHaveAttribute(
+        "aria-placeholder",
+        "Claude Code is responding..."
+      )
+    )
+    expect(textbox).toHaveAttribute("aria-label", "Send a message...")
+  })
+
   it("round-trips text through the handle and notifies onChange", async () => {
     const onChange = vi.fn()
     const { ref } = await mount({ onChange })

@@ -120,13 +120,17 @@ export function TerminalTabBar({
                 <span className="truncate max-w-[7.5rem]">{tab.title}</span>
               )}
               <button
+                type="button"
                 className="ml-1 rounded-sm hover:bg-muted-foreground/20 p-0.5"
+                // Cowork: an icon-only control needs its own name — every tab's
+                // close button used to be an unnamed "button" to assistive tech.
+                aria-label={t("closeTab", { title: tab.title })}
                 onClick={(e) => {
                   e.stopPropagation()
                   closeTerminal(tab.id)
                 }}
               >
-                <X className="h-3 w-3" />
+                <X className="h-3 w-3" aria-hidden />
               </button>
             </div>
           </ContextMenuTrigger>
@@ -160,8 +164,11 @@ export function TerminalTabBar({
                 className="h-6 w-6 shrink-0"
                 onClick={() => void createTerminal()}
                 disabled={!canCreateTerminal}
+                // Cowork: the icon-only "+" had no name at all (no label, no
+                // title), so it could only be found by position.
+                aria-label={t("newTerminal")}
               >
-                <Plus className="h-3 w-3" />
+                <Plus className="h-3 w-3" aria-hidden />
               </Button>
             </span>
           </TooltipTrigger>

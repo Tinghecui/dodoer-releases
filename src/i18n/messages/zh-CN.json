@@ -2664,6 +2664,7 @@
       }
     },
     "auxPanel": {
+      "label": "辅助面板",
       "tabs": {
         "files": "文件",
         "changes": "变更",
@@ -2730,6 +2731,8 @@
       "closeAll": "关闭所有",
       "hideTerminal": "隐藏终端（{shortcut}）",
       "openFolderFirst": "请先打开一个文件夹",
+      "newTerminal": "新建终端",
+      "closeTab": "关闭 {title}",
       "processExited": "进程已退出",
       "processExitedWithCode": "进程已退出（代码 {code}）",
       "unavailable": "终端会话不可用；它可能已结束，或后端已重启。",

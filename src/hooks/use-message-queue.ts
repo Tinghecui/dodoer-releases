@@ -1,8 +1,14 @@
 "use client"
 
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import type { PromptDraft } from "@/lib/types"
 import { randomUUID } from "@/lib/utils"
+import {
+  readStoredQueue,
+  writeStoredQueue,
+} from "@/lib/cowork/message-queue-storage"
+
+export { messageQueueStorageKey } from "@/lib/cowork/message-queue-storage"
 
 export interface QueuedMessage {
   id: string
@@ -37,12 +43,14 @@ export interface QueuedMessage {
    * Cowork fork: what kind of failure it was, when the panel knows and the
    * queue's hint has something to offer for it. `auth` — the agent refused
    * the turn for credentials, so the hint links to where the agent signs in.
+   * `restored` — read back after a page reload (`message-queue-storage.ts`):
+   * it may or may not have been about to go, so it waits for the user.
    * Only ever set together with `failed`; retry clears both.
    */
   failure?: QueueFailureKind
 }
 
-export type QueueFailureKind = "auth"
+export type QueueFailureKind = "auth" | "restored"
 
 export interface UseMessageQueueReturn {
   queue: QueuedMessage[]
@@ -93,8 +101,17 @@ export interface UseMessageQueueReturn {
   cancelEditing: () => void
 }
 
-export function useMessageQueue(): UseMessageQueueReturn {
-  const [queue, setQueue] = useState<QueuedMessage[]>([])
+/**
+ * `storageKey` (Cowork fork, #159): keep the queue across a page reload under
+ * this key (`messageQueueStorageKey`); null / omitted keeps it in memory only.
+ * The queue read back at mount is all failed — see `message-queue-storage.ts`.
+ */
+export function useMessageQueue(
+  storageKey?: string | null
+): UseMessageQueueReturn {
+  const [queue, setQueue] = useState<QueuedMessage[]>(() =>
+    storageKey ? readStoredQueue(storageKey) : []
+  )
   const [editingItemId, setEditingItemId] = useState<string | null>(null)
   // Authoritative copy of the queue, updated SYNCHRONOUSLY by every mutation
   // (before the React state commit). Reads that must observe the same-tick
@@ -104,6 +121,12 @@ export function useMessageQueue(): UseMessageQueueReturn {
   // render). Without this, a bounce that re-queues a draft leaves a window
   // where a caller still sees an empty queue.
   const queueRef = useRef<QueuedMessage[]>(queue)
+
+  // Cowork fork: mirror every committed queue (the key arriving later — a
+  // draft that just got saved — writes what is queued by then).
+  useEffect(() => {
+    if (storageKey) writeStoredQueue(storageKey, queue)
+  }, [storageKey, queue])
 
   // Update the authoritative ref first, then schedule the render. A plain value
   // (not a functional updater) is correct because `queueRef.current` is always

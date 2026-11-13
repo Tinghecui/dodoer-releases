@@ -509,7 +509,9 @@ describe("SidebarConversationCard hover quick actions", () => {
     const done: DbConversationSummary = { ...conv(4), status: "completed" }
     const { getByLabelText } = renderCard(done)
     fireEvent.click(getByLabelText("Reopen"))
-    expect(onStatusChange).toHaveBeenCalledWith(4, "in_progress")
+    // Cowork fork: back to "to review" — `in_progress` says the agent runs
+    // (AI QA #164).
+    expect(onStatusChange).toHaveBeenCalledWith(4, "pending_review")
   })
 
   it("omits the pin button when onTogglePin is absent but keeps the done button", () => {
@@ -536,6 +538,52 @@ describe("SidebarConversationCard hover quick actions", () => {
 // addressed by a window event the composer listens for. The target tab is read
 // from the tab store when the menu opens (not subscribed), so each test seeds the
 // store before firing the context menu.
+// Cowork fork (AI QA #164): "In progress" is what the sidebar shows while the
+// agent runs (spinner, "N in progress"); set by hand it stayed on for good.
+describe("SidebarConversationCard status menu", () => {
+  beforeEach(() => {
+    onStatusChange.mockClear()
+  })
+
+  function openStatusMenu(c: DbConversationSummary) {
+    renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={false}
+        timeLabel=""
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+      />
+    )
+    fireEvent.contextMenu(screen.getByText(c.title!))
+    fireEvent.keyDown(screen.getByText("Status"), { key: "ArrowRight" })
+  }
+
+  it("offers only the statuses a user may set, never In Progress", async () => {
+    openStatusMenu({ ...conv(5), status: "completed" })
+    expect(await screen.findByText("Review")).toBeDefined()
+    expect(screen.getByText("Cancelled")).toBeDefined()
+    expect(screen.queryByText("In Progress")).toBeNull()
+    // The current status is not offered either.
+    expect(screen.queryByText("Completed")).toBeNull()
+    fireEvent.click(screen.getByText("Review"))
+    expect(onStatusChange).toHaveBeenCalledWith(5, "pending_review")
+  })
+
+  it("lets a row already marked In Progress by hand be set to any of the three", async () => {
+    openStatusMenu({ ...conv(6), status: "in_progress" })
+    expect(await screen.findByText("Review")).toBeDefined()
+    expect(screen.getByText("Completed")).toBeDefined()
+    expect(screen.getByText("Cancelled")).toBeDefined()
+    expect(screen.queryByText("In Progress")).toBeNull()
+    fireEvent.click(screen.getByText("Completed"))
+    expect(onStatusChange).toHaveBeenCalledWith(6, "completed")
+  })
+})
+
 describe("SidebarConversationCard add to session", () => {
   function tab(id: string, conversationId: number | null): TabItem {
     return {

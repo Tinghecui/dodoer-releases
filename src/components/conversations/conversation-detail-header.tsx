@@ -30,7 +30,7 @@ import { useTabActions } from "@/contexts/tab-context"
 import { getRuntimeSession } from "@/stores/conversation-runtime-store"
 import { withoutUnreadChange } from "@/stores/conversation-seen-store"
 import type { ConversationStatus } from "@/lib/types"
-import { STATUS_ORDER } from "@/lib/types"
+import { MANUAL_STATUS_ORDER } from "@/lib/types"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
 import {
   DropdownMenu,
@@ -340,7 +340,8 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
               {t("status")}
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
-              {STATUS_ORDER.filter((s) => s !== status).map((s) => (
+              {/* Cowork fork: never `in_progress` by hand (#164). */}
+              {MANUAL_STATUS_ORDER.filter((s) => s !== status).map((s) => (
                 <DropdownMenuItem
                   key={s}
                   onSelect={() => handleStatusChange(s)}

@@ -273,3 +273,75 @@ describe("useMessageQueue failure kind", () => {
     })
   })
 })
+
+// Cowork fork (AI QA #159): a reload used to drop the whole queue.
+describe("useMessageQueue across a reload", () => {
+  const KEY = "cowork:message-queue:v1:local:42"
+
+  it("reads the queue back after a remount, all failed, and sends nothing on its own", () => {
+    window.sessionStorage.clear()
+    const first = renderHook(() => useMessageQueue(KEY))
+    act(() => {
+      first.result.current.requeueFailed(draft("A"), null, "auth")
+      first.result.current.enqueue(draft("B"), null)
+      first.result.current.enqueue(draft("C"), "plan")
+    })
+    first.unmount()
+
+    const { result } = renderHook(() => useMessageQueue(KEY))
+    expect(texts(result.current.queue)).toEqual(["A", "B", "C"])
+    expect(result.current.queue.every((item) => item.failed)).toBe(true)
+    expect(result.current.queue.map((item) => item.failure)).toEqual([
+      "auth",
+      "restored",
+      "restored",
+    ])
+    expect(result.current.queue[2].modeId).toBe("plan")
+    // Nothing leaves until the user retries it.
+    let sent: ReturnType<typeof result.current.dequeue>
+    act(() => {
+      sent = result.current.dequeue()
+    })
+    expect(sent!).toBeUndefined()
+    act(() => result.current.retry(result.current.queue[0].id))
+    act(() => {
+      sent = result.current.dequeue()
+    })
+    expect(sent!.draft.displayText).toBe("A")
+    // The next one still waits for its own retry.
+    act(() => {
+      sent = result.current.dequeue()
+    })
+    expect(sent!).toBeUndefined()
+  })
+
+  it("forgets the stored queue once it is empty", () => {
+    window.sessionStorage.clear()
+    const { result } = renderHook(() => useMessageQueue(KEY))
+    act(() => result.current.enqueue(draft("A"), null))
+    expect(window.sessionStorage.getItem(KEY)).not.toBeNull()
+    act(() => {
+      result.current.dequeue()
+    })
+    expect(window.sessionStorage.getItem(KEY)).toBeNull()
+  })
+
+  it("stores nothing without a key (a draft not saved yet)", () => {
+    window.sessionStorage.clear()
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => result.current.enqueue(draft("A"), null))
+    expect(window.sessionStorage.length).toBe(0)
+  })
+
+  it("starts storing once the key arrives", () => {
+    window.sessionStorage.clear()
+    const { result, rerender } = renderHook(
+      ({ storageKey }: { storageKey: string | null }) =>
+        useMessageQueue(storageKey),
+      { initialProps: { storageKey: null as string | null } }
+    )
+    act(() => result.current.enqueue(draft("A"), null))
+    rerender({ storageKey: KEY })
+    expect(window.sessionStorage.getItem(KEY)).toContain('"displayText":"A"')
+  })
+})

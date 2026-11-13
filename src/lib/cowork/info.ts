@@ -159,6 +159,15 @@ export function useCoworkInfo(): CoworkInfo | null {
   return info
 }
 
+/**
+ * The cached info as React state, WITHOUT starting a load: for surfaces that
+ * only adjust what they say once something else (the account menu, mounted
+ * whenever the portal is) has loaded it. Null while unknown / not Cowork.
+ */
+export function useCachedCoworkInfo(): CoworkInfo | null {
+  return useSyncExternalStore(subscribe, getCachedCoworkInfo, getServerSnapshot)
+}
+
 /** Test hook: forget the cached info. */
 export function resetCoworkInfoForTests(info?: CoworkInfo | null): void {
   cached = info

@@ -1356,6 +1356,18 @@ export const STATUS_ORDER: ConversationStatus[] = [
   "cancelled",
 ]
 
+/**
+ * Cowork fork (AI QA #164): the statuses a user may set by hand. Not
+ * `in_progress`: the sidebar reads it as "the agent is running" (spinner,
+ * "N in progress"), and only a turn the agent actually runs may say that —
+ * set by hand it spun forever. Filters and display keep `STATUS_ORDER`.
+ */
+export const MANUAL_STATUS_ORDER: ConversationStatus[] = [
+  "pending_review",
+  "completed",
+  "cancelled",
+]
+
 export const STATUS_LABELS: Record<ConversationStatus, string> = {
   in_progress: "In Progress",
   pending_review: "Review",

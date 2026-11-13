@@ -97,7 +97,7 @@ import type {
   DbConversationSummary,
   MoveConversationsResult,
 } from "@/lib/types"
-import { ALL_AGENT_TYPES, STATUS_ORDER } from "@/lib/types"
+import { ALL_AGENT_TYPES, MANUAL_STATUS_ORDER, STATUS_ORDER } from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
   excludeChatFolders,
@@ -1130,7 +1130,8 @@ export function ConversationManageDialog({
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  {STATUS_ORDER.map((s) => (
+                  {/* Cowork fork: never `in_progress` by hand (#164). */}
+                  {MANUAL_STATUS_ORDER.map((s) => (
                     <DropdownMenuItem
                       key={s}
                       onSelect={() => handleBulkStatus(s)}

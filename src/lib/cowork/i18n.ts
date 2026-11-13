@@ -103,6 +103,15 @@ const en = {
   gettingStartedMessage: "Send your first message",
   gettingStartedMessageHint:
     "Write what you want done and press {key} to send it.",
+  // Behind the portal, "Sign in" for an agent whose credentials the portal
+  // manages opens its AI accounts (`sign-in.ts`, #158).
+  signInViaPortal: "Set up AI accounts in the portal",
+  turnFailedAuthRequiredPortal:
+    "{agent} needs you to sign in again before it can run this turn. Set it up in the portal under My account → AI accounts, then send this message again.",
+  // A queued message read back after a reload (#159): marked failed, never
+  // sent on its own.
+  queueRestoredReason:
+    "It had not been sent when the page reloaded, and is not sent again on its own so it cannot go out twice.",
 }
 
 export type CoworkTextKey = keyof typeof en
@@ -189,6 +198,10 @@ const zhCN: Record<CoworkTextKey, string> = {
     "在项目里开一个新对话，从输入框上方的列表里选一个 agent。",
   gettingStartedMessage: "发出第一条消息",
   gettingStartedMessageHint: "写下要它做的事，按 {key} 发送。",
+  signInViaPortal: "去门户配置 AI 账户",
+  turnFailedAuthRequiredPortal:
+    "{agent} 需要你重新登录后才能执行本轮回复。请到门户「我的账户 → AI 账户」配置，然后重新发送这条消息。",
+  queueRestoredReason: "页面刷新时还没发出去，为免重复发送，不会自动续发。",
 }
 
 const zhTW: Record<CoworkTextKey, string> = {
@@ -275,6 +288,10 @@ const zhTW: Record<CoworkTextKey, string> = {
     "在專案裡開一個新對話，從輸入框上方的清單裡選一個 agent。",
   gettingStartedMessage: "送出第一則訊息",
   gettingStartedMessageHint: "寫下要它做的事，按 {key} 送出。",
+  signInViaPortal: "到入口網站設定 AI 帳戶",
+  turnFailedAuthRequiredPortal:
+    "{agent} 需要你重新登入後才能執行本輪回覆。請到入口網站「我的帳戶 → AI 帳戶」設定，然後重新傳送這則訊息。",
+  queueRestoredReason: "頁面重新整理時還沒送出，為避免重複傳送，不會自動續傳。",
 }
 
 const CATALOGS: Record<string, Record<CoworkTextKey, string>> = {

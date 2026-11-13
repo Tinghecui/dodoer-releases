@@ -87,14 +87,44 @@ describe("no usable agent fails the waiting message", () => {
 })
 
 describe("a failed head says what to do about it", () => {
-  it("links to the agent's settings for a turn refused for credentials", () => {
+  it("links to where the agent signs in for a turn refused for credentials", () => {
     const notice = between(
       "const queueFailedHeadNotice = useMemo",
       "// Click-to-insert for a queued row"
     )
-    expect(notice).toContain('if (queueHeadFailure === "auth") {')
-    expect(notice).toContain('tSessionFailure("action.login")')
-    expect(notice).toContain("onClick: handleOpenAgentsSettings")
+    const auth = notice.slice(
+      notice.indexOf('if (queueHeadFailure === "auth") {'),
+      notice.indexOf('if (queueHeadFailure === "restored") {')
+    )
+    expect(auth).toContain('tSessionFailure("action.login")')
+    // Behind the portal: its AI accounts, and the label says so (#158).
+    expect(auth).toContain("signInViaPortal(selectedAgent, coworkInfo)")
+    expect(auth).toContain('coworkT("signInViaPortal")')
+    expect(auth).toContain("onClick: () => openAgentSignIn(selectedAgent)")
+  })
+
+  it("says why a message read back after a reload waits (#159)", () => {
+    const notice = between(
+      'if (queueHeadFailure === "restored") {',
+      "// Click-to-insert for a queued row"
+    )
+    expect(notice).toContain('coworkT("queueRestoredReason")')
+  })
+
+  it("sends the failure notice's Sign in where the agent signs in (#158)", () => {
+    const handler = between('case "login":', 'case "new_session":')
+    expect(handler).toContain("openAgentSignIn(selectedAgent)")
+    expect(handler).not.toContain("handleOpenAgentsSettings")
+  })
+
+  it("keeps the queue of a saved conversation across a reload (#159)", () => {
+    const hook = between(
+      "const messageQueue = useMessageQueue(",
+      "const {\n    queue: msgQueue,"
+    )
+    expect(hook).toContain(
+      "dbConversationId != null ? messageQueueStorageKey(dbConversationId) : null"
+    )
   })
 
   it("learns of the refusal from the error event of the turn in flight", () => {

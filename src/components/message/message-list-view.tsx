@@ -44,6 +44,7 @@ import { TurnStats } from "./turn-stats"
 import { LiveTurnStats } from "./live-turn-stats"
 import { LiveRunsChip, type LiveRunsList } from "./live-runs-chip"
 import { ModelLabelProvider } from "./model-label-context"
+import { TurnErrorAgentProvider } from "./turn-error-part"
 import { KnownInvocationsProvider } from "./known-invocations-context"
 import { DelegationStatusIndexProvider } from "./delegation-status-index-context"
 import { useTranscriptKnownInvocations } from "./use-transcript-known-invocations"
@@ -2485,11 +2486,14 @@ export function MessageListView({
   return (
     <MarkdownImageProvider rootPath={resolvedImageRoot}>
       <ModelLabelProvider value={modelLabel}>
-        <DelegationStatusIndexProvider value={delegationStatusIndex}>
-          <KnownInvocationsProvider value={knownInvocations}>
-            {thread}
-          </KnownInvocationsProvider>
-        </DelegationStatusIndexProvider>
+        {/* Cowork fork: lets a failure line name the agent (#159). */}
+        <TurnErrorAgentProvider value={agentType}>
+          <DelegationStatusIndexProvider value={delegationStatusIndex}>
+            <KnownInvocationsProvider value={knownInvocations}>
+              {thread}
+            </KnownInvocationsProvider>
+          </DelegationStatusIndexProvider>
+        </TurnErrorAgentProvider>
       </ModelLabelProvider>
     </MarkdownImageProvider>
   )

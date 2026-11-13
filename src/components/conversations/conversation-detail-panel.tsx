@@ -65,7 +65,11 @@ import {
   type AskSelectionParkedDetail,
 } from "@/lib/ask-selection-handoff"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
-import { useMessageQueue, type QueuedMessage } from "@/hooks/use-message-queue"
+import {
+  messageQueueStorageKey,
+  useMessageQueue,
+  type QueuedMessage,
+} from "@/hooks/use-message-queue"
 import type { QueueFailedHeadNotice } from "@/components/chat/message-queue-display"
 import {
   MessageListView,
@@ -136,6 +140,9 @@ import { TurnBusyError } from "@/lib/turn-busy"
 import { deliverQueuedSteer } from "@/lib/queued-steer"
 import { toErrorMessage } from "@/lib/app-error"
 import { commandErrorReason } from "@/lib/cowork/worktree-start"
+import { useCoworkText } from "@/lib/cowork/i18n"
+import { useCachedCoworkInfo } from "@/lib/cowork/info"
+import { openAgentSignIn, signInViaPortal } from "@/lib/cowork/sign-in"
 import { blockingPrompts } from "@/lib/blocking-prompts"
 import { notify } from "@/lib/notify"
 import {
@@ -324,6 +331,8 @@ const ConversationTabView = memo(function ConversationTabView({
   const tJenny = useTranslations("JennyFork")
   const tQueue = useTranslations("Folder.chat.messageQueue")
   const tAgentSelector = useTranslations("Folder.chat.agentSelector")
+  const coworkT = useCoworkText()
+  const coworkInfo = useCachedCoworkInfo()
   const tDiag = useTranslations("DiagnosticsSettings")
   const sharedT = useTranslations("Folder.chat.shared")
   const tMessageList = useTranslations("Folder.chat.messageList")
@@ -771,7 +780,11 @@ const ConversationTabView = memo(function ConversationTabView({
     ),
   })
   const { status: connStatus, sessionId: connSessionId } = conn
-  const messageQueue = useMessageQueue()
+  // Cowork fork: the queue outlives a reload of the page (#159), keyed by the
+  // saved conversation; a draft's queue is kept once the draft is saved.
+  const messageQueue = useMessageQueue(
+    dbConversationId != null ? messageQueueStorageKey(dbConversationId) : null
+  )
   const {
     queue: msgQueue,
     enqueue: mqEnqueue,
@@ -2458,7 +2471,9 @@ const ConversationTabView = memo(function ConversationTabView({
           break
         }
         case "login":
-          handleOpenAgentsSettings()
+          // Cowork fork: the portal's AI accounts when it manages this
+          // agent's credentials (#158), else the agent's settings page.
+          openAgentSignIn(selectedAgent)
           break
         case "new_session":
           handleOpenNewSession()
@@ -2470,7 +2485,7 @@ const ConversationTabView = memo(function ConversationTabView({
       detailTurns,
       mqEnqueue,
       selectedModeId,
-      handleOpenAgentsSettings,
+      selectedAgent,
       handleOpenNewSession,
       tSessionFailure,
     ]
@@ -2683,9 +2698,10 @@ const ConversationTabView = memo(function ConversationTabView({
   // Cowork fork: what the queue's hint adds while its head is failed (the
   // hint itself — "the first message failed, the rest wait for it" — is the
   // queue's own). No usable agent: the reason, and the Agents settings the
-  // install banner opens. A turn the agent refused for credentials: the same
-  // settings page, which is where an agent signs in (the failure notice's
-  // "Sign in" button goes there too).
+  // install banner opens. A turn the agent refused for credentials: where the
+  // agent signs in, the same place as the failure notice's "Sign in" button
+  // (the settings page, or behind the portal its AI accounts — #158). A
+  // message read back after a reload: why it waits (#159).
   const queueHeadFailure = queueHeadFailed
     ? (msgQueue[0]?.failure ?? null)
     : null
@@ -2703,10 +2719,17 @@ const ConversationTabView = memo(function ConversationTabView({
     if (queueHeadFailure === "auth") {
       return {
         action: {
-          label: tSessionFailure("action.login"),
-          onClick: handleOpenAgentsSettings,
+          label: signInViaPortal(selectedAgent, coworkInfo)
+            ? coworkT("signInViaPortal")
+            : tSessionFailure("action.login"),
+          onClick: () => openAgentSignIn(selectedAgent),
         },
       }
+    }
+    // Read back after a reload (#159): it may or may not have been about to
+    // go; the user decides, so it is never sent twice.
+    if (queueHeadFailure === "restored") {
+      return { reason: coworkT("queueRestoredReason") }
     }
     return null
   }, [
@@ -2716,6 +2739,9 @@ const ConversationTabView = memo(function ConversationTabView({
     tAgentSelector,
     tSessionFailure,
     handleOpenAgentsSettings,
+    selectedAgent,
+    coworkInfo,
+    coworkT,
   ])
 
   // Click-to-insert for a queued row: send THAT item into the running turn

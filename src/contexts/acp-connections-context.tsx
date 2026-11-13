@@ -171,6 +171,8 @@ import {
 import { rememberAdvertisedCommands } from "@/lib/advertised-commands-store"
 import { rememberModelLabels } from "@/lib/model-label-store"
 import { useActiveFolder } from "@/contexts/active-folder-context"
+import { useCoworkText } from "@/lib/cowork/i18n"
+import { openAgentSignIn, signInViaPortal } from "@/lib/cowork/sign-in"
 
 /**
  * A session id we are willing to interpolate into a shell command we hand the
@@ -3968,6 +3970,16 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   const vocabularyT = useTranslations("AgentVocabulary")
   const tChat = useTranslations("Folder.chat")
   const tFailure = useTranslations("Folder.chat.sessionFailure")
+  const coworkT = useCoworkText()
+  // Cowork fork: "Sign in" for an agent whose credentials the portal manages
+  // opens the portal's AI accounts, and says so (`lib/cowork/sign-in.ts`).
+  const signInLabel = useCallback(
+    (agentType: AgentType | null | undefined) =>
+      signInViaPortal(agentType)
+        ? coworkT("signInViaPortal")
+        : tFailure("action.login"),
+    [coworkT, tFailure]
+  )
   const { activeFolder: folder } = useActiveFolder()
   const folderNameRef = useRef(folder?.name)
   useEffect(() => {
@@ -4823,12 +4835,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       for (const action of knownSessionFailureActions(record)) {
         if (action === "login") {
           actions.push({
-            label: tFailure("action.login"),
-            onClick: () => {
-              openSettingsWindow("agents", { agentType }).catch((err) => {
-                console.error("[AcpConnections] open agent settings:", err)
-              })
-            },
+            label: signInLabel(agentType),
+            onClick: () => openAgentSignIn(agentType),
           })
         } else if (sessionFailureHandlerFor(connectionId)) {
           actions.push({
@@ -4842,7 +4850,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       }
       return actions
     },
-    [sessionFailureHandlerFor, tFailure]
+    [sessionFailureHandlerFor, signInLabel, tFailure]
   )
 
   /**
@@ -5153,7 +5161,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     (
       code: string | null | undefined,
       message: string,
-      agentLabel: string
+      agentLabel: string,
+      agentType?: AgentType | null
     ): string => {
       switch (code) {
         case "initialize_timeout":
@@ -5220,7 +5229,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // notification carries a Sign in button that opens agent settings
         // (older claude/codex adapters also publish an `access` failure
         // record with the same button; the two are told as one).
+        // Cowork fork: behind the portal, Claude Code / Codex / Grok sign in
+        // through the portal's AI accounts, not in settings (#158).
         case "turn_failed_auth_required":
+          if (signInViaPortal(agentType)) {
+            return coworkT("turnFailedAuthRequiredPortal", {
+              agent: agentLabel,
+            })
+          }
           return t("backendErrors.turnFailedAuthRequired", {
             agent: agentLabel,
           })
@@ -5267,7 +5283,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           return message
       }
     },
-    [t]
+    [t, coworkT]
   )
 
   /**
@@ -5287,10 +5303,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       code: string | null | undefined,
       message: string,
       details: string | null | undefined,
-      agentLabel: string
+      agentLabel: string,
+      agentType?: AgentType | null
     ) => {
       const route = routeAcpError(code)
-      const text = localizeBackendError(code, message, agentLabel)
+      const text = localizeBackendError(code, message, agentLabel, agentType)
       const raw = message.trim()
       return {
         route,
@@ -6218,7 +6235,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             e.code,
             e.message,
             e.details,
-            agentLabel
+            agentLabel,
+            nc?.agentType
           )
 
           // A verdict that the turn FAILED, or a prompt the agent rejected (no
@@ -6297,17 +6315,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 e.code === "turn_failed_auth_required" && signInAgentType
                   ? [
                       {
-                        label: tFailure("action.login"),
-                        onClick: () => {
-                          openSettingsWindow("agents", {
-                            agentType: signInAgentType,
-                          }).catch((err) => {
-                            console.error(
-                              "[AcpConnections] open agent settings:",
-                              err
-                            )
-                          })
-                        },
+                        label: signInLabel(signInAgentType),
+                        onClick: () => openAgentSignIn(signInAgentType),
                       },
                     ]
                   : undefined,
@@ -6493,6 +6502,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       sessionFailureNotifyActions,
       sessionNotification,
       settleRetryIncidentsOnProgress,
+      signInLabel,
       t,
       tChat,
       tFailure,
@@ -6654,7 +6664,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         patch.lastErrorCode,
         patch.lastError,
         null,
-        conn ? getAgentLabel(conn.agentType) : ""
+        conn ? getAgentLabel(conn.agentType) : "",
+        conn?.agentType
       )
       return { ...patch, lastError: text, lastErrorLevel: route.level }
     },

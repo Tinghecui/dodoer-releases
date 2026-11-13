@@ -72,7 +72,8 @@ vi.mock("next-intl", () => {
   // stability the render-isolation suite asserts.
   const t = (key: string, values?: Record<string, string>) =>
     values ? `${key}:${JSON.stringify(values)}` : key
-  return { useTranslations: () => t }
+  // `useCoworkText` (the provider's Cowork-only strings) asks for the locale.
+  return { useTranslations: () => t, useLocale: () => "en" }
 })
 
 // Active-folder store backing the active-folder mock below. Tests switch the

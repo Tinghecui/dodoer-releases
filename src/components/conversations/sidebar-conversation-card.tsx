@@ -30,7 +30,7 @@ import { useImeGuard } from "@/hooks/use-ime-guard"
 import { useTabStore } from "@/contexts/tab-context"
 import { emitAttachSessionToSession } from "@/lib/session-attachment-events"
 import type { DbConversationSummary, ConversationStatus } from "@/lib/types"
-import { STATUS_ORDER } from "@/lib/types"
+import { MANUAL_STATUS_ORDER } from "@/lib/types"
 import {
   markConversationAccepted,
   markConversationUnread,
@@ -757,9 +757,11 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                           tabIndex={-1}
                           onClick={(e) => {
                             e.stopPropagation()
+                            // Cowork fork: reopening goes back to "to review",
+                            // not `in_progress`, which says the agent runs (#164).
                             void handleStatusChange(
                               conversation.id,
-                              isCompleted ? "in_progress" : "completed"
+                              isCompleted ? "pending_review" : "completed"
                             )
                           }}
                           title={isCompleted ? t("reopen") : t("markCompleted")}
@@ -869,19 +871,17 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                 {t("status")}
               </ContextMenuSubTrigger>
               <ContextMenuSubContent>
-                {STATUS_ORDER.filter((s) => s !== conversation.status).map(
-                  (s) => (
-                    <ContextMenuItem
-                      key={s}
-                      onSelect={() =>
-                        void handleStatusChange(conversation.id, s)
-                      }
-                    >
-                      <ConversationStatusDot status={s} />
-                      {tStatus(s)}
-                    </ContextMenuItem>
-                  )
-                )}
+                {MANUAL_STATUS_ORDER.filter(
+                  (s) => s !== conversation.status
+                ).map((s) => (
+                  <ContextMenuItem
+                    key={s}
+                    onSelect={() => void handleStatusChange(conversation.id, s)}
+                  >
+                    <ConversationStatusDot status={s} />
+                    {tStatus(s)}
+                  </ContextMenuItem>
+                ))}
               </ContextMenuSubContent>
             </ContextMenuSub>
             {onMoveToFolder &&

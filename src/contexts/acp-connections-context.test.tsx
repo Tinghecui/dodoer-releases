@@ -27,6 +27,7 @@ import { TaskProvider } from "@/contexts/task-context"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { parsePermissionToolCall } from "@/lib/permission-request"
 import { subscribe } from "@/lib/platform"
+import { resetCoworkInfoForTests } from "@/lib/cowork/info"
 import { saveConfigPreference } from "@/lib/selector-prefs-storage"
 import { inferLiveToolName } from "@/lib/tool-call-normalization"
 import type { AttachHandlers } from "@/lib/transport/types"
@@ -88,6 +89,8 @@ const h = vi.hoisted(() => {
     // Where a connection's advertised commands are filed for its transcripts.
     rememberAdvertisedCommands: vi.fn(),
     openSettingsWindow: vi.fn(async () => {}),
+    // Cowork fork: where "Sign in" opens the portal (`lib/cowork/sign-in.ts`).
+    openUrl: vi.fn(async () => {}),
     // Every `t(key, values)` this render made. The mock below still returns
     // the bare key (what most assertions compare against), so interpolated
     // values would otherwise be unobservable — this is how a test checks the
@@ -101,11 +104,16 @@ vi.mock("next-intl", () => ({
     h.tCalls.push([key, values])
     return key
   },
+  // `useCoworkText` (Cowork-only strings, `lib/cowork/i18n.ts`) asks for it.
+  useLocale: () => "en",
 }))
 
 vi.mock("@/lib/platform", () => ({
   subscribe: vi.fn(async () => () => {}),
   getEventStream: () => h.eventStreamValue,
+  isDesktop: () => false,
+  isRemoteDesktopWindow: () => false,
+  openUrl: h.openUrl,
 }))
 
 vi.mock("@/lib/delegation-seed", () => ({
@@ -269,6 +277,8 @@ beforeEach(() => {
   h.resolveAlert.mockClear()
   h.rememberAdvertisedCommands.mockClear()
   h.openSettingsWindow.mockClear()
+  h.openUrl.mockClear()
+  resetCoworkInfoForTests()
 })
 
 function latestAttachHandlers(): AttachHandlers {
@@ -8876,6 +8886,54 @@ describe("AIR session failures are told as notifications", () => {
     expect(
       alert.actions.map((action: { label: string }) => action.label)
     ).toEqual(["action.login"])
+  })
+
+  it("behind the Cowork portal, sends the Sign in button to the portal's AI accounts (#158)", async () => {
+    resetCoworkInfoForTests({
+      product: "Cowork",
+      projectsRoot: null,
+      portal: true,
+      updateDisabled: false,
+    })
+    const handlers = await connectOwner()
+    startTurn(handlers)
+    emit(handlers, {
+      type: "error",
+      message: "raw",
+      agent_type: "claude_code",
+      code: "turn_failed_auth_required",
+      details: null,
+    })
+
+    expect(h.toastError).toHaveBeenCalledTimes(1)
+    // The line says where to go, in the Cowork catalogue (not settings).
+    expect(h.toastError.mock.calls[0][0]).toContain("My account → AI accounts")
+    expect(h.store!.getConnection(TAB)!.error).toContain(
+      "My account → AI accounts"
+    )
+    const options = toastOptions(h.toastError.mock.calls[0])
+    expect(options.action?.label).toBe("Set up AI accounts in the portal")
+    act(() => options.action!.onClick())
+    expect(h.openUrl).toHaveBeenCalledWith("/_cowork/account#ai-accounts")
+    expect(h.openSettingsWindow).not.toHaveBeenCalled()
+  })
+
+  it("behind the portal, the typed record's Sign in goes to the portal too", async () => {
+    resetCoworkInfoForTests({
+      product: "Cowork",
+      projectsRoot: null,
+      portal: true,
+      updateDisabled: false,
+    })
+    const handlers = await connectOwner()
+    startTurn(handlers)
+    emit(handlers, { type: "session_failure", record: failure() })
+
+    const options = toastOptions(h.toastError.mock.calls[0])
+    expect(options.action?.label).toBe("Set up AI accounts in the portal")
+    act(() => options.action!.onClick())
+    expect(h.openUrl).toHaveBeenCalledWith("/_cowork/account#ai-accounts")
+    expect(h.openSettingsWindow).not.toHaveBeenCalled()
   })
 
   it("gives no Sign in button to a verdict that is not about credentials", async () => {

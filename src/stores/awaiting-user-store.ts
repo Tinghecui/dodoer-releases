@@ -4,6 +4,8 @@ import {
   isPlanApprovalPermission,
 } from "@/lib/blocking-prompts"
 import type { ConnectionState } from "@/contexts/acp-connections-context"
+import { isMergeAwaitingInput } from "@/components/tasks/task-acceptance"
+import type { WorkTask } from "@/lib/types"
 
 /**
  * Sessions whose agent is parked on the user: a codeg-mcp `ask_user_question`,
@@ -18,15 +20,26 @@ import type { ConnectionState } from "@/contexts/acp-connections-context"
  * sub-agent's prompt is answered from its parent's conversation, so it marks
  * every ancestor's session as well. Client-only and not persisted: a reload
  * starts empty until the backend re-sends its snapshot.
+ *
+ * A second, coarser source covers the sessions the task engine runs headless
+ * (#167): a merge generation parked on the user (`merge_awaiting_input`) has no
+ * connection here until someone opens it, so the tasks view publishes those
+ * tasks' conversation ids (`publishTaskAwaiting`). The engine only knows that
+ * a request is out, not which kind, so such a row reads as "permission" —
+ * until a connection attaches and names the real kind, which wins.
  */
 export type AwaitingUserKind = "permission" | "question" | "plan"
 
 interface AwaitingUserState {
   bySession: ReadonlyMap<string, AwaitingUserKind>
+  /** Conversation ids (`conversation.id`) of task-engine sessions waiting on
+   *  the user, from the task list (#167). */
+  byTaskConversation: ReadonlySet<number>
 }
 
 export const useAwaitingUserStore = create<AwaitingUserState>(() => ({
   bySession: new Map(),
+  byTaskConversation: new Set(),
 }))
 
 type AwaitingConn = Pick<
@@ -113,11 +126,46 @@ export function publishAwaitingUser(connections: Iterable<AwaitingConn>): void {
   useAwaitingUserStore.setState({ bySession: next })
 }
 
-/** What the session behind `externalId` waits on the user for, or `null`. */
+/**
+ * Replace the task-engine source from the full task list (#167): the
+ * conversations of the merges parked on the user. A no-op (same reference)
+ * when the set did not change, so a task refetch that moved nothing here
+ * re-renders no row.
+ */
+export function publishTaskAwaiting(tasks: Iterable<WorkTask>): void {
+  const next = new Set<number>()
+  for (const task of tasks) {
+    if (isMergeAwaitingInput(task) && task.conversation_id != null) {
+      next.add(task.conversation_id)
+    }
+  }
+  const prev = useAwaitingUserStore.getState().byTaskConversation
+  if (prev.size === next.size && [...next].every((id) => prev.has(id))) return
+  useAwaitingUserStore.setState({ byTaskConversation: next })
+}
+
+/** What one conversation waits on the user for, or `null`: its connection's
+ *  own kind when one is attached, else "permission" when the task engine
+ *  says its headless session waits (#167). */
+export function awaitingUserFor(
+  state: AwaitingUserState,
+  externalId: string | null | undefined,
+  conversationId?: number | null
+): AwaitingUserKind | null {
+  const live = externalId ? state.bySession.get(externalId) : undefined
+  if (live) return live
+  return conversationId != null && state.byTaskConversation.has(conversationId)
+    ? "permission"
+    : null
+}
+
+/** What the session behind `externalId` — or the task-engine session of
+ *  conversation `conversationId` — waits on the user for, or `null`. */
 export function useAwaitingUser(
-  externalId: string | null | undefined
+  externalId: string | null | undefined,
+  conversationId?: number | null
 ): AwaitingUserKind | null {
   return useAwaitingUserStore((s) =>
-    externalId ? (s.bySession.get(externalId) ?? null) : null
+    awaitingUserFor(s, externalId, conversationId)
   )
 }

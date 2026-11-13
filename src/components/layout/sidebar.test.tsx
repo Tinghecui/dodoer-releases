@@ -323,6 +323,65 @@ describe("Sidebar — fixed nav region", () => {
     useAppWorkspaceStore.setState({ conversations: [], folders: [] })
   })
 
+  it("counts a headless merge waiting on approval once, whatever says so", () => {
+    // #167: the task engine's merge session has no connection here until it
+    // is opened; the task list marks it by conversation id instead.
+    const row = (c: Partial<DbConversationSummary>) =>
+      ({
+        id: 0,
+        folder_id: 10,
+        title: "session",
+        title_locked: false,
+        agent_type: "claude_code",
+        status: "in_progress",
+        kind: "regular",
+        model: null,
+        git_branch: null,
+        external_id: null,
+        message_count: 0,
+        child_count: 0,
+        created_at: "2026-01-01",
+        pinned_at: null,
+        updated_at: "2026-01-02",
+        ...c,
+      }) as DbConversationSummary
+    useAppWorkspaceStore.setState({
+      conversations: [
+        row({ id: 1, external_id: "merge" }),
+        row({ id: 2, external_id: "other" }),
+        // A closed folder has no row to answer from.
+        row({ id: 4, external_id: "c", folder_id: 50 }),
+      ],
+      folders: [{ id: 10 }] as FolderDetail[],
+    })
+    const { container, unmount } = renderSidebar()
+    const bell = container.querySelector("[data-sidebar-bell]")!
+    act(() => {
+      useAwaitingUserStore.setState({ byTaskConversation: new Set([1, 4]) })
+    })
+    expect(
+      bell.querySelector('[data-global-awaiting-count="1"]')
+    ).not.toBeNull()
+    // Opened: its connection reports the same wait — still one session.
+    act(() => {
+      useAwaitingUserStore.setState({
+        bySession: new Map<string, AwaitingUserKind>([["merge", "permission"]]),
+      })
+    })
+    expect(
+      bell.querySelector('[data-global-awaiting-count="1"]')
+    ).not.toBeNull()
+    act(() => {
+      useAwaitingUserStore.setState({
+        bySession: new Map(),
+        byTaskConversation: new Set(),
+      })
+    })
+    expect(bell.querySelector("[data-global-awaiting-count]")).toBeNull()
+    unmount()
+    useAppWorkspaceStore.setState({ conversations: [], folders: [] })
+  })
+
   it("is a card lifted on a bottom shadow, with no frame", () => {
     const { container } = renderSidebar()
     const pane = container.querySelector("aside")!

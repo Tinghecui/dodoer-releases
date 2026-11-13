@@ -385,7 +385,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   // The agent stopped mid-turn to ask the user something (a question, a
   // permission, a plan approval): still `in_progress`, but it is the user's
   // move, so the spinner gives way to a "needs you" mark.
-  const awaiting = useAwaitingUser(conversation.external_id)
+  const awaiting = useAwaitingUser(conversation.external_id, conversation.id)
   // jenny fork: turn ended (or marked unread by hand) since the user last
   // accepted this session.
   const isUnread = useIsConversationUnread(conversation)

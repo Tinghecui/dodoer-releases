@@ -5,7 +5,10 @@ import { Bell } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useShallow } from "zustand/react/shallow"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useAwaitingUserStore } from "@/stores/awaiting-user-store"
+import {
+  awaitingUserFor,
+  useAwaitingUserStore,
+} from "@/stores/awaiting-user-store"
 import {
   countUnreadByGroup,
   useConversationSeenStore,
@@ -44,13 +47,19 @@ export function SidebarBell({
       markedUnread: s.markedUnread,
     }))
   )
-  const awaitingBySession = useAwaitingUserStore((s) => s.bySession)
+  const awaitingState = useAwaitingUserStore(
+    useShallow((s) => ({
+      bySession: s.bySession,
+      byTaskConversation: s.byTaskConversation,
+    }))
+  )
   // Roots only: a sub-agent's prompt already marks its parent's session.
+  // One count per row, whichever source (a live connection, or the task
+  // engine's headless merge, #167) — or both — says it waits.
   const awaiting = conversations.filter(
     (c) =>
       c.parent_id == null &&
-      c.external_id != null &&
-      awaitingBySession.has(c.external_id)
+      awaitingUserFor(awaitingState, c.external_id, c.id) != null
   ).length
   const running = conversations.filter((c) => c.status === "in_progress").length
   const unread =

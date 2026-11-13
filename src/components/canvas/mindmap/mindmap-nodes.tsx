@@ -270,7 +270,7 @@ export const MindMapLeaf = memo(function MindMapLeaf({
   // title), running or cancelled, else how long ago it last moved.
   const isUnread = useIsConversationUnread(conversation)
   const running = conversation.status === "in_progress"
-  const awaiting = useAwaitingUser(conversation.external_id)
+  const awaiting = useAwaitingUser(conversation.external_id, conversation.id)
   const cancelled = conversation.status === "cancelled"
   const timeLabel =
     now > 0 ? formatRelative(conversation.updated_at, now) : undefined

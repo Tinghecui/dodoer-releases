@@ -1440,7 +1440,10 @@ describe("SidebarConversationCard turn that did not finish", () => {
 describe("SidebarConversationCard awaiting the user", () => {
   beforeEach(() => {
     localStorage.clear()
-    useAwaitingUserStore.setState({ bySession: new Map() })
+    useAwaitingUserStore.setState({
+      bySession: new Map(),
+      byTaskConversation: new Set(),
+    })
   })
 
   const asking = { ...conv(31), status: "in_progress", external_id: "sess-31" }
@@ -1519,6 +1522,25 @@ describe("SidebarConversationCard awaiting the user", () => {
     act(() => publish("other", question))
     const { container } = renderCard(asking)
     expect(mark(container)).toBeNull()
+  })
+
+  it("marks a headless merge the task list says waits, as an approval", () => {
+    // #167: the task engine's merge session, not attached here yet.
+    const { container } = renderCard(asking)
+    act(() =>
+      useAwaitingUserStore.setState({ byTaskConversation: new Set([31]) })
+    )
+    expect(mark(container)?.getAttribute("data-awaiting-user")).toBe(
+      "permission"
+    )
+    expect(mark(container)?.getAttribute("title")).toBe("Needs your approval")
+    expect(container.querySelector('[title="Running"]')).toBeNull()
+
+    act(() =>
+      useAwaitingUserStore.setState({ byTaskConversation: new Set([32]) })
+    )
+    expect(mark(container)).toBeNull()
+    expect(container.querySelector('[title="Running"]')).not.toBeNull()
   })
 })
 

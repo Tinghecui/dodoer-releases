@@ -1,10 +1,11 @@
 import { act, renderHook } from "@testing-library/react"
 import { beforeEach, describe, expect, it } from "vitest"
 
-import type { QuestionSpec } from "@/lib/types"
+import type { QuestionSpec, WorkTask } from "@/lib/types"
 import {
   awaitingUserOf,
   publishAwaitingUser,
+  publishTaskAwaiting,
   useAwaitingUser,
   useAwaitingUserStore,
 } from "./awaiting-user-store"
@@ -46,8 +47,30 @@ function conn(
 const sessions = () => useAwaitingUserStore.getState().bySession
 
 beforeEach(() => {
-  useAwaitingUserStore.setState({ bySession: new Map() })
+  useAwaitingUserStore.setState({
+    bySession: new Map(),
+    byTaskConversation: new Set(),
+  })
 })
+
+/** A task row, reduced to what `publishTaskAwaiting` reads. */
+function task(
+  id: number,
+  status: WorkTask["status"],
+  over: Partial<WorkTask> = {}
+): WorkTask {
+  return {
+    id,
+    status,
+    conversation_id: id * 10,
+    merge_awaiting_input: false,
+    ...over,
+  } as WorkTask
+}
+const parkedMerge = (id: number, over: Partial<WorkTask> = {}) =>
+  task(id, "merging", { merge_awaiting_input: true, ...over })
+const taskConversations = () =>
+  useAwaitingUserStore.getState().byTaskConversation
 
 describe("awaitingUserOf", () => {
   it("is null with no prompt, and for a question set that asks nothing", () => {
@@ -188,6 +211,79 @@ describe("useAwaitingUser", () => {
       publishAwaitingUser([conn("c", "a", { pendingAskQuestion: question() })])
     )
     const { result } = renderHook(() => useAwaitingUser(null))
+    expect(result.current).toBeNull()
+  })
+})
+
+// #167: a merge the task engine runs headless waits on the user before any
+// connection here knows of it — the task list is the only source until then.
+describe("publishTaskAwaiting", () => {
+  it("collects the conversations of merges parked on the user", () => {
+    publishTaskAwaiting([
+      parkedMerge(1),
+      // Landing, not waiting.
+      task(2, "merging"),
+      // The mark means nothing off `merging`; awaiting_input is out of scope.
+      task(3, "review", { merge_awaiting_input: true }),
+      task(4, "awaiting_input"),
+      // No session to answer in.
+      parkedMerge(5, { conversation_id: null }),
+    ])
+    expect([...taskConversations()]).toEqual([10])
+  })
+
+  it("drops a merge once it stops waiting, and keeps the set when nothing moved", () => {
+    publishTaskAwaiting([parkedMerge(1), parkedMerge(2)])
+    const before = taskConversations()
+    publishTaskAwaiting([parkedMerge(2), parkedMerge(1)])
+    expect(taskConversations()).toBe(before)
+    publishTaskAwaiting([task(1, "merging"), parkedMerge(2)])
+    expect([...taskConversations()]).toEqual([20])
+    publishTaskAwaiting([])
+    expect(taskConversations().size).toBe(0)
+  })
+
+  it("leaves the connection source alone", () => {
+    publishAwaitingUser([conn("c", "a", { pendingAskQuestion: question() })])
+    const live = sessions()
+    publishTaskAwaiting([parkedMerge(1)])
+    expect(sessions()).toBe(live)
+  })
+})
+
+describe("useAwaitingUser with the task source", () => {
+  it("reads a headless merge's conversation as awaiting a permission", () => {
+    const { result } = renderHook(() => useAwaitingUser("sess-10", 10))
+    expect(result.current).toBeNull()
+    act(() => publishTaskAwaiting([parkedMerge(1)]))
+    expect(result.current).toBe("permission")
+    act(() => publishTaskAwaiting([task(1, "merging")]))
+    expect(result.current).toBeNull()
+  })
+
+  it("marks the row before its session id is known", () => {
+    act(() => publishTaskAwaiting([parkedMerge(1)]))
+    const { result } = renderHook(() => useAwaitingUser(null, 10))
+    expect(result.current).toBe("permission")
+  })
+
+  it("lets an attached connection name the real kind", () => {
+    act(() => {
+      publishTaskAwaiting([parkedMerge(1)])
+      publishAwaitingUser([
+        conn("c", "sess-10", { pendingAskQuestion: question() }),
+      ])
+    })
+    const { result } = renderHook(() => useAwaitingUser("sess-10", 10))
+    expect(result.current).toBe("question")
+    // The connection's prompt was answered; the task list has not caught up.
+    act(() => publishAwaitingUser([conn("c", "sess-10")]))
+    expect(result.current).toBe("permission")
+  })
+
+  it("another conversation's merge does not touch this one", () => {
+    act(() => publishTaskAwaiting([parkedMerge(2)]))
+    const { result } = renderHook(() => useAwaitingUser("sess-10", 10))
     expect(result.current).toBeNull()
   })
 })

@@ -43,6 +43,7 @@ vi.mock("@/lib/platform", () => ({
   }),
 }))
 
+import { useAwaitingUserStore } from "@/stores/awaiting-user-store"
 import { TasksViewProvider, useTasksView } from "./tasks-view-context"
 
 function sample(id: number, status: WorkTask["status"]): WorkTask {
@@ -147,6 +148,51 @@ describe("TasksViewProvider", () => {
       expect(screen.getByTestId("count").textContent).toBe("2")
     )
     expect(screen.getByTestId("attention").textContent).toBe("1")
+  })
+
+  it("hands the parked merge's conversation to the sidebar marks", async () => {
+    // #167: the sidebar row and the bell learn of a headless merge waiting
+    // on the user from this list.
+    listMock.mockResolvedValueOnce([
+      {
+        ...sample(1, "merging"),
+        merge_awaiting_input: true,
+        conversation_id: 9,
+      },
+      { ...sample(2, "merging"), conversation_id: 10 },
+    ])
+    const { unmount } = render(
+      <TasksViewProvider>
+        <Probe />
+      </TasksViewProvider>
+    )
+    const marked = () => [...useAwaitingUserStore.getState().byTaskConversation]
+    await waitFor(() => expect(marked()).toEqual([9]))
+
+    // Approved: the engine's upsert nudges a refetch that clears the mark.
+    listMock.mockResolvedValueOnce([
+      { ...sample(1, "merging"), conversation_id: 9 },
+      { ...sample(2, "merging"), conversation_id: 10 },
+    ])
+    await act(async () => {
+      changedHandler?.()
+    })
+    await waitFor(() => expect(marked()).toEqual([]))
+
+    listMock.mockResolvedValueOnce([
+      {
+        ...sample(1, "merging"),
+        merge_awaiting_input: true,
+        conversation_id: 9,
+      },
+    ])
+    await act(async () => {
+      changedHandler?.()
+    })
+    await waitFor(() => expect(marked()).toEqual([9]))
+    // Nothing keeps a mark alive once the list's owner is gone.
+    unmount()
+    expect(marked()).toEqual([])
   })
 
   it("leaves tasks put aside to handle later out of the badge", async () => {

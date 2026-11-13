@@ -21,6 +21,7 @@ import {
   type TasksViewMode,
 } from "@/lib/tasks-board-filter-storage"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { publishTaskAwaiting } from "@/stores/awaiting-user-store"
 import {
   isDeferred,
   isMergeAwaitingInput,
@@ -141,6 +142,14 @@ export function TasksViewProvider({ children }: { children: ReactNode }) {
     }
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [refetch])
+
+  // The sidebar rows and the bell mark a headless merge session that waits on
+  // the user (#167) from this list — the one place the client learns of it
+  // before anyone attaches to the session. Cleared when the provider leaves.
+  useEffect(() => {
+    publishTaskAwaiting(tasks)
+  }, [tasks])
+  useEffect(() => () => publishTaskAwaiting([]), [])
 
   const attentionCount = useMemo(
     () =>

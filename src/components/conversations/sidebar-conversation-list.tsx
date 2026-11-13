@@ -979,7 +979,8 @@ export function SidebarConversationList({
   const tRemote = useTranslations("RemoteWorkspace")
   const tCowork = useCoworkText()
   const { themeColor: appThemeColor } = useThemeColor()
-  const { createTerminalInDirectory } = useTerminalContext()
+  const { createTerminalInDirectory, closeTerminalsByFolder } =
+    useTerminalContext()
   const { zoomLevel } = useZoomLevel()
   const folders = useAppWorkspaceStore((s) => s.folders)
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
@@ -2280,9 +2281,16 @@ export function SidebarConversationList({
     try {
       closeTabsByFolder(folderId)
       // The project's worktree folders leave the workspace with it (#142).
+      const leaving = [folderId]
       for (const f of folders) {
-        if (f.parent_id === folderId) closeTabsByFolder(f.id)
+        if (f.parent_id === folderId) {
+          closeTabsByFolder(f.id)
+          leaving.push(f.id)
+        }
       }
+      // The confirm promises the terminals go too (#176): those opened for the
+      // project or one of its worktrees. Terminals of other projects stay.
+      closeTerminalsByFolder(leaving)
       await removeFolderFromWorkspace(folderId)
       toast.success(t("toasts.folderRemoved", { name: folderName }))
     } catch (e) {
@@ -2291,7 +2299,14 @@ export function SidebarConversationList({
     } finally {
       setRemoveConfirm(null)
     }
-  }, [removeConfirm, folders, closeTabsByFolder, removeFolderFromWorkspace, t])
+  }, [
+    removeConfirm,
+    folders,
+    closeTabsByFolder,
+    closeTerminalsByFolder,
+    removeFolderFromWorkspace,
+    t,
+  ])
 
   // The card already holds the full summary, so it passes `folderId` back to
   // these callbacks. That removes the `conversations` closure dependency, which
@@ -2368,6 +2383,8 @@ export function SidebarConversationList({
                   false
                 )
                 closeTabsByFolder(folderId)
+                // Its terminals sit in a directory that is gone now (#176).
+                closeTerminalsByFolder([folderId])
                 await useAppWorkspaceStore.getState().fetchFolders()
                 toast.success(
                   tBranch("worktreeCleanup.done", { branch: branchName })
@@ -2385,7 +2402,7 @@ export function SidebarConversationList({
         },
       })
     },
-    [closeTabsByFolder, tBranch]
+    [closeTabsByFolder, closeTerminalsByFolder, tBranch]
   )
 
   const handleDelete = useCallback(

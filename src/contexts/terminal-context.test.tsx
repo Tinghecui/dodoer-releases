@@ -9,7 +9,7 @@ import {
 const h = vi.hoisted(() => ({
   terminalKill: vi.fn(async () => {}),
   terminalSnapshot: vi.fn(),
-  listeners: new Map<string, () => void>(),
+  listeners: new Map<string, (payload?: unknown) => void>(),
   // While set, exit subscriptions wait to be granted (see `grant`).
   holdSubscribe: false,
   grants: [] as (() => void)[],
@@ -26,7 +26,7 @@ vi.mock("@/lib/api", () => ({
 }))
 vi.mock("@/lib/transport", () => ({
   getTransport: () => ({
-    subscribe: (event: string, handler: () => void) => {
+    subscribe: (event: string, handler: (payload?: unknown) => void) => {
       h.listeners.set(event, handler)
       const unlisten = () => {
         h.listeners.delete(event)
@@ -758,5 +758,129 @@ describe("TerminalProvider reload recovery", () => {
       expect(screen.getByTestId("exited")).toHaveTextContent(id)
     )
     expect(h.terminalSnapshot).toHaveBeenCalledTimes(2)
+  })
+})
+
+// AI QA #176: removing a project closes "its tabs and terminals". Terminals
+// are shared across projects, so only those opened for its folders go.
+describe("TerminalProvider closeTerminalsByFolder", () => {
+  function FolderProbe() {
+    const terminal = useTerminalContext()
+    return (
+      <div>
+        <button onClick={() => terminal.createTerminal()}>New</button>
+        <button onClick={() => terminal.closeTerminalsByFolder([7])}>
+          Close 7
+        </button>
+        <button onClick={() => terminal.closeTerminalsByFolder([8])}>
+          Close 8
+        </button>
+        <button onClick={() => terminal.closeTerminalsByFolder([99])}>
+          Close 99
+        </button>
+        <span data-testid="tabs">
+          {terminal.tabs.map((tab) => `${tab.folderId}:${tab.id}`).join(",")}
+        </span>
+        <span data-testid="active">{terminal.activeTabId ?? ""}</span>
+        <span data-testid="open">{String(terminal.isOpen)}</span>
+      </div>
+    )
+  }
+
+  beforeEach(() => {
+    h.terminalKill.mockClear()
+    h.listeners.clear()
+    h.holdSubscribe = false
+    h.remoteId = null
+    h.windowLabel = "main"
+    sessionStorage.clear()
+    window.name = ""
+  })
+
+  // Folder 7 gets one terminal, folder 8 two; the last one opened is active.
+  function openTwoProjects() {
+    const view = render(
+      <TerminalProvider>
+        <FolderProbe />
+      </TerminalProvider>
+    )
+    h.activeFolderId = 7
+    view.rerender(
+      <TerminalProvider>
+        <FolderProbe />
+      </TerminalProvider>
+    )
+    fireEvent.click(screen.getByRole("button", { name: "New" }))
+    h.activeFolderId = 8
+    view.rerender(
+      <TerminalProvider>
+        <FolderProbe />
+      </TerminalProvider>
+    )
+    fireEvent.click(screen.getByRole("button", { name: "New" }))
+    fireEvent.click(screen.getByRole("button", { name: "New" }))
+    const tabs = (screen.getByTestId("tabs").textContent ?? "")
+      .split(",")
+      .map((entry) => {
+        const [folderId, id] = entry.split(":")
+        return { folderId: Number(folderId), id }
+      })
+    return { view, tabs }
+  }
+
+  it("closes only that folder's terminals and kills them", () => {
+    const { tabs } = openTwoProjects()
+    expect(tabs.map((t) => t.folderId)).toEqual([7, 8, 8])
+    const active = screen.getByTestId("active").textContent
+
+    fireEvent.click(screen.getByRole("button", { name: "Close 7" }))
+
+    expect(h.terminalKill).toHaveBeenCalledTimes(1)
+    expect(h.terminalKill).toHaveBeenCalledWith(tabs[0].id)
+    expect(screen.getByTestId("tabs").textContent).toBe(
+      `8:${tabs[1].id},8:${tabs[2].id}`
+    )
+    // The active terminal was another project's: it stays active.
+    expect(screen.getByTestId("active").textContent).toBe(active)
+    expect(screen.getByTestId("open").textContent).toBe("true")
+  })
+
+  it("moves the active terminal to the first left, and folds away when none is", () => {
+    const { tabs } = openTwoProjects()
+    fireEvent.click(screen.getByRole("button", { name: "Close 8" }))
+    expect(h.terminalKill).toHaveBeenCalledWith(tabs[1].id)
+    expect(h.terminalKill).toHaveBeenCalledWith(tabs[2].id)
+    expect(screen.getByTestId("tabs").textContent).toBe(`7:${tabs[0].id}`)
+    expect(screen.getByTestId("active").textContent).toBe(tabs[0].id)
+
+    fireEvent.click(screen.getByRole("button", { name: "Close 7" }))
+    expect(screen.getByTestId("tabs").textContent).toBe("")
+    expect(screen.getByTestId("active").textContent).toBe("")
+    expect(screen.getByTestId("open").textContent).toBe("false")
+  })
+
+  it("leaves everything alone for a folder with no terminals", () => {
+    openTwoProjects()
+    const before = screen.getByTestId("tabs").textContent
+    fireEvent.click(screen.getByRole("button", { name: "Close 99" }))
+    expect(h.terminalKill).not.toHaveBeenCalled()
+    expect(screen.getByTestId("tabs").textContent).toBe(before)
+  })
+
+  it("closes a deleted folder's terminals when the backend announces it", async () => {
+    const { tabs } = openTwoProjects()
+    await waitFor(() => expect(h.listeners.has("folder://changed")).toBe(true))
+    act(() => {
+      h.listeners.get("folder://changed")?.({ kind: "deleted", id: 8 })
+    })
+    expect(screen.getByTestId("tabs").textContent).toBe(`7:${tabs[0].id}`)
+    // An upsert is not a removal.
+    act(() => {
+      h.listeners.get("folder://changed")?.({
+        kind: "upsert",
+        folder: { id: 7 },
+      })
+    })
+    expect(screen.getByTestId("tabs").textContent).toBe(`7:${tabs[0].id}`)
   })
 })

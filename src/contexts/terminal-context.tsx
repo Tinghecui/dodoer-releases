@@ -17,6 +17,7 @@ import {
   terminalSnapshot,
 } from "@/lib/api"
 import { getActiveRemoteConnectionId, getTransport } from "@/lib/transport"
+import { FOLDER_CHANGED_EVENT, type FolderChange } from "@/lib/types"
 import { randomUUID } from "@/lib/utils"
 import { getCurrentWindowLabel } from "@/lib/browser/window-label"
 import { useActiveFolder } from "@/contexts/active-folder-context"
@@ -212,6 +213,9 @@ interface TerminalContextValue {
   closeTerminal: (id: string) => void
   closeOtherTerminals: (id: string) => void
   closeAllTerminals: () => void
+  /** Close every terminal opened for one of these folders (`TerminalTab.folderId`)
+   *  — what removing a project from the workspace promises (#176). */
+  closeTerminalsByFolder: (folderIds: readonly number[]) => void
   renameTerminal: (id: string, title: string) => void
   switchTerminal: (id: string) => void
 }
@@ -569,6 +573,62 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     setIsOpen(false)
   }, [killTerminalTabs, removeExitedTerminals])
 
+  // Removing a project from the workspace closes "its tabs and terminals" —
+  // the confirm says so (#176). Terminals are shared across projects, so only
+  // the ones opened for these folders go; the rest stay as they were. Like
+  // `closeTerminal`, an active terminal that goes falls to one still open, and
+  // closing the last one folds the panel away.
+  const closeTerminalsByFolder = useCallback(
+    (folderIds: readonly number[]) => {
+      const ids = new Set(folderIds)
+      setTabs((prev) => {
+        const closed = prev.filter((t) => ids.has(t.folderId))
+        if (closed.length === 0) return prev
+        killTerminalTabs(closed)
+        removeExitedTerminals(closed.map((t) => t.id))
+        const next = prev.filter((t) => !ids.has(t.folderId))
+        if (next.length === 0) {
+          tabCounterRef.current = 0n
+          setIsOpen(false)
+          setActiveTabId(null)
+        } else {
+          setActiveTabId((prevActive) =>
+            prevActive !== null && next.some((t) => t.id === prevActive)
+              ? prevActive
+              : next[0].id
+          )
+        }
+        return next
+      })
+    },
+    [killTerminalTabs, removeExitedTerminals]
+  )
+
+  // A folder deleted for good — a worktree removed from the branch menu, the
+  // sidebar's clean-up offer or a task's merge — leaves its terminals sitting
+  // in a directory that is gone (#176). The backend announces it on
+  // `folder://changed`; closing a folder from the workspace does not, and the
+  // sidebar closes those terminals itself.
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    getTransport()
+      .subscribe<FolderChange>(FOLDER_CHANGED_EVENT, (change) => {
+        if (change.kind === "deleted") closeTerminalsByFolder([change.id])
+      })
+      .then((dispose) => {
+        if (disposed) dispose()
+        else unlisten = dispose
+      })
+      .catch((err) => {
+        console.error("[terminal] subscribe folder changes failed:", err)
+      })
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [closeTerminalsByFolder])
+
   const renameTerminal = useCallback((id: string, title: string) => {
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, title } : t)))
   }, [])
@@ -678,6 +738,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       closeTerminal,
       closeOtherTerminals,
       closeAllTerminals,
+      closeTerminalsByFolder,
       renameTerminal,
       switchTerminal,
     }),
@@ -698,6 +759,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       closeTerminal,
       closeOtherTerminals,
       closeAllTerminals,
+      closeTerminalsByFolder,
       renameTerminal,
       switchTerminal,
     ]

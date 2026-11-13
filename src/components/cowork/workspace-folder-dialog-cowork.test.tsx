@@ -158,7 +158,8 @@ describe("WorkspaceFolderDialog in Cowork mode", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
-  it("leaves the tabs alone when an existing folder was opened", async () => {
+  // AI QA #177: opening an existing folder lands in it too, like a new project.
+  it("switches to an existing folder opened from the list on Done", async () => {
     cowork.info = {
       product: "Cowork",
       projectsRoot: ROOT,
@@ -173,9 +174,58 @@ describe("WorkspaceFolderDialog in Cowork mode", () => {
     await userEvent.click(await screen.findByRole("button", { name: "demo" }))
     await userEvent.click(screen.getByRole("button", { name: "Next" }))
     await waitFor(() => expect(openFolder).toHaveBeenCalledWith(`${ROOT}/demo`))
+    // Not before the dialog is done with: step 2 still links folders.
+    expect(openNewConversationTab).not.toHaveBeenCalled()
     await userEvent.click(await screen.findByRole("button", { name: "Done" }))
     expect(onOpenChange).toHaveBeenCalledWith(false)
     expect(cowork.coworkCreateProject).not.toHaveBeenCalled()
+    expect(openNewConversationTab).toHaveBeenCalledTimes(1)
+    expect(openNewConversationTab).toHaveBeenCalledWith(9, `${ROOT}/demo`)
+  })
+
+  it("switches the same way outside Cowork", async () => {
+    api.listDirectoryEntries.mockResolvedValue([
+      { name: "demo", path: `${ROOT}/demo`, hasChildren: false },
+    ])
+    renderDialog()
+    await userEvent.click(await screen.findByRole("button", { name: "demo" }))
+    await userEvent.click(screen.getByRole("button", { name: "Next" }))
+    await userEvent.click(await screen.findByRole("button", { name: "Done" }))
+    expect(openNewConversationTab).toHaveBeenCalledTimes(1)
+    expect(openNewConversationTab).toHaveBeenCalledWith(9, `${ROOT}/demo`)
+  })
+
+  it("moves nothing when the dialog only managed a folder's links", async () => {
+    const onOpenChange = vi.fn()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <WorkspaceFolderDialog
+          open
+          onOpenChange={onOpenChange}
+          folder={folder()}
+        />
+      </NextIntlClientProvider>
+    )
+    await userEvent.click(await screen.findByRole("button", { name: "Done" }))
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+    expect(openFolder).not.toHaveBeenCalled()
+    expect(openNewConversationTab).not.toHaveBeenCalled()
+  })
+
+  it("does not switch when the dialog is closed without Done", async () => {
+    api.listDirectoryEntries.mockResolvedValue([
+      { name: "demo", path: `${ROOT}/demo`, hasChildren: false },
+    ])
+    const view = renderDialog()
+    await userEvent.click(await screen.findByRole("button", { name: "demo" }))
+    await userEvent.click(screen.getByRole("button", { name: "Next" }))
+    await screen.findByRole("button", { name: "Done" })
+    // Closed some other way (Esc, the corner ×): only "Done" switches.
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <WorkspaceFolderDialog open={false} onOpenChange={() => {}} />
+      </NextIntlClientProvider>
+    )
     expect(openNewConversationTab).not.toHaveBeenCalled()
   })
 

@@ -109,36 +109,38 @@ export function CoworkNewProjectForm({
 }
 
 /**
- * Cowork: land in the project the form just created. The dialog hands the
- * created folder to `remember` and calls `openIfCreated` when it is closed
- * with "Done"; if the folder it ended up on is that project, a new
- * conversation tab is opened on it, so the main area and the title switch to
- * the new project. A folder opened any other way keeps the upstream behavior
- * (the dialog closes, nothing else moves).
+ * Cowork: land in the project the dialog just opened. The dialog hands every
+ * root it opens in this session to `remember` — a project the form created
+ * as well as an existing folder picked in the list (#177; it used to be the
+ * created ones only, see .cowork/journal/2026-11-13-open-folder-switches.md)
+ * — and calls `openIfOpened` when it is closed with "Done": if the folder it
+ * ended up on is that one, a new conversation tab is opened on it, so the
+ * main area and the title switch to it. A dialog opened to manage an existing
+ * folder's links never opens a root, so its "Done" moves nothing.
  */
-export function useCoworkCreatedProject(open: boolean) {
+export function useCoworkOpenedProject(open: boolean) {
   const openNewConversationTab = useTabStore((s) => s.openNewConversationTab)
-  const createdIdRef = useRef<number | null>(null)
+  const openedIdRef = useRef<number | null>(null)
 
-  // Each time the dialog opens is a new session: forget the last project.
+  // Each time the dialog opens is a new session: forget the last folder.
   useEffect(() => {
-    if (open) createdIdRef.current = null
+    if (open) openedIdRef.current = null
   }, [open])
 
   const remember = useCallback((folder: FolderDetail) => {
-    createdIdRef.current = folder.id
+    openedIdRef.current = folder.id
   }, [])
 
-  const openIfCreated = useCallback(
+  const openIfOpened = useCallback(
     (root: FolderDetail | null) => {
-      const createdId = createdIdRef.current
-      createdIdRef.current = null
-      if (root && root.id === createdId) {
+      const openedId = openedIdRef.current
+      openedIdRef.current = null
+      if (root && root.id === openedId) {
         openNewConversationTab(root.id, root.path)
       }
     },
     [openNewConversationTab]
   )
 
-  return { remember, openIfCreated }
+  return { remember, openIfOpened }
 }

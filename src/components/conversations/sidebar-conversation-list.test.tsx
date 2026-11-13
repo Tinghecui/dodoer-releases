@@ -89,7 +89,32 @@ const stableTask = vi.hoisted(() => ({
 }))
 const stableTerminal = vi.hoisted(() => ({
   createTerminalInDirectory: () => {},
+  closeTerminalsByFolder: vi.fn(),
 }))
+
+// The worktree clean-up offered after deleting a worktree's last conversation
+// talks to the backend; only these calls are stubbed, the rest stays real.
+const api = vi.hoisted(() => ({
+  deleteConversation: vi.fn(() => Promise.resolve()),
+  getGitBranch: vi.fn(() => Promise.resolve("feature-x")),
+  gitRemoveWorktree: vi.fn(() => Promise.resolve()),
+}))
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  ...api,
+}))
+// That offer is a plain `toast(title, { action })`; record its options so a
+// test can press the action. `toast.success` / `toast.error` stay real.
+type ToastOffer = { action?: { onClick: () => void } }
+const toastOffers = vi.hoisted(() => [] as ToastOffer[])
+vi.mock("sonner", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("sonner")>()
+  const toast = Object.assign((...args: Parameters<typeof actual.toast>) => {
+    toastOffers.push((args[1] ?? {}) as ToastOffer)
+    return actual.toast(...args)
+  }, actual.toast)
+  return { ...actual, toast }
+})
 
 // Cowork brand switch, read live so one suite can flip it (AI QA #93). Off by
 // default, like the vitest env, so every other suite sees the upstream UI.
@@ -237,19 +262,28 @@ vi.mock("@/contexts/active-folder-context", () => ({
 
 vi.mock("@/contexts/tab-context", () => ({
   useTabActions: () => stableTabFns,
-  useTabStore: (
-    selector: (s: {
-      activeTabId: string | null
-      tabs: Array<Record<string, unknown>>
-    }) => unknown
-  ) =>
-    selector({
-      activeTabId: store.activeTabId,
-      // Fresh array + fresh objects every render → worst-case churn, exactly
-      // what the list's reuseSelected/reuseSet must absorb to keep folders
-      // memoized.
-      tabs: store.tabSpec.map((t) => ({ ...t })),
-    }),
+  useTabStore: Object.assign(
+    (
+      selector: (s: {
+        activeTabId: string | null
+        tabs: Array<Record<string, unknown>>
+      }) => unknown
+    ) =>
+      selector({
+        activeTabId: store.activeTabId,
+        // Fresh array + fresh objects every render → worst-case churn, exactly
+        // what the list's reuseSelected/reuseSet must absorb to keep folders
+        // memoized.
+        tabs: store.tabSpec.map((t) => ({ ...t })),
+      }),
+    {
+      // A card's context menu reads it on open.
+      getState: () => ({
+        activeTabId: store.activeTabId,
+        tabs: store.tabSpec.map((t) => ({ ...t })),
+      }),
+    }
+  ),
 }))
 vi.mock("@/contexts/workbench-route-context", () => {
   // Stable singleton — the real provider memoizes these (useCallback([])), so a
@@ -975,6 +1009,102 @@ describe("SidebarConversationList — folder ⋯ opens the same menu as right-cl
 
     // The identical menu is now open — assert a label unique to the folder menu.
     expect(document.body.textContent).toContain("Manage conversations")
+  })
+})
+
+// AI QA #176: the remove confirm says the folder's tabs AND terminals close.
+// Terminals are shared across projects, so only the ones opened for the
+// project — or for one of its worktrees, which leave with it (#142) — go.
+describe("SidebarConversationList — remove from workspace closes terminals", () => {
+  beforeEach(() => {
+    const wt = {
+      ...folder(2, "wt-feature", 1),
+      git_branch: "feature-x",
+    } as unknown as FolderDetail
+    const folders = [folder(1, "Repo"), wt, folder(3, "Other")]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: [conv(11, 1), conv(31, 3)],
+      removeFolderFromWorkspace: vi.fn(() => Promise.resolve()),
+    })
+    store.activeTabId = null
+    store.tabSpec = []
+    stableTerminal.closeTerminalsByFolder.mockClear()
+  })
+
+  it("closes the project's and its worktrees' terminals, not other projects'", async () => {
+    render(tree())
+    // Right-click the project's own header (the ⋯ button opens the same menu).
+    const header = document.querySelector('[data-folder-id="1"]')
+    expect(header).toBeTruthy()
+    act(() => {
+      fireEvent.contextMenu(header as HTMLElement)
+    })
+    const item = Array.from(
+      document.querySelectorAll('[role="menuitem"]')
+    ).find((el) => el.textContent?.includes("Remove from workspace"))
+    expect(item).toBeTruthy()
+    act(() => {
+      fireEvent.click(item as HTMLElement)
+    })
+    const dialog = document.querySelector('[role="alertdialog"]')
+    expect(dialog?.textContent).toContain("terminals will close")
+    const confirm = within(dialog as HTMLElement).getByRole("button", {
+      name: "Confirm",
+    })
+    await act(async () => {
+      fireEvent.click(confirm)
+    })
+
+    expect(stableTerminal.closeTerminalsByFolder).toHaveBeenCalledTimes(1)
+    expect(stableTerminal.closeTerminalsByFolder).toHaveBeenCalledWith([1, 2])
+    expect(
+      useAppWorkspaceStore.getState().removeFolderFromWorkspace
+    ).toHaveBeenCalledWith(1)
+  })
+
+  it("closes a deleted worktree's terminals when its clean-up removes it", async () => {
+    useAppWorkspaceStore.setState({
+      conversations: [conv(11, 1), conv(21, 2), conv(31, 3)],
+      fetchFolders: vi.fn(() => Promise.resolve()),
+    })
+    toastOffers.length = 0
+    try {
+      render(tree())
+      const row = document.querySelector('[data-conversation-id="21"]')
+      expect(row).toBeTruthy()
+      act(() => {
+        fireEvent.contextMenu(row as HTMLElement)
+      })
+      const del = Array.from(
+        document.querySelectorAll('[role="menuitem"]')
+      ).find((el) => el.textContent?.trim() === "Delete")
+      expect(del).toBeTruthy()
+      act(() => {
+        fireEvent.click(del as HTMLElement)
+      })
+      const dialog = document.querySelector('[role="alertdialog"]')
+      await act(async () => {
+        fireEvent.click(
+          within(dialog as HTMLElement).getByRole("button", { name: "Delete" })
+        )
+      })
+      await act(async () => {})
+      expect(api.deleteConversation).toHaveBeenCalledWith(21)
+      expect(toastOffers).toHaveLength(1)
+      expect(stableTerminal.closeTerminalsByFolder).not.toHaveBeenCalled()
+
+      await act(async () => {
+        toastOffers[0].action?.onClick()
+      })
+      await act(async () => {})
+      expect(api.gitRemoveWorktree).toHaveBeenCalled()
+      expect(stableTerminal.closeTerminalsByFolder).toHaveBeenCalledWith([2])
+    } finally {
+      api.deleteConversation.mockClear()
+      api.gitRemoveWorktree.mockClear()
+    }
   })
 })
 

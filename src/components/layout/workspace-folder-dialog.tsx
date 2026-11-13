@@ -73,7 +73,7 @@ import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useCoworkInfo } from "@/lib/cowork/info"
 import {
   CoworkNewProjectForm,
-  useCoworkCreatedProject,
+  useCoworkOpenedProject,
 } from "@/components/cowork/new-project-form"
 
 type View = "pick-root" | "links" | "add-targets"
@@ -138,8 +138,10 @@ export function WorkspaceFolderDialog({
   // Cowork: new projects live under one root — offer "New project" (name
   // only) first and start browsing there instead of $HOME.
   const coworkProjectsRoot = useCoworkInfo()?.projectsRoot ?? null
-  // Cowork: "Done" after creating a project there switches over to it.
-  const coworkCreated = useCoworkCreatedProject(open)
+  // Cowork: "Done" switches over to the folder this dialog opened — a project
+  // created there or an existing folder (#177).
+  const { remember: rememberOpened, openIfOpened } =
+    useCoworkOpenedProject(open)
 
   const nativePickerAvailable =
     isDesktop() && getActiveRemoteConnectionId() === null
@@ -193,6 +195,7 @@ export function WorkspaceFolderDialog({
       try {
         const detail = await openFolder(path)
         setRootFolder(detail)
+        rememberOpened(detail)
         onFolderOpened?.(detail)
         setView("links")
       } catch (err) {
@@ -201,7 +204,7 @@ export function WorkspaceFolderDialog({
         setOpeningRoot(false)
       }
     },
-    [openFolder, onFolderOpened, t]
+    [openFolder, onFolderOpened, rememberOpened, t]
   )
 
   const handleConfirmRoot = useCallback(async () => {
@@ -415,10 +418,7 @@ export function WorkspaceFolderDialog({
               <CoworkNewProjectForm
                 projectsRoot={coworkProjectsRoot}
                 disabled={openingRoot}
-                onCreated={(created) => {
-                  coworkCreated.remember(created)
-                  return commitRoot(created.path)
-                }}
+                onCreated={(created) => commitRoot(created.path)}
               />
             ) : null}
             <DirectoryBrowser
@@ -674,7 +674,7 @@ export function WorkspaceFolderDialog({
                 <Button
                   type="button"
                   onClick={() => {
-                    coworkCreated.openIfCreated(rootFolder)
+                    openIfOpened(rootFolder)
                     onOpenChange(false)
                   }}
                 >

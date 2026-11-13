@@ -6,7 +6,10 @@ import {
 } from "@/stores/folder-tabs-store"
 import { create } from "zustand"
 import { useShallow } from "zustand/react/shallow"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import {
+  isConversationDeleted,
+  useAppWorkspaceStore,
+} from "@/stores/app-workspace-store"
 import { registerBackendScopedStoreReset } from "@/stores/backend-scoped-store-reset"
 import {
   getFolderConversation,
@@ -2971,6 +2974,11 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       if (conversationKeys.has(`${tab.folderId}-${tab.agentType}-${id}`)) {
         continue
       }
+      // Just deleted, not a child: the Deleted event drops the row from the
+      // sidebar list a beat before the tab itself closes (the server's tab
+      // snapshot / the deleter's own close), and in that window the tab would
+      // read as an unseeded child and fetch a row that no longer exists.
+      if (isConversationDeleted(id)) continue
       openChildIds.add(id)
     }
     // Prune cached summaries for child tabs that have since closed.

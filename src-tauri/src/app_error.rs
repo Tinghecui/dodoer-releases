@@ -269,6 +269,46 @@ impl AppCommandError {
 
 impl From<DbError> for AppCommandError {
     fn from(value: DbError) -> Self {
+        // A missing (or soft-deleted) row is the caller asking for something
+        // that is not there, not a database failure: surface it as `not_found`
+        // (HTTP 404) so a client can tell "gone" from "broken". `detail` keeps
+        // the exact text `db()` would have put there, for anything that reads
+        // it.
+        if let DbError::NotFound(msg) = &value {
+            return Self::not_found(msg.clone()).with_detail(value.to_string());
+        }
+        // Validation / Conflict stay `database_error` on purpose: the frontend
+        // reads their markers out of `detail` under that code (task restart
+        // guard, automation cron errors).
         Self::db(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn db_not_found_maps_to_not_found_and_keeps_detail() {
+        let err = AppCommandError::from(DbError::NotFound("Conversation not found: 7".into()));
+        assert!(matches!(err.code, AppErrorCode::NotFound), "{err:?}");
+        assert_eq!(err.message, "Conversation not found: 7");
+        assert_eq!(
+            err.detail.as_deref(),
+            Some("not found: Conversation not found: 7")
+        );
+    }
+
+    #[test]
+    fn other_db_errors_stay_database_error() {
+        let err = AppCommandError::from(DbError::Validation("title is required".into()));
+        assert!(matches!(err.code, AppErrorCode::DatabaseError), "{err:?}");
+        assert_eq!(err.message, "Database operation failed");
+        assert_eq!(
+            err.detail.as_deref(),
+            Some("validation error: title is required")
+        );
+        let err = AppCommandError::from(DbError::Migration("boom".into()));
+        assert!(matches!(err.code, AppErrorCode::DatabaseError), "{err:?}");
     }
 }

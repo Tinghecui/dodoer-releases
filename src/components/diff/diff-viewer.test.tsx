@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 // Shared recorder for the fake Monaco pair below. Declared through
@@ -9,7 +9,16 @@ const harness = vi.hoisted(() => {
   // The model pair the fake widget currently holds — the state Monaco's
   // DiffEditorWidget consults through its `onWillDispose` listeners.
   const state: { attached: Record<string, object> | null } = { attached: null }
-  return { events, state }
+  // What the fake widget's `getLineChanges()` reports, i.e. Monaco's diff.
+  const lineChanges: {
+    current: Array<{
+      originalStartLineNumber: number
+      originalEndLineNumber: number
+      modifiedStartLineNumber: number
+      modifiedEndLineNumber: number
+    }>
+  } = { current: [] }
+  return { events, state, lineChanges }
 })
 
 // Stand-in for `@monaco-editor/react`'s DiffEditor that reproduces the two
@@ -54,7 +63,7 @@ vi.mock("@monaco-editor/react", async () => {
         harness.state.attached = next
       },
       getModifiedEditor: () => innerEditor,
-      getLineChanges: () => [],
+      getLineChanges: () => harness.lineChanges.current,
       onDidUpdateDiff: () => ({ dispose: () => {} }),
       dispose: () => harness.events.push("editor:dispose"),
     }
@@ -148,5 +157,85 @@ describe("DiffViewer teardown", () => {
       "modified:dispose",
       "editor:dispose",
     ])
+  })
+})
+
+describe("DiffViewer change counts", () => {
+  beforeEach(() => {
+    harness.events.length = 0
+    harness.state.attached = null
+    harness.lineChanges.current = []
+  })
+
+  const expectCounts = async (add: string, del: string) => {
+    // The first diff read is deferred until after mount.
+    await waitFor(() => expect(screen.getByText(add)).toBeInTheDocument(), {
+      timeout: 2000,
+    })
+    expect(screen.getByText(del)).toBeInTheDocument()
+  }
+
+  it("counts a one-line new file as +1 -0, not Monaco's blank-line pairing", async () => {
+    // What Monaco really reports for "" → "hello qa\n": the empty original's
+    // single blank line paired with both modified lines (#161).
+    harness.lineChanges.current = [
+      {
+        originalStartLineNumber: 1,
+        originalEndLineNumber: 1,
+        modifiedStartLineNumber: 1,
+        modifiedEndLineNumber: 2,
+      },
+    ]
+    render(<DiffViewer original="" modified={"hello qa\n"} />)
+    await expectCounts("+1", "-0")
+  })
+
+  it("counts a new file without a trailing newline by its lines", async () => {
+    harness.lineChanges.current = [
+      {
+        originalStartLineNumber: 1,
+        originalEndLineNumber: 1,
+        modifiedStartLineNumber: 1,
+        modifiedEndLineNumber: 3,
+      },
+    ]
+    render(<DiffViewer original="" modified={"a\nb\nc"} />)
+    await expectCounts("+3", "-0")
+  })
+
+  it("counts a deleted file as +0 -N", async () => {
+    harness.lineChanges.current = [
+      {
+        originalStartLineNumber: 1,
+        originalEndLineNumber: 3,
+        modifiedStartLineNumber: 1,
+        modifiedEndLineNumber: 1,
+      },
+    ]
+    render(<DiffViewer original={"a\nb\n"} modified="" />)
+    await expectCounts("+0", "-2")
+  })
+
+  it("keeps counting an ordinary edit from Monaco's line changes", async () => {
+    harness.lineChanges.current = [
+      // modified line 2 (1 → 1)
+      {
+        originalStartLineNumber: 2,
+        originalEndLineNumber: 2,
+        modifiedStartLineNumber: 2,
+        modifiedEndLineNumber: 2,
+      },
+      // pure insertion of 2 lines after original line 4
+      {
+        originalStartLineNumber: 4,
+        originalEndLineNumber: 0,
+        modifiedStartLineNumber: 5,
+        modifiedEndLineNumber: 6,
+      },
+    ]
+    render(
+      <DiffViewer original={"a\nb\nc\nd\n"} modified={"a\nB\nc\nd\ne\nf\n"} />
+    )
+    await expectCounts("+3", "-1")
   })
 })

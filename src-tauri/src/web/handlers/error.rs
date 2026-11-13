@@ -44,4 +44,20 @@ mod tests {
             StatusCode::UNPROCESSABLE_ENTITY
         );
     }
+
+    /// #165: a row that is not there (or was soft-deleted) is a 404 end to end
+    /// — the service's `DbError::NotFound` through the blanket `From` — not
+    /// the 500 every `database_error` gets.
+    #[test]
+    fn db_not_found_is_http_404() {
+        let err = AppCommandError::from(crate::db::error::DbError::NotFound(
+            "Conversation not found: 7".into(),
+        ));
+        assert_eq!(status_for_app_error_code(err.code), StatusCode::NOT_FOUND);
+        let err = AppCommandError::from(crate::db::error::DbError::Migration("boom".into()));
+        assert_eq!(
+            status_for_app_error_code(err.code),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
 }

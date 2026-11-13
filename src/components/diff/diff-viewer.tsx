@@ -38,6 +38,14 @@ const MonacoDiffEditor = dynamic(
 const useIsomorphicLayoutEffect =
   typeof window !== "undefined" ? useLayoutEffect : useEffect
 
+// Lines in a text the way a diff counts them: a trailing newline ends the last
+// line rather than starting another one, and "" has no lines at all.
+function countLines(text: string): number {
+  if (text === "") return 0
+  const parts = text.split("\n").length
+  return text.endsWith("\n") ? parts - 1 : parts
+}
+
 export interface DiffViewerProps {
   original: string
   modified: string
@@ -191,6 +199,17 @@ export function DiffViewer({
   )
 
   const { additions, deletions } = useMemo(() => {
+    // A side that is empty (new / untracked file, deleted file) is still one
+    // blank line to Monaco, and its diff scoring prefers pairing that blank
+    // line with real content over matching it, so a one-line new file comes
+    // back as "original 1-1 → modified 1-2" and would read +2 -1. When one
+    // side is empty the counts are simply the other side's line count.
+    if (original === "" || modified === "") {
+      return {
+        additions: countLines(modified),
+        deletions: countLines(original),
+      }
+    }
     let add = 0
     let del = 0
     for (const change of diffChanges) {
@@ -210,7 +229,7 @@ export function DiffViewer({
       }
     }
     return { additions: add, deletions: del }
-  }, [diffChanges])
+  }, [diffChanges, original, modified])
 
   return (
     <div className={cn("flex h-full flex-col", className)}>

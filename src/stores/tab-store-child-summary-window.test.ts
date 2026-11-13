@@ -92,4 +92,43 @@ describe("child-tab summary seeding", () => {
       useTabStore.getState().tabs.find((tab) => tab.id === "child-1")?.title
     ).toBe("child session")
   })
+
+  it("does not fetch a tab whose conversation was just deleted (#165)", async () => {
+    // The Deleted event drops the row from the sidebar list before the tab
+    // itself closes; in that window the tab looks exactly like a child tab
+    // (conversationId, absent from the list). It must not be seeded — the row
+    // is gone, and the read comes back as an error on every delete.
+    useTabStore.setState({
+      rawTabs: [
+        {
+          id: "deleted-1",
+          kind: "conversation",
+          folderId: 1,
+          conversationId: CHILD_ID,
+          agentType: "claude_code",
+          title: "about to close",
+          isPinned: false,
+        },
+      ],
+      activeTabId: "deleted-1",
+    })
+    useAppWorkspaceStore.setState({
+      conversations: [
+        {
+          ...childSummary,
+          agent_type: "claude_code",
+        } as DbConversationSummary,
+      ],
+      conversationsLoading: false,
+    })
+    useAppWorkspaceStore.getState().applyConversationRemove(CHILD_ID)
+    mockGet.mockResolvedValue(summaryOnlyDetail)
+
+    useTabStore.getState().reconcileChildSummaries()
+
+    // The seed is fired synchronously from the reconcile, so nothing pending.
+    await Promise.resolve()
+    expect(mockGet).not.toHaveBeenCalled()
+    expect(useTabStore.getState().childSummaries.has(CHILD_ID)).toBe(false)
+  })
 })

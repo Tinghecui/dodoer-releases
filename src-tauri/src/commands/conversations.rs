@@ -5876,10 +5876,44 @@ mod tests {
         let err = get_folder_conversation_core(&db.conn, 999_999)
             .await
             .expect_err("missing conversation must error, not panic");
-        let msg = format!("{err:?}");
+        // `not_found` (HTTP 404), not `database_error` (500): a missing row is
+        // the caller's to handle, not a server fault.
         assert!(
-            msg.to_lowercase().contains("not found") || msg.to_lowercase().contains("999999"),
-            "expected not-found-shaped error, got: {msg}"
+            matches!(err.code, crate::app_error::AppErrorCode::NotFound),
+            "expected not_found, got: {err:?}"
+        );
+        assert!(err.message.contains("999999"), "got: {err:?}");
+    }
+
+    /// #165: once a conversation is soft-deleted, a late detail read from a
+    /// client that has not caught up yet must come back as `not_found` (404),
+    /// not as a 500 the browser logs on every delete. Deleting it twice is the
+    /// same "already gone".
+    #[tokio::test]
+    async fn get_folder_conversation_core_after_soft_delete_is_not_found() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-get-after-delete").await;
+        let row = conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("create conversation");
+        delete_conversation_core(&db.conn, row.id)
+            .await
+            .expect("soft delete");
+
+        let err = get_folder_conversation_core(&db.conn, row.id)
+            .await
+            .expect_err("a deleted conversation must not load");
+        assert!(
+            matches!(err.code, crate::app_error::AppErrorCode::NotFound),
+            "expected not_found, got: {err:?}"
+        );
+
+        let err = delete_conversation_core(&db.conn, row.id)
+            .await
+            .expect_err("deleting twice must error");
+        assert!(
+            matches!(err.code, crate::app_error::AppErrorCode::NotFound),
+            "expected not_found, got: {err:?}"
         );
     }
 

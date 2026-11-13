@@ -147,7 +147,7 @@ pub async fn update_status(
     let conv = conversation::Entity::find_by_id(conversation_id)
         .one(conn)
         .await?
-        .ok_or_else(|| DbError::Migration(format!("Conversation not found: {conversation_id}")))?;
+        .ok_or_else(|| DbError::NotFound(format!("Conversation not found: {conversation_id}")))?;
     let mut active: conversation::ActiveModel = conv.into();
     active.status = Set(status);
     active.updated_at = Set(Utc::now());
@@ -188,7 +188,7 @@ pub async fn update_title(
     let conv = conversation::Entity::find_by_id(conversation_id)
         .one(conn)
         .await?
-        .ok_or_else(|| DbError::Migration(format!("Conversation not found: {conversation_id}")))?;
+        .ok_or_else(|| DbError::NotFound(format!("Conversation not found: {conversation_id}")))?;
     let mut active: conversation::ActiveModel = conv.into();
     active.title = Set(Some(title));
     active.title_locked = Set(true);
@@ -587,7 +587,7 @@ pub async fn update_pin(
     let conv = conversation::Entity::find_by_id(conversation_id)
         .one(conn)
         .await?
-        .ok_or_else(|| DbError::Migration(format!("Conversation not found: {conversation_id}")))?;
+        .ok_or_else(|| DbError::NotFound(format!("Conversation not found: {conversation_id}")))?;
     let mut active: conversation::ActiveModel = conv.into();
     active.pinned_at = Set(pinned.then(Utc::now));
     active.update(conn).await?;
@@ -1375,7 +1375,7 @@ pub async fn soft_delete(conn: &DatabaseConnection, conversation_id: i32) -> Res
         .filter(conversation::Column::DeletedAt.is_null())
         .one(conn)
         .await?
-        .ok_or_else(|| DbError::Migration(format!("Conversation not found: {conversation_id}")))?;
+        .ok_or_else(|| DbError::NotFound(format!("Conversation not found: {conversation_id}")))?;
     let mut active: conversation::ActiveModel = conv.into();
     active.deleted_at = Set(Some(Utc::now()));
     active.update(conn).await?;
@@ -1559,7 +1559,7 @@ pub async fn get_by_id(
         .filter(conversation::Column::DeletedAt.is_null())
         .one(conn)
         .await?
-        .ok_or_else(|| DbError::Migration(format!("Conversation not found: {conversation_id}")))?;
+        .ok_or_else(|| DbError::NotFound(format!("Conversation not found: {conversation_id}")))?;
 
     let mut summary = conv_to_summary(conv);
     fill_summary_extras(conn, std::slice::from_mut(&mut summary)).await?;

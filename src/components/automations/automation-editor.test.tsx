@@ -3,6 +3,7 @@ import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
+import zhCNMessages from "@/i18n/messages/zh-CN.json"
 import { automationComputeNextRun } from "@/lib/api"
 import type { AutomationDraft } from "@/lib/types"
 import {
@@ -118,9 +119,15 @@ const draft: AutomationDraft = {
   },
 }
 
-function renderEditor(onSubmit: (draft: AutomationDraft) => Promise<void>) {
+function renderEditor(
+  onSubmit: (draft: AutomationDraft) => Promise<void>,
+  locale: "en" | "zh-CN" = "en"
+) {
   return render(
-    <NextIntlClientProvider locale="en" messages={enMessages}>
+    <NextIntlClientProvider
+      locale={locale}
+      messages={locale === "en" ? enMessages : zhCNMessages}
+    >
       <AutomationEditor
         automation={draft}
         onSubmit={onSubmit}
@@ -202,5 +209,57 @@ describe("AutomationEditor — a schedule the server rejects", () => {
     await waitFor(() =>
       expect(screen.queryByRole("status")).not.toBeInTheDocument()
     )
+  })
+})
+
+// What the backend sends for a bad cron since AI QA #162: a 400
+// `invalid_input` whose i18n key picks one of three localized sentences.
+const FIELD_COUNT = {
+  code: "invalid_input",
+  message:
+    "validation error: cron must have 5 fields (min hour dom mon dow), got 2",
+  i18n_key: "cronErrorFieldCount",
+  i18n_params: { n: "2" },
+}
+const NEVER_FIRES = {
+  code: "invalid_input",
+  message:
+    "validation error: cron '0 0 31 2 *' never fires: no date matches it",
+  i18n_key: "cronErrorNeverFires",
+}
+
+describe("AutomationEditor — localized cron errors", () => {
+  it("explains a malformed cron in Chinese, with an example, not the English detail", async () => {
+    mockNextRun.mockRejectedValue(FIELD_COUNT)
+
+    renderEditor(vi.fn(), "zh-CN")
+
+    const reason = await screen.findByRole("status")
+    expect(reason).toHaveTextContent(
+      "cron 需要 5 段（分 时 日 月 周），现在是 2 段。示例：0 9 * * 1-5"
+    )
+    expect(reason).not.toHaveTextContent("validation error")
+  })
+
+  it("says a schedule that never fires will never run, before saving", async () => {
+    mockNextRun.mockResolvedValue(null)
+
+    renderEditor(vi.fn(), "zh-CN")
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      zhCNMessages.Automations.cronErrorNeverFires
+    )
+  })
+
+  it("shows the refused save in the user's language", async () => {
+    mockNextRun.mockResolvedValue(null)
+    const onSubmit = vi.fn().mockRejectedValue(NEVER_FIRES)
+
+    renderEditor(onSubmit)
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent(enMessages.Automations.cronErrorNeverFires)
+    expect(alert).not.toHaveTextContent("validation error")
   })
 })

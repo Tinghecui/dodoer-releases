@@ -122,4 +122,38 @@ describe("describeCron", () => {
       minute: 0,
     })
   })
+
+  it("describes the @-macros the backend expands", () => {
+    expect(describeCron("@daily")).toEqual({
+      kind: "daily",
+      hour: 0,
+      minute: 0,
+    })
+    expect(describeCron("@midnight")).toEqual({
+      kind: "daily",
+      hour: 0,
+      minute: 0,
+    })
+    expect(describeCron(" @HOURLY ")).toEqual({ kind: "hourly" })
+    expect(describeCron("@weekly")).toEqual({
+      kind: "weekly",
+      dow: 0,
+      hour: 0,
+      minute: 0,
+    })
+    expect(describeCron("@monthly")).toEqual({
+      kind: "monthly",
+      dom: 1,
+      hour: 0,
+      minute: 0,
+    })
+    // Yearly has no label of its own; the macro is shown as typed.
+    expect(describeCron("@yearly")).toEqual({ kind: "raw", cron: "@yearly" })
+    expect(describeCron("@reboot")).toEqual({ kind: "raw", cron: "@reboot" })
+    // Not an own key of the macro table.
+    expect(describeCron("constructor")).toEqual({
+      kind: "raw",
+      cron: "constructor",
+    })
+  })
 })

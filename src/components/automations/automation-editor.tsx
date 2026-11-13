@@ -27,6 +27,7 @@ import {
 } from "./composer-invocations"
 import { CronBuilderDialog } from "./cron-builder-dialog"
 import { useAgentOptions } from "./use-agent-options"
+import { useAutomationErrorMessage } from "./use-automation-error-message"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -34,7 +35,6 @@ import { Label } from "@/components/ui/label"
 import { FolderSelect } from "@/components/shared/folder-select"
 import { cn } from "@/lib/utils"
 import { automationComputeNextRun } from "@/lib/api"
-import { toErrorMessage } from "@/lib/app-error"
 import type {
   AgentType,
   Automation,
@@ -83,6 +83,7 @@ export function AutomationEditor({
   defaultFolderId = null,
 }: AutomationEditorProps) {
   const t = useTranslations("Automations")
+  const errorMessage = useAutomationErrorMessage()
   const folders = useAppWorkspaceStore((s) => s.folders)
 
   const [name, setName] = useState(automation?.name ?? "")
@@ -127,7 +128,8 @@ export function AutomationEditor({
   const [saving, setSaving] = useState(false)
   const [nextRun, setNextRun] = useState<string | null>(null)
   // Why there is no next run to preview: what the evaluator said about the
-  // expression (or the timezone), shown beside the "—".
+  // expression (or the timezone) — or that it never fires — shown beside the
+  // "—", in the user's language.
   const [nextRunError, setNextRunError] = useState<string | null>(null)
   const [cronBuilderOpen, setCronBuilderOpen] = useState(false)
 
@@ -203,19 +205,21 @@ export function AutomationEditor({
         .then((r) => {
           if (cancelled) return
           setNextRun(r)
-          setNextRunError(null)
+          // Parses, but no date ever matches (`0 0 31 2 *`): saving refuses it
+          // with the same sentence, so say so before the user gets that far.
+          setNextRunError(r == null ? t("cronErrorNeverFires") : null)
         })
         .catch((e) => {
           if (cancelled) return
           setNextRun(null)
-          setNextRunError(toErrorMessage(e))
+          setNextRunError(errorMessage(e))
         })
     }, 300)
     return () => {
       cancelled = true
       clearTimeout(handle)
     }
-  }, [cron, timezone, trigger])
+  }, [cron, timezone, trigger, t, errorMessage])
 
   // Backfill the default folder once the workspace folders finish hydrating — a
   // new (or template-seeded) automation opened before they load would otherwise
@@ -332,8 +336,9 @@ export function AutomationEditor({
       }
       await onSubmit(draft)
     } catch (e) {
-      // A server-mode rejection is the parsed error body, not an `Error`.
-      setError(toErrorMessage(e))
+      // A server-mode rejection is the parsed error body, not an `Error`; a bad
+      // cron carries an i18n key for one of three localized sentences.
+      setError(errorMessage(e))
     } finally {
       setSaving(false)
     }

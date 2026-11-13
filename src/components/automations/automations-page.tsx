@@ -43,7 +43,8 @@ import {
   type AutomationTemplate,
 } from "./automation-templates"
 import { TemplateGallery } from "./template-gallery"
-import { ScheduleLabel } from "./schedule-label"
+import { ScheduleSummary } from "./schedule-label"
+import { useAutomationErrorMessage } from "./use-automation-error-message"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -222,6 +223,7 @@ export function AutomationsPageTitle() {
 
 export function AutomationsPage() {
   const t = useTranslations("Automations")
+  const errorMessage = useAutomationErrorMessage()
   const { automations, unseenFailures, refetch } = useAutomationsView()
   const folders = useAppWorkspaceStore((s) => s.folders)
   // Every folder codeg knows, open or closed — for naming a folder the list is
@@ -395,10 +397,10 @@ export function AutomationsPage() {
         await fn()
         await refetch()
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : String(e))
+        toast.error(errorMessage(e))
       }
     },
-    [refetch]
+    [refetch, errorMessage]
   )
 
   const handleSubmit = async (draft: AutomationDraft) => {
@@ -1090,6 +1092,7 @@ export function AutomationDetail({
   onConversationOpened?: () => void
 }) {
   const t = useTranslations("Automations")
+  const errorMessage = useAutomationErrorMessage()
   const folders = useAppWorkspaceStore((s) => s.folders)
   const [busy, setBusy] = useState(false)
 
@@ -1099,7 +1102,7 @@ export function AutomationDetail({
       await fn()
       await refetch()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
+      toast.error(errorMessage(e))
     } finally {
       setBusy(false)
     }
@@ -1187,12 +1190,10 @@ export function AutomationDetail({
               label={t("trigger")}
             >
               {isSchedule && automation.cron ? (
-                <span className="flex flex-col gap-0.5">
-                  <ScheduleLabel cron={automation.cron} />
-                  <span className="font-mono text-xs text-muted-foreground">
-                    {automation.cron}
-                  </span>
-                </span>
+                <ScheduleSummary
+                  cron={automation.cron}
+                  className="flex flex-col gap-0.5"
+                />
               ) : (
                 t("manual")
               )}
@@ -1300,6 +1301,7 @@ function RunHistory({
   onConversationOpened?: () => void
 }) {
   const t = useTranslations("Automations")
+  const errorMessage = useAutomationErrorMessage()
   const { openTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
   const [runs, setRuns] = useState<AutomationRun[]>([])
@@ -1362,7 +1364,7 @@ function RunHistory({
       await load()
       await onChanged()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
+      toast.error(errorMessage(e))
     }
   }
 

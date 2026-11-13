@@ -7,6 +7,7 @@ import {
 } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
+import { toast } from "sonner"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import enMessages from "@/i18n/messages/en.json"
 import {
@@ -233,6 +234,60 @@ describe("AutomationsPage (master-detail)", () => {
     expect(screen.queryByText("只读")).not.toBeInTheDocument()
     // The model catalogue is the user's own data, so its frozen label stands.
     expect(screen.getByText("深度求索 Flash")).toBeInTheDocument()
+  })
+
+  // AI QA #163: an expression the humanizer can't describe was printed twice —
+  // once as the "label", once as the cron underneath — with nothing readable.
+  it("shows a cron it can't describe once, under a readable label", () => {
+    automations = [
+      {
+        ...FIXTURE,
+        trigger_kind: "schedule",
+        cron: "0 0 1,15 * *",
+        next_run_at: "2026-12-01T00:00:00Z",
+      },
+    ]
+    renderPage()
+    expect(screen.getAllByText("0 0 1,15 * *")).toHaveLength(1)
+    expect(
+      screen.getByText(enMessages.Automations.schedCustom)
+    ).toBeInTheDocument()
+  })
+
+  it("still pairs a describable cron with its readable cadence", () => {
+    automations = [
+      {
+        ...FIXTURE,
+        trigger_kind: "schedule",
+        cron: "@daily",
+        next_run_at: "2026-12-01T00:00:00Z",
+      },
+    ]
+    renderPage()
+    expect(screen.getAllByText("@daily")).toHaveLength(1)
+    expect(screen.getByText(/^Daily at /)).toBeInTheDocument()
+    expect(
+      screen.queryByText(enMessages.Automations.schedCustom)
+    ).not.toBeInTheDocument()
+  })
+
+  it("explains a refused enable in the user's words, not [object Object]", async () => {
+    vi.mocked(automationSetEnabled).mockRejectedValueOnce({
+      code: "invalid_input",
+      message:
+        "validation error: cron '0 0 31 2 *' never fires: no date matches it",
+      i18n_key: "cronErrorNeverFires",
+    })
+    const toastError = vi.spyOn(toast, "error")
+    automations = [{ ...FIXTURE, enabled: false }]
+    renderPage()
+    fireEvent.click(screen.getByRole("switch"))
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        enMessages.Automations.cronErrorNeverFires
+      )
+    )
+    toastError.mockRestore()
   })
 
   it("keeps the header switch and surfaces Run now + Edit under the title", () => {

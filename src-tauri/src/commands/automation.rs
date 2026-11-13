@@ -6,6 +6,7 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::app_error::AppCommandError;
 use crate::db::error::DbError;
 use crate::db::service::automation_service;
 use crate::db::AppDatabase;
@@ -15,6 +16,20 @@ use crate::web::event_bridge::{
 };
 
 // ── shared business logic (both modes) ──────────────────────────────────────
+
+/// Map service errors onto user-facing codes for every automation endpoint
+/// (Axum handlers and Tauri wrappers alike): a rejected draft is the caller's
+/// mistake — `invalid_input` (HTTP 400) with its reason, not an opaque
+/// `database_error` 500 — and a missing automation is `not_found`. A bad cron
+/// additionally carries an i18n key (`AppCommandError::invalid_cron`). Same
+/// split as `commands::canvas::map_db`.
+pub fn automation_error(e: DbError) -> AppCommandError {
+    match e {
+        DbError::NotFound(msg) => AppCommandError::not_found(msg),
+        DbError::Validation(msg) => AppCommandError::invalid_input(msg),
+        other => AppCommandError::from(other),
+    }
+}
 
 pub async fn automation_list_core(db: &AppDatabase) -> Result<Vec<AutomationInfo>, DbError> {
     automation_service::list(&db.conn).await
@@ -109,8 +124,8 @@ pub fn automation_compute_next_run_core(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn automation_list(
     db: tauri::State<'_, AppDatabase>,
-) -> Result<Vec<AutomationInfo>, DbError> {
-    automation_list_core(&db).await
+) -> Result<Vec<AutomationInfo>, AppCommandError> {
+    automation_list_core(&db).await.map_err(automation_error)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -118,8 +133,8 @@ pub async fn automation_list(
 pub async fn automation_get(
     db: tauri::State<'_, AppDatabase>,
     id: i32,
-) -> Result<AutomationInfo, DbError> {
-    automation_get_core(&db, id).await
+) -> Result<AutomationInfo, AppCommandError> {
+    automation_get_core(&db, id).await.map_err(automation_error)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -128,8 +143,8 @@ pub async fn automation_runs(
     db: tauri::State<'_, AppDatabase>,
     automation_id: i32,
     limit: u64,
-) -> Result<Vec<AutomationRunInfo>, DbError> {
-    automation_runs_core(&db, automation_id, limit).await
+) -> Result<Vec<AutomationRunInfo>, AppCommandError> {
+    automation_runs_core(&db, automation_id, limit).await.map_err(automation_error)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -138,8 +153,8 @@ pub async fn automation_create(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     draft: AutomationDraft,
-) -> Result<AutomationInfo, DbError> {
-    automation_create_core(&EventEmitter::Tauri(app), &db, draft).await
+) -> Result<AutomationInfo, AppCommandError> {
+    automation_create_core(&EventEmitter::Tauri(app), &db, draft).await.map_err(automation_error)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -149,8 +164,10 @@ pub async fn automation_update(
     db: tauri::State<'_, AppDatabase>,
     id: i32,
     draft: AutomationDraft,
-) -> Result<AutomationInfo, DbError> {
-    automation_update_core(&EventEmitter::Tauri(app), &db, id, draft).await
+) -> Result<AutomationInfo, AppCommandError> {
+    automation_update_core(&EventEmitter::Tauri(app), &db, id, draft)
+        .await
+        .map_err(automation_error)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -160,8 +177,10 @@ pub async fn automation_set_enabled(
     db: tauri::State<'_, AppDatabase>,
     id: i32,
     enabled: bool,
-) -> Result<AutomationInfo, DbError> {
-    automation_set_enabled_core(&EventEmitter::Tauri(app), &db, id, enabled).await
+) -> Result<AutomationInfo, AppCommandError> {
+    automation_set_enabled_core(&EventEmitter::Tauri(app), &db, id, enabled)
+        .await
+        .map_err(automation_error)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -170,16 +189,16 @@ pub async fn automation_delete(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     id: i32,
-) -> Result<(), DbError> {
-    automation_delete_core(&EventEmitter::Tauri(app), &db, id).await
+) -> Result<(), AppCommandError> {
+    automation_delete_core(&EventEmitter::Tauri(app), &db, id).await.map_err(automation_error)
 }
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn automation_mark_seen(
     db: tauri::State<'_, AppDatabase>,
-) -> Result<(), DbError> {
-    automation_mark_seen_core(&db).await
+) -> Result<(), AppCommandError> {
+    automation_mark_seen_core(&db).await.map_err(automation_error)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -187,8 +206,8 @@ pub async fn automation_mark_seen(
 pub async fn automation_compute_next_run(
     cron: String,
     timezone: String,
-) -> Result<Option<DateTime<Utc>>, DbError> {
-    automation_compute_next_run_core(&cron, &timezone)
+) -> Result<Option<DateTime<Utc>>, AppCommandError> {
+    automation_compute_next_run_core(&cron, &timezone).map_err(automation_error)
 }
 
 // ── engine-dispatched ops (manual run / cancel) ─────────────────────────────
@@ -213,12 +232,51 @@ pub async fn automation_cancel_run_core(run_id: i32) -> Result<(), DbError> {
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn automation_run_now(automation_id: i32) -> Result<i32, DbError> {
-    automation_run_now_core(automation_id).await
+pub async fn automation_run_now(automation_id: i32) -> Result<i32, AppCommandError> {
+    automation_run_now_core(automation_id).await.map_err(automation_error)
 }
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn automation_cancel_run(run_id: i32) -> Result<(), DbError> {
-    automation_cancel_run_core(run_id).await
+pub async fn automation_cancel_run(run_id: i32) -> Result<(), AppCommandError> {
+    automation_cancel_run_core(run_id).await.map_err(automation_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_error::AppErrorCode;
+    use crate::db::error::CronProblem;
+
+    #[test]
+    fn rejected_input_is_invalid_input_not_database_error() {
+        let err = automation_error(DbError::Validation("name is required".into()));
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+        assert_eq!(err.message, "name is required");
+
+        let err = automation_error(DbError::NotFound("automation 7".into()));
+        assert!(matches!(err.code, AppErrorCode::NotFound));
+
+        let err = automation_error(DbError::InvalidCron(CronProblem::NeverFires(
+            "0 0 31 2 *".into(),
+        )));
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+        assert_eq!(err.i18n_key.as_deref(), Some("cronErrorNeverFires"));
+    }
+
+    #[test]
+    fn next_run_preview_of_a_bad_cron_is_a_localized_invalid_input() {
+        // What the editor's live preview gets back for `not a cron`.
+        let err = automation_compute_next_run_core("not a cron", "UTC")
+            .map_err(automation_error)
+            .unwrap_err();
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+        assert_eq!(err.i18n_key.as_deref(), Some("cronErrorFieldCount"));
+        assert_eq!(
+            err.i18n_params.as_ref().and_then(|p| p.get("n")).map(String::as_str),
+            Some("3")
+        );
+        // A never-firing cron previews as "no next run", and saving refuses it.
+        assert_eq!(automation_compute_next_run_core("0 0 31 2 *", "UTC").unwrap(), None);
+    }
 }

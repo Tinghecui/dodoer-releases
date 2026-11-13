@@ -2,7 +2,8 @@
  * Humanize a 5-field cron expression into a small structured descriptor that the
  * UI renders via i18n. Covers the patterns the editor's presets and the
  * automation templates emit — every-N-minutes, hourly, daily, weekdays,
- * weekly-on-a-weekday, monthly-on-a-day. Anything else falls back to
+ * weekly-on-a-weekday, monthly-on-a-day — and the `@daily`-style macros that
+ * expand to one of those. Anything else falls back to
  * `{ kind: "raw" }` so the expression is shown verbatim rather than
  * mis-described.
  *
@@ -26,10 +27,29 @@ function intField(field: string): number | null {
   return /^\d+$/.test(field) ? Number(field) : null
 }
 
+/** The 5-field form of the `@daily`-style nicknames the backend accepts —
+ *  MUST mirror `expand_cron_macro` in
+ *  `src-tauri/src/db/service/automation_service.rs`. */
+const CRON_MACROS = new Map<string, string>([
+  ["@yearly", "0 0 1 1 *"],
+  ["@annually", "0 0 1 1 *"],
+  ["@monthly", "0 0 1 * *"],
+  ["@weekly", "0 0 * * 0"],
+  ["@daily", "0 0 * * *"],
+  ["@midnight", "0 0 * * *"],
+  ["@hourly", "0 * * * *"],
+])
+
+/** `@daily` → `0 0 * * *`; anything else is returned trimmed, unchanged. */
+function expandCronMacro(cron: string): string {
+  const trimmed = cron.trim()
+  return CRON_MACROS.get(trimmed.toLowerCase()) ?? trimmed
+}
+
 export function describeCron(cron: string): CronDescriptor {
   const trimmed = cron.trim()
   const raw: CronDescriptor = { kind: "raw", cron: trimmed }
-  const fields = trimmed.split(/\s+/)
+  const fields = expandCronMacro(trimmed).split(/\s+/)
   if (fields.length !== 5) return raw
   const [min, hr, dom, mon, dow] = fields
   const restIsStar = dom === "*" && mon === "*" && dow === "*"

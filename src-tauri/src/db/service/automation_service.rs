@@ -15,7 +15,7 @@ use sea_orm::{
 
 use crate::db::entities::automation::{IsolationMode, TriggerKind};
 use crate::db::entities::{automation, automation_run};
-use crate::db::error::DbError;
+use crate::db::error::{CronProblem, DbError};
 use crate::models::{
     AutomationConfig, AutomationDraft, AutomationInfo, AutomationRunInfo, AutomationRunStatus,
 };
@@ -82,7 +82,11 @@ fn remap_dow_field(field: &str) -> Result<String, DbError> {
     if field.chars().any(|c| c.is_ascii_alphabetic()) {
         return Ok(field.to_string());
     }
-    let invalid = || DbError::Validation(format!("invalid cron day-of-week field '{field}'"));
+    let invalid = || {
+        DbError::InvalidCron(CronProblem::InvalidValue(format!(
+            "invalid cron day-of-week field '{field}'"
+        )))
+    };
     let mut days: Vec<u32> = Vec::new();
     for part in field.split(',') {
         let part = part.trim();
@@ -134,13 +138,37 @@ fn remap_dow_field(field: &str) -> Result<String, DbError> {
         .join(","))
 }
 
+/// The 5-field form of the nicknames most cron dialects accept. Expanded before
+/// anything else so the day-of-week remap (and the frontend humanizer, which
+/// mirrors this table) only ever see one shape. `@reboot` has no calendar
+/// meaning for a scheduler that isn't the system's, so it stays unsupported.
+fn expand_cron_macro(expr: &str) -> Option<&'static str> {
+    match expr.to_ascii_lowercase().as_str() {
+        "@yearly" | "@annually" => Some("0 0 1 1 *"),
+        "@monthly" => Some("0 0 1 * *"),
+        "@weekly" => Some("0 0 * * 0"),
+        "@daily" | "@midnight" => Some("0 0 * * *"),
+        "@hourly" => Some("0 * * * *"),
+        _ => None,
+    }
+}
+
 /// Normalize a user-supplied 5-field cron (`min hour dom mon dow`) to the
 /// 6-field form (`sec min hour dom mon dow`) the `cron` crate requires, by
 /// remapping the day-of-week field (see [`remap_dow_field`]) and prepending a
-/// zero-seconds field. 6/7-field expressions are assumed crate-native and pass
-/// through unchanged (nothing first-party emits them).
+/// zero-seconds field. `@daily`-style macros are expanded first (see
+/// [`expand_cron_macro`]). 6/7-field expressions are assumed crate-native and
+/// pass through unchanged (nothing first-party emits them).
 fn normalize_cron(expr: &str) -> Result<String, DbError> {
     let trimmed = expr.trim();
+    if trimmed.starts_with('@') {
+        let expanded = expand_cron_macro(trimmed).ok_or_else(|| {
+            DbError::InvalidCron(CronProblem::InvalidValue(format!(
+                "unsupported cron macro '{trimmed}'"
+            )))
+        })?;
+        return normalize_cron(expanded);
+    }
     let fields: Vec<&str> = trimmed.split_whitespace().collect();
     match fields.len() {
         5 => {
@@ -151,9 +179,7 @@ fn normalize_cron(expr: &str) -> Result<String, DbError> {
             ))
         }
         6 | 7 => Ok(trimmed.to_string()),
-        n => Err(DbError::Validation(format!(
-            "cron must have 5 fields (min hour dom mon dow), got {n}"
-        ))),
+        n => Err(DbError::InvalidCron(CronProblem::FieldCount(n))),
     }
 }
 
@@ -168,7 +194,11 @@ pub fn compute_next_run(
 ) -> Result<Option<DateTime<Utc>>, DbError> {
     let normalized = normalize_cron(cron_expr)?;
     let schedule = Schedule::from_str(&normalized)
-        .map_err(|e| DbError::Validation(format!("invalid cron '{cron_expr}': {e}")))?;
+        .map_err(|e| {
+            DbError::InvalidCron(CronProblem::InvalidValue(format!(
+                "invalid cron '{cron_expr}': {e}"
+            )))
+        })?;
     let tz: Tz = timezone
         .parse()
         .map_err(|_| DbError::Validation(format!("invalid timezone '{timezone}'")))?;
@@ -213,7 +243,11 @@ fn validate_draft(draft: &AutomationDraft) -> Result<(), DbError> {
             ));
         }
         // Parses cron + timezone (and surfaces an error before we ever store it).
-        compute_next_run(cron, &draft.timezone, Utc::now())?;
+        // An expression that parses but matches no date (`0 0 31 2 *`) would be
+        // stored "enabled" yet never run — refuse it like any other bad cron.
+        if compute_next_run(cron, &draft.timezone, Utc::now())?.is_none() {
+            return Err(DbError::InvalidCron(CronProblem::NeverFires(cron.to_string())));
+        }
     }
     Ok(())
 }
@@ -356,7 +390,14 @@ pub async fn set_enabled(
     let row = find_active(conn, id).await?;
     let now = Utc::now();
     let next_run_at = if enabled && row.trigger_kind == TriggerKind::Schedule {
-        compute_next_run(row.cron.as_deref().unwrap_or(""), &row.timezone, now)?
+        let cron = row.cron.as_deref().unwrap_or("");
+        // A row saved before never-firing schedules were refused at save:
+        // switching it on would only look enabled.
+        let next = compute_next_run(cron, &row.timezone, now)?;
+        if next.is_none() {
+            return Err(DbError::InvalidCron(CronProblem::NeverFires(cron.trim().to_string())));
+        }
+        next
     } else {
         None
     };
@@ -793,6 +834,117 @@ mod tests {
         let mut sched_no_cron = draft("x", Some("0 0 * * *"));
         sched_no_cron.cron = None;
         assert!(create(&db.conn, sched_no_cron).await.is_err());
+    }
+
+    fn cron_problem(err: DbError) -> CronProblem {
+        match err {
+            DbError::InvalidCron(p) => p,
+            other => panic!("expected InvalidCron, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compute_next_run_classifies_bad_cron() {
+        let now = Utc::now();
+        let kind = |cron: &str| cron_problem(compute_next_run(cron, "UTC", now).unwrap_err());
+        assert_eq!(kind("not a cron"), CronProblem::FieldCount(3));
+        assert_eq!(kind("0 9 * *"), CronProblem::FieldCount(4));
+        assert!(matches!(kind("99 99 * * *"), CronProblem::InvalidValue(_)));
+        assert!(matches!(kind("*/0 * * * *"), CronProblem::InvalidValue(_)));
+        assert!(matches!(kind("0 9 * * 9"), CronProblem::InvalidValue(_)));
+        assert!(matches!(kind("@reboot"), CronProblem::InvalidValue(_)));
+        // A bad timezone is not a cron problem.
+        assert!(matches!(
+            compute_next_run("0 0 * * *", "Not/AZone", now),
+            Err(DbError::Validation(_))
+        ));
+        // The English text the CLI / chat-authoring tool read is unchanged.
+        assert_eq!(
+            compute_next_run("not a cron", "UTC", now).unwrap_err().to_string(),
+            "validation error: cron must have 5 fields (min hour dom mon dow), got 3"
+        );
+    }
+
+    #[test]
+    fn compute_next_run_never_firing_cron_is_none() {
+        // 31 February parses but matches no date.
+        assert_eq!(compute_next_run("0 0 31 2 *", "UTC", Utc::now()).unwrap(), None);
+    }
+
+    #[test]
+    fn cron_macros_expand_to_five_fields() {
+        assert_eq!(normalize_cron("@daily").unwrap(), "0 0 0 * * *");
+        assert_eq!(normalize_cron("@midnight").unwrap(), "0 0 0 * * *");
+        assert_eq!(normalize_cron(" @HOURLY ").unwrap(), "0 0 * * * *");
+        // Sunday, remapped like any 5-field day-of-week.
+        assert_eq!(normalize_cron("@weekly").unwrap(), "0 0 0 * * 1");
+        assert_eq!(normalize_cron("@monthly").unwrap(), "0 0 0 1 * *");
+        assert_eq!(normalize_cron("@yearly").unwrap(), "0 0 0 1 1 *");
+        assert_eq!(normalize_cron("@annually").unwrap(), "0 0 0 1 1 *");
+
+        let after = DateTime::parse_from_rfc3339("2026-06-21T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let next = compute_next_run("@daily", "UTC", after)
+            .expect("compute")
+            .expect("has next");
+        assert_eq!(next.to_rfc3339(), "2026-06-22T00:00:00+00:00");
+    }
+
+    #[tokio::test]
+    async fn create_accepts_cron_macro() {
+        let db = fresh_in_memory_db().await;
+        let a = create(&db.conn, draft("nightly", Some("@daily")))
+            .await
+            .expect("create");
+        assert!(a.next_run_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn never_firing_cron_is_refused_at_save() {
+        let db = fresh_in_memory_db().await;
+        let err = create(&db.conn, draft("feb 31", Some("0 0 31 2 *")))
+            .await
+            .expect_err("never fires");
+        assert_eq!(cron_problem(err), CronProblem::NeverFires("0 0 31 2 *".into()));
+        // Refused whether or not the draft is switched on: it can never be useful.
+        let mut off = draft("feb 31", Some("0 0 31 2 *"));
+        off.enabled = false;
+        assert!(matches!(
+            create(&db.conn, off).await,
+            Err(DbError::InvalidCron(CronProblem::NeverFires(_)))
+        ));
+
+        let a = create(&db.conn, draft("ok", Some("0 0 * * *")))
+            .await
+            .expect("create");
+        let err = update(&db.conn, a.id, draft("ok", Some("0 0 30 2 *")))
+            .await
+            .expect_err("never fires");
+        assert!(matches!(err, DbError::InvalidCron(CronProblem::NeverFires(_))));
+    }
+
+    #[tokio::test]
+    async fn enabling_a_stored_never_firing_row_is_refused() {
+        // A row saved before the save-time check existed.
+        let db = fresh_in_memory_db().await;
+        let mut d = draft("legacy", Some("0 0 * * *"));
+        d.enabled = false;
+        let a = create(&db.conn, d).await.expect("create");
+        let mut am = automation::Entity::find_by_id(a.id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap()
+            .into_active_model();
+        am.cron = Set(Some("0 0 31 2 *".into()));
+        am.update(&db.conn).await.unwrap();
+
+        let err = set_enabled(&db.conn, a.id, true).await.expect_err("never fires");
+        assert!(matches!(err, DbError::InvalidCron(CronProblem::NeverFires(_))));
+        assert!(!get(&db.conn, a.id).await.unwrap().enabled, "stays off");
+        // Switching it off (or leaving it off) is still allowed.
+        assert!(set_enabled(&db.conn, a.id, false).await.is_ok());
     }
 
     #[test]

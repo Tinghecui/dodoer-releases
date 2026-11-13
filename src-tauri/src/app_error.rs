@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::db::error::DbError;
+use crate::db::error::{CronProblem, DbError};
 
 // ─── Shared i18n keys ─────────────────────────────────────────────────
 //
@@ -115,6 +115,19 @@ pub const CONFIG_SYNC_I18N_KEY_CREDENTIALS_UNREADABLE: &str =
 /// would let anyone who can write to the share undo the setting.
 pub const CONFIG_SYNC_I18N_KEY_NOT_ENCRYPTED: &str = "configSync.error.notEncrypted";
 
+// ─── Automation cron i18n keys ───────────────────────────────────────
+//
+// Emitted for `DbError::InvalidCron` and consumed by the automation editor
+// through `toLocalizedErrorMessage` scoped to the `Automations` namespace.
+// MUST stay in lockstep with the keys in `src/i18n/messages/*.json`.
+
+/// The expression doesn't have 5 fields. Params: `n` (the count it has).
+pub const AUTOMATION_I18N_KEY_CRON_FIELD_COUNT: &str = "cronErrorFieldCount";
+/// Five fields, but one of them is malformed or out of range. No params.
+pub const AUTOMATION_I18N_KEY_CRON_INVALID_VALUE: &str = "cronErrorInvalidValue";
+/// The expression parses but no date ever matches it. No params.
+pub const AUTOMATION_I18N_KEY_CRON_NEVER_FIRES: &str = "cronErrorNeverFires";
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppErrorCode {
@@ -184,8 +197,29 @@ impl AppCommandError {
     }
 
     pub fn db(err: DbError) -> Self {
-        Self::new(AppErrorCode::DatabaseError, "Database operation failed")
-            .with_detail(err.to_string())
+        match err {
+            // The user typed it: a 400 the editor can explain, not a 500.
+            DbError::InvalidCron(problem) => Self::invalid_cron(problem),
+            other => Self::new(AppErrorCode::DatabaseError, "Database operation failed")
+                .with_detail(other.to_string()),
+        }
+    }
+
+    /// A cron expression that can't be scheduled, as `invalid_input` with the
+    /// English reason in `message` and one of three i18n keys for the UI.
+    pub fn invalid_cron(problem: CronProblem) -> Self {
+        let message = format!("validation error: {problem}");
+        let (key, params) = match problem {
+            CronProblem::FieldCount(n) => (
+                AUTOMATION_I18N_KEY_CRON_FIELD_COUNT,
+                BTreeMap::from([("n".to_string(), n.to_string())]),
+            ),
+            CronProblem::InvalidValue(_) => {
+                (AUTOMATION_I18N_KEY_CRON_INVALID_VALUE, BTreeMap::new())
+            }
+            CronProblem::NeverFires(_) => (AUTOMATION_I18N_KEY_CRON_NEVER_FIRES, BTreeMap::new()),
+        };
+        Self::invalid_input(message).with_i18n(key, params)
     }
 
     pub fn invalid_input(message: impl Into<String>) -> Self {
@@ -279,7 +313,8 @@ impl From<DbError> for AppCommandError {
         }
         // Validation / Conflict stay `database_error` on purpose: the frontend
         // reads their markers out of `detail` under that code (task restart
-        // guard, automation cron errors).
+        // guard). A bad cron is `DbError::InvalidCron`, which `db()` turns into
+        // a localizable `invalid_input`.
         Self::db(value)
     }
 }
@@ -287,6 +322,34 @@ impl From<DbError> for AppCommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_cron_is_localizable_invalid_input() {
+        let err = AppCommandError::from(DbError::InvalidCron(CronProblem::FieldCount(3)));
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+        assert_eq!(err.i18n_key.as_deref(), Some("cronErrorFieldCount"));
+        assert_eq!(
+            err.i18n_params.as_ref().and_then(|p| p.get("n")).map(String::as_str),
+            Some("3")
+        );
+        assert_eq!(
+            err.message,
+            "validation error: cron must have 5 fields (min hour dom mon dow), got 3"
+        );
+
+        let err = AppCommandError::from(DbError::InvalidCron(CronProblem::InvalidValue(
+            "invalid cron '99 99 * * *': bad".into(),
+        )));
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+        assert_eq!(err.i18n_key.as_deref(), Some("cronErrorInvalidValue"));
+        assert!(err.i18n_params.is_none());
+
+        let err = AppCommandError::from(DbError::InvalidCron(CronProblem::NeverFires(
+            "0 0 31 2 *".into(),
+        )));
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+        assert_eq!(err.i18n_key.as_deref(), Some("cronErrorNeverFires"));
+    }
 
     #[test]
     fn db_not_found_maps_to_not_found_and_keeps_detail() {

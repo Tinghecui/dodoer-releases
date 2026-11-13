@@ -38,6 +38,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejected_input_is_a_client_error() {
+        assert_eq!(
+            status_for_app_error_code(AppErrorCode::InvalidInput),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
     fn command_authentication_failures_are_not_web_session_unauthorized() {
         assert_eq!(
             status_for_app_error_code(AppErrorCode::AuthenticationFailed),

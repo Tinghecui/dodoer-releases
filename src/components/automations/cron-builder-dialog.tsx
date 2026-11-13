@@ -21,7 +21,8 @@ import {
 } from "@/components/ui/select"
 import { automationComputeNextRun } from "@/lib/api"
 import { describeCron, type CronDescriptor } from "@/lib/cron-humanize"
-import { ScheduleLabel } from "./schedule-label"
+import { ScheduleSummary } from "./schedule-label"
+import { useAutomationErrorMessage } from "./use-automation-error-message"
 
 type Freq =
   | "everyMinutes"
@@ -171,6 +172,7 @@ function CronBuilderBody({
   onCancel: () => void
 }) {
   const t = useTranslations("Automations")
+  const errorMessage = useAutomationErrorMessage()
   const init = useMemo(() => describeCron(cron), [cron])
 
   const [freq, setFreq] = useState<Freq>(
@@ -192,23 +194,30 @@ function CronBuilderBody({
   // async callbacks set state (an empty expression is handled by gating the
   // render below, never a synchronous setState in the effect body).
   const [nextRun, setNextRun] = useState<string | null>(null)
+  // Why there is no next run (bad expression, or one that never fires) — the
+  // same localized sentence the editor shows and saving would refuse with.
+  const [nextRunError, setNextRunError] = useState<string | null>(null)
   useEffect(() => {
     if (!built.trim()) return
     let cancelled = false
     const handle = setTimeout(() => {
       automationComputeNextRun(built.trim(), timezone)
         .then((r) => {
-          if (!cancelled) setNextRun(r)
+          if (cancelled) return
+          setNextRun(r)
+          setNextRunError(r == null ? t("cronErrorNeverFires") : null)
         })
-        .catch(() => {
-          if (!cancelled) setNextRun(null)
+        .catch((e) => {
+          if (cancelled) return
+          setNextRun(null)
+          setNextRunError(errorMessage(e))
         })
     }, 300)
     return () => {
       cancelled = true
       clearTimeout(handle)
     }
-  }, [built, timezone])
+  }, [built, timezone, t, errorMessage])
 
   const showTime =
     freq === "daily" ||
@@ -350,15 +359,19 @@ function CronBuilderBody({
         <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
           {t("cronPreviewLabel")}
         </span>
-        <span className="flex flex-wrap items-center gap-1.5">
-          <ScheduleLabel cron={built} />
-          <span className="font-mono text-xs text-muted-foreground">
-            {built}
-          </span>
-        </span>
+        <ScheduleSummary
+          cron={built}
+          className="flex flex-wrap items-center gap-1.5"
+        />
         <span className="text-xs text-muted-foreground">
           {t("nextRun")}:{" "}
           {built.trim() && nextRun ? new Date(nextRun).toLocaleString() : "—"}
+          {built.trim() && nextRunError ? (
+            <span className="text-destructive" role="status">
+              {" "}
+              {nextRunError}
+            </span>
+          ) : null}
         </span>
       </div>
 

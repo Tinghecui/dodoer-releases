@@ -56,3 +56,26 @@ export function ScheduleLabel({ cron }: { cron: string }) {
       return <span className="font-mono">{d.cron}</span>
   }
 }
+
+/**
+ * A schedule as a readable cadence with the cron underneath — for the detail
+ * page and the builder preview, where the expression itself matters too. One
+ * the humanizer can't describe reads "Custom schedule" rather than repeating
+ * the cron twice with nothing readable (AI QA #163).
+ */
+export function ScheduleSummary({
+  cron,
+  className,
+}: {
+  cron: string
+  className?: string
+}) {
+  const t = useTranslations("Automations")
+  const custom = useMemo(() => describeCron(cron).kind === "raw", [cron])
+  return (
+    <span className={className}>
+      {custom ? <span>{t("schedCustom")}</span> : <ScheduleLabel cron={cron} />}
+      <span className="font-mono text-xs text-muted-foreground">{cron}</span>
+    </span>
+  )
+}

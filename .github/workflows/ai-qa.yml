@@ -37,6 +37,9 @@ on:
         default: ""
       pm_model:
         default: ""
+      # AI QA 自己的几个角色的凭证：空 = 这个仓库的变量 AIQA_CLAUDE_AUTH，没有就 oauth（订阅令牌）；api = API key（实际扣费）
+      claude_auth:
+        default: ""
       env:
         type: choice
         options: [cowork, bare]
@@ -77,6 +80,7 @@ jobs:
       MODEL: ${{ inputs.model || vars.AIQA_MODEL || 'claude-opus-5-5' }}
       PM_MODEL: ${{ inputs.pm_model || vars.AIQA_PM_MODEL || vars.AIQA_MODEL || 'claude-opus-5-5' }}
       AGENT_MODEL: ${{ inputs.agent_model || vars.AIQA_AGENT_MODEL || 'claude-haiku-4-5' }}
+      CLAUDE_AUTH: ${{ inputs.claude_auth || vars.AIQA_CLAUDE_AUTH || 'oauth' }}
       ROTATE: ${{ vars.AIQA_ROTATE || '8' }}
       TRIAGE: ${{ vars.AIQA_TRIAGE || '12' }}
     steps:
@@ -90,6 +94,7 @@ jobs:
           PUBLIC_TOKEN: ${{ github.token }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CODEG_AGENT_ANTHROPIC_KEY: ${{ secrets.CODEG_AGENT_ANTHROPIC_KEY }}
+          AIQA_ANTHROPIC_API_KEY: ${{ secrets.AIQA_ANTHROPIC_API_KEY }}
           COWORK_RELEASE_TOKEN: ${{ secrets.COWORK_RELEASE_TOKEN }}
           PUBLIC_SYNC_DEPLOY_KEY: ${{ secrets.PUBLIC_SYNC_DEPLOY_KEY }}
         run: |

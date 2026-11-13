@@ -19,9 +19,11 @@ env:
   # not built.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
+# pr/<n> 上新推送取消旧的那次；main 上不取消：main 只测「比上一次推送改了什么」，连着合并时前一次被取消，
+# 它那部分改动就再也没人测（2026-11-13 连合 4 个改 Rust 的 PR，全被取消，最后一次只改了前端，Rust 一次没跑）
 concurrency:
   group: test-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # 按改动范围决定跑哪些 job。pr/<n> 分支和 main 比（merge-base），main 上和上一次推送比；工作流文件自己改了就全跑

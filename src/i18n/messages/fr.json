@@ -4000,6 +4000,8 @@
         "openDetail": "Voir la conversation",
         "resumed": "Repris",
         "resumeReasonLabel": "Motif de la reprise",
+        "settledOk": "La sous-tâche {task} s'est terminée après cette réponse — l'agent n'a pas encore vu le résultat",
+        "settledErr": "La sous-tâche {task} a échoué après cette réponse — l'agent ne le sait pas encore",
         "detailTitle": "Conversation du sous-agent",
         "detailDescription": "Vue en lecture seule de la conversation du sous-agent délégué.",
         "waitForResult": "En attente du résultat de la tâche {task}",

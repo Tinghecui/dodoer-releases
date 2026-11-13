@@ -4000,6 +4000,8 @@
         "openDetail": "会話を表示",
         "resumed": "再開済み",
         "resumeReasonLabel": "再開理由",
+        "settledOk": "サブタスク {task} はこの返信の終了後に完了しました。エージェントはまだ結果を見ていません",
+        "settledErr": "サブタスク {task} はこの返信の終了後に失敗しました。エージェントはまだ把握していません",
         "detailTitle": "サブエージェントの会話",
         "detailDescription": "委任されたサブエージェントの会話を読み取り専用で表示します。",
         "waitForResult": "タスク {task} の実行結果を待機中",

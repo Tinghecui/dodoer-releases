@@ -4000,6 +4000,8 @@
         "openDetail": "查看会话",
         "resumed": "已恢复",
         "resumeReasonLabel": "恢复原因",
+        "settledOk": "子任务 {task} 在这轮回复结束后才完成，agent 还没看到结果",
+        "settledErr": "子任务 {task} 在这轮回复结束后失败了，agent 还不知道",
         "detailTitle": "子智能体会话",
         "detailDescription": "只读查看委托给子智能体的会话内容。",
         "waitForResult": "等待 {task} 任务执行结果",

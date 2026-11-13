@@ -213,8 +213,14 @@ function DelegationStepRow({
 
   if (pinnedOnly && status !== "running" && status !== "awaiting") return null
 
+  // The newest check's text is the result only if that check did not find
+  // the task still running. One made while the sub-agent worked ("Running.",
+  // "Blocked on …") is stale once the live binding or the stored record says
+  // it is done — the parent's turn can end before the task does (#173) — and
+  // "Open conversation" stands in for the result there.
   const result =
-    model.status === "ok" || model.status === "err"
+    (model.status === "ok" || model.status === "err") &&
+    latest?.report.status !== "running"
       ? previewLine(latest?.report.text, RESULT_PREVIEW_CHARS)
       : null
   // While it works, what it is doing now stands where the result will be.

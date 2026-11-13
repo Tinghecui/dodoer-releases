@@ -67,6 +67,11 @@ import {
 } from "@/lib/delegation-card"
 import type { DelegationCardSource } from "@/hooks/use-delegation-card-model"
 import {
+  settledNoticeCandidates,
+  type SettledNoticeCandidate,
+} from "@/lib/delegation-settled"
+import { DelegationSettledNotice } from "./delegation-settled-notice"
+import {
   collectDelegationStatusTasks,
   createDelegationStatusIndexer,
   type DelegationStatusTaskRef,
@@ -330,6 +335,16 @@ export type ThreadRenderItem =
       /** The compaction call's id — the event's own name wherever the live
        *  and history channels agree on one (see `dedupeCompactionItems`). */
       callId?: string
+    }
+  | {
+      // Under the newest reply, once it has ended: the tasks it handed off
+      // and never saw end, any of which may have finished since
+      // (`DelegationSettledNotice`, cowork-codeg#173). Appended for the
+      // virtualizer only, after everything above has read the thread — it is
+      // not a message, so the reply stays the thread's tail.
+      key: string
+      kind: "delegation-settled"
+      candidates: readonly SettledNoticeCandidate[]
     }
 
 /**
@@ -631,6 +646,47 @@ export function groupDelegationSources(
     delegationSourcesByGroup.set(group, sources)
   }
   return sources
+}
+
+const EMPTY_SETTLED: readonly SettledNoticeCandidate[] = []
+const settledCandidatesByGroup = new WeakMap<
+  ResolvedMessageGroup,
+  readonly SettledNoticeCandidate[]
+>()
+
+/**
+ * The thread as the virtualizer draws it: `items`, plus — when the newest
+ * reply is the tail and has ended — the notice row for the tasks it handed
+ * off and never saw end (`settledNoticeCandidates`). Whether one of those has
+ * ended since is the notice's own call; until one has, the row draws nothing.
+ */
+export function withDelegationSettledNotice(
+  items: ThreadRenderItem[],
+  replyEnded: boolean
+): ThreadRenderItem[] {
+  if (!replyEnded) return items
+  const tail = items[items.length - 1]
+  if (!tail || tail.kind !== "turn" || tail.group.role !== "assistant") {
+    return items
+  }
+  let candidates = settledCandidatesByGroup.get(tail.group)
+  if (!candidates) {
+    const found = settledNoticeCandidates(
+      groupDelegationSources(tail.group),
+      tail.group.parts
+    )
+    candidates = found.length > 0 ? found : EMPTY_SETTLED
+    settledCandidatesByGroup.set(tail.group, candidates)
+  }
+  if (candidates.length === 0) return items
+  return [
+    ...items,
+    {
+      key: `delegation-settled-${tail.group.id}`,
+      kind: "delegation-settled",
+      candidates,
+    },
+  ]
 }
 
 // Per group as well, for the status index below: the rows a historical
@@ -1893,6 +1949,9 @@ export function MessageListView({
               />
             </div>
           )
+        case "delegation-settled":
+          // Nothing at all while none of its tasks has ended: no padding here.
+          return <DelegationSettledNotice candidates={item.candidates} />
         default:
           return null
       }
@@ -1969,6 +2028,14 @@ export function MessageListView({
   const delegationStatusIndex = useMemo(
     () => indexDelegationStatus(threadDelegationStatusTasks(threadItems)),
     [indexDelegationStatus, threadItems]
+  )
+
+  // What the virtualizer draws: the thread, and under a reply that has ended,
+  // the "sub-task finished after this reply" notice (cowork-codeg#173).
+  const replyEnded = !lastAssistantRunning && connStatus !== "prompting"
+  const renderedThreadItems = useMemo(
+    () => withDelegationSettledNotice(threadItems, replyEnded),
+    [threadItems, replyEnded]
   )
 
   // --- Message navigator ------------------------------------------------------
@@ -2406,7 +2473,7 @@ export function MessageListView({
         >
           <AutoScrollOnSend signal={sendSignal} />
           <VirtualizedMessageThread
-            items={threadItems}
+            items={renderedThreadItems}
             getItemKey={getThreadItemKey}
             renderItem={renderThreadItem}
             emptyState={emptyState}

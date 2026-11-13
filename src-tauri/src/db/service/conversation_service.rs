@@ -572,6 +572,42 @@ pub async fn refresh_external_activity(
     Ok(res.rows_affected > 0)
 }
 
+/// A codeg delegation this conversation started has settled AFTER the turn
+/// that started it ended (cowork-codeg#173): bump `updated_at` so the sidebar
+/// reads the conversation as unread again — its unread mark is "a turn ended
+/// after the user last accepted it", keyed on `updated_at` — exactly as if the
+/// agent had finished another turn. Nothing reaches the agent: the parent is
+/// not prompted, and the transcript is not touched.
+///
+/// One conditional UPDATE:
+/// * `status IN (pending_review, cancelled)` — the turn is over. A turn still
+///   in progress will see the result itself (its `get_delegation_status` wait
+///   wakes on it) and stamps `updated_at` when it ends; a conversation the
+///   user marked `completed` is theirs and stays read.
+/// * `parent_id IS NULL` — a nested delegation's parent is itself a child,
+///   which has no unread state.
+/// * `deleted_at IS NULL` — a soft-deleted conversation stays out of sight.
+///
+/// Returns whether the row was bumped (the caller then broadcasts it).
+pub async fn touch_for_settled_delegation(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<bool, DbError> {
+    use sea_orm::sea_query::Expr;
+    let res = conversation::Entity::update_many()
+        .col_expr(conversation::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .filter(conversation::Column::DeletedAt.is_null())
+        .filter(conversation::Column::ParentId.is_null())
+        .filter(conversation::Column::Status.is_in([
+            conversation::ConversationStatus::PendingReview,
+            conversation::ConversationStatus::Cancelled,
+        ]))
+        .exec(conn)
+        .await?;
+    Ok(res.rows_affected > 0)
+}
+
 /// Pin or unpin a conversation. Sets `pinned_at = now()` when pinning, `NULL`
 /// when unpinning. Only the `pinned_at` column is written — `updated_at` is
 /// deliberately left untouched (SeaORM updates only the `Set` field), because
@@ -3777,6 +3813,91 @@ mod tests {
                 .expect("row present");
             assert_eq!(raw.message_count, 0, "row {id} untouched");
         }
+    }
+
+    #[tokio::test]
+    async fn touch_for_settled_delegation_bumps_only_an_ended_root_turn() {
+        use conversation::ConversationStatus as S;
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-settled-delegation").await;
+        let (parent, child) = seed_parent_with_child(&db.conn, folder).await;
+        let row = |id: i32| {
+            let conn = db.conn.clone();
+            async move {
+                conversation::Entity::find_by_id(id)
+                    .one(&conn)
+                    .await
+                    .expect("query")
+                    .expect("row present")
+            }
+        };
+
+        // Its turn still runs (a fresh row is `in_progress`): that turn sees
+        // the result itself and stamps the row when it ends.
+        let before = row(parent).await.updated_at;
+        assert!(
+            !touch_for_settled_delegation(&db.conn, parent)
+                .await
+                .expect("in progress"),
+            "a turn still running is left alone"
+        );
+        assert_eq!(row(parent).await.updated_at, before);
+
+        // The turn ended, either way: the row moves forward, its status kept.
+        for status in [S::PendingReview, S::Cancelled] {
+            update_status(&db.conn, parent, status.clone())
+                .await
+                .expect("status");
+            let before = row(parent).await.updated_at;
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            assert!(
+                touch_for_settled_delegation(&db.conn, parent)
+                    .await
+                    .expect("ended"),
+                "{status:?} is an ended turn"
+            );
+            let after = row(parent).await;
+            assert!(after.updated_at > before, "{status:?} must be bumped");
+            assert_eq!(after.status, status, "the status is left alone");
+        }
+
+        // Marked done by the user: theirs, and it stays read.
+        update_status(&db.conn, parent, S::Completed)
+            .await
+            .expect("completed");
+        let before = row(parent).await.updated_at;
+        assert!(
+            !touch_for_settled_delegation(&db.conn, parent)
+                .await
+                .expect("completed"),
+            "a conversation marked completed is left alone"
+        );
+        assert_eq!(row(parent).await.updated_at, before);
+
+        // A delegation child (a nested delegation's parent) has no unread
+        // state; a soft-deleted row stays out of sight.
+        update_status(&db.conn, child, S::PendingReview)
+            .await
+            .expect("child status");
+        assert!(
+            !touch_for_settled_delegation(&db.conn, child)
+                .await
+                .expect("child"),
+            "a delegation child is not a sidebar row"
+        );
+        let deleted = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("deleted");
+        update_status(&db.conn, deleted.id, S::PendingReview)
+            .await
+            .expect("deleted status");
+        soft_delete(&db.conn, deleted.id).await.expect("soft delete");
+        assert!(
+            !touch_for_settled_delegation(&db.conn, deleted.id)
+                .await
+                .expect("deleted"),
+            "a soft-deleted conversation stays out of sight"
+        );
     }
 
     #[tokio::test]

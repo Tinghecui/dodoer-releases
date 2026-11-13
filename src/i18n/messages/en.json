@@ -4000,6 +4000,8 @@
         "openDetail": "Open conversation",
         "resumed": "Resumed",
         "resumeReasonLabel": "Resume reason",
+        "settledOk": "Sub-task {task} finished after this reply ended — the agent hasn't seen the result",
+        "settledErr": "Sub-task {task} failed after this reply ended — the agent hasn't seen it",
         "detailTitle": "Sub-agent conversation",
         "detailDescription": "Read-only view of the delegated sub-agent's conversation.",
         "waitForResult": "Waiting for task {task} result",

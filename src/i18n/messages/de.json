@@ -4000,6 +4000,8 @@
         "openDetail": "Konversation anzeigen",
         "resumed": "Fortgesetzt",
         "resumeReasonLabel": "Grund der Fortsetzung",
+        "settledOk": "Teilaufgabe {task} wurde nach dieser Antwort fertig – der Agent hat das Ergebnis noch nicht gesehen",
+        "settledErr": "Teilaufgabe {task} ist nach dieser Antwort fehlgeschlagen – der Agent weiß es noch nicht",
         "detailTitle": "Unteragent-Konversation",
         "detailDescription": "Schreibgeschützte Ansicht der delegierten Unteragent-Konversation.",
         "waitForResult": "Warte auf das Ergebnis von Aufgabe {task}",

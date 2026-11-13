@@ -4000,6 +4000,8 @@
         "openDetail": "檢視會話",
         "resumed": "已恢復",
         "resumeReasonLabel": "恢復原因",
+        "settledOk": "子任務 {task} 在這輪回覆結束後才完成，agent 還沒看到結果",
+        "settledErr": "子任務 {task} 在這輪回覆結束後失敗了，agent 還不知道",
         "detailTitle": "子智慧體會話",
         "detailDescription": "唯讀檢視委派給子智慧體的會話內容。",
         "waitForResult": "等待 {task} 任務執行結果",

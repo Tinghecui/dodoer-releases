@@ -799,6 +799,55 @@ describe("delegation row: its checks", () => {
       "Checked all four; one path is missing."
     )
   })
+
+  it("never shows a check that found it still running as the result once it is done (#173)", () => {
+    // The parent checked while the sub-agent was parked on a permission, its
+    // turn ended there, and the sub-agent finished after the user approved:
+    // the binding says done, the newest check still says "Running.".
+    const TASK = "a68323fc"
+    const blocked = (output: string): AdaptedContentPart => ({
+      type: "delegation-status-group",
+      polls: [
+        {
+          type: "tool-call",
+          toolCallId: "c1",
+          toolName: "mcp__codeg-mcp__get_delegation_status",
+          input: JSON.stringify({ task_ids: [TASK] }),
+          output,
+          state: "output-available",
+        },
+      ],
+    })
+    const call = delegation({
+      state: "output-available",
+      output: JSON.stringify({ task_id: TASK, status: "started" }),
+    })
+    const running =
+      "Running.\nAwaiting your decision: Edit docs/notes.md\nThe sub-agent " +
+      "is parked until a human answers in Codeg — it is not making progress."
+    bind(bindingOf({ status: "ok", taskId: TASK }))
+    for (const output of [
+      // Structured, and the content-only shape a host may leave instead.
+      JSON.stringify({ task_id: TASK, status: "running", message: running }),
+      running,
+    ]) {
+      const view = render(
+        <NextIntlClientProvider locale="en" messages={enMessages}>
+          <ContentPartsRenderer
+            parts={[call, blocked(output)]}
+            role="assistant"
+          />
+        </NextIntlClientProvider>
+      )
+      const delegationRow = row()
+      expect(within(delegationRow).getByText(/^done/)).toBeInTheDocument()
+      expect(delegationRow).not.toHaveTextContent("Running.")
+      expect(delegationRow).not.toHaveTextContent("Awaiting your decision")
+      // The way to its result is still there.
+      expect(within(delegationRow).getByText("Open conversation")).toBeTruthy()
+      view.unmount()
+    }
+  })
 })
 
 describe("delegation row: the task it was handed", () => {

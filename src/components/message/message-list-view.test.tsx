@@ -14,6 +14,7 @@ import {
   mergeConsecutiveAssistantTurns,
   singletonSourceTurns,
   threadDelegationStatusTasks,
+  withDelegationSettledNotice,
   type MergedAssistantRunCache,
   type ReplyFoldState,
   type ResolvedMessageGroup,
@@ -1272,5 +1273,50 @@ describe("hoistedCompaction", () => {
       "tool-call",
       "text",
     ])
+  })
+})
+
+describe("withDelegationSettledNotice", () => {
+  // A reply that handed off a task and only ever saw it running
+  // (cowork-codeg#173).
+  function delegatingReply(id: string): ResolvedMessageGroup {
+    const group = makeGroup("assistant", id)
+    group.parts = [
+      {
+        type: "tool-call",
+        toolCallId: `${id}-call`,
+        toolName: "mcp__codeg-mcp__delegate_to_agent",
+        input: JSON.stringify({ agent_type: "codex", task: "x" }),
+        state: "output-available",
+        output: JSON.stringify({ task_id: "t1", status: "running" }),
+      },
+    ]
+    return group
+  }
+
+  it("adds the notice row under a reply that has ended", () => {
+    const user = makeUserItem("u1", 0)
+    const reply = makeItem(delegatingReply("a1"), 1)
+    const items = [user, reply]
+    const out = withDelegationSettledNotice(items, true)
+    expect(out.map((it) => it.kind)).toEqual([
+      "turn",
+      "turn",
+      "delegation-settled",
+    ])
+    const row = out[2]
+    if (row.kind !== "delegation-settled") throw new Error("no notice row")
+    expect(row.candidates.map((c) => c.taskId)).toEqual(["t1"])
+    // The thread itself is left as it was.
+    expect(items).toHaveLength(2)
+  })
+
+  it("adds nothing while the reply runs, under a user message, or with no open task", () => {
+    const reply = makeItem(delegatingReply("a1"), 1)
+    expect(withDelegationSettledNotice([reply], false)).toEqual([reply])
+    const sent = [reply, makeUserItem("u2", 2)]
+    expect(withDelegationSettledNotice(sent, true)).toBe(sent)
+    const plain = [makeItem(makeGroup("assistant", "a2"), 0)]
+    expect(withDelegationSettledNotice(plain, true)).toBe(plain)
   })
 })

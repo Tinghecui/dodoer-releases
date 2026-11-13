@@ -359,7 +359,7 @@ pub(crate) async fn handle_event(
             // pending broker call. The broker maps the outcome onto the
             // parent's `tool_use_id` via the registered `call_id`.
             if let Some(b) = broker {
-                forward_turn_complete_to_broker(
+                let parent = forward_turn_complete_to_broker(
                     db_conn,
                     b.as_ref(),
                     cid,
@@ -367,6 +367,9 @@ pub(crate) async fn handle_event(
                     last_text,
                 )
                 .await;
+                if let Some(parent_id) = parent {
+                    flag_parent_after_child_turn(db_conn, &emitter, parent_id, stop_reason).await;
+                }
             }
             Ok(())
         }
@@ -473,13 +476,16 @@ pub(crate) async fn handle_event(
 /// paths (`timeout` / `cancel_by_child_connection` / `cancel_by_parent`)
 /// also surface the event — see
 /// `.docs/issues/2026-05-24-delegation-termination-cascade.md`.
+///
+/// Returns the parent conversation's id when the turn was a delegation
+/// child's and its outcome was forwarded.
 async fn forward_turn_complete_to_broker(
     db_conn: &DatabaseConnection,
     broker: &DelegationBroker,
     conversation_id: i32,
     stop_reason: &str,
     last_text: Option<String>,
-) {
+) -> Option<i32> {
     let row = match conversation_service::get_by_id(db_conn, conversation_id).await {
         Ok(r) => r,
         Err(e) => {
@@ -487,19 +493,16 @@ async fn forward_turn_complete_to_broker(
                 "[delegation][lifecycle] couldn't fetch child conversation \
                  {conversation_id} for outcome routing: {e}"
             );
-            return;
+            return None;
         }
     };
-    let call_id = match row.delegation_call_id.clone() {
-        Some(id) => id,
-        None => return, // not a delegation child; nothing to do.
-    };
+    let call_id = row.delegation_call_id.clone()?; // not a delegation child; nothing to do.
     if row.parent_tool_use_id.is_none() {
         tracing::info!(
             "[delegation][lifecycle] conversation {conversation_id} has \
              delegation_call_id but no parent_tool_use_id; dropping"
         );
-        return;
+        return None;
     }
     let agent_type = row.agent_type;
     let outcome = match stop_reason {
@@ -544,6 +547,35 @@ async fn forward_turn_complete_to_broker(
         ),
     };
     broker.complete_call(&call_id, outcome).await;
+    row.parent_id
+}
+
+/// A delegated sub-agent's turn ended: if the parent's own turn is already
+/// over, mark the parent unread in the sidebar (cowork-codeg#173). The parent
+/// agent is NOT prompted — waking it would spend tokens and set it running on
+/// its own; the transcript draws the "sub-task finished" notice from the
+/// delegation card's own state. A turn the user cancelled is not news to
+/// them, so it marks nothing. Best-effort: a failure only logs.
+async fn flag_parent_after_child_turn(
+    db_conn: &DatabaseConnection,
+    emitter: &EventEmitter,
+    parent_id: i32,
+    stop_reason: &str,
+) {
+    if stop_reason == "cancelled" {
+        return;
+    }
+    match conversation_service::touch_for_settled_delegation(db_conn, parent_id).await {
+        Ok(true) => {
+            crate::commands::conversations::emit_conversation_upsert(emitter, db_conn, parent_id)
+                .await
+        }
+        Ok(false) => {}
+        Err(e) => tracing::warn!(
+            "[delegation][lifecycle] couldn't flag parent conversation \
+             {parent_id} after its sub-agent finished: {e}"
+        ),
+    }
 }
 
 /// Snapshot the connection's `(state, emitter)` into the lifecycle cache when
@@ -5206,5 +5238,104 @@ mod tests {
 
         drop(bus);
         let _ = dispatcher.await;
+    }
+
+    /// cowork-codeg#173: a sub-agent that finishes after its parent's turn
+    /// ended moves the parent's `updated_at` on — the sidebar's unread mark —
+    /// and leaves its status alone. One that finishes while the parent's turn
+    /// still runs, or that the user cancelled, marks nothing.
+    #[tokio::test]
+    async fn child_turn_complete_marks_an_idle_parent_unread() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/child-done-parent").await;
+        let parent =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let child = conversation_service::create_with_delegation(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            None,
+            None,
+            Some(crate::acp::delegation::spawner::DelegationLink {
+                parent_conversation_id: parent.id,
+                parent_tool_use_id: "tu-parent".into(),
+                delegation_call_id: "call-child".into(),
+                assistant: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let mgr = ConnectionManager::new();
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "child".to_string(),
+                fake_connection_with_state("child", Some(child.id)),
+            );
+        }
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(NoopDepthLookup) as Arc<dyn ConversationDepthLookup>,
+        ));
+        let child_turn = |seq: u64, stop_reason: &str| EventEnvelope {
+            seq,
+            connection_id: "child".to_string(),
+            payload: AcpEvent::TurnComplete {
+                session_id: "ext-child".into(),
+                stop_reason: stop_reason.into(),
+                agent_type: "claude_code".into(),
+            },
+        };
+        let parent_id = parent.id;
+        let parent_updated_at = || {
+            let conn = db.conn.clone();
+            async move {
+                conversation_service::get_by_id(&conn, parent_id)
+                    .await
+                    .unwrap()
+                    .updated_at
+            }
+        };
+
+        // The parent's turn still runs: it collects the result itself.
+        let before = parent_updated_at().await;
+        handle_event(&db.conn, &mgr, &child_turn(1, "end_turn"), Some(&broker))
+            .await
+            .unwrap();
+        assert_eq!(
+            parent_updated_at().await,
+            before,
+            "a parent mid-turn is not marked"
+        );
+
+        // The parent's turn is over.
+        conversation_service::update_status(&db.conn, parent_id, ConversationStatus::PendingReview)
+            .await
+            .unwrap();
+        let before = parent_updated_at().await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        handle_event(&db.conn, &mgr, &child_turn(2, "cancelled"), Some(&broker))
+            .await
+            .unwrap();
+        assert_eq!(
+            parent_updated_at().await,
+            before,
+            "a sub-agent the user cancelled is not news"
+        );
+
+        handle_event(&db.conn, &mgr, &child_turn(3, "end_turn"), Some(&broker))
+            .await
+            .unwrap();
+        assert!(
+            parent_updated_at().await > before,
+            "a sub-agent done after its parent's turn marks the parent unread"
+        );
+        assert_eq!(
+            read_row_status(&db, parent_id).await,
+            ConversationStatus::PendingReview,
+            "the parent's status is left alone"
+        );
     }
 }

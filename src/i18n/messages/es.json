@@ -4000,6 +4000,8 @@
         "openDetail": "Ver conversación",
         "resumed": "Reanudado",
         "resumeReasonLabel": "Motivo de reanudación",
+        "settledOk": "La subtarea {task} terminó después de esta respuesta; el agente aún no ha visto el resultado",
+        "settledErr": "La subtarea {task} falló después de esta respuesta; el agente aún no lo sabe",
         "detailTitle": "Conversación del subagente",
         "detailDescription": "Vista de solo lectura de la conversación del subagente delegado.",
         "waitForResult": "Esperando el resultado de la tarea {task}",

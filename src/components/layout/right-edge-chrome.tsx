@@ -38,15 +38,30 @@ export function RightEdgeChrome() {
   const isChatMode = useIsActiveChatMode()
   // Full-page workbench routes (tasks / automations) overlay the workspace the
   // terminal and aux panel live in — toggling them there is invisible, so the
-  // two buttons hide and the route's own page-level controls take their slots
-  // (WorkbenchRouteChromeActions below). The way OUT of such a route is the
-  // breadcrumb button at the head of its title (see WorkbenchPageTitle), not
-  // this corner.
-  const { isConversations } = useWorkbenchRoute()
-  const { isOpen: auxPanelOpen, toggle: toggleAuxPanel } = useAuxPanelContext()
+  // terminal button hides and the route's own page-level controls take its
+  // slot (WorkbenchRouteChromeActions below). The way OUT of such a route is
+  // the breadcrumb button at the head of its title (see WorkbenchPageTitle).
+  // Cowork (AI QA #59): the aux-panel button stays, and there it goes back to
+  // the conversations and opens the panel (same as mod+E, see
+  // WorkspaceChromeController) — otherwise the changes view has no way in.
+  const { isConversations, openConversations } = useWorkbenchRoute()
+  const {
+    isOpen: auxPanelOpen,
+    toggle: toggleAuxPanel,
+    setOpen: setAuxPanelOpen,
+  } = useAuxPanelContext()
   const { isOpen: terminalOpen, toggle: toggleTerminal } = useTerminalContext()
   const isMac = useIsMac()
   const { shortcuts } = useShortcutSettings()
+
+  const handleAuxPanelClick = useCallback(() => {
+    if (isConversations) {
+      toggleAuxPanel()
+      return
+    }
+    openConversations()
+    setAuxPanelOpen(true)
+  }, [isConversations, toggleAuxPanel, openConversations, setAuxPanelOpen])
 
   const handleOpenSettings = useCallback(() => {
     openSettingsWindow().catch((err) => {
@@ -60,6 +75,11 @@ export function RightEdgeChrome() {
     asCapsule ? "mx-[0.1875rem] h-7 w-[1.875rem]" : "h-7 w-7"
   )
   const on = "bg-[var(--g-sel)] text-foreground"
+  // Accessible names come from the plain labels, not the `withShortcut`
+  // tooltip (AI QA #59: a bare title is all a screen reader / tester had).
+  const auxPanelLabel = tTitleBar("toggleAuxPanel")
+  const terminalLabel = tTitleBar("toggleTerminal")
+  const settingsLabel = tTitleBar("openSettings")
 
   const cluster = (
     <>
@@ -75,28 +95,31 @@ export function RightEdgeChrome() {
             className={cn(btn, terminalOpen && on)}
             onClick={() => toggleTerminal()}
             disabled={!activeFolder}
+            aria-label={terminalLabel}
             title={tTitleBar("withShortcut", {
-              label: tTitleBar("toggleTerminal"),
+              label: terminalLabel,
               shortcut: formatShortcutLabel(shortcuts.toggle_terminal, isMac),
             })}
           >
             <SquareTerminal className="h-[0.9375rem] w-[0.9375rem]" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className={cn(btn, auxPanelOpen && on)}
-            onClick={toggleAuxPanel}
-            disabled={!activeFolder && !isChatMode}
-            title={tTitleBar("withShortcut", {
-              label: tTitleBar("toggleAuxPanel"),
-              shortcut: formatShortcutLabel(shortcuts.toggle_aux_panel, isMac),
-            })}
-          >
-            <PanelRight className="h-[0.9375rem] w-[0.9375rem]" />
-          </Button>
         </>
       )}
+      <Button
+        variant="ghost"
+        size="icon"
+        className={cn(btn, isConversations && auxPanelOpen && on)}
+        onClick={handleAuxPanelClick}
+        disabled={!activeFolder && !isChatMode}
+        aria-label={auxPanelLabel}
+        aria-pressed={isConversations && auxPanelOpen}
+        title={tTitleBar("withShortcut", {
+          label: auxPanelLabel,
+          shortcut: formatShortcutLabel(shortcuts.toggle_aux_panel, isMac),
+        })}
+      >
+        <PanelRight className="h-[0.9375rem] w-[0.9375rem]" />
+      </Button>
       <WorkbenchRouteChromeActions
         buttonClassName={btn}
         iconClassName="h-[0.9375rem] w-[0.9375rem]"
@@ -106,8 +129,9 @@ export function RightEdgeChrome() {
         size="icon"
         className={btn}
         onClick={handleOpenSettings}
+        aria-label={settingsLabel}
         title={tTitleBar("withShortcut", {
-          label: tTitleBar("openSettings"),
+          label: settingsLabel,
           shortcut: formatShortcutLabel(shortcuts.open_settings, isMac),
         })}
       >

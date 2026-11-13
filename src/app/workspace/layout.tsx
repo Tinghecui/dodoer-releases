@@ -1406,12 +1406,18 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
               floating card 8px in from the window's top, right and bottom
               edges and from the resize handle; the card is its own <aside>.
               Folded for a full-page route it stays mounted, so it also stops
-              painting: its shadow would reach back in past the window's edge. */}
+              painting: its shadow would reach back in past the window's edge.
+              Cowork (AI QA #59): and it leaves the tab order and the
+              accessibility tree, or its tab rail (「变更」…) still reads as
+              clickable off the right edge while the panel is 0 wide. */}
           <div
+            data-aux-panel-shell=""
             className={cn(
               "h-full min-h-0 p-2",
               !auxOpen && "conversation-tab-hidden invisible"
             )}
+            inert={!auxOpen || undefined}
+            aria-hidden={!auxOpen || undefined}
           >
             {auxElement}
           </div>

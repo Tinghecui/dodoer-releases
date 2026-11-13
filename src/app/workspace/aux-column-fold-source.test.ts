@@ -26,8 +26,19 @@ describe("the aux column folds away for a full-page route", () => {
 
   it("stops the folded card painting", () => {
     expect(layout).toMatch(
-      /!auxOpen && "conversation-tab-hidden invisible"\s*\)\s*\}\s*>\s*\{auxElement\}/
+      /!auxOpen && "conversation-tab-hidden invisible"\s*\)\s*\}[^>]*>\s*\{auxElement\}/
     )
+  })
+
+  // Cowork (AI QA #59): `invisible` alone left the folded panel's tab rail
+  // («变更»…) focusable and in the accessibility tree, off the right edge at
+  // 1280px — it read as a clickable tab that opened a 0-wide panel.
+  it("takes the folded card out of the tab order and the a11y tree", () => {
+    const shell = layout.match(
+      /<div\s+data-aux-panel-shell=""[^>]*>\s*\{auxElement\}/
+    )
+    expect(shell?.[0]).toContain("inert={!auxOpen || undefined}")
+    expect(shell?.[0]).toContain("aria-hidden={!auxOpen || undefined}")
   })
 
   it("keeps the panel collapsed off the route, not just its toggle", () => {

@@ -55,7 +55,8 @@ export function WorkspaceChromeController() {
   const { activeFolder } = useActiveFolder()
   const isChatMode = useIsActiveChatMode()
   const { toggle } = useSidebarContext()
-  const { toggle: toggleAuxPanel } = useAuxPanelContext()
+  const { toggle: toggleAuxPanel, setOpen: setAuxPanelOpen } =
+    useAuxPanelContext()
   const { toggle: toggleTerminal } = useTerminalContext()
   const { openNewConversationTab, openTab, switchTab, closeTab } =
     useTabActions()
@@ -230,9 +231,15 @@ export function WorkspaceChromeController() {
         // mode too; only suppress the toggle when there's nothing to show.
         if (!activeFolder && !isChatMode) return
         e.preventDefault()
-        // A full-page route has no aux panel (its button is hidden there too):
-        // the press would only change what the conversations come back to.
-        if (!isConversations) return
+        // A full-page route has no aux panel. Cowork (AI QA #59): the press
+        // means "show me the panel" (changes, details…), so go back to the
+        // conversations and open it there — toggling would be invisible, and
+        // could even close it for when the user comes back.
+        if (!isConversations) {
+          openConversations()
+          setAuxPanelOpen(true)
+          return
+        }
         toggleAuxPanel()
         return
       }
@@ -429,6 +436,7 @@ export function WorkspaceChromeController() {
     shortcuts,
     toggle,
     toggleAuxPanel,
+    setAuxPanelOpen,
     toggleTerminal,
     isChatMode,
     isConversations,

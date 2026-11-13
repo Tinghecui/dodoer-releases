@@ -88,6 +88,21 @@ const en = {
   // A request that got no response at all (`toErrorMessage`, #71).
   networkUnreachable:
     "Can't reach the server. Check your network connection; it reconnects on its own once the network is back.",
+  // First steps on an empty workspace (`getting-started-card.tsx`), and the
+  // sidebar's button for the same first step.
+  newOrOpenProject: "New or open project",
+  gettingStartedTitle: "Get started",
+  gettingStartedProject: "Create or open a project",
+  gettingStartedProjectHint:
+    "Give it a name and it is created under {root}, or open a folder that is already there.",
+  gettingStartedProjectHintOpen:
+    "A project is a folder: open the one you want to work in.",
+  gettingStartedAgent: "Pick an agent",
+  gettingStartedAgentHint:
+    "Start a new conversation in the project and choose an agent in the list above the message box.",
+  gettingStartedMessage: "Send your first message",
+  gettingStartedMessageHint:
+    "Write what you want done and press {key} to send it.",
 }
 
 export type CoworkTextKey = keyof typeof en
@@ -163,6 +178,17 @@ const zhCN: Record<CoworkTextKey, string> = {
   resourcesCriticalTitle: "内存快用完了",
   resourcesCriticalDetail: "{where}只剩 {available}（共 {total}）。",
   networkUnreachable: "连不上服务器，请检查网络。网络恢复后会自动重连。",
+  newOrOpenProject: "新建或打开项目",
+  gettingStartedTitle: "从这里开始",
+  gettingStartedProject: "新建或打开一个项目",
+  gettingStartedProjectHint:
+    "起个名字，就在 {root} 下建好；也可以打开那里已有的文件夹。",
+  gettingStartedProjectHintOpen: "一个项目就是一个文件夹，打开你要干活的那个。",
+  gettingStartedAgent: "选一个 agent",
+  gettingStartedAgentHint:
+    "在项目里开一个新对话，从输入框上方的列表里选一个 agent。",
+  gettingStartedMessage: "发出第一条消息",
+  gettingStartedMessageHint: "写下要它做的事，按 {key} 发送。",
 }
 
 const zhTW: Record<CoworkTextKey, string> = {
@@ -238,6 +264,17 @@ const zhTW: Record<CoworkTextKey, string> = {
   resourcesCriticalTitle: "記憶體快用完了",
   resourcesCriticalDetail: "{where}只剩 {available}（共 {total}）。",
   networkUnreachable: "連不上伺服器，請檢查網路。網路恢復後會自動重新連線。",
+  newOrOpenProject: "新增或開啟專案",
+  gettingStartedTitle: "從這裡開始",
+  gettingStartedProject: "新增或開啟一個專案",
+  gettingStartedProjectHint:
+    "取個名字，就在 {root} 下建立；也可以開啟那裡現有的資料夾。",
+  gettingStartedProjectHintOpen: "一個專案就是一個資料夾，開啟你要工作的那個。",
+  gettingStartedAgent: "選一個 agent",
+  gettingStartedAgentHint:
+    "在專案裡開一個新對話，從輸入框上方的清單裡選一個 agent。",
+  gettingStartedMessage: "送出第一則訊息",
+  gettingStartedMessageHint: "寫下要它做的事，按 {key} 送出。",
 }
 
 const CATALOGS: Record<string, Record<CoworkTextKey, string>> = {

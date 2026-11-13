@@ -32,6 +32,8 @@ const state = vi.hoisted(() => ({
 
 const spies = vi.hoisted(() => ({
   toggleAuxPanel: vi.fn(),
+  setAuxPanelOpen: vi.fn(),
+  openConversations: vi.fn(),
   closeTab: vi.fn(),
   closeFileTab: vi.fn(),
   switchTab: vi.fn(),
@@ -54,7 +56,10 @@ vi.mock("@/contexts/sidebar-context", () => ({
   useSidebarContext: () => ({ toggle: vi.fn() }),
 }))
 vi.mock("@/contexts/aux-panel-context", () => ({
-  useAuxPanelContext: () => ({ toggle: spies.toggleAuxPanel }),
+  useAuxPanelContext: () => ({
+    toggle: spies.toggleAuxPanel,
+    setOpen: spies.setAuxPanelOpen,
+  }),
 }))
 vi.mock("@/contexts/terminal-context", () => ({
   useTerminalContext: () => ({ toggle: vi.fn() }),
@@ -115,7 +120,7 @@ vi.mock("@/contexts/workspace-context", () => ({
 vi.mock("@/contexts/workbench-route-context", () => ({
   useWorkbenchRoute: () => ({
     isConversations: state.isConversations,
-    openConversations: vi.fn(),
+    openConversations: spies.openConversations,
   }),
 }))
 vi.mock("@/contexts/search-dialog-context", () => ({
@@ -188,6 +193,8 @@ beforeEach(() => {
   state.conversations = [{ id: 11, parent_id: null }]
   spies.markConversationUnread.mockClear()
   spies.toggleAuxPanel.mockClear()
+  spies.setAuxPanelOpen.mockClear()
+  spies.openConversations.mockClear()
   state.activeFileTabId = "browser:tab-1"
   state.desktop = true
   state.shortcuts = { ...DEFAULT_SHORTCUTS }
@@ -422,10 +429,15 @@ describe("WorkspaceChromeController — aux panel shortcut", () => {
     expect(event.defaultPrevented).toBe(true)
   })
 
-  it("leaves the panel alone on a full-page route, which has none", () => {
+  // Cowork (AI QA #59): a full-page route (the forge page…) has no aux panel,
+  // so the press goes back to the conversations and opens it there — never a
+  // blind toggle that could close it for when the user returns.
+  it("returns to the conversations and opens the panel on a full-page route", () => {
     state.isConversations = false
     render(<WorkspaceChromeController />)
     const event = press()
+    expect(spies.openConversations).toHaveBeenCalledTimes(1)
+    expect(spies.setAuxPanelOpen).toHaveBeenCalledWith(true)
     expect(spies.toggleAuxPanel).not.toHaveBeenCalled()
     expect(event.defaultPrevented).toBe(true)
   })

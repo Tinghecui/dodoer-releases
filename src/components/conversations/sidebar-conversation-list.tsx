@@ -27,6 +27,7 @@ import {
   FolderGit2,
   FolderOpen,
   FolderOpenDot,
+  FolderPlus,
   FolderRoot,
   Layers,
   LayersPlus,
@@ -44,6 +45,8 @@ import {
   XCircle,
 } from "lucide-react"
 import { useActiveFolder } from "@/contexts/active-folder-context"
+import { COWORK_BUILD } from "@/lib/cowork/brand"
+import { useCoworkText } from "@/lib/cowork/i18n"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
@@ -974,6 +977,7 @@ export function SidebarConversationList({
   const tFolderDropdown = useTranslations("Folder.folderNameDropdown")
   const tFileTree = useTranslations("Folder.fileTreeTab")
   const tRemote = useTranslations("RemoteWorkspace")
+  const tCowork = useCoworkText()
   const { themeColor: appThemeColor } = useThemeColor()
   const { createTerminalInDirectory } = useTerminalContext()
   const { zoomLevel } = useZoomLevel()
@@ -3348,9 +3352,22 @@ export function SidebarConversationList({
       // aligned with the section header's text inset). The header's own hover
       // actions (Open Folder / Clone / Import) are how you add the first folder.
       // Under a tag filter it means no folder has a match, which says so.
+      // Cowork (AI QA #93): those hover actions are invisible to a newcomer,
+      // so the first step gets a button of its own.
       return (
         <div className="px-[0.5rem] py-[0.375rem] text-[0.75rem] text-muted-foreground/70">
           {tagFilterActive ? tTags("filter.noMatches") : t("noFolders")}
+          {COWORK_BUILD && !tagFilterActive && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-1.5 flex w-full max-w-[14rem] justify-start"
+              onClick={handleOpenFolderAction}
+            >
+              <FolderPlus className="h-3.5 w-3.5 mr-1.5" />
+              {tCowork("newOrOpenProject")}
+            </Button>
+          )}
         </div>
       )
     }
@@ -3601,14 +3618,22 @@ export function SidebarConversationList({
         </div>
       ) : showEmptyWorkspaceActions ? (
         <div className="flex-1 flex flex-col items-center justify-center px-3 gap-2">
+          {/* Cowork (AI QA #93): the same dialog, named for what a newcomer
+              wants — in portal mode it leads with the "new project" form. */}
           <Button
-            variant="outline"
+            variant={COWORK_BUILD ? "default" : "outline"}
             size="sm"
             className="w-full max-w-[14rem] justify-start"
             onClick={handleOpenFolderAction}
           >
-            <FolderOpenDot className="h-3.5 w-3.5 mr-1.5" />
-            {tFolderDropdown("openFolder")}
+            {COWORK_BUILD ? (
+              <FolderPlus className="h-3.5 w-3.5 mr-1.5" />
+            ) : (
+              <FolderOpenDot className="h-3.5 w-3.5 mr-1.5" />
+            )}
+            {COWORK_BUILD
+              ? tCowork("newOrOpenProject")
+              : tFolderDropdown("openFolder")}
           </Button>
           <Button
             variant="outline"

@@ -77,6 +77,19 @@ describe("ConversationDetailPanel new conversation layout", () => {
     expect(welcomeBranch).toContain("tall")
   })
 
+  // Cowork (AI QA #93): the first-steps card sits right under the welcome
+  // title (it renders nothing outside Cowork or once there is a project).
+  it("puts the Cowork getting-started card under the welcome title", () => {
+    const welcomeBranchStart = source.indexOf("{isWelcomeMode ? (")
+    const welcomeBranch = source.slice(
+      welcomeBranchStart,
+      source.indexOf(") : showDraftHeader ?", welcomeBranchStart)
+    )
+    expect(welcomeBranch).toMatch(
+      /<WelcomeHero \/>\s*(\{\/\*[\s\S]*?\*\/\}\s*)?<GettingStartedCard \/>\s*<QuickActions/
+    )
+  })
+
   it("snaps the hidden keep-alive tab so `transition-all` descendants don't ghost", () => {
     // Inactive tabs stay mounted and hide with `visibility: hidden` (`invisible`).
     // In Tailwind v4 `transition-all` transitions `visibility` too, so welcome

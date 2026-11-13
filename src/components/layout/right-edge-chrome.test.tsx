@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react"
+import { fireEvent, render } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -9,13 +9,23 @@ import { useRightStatusCapsuleStore } from "@/stores/right-status-capsule-store"
 const env = vi.hoisted(() => ({
   auxOpen: false,
   isConversations: true,
+  toggleAux: vi.fn(),
+  setAuxOpen: vi.fn(),
+  openConversations: vi.fn(),
 }))
 
 vi.mock("@/contexts/aux-panel-context", () => ({
-  useAuxPanelContext: () => ({ isOpen: env.auxOpen, toggle: () => {} }),
+  useAuxPanelContext: () => ({
+    isOpen: env.auxOpen,
+    toggle: env.toggleAux,
+    setOpen: env.setAuxOpen,
+  }),
 }))
 vi.mock("@/contexts/workbench-route-context", () => ({
-  useWorkbenchRoute: () => ({ isConversations: env.isConversations }),
+  useWorkbenchRoute: () => ({
+    isConversations: env.isConversations,
+    openConversations: env.openConversations,
+  }),
 }))
 vi.mock("@/contexts/terminal-context", () => ({
   useTerminalContext: () => ({ isOpen: false, toggle: () => {} }),
@@ -106,5 +116,48 @@ describe("RightEdgeChrome status capsule", () => {
       expect(view.queryByTestId("cowork-account")).toBeNull()
       view.unmount()
     }
+  })
+})
+
+// Cowork (AI QA #59): the tester could not find a way to the changes panel at
+// 1280px — on the forge page the aux toggle was hidden and the buttons had
+// only a `title`.
+describe("RightEdgeChrome aux-panel toggle", () => {
+  beforeEach(() => {
+    env.auxOpen = false
+    env.isConversations = true
+    env.toggleAux.mockClear()
+    env.setAuxOpen.mockClear()
+    env.openConversations.mockClear()
+  })
+
+  it("names its buttons with the plain labels", () => {
+    const view = renderChrome()
+    expect(
+      view.getByRole("button", { name: "Toggle Auxiliary Panel" })
+    ).toBeTruthy()
+    expect(view.getByRole("button", { name: "Toggle Terminal" })).toBeTruthy()
+    expect(view.getByRole("button", { name: "Open Settings" })).toBeTruthy()
+  })
+
+  it("toggles the panel in the conversations", () => {
+    const view = renderChrome()
+    fireEvent.click(
+      view.getByRole("button", { name: "Toggle Auxiliary Panel" })
+    )
+    expect(env.toggleAux).toHaveBeenCalledTimes(1)
+    expect(env.openConversations).not.toHaveBeenCalled()
+  })
+
+  it("stays on a full-page route and goes back to the conversations with the panel open", () => {
+    env.isConversations = false
+    const view = renderChrome()
+    expect(view.queryByRole("button", { name: "Toggle Terminal" })).toBeNull()
+    fireEvent.click(
+      view.getByRole("button", { name: "Toggle Auxiliary Panel" })
+    )
+    expect(env.openConversations).toHaveBeenCalledTimes(1)
+    expect(env.setAuxOpen).toHaveBeenCalledWith(true)
+    expect(env.toggleAux).not.toHaveBeenCalled()
   })
 })

@@ -91,6 +91,19 @@ const stableTerminal = vi.hoisted(() => ({
   createTerminalInDirectory: () => {},
 }))
 
+// Cowork brand switch, read live so one suite can flip it (AI QA #93). Off by
+// default, like the vitest env, so every other suite sees the upstream UI.
+const brand = vi.hoisted(() => ({ cowork: false }))
+vi.mock("@/lib/cowork/brand", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/cowork/brand")>()
+  return {
+    ...actual,
+    get COWORK_BUILD() {
+      return brand.cowork
+    },
+  }
+})
+
 vi.mock("@/components/agent-icon", () => ({
   AgentIcon: () => {
     probes.card++
@@ -369,6 +382,38 @@ beforeEach(() => {
   virtuaCtl.scrollOffset = 0
   virtuaCtl.onScroll = null
   virtuaCtl.scrollToIndex.mockClear()
+  brand.cowork = false
+})
+
+// Cowork (AI QA #93): a newcomer's first step has a button of its own, not
+// only the Folders header's hover actions.
+describe("SidebarConversationList — Cowork first project button", () => {
+  it("leads the empty workspace with New or open project", () => {
+    brand.cowork = true
+    useAppWorkspaceStore.setState({ folders: [], conversations: [] })
+    const { getByRole } = render(tree())
+    fireEvent.click(getByRole("button", { name: "New or open project" }))
+    expect(folderDialogs.browser?.open).toBe(true)
+  })
+
+  it("adds the button under the empty Folders section", () => {
+    brand.cowork = true
+    useAppWorkspaceStore.setState({
+      folders: [],
+      conversations: [conv(3, 99, { kind: "chat" })],
+    })
+    const { getByText, getByRole } = render(tree())
+    expect(getByText("No folders open")).not.toBeNull()
+    fireEvent.click(getByRole("button", { name: "New or open project" }))
+    expect(folderDialogs.browser?.open).toBe(true)
+  })
+
+  it("keeps the upstream Open Folder outside a Cowork build", () => {
+    useAppWorkspaceStore.setState({ folders: [], conversations: [] })
+    const { getByRole, queryByRole } = render(tree())
+    expect(getByRole("button", { name: "Open Folder" })).not.toBeNull()
+    expect(queryByRole("button", { name: "New or open project" })).toBeNull()
+  })
 })
 
 describe("SidebarConversationList - session activity", () => {

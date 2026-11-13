@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::agent::AgentType;
-use super::message::{MessageTurn, TurnUsage};
+use super::message::{MessageTurn, TurnRole, TurnUsage};
 use crate::db::entities::conversation::ConversationKind;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +203,58 @@ pub struct DbConversationDetail {
 pub struct ConversationGoalMarkers {
     pub conversation_id: i32,
     pub turns: Vec<MessageTurn>,
+}
+
+/// One round of a transcript whose text matched a conversation search.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationMessageHit {
+    /// The user turn that opens the matching round — what the message
+    /// navigator jumps to. The match itself may be in the reply.
+    pub turn_id: String,
+    /// That user turn's index in the full transcript (the coordinates of
+    /// `turns_offset`), so a jump can page it in when it is above the
+    /// loaded window.
+    pub turn_index: usize,
+    /// Which side of the round the text matched in.
+    pub role: TurnRole,
+    /// The matched text with some context around it, whitespace collapsed.
+    pub snippet: String,
+}
+
+/// One conversation a search found: by its title, by its messages, or both.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationSearchResult {
+    pub conversation: DbConversationSummary,
+    pub title_match: bool,
+    /// Matching rounds, oldest first, at most a few per conversation.
+    pub hits: Vec<ConversationMessageHit>,
+}
+
+/// Why a message search stopped before reading every transcript in scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationSearchStop {
+    /// Only the most recent conversations are read.
+    Conversations,
+    /// The time budget ran out.
+    Time,
+    /// Enough conversations matched; older ones were not read.
+    Results,
+}
+
+/// A conversation search: titles are matched across every conversation in
+/// scope, messages across the most recent ones (see `stopped`).
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationSearchResponse {
+    /// Most recently updated first.
+    pub results: Vec<ConversationSearchResult>,
+    /// Conversations in scope.
+    pub candidate_count: usize,
+    /// Of those, how many transcripts were read.
+    pub scanned_count: usize,
+    /// Set when some conversations in scope were not searched by message (or
+    /// results were cut), so the UI can say the search was not exhaustive.
+    pub stopped: Option<ConversationSearchStop>,
 }
 
 /// One page of older history for the reverse-infinite-scroll path:

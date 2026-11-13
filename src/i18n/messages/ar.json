@@ -2543,7 +2543,12 @@
       "typeToSearch": "اكتب للبحث في المحادثات",
       "typeToSearchFiles": "اكتب للبحث في الملفات أو المجلدات",
       "noResults": "لم يتم العثور على نتائج.",
-      "untitledConversation": "محادثة بدون عنوان"
+      "untitledConversation": "محادثة بدون عنوان",
+      "scopeProject": "هذا المشروع",
+      "scopeAll": "كل المشاريع",
+      "scanLimited": "تم البحث في رسائل أحدث {scanned} محادثة فقط من أصل {total}، وفي العناوين كلها.",
+      "scanTimedOut": "انتهى الوقت: تم البحث في رسائل أحدث {scanned} محادثة فقط من أصل {total}، وفي العناوين كلها.",
+      "resultsLimited": "يتم عرض أول {count} نتيجة فقط. ابحث بكلمات أدق لرؤية البقية."
     },
     "folderTitleBar": {
       "showSidebar": "إظهار الشريط الجانبي",

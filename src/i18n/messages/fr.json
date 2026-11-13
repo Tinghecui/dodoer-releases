@@ -2543,7 +2543,12 @@
       "typeToSearch": "Tapez pour rechercher des conversations",
       "typeToSearchFiles": "Tapez pour rechercher des fichiers ou répertoires",
       "noResults": "Aucun résultat trouvé.",
-      "untitledConversation": "Conversation sans titre"
+      "untitledConversation": "Conversation sans titre",
+      "scopeProject": "Ce projet",
+      "scopeAll": "Tous les projets",
+      "scanLimited": "Messages recherchés uniquement dans les {scanned} conversations les plus récentes sur {total} ; titres dans toutes.",
+      "scanTimedOut": "Temps écoulé : messages recherchés uniquement dans les {scanned} conversations les plus récentes sur {total} ; titres dans toutes.",
+      "resultsLimited": "Seuls les {count} premiers résultats sont affichés. Précisez la recherche pour voir les autres."
     },
     "folderTitleBar": {
       "showSidebar": "Afficher la barre latérale",

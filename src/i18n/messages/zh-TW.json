@@ -2543,7 +2543,12 @@
       "typeToSearch": "輸入關鍵字搜尋會話",
       "typeToSearchFiles": "輸入關鍵字搜尋檔案或目錄",
       "noResults": "找不到結果。",
-      "untitledConversation": "未命名會話"
+      "untitledConversation": "未命名會話",
+      "scopeProject": "目前專案",
+      "scopeAll": "全部專案",
+      "scanLimited": "只搜尋了最近 {scanned} 個對話的訊息（共 {total} 個），標題已全部搜尋過。",
+      "scanTimedOut": "搜尋逾時：只搜尋了最近 {scanned} 個對話的訊息（共 {total} 個），標題已全部搜尋過。",
+      "resultsLimited": "只顯示前 {count} 個結果，換個更具體的關鍵字才能看到其餘的。"
     },
     "folderTitleBar": {
       "showSidebar": "顯示側邊欄",

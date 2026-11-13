@@ -2543,7 +2543,12 @@
       "typeToSearch": "输入关键词搜索会话",
       "typeToSearchFiles": "输入关键词搜索文件或目录",
       "noResults": "未找到结果。",
-      "untitledConversation": "未命名会话"
+      "untitledConversation": "未命名会话",
+      "scopeProject": "当前项目",
+      "scopeAll": "全部项目",
+      "scanLimited": "只搜了最近 {scanned} 个会话的消息（共 {total} 个），标题已全部搜过。",
+      "scanTimedOut": "搜索超时：只搜了最近 {scanned} 个会话的消息（共 {total} 个），标题已全部搜过。",
+      "resultsLimited": "只显示前 {count} 个结果，换个更具体的词才能看到其余的。"
     },
     "folderTitleBar": {
       "showSidebar": "显示侧边栏",

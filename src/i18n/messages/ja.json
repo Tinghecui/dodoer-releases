@@ -2543,7 +2543,12 @@
       "typeToSearch": "入力して会話を検索",
       "typeToSearchFiles": "入力してファイルまたはディレクトリを検索",
       "noResults": "結果が見つかりません。",
-      "untitledConversation": "無題の会話"
+      "untitledConversation": "無題の会話",
+      "scopeProject": "このプロジェクト",
+      "scopeAll": "すべてのプロジェクト",
+      "scanLimited": "メッセージは最近の {scanned} 件の会話のみ検索しました（全 {total} 件）。タイトルはすべて検索済みです。",
+      "scanTimedOut": "時間切れのため、メッセージは最近の {scanned} 件の会話のみ検索しました（全 {total} 件）。タイトルはすべて検索済みです。",
+      "resultsLimited": "最初の {count} 件のみ表示しています。他の結果を見るには、より具体的に検索してください。"
     },
     "folderTitleBar": {
       "showSidebar": "サイドバーを表示",

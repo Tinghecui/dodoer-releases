@@ -1266,6 +1266,42 @@ export interface ConversationGoalMarkers {
   turns: MessageTurn[]
 }
 
+/** One round of a transcript whose text matched a conversation search. */
+export interface ConversationMessageHit {
+  /** The user turn that opens the matching round — the jump target. */
+  turn_id: string
+  /** That user turn's index in the full transcript (`turns_offset`
+   *  coordinates), for paging it in above a loaded window. */
+  turn_index: number
+  /** Which side of the round the text matched in. */
+  role: TurnRole
+  /** The matched text with some context, whitespace collapsed. */
+  snippet: string
+}
+
+/** One conversation a search found, by title, by messages, or both. */
+export interface ConversationSearchResult {
+  conversation: DbConversationSummary
+  title_match: boolean
+  hits: ConversationMessageHit[]
+}
+
+/** Why a message search stopped before reading every transcript in scope:
+ *  only the most recent conversations are read, the time budget ran out, or
+ *  enough matched. */
+export type ConversationSearchStop = "conversations" | "time" | "results"
+
+export interface ConversationSearchResponse {
+  /** Most recently updated first. */
+  results: ConversationSearchResult[]
+  /** Conversations in scope that have a transcript. */
+  candidate_count: number
+  /** Of those, how many were read. */
+  scanned_count: number
+  /** Set when the search was not exhaustive. */
+  stopped: ConversationSearchStop | null
+}
+
 /** One page of older history for reverse infinite scroll:
  *  `full[turns_offset .. turns_offset + turns.length)`. */
 export interface ConversationTurnsPage {

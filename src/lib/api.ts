@@ -86,6 +86,7 @@ import type {
   ConversationOutline,
   ConversationTurnsPage,
   ConversationGoalMarkers,
+  ConversationSearchResponse,
   DbConversationDetail,
   FolderInfo,
   AgentStats,
@@ -2733,6 +2734,27 @@ export async function getConversationGoalMarkers(
 ): Promise<ConversationGoalMarkers[]> {
   return getTransport().call("get_conversation_goal_markers", {
     conversationIds,
+  })
+}
+
+/**
+ * Search conversations by title and by message text. `folder_ids: null`
+ * searches every project. Titles are matched across the whole scope; message
+ * text is read from the session files of the most recent conversations only,
+ * under a count and time limit — `stopped` says when that cut the search
+ * short.
+ */
+export async function searchConversationMessages(params: {
+  folder_ids: number[] | null
+  agent_type?: AgentType | null
+  query: string
+  limit?: number | null
+}): Promise<ConversationSearchResponse> {
+  return getTransport().call("search_conversation_messages", {
+    folderIds: params.folder_ids,
+    agentType: params.agent_type ?? null,
+    query: params.query,
+    limit: params.limit ?? null,
   })
 }
 

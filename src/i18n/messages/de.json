@@ -2543,7 +2543,12 @@
       "typeToSearch": "Tippen, um Konversationen zu suchen",
       "typeToSearchFiles": "Tippen, um Dateien oder Verzeichnisse zu suchen",
       "noResults": "Keine Ergebnisse gefunden.",
-      "untitledConversation": "Unbenannte Konversation"
+      "untitledConversation": "Unbenannte Konversation",
+      "scopeProject": "Dieses Projekt",
+      "scopeAll": "Alle Projekte",
+      "scanLimited": "Nachrichten wurden nur in den {scanned} neuesten von {total} Unterhaltungen durchsucht, Titel in allen.",
+      "scanTimedOut": "Zeitlimit erreicht: Nachrichten wurden nur in den {scanned} neuesten von {total} Unterhaltungen durchsucht, Titel in allen.",
+      "resultsLimited": "Nur die ersten {count} Treffer werden angezeigt. Suche genauer, um weitere zu sehen."
     },
     "folderTitleBar": {
       "showSidebar": "Seitenleiste anzeigen",

@@ -186,6 +186,31 @@ pub async fn get_conversation_goal_markers(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SearchConversationMessagesParams {
+    pub folder_ids: Option<Vec<i32>>,
+    pub agent_type: Option<AgentType>,
+    pub query: String,
+    pub limit: Option<usize>,
+}
+
+pub async fn search_conversation_messages(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<SearchConversationMessagesParams>,
+) -> Result<Json<ConversationSearchResponse>, AppCommandError> {
+    Ok(Json(
+        conv_commands::search_conversation_messages_core(
+            &state.db.conn,
+            params.folder_ids,
+            params.agent_type,
+            params.query,
+            params.limit,
+        )
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetFolderConversationTurnsParams {
     pub conversation_id: i32,
     pub before_index: usize,

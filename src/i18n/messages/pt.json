@@ -2543,7 +2543,12 @@
       "typeToSearch": "Digite para buscar conversas",
       "typeToSearchFiles": "Digite para buscar arquivos ou diretórios",
       "noResults": "Nenhum resultado encontrado.",
-      "untitledConversation": "Conversa sem título"
+      "untitledConversation": "Conversa sem título",
+      "scopeProject": "Este projeto",
+      "scopeAll": "Todos os projetos",
+      "scanLimited": "Mensagens pesquisadas apenas nas {scanned} conversas mais recentes de {total}; títulos em todas.",
+      "scanTimedOut": "Tempo esgotado: mensagens pesquisadas apenas nas {scanned} conversas mais recentes de {total}; títulos em todas.",
+      "resultsLimited": "Mostrando apenas as primeiras {count} correspondências. Faça uma pesquisa mais específica para ver as outras."
     },
     "folderTitleBar": {
       "showSidebar": "Mostrar barra lateral",

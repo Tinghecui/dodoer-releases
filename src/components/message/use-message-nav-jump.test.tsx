@@ -261,3 +261,49 @@ describe("useMessageNavJump", () => {
     expect(result.current.revealingTurnId).toBeNull()
   })
 })
+
+describe("useMessageNavJump revealTurn (search hits)", () => {
+  it("jumps to a loaded turn a frame later, without paging", async () => {
+    const load = vi.fn()
+    const { result, scrollToIndex } = setup(load, {
+      threadIndexByTurnId: new Map([["turn-4", 7]]),
+    })
+    act(() => result.current.revealTurn("turn-4", 4))
+    expect(load).not.toHaveBeenCalled()
+    await nextFrame()
+    expect(scrollToIndex).toHaveBeenCalledExactlyOnceWith(7, {
+      align: "start",
+      smooth: false,
+    })
+    expect(result.current.revealingTurnId).toBeNull()
+  })
+
+  it("pages a turn above the window in through its index, then jumps", async () => {
+    const paging = deferred<boolean>()
+    const load = vi.fn(() => paging.promise)
+    const { result, rerender, scrollToIndex } = setup(load)
+    act(() => result.current.revealTurn("turn-12", 12))
+    expect(load).toHaveBeenCalledWith(1, 12)
+    expect(result.current.revealingTurnId).toBe("turn-12")
+
+    rerender({
+      conversationId: 1,
+      threadIndexByTurnId: new Map([["turn-12", 2]]),
+      smooth: true,
+    })
+    await act(async () => paging.resolve(true))
+    await nextFrame()
+    expect(scrollToIndex).toHaveBeenCalledExactlyOnceWith(2, {
+      align: "start",
+      smooth: false,
+    })
+  })
+
+  it("gives up on a turn paging can't reach", async () => {
+    const { result, scrollToIndex } = setup(() => Promise.resolve(false))
+    act(() => result.current.revealTurn("turn-12", 12))
+    await waitFor(() => expect(result.current.revealingTurnId).toBeNull())
+    await nextFrame()
+    expect(scrollToIndex).not.toHaveBeenCalled()
+  })
+})

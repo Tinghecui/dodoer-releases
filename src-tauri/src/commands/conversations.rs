@@ -2274,6 +2274,321 @@ pub async fn get_conversation_goal_markers(
     get_conversation_goal_markers_core(&db.conn, conversation_ids).await
 }
 
+// --- Conversation search ------------------------------------------------------
+//
+// codeg's database holds no message text — it lives in each agent's session
+// files — so a search by message reads those files on demand, newest
+// conversation first, under the limits below. No index: every search reads
+// the transcripts as they are now. The response says when the limits cut the
+// scan short, so the UI never presents a partial search as a complete one.
+
+/// Results returned when the caller names no limit.
+const SEARCH_RESULTS_DEFAULT: usize = 50;
+/// Hard cap on results, whatever the caller asks for.
+const SEARCH_RESULTS_MAX: usize = 200;
+/// Transcripts read per search: the most recently updated ones in scope.
+const SEARCH_SCAN_MAX_CONVERSATIONS: usize = 200;
+/// Wall-clock budget for reading transcripts. Checked between files, so one
+/// very large file can run past it once.
+const SEARCH_SCAN_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+/// Matching rounds reported per conversation.
+const SEARCH_HITS_PER_CONVERSATION: usize = 3;
+/// Characters of context kept before / after the match in a snippet.
+const SNIPPET_CHARS_BEFORE: usize = 40;
+const SNIPPET_CHARS_AFTER: usize = 100;
+
+/// Byte range of `needle_lower` in `haystack`, matched case-insensitively.
+/// `needle_lower` must already be lowercased.
+fn find_ignore_case(haystack: &str, needle_lower: &str) -> Option<(usize, usize)> {
+    if needle_lower.is_empty() {
+        return None;
+    }
+    let lowered = haystack.to_lowercase();
+    let pos = lowered.find(needle_lower)?;
+    if lowered.len() == haystack.len()
+        && haystack.is_char_boundary(pos)
+        && haystack.is_char_boundary(pos + needle_lower.len())
+    {
+        return Some((pos, pos + needle_lower.len()));
+    }
+    // Lowercasing changed some character's length (e.g. `İ`): map the
+    // lowered offsets back through each source character.
+    let mut origin = Vec::with_capacity(lowered.len() + 1);
+    for (i, c) in haystack.char_indices() {
+        let width: usize = c.to_lowercase().map(char::len_utf8).sum();
+        origin.extend(std::iter::repeat_n(i, width));
+    }
+    origin.push(haystack.len());
+    let start = *origin.get(pos)?;
+    let end = *origin.get(pos + needle_lower.len())?;
+    Some((start, end.max(start)))
+}
+
+/// `text[start..end]` with up to [`SNIPPET_CHARS_BEFORE`] /
+/// [`SNIPPET_CHARS_AFTER`] characters around it, runs of whitespace collapsed
+/// to one space, and `…` where text was cut.
+fn search_snippet(text: &str, start: usize, end: usize) -> String {
+    let head = &text[..start];
+    let head_from = head
+        .char_indices()
+        .rev()
+        .nth(SNIPPET_CHARS_BEFORE - 1)
+        .map_or(0, |(i, _)| i);
+    let tail = &text[end..];
+    let tail_to = tail
+        .char_indices()
+        .nth(SNIPPET_CHARS_AFTER)
+        .map_or(tail.len(), |(i, _)| i);
+    let body = text[head_from..end + tail_to]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut snippet = String::with_capacity(body.len() + 6);
+    if head_from > 0 {
+        snippet.push('…');
+    }
+    snippet.push_str(&body);
+    if tail_to < tail.len() {
+        snippet.push('…');
+    }
+    snippet
+}
+
+/// The rounds of `turns` whose user or assistant text contains `query_lower`,
+/// at most [`SEARCH_HITS_PER_CONVERSATION`], one per round, oldest first.
+fn search_turns(turns: &[MessageTurn], query_lower: &str) -> Vec<ConversationMessageHit> {
+    let mut hits: Vec<ConversationMessageHit> = Vec::new();
+    // The user turn that opened the round being walked.
+    let mut round: Option<(usize, &str)> = None;
+    for (index, turn) in turns.iter().enumerate() {
+        match turn.role {
+            TurnRole::User => round = Some((index, turn.id.as_str())),
+            TurnRole::Assistant => {}
+            TurnRole::System => continue,
+        }
+        let (turn_index, turn_id) = round.unwrap_or((index, turn.id.as_str()));
+        if hits.last().is_some_and(|h| h.turn_index == turn_index) {
+            continue;
+        }
+        let found = turn.blocks.iter().find_map(|block| match block {
+            ContentBlock::Text { text } => {
+                find_ignore_case(text, query_lower).map(|(s, e)| search_snippet(text, s, e))
+            }
+            _ => None,
+        });
+        if let Some(snippet) = found {
+            hits.push(ConversationMessageHit {
+                turn_id: turn_id.to_string(),
+                turn_index,
+                role: turn.role.clone(),
+                snippet,
+            });
+            if hits.len() >= SEARCH_HITS_PER_CONVERSATION {
+                break;
+            }
+        }
+    }
+    hits
+}
+
+struct MessageScanOutcome {
+    /// Per conversation id, the rounds that matched (only those with any).
+    hits: HashMap<i32, Vec<ConversationMessageHit>>,
+    scanned: usize,
+    stopped: Option<ConversationSearchStop>,
+}
+
+/// Read the transcripts of `targets` (newest first) and search their text.
+/// Blocking — run it on a blocking thread. Stops at the first of: every
+/// target read, `max_hits` conversations matched, the time budget spent, or
+/// `cancelled` set (the request went away).
+fn scan_transcripts_for_query(
+    envs: &AgentEnvs,
+    targets: &[(i32, AgentType, String)],
+    query_lower: &str,
+    max_hits: usize,
+    budget: std::time::Duration,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> MessageScanOutcome {
+    let started = std::time::Instant::now();
+    let mut parsers: HashMap<AgentType, Box<dyn AgentParser>> = HashMap::new();
+    let mut hits = HashMap::new();
+    let mut scanned = 0usize;
+    let mut stopped = None;
+    for (position, (conversation_id, agent_type, external_id)) in targets.iter().enumerate() {
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            stopped = Some(ConversationSearchStop::Time);
+            break;
+        }
+        if hits.len() >= max_hits {
+            stopped = Some(ConversationSearchStop::Results);
+            break;
+        }
+        if position > 0 && started.elapsed() >= budget {
+            stopped = Some(ConversationSearchStop::Time);
+            break;
+        }
+        let parser = parsers
+            .entry(*agent_type)
+            .or_insert_with(|| build_agent_parser(*agent_type, &envs.get(*agent_type)));
+        scanned += 1;
+        // A session file that is gone or unreadable just has no matches; the
+        // ACP-id fallback `get_folder_conversation_core` runs for a few agents
+        // lists every session, far too costly to repeat per search.
+        match parser.get_conversation(external_id) {
+            Ok(detail) => {
+                let found = search_turns(&detail.turns, query_lower);
+                if !found.is_empty() {
+                    hits.insert(*conversation_id, found);
+                }
+            }
+            Err(e) => tracing::debug!(
+                "[conversations] search skipped transcript of {conversation_id}: {e}"
+            ),
+        }
+    }
+    MessageScanOutcome {
+        hits,
+        scanned,
+        stopped,
+    }
+}
+
+/// Sets the flag when dropped: a search whose request went away (the client
+/// typed on, or disconnected) stops reading files at the next one.
+struct CancelOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Search conversations by title and by message text. Titles are matched
+/// across every root conversation in scope (`folder_ids`, `None` = every
+/// project; `agent_type`); message text across the most recently updated
+/// ones, read from their session files on a blocking thread under
+/// [`SEARCH_SCAN_MAX_CONVERSATIONS`] / [`SEARCH_SCAN_BUDGET`]. Results are
+/// most recently updated first, one per conversation, at most `limit`.
+/// Matching is a case-insensitive substring match on the trimmed query.
+pub async fn search_conversation_messages_core(
+    conn: &sea_orm::DatabaseConnection,
+    folder_ids: Option<Vec<i32>>,
+    agent_type: Option<AgentType>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<ConversationSearchResponse, AppCommandError> {
+    search_conversation_messages_with_budget(
+        conn,
+        folder_ids,
+        agent_type,
+        query,
+        limit,
+        SEARCH_SCAN_MAX_CONVERSATIONS,
+        SEARCH_SCAN_BUDGET,
+    )
+    .await
+}
+
+async fn search_conversation_messages_with_budget(
+    conn: &sea_orm::DatabaseConnection,
+    folder_ids: Option<Vec<i32>>,
+    agent_type: Option<AgentType>,
+    query: String,
+    limit: Option<usize>,
+    max_scanned: usize,
+    budget: std::time::Duration,
+) -> Result<ConversationSearchResponse, AppCommandError> {
+    let query_lower = query.trim().to_lowercase();
+    let limit = limit
+        .unwrap_or(SEARCH_RESULTS_DEFAULT)
+        .clamp(1, SEARCH_RESULTS_MAX);
+    if query_lower.is_empty() {
+        return Ok(ConversationSearchResponse {
+            results: Vec::new(),
+            candidate_count: 0,
+            scanned_count: 0,
+            stopped: None,
+        });
+    }
+
+    // Newest first (the default sort): the scan reads the head of this list.
+    let candidates = conversation_service::list_all_filtered(
+        conn, folder_ids, agent_type, None, None, None, false, false,
+    )
+    .await
+    .map_err(AppCommandError::from)?;
+
+    let readable: Vec<&DbConversationSummary> = candidates
+        .iter()
+        .filter(|c| c.kind != conversation::ConversationKind::Loop && c.external_id.is_some())
+        .collect();
+    let targets: Vec<(i32, AgentType, String)> = readable
+        .iter()
+        .take(max_scanned)
+        .filter_map(|c| Some((c.id, c.agent_type, c.external_id.clone()?)))
+        .collect();
+    let readable_count = readable.len();
+    let left_unread = readable_count > targets.len();
+
+    let envs = agent_setting_service::load_agent_envs(conn).await;
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _cancel_guard = CancelOnDrop(cancelled.clone());
+    let scan_query = query_lower.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        scan_transcripts_for_query(&envs, &targets, &scan_query, limit, budget, &cancelled)
+    })
+    .await
+    .map_err(|e| {
+        AppCommandError::task_execution_failed("Failed to search conversations")
+            .with_detail(e.to_string())
+    })?;
+
+    let mut stopped = outcome
+        .stopped
+        .or(left_unread.then_some(ConversationSearchStop::Conversations));
+    let mut hits = outcome.hits;
+    let mut results = Vec::new();
+    for conversation in candidates {
+        let title_match = conversation
+            .title
+            .as_deref()
+            .is_some_and(|t| t.to_lowercase().contains(&query_lower));
+        let conversation_hits = hits.remove(&conversation.id).unwrap_or_default();
+        if !title_match && conversation_hits.is_empty() {
+            continue;
+        }
+        if results.len() >= limit {
+            stopped = stopped.or(Some(ConversationSearchStop::Results));
+            break;
+        }
+        results.push(ConversationSearchResult {
+            conversation,
+            title_match,
+            hits: conversation_hits,
+        });
+    }
+
+    Ok(ConversationSearchResponse {
+        results,
+        candidate_count: readable_count,
+        scanned_count: outcome.scanned,
+        stopped,
+    })
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn search_conversation_messages(
+    db: tauri::State<'_, AppDatabase>,
+    folder_ids: Option<Vec<i32>>,
+    agent_type: Option<AgentType>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<ConversationSearchResponse, AppCommandError> {
+    search_conversation_messages_core(&db.conn, folder_ids, agent_type, query, limit).await
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn get_folder_conversation(
@@ -5159,6 +5474,400 @@ mod tests {
             .expect("the commit carries its approval");
         assert_eq!(stamp["option_kind"], "allow_always");
         assert_eq!(stamp["origin"], "chat_channel");
+    }
+
+    // ── Conversation search (#101) ───────────────────────────────────────
+
+    /// A Claude transcript of `rounds` (prompt, reply) under
+    /// `<config_dir>/projects/<project>/<session_id>.jsonl`.
+    fn write_claude_rounds(
+        config_dir: &std::path::Path,
+        project: &str,
+        session_id: &str,
+        cwd: &str,
+        rounds: &[(&str, &str)],
+    ) {
+        let dir = config_dir.join("projects").join(project);
+        std::fs::create_dir_all(&dir).expect("project dir");
+        let mut lines = Vec::new();
+        for (i, (prompt, reply)) in rounds.iter().enumerate() {
+            let mut user = serde_json::json!({
+                "type": "user",
+                "timestamp": format!("2026-11-13T01:{i:02}:00.000Z"),
+                "uuid": format!("u{i}"),
+                "cwd": cwd,
+                "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
+            });
+            if i > 0 {
+                user["parentUuid"] = serde_json::json!(format!("a{}", i - 1));
+            }
+            lines.push(user.to_string());
+            lines.push(
+                serde_json::json!({
+                    "type": "assistant",
+                    "timestamp": format!("2026-11-13T01:{i:02}:05.000Z"),
+                    "uuid": format!("a{i}"),
+                    "parentUuid": format!("u{i}"),
+                    "message": {
+                        "id": format!("msg_{i}"),
+                        "role": "assistant",
+                        "model": "claude-opus-5",
+                        "content": [{"type": "text", "text": reply}],
+                    },
+                })
+                .to_string(),
+            );
+        }
+        std::fs::write(dir.join(format!("{session_id}.jsonl")), lines.join("\n"))
+            .expect("write transcript");
+    }
+
+    /// A Claude conversation titled `title` in `folder_id`, bound to the
+    /// session `session_id` (whose file the caller writes).
+    async fn seed_claude_conversation(
+        db: &crate::db::AppDatabase,
+        folder_id: i32,
+        title: &str,
+        session_id: &str,
+    ) -> i32 {
+        let id = create_conversation_core(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some(title.into()),
+        )
+        .await
+        .expect("create conversation");
+        conversation_service::bind_external_id(&db.conn, id, session_id, &[])
+            .await
+            .expect("bind session");
+        id
+    }
+
+    async fn claude_search_db(config_dir: &std::path::Path) -> crate::db::AppDatabase {
+        let db = fresh_in_memory_db().await;
+        save_agent_env_json(
+            &db,
+            AgentType::ClaudeCode,
+            &serde_json::json!({ "CLAUDE_CONFIG_DIR": config_dir }).to_string(),
+        )
+        .await;
+        db
+    }
+
+    #[test]
+    fn find_ignore_case_matches_any_case_and_maps_back_to_the_source() {
+        assert_eq!(
+            find_ignore_case("say Pineapple-Answer-0 now", "pineapple-answer-0"),
+            Some((4, 22))
+        );
+        assert_eq!(
+            find_ignore_case("中文 Const V39 后", "const v39"),
+            Some((7, 16))
+        );
+        assert_eq!(find_ignore_case("nothing here", "pineapple"), None);
+        assert_eq!(find_ignore_case("anything", ""), None);
+        // `İ` lowercases to two chars (three bytes): offsets must still land on
+        // the source's character boundaries.
+        let text = "İİ needle İ";
+        let (start, end) = find_ignore_case(text, "needle").expect("found");
+        assert_eq!(&text[start..end], "needle");
+    }
+
+    #[test]
+    fn search_snippet_keeps_context_collapses_whitespace_and_marks_cuts() {
+        let text = "short\n\n  hit   here";
+        let (s, e) = find_ignore_case(text, "hit").unwrap();
+        assert_eq!(search_snippet(text, s, e), "short hit here");
+
+        let long = format!("{}MATCH{}", "a".repeat(100), "b".repeat(300));
+        let (s, e) = find_ignore_case(&long, "match").unwrap();
+        let snippet = search_snippet(&long, s, e);
+        assert!(
+            snippet.starts_with('…') && snippet.ends_with('…'),
+            "{snippet}"
+        );
+        assert!(snippet.contains("MATCH"));
+        assert_eq!(
+            snippet.chars().count(),
+            2 + SNIPPET_CHARS_BEFORE + "MATCH".len() + SNIPPET_CHARS_AFTER
+        );
+    }
+
+    fn text_turn(id: &str, role: TurnRole, text: &str) -> MessageTurn {
+        MessageTurn {
+            id: id.into(),
+            role,
+            blocks: vec![ContentBlock::Text { text: text.into() }],
+            timestamp: chrono::Utc::now(),
+            usage: None,
+            duration_ms: None,
+            model: None,
+            completed_at: None,
+            agent_message_id: None,
+        }
+    }
+
+    #[test]
+    fn search_turns_reports_the_round_one_hit_each_and_caps_per_conversation() {
+        let turns = vec![
+            text_turn("turn-0", TurnRole::User, "first question"),
+            text_turn("turn-1", TurnRole::Assistant, "plain answer"),
+            text_turn("turn-2", TurnRole::User, "second question"),
+            text_turn("turn-3", TurnRole::Assistant, "the KIWI is here"),
+            text_turn("turn-4", TurnRole::Assistant, "kiwi again, same round"),
+            text_turn("turn-5", TurnRole::System, "kiwi in a system note"),
+            text_turn("turn-6", TurnRole::User, "kiwi from the user"),
+            text_turn("turn-7", TurnRole::User, "kiwi 3"),
+            text_turn("turn-8", TurnRole::User, "kiwi 4"),
+        ];
+        let hits = search_turns(&turns, "kiwi");
+        assert_eq!(hits.len(), SEARCH_HITS_PER_CONVERSATION);
+        // A match in the reply points at the prompt that opened its round.
+        assert_eq!(hits[0].turn_id, "turn-2");
+        assert_eq!(hits[0].turn_index, 2);
+        assert!(matches!(hits[0].role, TurnRole::Assistant));
+        assert_eq!(hits[0].snippet, "the KIWI is here");
+        // The second reply turn of that round adds no hit; system text is skipped.
+        assert_eq!(hits[1].turn_id, "turn-6");
+        assert!(matches!(hits[1].role, TurnRole::User));
+        assert_eq!(hits[2].turn_id, "turn-7");
+        assert!(search_turns(&turns, "absent").is_empty());
+    }
+
+    /// The bug: a word only in a message body was never found, because only
+    /// the title was searched.
+    #[tokio::test]
+    async fn search_finds_a_conversation_by_its_message_text() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let session_id = "3c1d2e4f-5a6b-4c7d-8e9f-0a1b2c3d4e01";
+        write_claude_rounds(
+            config_dir.path(),
+            "-search-body",
+            session_id,
+            "/tmp/codeg-search-body",
+            &[
+                ("hello", "nothing to see"),
+                ("what is the code?", "It is Pineapple-Answer-0, as asked."),
+            ],
+        );
+        let db = claude_search_db(config_dir.path()).await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-search-body").await;
+        let id = seed_claude_conversation(&db, folder_id, "mango-import-1", session_id).await;
+
+        let found = search_conversation_messages_core(
+            &db.conn,
+            Some(vec![folder_id]),
+            None,
+            "  pineapple-answer-0 ".into(),
+            None,
+        )
+        .await
+        .expect("search");
+        assert_eq!(found.results.len(), 1, "{found:?}");
+        let result = &found.results[0];
+        assert_eq!(result.conversation.id, id);
+        assert!(!result.title_match);
+        assert_eq!(result.hits.len(), 1);
+        let hit = &result.hits[0];
+        assert!(matches!(hit.role, TurnRole::Assistant));
+        assert!(
+            hit.snippet.contains("Pineapple-Answer-0"),
+            "{}",
+            hit.snippet
+        );
+        // The hit names the round's prompt the way an opened detail does, so
+        // the navigator can jump to it.
+        let (detail, _) = get_folder_conversation_core(&db.conn, id)
+            .await
+            .expect("open");
+        let prompt = &detail.turns[hit.turn_index];
+        assert!(matches!(prompt.role, TurnRole::User));
+        assert_eq!(prompt.id, hit.turn_id);
+        assert_eq!(hit.turn_index, 2);
+        assert_eq!(found.scanned_count, 1);
+        assert_eq!(found.candidate_count, 1);
+        assert_eq!(found.stopped, None);
+
+        let none = search_conversation_messages_core(
+            &db.conn,
+            Some(vec![folder_id]),
+            None,
+            "durian".into(),
+            None,
+        )
+        .await
+        .expect("search");
+        assert!(none.results.is_empty());
+        assert_eq!(none.scanned_count, 1);
+        assert_eq!(none.stopped, None);
+
+        let blank = search_conversation_messages_core(&db.conn, None, None, "  ".into(), None)
+            .await
+            .expect("search");
+        assert!(blank.results.is_empty());
+        assert_eq!(blank.scanned_count, 0);
+    }
+
+    #[tokio::test]
+    async fn search_matches_titles_and_merges_them_with_message_hits() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let both = "3c1d2e4f-5a6b-4c7d-8e9f-0a1b2c3d4e02";
+        write_claude_rounds(
+            config_dir.path(),
+            "-search-title",
+            both,
+            "/tmp/codeg-search-title",
+            &[("tell me about kiwi", "kiwi is a fruit")],
+        );
+        let db = claude_search_db(config_dir.path()).await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-search-title").await;
+        let both_id = seed_claude_conversation(&db, folder_id, "Kiwi notes", both).await;
+        // A renamed conversation with no transcript is still found by title.
+        let title_only = create_conversation_core(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some("apple-KIWI".into()),
+        )
+        .await
+        .expect("create");
+
+        let found = search_conversation_messages_core(&db.conn, None, None, "kiwi".into(), None)
+            .await
+            .expect("search");
+        assert_eq!(found.results.len(), 2, "{found:?}");
+        let by_id: HashMap<i32, &ConversationSearchResult> = found
+            .results
+            .iter()
+            .map(|r| (r.conversation.id, r))
+            .collect();
+        let merged = by_id[&both_id];
+        assert!(merged.title_match);
+        assert_eq!(merged.hits.len(), 1, "one round, one hit");
+        let titled = by_id[&title_only];
+        assert!(titled.title_match);
+        assert!(titled.hits.is_empty());
+        // Only the conversation with a session file was read.
+        assert_eq!(found.candidate_count, 1);
+        assert_eq!(found.scanned_count, 1);
+    }
+
+    #[tokio::test]
+    async fn search_scope_follows_folder_ids_and_none_means_every_project() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let a = "3c1d2e4f-5a6b-4c7d-8e9f-0a1b2c3d4e03";
+        let b = "3c1d2e4f-5a6b-4c7d-8e9f-0a1b2c3d4e04";
+        write_claude_rounds(
+            config_dir.path(),
+            "-scope-a",
+            a,
+            "/tmp/codeg-scope-a",
+            &[("q", "longsess-q10 in a")],
+        );
+        write_claude_rounds(
+            config_dir.path(),
+            "-scope-b",
+            b,
+            "/tmp/codeg-scope-b",
+            &[("longsess-q10 in b", "ok")],
+        );
+        let db = claude_search_db(config_dir.path()).await;
+        let folder_a = seed_folder(&db, "/tmp/codeg-scope-a").await;
+        let folder_b = seed_folder(&db, "/tmp/codeg-scope-b").await;
+        let id_a = seed_claude_conversation(&db, folder_a, "one", a).await;
+        let id_b = seed_claude_conversation(&db, folder_b, "two", b).await;
+
+        let only_a = search_conversation_messages_core(
+            &db.conn,
+            Some(vec![folder_a]),
+            None,
+            "LONGSESS-Q10".into(),
+            None,
+        )
+        .await
+        .expect("search");
+        let ids: Vec<i32> = only_a.results.iter().map(|r| r.conversation.id).collect();
+        assert_eq!(ids, vec![id_a]);
+
+        let everywhere =
+            search_conversation_messages_core(&db.conn, None, None, "longsess-q10".into(), None)
+                .await
+                .expect("search");
+        let mut ids: Vec<i32> = everywhere
+            .results
+            .iter()
+            .map(|r| r.conversation.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![id_a, id_b]);
+        let in_b = everywhere
+            .results
+            .iter()
+            .find(|r| r.conversation.id == id_b)
+            .unwrap();
+        assert!(matches!(in_b.hits[0].role, TurnRole::User));
+    }
+
+    /// The limits cut the scan short and the response says so, so the UI
+    /// can tell the user the search was not exhaustive.
+    #[tokio::test]
+    async fn search_reports_when_its_limits_stop_the_scan() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let db = claude_search_db(config_dir.path()).await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-search-limits").await;
+        for n in 0..3 {
+            let session_id = format!("3c1d2e4f-5a6b-4c7d-8e9f-0a1b2c3d4e1{n}");
+            write_claude_rounds(
+                config_dir.path(),
+                "-search-limits",
+                &session_id,
+                "/tmp/codeg-search-limits",
+                &[("q", "const v39")],
+            );
+            seed_claude_conversation(&db, folder_id, &format!("c{n}"), &session_id).await;
+        }
+        async fn run(
+            conn: &sea_orm::DatabaseConnection,
+            folder_id: i32,
+            max_scanned: usize,
+            budget_ms: u64,
+            limit: Option<usize>,
+        ) -> ConversationSearchResponse {
+            search_conversation_messages_with_budget(
+                conn,
+                Some(vec![folder_id]),
+                None,
+                "const v39".into(),
+                limit,
+                max_scanned,
+                std::time::Duration::from_millis(budget_ms),
+            )
+            .await
+            .expect("search")
+        }
+        let conn = &db.conn;
+
+        let all = run(conn, folder_id, 10, 60_000, None).await;
+        assert_eq!(all.results.len(), 3);
+        assert_eq!(all.stopped, None);
+
+        let capped = run(conn, folder_id, 2, 60_000, None).await;
+        assert_eq!(capped.results.len(), 2);
+        assert_eq!(capped.scanned_count, 2);
+        assert_eq!(capped.candidate_count, 3);
+        assert_eq!(capped.stopped, Some(ConversationSearchStop::Conversations));
+
+        // A spent budget still reads the newest transcript, then stops.
+        let timed = run(conn, folder_id, 10, 0, None).await;
+        assert_eq!(timed.scanned_count, 1);
+        assert_eq!(timed.results.len(), 1);
+        assert_eq!(timed.stopped, Some(ConversationSearchStop::Time));
+
+        let few = run(conn, folder_id, 10, 60_000, Some(1)).await;
+        assert_eq!(few.results.len(), 1);
+        assert_eq!(few.scanned_count, 1);
+        assert_eq!(few.stopped, Some(ConversationSearchStop::Results));
     }
 
     #[tokio::test]

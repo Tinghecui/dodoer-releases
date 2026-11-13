@@ -1,6 +1,14 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "react"
+import {
+  Fragment,
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  type ReactNode,
+} from "react"
 import { formatDistanceToNow } from "date-fns"
 import { enUS, zhCN, zhTW } from "date-fns/locale"
 import { File, Folder } from "lucide-react"
@@ -11,12 +19,16 @@ import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
-import { listAllConversations } from "@/lib/api"
+import { listAllConversations, searchConversationMessages } from "@/lib/api"
 import type {
   AgentType,
+  ConversationMessageHit,
+  ConversationSearchResponse,
+  ConversationSearchResult,
   ConversationStatus,
   DbConversationSummary,
 } from "@/lib/types"
+import { requestTurnReveal } from "@/stores/turn-reveal-store"
 import { useFileTree, type FlatFileEntry } from "@/hooks/use-file-tree"
 import { rankFileMatches } from "@/lib/file-search-match"
 import { compareAgentType } from "@/lib/types"
@@ -35,6 +47,43 @@ import { cn } from "@/lib/utils"
 import { formatConversationTitle } from "@/lib/conversation-title"
 
 type SearchTab = "conversations" | "files"
+/** Which projects the conversations tab searches. */
+type SearchScope = "project" | "all"
+
+/** How a finished search was limited, for the notice under the results. */
+type SearchLimits = Pick<
+  ConversationSearchResponse,
+  "stopped" | "scanned_count" | "candidate_count"
+> & { result_count: number }
+
+/** `text` with each case-insensitive occurrence of `query` marked. */
+function HighlightedText({ text, query }: { text: string; query: string }) {
+  const needle = query.trim().toLowerCase()
+  const lowered = text.toLowerCase()
+  // Lowercasing that changes the length (rare) would shift every offset:
+  // show the text unmarked rather than mark the wrong characters.
+  if (!needle || lowered.length !== text.length) return <>{text}</>
+  const parts: ReactNode[] = []
+  let from = 0
+  for (
+    let at = lowered.indexOf(needle);
+    at !== -1;
+    at = lowered.indexOf(needle, from)
+  ) {
+    if (at > from) parts.push(text.slice(from, at))
+    parts.push(
+      <mark
+        key={at}
+        className="rounded-sm bg-yellow-200/70 px-0.5 text-foreground dark:bg-yellow-500/30"
+      >
+        {text.slice(at, at + needle.length)}
+      </mark>
+    )
+    from = at + needle.length
+  }
+  if (from < text.length) parts.push(text.slice(from))
+  return <>{parts}</>
+}
 
 interface SearchCommandDialogProps {
   open: boolean
@@ -52,12 +101,16 @@ export function SearchCommandDialog({
   const { activeFolder: folder, activeFolderId } = useActiveFolder()
   const allConversations = useAppWorkspaceStore((s) => s.conversations)
   const folderId = activeFolderId ?? 0
+  // Current project by default; "all projects" searches every one. Without an
+  // active project there is only "all".
+  const [scope, setScope] = useState<SearchScope>("project")
+  const searchAll = scope === "all" || folderId <= 0
   const conversations = useMemo(
     () =>
-      activeFolderId == null
-        ? []
+      searchAll
+        ? allConversations
         : allConversations.filter((c) => c.folder_id === activeFolderId),
-    [allConversations, activeFolderId]
+    [allConversations, activeFolderId, searchAll]
   )
   const { openTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
@@ -75,9 +128,14 @@ export function SearchCommandDialog({
   }, [])
   const [query, setQuery] = useState("")
   const [agentFilter, setAgentFilter] = useState<AgentType | null>(null)
-  const [results, setResults] = useState<DbConversationSummary[]>([])
+  const [results, setResults] = useState<ConversationSearchResult[]>([])
+  const [limits, setLimits] = useState<SearchLimits | null>(null)
   const [searching, setSearching] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  // Bumped by every new search (and by every keystroke, before the debounce
+  // fires): a response that comes back after it is stale and is dropped, so a
+  // slow search for an earlier query never replaces a newer one's results.
+  const searchSeqRef = useRef(0)
 
   const folderPath = folder?.path ?? ""
 
@@ -106,31 +164,66 @@ export function SearchCommandDialog({
 
   const doSearch = useCallback(
     async (q: string, agent: AgentType | null) => {
-      if (!q.trim() && !agent) {
+      const seq = ++searchSeqRef.current
+      const text = q.trim()
+      if (!text && !agent) {
         setResults([])
+        setLimits(null)
         setSearching(false)
         return
       }
+      const folderIds = searchAll ? null : [folderId]
       setSearching(true)
       try {
-        const data = await listAllConversations({
-          folder_ids: folderId > 0 ? [folderId] : null,
-          search: q.trim() || null,
-          agent_type: agent,
-        })
-        setResults(data)
+        if (text) {
+          // Titles and message text, matched by the backend: the rows are
+          // shown as returned, never filtered again here.
+          const data = await searchConversationMessages({
+            folder_ids: folderIds,
+            agent_type: agent,
+            query: text,
+          })
+          if (seq !== searchSeqRef.current) return
+          setResults(data.results)
+          setLimits({
+            stopped: data.stopped,
+            scanned_count: data.scanned_count,
+            candidate_count: data.candidate_count,
+            result_count: data.results.length,
+          })
+        } else {
+          // An agent filter alone lists that agent's conversations.
+          const rows = await listAllConversations({
+            folder_ids: folderIds,
+            agent_type: agent,
+          })
+          if (seq !== searchSeqRef.current) return
+          setResults(
+            rows.map((conversation) => ({
+              conversation,
+              title_match: false,
+              hits: [],
+            }))
+          )
+          setLimits(null)
+        }
       } catch {
+        if (seq !== searchSeqRef.current) return
         setResults([])
+        setLimits(null)
       } finally {
-        setSearching(false)
+        if (seq === searchSeqRef.current) setSearching(false)
       }
     },
-    [folderId]
+    [folderId, searchAll]
   )
 
-  // Debounced search on query change (conversations tab only)
+  // Debounced search on query change (conversations tab only). Each change
+  // also voids the search in flight, so its results can't land under the new
+  // query while the debounce waits.
   useEffect(() => {
     if (activeTab !== "conversations") return
+    searchSeqRef.current += 1
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
       doSearch(query, agentFilter)
@@ -146,6 +239,9 @@ export function SearchCommandDialog({
       setQuery("")
       setAgentFilter(null)
       setResults([])
+      setLimits(null)
+      setScope("project")
+      searchSeqRef.current += 1
       setActiveTab("conversations")
       // Like the full re-list this replaced, each opening searches files as
       // they are now, not a native snapshot left over from before it opened.
@@ -154,11 +250,19 @@ export function SearchCommandDialog({
   }, [open, resetFileTree])
 
   const handleSelectConversation = useCallback(
-    (conv: DbConversationSummary) => {
+    (conv: DbConversationSummary, hit?: ConversationMessageHit) => {
       // Leave any workbench route (e.g. Automations) so the picked conversation
       // isn't stranded behind the route overlay — covers re-selecting the
       // already-active tab, which doesn't change activeTabId.
       openConversations()
+      // A message hit: the transcript jumps to its round once it has loaded.
+      if (hit) {
+        requestTurnReveal({
+          conversationId: conv.id,
+          turnId: hit.turn_id,
+          turnIndex: hit.turn_index,
+        })
+      }
       openTab(conv.folder_id, conv.id, conv.agent_type, true)
       onOpenChange(false)
     },
@@ -194,7 +298,10 @@ export function SearchCommandDialog({
       }
       open={open}
       onOpenChange={onOpenChange}
-      shouldFilter={activeTab === "conversations"}
+      // Never cmdk's own filter: conversations are matched by the backend
+      // (by title AND message text, which cmdk can't see) and files ranked by
+      // `rankFileMatches`.
+      shouldFilter={false}
       // Not `autoFocus`: an input focused while mounting takes focus before
       // the focus trap starts listening, so the trap never records it and has
       // nothing to pull focus back to when the chat composer behind the dialog
@@ -207,11 +314,40 @@ export function SearchCommandDialog({
     >
       {/* Folder context header */}
       {folder && (
-        <div className="flex items-center gap-2 border-b px-4 py-2.5">
+        <div className="flex items-center gap-2 border-b px-4 py-2.5 pe-12">
           <Folder className="w-4 h-4 shrink-0 text-muted-foreground" />
           <span className="text-sm font-medium truncate">
-            {t("dialogTitleWithFolder", { name: folder.name })}
+            {searchAll && activeTab === "conversations"
+              ? t("dialogTitle")
+              : t("dialogTitleWithFolder", { name: folder.name })}
           </span>
+          {activeTab === "conversations" && (
+            <div
+              role="group"
+              className="ms-auto flex shrink-0 items-center gap-0.5 rounded-md bg-muted p-0.5"
+            >
+              {(["project", "all"] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={scope === value}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setScope(value)
+                    inputRef.current?.focus()
+                  }}
+                  className={cn(
+                    "h-6 rounded px-2 text-xs transition-colors",
+                    scope === value
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {value === "project" ? t("scopeProject") : t("scopeAll")}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -306,32 +442,84 @@ export function SearchCommandDialog({
                   ? t("typeToSearch")
                   : t("noResults")}
             </CommandEmpty>
+            {limits?.stopped && !searching && (
+              <p
+                data-testid="search-limit-notice"
+                className="px-4 pt-2 text-xs text-muted-foreground"
+              >
+                {limits.stopped === "results"
+                  ? t("resultsLimited", { count: limits.result_count })
+                  : t(
+                      limits.stopped === "time"
+                        ? "scanTimedOut"
+                        : "scanLimited",
+                      {
+                        scanned: limits.scanned_count,
+                        total: limits.candidate_count,
+                      }
+                    )}
+              </p>
+            )}
             {results.length > 0 && (
               <CommandGroup>
-                {results.map((conv) => (
-                  <CommandItem
-                    key={conv.id}
-                    value={`${conv.id}-${formatConversationTitle(conv.title)}`}
-                    onSelect={() => handleSelectConversation(conv)}
-                  >
-                    <ConversationStatusDot
-                      status={conv.status as ConversationStatus}
-                    />
-                    <span className="flex-1 truncate">
-                      {formatConversationTitle(conv.title) ||
-                        t("untitledConversation")}
-                    </span>
-                    <span className="text-xs text-muted-foreground shrink-0">
-                      {getAgentLabel(conv.agent_type)}
-                    </span>
-                    <span className="text-xs text-muted-foreground shrink-0">
-                      {formatDistanceToNow(new Date(conv.created_at), {
-                        addSuffix: true,
-                        locale: dateFnsLocale,
-                      })}
-                    </span>
-                  </CommandItem>
-                ))}
+                {results.map(({ conversation: conv, hits }) => {
+                  const [firstHit, ...moreHits] = hits
+                  return (
+                    <Fragment key={conv.id}>
+                      <CommandItem
+                        value={`conversation-${conv.id}`}
+                        onSelect={() =>
+                          handleSelectConversation(conv, firstHit)
+                        }
+                        className="flex-col items-stretch gap-1"
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <ConversationStatusDot
+                            status={conv.status as ConversationStatus}
+                          />
+                          <span className="flex-1 truncate">
+                            <HighlightedText
+                              text={
+                                formatConversationTitle(conv.title) ||
+                                t("untitledConversation")
+                              }
+                              query={query}
+                            />
+                          </span>
+                          <span className="text-xs text-muted-foreground shrink-0">
+                            {getAgentLabel(conv.agent_type)}
+                          </span>
+                          <span className="text-xs text-muted-foreground shrink-0">
+                            {formatDistanceToNow(new Date(conv.created_at), {
+                              addSuffix: true,
+                              locale: dateFnsLocale,
+                            })}
+                          </span>
+                        </div>
+                        {firstHit && (
+                          <span className="ps-4 text-xs text-muted-foreground line-clamp-2 break-words">
+                            <HighlightedText
+                              text={firstHit.snippet}
+                              query={query}
+                            />
+                          </span>
+                        )}
+                      </CommandItem>
+                      {moreHits.map((hit) => (
+                        <CommandItem
+                          key={`${conv.id}-${hit.turn_index}`}
+                          value={`conversation-${conv.id}-turn-${hit.turn_index}`}
+                          onSelect={() => handleSelectConversation(conv, hit)}
+                          className="ps-8"
+                        >
+                          <span className="text-xs text-muted-foreground line-clamp-2 break-words">
+                            <HighlightedText text={hit.snippet} query={query} />
+                          </span>
+                        </CommandItem>
+                      ))}
+                    </Fragment>
+                  )
+                })}
               </CommandGroup>
             )}
           </>

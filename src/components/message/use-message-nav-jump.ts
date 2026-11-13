@@ -49,6 +49,11 @@ export function useMessageNavJump({
   loadOlderTurnsThrough,
 }: MessageNavJumpOptions): {
   select: (entry: MessageNavEntry) => void
+  /** Jump to the user turn `turnId` (global index `turnIndex`) from outside
+   *  the navigator — the search dialog's message hits. Unlike `select` it
+   *  needs no navigator entry: a loaded turn is found by id, one above the
+   *  window is paged in through its index. */
+  revealTurn: (turnId: string, turnIndex: number) => void
   revealingTurnId: string | null
 } {
   const [reveal, setReveal] = useState<PendingReveal | null>(null)
@@ -116,5 +121,24 @@ export function useMessageNavJump({
     [conversationId, loadOlderTurnsThrough, scrollApiRef, smooth]
   )
 
-  return { select, revealingTurnId: active?.turnId ?? null }
+  // Always through the pending reveal, even for a loaded turn: the caller
+  // asks right after the transcript loads, and the scroll then waits the
+  // frame the effect above gives virtua to settle.
+  const revealTurn = useCallback(
+    (turnId: string, turnIndex: number) => {
+      const token = ++lastToken.current
+      const loaded = threadIndexByTurnId.has(turnId)
+      setReveal({ token, conversationId, turnId, settled: loaded })
+      if (loaded) return
+      void loadOlderTurnsThrough(conversationId, turnIndex).then((reached) => {
+        setReveal((current) => {
+          if (current?.token !== token) return current
+          return reached ? { ...current, settled: true } : null
+        })
+      })
+    },
+    [conversationId, loadOlderTurnsThrough, threadIndexByTurnId]
+  )
+
+  return { select, revealTurn, revealingTurnId: active?.turnId ?? null }
 }

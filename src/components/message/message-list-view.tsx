@@ -139,6 +139,7 @@ import { usePageHandoffName } from "@/lib/browser/use-page-handoff-name"
 import { unescapeComposerText } from "@/lib/composer-copy-text"
 import { useStickToBottomContext } from "use-stick-to-bottom"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { takeTurnReveal, useTurnRevealStore } from "@/stores/turn-reveal-store"
 import {
   useAwaitingUser,
   type AwaitingUserKind,
@@ -2088,6 +2089,27 @@ export function MessageListView({
     smooth: chatAnimations,
     loadOlderTurnsThrough,
   })
+
+  // A message hit picked in the search dialog opens this conversation and
+  // leaves a reveal request behind: jump to its round once the transcript has
+  // loaded, the way the navigator jumps. The conversation page only — it is
+  // the surface the dialog opens.
+  const revealConversationId = session?.dbConversationId ?? conversationId
+  const pendingTurnReveal = useTurnRevealStore((s) => s.pending)
+  const transcriptReady = detail != null && !detailLoading
+  const { revealTurn } = navJump
+  useEffect(() => {
+    if (!insightsInSidebar || !transcriptReady) return
+    if (pendingTurnReveal?.conversationId !== revealConversationId) return
+    const request = takeTurnReveal(revealConversationId)
+    if (request) revealTurn(request.turnId, request.turnIndex)
+  }, [
+    insightsInSidebar,
+    transcriptReady,
+    pendingTurnReveal,
+    revealConversationId,
+    revealTurn,
+  ])
 
   // --- Session Details side panel ---------------------------------------------
   // The plan it shows: the live reply's latest plan block while it has one,

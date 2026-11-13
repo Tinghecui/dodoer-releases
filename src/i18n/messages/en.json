@@ -2543,7 +2543,12 @@
       "typeToSearch": "Type to search conversations",
       "typeToSearchFiles": "Type to search files or directories",
       "noResults": "No results found.",
-      "untitledConversation": "Untitled conversation"
+      "untitledConversation": "Untitled conversation",
+      "scopeProject": "This project",
+      "scopeAll": "All projects",
+      "scanLimited": "Messages were searched in the {scanned} most recent of {total} conversations only; titles in all of them.",
+      "scanTimedOut": "The search ran out of time: messages were searched in the {scanned} most recent of {total} conversations only; titles in all of them.",
+      "resultsLimited": "Showing the first {count} matches only. Use a more specific search to see others."
     },
     "folderTitleBar": {
       "showSidebar": "Show Sidebar",

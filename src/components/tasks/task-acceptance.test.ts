@@ -10,6 +10,7 @@ import {
   isDeferred,
   isMergeAwaitingInput,
   isMergeQueued,
+  isTaskAwaitingUser,
   isWorktreeGone,
   mergeQueueRanks,
   mustDeliverToPr,
@@ -647,6 +648,26 @@ describe("the actions a merge waiting on the user offers", () => {
     // The mark means nothing on any other status.
     for (const status of ["running", "awaiting_input", "review"] as const) {
       expect(isMergeAwaitingInput(parked({ status }))).toBe(false)
+    }
+  })
+
+  // #167 (cont.): the sidebar marks a task's session from this — a merge
+  // parked on the user, or a run the engine flipped to awaiting_input.
+  it("reads a task as waiting on the user from either, with a session", () => {
+    expect(isTaskAwaitingUser(parked())).toBe(true)
+    expect(isTaskAwaitingUser(task({ status: "awaiting_input" }))).toBe(true)
+    expect(
+      isTaskAwaitingUser(
+        task({ status: "awaiting_input", conversation_id: null })
+      )
+    ).toBe(false)
+    for (const status of [
+      "running",
+      "review",
+      "merging",
+      "canceled",
+    ] as const) {
+      expect(isTaskAwaitingUser(task({ status }))).toBe(false)
     }
   })
 

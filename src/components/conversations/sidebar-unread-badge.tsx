@@ -93,20 +93,47 @@ export function AwaitingCountBadge({ count }: { count: number }) {
   )
 }
 
-/** Session row marker for an UNREAD session: a solid blue dot. */
-export function UnreadDot() {
+/** How the unread session's last turn ended, for the unread mark's wording:
+ *  it finished; it did not (`cancelled` — a Stop, or a turn the agent refused
+ *  or could not run, #102); or it belongs to a work task the user canceled
+ *  (#178), which says so. */
+export type UnreadEnding = "finished" | "unfinished" | "canceled"
+
+/** The ending of a row whose status is `cancelled` or not, and whether it is
+ *  a canceled work task's session — which wins whatever the status: a task
+ *  canceled after its turn ended still reads "cancelled". */
+export function unreadEndingOf(
+  cancelled: boolean,
+  taskCanceled: boolean
+): UnreadEnding {
+  if (taskCanceled) return "canceled"
+  return cancelled ? "unfinished" : "finished"
+}
+
+/** Title and screen-reader text of the unread mark (the dot here, or the
+ *  activity badge's cross it rides on). */
+export const UNREAD_LABEL_KEYS = {
+  finished: "statusUnreadBadge",
+  unfinished: "statusCancelledUnreadBadge",
+  canceled: "statusUnreadCancelledBadge",
+} as const satisfies Record<UnreadEnding, string>
+
+/** Session row marker for an UNREAD session: a solid blue dot, worded by how
+ *  the turn ended (`ending`, "finished" by default). */
+export function UnreadDot({ ending = "finished" }: { ending?: UnreadEnding }) {
   const t = useTranslations("Folder.sidebar")
+  const label = t(UNREAD_LABEL_KEYS[ending])
   return (
     <span
       className="relative inline-flex shrink-0 items-center justify-center"
-      title={t("statusUnreadBadge")}
+      title={label}
       data-jenny-unread-dot=""
     >
       <span
         aria-hidden
         className="h-2 w-2 rounded-full bg-[var(--st-unread)]"
       />
-      <span className="sr-only">{t("statusUnreadBadge")}</span>
+      <span className="sr-only">{label}</span>
     </span>
   )
 }

@@ -24,11 +24,12 @@ import {
 import { resetFolderTabsStore } from "@/stores/folder-tabs-store"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
+  publishTaskAwaiting,
   useAwaitingUserStore,
   type AwaitingUserKind,
 } from "@/stores/awaiting-user-store"
 import { useConversationSeenStore } from "@/stores/conversation-seen-store"
-import type { DbConversationSummary, FolderDetail } from "@/lib/types"
+import type { DbConversationSummary, FolderDetail, WorkTask } from "@/lib/types"
 
 // Stable spies + mutable active-folder, referenced from the hoisted mock
 // factories below (vi.mock is hoisted above imports).
@@ -378,6 +379,98 @@ describe("Sidebar — fixed nav region", () => {
       })
     })
     expect(bell.querySelector("[data-global-awaiting-count]")).toBeNull()
+    unmount()
+    useAppWorkspaceStore.setState({ conversations: [], folders: [] })
+  })
+
+  it("counts a task run waiting on approval once, merges and live connections alike", () => {
+    // #167 (cont.): a plain task run the engine parked at awaiting_input marks
+    // its row the way a headless merge does — one per session row, however
+    // many sources say it waits.
+    const row = (c: Partial<DbConversationSummary>) =>
+      ({
+        id: 0,
+        folder_id: 10,
+        title: "session",
+        title_locked: false,
+        agent_type: "claude_code",
+        status: "in_progress",
+        kind: "regular",
+        model: null,
+        git_branch: null,
+        external_id: null,
+        message_count: 0,
+        child_count: 0,
+        created_at: "2026-01-01",
+        pinned_at: null,
+        updated_at: "2026-01-02",
+        ...c,
+      }) as DbConversationSummary
+    const task = (
+      id: number,
+      status: WorkTask["status"],
+      over: Partial<WorkTask> = {}
+    ) =>
+      ({
+        id,
+        status,
+        conversation_id: id,
+        merge_awaiting_input: false,
+        ...over,
+      }) as WorkTask
+    useAppWorkspaceStore.setState({
+      conversations: [
+        row({ id: 1, external_id: "run" }),
+        row({ id: 2, external_id: "merge" }),
+        row({ id: 3, external_id: "busy" }),
+      ],
+      folders: [{ id: 10 }] as FolderDetail[],
+    })
+    const { container, unmount } = renderSidebar()
+    const bell = container.querySelector("[data-sidebar-bell]")!
+    const count = () =>
+      bell
+        .querySelector("[data-global-awaiting-count]")
+        ?.getAttribute("data-global-awaiting-count") ?? null
+    act(() => {
+      publishTaskAwaiting([
+        task(1, "awaiting_input"),
+        task(2, "merging", { merge_awaiting_input: true }),
+        task(3, "running"),
+      ])
+    })
+    expect(count()).toBe("2")
+    // Both get opened: their connections report the same waits — still two.
+    act(() => {
+      useAwaitingUserStore.setState({
+        bySession: new Map<string, AwaitingUserKind>([
+          ["run", "question"],
+          ["merge", "permission"],
+        ]),
+      })
+    })
+    expect(count()).toBe("2")
+    // The run's question is answered; the connection says so before the task
+    // list catches up — the row is still one wait until it does.
+    act(() => {
+      useAwaitingUserStore.setState({
+        bySession: new Map<string, AwaitingUserKind>([["merge", "permission"]]),
+      })
+    })
+    expect(count()).toBe("2")
+    act(() => {
+      publishTaskAwaiting([
+        task(1, "running"),
+        task(2, "merging", { merge_awaiting_input: true }),
+        task(3, "running"),
+      ])
+    })
+    expect(count()).toBe("1")
+    act(() => {
+      publishTaskAwaiting([])
+      useAwaitingUserStore.setState({ bySession: new Map() })
+    })
+    expect(count()).toBeNull()
     unmount()
     useAppWorkspaceStore.setState({ conversations: [], folders: [] })
   })

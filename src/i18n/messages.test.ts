@@ -114,3 +114,35 @@ describe("Arabic keeps a task id one left-to-right token", () => {
     expect(t(key as never, values as never)).toContain(`\u2066${id}\u2069`)
   })
 })
+
+// #178: the board's Done column also holds the canceled tasks, so it is named
+// for "ended", not "finished" — in every locale, never the word the finished
+// status itself uses. The unread mark of a canceled task's session says
+// "cancelled".
+describe("the Done column reads as ended, not finished (#178)", () => {
+  it("names it 已结束 in Simplified Chinese", () => {
+    expect(zhCN.Tasks.colDone).toBe("已结束")
+    expect(zhCN.Tasks.emptyColDone).toBe("还没有已结束的任务")
+    expect(zhCN.Folder.sidebar.statusUnreadCancelledBadge).toBe(
+      "已取消，尚未查看"
+    )
+  })
+
+  it.each([
+    ["ar", ar],
+    ["de", de],
+    ["en", en],
+    ["es", es],
+    ["fr", fr],
+    ["ja", ja],
+    ["ko", ko],
+    ["pt", pt],
+    ["zh-CN", zhCN],
+    ["zh-TW", zhTW],
+  ] as const)("%s keeps it apart from the finished status", (_, messages) => {
+    expect(messages.Tasks.colDone).not.toBe(messages.Tasks.statusDone)
+    expect(messages.Folder.sidebar.statusUnreadCancelledBadge).not.toBe(
+      messages.Folder.sidebar.statusUnreadBadge
+    )
+  })
+})

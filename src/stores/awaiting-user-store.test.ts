@@ -215,21 +215,43 @@ describe("useAwaitingUser", () => {
   })
 })
 
-// #167: a merge the task engine runs headless waits on the user before any
-// connection here knows of it — the task list is the only source until then.
+// #167: a merge or a task run the task engine runs headless waits on the user
+// before any connection here knows of it — the task list is the only source
+// until then.
 describe("publishTaskAwaiting", () => {
   it("collects the conversations of merges parked on the user", () => {
     publishTaskAwaiting([
       parkedMerge(1),
       // Landing, not waiting.
       task(2, "merging"),
-      // The mark means nothing off `merging`; awaiting_input is out of scope.
+      // The mark means nothing off `merging`.
       task(3, "review", { merge_awaiting_input: true }),
-      task(4, "awaiting_input"),
       // No session to answer in.
       parkedMerge(5, { conversation_id: null }),
     ])
     expect([...taskConversations()]).toEqual([10])
+  })
+
+  it("collects the runs parked at awaiting_input too, and only those", () => {
+    publishTaskAwaiting([
+      task(1, "awaiting_input"),
+      // Working, or done with the turn: nothing to answer.
+      task(2, "running"),
+      task(3, "review"),
+      task(4, "preparing"),
+      // No session to answer in.
+      task(5, "awaiting_input", { conversation_id: null }),
+      parkedMerge(6),
+    ])
+    expect([...taskConversations()].sort((a, b) => a - b)).toEqual([10, 60])
+  })
+
+  it("drops a run once its prompt is answered (back to running)", () => {
+    publishTaskAwaiting([task(1, "awaiting_input"), task(2, "awaiting_input")])
+    publishTaskAwaiting([task(1, "running"), task(2, "awaiting_input")])
+    expect([...taskConversations()]).toEqual([20])
+    publishTaskAwaiting([task(1, "running"), task(2, "canceled")])
+    expect(taskConversations().size).toBe(0)
   })
 
   it("drops a merge once it stops waiting, and keeps the set when nothing moved", () => {
@@ -279,6 +301,24 @@ describe("useAwaitingUser with the task source", () => {
     // The connection's prompt was answered; the task list has not caught up.
     act(() => publishAwaitingUser([conn("c", "sess-10")]))
     expect(result.current).toBe("permission")
+  })
+
+  it("reads a run at awaiting_input as awaiting a permission, once per row", () => {
+    const { result } = renderHook(() => useAwaitingUser("sess-10", 10))
+    act(() => publishTaskAwaiting([task(1, "awaiting_input")]))
+    expect(result.current).toBe("permission")
+    // The connection attaches and names the kind: still the one row's mark.
+    act(() =>
+      publishAwaitingUser([
+        conn("c", "sess-10", { pendingAskQuestion: question() }),
+      ])
+    )
+    expect(result.current).toBe("question")
+    act(() => {
+      publishAwaitingUser([conn("c", "sess-10")])
+      publishTaskAwaiting([task(1, "running")])
+    })
+    expect(result.current).toBeNull()
   })
 
   it("another conversation's merge does not touch this one", () => {

@@ -182,7 +182,7 @@ describe("TasksAuxTab", () => {
       "Needs you1",
       "In progress1",
       "To do1",
-      "Done1",
+      "Closed1",
     ])
     expect(screen.getByText("Write the release notes")).toBeInTheDocument()
     expect(screen.getByText("Port the parser")).toBeInTheDocument()
@@ -197,7 +197,7 @@ describe("TasksAuxTab", () => {
   it("unfolds a section from its header", async () => {
     const user = userEvent.setup()
     mount()
-    const done = screen.getByRole("button", { name: /Done/, expanded: false })
+    const done = screen.getByRole("button", { name: /Closed/, expanded: false })
     await user.click(done)
     expect(done).toHaveAttribute("aria-expanded", "true")
     expect(screen.getByText("Login page polish")).toBeInTheDocument()
@@ -279,7 +279,7 @@ describe("TasksAuxTab", () => {
       task({ id: 7, title: "Drop the old importer", status: "canceled" }),
     ]
     mount()
-    await user.click(screen.getByRole("button", { name: /Done/ }))
+    await user.click(screen.getByRole("button", { name: /Closed/ }))
     // Canceled tasks show by default, as on the board.
     expect(screen.getByText("Drop the old importer")).toBeInTheDocument()
 

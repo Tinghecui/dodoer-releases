@@ -21,8 +21,13 @@ import { useTabStore, type TabItem } from "@/stores/tab-store"
 import { useConversationSeenStore } from "@/stores/conversation-seen-store"
 import {
   publishAwaitingUser,
+  publishTaskAwaiting,
   useAwaitingUserStore,
 } from "@/stores/awaiting-user-store"
+import {
+  publishCanceledTasks,
+  useCanceledTaskStore,
+} from "@/stores/canceled-task-store"
 import {
   publishBackgroundPending,
   useBackgroundPendingStore,
@@ -39,6 +44,7 @@ import type {
   DbConversationSummary,
   MessageTurn,
   QuestionSpec,
+  WorkTask,
 } from "@/lib/types"
 import enMessages from "@/i18n/messages/en.json"
 import {
@@ -1379,6 +1385,7 @@ describe("SidebarConversationCard turn that did not finish", () => {
     })
     useBackgroundPendingStore.setState({ bySession: new Map() })
     useAwaitingUserStore.setState({ bySession: new Map() })
+    useCanceledTaskStore.setState({ conversationIds: new Set() })
   })
 
   const ended = (status: string): DbConversationSummary => ({
@@ -1432,6 +1439,54 @@ describe("SidebarConversationCard turn that did not finish", () => {
     const { container } = renderCard(ended("pending_review"))
     expect(container.querySelector("[data-jenny-unread-dot]")).not.toBeNull()
     expect(unfinished(container)).toBeNull()
+  })
+
+  // #178: the session of a work task the user canceled.
+  const canceledTask = (conversationId: number) =>
+    ({
+      id: 7,
+      status: "canceled",
+      conversation_id: conversationId,
+    }) as WorkTask
+
+  it("says a canceled task's turn was cancelled, not finished", () => {
+    act(() => publishCanceledTasks([canceledTask(41)]))
+    const { container } = renderCard(ended("cancelled"))
+    expect(unfinished(container)?.getAttribute("title")).toBe(
+      "Cancelled — not viewed yet"
+    )
+    expect(unfinished(container)?.textContent).toBe(
+      "Cancelled — not viewed yet"
+    )
+    expect(container.querySelector("[data-jenny-unread-dot]")).toBeNull()
+    expect(container.textContent).not.toContain("Finished — not viewed yet")
+  })
+
+  it("a task canceled after its turn ended says cancelled on the dot", () => {
+    act(() => publishCanceledTasks([canceledTask(41)]))
+    const { container } = renderCard(ended("pending_review"))
+    const dot = container.querySelector("[data-jenny-unread-dot]")
+    expect(dot?.getAttribute("title")).toBe("Cancelled — not viewed yet")
+    expect(dot?.textContent).toBe("Cancelled — not viewed yet")
+    expect(container.textContent).not.toContain("Finished — not viewed yet")
+  })
+
+  it("another task's cancel leaves this row's wording alone", () => {
+    act(() => publishCanceledTasks([canceledTask(99)]))
+    const { container } = renderCard(ended("cancelled"))
+    expect(unfinished(container)?.getAttribute("title")).toBe(
+      "Turn didn't finish — not viewed yet"
+    )
+  })
+
+  it("reads plainly unfinished once accepted, canceled task or not", () => {
+    act(() => publishCanceledTasks([canceledTask(41)]))
+    const { container, getByText } = renderCard(ended("cancelled"))
+    fireEvent.contextMenu(getByText("conv-41"))
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Accepted$/ }))
+    expect(unfinished(container)?.getAttribute("title")).toBe(
+      "Turn didn't finish"
+    )
   })
 })
 
@@ -1539,6 +1594,22 @@ describe("SidebarConversationCard awaiting the user", () => {
     act(() =>
       useAwaitingUserStore.setState({ byTaskConversation: new Set([32]) })
     )
+    expect(mark(container)).toBeNull()
+    expect(container.querySelector('[title="Running"]')).not.toBeNull()
+  })
+
+  it("marks a task run the engine parked at awaiting_input, as an approval", () => {
+    // #167 (cont.): a plain task run, not only a merge, waits headless.
+    const run = (status: WorkTask["status"]) =>
+      ({ id: 3, status, conversation_id: 31 }) as WorkTask
+    const { container } = renderCard(asking)
+    act(() => publishTaskAwaiting([run("awaiting_input")]))
+    expect(mark(container)?.getAttribute("data-awaiting-user")).toBe(
+      "permission"
+    )
+    expect(container.querySelector('[title="Running"]')).toBeNull()
+
+    act(() => publishTaskAwaiting([run("running")]))
     expect(mark(container)).toBeNull()
     expect(container.querySelector('[title="Running"]')).not.toBeNull()
   })

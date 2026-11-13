@@ -146,7 +146,7 @@ describe("TasksPage handle later", () => {
   it("files a deferred task under Done and the rest where they were", () => {
     mount()
     const attention = column("Needs you")
-    const done = column("Done")
+    const done = column("Closed")
     expect(within(attention).getByText("Review me now")).toBeInTheDocument()
     expect(within(attention).queryByText("Review me later")).toBeNull()
     expect(within(done).getByText("Review me later")).toBeInTheDocument()
@@ -166,7 +166,7 @@ describe("TasksPage handle later", () => {
   it("follows a deferred card back up through the follow-up dialog", async () => {
     const user = userEvent.setup()
     mount()
-    const done = column("Done")
+    const done = column("Closed")
     await user.click(within(done).getByRole("button", { name: "Follow up" }))
     expect(screen.getByRole("dialog")).toHaveTextContent("follow up #2")
 
@@ -188,7 +188,7 @@ describe("TasksPage handle later", () => {
     view.tasks = view.tasks.filter((t) => t.id !== 3)
     mount()
     expect(
-      within(column("Done")).getByText("Review me later")
+      within(column("Closed")).getByText("Review me later")
     ).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Archive all" })).toBeNull()
   })

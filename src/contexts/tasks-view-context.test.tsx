@@ -44,6 +44,7 @@ vi.mock("@/lib/platform", () => ({
 }))
 
 import { useAwaitingUserStore } from "@/stores/awaiting-user-store"
+import { useCanceledTaskStore } from "@/stores/canceled-task-store"
 import { TasksViewProvider, useTasksView } from "./tasks-view-context"
 
 function sample(id: number, status: WorkTask["status"]): WorkTask {
@@ -193,6 +194,68 @@ describe("TasksViewProvider", () => {
     // Nothing keeps a mark alive once the list's owner is gone.
     unmount()
     expect(marked()).toEqual([])
+  })
+
+  it("hands a run parked at awaiting_input to the sidebar marks too", async () => {
+    // #167 (cont.): a plain task run waiting on an approval is headless as
+    // well until someone opens it.
+    listMock.mockResolvedValueOnce([
+      { ...sample(1, "awaiting_input"), conversation_id: 9 },
+      { ...sample(2, "running"), conversation_id: 10 },
+    ])
+    render(
+      <TasksViewProvider>
+        <Probe />
+      </TasksViewProvider>
+    )
+    const marked = () => [...useAwaitingUserStore.getState().byTaskConversation]
+    await waitFor(() => expect(marked()).toEqual([9]))
+
+    listMock.mockResolvedValueOnce([
+      { ...sample(1, "running"), conversation_id: 9 },
+      { ...sample(2, "running"), conversation_id: 10 },
+    ])
+    await act(async () => {
+      changedHandler?.()
+    })
+    await waitFor(() => expect(marked()).toEqual([]))
+  })
+
+  it("hands the canceled tasks' conversations to the sidebar rows", async () => {
+    // #178: their unread mark says "cancelled", not "finished".
+    listMock.mockResolvedValueOnce([
+      { ...sample(1, "canceled"), conversation_id: 9 },
+      { ...sample(2, "done"), conversation_id: 10 },
+      // Canceled before it ever ran: no session, no row.
+      { ...sample(3, "canceled"), conversation_id: null },
+    ])
+    const { unmount } = render(
+      <TasksViewProvider>
+        <Probe />
+      </TasksViewProvider>
+    )
+    const canceled = () => [...useCanceledTaskStore.getState().conversationIds]
+    await waitFor(() => expect(canceled()).toEqual([9]))
+
+    // Put back in the queue: no longer canceled.
+    listMock.mockResolvedValueOnce([
+      { ...sample(1, "queued"), conversation_id: 9 },
+      { ...sample(2, "done"), conversation_id: 10 },
+    ])
+    await act(async () => {
+      changedHandler?.()
+    })
+    await waitFor(() => expect(canceled()).toEqual([]))
+
+    listMock.mockResolvedValueOnce([
+      { ...sample(1, "canceled"), conversation_id: 9 },
+    ])
+    await act(async () => {
+      changedHandler?.()
+    })
+    await waitFor(() => expect(canceled()).toEqual([9]))
+    unmount()
+    expect(canceled()).toEqual([])
   })
 
   it("leaves tasks put aside to handle later out of the badge", async () => {

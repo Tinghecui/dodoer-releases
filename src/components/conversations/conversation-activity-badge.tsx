@@ -12,6 +12,7 @@ import {
 import { useTranslations } from "next-intl"
 import type { AwaitingUserKind } from "@/stores/awaiting-user-store"
 import { cn } from "@/lib/utils"
+import { UNREAD_LABEL_KEYS } from "./sidebar-unread-badge"
 
 /** The mark and wording per thing the agent waits on the user for — the same
  *  icons the prompts themselves carry in the conversation. */
@@ -57,6 +58,7 @@ export function ConversationActivityBadge({
   waiting,
   cancelled,
   unread = false,
+  taskCanceled = false,
   timeLabel,
   timeClassName,
 }: {
@@ -71,6 +73,10 @@ export function ConversationActivityBadge({
   /** Unread, shown on the cancelled cross only (see above); the other marks
    *  leave unread to the caller. */
   unread?: boolean
+  /** The conversation is a canceled work task's session (#178): its unread
+   *  cross says "cancelled, not viewed yet" — the turn did not merely fail
+   *  to finish, the user canceled it. */
+  taskCanceled?: boolean
   timeLabel?: string
   /** The time label's weight and colour (the sidebar emphasises the
    *  selected row's). */
@@ -134,7 +140,9 @@ export function ConversationActivityBadge({
   }
   if (cancelled) {
     const title = t(
-      unread ? "statusCancelledUnreadBadge" : "statusCancelledBadge"
+      unread
+        ? UNREAD_LABEL_KEYS[taskCanceled ? "canceled" : "unfinished"]
+        : "statusCancelledBadge"
     )
     return (
       <span

@@ -55,7 +55,7 @@ export function SidebarBell({
   )
   // Roots only: a sub-agent's prompt already marks its parent's session.
   // One count per row, whichever source (a live connection, or the task
-  // engine's headless merge, #167) — or both — says it waits.
+  // engine's headless merge or task run, #167) — or both — says it waits.
   const awaiting = conversations.filter(
     (c) =>
       c.parent_id == null &&

@@ -4,7 +4,7 @@ import {
   isPlanApprovalPermission,
 } from "@/lib/blocking-prompts"
 import type { ConnectionState } from "@/contexts/acp-connections-context"
-import { isMergeAwaitingInput } from "@/components/tasks/task-acceptance"
+import { isTaskAwaitingUser } from "@/components/tasks/task-acceptance"
 import type { WorkTask } from "@/lib/types"
 
 /**
@@ -22,11 +22,12 @@ import type { WorkTask } from "@/lib/types"
  * starts empty until the backend re-sends its snapshot.
  *
  * A second, coarser source covers the sessions the task engine runs headless
- * (#167): a merge generation parked on the user (`merge_awaiting_input`) has no
- * connection here until someone opens it, so the tasks view publishes those
- * tasks' conversation ids (`publishTaskAwaiting`). The engine only knows that
- * a request is out, not which kind, so such a row reads as "permission" —
- * until a connection attaches and names the real kind, which wins.
+ * (#167): a merge generation parked on the user (`merge_awaiting_input`), or a
+ * task run the engine flipped to `awaiting_input`, has no connection here
+ * until someone opens it, so the tasks view publishes those tasks'
+ * conversation ids (`publishTaskAwaiting`). The engine only knows that a
+ * request is out, not which kind, so such a row reads as "permission" — until
+ * a connection attaches and names the real kind, which wins.
  */
 export type AwaitingUserKind = "permission" | "question" | "plan"
 
@@ -128,14 +129,15 @@ export function publishAwaitingUser(connections: Iterable<AwaitingConn>): void {
 
 /**
  * Replace the task-engine source from the full task list (#167): the
- * conversations of the merges parked on the user. A no-op (same reference)
+ * conversations of the tasks parked on the user — a merge waiting on it, or a
+ * run at `awaiting_input` (`isTaskAwaitingUser`). A no-op (same reference)
  * when the set did not change, so a task refetch that moved nothing here
  * re-renders no row.
  */
 export function publishTaskAwaiting(tasks: Iterable<WorkTask>): void {
   const next = new Set<number>()
   for (const task of tasks) {
-    if (isMergeAwaitingInput(task) && task.conversation_id != null) {
+    if (isTaskAwaitingUser(task) && task.conversation_id != null) {
       next.add(task.conversation_id)
     }
   }

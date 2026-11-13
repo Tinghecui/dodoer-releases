@@ -48,6 +48,21 @@ export function isMergeAwaitingInput(task: WorkTask): boolean {
 }
 
 /**
+ * Whether the task's headless session is parked on the user right now (#167):
+ * a merge parked on the user (`isMergeAwaitingInput`), or a run the engine
+ * flipped to `awaiting_input` — its agent (or one of its delegation
+ * sub-agents, whose prompts the engine counts against the task too) stopped
+ * for a permission, a question or a plan approval. Both name the session to
+ * answer in through `conversation_id`; without one there is no row to mark.
+ */
+export function isTaskAwaitingUser(task: WorkTask): boolean {
+  return (
+    isMergeAwaitingInput(task) ||
+    (task.status === "awaiting_input" && task.conversation_id != null)
+  )
+}
+
+/**
  * Whether "以后处理" is on offer — the same conditions the backend's
  * `set_deferred` enforces: a reviewed or failed task not already put aside,
  * not archived (that already put it away), and not waiting in its project's

@@ -22,6 +22,7 @@ import {
 } from "@/lib/tasks-board-filter-storage"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { publishTaskAwaiting } from "@/stores/awaiting-user-store"
+import { publishCanceledTasks } from "@/stores/canceled-task-store"
 import {
   isDeferred,
   isMergeAwaitingInput,
@@ -143,13 +144,23 @@ export function TasksViewProvider({ children }: { children: ReactNode }) {
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [refetch])
 
-  // The sidebar rows and the bell mark a headless merge session that waits on
-  // the user (#167) from this list — the one place the client learns of it
-  // before anyone attaches to the session. Cleared when the provider leaves.
+  // The sidebar rows and the bell mark a headless task session (a merge, or a
+  // run at awaiting_input) that waits on the user (#167) from this list — the
+  // one place the client learns of it before anyone attaches to the session.
+  // The rows also learn which conversations belong to a canceled task, so
+  // their unread mark says "cancelled" rather than "finished" (#178). Both
+  // are cleared when the provider leaves.
   useEffect(() => {
     publishTaskAwaiting(tasks)
+    publishCanceledTasks(tasks)
   }, [tasks])
-  useEffect(() => () => publishTaskAwaiting([]), [])
+  useEffect(
+    () => () => {
+      publishTaskAwaiting([])
+      publishCanceledTasks([])
+    },
+    []
+  )
 
   const attentionCount = useMemo(
     () =>

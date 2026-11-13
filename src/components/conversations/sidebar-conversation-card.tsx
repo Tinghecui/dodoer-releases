@@ -43,7 +43,7 @@ import {
   readShortcutSettings,
 } from "@/lib/keyboard-shortcuts"
 import { detectPlatform } from "@/hooks/use-platform"
-import { UnreadDot } from "./sidebar-unread-badge"
+import { UnreadDot, unreadEndingOf } from "./sidebar-unread-badge"
 import { SidebarGoalBadge } from "./sidebar-goal-badge"
 import { useConversationGoalStatus } from "@/hooks/use-conversation-goal-status"
 import { isGoalOpen } from "@/lib/conversation-goal-status"
@@ -88,6 +88,7 @@ import { ConversationStatusDot } from "./conversation-status-dot"
 import { ConversationActivityBadge } from "./conversation-activity-badge"
 import { useAwaitingUser } from "@/stores/awaiting-user-store"
 import { useBackgroundPending } from "@/stores/background-pending-store"
+import { useIsCanceledTaskConversation } from "@/stores/canceled-task-store"
 import { SessionDetailsDialog } from "./session-details-dialog"
 import { SidebarConversationHoverDetails } from "./sidebar-conversation-hover-details"
 import { SidebarPrIndicator } from "./sidebar-pr-status"
@@ -437,6 +438,11 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   // outranks it): unread then rides on that cross instead of the separate
   // dot, whose "finished, not viewed" would contradict it (#102).
   const unreadOnCancelledMark = isCancelled && !awaiting && !isWaiting
+  // The session of a work task the user canceled: its unread mark — the cross,
+  // or the dot when the task was canceled after its turn had ended — says
+  // "cancelled, not viewed yet" (#178).
+  const taskCanceled = useIsCanceledTaskConversation(conversation.id)
+  const unreadEnding = unreadEndingOf(isCancelled, taskCanceled)
   const isPinned = conversation.pinned_at != null
   const isCompleted = status === "completed"
 
@@ -689,7 +695,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                     >
                       {isUnread && !isWaiting && !unreadOnCancelledMark && (
                         <span className="mr-1.5 inline-flex">
-                          <UnreadDot />
+                          <UnreadDot ending={unreadEnding} />
                         </span>
                       )}
                       {goalOpen && (
@@ -710,6 +716,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                         waiting={isWaiting ? background : null}
                         cancelled={isCancelled}
                         unread={isUnread}
+                        taskCanceled={taskCanceled}
                         timeLabel={timeLabel}
                         timeClassName={
                           isSelected

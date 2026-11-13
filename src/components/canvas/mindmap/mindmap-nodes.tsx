@@ -22,7 +22,10 @@ import { useLocale, useTranslations } from "next-intl"
 import { AgentIcon } from "@/components/agent-icon"
 import { ConversationActivityBadge } from "@/components/conversations/conversation-activity-badge"
 import { formatRelative } from "@/components/conversations/sidebar-conversation-grouping"
-import { UnreadDot } from "@/components/conversations/sidebar-unread-badge"
+import {
+  UnreadDot,
+  unreadEndingOf,
+} from "@/components/conversations/sidebar-unread-badge"
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -47,6 +50,7 @@ import { formatConversationTitle } from "@/lib/conversation-title"
 import type { DbConversationSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { useAwaitingUser } from "@/stores/awaiting-user-store"
+import { useIsCanceledTaskConversation } from "@/stores/canceled-task-store"
 import { useIsConversationUnread } from "@/stores/conversation-seen-store"
 import type { MindMapCategory } from "./mindmap-model"
 
@@ -272,6 +276,8 @@ export const MindMapLeaf = memo(function MindMapLeaf({
   const running = conversation.status === "in_progress"
   const awaiting = useAwaitingUser(conversation.external_id, conversation.id)
   const cancelled = conversation.status === "cancelled"
+  // A canceled work task's session says so on its unread mark (#178).
+  const taskCanceled = useIsCanceledTaskConversation(conversation.id)
   const timeLabel =
     now > 0 ? formatRelative(conversation.updated_at, now) : undefined
   const sourceText =
@@ -318,12 +324,15 @@ export const MindMapLeaf = memo(function MindMapLeaf({
               </span>
               <SourceMark assignment={assignment} />
               {/* A cancelled turn's cross carries unread itself (#102). */}
-              {isUnread && (!cancelled || awaiting) && <UnreadDot />}
+              {isUnread && (!cancelled || awaiting) && (
+                <UnreadDot ending={unreadEndingOf(cancelled, taskCanceled)} />
+              )}
               <ConversationActivityBadge
                 awaiting={awaiting}
                 running={running}
                 cancelled={cancelled}
                 unread={isUnread}
+                taskCanceled={taskCanceled}
                 timeLabel={timeLabel}
               />
             </button>

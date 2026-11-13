@@ -4,7 +4,8 @@
 # 凭证在 Environment「ai-qa」里，只有 main 分支用得到。
 name: ai-qa
 # 会开 issue 的轮次叫「ai-qa」，PR 验收、只搭环境的另起名字（源仓库 run.sh 的 s_wait_others 按名字找还在跑的轮次）
-run-name: ${{ inputs.pr && format('ai-qa PR #{0}', inputs.pr) || inputs.setup_only && 'ai-qa 只搭环境' || 'ai-qa' }}
+# 整个值要加引号：里面的「 #」不加引号会被 YAML 当成注释截掉，整个文件失效（2026-11-13 #186 就这样，每晚那轮差点起不来）
+run-name: "${{ inputs.pr && format('ai-qa PR #{0}', inputs.pr) || inputs.setup_only && 'ai-qa 只搭环境' || 'ai-qa' }}"
 
 on:
   workflow_dispatch:

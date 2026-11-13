@@ -59,6 +59,7 @@ interface AlertContextValue {
 type Action =
   | { type: "push"; alert: Alert }
   | { type: "dismiss"; id: string }
+  | { type: "resolve"; key: string }
   | { type: "clear_all" }
 
 let seq = 0
@@ -87,13 +88,20 @@ function reducer(state: Alert[], action: Action): Alert[] {
     }
     case "dismiss":
       return state.filter((a) => a.id !== action.id)
+    case "resolve": {
+      const next = state.filter((a) => a.key !== action.key)
+      // Nothing under that key: keep the array, so no consumer re-renders.
+      return next.length === state.length ? state : next
+    }
     case "clear_all":
       return []
   }
 }
 
-// The mounted provider's writer (see `recordAlert`).
+// The mounted provider's writer and resolver (see `recordAlert`,
+// `resolveAlert`).
 let alertSink: ((input: AlertInput) => void) | null = null
+let alertResolver: ((key: string) => void) | null = null
 
 /**
  * Record an alert from anywhere — including code with no React context of its
@@ -103,6 +111,16 @@ let alertSink: ((input: AlertInput) => void) | null = null
  */
 export function recordAlert(input: AlertInput): void {
   alertSink?.(input)
+}
+
+/**
+ * Take the alert recorded under `key` out of the list: what it reported is
+ * over (the failure was retired, its cause fixed). The list keeps no
+ * "resolved" history — its count is what is wrong now. No-op when nothing is
+ * recorded under the key, or with no provider mounted.
+ */
+export function resolveAlert(key: string): void {
+  alertResolver?.(key)
 }
 
 const AlertContext = createContext<AlertContextValue | null>(null)
@@ -127,12 +145,18 @@ export function AlertProvider({ children }: { children: ReactNode }) {
     return id
   }, [])
 
+  const resolve = useCallback((key: string) => {
+    dispatch({ type: "resolve", key })
+  }, [])
+
   useEffect(() => {
     alertSink = record
+    alertResolver = resolve
     return () => {
       if (alertSink === record) alertSink = null
+      if (alertResolver === resolve) alertResolver = null
     }
-  }, [record])
+  }, [record, resolve])
 
   const pushAlert = useCallback(
     (

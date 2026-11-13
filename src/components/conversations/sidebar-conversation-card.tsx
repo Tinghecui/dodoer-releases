@@ -433,6 +433,10 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
     [conversation.id, conversation.parent_id, unreadShortcut]
   )
   const isCancelled = status === "cancelled"
+  // The activity badge shows its red "turn did not finish" cross (nothing
+  // outranks it): unread then rides on that cross instead of the separate
+  // dot, whose "finished, not viewed" would contradict it (#102).
+  const unreadOnCancelledMark = isCancelled && !awaiting && !isWaiting
   const isPinned = conversation.pinned_at != null
   const isCompleted = status === "completed"
 
@@ -683,7 +687,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                         !isSubsession && "group-hover:hidden"
                       )}
                     >
-                      {isUnread && !isWaiting && (
+                      {isUnread && !isWaiting && !unreadOnCancelledMark && (
                         <span className="mr-1.5 inline-flex">
                           <UnreadDot />
                         </span>
@@ -705,6 +709,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                         running={isRunning}
                         waiting={isWaiting ? background : null}
                         cancelled={isCancelled}
+                        unread={isUnread}
                         timeLabel={timeLabel}
                         timeClassName={
                           isSelected

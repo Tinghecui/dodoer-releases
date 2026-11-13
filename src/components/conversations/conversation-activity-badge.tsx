@@ -40,15 +40,23 @@ const AWAITING: Record<
  * spinner while it runs, an
  * hourglass while its turn has ended but background work it launched (a
  * background shell, a monitor) is still out — the agent will wake up again —
- * a cross when it was cancelled, otherwise its relative time ("5m", "2d").
- * Shared by the sidebar rows and the mind map's conversation nodes, so both
- * read alike.
+ * a red cross when the turn did not finish, otherwise its relative time
+ * ("5m", "2d"). Shared by the sidebar rows and the mind map's conversation
+ * nodes, so both read alike.
+ *
+ * `cancelled` covers more than a user's Stop: a turn the agent refused or
+ * could not run (not signed in, rejected) is stored as cancelled too, so the
+ * cross says "this turn did not finish" rather than "cancelled". Such a row
+ * is unread as well; the unread dot then rides on the cross (`unread`) —
+ * the caller drops its own dot, whose wording ("finished") would contradict
+ * the cross (#102).
  */
 export function ConversationActivityBadge({
   awaiting,
   running,
   waiting,
   cancelled,
+  unread = false,
   timeLabel,
   timeClassName,
 }: {
@@ -60,6 +68,9 @@ export function ConversationActivityBadge({
    *  `useBackgroundPending`); ignored while `running`. */
   waiting?: { count: number; names: string[] } | null
   cancelled: boolean
+  /** Unread, shown on the cancelled cross only (see above); the other marks
+   *  leave unread to the caller. */
+  unread?: boolean
   timeLabel?: string
   /** The time label's weight and colour (the sidebar emphasises the
    *  selected row's). */
@@ -122,13 +133,26 @@ export function ConversationActivityBadge({
     )
   }
   if (cancelled) {
+    const title = t(
+      unread ? "statusCancelledUnreadBadge" : "statusCancelledBadge"
+    )
     return (
       <span
         className="relative inline-flex shrink-0 items-center justify-center"
-        title={t("statusCancelledBadge")}
+        title={title}
+        data-turn-unfinished=""
+        data-unread={unread ? "" : undefined}
       >
         <XCircle className="h-3.5 w-3.5 text-destructive" aria-hidden />
-        <span className="sr-only">{t("statusCancelledBadge")}</span>
+        {unread && (
+          // The unread dot, shrunk onto the cross's top-right corner; the
+          // sidebar's ring colour cuts it out of the cross beneath.
+          <span
+            aria-hidden
+            className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-[var(--st-unread)] ring-1 ring-sidebar"
+          />
+        )}
+        <span className="sr-only">{title}</span>
       </span>
     )
   }

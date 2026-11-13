@@ -317,11 +317,13 @@ export const MindMapLeaf = memo(function MindMapLeaf({
                 {title}
               </span>
               <SourceMark assignment={assignment} />
-              {isUnread && <UnreadDot />}
+              {/* A cancelled turn's cross carries unread itself (#102). */}
+              {isUnread && (!cancelled || awaiting) && <UnreadDot />}
               <ConversationActivityBadge
                 awaiting={awaiting}
                 running={running}
                 cancelled={cancelled}
+                unread={isUnread}
                 timeLabel={timeLabel}
               />
             </button>

@@ -128,7 +128,12 @@ import {
   routeAcpError,
   type AcpErrorLevel,
 } from "@/lib/acp-error-presentation"
-import { dismissNotification, notify, type NotifyAction } from "@/lib/notify"
+import {
+  dismissNotification,
+  notify,
+  resolveNotification,
+  type NotifyAction,
+} from "@/lib/notify"
 import type { SnapshotPatch } from "@/lib/snapshot-denormalize"
 import {
   appendLiveToolRawOutput,
@@ -3431,8 +3436,9 @@ export interface ConnectPendingInfo {
  * Same side-table shape as `ConnectPendingInfo`, for the same reason: a failed
  * connect never produced a `ConnectionsMap` entry, so there is no
  * `ConnectionState` to hang the failure on. Set by `connect()` alongside the
- * notification; cleared, and its toast dismissed, when the next attempt
- * starts, when the key is disconnected, or on `disconnectAll`.
+ * notification; cleared, its toast dismissed and its alert list entry
+ * resolved, when the next attempt starts, when the key is disconnected, on
+ * `disconnectAll`, or when Agents settings lift the block it reported.
  */
 export interface ConnectErrorInfo {
   agentType: AgentType
@@ -3443,7 +3449,23 @@ export interface ConnectErrorInfo {
   detail: string | null
   /** The fix lives in Settings → Agents (install, enable, configure). */
   opensAgentSettings: boolean
+  /** Set when the preflight refused to connect because of the agent's own
+   *  state (disabled, not installed…): a change in Agents settings can lift
+   *  it, and the failure is then retired with no new attempt (#141). */
+  blockKind?: ConnectBlockKind
 }
+
+/** Why the preflight refuses to connect an agent (see
+ *  `resolveConnectBlockState`). */
+export type ConnectBlockKind =
+  | "missing_config"
+  | "disabled"
+  | "unavailable"
+  | "sdk_missing"
+
+/** Emitted by the backend whenever an agent's settings change (enabled,
+ *  installed, configured) — the same event `useAcpAgents` reloads on. */
+const ACP_AGENTS_UPDATED_EVENT = "app://acp-agents-updated"
 
 interface InternalStore {
   connections: ConnectionsMap
@@ -4166,10 +4188,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
   type ConnectBlockState =
     | { kind: "none"; reason: "" }
-    | {
-        kind: "missing_config" | "disabled" | "unavailable" | "sdk_missing"
-        reason: string
-      }
+    | { kind: ConnectBlockKind; reason: string }
 
   const resolveConnectBlockState = useCallback(
     (agent: AcpAgentStatus | null): ConnectBlockState => {
@@ -4274,15 +4293,17 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
   /** Publish (or retire) why the last `connect()` for a key failed — see
    *  `ConnectErrorInfo`. Same per-key listener set as `setConnectPending`.
-   *  Retiring one (a new attempt starting, the surface letting go) also takes
-   *  its notification's toast off the screen: it no longer says what is true,
-   *  and its Retry would act on nothing. */
+   *  Retiring one (a new attempt starting, the surface letting go, the block
+   *  lifted in Agents settings) takes its notification off the screen AND out
+   *  of the alert list: it no longer says what is true, its Retry would act on
+   *  nothing, and the status chip counts what is wrong now (#141). A new
+   *  attempt that fails again records it afresh. */
   const setConnectError = useCallback(
     (key: string, info: ConnectErrorInfo | null) => {
       const { connectErrors } = storeRef.current
       if (info === null) {
         if (!connectErrors.delete(key)) return
-        dismissNotification(connectErrorNotificationKey(key))
+        resolveNotification(connectErrorNotificationKey(key))
       } else {
         connectErrors.set(key, info)
       }
@@ -7406,6 +7427,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                   title: blocked.reason,
                   detail: null,
                   opensAgentSettings: true,
+                  blockKind: blocked.kind,
                 }
               : {
                   agentType,
@@ -7414,6 +7436,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                   }),
                   detail: blocked.reason,
                   opensAgentSettings: true,
+                  blockKind: blocked.kind,
                 }
           )
           throw createAlertedError(blocked.reason)
@@ -7816,6 +7839,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 : t("blocked.sdkMissing", { agent: agentLabel }),
               detail: null,
               opensAgentSettings: true,
+              // No `blockKind`: the preflight let this agent through, so a
+              // re-read status cannot tell that the binary is back.
             })
           } else {
             publishConnectError({
@@ -7893,6 +7918,66 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     ]
   )
   connectRef.current = connect
+
+  /** Retire every connect failure whose block the agent's settings no longer
+   *  impose: re-read the status of each agent such a failure names and, when
+   *  the preflight would now let it through, take the failure (heart, toast,
+   *  alert) away. Nothing reconnects by itself — the surface's next send or
+   *  Retry does, as after any other failure. A failure replaced while the
+   *  status was being read is left to its newer self. */
+  const retireLiftedConnectBlocks = async () => {
+    const byAgent = new Map<AgentType, Array<[string, ConnectErrorInfo]>>()
+    for (const [key, info] of storeRef.current.connectErrors) {
+      if (!info.blockKind) continue
+      const entries = byAgent.get(info.agentType) ?? []
+      entries.push([key, info])
+      byAgent.set(info.agentType, entries)
+    }
+    for (const [agentType, entries] of byAgent) {
+      let status: AcpAgentStatus | null
+      try {
+        status = await acpGetAgentStatus(agentType)
+      } catch {
+        continue
+      }
+      if (resolveConnectBlockState(status).kind !== "none") continue
+      for (const [key, info] of entries) {
+        if (storeRef.current.connectErrors.get(key) === info) {
+          setConnectError(key, null)
+        }
+      }
+    }
+  }
+  const retireLiftedConnectBlocksRef = useRef(retireLiftedConnectBlocks)
+  retireLiftedConnectBlocksRef.current = retireLiftedConnectBlocks
+
+  // Enabling (installing, configuring) an agent in Settings → Agents emits
+  // `app://acp-agents-updated`; the settings may also live in another window
+  // or tab, so coming back to this one re-checks too. Both are no-ops while no
+  // failure is a block. Declared after the `acp://event` listener so that one
+  // stays the provider's first subscription.
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | null = null
+    const recheck = () => {
+      if (disposed) return
+      void retireLiftedConnectBlocksRef.current()
+    }
+    window.addEventListener("focus", recheck)
+    subscribe<unknown>(ACP_AGENTS_UPDATED_EVENT, recheck)
+      .then((dispose) => {
+        if (disposed) dispose()
+        else unlisten = dispose
+      })
+      .catch(() => {
+        // No event channel: the focus re-check still covers coming back.
+      })
+    return () => {
+      disposed = true
+      window.removeEventListener("focus", recheck)
+      unlisten?.()
+    }
+  }, [])
 
   const disconnect = useCallback(
     async (contextKey: string): Promise<boolean> => {

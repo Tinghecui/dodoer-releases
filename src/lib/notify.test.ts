@@ -5,20 +5,32 @@ const h = vi.hoisted(() => ({
   warning: vi.fn(),
   info: vi.fn(),
   recordAlert: vi.fn(),
+  resolveAlert: vi.fn(),
+  dismiss: vi.fn(),
 }))
 
 vi.mock("sonner", () => ({
-  toast: { error: h.error, warning: h.warning, info: h.info },
+  toast: {
+    error: h.error,
+    warning: h.warning,
+    info: h.info,
+    dismiss: h.dismiss,
+  },
 }))
-vi.mock("@/contexts/alert-context", () => ({ recordAlert: h.recordAlert }))
+vi.mock("@/contexts/alert-context", () => ({
+  recordAlert: h.recordAlert,
+  resolveAlert: h.resolveAlert,
+}))
 
-import { notify } from "./notify"
+import { dismissNotification, notify, resolveNotification } from "./notify"
 
 beforeEach(() => {
   h.error.mockClear()
   h.warning.mockClear()
   h.info.mockClear()
   h.recordAlert.mockClear()
+  h.resolveAlert.mockClear()
+  h.dismiss.mockClear()
 })
 
 describe("notify", () => {
@@ -169,5 +181,19 @@ describe("notify", () => {
     expect(alert).not.toHaveProperty("detail")
     expect(alert).not.toHaveProperty("evidence")
     expect(alert).not.toHaveProperty("actions")
+  })
+})
+
+describe("taking a notification back", () => {
+  it("dismissing only takes the toast off the screen", () => {
+    dismissNotification("k")
+    expect(h.dismiss).toHaveBeenCalledWith("k")
+    expect(h.resolveAlert).not.toHaveBeenCalled()
+  })
+
+  it("resolving takes the toast and the alert list entry away (#141)", () => {
+    resolveNotification("acp-connect:tab")
+    expect(h.dismiss).toHaveBeenCalledWith("acp-connect:tab")
+    expect(h.resolveAlert).toHaveBeenCalledWith("acp-connect:tab")
   })
 })

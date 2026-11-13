@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 import {
   AlertProvider,
   recordAlert,
+  resolveAlert,
   useAlertContext,
   type Alert,
 } from "./alert-context"
@@ -95,5 +96,44 @@ describe("recordAlert", () => {
     expect(probe.alerts).toHaveLength(2)
     expect(probe.alerts[0]).toMatchObject({ detail: "rejected" })
     unmount()
+  })
+})
+
+// #141: a failure that is over leaves the list — no "resolved" history.
+describe("resolveAlert", () => {
+  it("takes the entry under the key out, and leaves the others", () => {
+    const { unmount } = mount()
+    act(() => {
+      recordAlert({ key: "k", level: "error", message: "agent disabled" })
+      recordAlert({ key: "other", level: "error", message: "other key" })
+      recordAlert({ level: "warning", message: "no key" })
+    })
+    act(() => resolveAlert("k"))
+    expect(probe.alerts.map((a) => a.message)).toEqual(["other key", "no key"])
+    unmount()
+  })
+
+  it("keeps the list as it is when nothing is under the key", () => {
+    const { unmount } = mount()
+    act(() => recordAlert({ key: "k", level: "error", message: "kept" }))
+    const before = probe.alerts
+    act(() => resolveAlert("missing"))
+    expect(probe.alerts).toBe(before)
+    unmount()
+  })
+
+  it("lets the key be recorded again afterwards", () => {
+    const { unmount } = mount()
+    act(() => recordAlert({ key: "k", level: "error", message: "first" }))
+    act(() => resolveAlert("k"))
+    act(() => recordAlert({ key: "k", level: "error", message: "again" }))
+    expect(probe.alerts.map((a) => a.message)).toEqual(["again"])
+    unmount()
+  })
+
+  it("is a no-op with no provider mounted", () => {
+    const { unmount } = mount()
+    unmount()
+    expect(() => resolveAlert("k")).not.toThrow()
   })
 })

@@ -18,7 +18,11 @@
 
 import { toast } from "sonner"
 
-import { recordAlert, type AlertAction } from "@/contexts/alert-context"
+import {
+  recordAlert,
+  resolveAlert,
+  type AlertAction,
+} from "@/contexts/alert-context"
 
 export type NotifyLevel = "error" | "warning" | "info"
 
@@ -108,4 +112,12 @@ export function notify(input: NotifyInput): void {
  *  buttons would act on a moment that has passed. */
 export function dismissNotification(key: string): void {
   toast.dismiss(key)
+}
+
+/** The thing a notification reported is over (a failed connect retired, its
+ *  block lifted): take the toast off the screen and its entry out of the
+ *  alert list, so the list only counts what is still wrong. */
+export function resolveNotification(key: string): void {
+  toast.dismiss(key)
+  resolveAlert(key)
 }

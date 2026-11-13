@@ -1317,6 +1317,76 @@ describe("SidebarConversationCard waiting on background work", () => {
   })
 })
 
+// #102: a turn the agent refused or could not run (not signed in) is stored as
+// `cancelled`, and it ended, so the row is unread too. One red mark, not a
+// "finished, not viewed" dot beside a "cancelled" cross.
+describe("SidebarConversationCard turn that did not finish", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useConversationSeenStore.setState({
+      scope: null,
+      baselineAt: 0,
+      seen: {},
+      markedUnread: {},
+    })
+    useBackgroundPendingStore.setState({ bySession: new Map() })
+    useAwaitingUserStore.setState({ bySession: new Map() })
+  })
+
+  const ended = (status: string): DbConversationSummary => ({
+    ...conv(41),
+    status,
+    external_id: "sess-41",
+    updated_at: new Date(Date.now() + 1_000).toISOString(),
+  })
+
+  function renderCard(c: DbConversationSummary) {
+    return renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={false}
+        timeLabel="5m"
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+      />
+    )
+  }
+
+  const unfinished = (container: HTMLElement) =>
+    container.querySelector("[data-turn-unfinished]")
+
+  it("shows one red mark carrying unread, and no separate unread dot", () => {
+    const { container } = renderCard(ended("cancelled"))
+    expect(container.querySelector("[data-jenny-unread-dot]")).toBeNull()
+    expect(unfinished(container)?.getAttribute("title")).toBe(
+      "Turn didn't finish — not viewed yet"
+    )
+    expect(unfinished(container)?.hasAttribute("data-unread")).toBe(true)
+    expect(container.textContent).not.toContain("Finished — not viewed yet")
+  })
+
+  it("drops the unread part once accepted", () => {
+    const c = ended("cancelled")
+    const { container, getByText } = renderCard(c)
+    fireEvent.contextMenu(getByText("conv-41"))
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Accepted$/ }))
+    expect(unfinished(container)?.getAttribute("title")).toBe(
+      "Turn didn't finish"
+    )
+    expect(unfinished(container)?.hasAttribute("data-unread")).toBe(false)
+    expect(container.querySelector("[data-jenny-unread-dot]")).toBeNull()
+  })
+
+  it("a finished unread turn keeps the unread dot and no red mark", () => {
+    const { container } = renderCard(ended("pending_review"))
+    expect(container.querySelector("[data-jenny-unread-dot]")).not.toBeNull()
+    expect(unfinished(container)).toBeNull()
+  })
+})
+
 // Mid-turn the agent stopped to ask the user something: the row is still
 // `in_progress`, but it is the user's move.
 describe("SidebarConversationCard awaiting the user", () => {

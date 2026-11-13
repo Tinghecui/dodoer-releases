@@ -83,6 +83,8 @@ const h = vi.hoisted(() => {
     toastDismiss: vi.fn(),
     // The status-bar alert list — where every notified warning/error is kept.
     recordAlert: vi.fn(),
+    // …and where an entry leaves it once what it reported is over.
+    resolveAlert: vi.fn(),
     // Where a connection's advertised commands are filed for its transcripts.
     rememberAdvertisedCommands: vi.fn(),
     openSettingsWindow: vi.fn(async () => {}),
@@ -136,7 +138,10 @@ vi.mock("sonner", () => ({
   },
 }))
 
-vi.mock("@/contexts/alert-context", () => ({ recordAlert: h.recordAlert }))
+vi.mock("@/contexts/alert-context", () => ({
+  recordAlert: h.recordAlert,
+  resolveAlert: h.resolveAlert,
+}))
 
 vi.mock("@/lib/advertised-commands-store", () => ({
   rememberAdvertisedCommands: h.rememberAdvertisedCommands,
@@ -261,6 +266,7 @@ beforeEach(() => {
   h.toastInfo.mockClear()
   h.toastDismiss.mockClear()
   h.recordAlert.mockClear()
+  h.resolveAlert.mockClear()
   h.rememberAdvertisedCommands.mockClear()
   h.openSettingsWindow.mockClear()
 })
@@ -6382,8 +6388,17 @@ describe("global acp://event listener is mount-once", () => {
     h.eventStreamValue = null
     unlisten = vi.fn()
     vi.mocked(subscribe).mockClear()
-    vi.mocked(subscribe).mockImplementation(async () => unlisten)
+    // Only the ACP firehose's teardown is watched; the agents-updated listener
+    // (#141) gets its own no-op.
+    vi.mocked(subscribe).mockImplementation(async (event) =>
+      event === "acp://event" ? unlisten : () => {}
+    )
   })
+
+  /** How many times the provider subscribed to the ACP firehose. */
+  const firehoseSubscriptions = () =>
+    vi.mocked(subscribe).mock.calls.filter(([event]) => event === "acp://event")
+      .length
 
   // Restore the suite-wide default. `subscribe` is a module-level mock that
   // the outer `beforeEach` does not reset, so leaving our implementation (or
@@ -6405,7 +6420,7 @@ describe("global acp://event listener is mount-once", () => {
     const { rerender } = mountDesktop()
     await act(async () => {})
 
-    expect(vi.mocked(subscribe)).toHaveBeenCalledTimes(1)
+    expect(firehoseSubscriptions()).toBe(1)
     expect(vi.mocked(subscribe).mock.calls[0]![0]).toBe("acp://event")
 
     for (let i = 0; i < 3; i++) {
@@ -6418,7 +6433,7 @@ describe("global acp://event listener is mount-once", () => {
       })
     }
 
-    expect(vi.mocked(subscribe)).toHaveBeenCalledTimes(1)
+    expect(firehoseSubscriptions()).toBe(1)
     // Never torn down while mounted — no window with two live listeners.
     expect(unlisten).not.toHaveBeenCalled()
   })
@@ -6482,7 +6497,7 @@ describe("global acp://event listener is mount-once", () => {
     const { unmount } = mountDesktop()
     await act(async () => {})
 
-    expect(vi.mocked(subscribe)).toHaveBeenCalledTimes(1)
+    expect(firehoseSubscriptions()).toBe(1)
     unmount()
     expect(unlisten).toHaveBeenCalledTimes(1)
   })
@@ -8588,6 +8603,7 @@ describe("connect failures land on the surface that asked", () => {
       title: "blocked.adapterMissing",
       detail: null,
       opensAgentSettings: true,
+      blockKind: "sdk_missing",
     })
     // The preflight stops it before anything is spawned.
     expect(h.acpConnect).not.toHaveBeenCalled()
@@ -8642,8 +8658,10 @@ describe("connect failures land on the surface that asked", () => {
     })
     expect(h.store!.getConnectError(TAB)).toBeUndefined()
     expect(h.store!.getConnection(TAB)?.connectionId).toBe("spawned-conn")
-    // The toast that reported it no longer says what is true.
+    // The toast that reported it no longer says what is true, and the alert
+    // list stops counting it (#141).
     expect(h.toastDismiss).toHaveBeenCalledWith(`acp-connect:${TAB}`)
+    expect(h.resolveAlert).toHaveBeenCalledWith(`acp-connect:${TAB}`)
   })
 
   it("retries from the toast only while that failure is still the latest", async () => {
@@ -8684,6 +8702,101 @@ describe("connect failures land on the surface that asked", () => {
       stale()
     })
     expect(h.acpConnect).not.toHaveBeenCalled()
+  })
+
+  // #141: the agent was disabled when the tab connected; enabling it again in
+  // Settings → Agents lifts the block, and the failure leaves with it — the
+  // heart, the toast and the alert list entry — with no new attempt.
+  describe("a block lifted in Agents settings", () => {
+    const DISABLED = {
+      agent_type: "claude_code",
+      enabled: false,
+      available: true,
+      installed_version: "1.0.0",
+      host_tools_agent_mode: false,
+      is_acp_adapter: true,
+    }
+    const ENABLED = { ...DISABLED, enabled: true }
+
+    /** The provider's `app://acp-agents-updated` listener. */
+    function agentsUpdated() {
+      const call = vi
+        .mocked(subscribe)
+        .mock.calls.find(([event]) => event === "app://acp-agents-updated")
+      expect(call).toBeDefined()
+      return call![1] as (payload: unknown) => void
+    }
+
+    async function failDisabled() {
+      vi.mocked(subscribe).mockClear()
+      h.acpGetAgentStatus.mockResolvedValue(DISABLED)
+      await mountProvider()
+      await act(async () => {
+        await expect(
+          h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+        ).rejects.toThrow()
+      })
+      expect(h.store!.getConnectError(TAB)).toMatchObject({
+        detail: "blocked.disabled",
+        blockKind: "disabled",
+      })
+      expect(h.recordAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ key: `acp-connect:${TAB}` })
+      )
+    }
+
+    it("retires the failure and its alert once the agent is enabled", async () => {
+      await failDisabled()
+      h.acpGetAgentStatus.mockResolvedValue(ENABLED)
+      await act(async () => {
+        agentsUpdated()({ reason: "preferences_updated" })
+      })
+      expect(h.store!.getConnectError(TAB)).toBeUndefined()
+      expect(h.toastDismiss).toHaveBeenCalledWith(`acp-connect:${TAB}`)
+      expect(h.resolveAlert).toHaveBeenCalledWith(`acp-connect:${TAB}`)
+      // Nothing reconnects by itself.
+      expect(h.acpConnect).not.toHaveBeenCalled()
+    })
+
+    it("re-checks when the window comes back into focus too", async () => {
+      await failDisabled()
+      h.acpGetAgentStatus.mockResolvedValue(ENABLED)
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"))
+      })
+      expect(h.store!.getConnectError(TAB)).toBeUndefined()
+      expect(h.resolveAlert).toHaveBeenCalledWith(`acp-connect:${TAB}`)
+    })
+
+    it("keeps the failure while the agent is still blocked", async () => {
+      await failDisabled()
+      await act(async () => {
+        agentsUpdated()({ reason: "preferences_updated" })
+      })
+      expect(h.store!.getConnectError(TAB)).toMatchObject({
+        blockKind: "disabled",
+      })
+      expect(h.resolveAlert).not.toHaveBeenCalled()
+    })
+
+    it("leaves a failure that was not a block alone", async () => {
+      vi.mocked(subscribe).mockClear()
+      h.acpConnect.mockRejectedValueOnce(new Error("spawn claude ENOENT"))
+      await mountProvider()
+      await act(async () => {
+        await expect(
+          h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+        ).rejects.toThrow("spawn claude ENOENT")
+      })
+      h.acpGetAgentStatus.mockClear()
+      await act(async () => {
+        agentsUpdated()({ reason: "preferences_updated" })
+      })
+      // Not even looked up: only a block can be lifted from the settings.
+      expect(h.acpGetAgentStatus).not.toHaveBeenCalled()
+      expect(h.store!.getConnectError(TAB)).toBeDefined()
+      expect(h.resolveAlert).not.toHaveBeenCalled()
+    })
   })
 })
 

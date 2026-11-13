@@ -30,6 +30,7 @@
 //! | `CODEG_HOST`, `CODEG_PORT`, `CODEG_DATA_DIR`, `CODEG_STATIC_DIR` | upstream meaning; only the `COWORK_` alias is added. |
 //! | `CODEG_LISTEN` / `COWORK_LISTEN` / `PASEO_LISTEN` | `host:port` fallback for whichever of host/port is still unset. |
 //! | `CODEG_PUBLIC_ORIGIN` | portal mode: extra browser origins (comma-separated) allowed besides the request's own. |
+//! | `CODEG_SHARED_NPM_PREFIX` | an npm prefix (absolute) where the administrator installed agents for every user, read-only to us (Cowork: `/usr`, its ACP adapters and CLIs). npx agents are also looked up in its `bin/` and read their version from its `lib/node_modules` ([`shared_npm_prefix`]). |
 //!
 //! In portal mode `CODEG_BRIDGE_PORTS` defaults to `off` (the ports after
 //! ours are the neighbouring employees' servers), and `/api` + `/ws` requests
@@ -111,6 +112,8 @@ pub struct CoworkSettings {
     pub update_disabled: bool,
     /// `CODEG_PUBLIC_ORIGIN`: extra allowed browser origins (normalized).
     pub public_origins: Vec<String>,
+    /// `CODEG_SHARED_NPM_PREFIX`: the administrator's npm prefix (absolute).
+    pub shared_npm_prefix: Option<PathBuf>,
     token_file: Option<String>,
     env_token: Option<String>,
 }
@@ -252,6 +255,11 @@ pub fn resolve_settings(env: &dyn Fn(&str) -> Option<String>, cwd: &Path) -> Cow
         public_origins: lookup(env, "PUBLIC_ORIGIN")
             .map(|raw| raw.split(',').filter_map(normalize_origin).collect())
             .unwrap_or_default(),
+        // Absolute only: a relative prefix would follow the server's cwd.
+        shared_npm_prefix: lookup(env, "SHARED_NPM_PREFIX")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .map(|p| normalize(&p)),
         token_file: lookup(env, "TOKEN_FILE"),
         env_token: non_empty(env("CODEG_TOKEN")),
     }
@@ -411,6 +419,27 @@ fn resolved() -> Option<&'static Resolved> {
 /// ran (desktop app, tests).
 pub fn settings() -> CoworkSettings {
     resolved().map(|r| r.settings.clone()).unwrap_or_default()
+}
+
+/// `CODEG_SHARED_NPM_PREFIX`: the npm prefix an administrator installed agents
+/// into for every user of the machine, `None` when unset (desktop app, tests,
+/// upstream deployments) — then nothing below changes.
+///
+/// Cowork installs the ACP adapters (`claude-agent-acp`, `codex-acp`) there
+/// once, next to the `claude` / `codex` / `grok` CLIs, so an employee never
+/// installs them (AI QA #109). The lookup comes AFTER every per-user place
+/// (PATH, `~/.local/bin`, the npm global prefix): a copy the employee
+/// installed himself, which lands in `~/.codeg/npm-global`, keeps winning, as
+/// it already does for the CLIs (`codeg@.service` puts `~/.codeg/npm-global/bin`
+/// first on PATH).
+pub fn shared_npm_prefix() -> Option<PathBuf> {
+    // Unit tests never run `init_process_env`: read the variable as it stands
+    // (tests set it with `temp_env`), through the same rules.
+    #[cfg(test)]
+    if resolved().is_none() {
+        return resolve_settings(&|k| std::env::var(k).ok(), Path::new("/")).shared_npm_prefix;
+    }
+    resolved().and_then(|r| r.settings.shared_npm_prefix.clone())
 }
 
 /// The token override for `resolve_persisted_server_token`: the token file's
@@ -1808,6 +1837,19 @@ mod tests {
         assert!(s.update_disabled);
         assert_eq!(s.token_file.as_deref(), Some("/run/x/token"));
         assert_eq!(s.env_token, None);
+        assert_eq!(s.shared_npm_prefix, None);
+
+        let s = resolve_settings(
+            &env_of(&[("COWORK_SHARED_NPM_PREFIX", "/usr/./lib/..")]),
+            Path::new("/cwd"),
+        );
+        assert_eq!(s.shared_npm_prefix.as_deref(), Some(Path::new("/usr")));
+        // Relative: ignored rather than resolved against the cwd.
+        let s = resolve_settings(
+            &env_of(&[("CODEG_SHARED_NPM_PREFIX", "usr")]),
+            Path::new("/cwd"),
+        );
+        assert_eq!(s.shared_npm_prefix, None);
 
         let s = resolve_settings(
             &env_of(&[("CODEG_PROJECTS_ROOT", "rel/../work")]),

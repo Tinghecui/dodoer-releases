@@ -59,7 +59,9 @@ export function TabProvider({ children }: TabProviderProps) {
     },
     [disconnect]
   )
-  const { sortedTypes: sortedAvailableAgents, fresh: agentsFresh } =
+  // The default order (installed agents first), not the display order: the
+  // store only resolves defaults and checks membership with it.
+  const { defaultOrder: sortedAvailableAgents, fresh: agentsFresh } =
     useSortedAvailableAgents()
 
   // App-workspace gates for the correction / recovery / child-reconcile effects.

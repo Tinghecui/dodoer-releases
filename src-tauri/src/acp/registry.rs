@@ -283,6 +283,29 @@ pub fn builtin_acp_agents() -> Vec<AgentType> {
     ]
 }
 
+/// The `sort_order` an agent's settings row starts with: a built-in's index in
+/// [`builtin_acp_agents`] (Claude Code first), a custom agent after every
+/// built-in.
+///
+/// Cowork fork: every entry point that creates a single agent's row (an env
+/// or preference save, an install) used to park it at `i32::MAX / 2`, so an
+/// agent configured before the list ever ran — the first thing a fresh Cowork
+/// employee or AI QA's seed does to Claude Code — stayed last in the picker
+/// for good, pushed into "more" behind sixteen agents. The list path seeds
+/// the same values, so whichever entry point creates the row first, the
+/// built-in order holds.
+pub fn default_sort_order_for(agent_type: AgentType) -> i32 {
+    builtin_acp_agents()
+        .iter()
+        .position(|builtin| *builtin == agent_type)
+        .map_or(CUSTOM_AGENT_DEFAULT_SORT_ORDER, |idx| idx as i32)
+}
+
+/// Where a custom agent's row starts (after every built-in), and where the
+/// single-agent entry points used to park built-ins too (see
+/// [`default_sort_order_for`]).
+pub const CUSTOM_AGENT_DEFAULT_SORT_ORDER: i32 = i32::MAX / 2;
+
 /// Every agent codeg can currently drive: the twenty built-ins followed by
 /// the user's registered custom ACP agents (sorted by id).
 pub fn all_acp_agents() -> Vec<AgentType> {
@@ -8759,6 +8782,18 @@ mod tests {
         ] {
             assert!(!goal_control_is_out_of_band(agent));
         }
+    }
+
+    #[test]
+    fn default_sort_order_follows_the_builtin_order() {
+        for (idx, agent) in builtin_acp_agents().into_iter().enumerate() {
+            assert_eq!(default_sort_order_for(agent), idx as i32, "{agent:?}");
+        }
+        assert_eq!(default_sort_order_for(AgentType::ClaudeCode), 0);
+        assert_eq!(
+            default_sort_order_for(AgentType::Custom("acme")),
+            CUSTOM_AGENT_DEFAULT_SORT_ORDER
+        );
     }
 
     #[test]

@@ -331,6 +331,11 @@ async fn npm_prefix_adapter_dirs() -> Vec<PathBuf> {
     if let Some(prefix) = crate::process::user_npm_prefix() {
         dirs.push(adapter_dir_under_prefix(&prefix));
     }
+    // Cowork fork: the administrator's shared copy (AI QA #109), last like
+    // its launch-order place.
+    if let Some(prefix) = crate::cowork::shared_npm_prefix() {
+        dirs.push(adapter_dir_under_prefix(&prefix));
+    }
     dirs
 }
 

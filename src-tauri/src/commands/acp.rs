@@ -428,7 +428,8 @@ async fn prewarm_uvx_agent(
 /// Resolve a command the way an npx agent's command resolves, short of the
 /// agent-specific last step [`resolve_npx_command_for`] adds: PATH, then
 /// `~/.local/bin` (both via [`resolve_system_agent_binary`]), then the current
-/// npm global prefix.
+/// npm global prefix, then (Cowork fork) the administrator's shared prefix
+/// ([`crate::cowork::shared_npm_prefix`], unset outside Cowork).
 ///
 /// Both fallbacks cover an app PATH that lacks the user's shell PATH.
 /// `~/.local/bin` goes first on purpose: when neither copy is on the app's
@@ -441,7 +442,17 @@ pub(crate) async fn resolve_npx_command(cmd: &str) -> Option<PathBuf> {
     if let Some(path) = resolve_system_agent_binary(cmd) {
         return Some(path);
     }
-    resolve_npx_command_from_current_npm_prefix(cmd).await
+    if let Some(path) = resolve_npx_command_from_current_npm_prefix(cmd).await {
+        return Some(path);
+    }
+    resolve_npx_command_from_shared_prefix(cmd, crate::cowork::shared_npm_prefix().as_deref())
+}
+
+/// Cowork fork (AI QA #109): `cmd` in the administrator's shared npm prefix,
+/// where Cowork installs the ACP adapters once for every employee. Last, after
+/// every per-user place, so an employee's own copy keeps winning.
+fn resolve_npx_command_from_shared_prefix(cmd: &str, prefix: Option<&Path>) -> Option<PathBuf> {
+    prefix.and_then(|prefix| resolve_npx_command_from_npm_prefix(cmd, prefix))
 }
 
 /// [`resolve_npx_command`] plus the copy the agent vendor's own native
@@ -555,6 +566,8 @@ fn is_grok_npm_copy(bin_dir: &Path, cand: &Path, cmd: &str) -> bool {
 struct NpxCommandResolver {
     per_cmd_cache: HashMap<String, Option<PathBuf>>,
     request_npm_prefix: Option<Option<PathBuf>>,
+    /// `None`: [`crate::cowork::shared_npm_prefix`]. Set by tests.
+    shared_npm_prefix: Option<Option<PathBuf>>,
 }
 
 impl NpxCommandResolver {
@@ -584,7 +597,15 @@ impl NpxCommandResolver {
                 self.request_npm_prefix = Some(resolved_prefix.clone());
                 resolved_prefix
             };
-            prefix.and_then(|p| resolve_npx_command_from_npm_prefix(cmd, &p))
+            prefix
+                .and_then(|p| resolve_npx_command_from_npm_prefix(cmd, &p))
+                .or_else(|| {
+                    let shared = self
+                        .shared_npm_prefix
+                        .clone()
+                        .unwrap_or_else(crate::cowork::shared_npm_prefix);
+                    resolve_npx_command_from_shared_prefix(cmd, shared.as_deref())
+                })
         };
 
         self.per_cmd_cache.insert(cmd.to_string(), resolved.clone());
@@ -641,6 +662,43 @@ fn npm_global_prefix_from_stdout(stdout: &[u8]) -> Option<PathBuf> {
         return None;
     }
     Some(PathBuf::from(prefix))
+}
+
+/// `<prefix>/lib/node_modules/<package>` (`<prefix>/node_modules/…` on
+/// Windows), where `npm install -g --prefix <prefix>` puts a package.
+fn npm_prefix_package_dir(prefix: &Path, package_name: &str) -> PathBuf {
+    let modules = if cfg!(windows) {
+        prefix.join("node_modules")
+    } else {
+        prefix.join("lib").join("node_modules")
+    };
+    package_name
+        .split('/')
+        .fold(modules, |dir, part| dir.join(part))
+}
+
+/// The version of `package_name` installed under the npm `prefix`, when `bin`
+/// is that install's command (`<prefix>/bin/<cmd>`, or a path that resolves
+/// into the package): read from its package.json, without running npm. `None`
+/// for a `bin` from anywhere else, so another install never borrows it.
+fn npm_prefix_version_for_bin(prefix: &Path, bin: &Path, package_name: &str) -> Option<String> {
+    let package_dir = npm_prefix_package_dir(prefix, package_name);
+    let in_prefix_bin = bin.parent() == Some(npm_prefix_bin_dir(prefix).as_path());
+    let into_package = || {
+        match (fs::canonicalize(bin), fs::canonicalize(&package_dir)) {
+            (Ok(real), Ok(dir)) => real.starts_with(dir),
+            _ => false,
+        }
+    };
+    if !in_prefix_bin && !into_package() {
+        return None;
+    }
+    let text = fs::read_to_string(package_dir.join("package.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_str(&text).ok()?;
+    if manifest.get("name")?.as_str()? != package_name {
+        return None;
+    }
+    normalize_version_candidate(manifest.get("version")?.as_str()?)
 }
 
 fn npm_prefix_bin_dir(prefix: &Path) -> PathBuf {
@@ -2481,6 +2539,13 @@ async fn system_probed_version_with(
             if let Some(path) = resolve_npx_command(program).await {
                 version = probe_cli_version_token(&path, &args).await;
             }
+        }
+    }
+    // Cowork fork (AI QA #109): the administrator's shared copy names its
+    // version in its own package.json; `npm list -g` looks in other prefixes.
+    if version.is_none() {
+        if let (Some(package), Some(prefix)) = (npm_package, crate::cowork::shared_npm_prefix()) {
+            version = npm_prefix_version_for_bin(&prefix, resolved_bin, &package_name_from_spec(package));
         }
     }
     if version.is_none() {
@@ -6026,7 +6091,7 @@ async fn clear_kimi_model_env(db: &AppDatabase) -> Result<(), AcpError> {
     let default = agent_setting_service::AgentDefaultInput {
         agent_type: AgentType::KimiCode,
         registry_id: registry::registry_id_for(AgentType::KimiCode).to_string(),
-        default_sort_order: i32::MAX / 2,
+        default_sort_order: registry::default_sort_order_for(AgentType::KimiCode),
     };
     agent_setting_service::ensure_defaults(&db.conn, &[default])
         .await
@@ -7635,7 +7700,7 @@ pub(crate) async fn acp_update_pi_config_core(
     let default = agent_setting_service::AgentDefaultInput {
         agent_type: AgentType::Pi,
         registry_id: registry::registry_id_for(AgentType::Pi).to_string(),
-        default_sort_order: i32::MAX / 2,
+        default_sort_order: registry::default_sort_order_for(AgentType::Pi),
     };
     agent_setting_service::ensure_defaults(&db.conn, &[default])
         .await
@@ -12828,6 +12893,24 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
     agent_setting_service::ensure_defaults(&db.conn, &defaults)
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))?;
+    // Cowork fork (AI QA #129): a built-in row an older build parked at the
+    // custom-agent slot goes back to its built-in position (see
+    // `registry::default_sort_order_for`). Custom agents keep their slot.
+    let builtin_defaults = agent_types
+        .iter()
+        .map(|agent_type| agent_setting_service::AgentDefaultInput {
+            agent_type: *agent_type,
+            registry_id: registry::registry_id_for(*agent_type).to_string(),
+            default_sort_order: registry::default_sort_order_for(*agent_type),
+        })
+        .collect::<Vec<_>>();
+    agent_setting_service::unpark_sort_orders(
+        &db.conn,
+        registry::CUSTOM_AGENT_DEFAULT_SORT_ORDER,
+        &builtin_defaults,
+    )
+    .await
+    .map_err(|e| AcpError::protocol(e.to_string()))?;
     let settings_map = agent_setting_service::list_map_by_agent_type(&db.conn)
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))?;
@@ -13155,7 +13238,7 @@ pub(crate) async fn acp_update_agent_preferences_core(
     let default = agent_setting_service::AgentDefaultInput {
         agent_type,
         registry_id: registry::registry_id_for(agent_type).to_string(),
-        default_sort_order: i32::MAX / 2,
+        default_sort_order: registry::default_sort_order_for(agent_type),
     };
 
     agent_setting_service::ensure_defaults(&db.conn, &[default])
@@ -13293,7 +13376,7 @@ pub(crate) async fn acp_update_agent_env_core(
     let default = agent_setting_service::AgentDefaultInput {
         agent_type,
         registry_id: registry::registry_id_for(agent_type).to_string(),
-        default_sort_order: i32::MAX / 2,
+        default_sort_order: registry::default_sort_order_for(agent_type),
     };
 
     agent_setting_service::ensure_defaults(&db.conn, &[default])
@@ -14619,7 +14702,7 @@ pub(crate) async fn acp_prepare_npx_agent_core(
             let default = agent_setting_service::AgentDefaultInput {
                 agent_type,
                 registry_id: registry::registry_id_for(agent_type).to_string(),
-                default_sort_order: i32::MAX / 2,
+                default_sort_order: registry::default_sort_order_for(agent_type),
             };
             agent_setting_service::ensure_defaults(&db.conn, &[default])
                 .await
@@ -14754,7 +14837,7 @@ pub(crate) async fn acp_prepare_npx_agent_core(
             let default = agent_setting_service::AgentDefaultInput {
                 agent_type,
                 registry_id: registry::registry_id_for(agent_type).to_string(),
-                default_sort_order: i32::MAX / 2,
+                default_sort_order: registry::default_sort_order_for(agent_type),
             };
             agent_setting_service::ensure_defaults(&db.conn, &[default])
                 .await
@@ -16611,6 +16694,166 @@ mod tests {
             stored_installed_version(&db, agent).await.as_deref(),
             Some("0.0.34")
         );
+    }
+
+    /// Cowork fork (AI QA #109): an npm prefix as `npm install -g --prefix`
+    /// leaves `id`: `bin/<id>` (a script that prints no version) and
+    /// `lib/node_modules/<id>/package.json` at `version`.
+    #[cfg(unix)]
+    fn fake_shared_prefix(root: &Path, id: &str, version: &str) -> PathBuf {
+        let package_dir = npm_prefix_package_dir(root, id);
+        std::fs::create_dir_all(&package_dir).expect("package dir");
+        std::fs::write(
+            package_dir.join("package.json"),
+            serde_json::json!({ "name": id, "version": version }).to_string(),
+        )
+        .expect("package.json");
+        let bin_dir = npm_prefix_bin_dir(root);
+        std::fs::create_dir_all(&bin_dir).expect("bin dir");
+        let bin = bin_dir.join(id);
+        crate::process::write_test_script(&bin, "#!/bin/sh\n");
+        bin
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shared_prefix_version_is_read_only_for_its_own_command() {
+        let prefix = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            npm_prefix_package_dir(prefix.path(), "@agentclientprotocol/claude-agent-acp"),
+            prefix
+                .path()
+                .join("lib")
+                .join("node_modules")
+                .join("@agentclientprotocol")
+                .join("claude-agent-acp")
+        );
+        let bin = fake_shared_prefix(prefix.path(), "shared-adapter", "1.2.3");
+        assert_eq!(
+            npm_prefix_version_for_bin(prefix.path(), &bin, "shared-adapter").as_deref(),
+            Some("1.2.3")
+        );
+        // Another install's command never borrows the shared version.
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let other = elsewhere.path().join("shared-adapter");
+        crate::process::write_test_script(&other, "#!/bin/sh\n");
+        assert_eq!(
+            npm_prefix_version_for_bin(prefix.path(), &other, "shared-adapter"),
+            None
+        );
+        // A package.json naming another package is not this one's.
+        assert_eq!(
+            npm_prefix_version_for_bin(prefix.path(), &bin, "other-adapter"),
+            None
+        );
+        // A symlink into the package (npm's own bin layout) counts too.
+        let link_dir = tempfile::tempdir().expect("tempdir");
+        let link = link_dir.path().join("shared-adapter");
+        let target = npm_prefix_package_dir(prefix.path(), "shared-adapter").join("index.js");
+        std::fs::write(&target, "").expect("entry");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        assert_eq!(
+            npm_prefix_version_for_bin(prefix.path(), &link, "shared-adapter").as_deref(),
+            Some("1.2.3")
+        );
+    }
+
+    // The list path's resolver finds the shared copy after every per-user
+    // place, and an employee's own copy keeps winning.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_list_resolver_falls_back_to_the_shared_prefix_last() {
+        let cmd = format!("codeg-shared-prefix-cmd-{}", uuid::Uuid::new_v4().simple());
+        let shared = tempfile::tempdir().expect("tempdir");
+        let shared_bin = fake_shared_prefix(shared.path(), &cmd, "1.0.0");
+        let own = tempfile::tempdir().expect("tempdir");
+
+        let mut resolver = NpxCommandResolver {
+            request_npm_prefix: Some(Some(own.path().to_path_buf())),
+            shared_npm_prefix: Some(Some(shared.path().to_path_buf())),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolver.resolve_for_list(AgentType::ClaudeCode, &cmd).await,
+            Some(shared_bin)
+        );
+
+        let own_bin = fake_shared_prefix(own.path(), &cmd, "0.9.0");
+        let mut resolver = NpxCommandResolver {
+            request_npm_prefix: Some(Some(own.path().to_path_buf())),
+            shared_npm_prefix: Some(Some(shared.path().to_path_buf())),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolver.resolve_for_list(AgentType::ClaudeCode, &cmd).await,
+            Some(own_bin)
+        );
+
+        let mut resolver = NpxCommandResolver {
+            request_npm_prefix: Some(None),
+            shared_npm_prefix: Some(None),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolver.resolve_for_list(AgentType::Codex, &format!("{cmd}-none")).await,
+            None
+        );
+    }
+
+    // An adapter installed only in the shared prefix (Cowork installs it for
+    // every employee) reads as installed at its own version: the connect gate
+    // passes and the status carries the version, so the composer no longer
+    // says "the ACP adapter is not installed". Without the variable it stays
+    // not installed, as on the desktop.
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn an_adapter_only_in_the_shared_prefix_reads_as_installed() {
+        let _registry = custom_registry::hydrate_test_guard();
+        let id = "shared-prefix-npx-agent";
+        let agent = register_npx_detection_agent(id);
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let home = tempfile::tempdir().expect("tempdir");
+        let shared = tempfile::tempdir().expect("tempdir");
+        fake_shared_prefix(shared.path(), id, "0.0.40");
+
+        let without = temp_env::async_with_vars(
+            [
+                ("HOME", Some(home.path().as_os_str())),
+                ("CODEG_SHARED_NPM_PREFIX", None),
+                ("COWORK_SHARED_NPM_PREFIX", None),
+            ],
+            async {
+                (
+                    verify_agent_installed(agent).await.is_ok(),
+                    acp_get_agent_status_core(agent, &db)
+                        .await
+                        .expect("status")
+                        .installed_version,
+                )
+            },
+        )
+        .await;
+        let with = temp_env::async_with_vars(
+            [
+                ("HOME", Some(home.path().as_os_str())),
+                ("CODEG_SHARED_NPM_PREFIX", Some(shared.path().as_os_str())),
+            ],
+            async {
+                (
+                    verify_agent_installed(agent).await.is_ok(),
+                    acp_get_agent_status_core(agent, &db)
+                        .await
+                        .expect("status")
+                        .installed_version,
+                )
+            },
+        )
+        .await;
+        custom_registry::hydrate(&[]);
+
+        assert_eq!(without, (false, None));
+        assert_eq!(with, (true, Some("0.0.40".to_string())));
     }
 
     #[test]
@@ -23943,6 +24186,87 @@ model = "gpt"
         let config = "{\n  // comment\n  \"model\": \"anthropic/claude-x\",\n  \"env\": {\"X\": \"y\"},\n}";
         let env = build_runtime_env_from_setting(AgentType::OpenCode, None, Some(config));
         assert!(env.is_empty(), "{env:?}");
+    }
+
+    // Cowork fork (AI QA #129): saving Claude Code's env before the agent list
+    // ever ran (AI QA's seed, a new employee's first config) used to create its
+    // row at i32::MAX / 2, so it sorted last and fell into "more agents".
+    #[tokio::test]
+    async fn a_single_agent_save_on_an_empty_db_keeps_the_builtin_order() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        acp_update_agent_env_core(
+            AgentType::ClaudeCode,
+            true,
+            BTreeMap::new(),
+            None,
+            &db,
+            &EventEmitter::Noop,
+        )
+        .await
+        .expect("env save");
+        let row = agent_setting_service::get_by_agent_type(&db.conn, AgentType::ClaudeCode)
+            .await
+            .unwrap()
+            .expect("the save created the row");
+        assert_eq!(row.sort_order, 0);
+
+        // The list then seeds the other built-ins after it.
+        let defaults = registry::builtin_acp_agents()
+            .into_iter()
+            .enumerate()
+            .map(|(idx, agent_type)| agent_setting_service::AgentDefaultInput {
+                agent_type,
+                registry_id: registry::registry_id_for(agent_type).to_string(),
+                default_sort_order: idx as i32,
+            })
+            .collect::<Vec<_>>();
+        agent_setting_service::ensure_defaults(&db.conn, &defaults)
+            .await
+            .unwrap();
+        let rows = agent_setting_service::list(&db.conn).await.unwrap();
+        let claude = serde_json::to_string(&AgentType::ClaudeCode).unwrap();
+        assert_eq!(
+            rows.first().map(|r| r.agent_type.as_str()),
+            Some(claude.as_str()),
+            "{:?}",
+            rows.iter()
+                .map(|r| (&r.agent_type, r.sort_order))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // A row an older build already parked is put back by the list path.
+    #[tokio::test]
+    async fn the_list_path_unparks_a_builtin_an_older_build_parked() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let parked = registry::CUSTOM_AGENT_DEFAULT_SORT_ORDER;
+        agent_setting_service::ensure_defaults(
+            &db.conn,
+            &[agent_setting_service::AgentDefaultInput {
+                agent_type: AgentType::ClaudeCode,
+                registry_id: registry::registry_id_for(AgentType::ClaudeCode).to_string(),
+                default_sort_order: parked,
+            }],
+        )
+        .await
+        .unwrap();
+        let defaults = registry::builtin_acp_agents()
+            .into_iter()
+            .map(|agent_type| agent_setting_service::AgentDefaultInput {
+                agent_type,
+                registry_id: registry::registry_id_for(agent_type).to_string(),
+                default_sort_order: registry::default_sort_order_for(agent_type),
+            })
+            .collect::<Vec<_>>();
+        let moved = agent_setting_service::unpark_sort_orders(&db.conn, parked, &defaults)
+            .await
+            .unwrap();
+        assert_eq!(moved, 1);
+        let row = agent_setting_service::get_by_agent_type(&db.conn, AgentType::ClaudeCode)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.sort_order, 0);
     }
 
     // Model providers are not offered for MiniMax Code, but the API accepts one

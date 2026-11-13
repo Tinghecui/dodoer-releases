@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo } from "react"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
+import { installedFirst } from "@/lib/resolve-default-agent"
 import { AGENT_DISPLAY_ORDER, type AgentType } from "@/lib/types"
 
 const STORAGE_KEY = "workspace:sorted-available-agents"
@@ -50,6 +51,13 @@ export interface UseSortedAvailableAgentsResult {
    * agents are known yet.
    */
   sortedTypes: AgentType[]
+  /**
+   * The same agents ranked for picking a DEFAULT (Cowork fork, AI QA #129):
+   * the installed ones first, the user's order kept within each group
+   * (`installedFirst`). While not fresh, the persisted snapshot, which is
+   * stored in this order.
+   */
+  defaultOrder: AgentType[]
   /** True once the first successful reload has completed this session. */
   fresh: boolean
   refresh: () => Promise<void>
@@ -68,22 +76,29 @@ export interface UseSortedAvailableAgentsResult {
 export function useSortedAvailableAgents(): UseSortedAvailableAgentsResult {
   const { agents, fresh, refresh } = useAcpAgents()
 
-  const liveSortedTypes = useMemo(
-    () =>
-      agents.filter((a) => a.enabled && a.available).map((a) => a.agent_type),
+  const usable = useMemo(
+    () => agents.filter((a) => a.enabled && a.available),
     [agents]
   )
+  const liveSortedTypes = useMemo(
+    () => usable.map((a) => a.agent_type),
+    [usable]
+  )
+  const liveDefaultOrder = useMemo(() => installedFirst(usable), [usable])
 
   // While not fresh, expose the localStorage seed so consumers can
   // resolve a sensible default without waiting on the API. Once fresh,
   // the live list takes over even if it temporarily shrinks (e.g. user
   // disabled an agent).
   const sortedTypes = fresh ? liveSortedTypes : initialSeed
+  const defaultOrder = fresh ? liveDefaultOrder : initialSeed
 
+  // The seed only stands in for the default before the list arrives, so it
+  // is kept in the default order; it holds the same agents either way.
   useEffect(() => {
     if (!fresh) return
-    writeSeed(liveSortedTypes)
-  }, [fresh, liveSortedTypes])
+    writeSeed(liveDefaultOrder)
+  }, [fresh, liveDefaultOrder])
 
-  return { sortedTypes, fresh, refresh }
+  return { sortedTypes, defaultOrder, fresh, refresh }
 }

@@ -13,6 +13,7 @@ import { MoreHorizontal } from "lucide-react"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import type { AgentType, AcpAgentInfo } from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
+import { firstUsableAgent } from "@/lib/resolve-default-agent"
 import { AgentIcon } from "@/components/agent-icon"
 import { SelectorTooltip } from "@/components/chat/selector-tooltip"
 import {
@@ -88,7 +89,9 @@ export function AgentSelector({
   const onAgentsLoadedRef = useRef(onAgentsLoaded)
 
   // Effective selection. Priority: prop default (when still available) →
-  // first available. Derived so we don't have to call setState inside an
+  // first available that is installed → first available (Cowork fork, AI QA
+  // #129: not an agent whose adapter isn't installed while another one is
+  // ready). Derived so we don't have to call setState inside an
   // effect. Click handling lives on the parent — `handleSelect` just
   // forwards via `onSelect`, which patches `defaultAgentType` upstream.
   const selected = useMemo<AgentType | null>(() => {
@@ -96,8 +99,7 @@ export function AgentSelector({
       ? agents.find((a) => a.agent_type === defaultAgentType && a.available)
       : null
     if (found) return found.agent_type
-    const first = agents.find((a) => a.available)
-    return first?.agent_type ?? null
+    return firstUsableAgent(agents)?.agent_type ?? null
   }, [agents, defaultAgentType])
 
   // Sliding indicator state
@@ -300,7 +302,7 @@ export function AgentSelector({
       ? agents.find((a) => a.agent_type === defaultAgentType && a.available)
       : null
     if (found) return
-    const first = agents.find((a) => a.available)
+    const first = firstUsableAgent(agents)
     if (!first) return
     const fallback = onFallbackRef.current
     if (fallback) {

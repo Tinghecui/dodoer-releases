@@ -50,7 +50,11 @@ vi.mock("@/contexts/acp-connections-context", () => ({
   useAcpActions: () => ({ disconnect: mocks.disconnect }),
 }))
 vi.mock("@/hooks/use-sorted-available-agents", () => ({
-  useSortedAvailableAgents: () => ({ sortedTypes: [], fresh: false }),
+  useSortedAvailableAgents: () => ({
+    sortedTypes: [],
+    defaultOrder: [],
+    fresh: false,
+  }),
 }))
 
 const draftId = "new-offline-draft"

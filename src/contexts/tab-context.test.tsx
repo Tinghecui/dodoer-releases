@@ -89,6 +89,7 @@ vi.mock("@/contexts/acp-connections-context", () => ({
 vi.mock("@/hooks/use-sorted-available-agents", () => ({
   useSortedAvailableAgents: () => ({
     sortedTypes: ["codex" satisfies AgentType],
+    defaultOrder: ["codex" satisfies AgentType],
     fresh: true,
   }),
 }))

@@ -103,6 +103,43 @@ pub async fn ensure_defaults(
     Ok(())
 }
 
+/// Cowork fork: move the rows that still sit at `parked` back to their
+/// default position from `defaults`. Returns how many rows moved.
+///
+/// The single-agent entry points (env / preference saves, installs) used to
+/// create a missing row at `parked` (`i32::MAX / 2`), which kept a built-in
+/// configured before the list first ran — Claude Code, in a fresh Cowork
+/// workspace — last in the picker. Only a row holding exactly `parked` moves:
+/// [`reorder`] writes list indexes, so a row the user dragged never holds it.
+/// No schema migration on purpose: an older codeg must still open the
+/// database after a rollback (Cowork keeps that path open, see COWORK.md).
+pub async fn unpark_sort_orders(
+    conn: &DatabaseConnection,
+    parked: i32,
+    defaults: &[AgentDefaultInput],
+) -> Result<u64, DbError> {
+    let rows = agent_setting::Entity::find()
+        .filter(agent_setting::Column::SortOrder.eq(parked))
+        .all(conn)
+        .await?;
+    let mut moved = 0;
+    for row in rows {
+        let Some(default) = defaults.iter().find(|d| {
+            d.default_sort_order != parked
+                && serde_json::to_string(&d.agent_type).ok().as_deref()
+                    == Some(row.agent_type.as_str())
+        }) else {
+            continue;
+        };
+        let mut active = row.into_active_model();
+        active.sort_order = Set(default.default_sort_order);
+        active.updated_at = Set(Utc::now());
+        active.update(conn).await?;
+        moved += 1;
+    }
+    Ok(moved)
+}
+
 pub async fn list(conn: &DatabaseConnection) -> Result<Vec<agent_setting::Model>, DbError> {
     let rows = agent_setting::Entity::find()
         .order_by_asc(agent_setting::Column::SortOrder)
@@ -320,5 +357,66 @@ mod tests {
         for agent in crate::models::agent::BUILTIN_AGENT_TYPES {
             assert!(default_enabled(*agent), "{agent:?} defaults to disabled");
         }
+    }
+
+    fn default_input(agent_type: AgentType, sort_order: i32) -> AgentDefaultInput {
+        AgentDefaultInput {
+            agent_type,
+            registry_id: format!("{agent_type:?}"),
+            default_sort_order: sort_order,
+        }
+    }
+
+    async fn sort_order_of(conn: &DatabaseConnection, agent_type: AgentType) -> i32 {
+        get_by_agent_type(conn, agent_type)
+            .await
+            .unwrap()
+            .expect("row exists")
+            .sort_order
+    }
+
+    // Cowork fork (AI QA #129): a built-in row parked at i32::MAX / 2 by a
+    // single-agent save goes back to its built-in slot; a dragged row and a
+    // custom agent's row (whose default IS the parking value) stay put.
+    #[tokio::test]
+    async fn unpark_moves_only_rows_still_at_the_parking_value() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let parked = i32::MAX / 2;
+        ensure_defaults(
+            &db.conn,
+            &[
+                default_input(AgentType::ClaudeCode, parked),
+                default_input(AgentType::Codex, 1),
+                default_input(AgentType::Custom("acme"), parked),
+            ],
+        )
+        .await
+        .unwrap();
+        reorder(&db.conn, &[AgentType::Codex]).await.unwrap();
+        assert_eq!(sort_order_of(&db.conn, AgentType::Codex).await, 0);
+
+        let defaults = [
+            default_input(AgentType::ClaudeCode, 0),
+            default_input(AgentType::Codex, 1),
+            default_input(AgentType::Custom("acme"), parked),
+        ];
+        let moved = unpark_sort_orders(&db.conn, parked, &defaults)
+            .await
+            .unwrap();
+        assert_eq!(moved, 1);
+        assert_eq!(sort_order_of(&db.conn, AgentType::ClaudeCode).await, 0);
+        // Dragged: the user's order wins over the built-in default.
+        assert_eq!(sort_order_of(&db.conn, AgentType::Codex).await, 0);
+        assert_eq!(
+            sort_order_of(&db.conn, AgentType::Custom("acme")).await,
+            parked
+        );
+        // Idempotent.
+        assert_eq!(
+            unpark_sort_orders(&db.conn, parked, &defaults)
+                .await
+                .unwrap(),
+            0
+        );
     }
 }

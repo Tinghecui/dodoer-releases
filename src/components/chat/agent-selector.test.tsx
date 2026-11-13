@@ -369,6 +369,41 @@ describe("AgentSelector", () => {
     expect(onSelect).toHaveBeenCalledWith("deepseek")
   })
 
+  // Cowork fork (AI QA #129): with no usable default, an installed agent wins
+  // over one whose ACP adapter is missing, wherever it sits in the row; the
+  // row keeps its order.
+  it("falls back to the first installed agent, not the first available one", async () => {
+    mockUseAcpAgents.mockReturnValue({
+      agents: [
+        agent("codex", { is_acp_adapter: true }),
+        agent("gemini"),
+        agent("claude_code", {
+          installed_version: "0.106.0",
+          is_acp_adapter: true,
+        }),
+      ],
+      fresh: true,
+      refresh: async () => {},
+    })
+    const onSelect = vi.fn()
+    const onFallback = vi.fn()
+    const { container } = renderWithIntl(
+      <AgentSelector
+        defaultAgentType={undefined}
+        onSelect={onSelect}
+        onFallback={onFallback}
+      />
+    )
+    await waitFor(() => {
+      expect(onFallback).toHaveBeenCalledWith("claude_code")
+    })
+    expect(onSelect).not.toHaveBeenCalled()
+    const pressed = pills(container).map(
+      (el) => el.getAttribute("aria-pressed") === "true"
+    )
+    expect(pressed).toEqual([false, false, true])
+  })
+
   it("notifies onAgentsLoaded with the current agent list", async () => {
     const codex = agent("codex")
     mockUseAcpAgents.mockReturnValue({

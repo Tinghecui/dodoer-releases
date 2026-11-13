@@ -219,6 +219,17 @@ jobs:
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then echo "cowork 已经有分支 $branch，不重复开"; exit 0; fi
           git switch -c "$branch"
           sed -i -E "s|^codeg=.*|codeg=$VERSION|; s|^codeg-linux-x64-sha256=.*|codeg-linux-x64-sha256=$sha|" deploy/runtime.lock
+          # ACP 适配器：cowork 全局装一份给所有员工的 codeg 用（AI QA #109），版本跟这个 tag 的 registry.rs 里钉的一致，
+          # 写进 runtime.lock 的 acp-<命令>=（老的 cowork 没有这几行就不加）
+          adapters=""
+          for a in claude-agent-acp codex-acp; do
+            v=$(sed -n -E "s|^ *package: \"@agentclientprotocol/$a@([0-9][^\"]*)\",.*|\1|p" "$GITHUB_WORKSPACE/src-tauri/src/acp/registry.rs" | head -n 1)
+            [ -n "$v" ] || { echo "registry.rs 里找不到 $a 钉的版本"; exit 1; }
+            if grep -q "^acp-$a=" deploy/runtime.lock; then
+              sed -i -E "s|^acp-$a=.*|acp-$a=$v|" deploy/runtime.lock
+              adapters="$adapters $a@$v"
+            fi
+          done
           if git diff --quiet; then echo "runtime.lock 已经是 $VERSION，不开 PR"; exit 0; fi
           old=$(node -p "require('./package.json').version")
           new=$(npm version patch --no-git-tag-version); new=${new#v}
@@ -245,6 +256,6 @@ jobs:
             --title "codeg runtime 升到 $VERSION（cowork $old → $new）" \
             --body "$(printf '%s\n\n%s\n%s\n\n%s' \
               "dodoer-releases 的 \`cowork-release\` 自动开的：$release_url" \
-              "- \`deploy/runtime.lock\`：\`codeg=$VERSION\`，sha256 \`$sha\`" \
+              "- \`deploy/runtime.lock\`：\`codeg=$VERSION\`，sha256 \`$sha\`${adapters:+；ACP 适配器${adapters}}" \
               "- \`package.json\` $old → $new，CHANGELOG 新建了 $new 一节：codeg 这一条，加上 changelog.d/ 里攒的条目——按需要改改说明" \
               "合并到 main 就发 cowork $new（release.yml 看到 version 没有 tag 就打包、发 Release、打 tag）。")"

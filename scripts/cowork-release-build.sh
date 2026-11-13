@@ -9,8 +9,12 @@
 # <build-dir> is an rsync'ed copy of this repo owned by gha-runner, e.g.
 # /data/gha-runner/cowork-codeg-build/release. Output:
 #   <build-dir>/dist/cowork-codeg-server-linux-x64.tar.gz (+ .sha256)
-# containing codeg-server, codeg-mcp, web/, LICENSE, COWORK-VERSION at the top
-# level (extract straight into /usr/local/lib/cowork-codeg).
+# containing codeg-server, codeg-mcp, codeg-cli, web/, LICENSE, COWORK-VERSION
+# at the top level (extract straight into /usr/local/lib/cowork-codeg).
+# codeg-server puts the directory it runs from first on the PATH of its
+# terminals and agents when codeg-cli is there (cli_run::shim::plan_server).
+# GitHub Actions builds the binaries itself (.github/public/workflows/
+# cowork-release.yml, backend job) and only runs the package step here.
 set -euo pipefail
 
 DIR=${1:?usage: $0 <build-dir> [frontend|backend|package|all]}
@@ -46,15 +50,16 @@ backend() {
     'apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev >/dev/null &&
      cargo build --release --bin codeg-server --no-default-features --features server-bin &&
      cargo build --release --bin codeg-mcp --no-default-features --features mcp-bin &&
-     mkdir -p /app/dist/bin && cp target/release/codeg-server target/release/codeg-mcp /app/dist/bin/ &&
-     strip /app/dist/bin/codeg-server /app/dist/bin/codeg-mcp'
+     cargo build --release --bin codeg-cli --no-default-features --features cli-bin &&
+     mkdir -p /app/dist/bin && cp target/release/codeg-server target/release/codeg-mcp target/release/codeg-cli /app/dist/bin/ &&
+     strip /app/dist/bin/codeg-server /app/dist/bin/codeg-mcp /app/dist/bin/codeg-cli'
 }
 
 package() {
   local stage="$DIR/dist/$NAME"
   rm -rf "$stage" "$DIR/dist/$NAME.tar.gz" "$DIR/dist/$NAME.tar.gz.sha256"
   mkdir -p "$stage"
-  install -m 755 "$DIR/dist/bin/codeg-server" "$DIR/dist/bin/codeg-mcp" "$stage/"
+  install -m 755 "$DIR/dist/bin/codeg-server" "$DIR/dist/bin/codeg-mcp" "$DIR/dist/bin/codeg-cli" "$stage/"
   # out/ 和 dist/bin 可能是容器里 root 写出来的；这里可能不是 root（GitHub Actions），不要保留属主
   cp -a --no-preserve=ownership "$DIR/out" "$stage/web"
   cp "$DIR/LICENSE" "$stage/"

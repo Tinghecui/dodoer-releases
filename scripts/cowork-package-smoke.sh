@@ -15,7 +15,8 @@ L=/usr/local/lib/cowork-codeg
 mkdir -p $L && tar -xzf /pkg.tar.gz -C $L
 echo "== package: $(ls $L | tr '\n' ' ') version=$(cat $L/COWORK-VERSION)"
 echo "web index: $(test -f $L/web/index.html && echo yes) title: $(grep -o '<title>[^<]*</title>' $L/web/index.html | head -1)"
-for b in codeg-server codeg-mcp; do echo -n "$b missing libs: "; ldd $L/$b | grep -c 'not found'; done
+# A binary missing from the package prints no count: cowork-release.yml then fails on it.
+for b in codeg-server codeg-mcp codeg-cli; do [ -f $L/$b ] || { echo "$b missing from the package"; continue; }; echo -n "$b missing libs: "; ldd $L/$b | grep -c 'not found'; done
 id -u tester >/dev/null 2>&1 || useradd -m -u 1500 tester
 H=/home/tester
 TOKEN="smoke-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
@@ -95,6 +96,18 @@ for p in $(pgrep -u 1500 | grep -vx "$SP"); do
   echo "descendant $p $(cat /proc/$p/comm): secret vars $(env_of | grep -cE '^(PASEO_PASSWORD|COWORK_PASSWORD|CODEG_TOKEN|COWORK_TOKEN)'), token value $(env_of | grep -c -- "$TOKEN")"
 done
 echo "descendants checked: $n"
+echo "== codeg-cli in the package, first on the terminals' PATH (cowork-codeg #171)"
+chk "package has an executable codeg-cli" "$(test -x $L/codeg-cli && echo yes)" yes
+chk "codeg-cli --help as the employee" "$(setpriv --reuid=1500 --regid=1500 --clear-groups $L/codeg-cli --help >/dev/null 2>&1; echo $?)" 0
+# The terminal's bash runs as a login shell, and Debian's /etc/profile sets PATH outright: a shell
+# that reads no profile (a dash under another name, so codeg-server runs it as `<shell> -c`) shows
+# the PATH codeg-server hands its terminals.
+cp /bin/dash /usr/local/bin/plainsh
+code -H "$A" -d "{\"workingDir\":\"$H/work/demo\",\"shell\":\"/usr/local/bin/plainsh\",\"initialCommand\":\"command -v codeg-cli > $H/cli-path; printenv CODEG_CLI >> $H/cli-path; codeg-cli --help > /dev/null 2>&1; echo exit=\$? >> $H/cli-path\"}" http://127.0.0.1:$P/api/terminal_spawn >/dev/null
+for i in $(seq 1 10); do grep -q '^exit=' $H/cli-path 2>/dev/null && break; sleep 1; done
+chk "terminal PATH finds the package's codeg-cli" "$(sed -n 1p $H/cli-path 2>/dev/null)" "$L/codeg-cli"
+chk "terminal CODEG_CLI names it" "$(sed -n 2p $H/cli-path 2>/dev/null)" "$L/codeg-cli"
+chk "codeg-cli runs in the terminal" "$(sed -n 3p $H/cli-path 2>/dev/null)" exit=0
 echo -n "token in log: "; grep -c -- "$TOKEN" /tmp/server.log
 echo "codeg-mcp runs: $($L/codeg-mcp --help >/dev/null 2>&1; echo exit=$?)"
 grep -E "cowork|Token|FATAL|Listening|listening" /tmp/server.log | head -6

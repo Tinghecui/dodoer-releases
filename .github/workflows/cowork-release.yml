@@ -91,7 +91,7 @@ jobs:
           if-no-files-found: error
 
   backend:
-    name: codeg-server、codeg-mcp（release）
+    name: codeg-server、codeg-mcp、codeg-cli（release）
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     env:
@@ -117,8 +117,10 @@ jobs:
         run: |
           cargo build --release --bin codeg-server --no-default-features --features server-bin
           cargo build --release --bin codeg-mcp --no-default-features --features mcp-bin
-          mkdir -p ../dist/bin && cp target/release/codeg-server target/release/codeg-mcp ../dist/bin/
-          strip ../dist/bin/codeg-server ../dist/bin/codeg-mcp
+          # 员工终端和 agent 里的 codeg-cli 命令：codeg-server 启动时把包里它所在的目录放到 PATH 最前（cowork-codeg #171）
+          cargo build --release --bin codeg-cli --no-default-features --features cli-bin
+          mkdir -p ../dist/bin && cp target/release/codeg-server target/release/codeg-mcp target/release/codeg-cli ../dist/bin/
+          strip ../dist/bin/codeg-server ../dist/bin/codeg-mcp ../dist/bin/codeg-cli
           ls -la ../dist/bin
       - uses: actions/upload-artifact@v4
         with:
@@ -171,7 +173,7 @@ jobs:
           docker run --rm -v "$PWD/dist/$NAME.tar.gz:/pkg.tar.gz:ro" -v "$PWD/scripts:/s:ro" debian:bookworm-slim \
             bash /s/cowork-package-smoke.sh | tee dist/smoke.txt
           tail -1 dist/smoke.txt | grep -q "CHECK failures: 0$" || { echo "冒烟有失败项"; exit 1; }
-          grep -q "codeg-server missing libs: 0" dist/smoke.txt && grep -q "codeg-mcp missing libs: 0" dist/smoke.txt || { echo "二进制缺共享库"; exit 1; }
+          for b in codeg-server codeg-mcp codeg-cli; do grep -q "$b missing libs: 0" dist/smoke.txt || { echo "$b 缺共享库（或包里没有）"; exit 1; }; done
 
       - uses: actions/upload-artifact@v4
         with:

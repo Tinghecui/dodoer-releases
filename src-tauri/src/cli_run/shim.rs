@@ -23,6 +23,9 @@
 //!
 //! A debug build names its command `codeg-cli-dev`, so it never takes the
 //! name of an installed release's.
+//!
+//! codeg-server does the same with the `codeg-cli` its package puts beside
+//! it ([`plan_server`]): that directory itself goes first on PATH.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -123,6 +126,36 @@ pub fn plan_desktop(data_dir: &Path, local_data_dir: Option<&Path>, exe: &Path) 
         dir,
         command,
         kind,
+    })
+}
+
+/// Where codeg-server's own `codeg-cli` is: the one its package installs
+/// beside it (Cowork's server tarball, the Docker image's `/usr/local/bin`),
+/// put first on PATH where it is — nothing to write. `None`: a package
+/// without one (Cowork's before #171), or one that cannot be run.
+pub fn plan_server(exe: &Path) -> Option<Layout> {
+    let dir = exe.parent()?;
+    let cli = dir.join(if cfg!(windows) {
+        "codeg-cli.exe"
+    } else {
+        "codeg-cli"
+    });
+    if !is_program(&cli) {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if cli.metadata().ok()?.permissions().mode() & 0o111 == 0 {
+            return None;
+        }
+    }
+    Some(Layout {
+        dir: dir.to_path_buf(),
+        // The file the package ships, debug build or not.
+        command: "codeg-cli",
+        cli,
+        kind: Kind::Installed,
     })
 }
 
@@ -437,6 +470,57 @@ mod tests {
         program(&dir.join("codeg-cli"), "");
         program(&dir.join("codeg-cli.exe"), "");
         assert!(plan_desktop(root.path(), None, &dir.join("codeg")).is_none());
+    }
+
+    /// The server package's own `codeg-cli`, beside codeg-server: its
+    /// directory goes first on PATH as it is, nothing written (#171).
+    #[cfg(unix)]
+    #[test]
+    fn the_server_puts_the_codeg_cli_beside_it_first_on_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let pkg = root.path().join("cowork-codeg");
+        program(&pkg.join("codeg-server"), "server");
+        let cli = pkg.join("codeg-cli");
+        program(&cli, "cli");
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let layout = plan_server(&pkg.join("codeg-server")).expect("codeg-cli beside it");
+        assert_eq!(layout.dir, pkg);
+        assert_eq!(layout.cli, cli);
+        assert_eq!(layout.command, "codeg-cli", "the file shipped, debug or not");
+        assert_eq!(layout.kind, Kind::Installed);
+        // CODEG_CLI names the package's own.
+        assert_eq!(layout.program(), cli);
+
+        let entries = || std::fs::read_dir(&pkg).unwrap().count();
+        let before = entries();
+        layout.write().unwrap();
+        assert_eq!(entries(), before, "nothing written into the package");
+        assert_eq!(std::fs::read_to_string(&cli).unwrap(), "cli");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_server_layout_without_a_runnable_codeg_cli() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let pkg = root.path().join("cowork-codeg");
+        program(&pkg.join("codeg-server"), "server");
+        // A package from before #171: no codeg-cli.
+        assert!(plan_server(&pkg.join("codeg-server")).is_none());
+        // Empty, or not executable: no program to put on PATH.
+        let cli = pkg.join("codeg-cli");
+        program(&cli, "");
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(plan_server(&pkg.join("codeg-server")).is_none());
+        program(&cli, "cli");
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(plan_server(&pkg.join("codeg-server")).is_none());
+        // A directory under the name is no program either.
+        std::fs::remove_file(&cli).unwrap();
+        std::fs::create_dir(&cli).unwrap();
+        assert!(plan_server(&pkg.join("codeg-server")).is_none());
     }
 
     #[test]

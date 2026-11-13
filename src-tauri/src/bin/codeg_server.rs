@@ -106,14 +106,16 @@ fn main() -> ExitCode {
         codeg_lib::cli_run::discovery::file_for(&resolved_data_dir, std::process::id()),
     );
 
-    // The codeg-cli installed beside this server, for everything it starts
-    // (`cli_run::shim`): the matching one, whatever else is on their PATH.
-    if let Some(cli) = codeg_lib::update::runtime::self_exe()
-        .parent()
-        .map(|dir| dir.join(if cfg!(windows) { "codeg-cli.exe" } else { "codeg-cli" }))
-        .filter(|p| p.metadata().is_ok_and(|m| m.is_file() && m.len() > 0))
+    // The codeg-cli installed beside this server, first on the PATH of its
+    // terminals and agents and named in CODEG_CLI (`cli_run::shim`): the
+    // matching one, whatever else is on their PATH (#171). After the PATH
+    // fixes above, which rewrite PATH; `remember` is what the terminal and
+    // the agent launch read to put its directory first again.
+    if let Some(layout) =
+        codeg_lib::cli_run::shim::plan_server(&codeg_lib::update::runtime::self_exe())
     {
-        std::env::set_var(codeg_lib::cli_run::shim::CLI_ENV, cli);
+        layout.export();
+        layout.remember();
     }
 
     // Install the logging subscriber now that CODEG_DATA_DIR is pinned (the logs

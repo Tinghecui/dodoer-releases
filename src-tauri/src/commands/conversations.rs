@@ -5942,6 +5942,92 @@ mod tests {
         assert_eq!(evt.payload["origin"], "server");
     }
 
+    /// AI QA #142: removing a project must take its worktree folders out of the
+    /// workspace with it — otherwise the sidebar draws each of them as a
+    /// top-level orphan. Only closing: rows stay, other projects (and their
+    /// worktrees) are untouched.
+    #[tokio::test]
+    async fn remove_folder_from_workspace_closes_its_worktree_folders_too() {
+        let db = fresh_in_memory_db().await;
+        let root = seed_folder(&db, "/tmp/codeg-142-root").await;
+        let wt = folder_service::add_folder_with_parent(
+            &db.conn,
+            "/tmp/codeg-142-root-wt",
+            Some(root),
+        )
+        .await
+        .expect("worktree folder")
+        .id;
+        let other = seed_folder(&db, "/tmp/codeg-142-other").await;
+        let other_wt = folder_service::add_folder_with_parent(
+            &db.conn,
+            "/tmp/codeg-142-other-wt",
+            Some(other),
+        )
+        .await
+        .expect("other worktree folder")
+        .id;
+
+        let c_root = create_conversation_core(&db.conn, root, AgentType::ClaudeCode, None)
+            .await
+            .expect("root conversation");
+        let c_wt = create_conversation_core(&db.conn, wt, AgentType::ClaudeCode, None)
+            .await
+            .expect("worktree conversation");
+        let c_other = create_conversation_core(&db.conn, other_wt, AgentType::Codex, None)
+            .await
+            .expect("other conversation");
+        save_opened_tabs_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            vec![
+                conv_tab(root, c_root, AgentType::ClaudeCode),
+                conv_tab(wt, c_wt, AgentType::ClaudeCode),
+                conv_tab(other_wt, c_other, AgentType::Codex),
+            ],
+            0,
+            "a".into(),
+        )
+        .await
+        .expect("save");
+
+        crate::commands::folders::remove_folder_from_workspace_core(
+            &EventEmitter::Noop,
+            &db,
+            root,
+        )
+        .await
+        .expect("remove folder");
+
+        assert!(!folder_service::is_open(&db.conn, root).await.expect("root"));
+        assert!(
+            !folder_service::is_open(&db.conn, wt).await.expect("wt"),
+            "the project's worktree folder must leave the workspace with it"
+        );
+        assert!(folder_service::is_open(&db.conn, other).await.expect("other"));
+        assert!(
+            folder_service::is_open(&db.conn, other_wt)
+                .await
+                .expect("other wt"),
+            "another project's worktree is untouched"
+        );
+        // Closed, not deleted: the row is still there for by-id lookups.
+        assert!(folder_service::get_folder_by_id(&db.conn, wt)
+            .await
+            .expect("query")
+            .is_some());
+
+        let snap = list_opened_tabs_core(&db.conn).await.expect("list");
+        assert_eq!(
+            snap.items
+                .iter()
+                .map(|t| t.conversation_id)
+                .collect::<Vec<_>>(),
+            vec![Some(c_other)],
+            "the root's and its worktree's tabs are both dropped"
+        );
+    }
+
     #[tokio::test]
     async fn stale_save_after_conversation_cleanup_is_rejected_no_resurrection() {
         let db = fresh_in_memory_db().await;

@@ -606,6 +606,26 @@ pub async fn list_open_folders(
     Ok(rows.into_iter().map(to_entry).collect())
 }
 
+/// Ids of every live worktree folder whose `parent_id` is `parent_id`
+/// and that is still in the workspace — the folders that would be left behind
+/// as top-level orphans in the sidebar when their project is removed from the
+/// workspace. Parents are flattened at registration (see
+/// `open_worktree_folder_core`), so one level is the whole tree.
+pub async fn list_open_child_folders(
+    conn: &DatabaseConnection,
+    parent_id: i32,
+) -> Result<Vec<i32>, DbError> {
+    let rows = folder::Entity::find()
+        .filter(folder::Column::DeletedAt.is_null())
+        .filter(folder::Column::IsOpen.eq(true))
+        .filter(folder::Column::ParentId.eq(parent_id))
+        .order_by_asc(folder::Column::Id)
+        .all(conn)
+        .await?;
+
+    Ok(rows.into_iter().map(|m| m.id).collect())
+}
+
 pub async fn list_open_folder_details(
     conn: &DatabaseConnection,
 ) -> Result<Vec<FolderDetail>, DbError> {

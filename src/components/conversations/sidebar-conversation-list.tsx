@@ -2275,6 +2275,10 @@ export function SidebarConversationList({
     const { folderId, folderName } = removeConfirm
     try {
       closeTabsByFolder(folderId)
+      // The project's worktree folders leave the workspace with it (#142).
+      for (const f of folders) {
+        if (f.parent_id === folderId) closeTabsByFolder(f.id)
+      }
       await removeFolderFromWorkspace(folderId)
       toast.success(t("toasts.folderRemoved", { name: folderName }))
     } catch (e) {
@@ -2283,7 +2287,7 @@ export function SidebarConversationList({
     } finally {
       setRemoveConfirm(null)
     }
-  }, [removeConfirm, closeTabsByFolder, removeFolderFromWorkspace, t])
+  }, [removeConfirm, folders, closeTabsByFolder, removeFolderFromWorkspace, t])
 
   // The card already holds the full summary, so it passes `folderId` back to
   // these callbacks. That removes the `conversations` closure dependency, which

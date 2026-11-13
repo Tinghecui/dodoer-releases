@@ -299,6 +299,42 @@ describe("applyFolderRemove", () => {
   })
 })
 
+describe("removeFolderFromWorkspace — project worktrees (#142)", () => {
+  it("drops the project's worktree folders along with it", async () => {
+    const store = useAppWorkspaceStore.getState()
+    store.upsertFolder(makeFolder({ id: 1, path: "/tmp/root" }))
+    store.upsertFolder(makeFolder({ id: 2, path: "/tmp/wt", parent_id: 1 }))
+    store.upsertFolder(makeFolder({ id: 3, path: "/tmp/other" }))
+    store.upsertFolder(
+      makeFolder({ id: 4, path: "/tmp/other-wt", parent_id: 3 })
+    )
+    store.setBranch(1, "main")
+    store.setBranch(2, "cv/list-directory")
+    store.setBranch(4, "task/9")
+
+    await useAppWorkspaceStore.getState().removeFolderFromWorkspace(1)
+
+    const after = useAppWorkspaceStore.getState()
+    // No top-level orphan left behind; another project's worktree stays.
+    expect(after.folders.map((f) => f.id)).toEqual([3, 4])
+    expect(after.branches.has(1)).toBe(false)
+    expect(after.branches.has(2)).toBe(false)
+    expect(after.branches.get(4)).toBe("task/9")
+  })
+
+  it("removing a worktree folder itself leaves its project alone", async () => {
+    const store = useAppWorkspaceStore.getState()
+    store.upsertFolder(makeFolder({ id: 1, path: "/tmp/root" }))
+    store.upsertFolder(makeFolder({ id: 2, path: "/tmp/wt", parent_id: 1 }))
+
+    await useAppWorkspaceStore.getState().removeFolderFromWorkspace(2)
+
+    expect(useAppWorkspaceStore.getState().folders.map((f) => f.id)).toEqual([
+      1,
+    ])
+  })
+})
+
 describe("applyFolderRemove — in-flight fetch resurrection guard", () => {
   it("subtracts a removed folder from a snapshot that was already in flight", async () => {
     // Mount / reconnect `fetchFolders` replaces both lists wholesale. A

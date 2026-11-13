@@ -832,7 +832,36 @@ pub async fn open_folder_by_id_core(
         .ok_or_else(|| AppCommandError::not_found(format!("Folder {folder_id} not found")))
 }
 
+/// Close a folder in the workspace, together with every worktree folder that
+/// still hangs off it (`parent_id == folder_id`). Without the children, the
+/// sidebar — which draws a worktree whose project is closed as an ordinary
+/// top-level folder — would leave each of them behind as an orphan the user
+/// has to remove one by one (AI QA #142).
+///
+/// Closing only: the rows stay alive (by-id cwd lookups keep working), and
+/// nothing on disk is touched — no directory and no git worktree is removed.
+/// Reopening the project does not reopen its worktrees.
 pub async fn remove_folder_from_workspace_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    folder_id: i32,
+) -> Result<(), AppCommandError> {
+    // Read the children before closing anything, so the list reflects what the
+    // user saw grouped under the project.
+    let children = folder_service::list_open_child_folders(&db.conn, folder_id)
+        .await
+        .map_err(AppCommandError::from)?;
+
+    close_folder_in_workspace(emitter, db, folder_id).await?;
+    for child_id in children {
+        close_folder_in_workspace(emitter, db, child_id).await?;
+    }
+    Ok(())
+}
+
+/// Close one folder: flip it closed, drop its persisted tabs and stop office
+/// watches rooted under it. See [`remove_folder_from_workspace_core`].
+async fn close_folder_in_workspace(
     emitter: &EventEmitter,
     db: &AppDatabase,
     folder_id: i32,

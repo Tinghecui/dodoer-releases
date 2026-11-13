@@ -654,12 +654,21 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
     removeFolderFromWorkspace: async (folderId) => {
       await apiRemoveFolderFromWorkspace(folderId)
       const { folders, branches, refreshConversations } = get()
+      // The backend closes the project's worktree folders along with it
+      // (#142), so drop them here too — otherwise the sidebar keeps drawing
+      // each one as a top-level orphan until the next full fetch.
+      const removed = new Set(
+        folders
+          .filter((f) => f.id === folderId || f.parent_id === folderId)
+          .map((f) => f.id)
+      )
+      removed.add(folderId)
       const patch: Partial<AppWorkspaceStoreState> = {
-        folders: folders.filter((f) => f.id !== folderId),
+        folders: folders.filter((f) => !removed.has(f.id)),
       }
-      if (branches.has(folderId)) {
+      if ([...removed].some((id) => branches.has(id))) {
         const next = new Map(branches)
-        next.delete(folderId)
+        for (const id of removed) next.delete(id)
         patch.branches = next
       }
       set(patch)

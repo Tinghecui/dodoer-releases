@@ -3,6 +3,8 @@
 # 这份日志里只有每个阶段一行的进度；运行结束后 ai-qa-seal.yml 会核对这一点。
 # 凭证在 Environment「ai-qa」里，只有 main 分支用得到。
 name: ai-qa
+# 会开 issue 的轮次叫「ai-qa」，PR 验收、只搭环境的另起名字（源仓库 run.sh 的 s_wait_others 按名字找还在跑的轮次）
+run-name: ${{ inputs.pr && format('ai-qa PR #{0}', inputs.pr) || inputs.setup_only && 'ai-qa 只搭环境' || 'ai-qa' }}
 
 on:
   workflow_dispatch:
@@ -20,8 +22,12 @@ on:
         description: "探索区域（空 = 默认）"
         default: ""
       version:
-        description: "版本 tag（空 = 最新）"
+        description: "版本 tag（空 = 最新 Release，或者见 head）"
         default: ""
+      head:
+        description: "测分支的最新提交（和每晚一样现编；停在 tag 上就测 Release）；不勾 = 测最新 Release"
+        type: boolean
+        default: false
       changes:
         description: "改动验收：PR 号逗号分隔，或 new、untested"
         default: ""
@@ -72,6 +78,7 @@ jobs:
       REAL_AGENT: ${{ inputs.real_agent && 'true' || 'false' }}
       AIQA_ENV: ${{ inputs.env || 'cowork' }}
       SETUP_ONLY: ${{ inputs.setup_only && 'true' || 'false' }}
+      HEAD_BUILD: ${{ inputs.head && 'true' || 'false' }}
       CHANGES: ${{ inputs.changes }}
       INPUT_VERSION: ${{ inputs.version }}
       INPUT_STORIES: ${{ inputs.stories }}

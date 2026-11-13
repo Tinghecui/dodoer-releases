@@ -32,6 +32,22 @@ export function isDeferred(task: WorkTask): boolean {
 }
 
 /**
+ * Whether a merge in flight is parked on the user (#137): its agent stopped
+ * for a permission (its own `git status` / `git merge`), a question or a plan
+ * approval. The status stays `merging` — the card reads 合并中 · 等待输入 and
+ * leads with 去回应. Needs the session to answer in, which a merge generation
+ * always has once its agent runs. Read off the status as well, like
+ * `isDeferred`: the mark means nothing on any other status.
+ */
+export function isMergeAwaitingInput(task: WorkTask): boolean {
+  return (
+    task.status === "merging" &&
+    task.merge_awaiting_input === true &&
+    task.conversation_id != null
+  )
+}
+
+/**
  * Whether "以后处理" is on offer — the same conditions the backend's
  * `set_deferred` enforces: a reviewed or failed task not already put aside,
  * not archived (that already put it away), and not waiting in its project's

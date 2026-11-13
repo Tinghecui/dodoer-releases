@@ -127,6 +127,28 @@ describe("TasksViewProvider", () => {
     expect(screen.getByTestId("attention").textContent).toBe("2")
   })
 
+  it("counts a merge only while its agent waits on the user", async () => {
+    // #137: a merge parked on a permission needs the user as much as an
+    // awaiting-input run does; one that is simply landing does not.
+    listMock.mockResolvedValueOnce([
+      {
+        ...sample(1, "merging"),
+        merge_awaiting_input: true,
+        conversation_id: 9,
+      },
+      { ...sample(2, "merging"), conversation_id: 10 },
+    ])
+    render(
+      <TasksViewProvider>
+        <Probe />
+      </TasksViewProvider>
+    )
+    await waitFor(() =>
+      expect(screen.getByTestId("count").textContent).toBe("2")
+    )
+    expect(screen.getByTestId("attention").textContent).toBe("1")
+  })
+
   it("leaves tasks put aside to handle later out of the badge", async () => {
     // The badge mirrors the "needs you" column: a reviewed or failed task the
     // user deferred waits under Done, and counting it would keep nagging about

@@ -6369,6 +6369,7 @@
     "statusAwaitingInput": "入力待ち",
     "statusReview": "レビュー待ち",
     "statusMerging": "マージ中",
+    "statusMergingAwaitingInput": "マージ中 · 入力待ち",
     "statusDone": "完了",
     "statusFailed": "失敗",
     "statusCanceled": "キャンセル済み",

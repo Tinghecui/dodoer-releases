@@ -115,6 +115,7 @@ fn to_info(m: work_task::Model) -> WorkTaskInfo {
             .filter(|drafts| !drafts.is_empty()),
         latest_progress: None,
         compacting: false,
+        merge_awaiting_input: false,
         created_at: m.created_at,
         updated_at: m.updated_at,
         started_at: m.started_at,

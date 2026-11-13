@@ -6369,6 +6369,7 @@
     "statusAwaitingInput": "بانتظار الإدخال",
     "statusReview": "بانتظار المراجعة",
     "statusMerging": "جارٍ الدمج",
+    "statusMergingAwaitingInput": "جارٍ الدمج · بانتظار الإدخال",
     "statusDone": "مكتملة",
     "statusFailed": "فشلت",
     "statusCanceled": "ملغاة",

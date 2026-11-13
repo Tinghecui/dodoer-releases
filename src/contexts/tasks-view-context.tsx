@@ -21,7 +21,10 @@ import {
   type TasksViewMode,
 } from "@/lib/tasks-board-filter-storage"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { isDeferred } from "@/components/tasks/task-acceptance"
+import {
+  isDeferred,
+  isMergeAwaitingInput,
+} from "@/components/tasks/task-acceptance"
 import type { WorkTask } from "@/lib/types"
 import { brandTitle } from "@/lib/cowork/brand"
 
@@ -29,7 +32,8 @@ const WORK_TASK_CHANGED_EVENT = "task://changed"
 
 /** Statuses that need the user ("等你处理") — drives the sidebar badge. A task
  *  the user archived or put aside to handle later is not counted, whatever its
- *  status: the badge mirrors the column, not the state machine. */
+ *  status: the badge mirrors the column, not the state machine. A merge in
+ *  flight counts only while its agent waits on the user (#137). */
 const ATTENTION_STATUSES = new Set(["awaiting_input", "review", "failed"])
 
 interface TasksViewContextValue {
@@ -142,7 +146,7 @@ export function TasksViewProvider({ children }: { children: ReactNode }) {
     () =>
       tasks.filter(
         (t) =>
-          ATTENTION_STATUSES.has(t.status) &&
+          (ATTENTION_STATUSES.has(t.status) || isMergeAwaitingInput(t)) &&
           t.archived_at == null &&
           !isDeferred(t)
       ).length,

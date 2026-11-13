@@ -212,8 +212,9 @@ pub struct TaskEngine {
     index: Arc<Mutex<HashMap<String, (i32, i32)>>>,
     /// Outstanding blocking requests per task (`"q:<id>"`, `"p:<id>"`,
     /// `"a:<id>"` — namespaced so the three id spaces can't collide). Non-empty
-    /// set ⇔ awaiting_input. Requests raised by a delegation sub-agent are
-    /// additionally prefixed with the child's connection id
+    /// set ⇔ awaiting_input — or, on a `merging` row, whose status never
+    /// flips, `merge_awaiting_input` (#137). Requests raised by a delegation
+    /// sub-agent are additionally prefixed with the child's connection id
     /// (`"<child_conn>#p:<id>"`) so [`TaskEngine::forget_delegation_child`] can
     /// drop the whole group when that child goes away.
     awaiting: Arc<Mutex<HashMap<i32, HashSet<String>>>>,
@@ -3003,7 +3004,7 @@ impl TaskEngine {
         // its parent is indexed), so holding it is what keeps the answer true
         // until the set is gone. Lock order is index → awaiting; every other
         // `awaiting` critical section is a leaf, so it cannot invert.
-        let emptied_for = {
+        let (emptied_for, dropped_outstanding) = {
             let mut index = self.index.lock().await;
             index.remove(conn_id);
             let survivor = index
@@ -3016,8 +3017,8 @@ impl TaskEngine {
                 // inherited by the next generation would never flip the row to
                 // `awaiting_input` again.
                 None => {
-                    awaiting.remove(&task_id);
-                    None
+                    let dropped = awaiting.remove(&task_id).is_some_and(|set| !set.is_empty());
+                    (None, dropped)
                 }
                 // Someone else still owns the row: keep THEIR requests, but
                 // retract this run's children's. Sparing those is the opposite
@@ -3029,8 +3030,10 @@ impl TaskEngine {
                 // wholesale. Only a LATER retirement that is the last one out
                 // (or a cancel) does that, so it outlasts every generation the
                 // orphan is actually lying about.
-                Some(run_seq) => Self::retract_keys(&mut awaiting, task_id, &orphaned)
-                    .then_some(run_seq),
+                Some(run_seq) => (
+                    Self::retract_keys(&mut awaiting, task_id, &orphaned).then_some(run_seq),
+                    false,
+                ),
             }
         };
 
@@ -3038,12 +3041,51 @@ impl TaskEngine {
         // just became unanswerable, so return it to the survivor's `running`
         // through the same flip `track_request` would have used.
         if let Some(run_seq) = emptied_for {
-            let flipped = work_task_service::flip_awaiting(&self.db.conn, task_id, run_seq, false)
+            self.flip_awaiting_edge(task_id, run_seq, false).await;
+        }
+        // A `merging` row has no status to flip back: its "waiting for you"
+        // lives in the set just dropped (see `tasks_awaiting_user`), so the
+        // board has to be told it is gone. A `running` / `awaiting_input` row
+        // is settled by the caller, which nudges on its own.
+        if dropped_outstanding
+            && work_task_service::get_model(&self.db.conn, task_id)
                 .await
-                .unwrap_or(false);
-            if flipped {
-                self.emit_upsert(task_id);
-            }
+                .is_ok_and(|t| t.status == WorkTaskStatus::Merging)
+        {
+            self.emit_upsert(task_id);
+        }
+    }
+
+    /// Tasks whose current generation has a blocking request outstanding (a
+    /// non-empty set in `awaiting`). For a `running` / `awaiting_input` row the
+    /// status already says it; a `merging` row keeps its status, and this is
+    /// the only record that its agent is parked on the user (#137) — read by
+    /// `work_task_list_core` into `WorkTaskInfo::merge_awaiting_input`.
+    pub async fn tasks_awaiting_user(&self) -> HashSet<i32> {
+        self.awaiting
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, set)| !set.is_empty())
+            .map(|(task_id, _)| *task_id)
+            .collect()
+    }
+
+    /// What an empty↔non-empty edge of a task's outstanding set owes the row:
+    /// the `running` ⇄ `awaiting_input` flip, or — for a `merging` generation,
+    /// which the flip's CAS never matches and whose status must not move (the
+    /// merge slot, crash recovery and the settle all key on `merging`) — just
+    /// the nudge that makes the board re-read `merge_awaiting_input` (#137).
+    async fn flip_awaiting_edge(&self, task_id: i32, run_seq: i32, awaiting: bool) {
+        let flipped = work_task_service::flip_awaiting(&self.db.conn, task_id, run_seq, awaiting)
+            .await
+            .unwrap_or(false);
+        if flipped
+            || work_task_service::get_model(&self.db.conn, task_id)
+                .await
+                .is_ok_and(|t| t.status == WorkTaskStatus::Merging && t.run_seq == run_seq)
+        {
+            self.emit_upsert(task_id);
         }
     }
 
@@ -3095,12 +3137,7 @@ impl TaskEngine {
             Self::retract_keys(&mut awaiting, task_id, &prefixes)
         };
         if emptied {
-            let flipped = work_task_service::flip_awaiting(&self.db.conn, task_id, run_seq, false)
-                .await
-                .unwrap_or(false);
-            if flipped {
-                self.emit_upsert(task_id);
-            }
+            self.flip_awaiting_edge(task_id, run_seq, false).await;
         }
     }
 
@@ -3242,7 +3279,8 @@ impl TaskEngine {
     }
 
     /// Track an outstanding blocking request and flip running ⇄ awaiting_input
-    /// on the empty↔non-empty edges of the per-task set.
+    /// on the empty↔non-empty edges of the per-task set (a `merging` row keeps
+    /// its status and is only re-announced — see [`Self::flip_awaiting_edge`]).
     ///
     /// `conn_id` may be the task's own connection or one of its delegation
     /// children: a sub-agent parked on a permission blocks the run just as
@@ -3277,13 +3315,7 @@ impl TaskEngine {
             }
         };
         if flip {
-            let flipped =
-                work_task_service::flip_awaiting(&self.db.conn, task_id, run_seq, outstanding)
-                    .await
-                    .unwrap_or(false);
-            if flipped {
-                self.emit_upsert(task_id);
-            }
+            self.flip_awaiting_edge(task_id, run_seq, outstanding).await;
         }
     }
 
@@ -13311,6 +13343,90 @@ mod tests {
             .lock()
             .await
             .insert(conn_id.into(), (f.task_id, run_seq));
+    }
+
+    /// #137: the merge generation's agent stops for a permission (its own
+    /// `git status` / `git merge`). The row must stay `merging` — the merge
+    /// slot, crash recovery and the settle all key on it, and the flip's CAS
+    /// only knows `running` ⇄ `awaiting_input` — but the engine has to say the
+    /// task waits on the user, and re-announce the row on both edges so the
+    /// board re-reads `merge_awaiting_input`.
+    #[tokio::test]
+    async fn a_merge_parked_on_a_permission_stays_merging_and_awaits_the_user() {
+        const MERGE_CONN: &str = "conn-of-the-merge";
+        let mut f = delivery_fixture(FakeForge::default()).await;
+        interrupt_merge(&f, MERGE_CONN, false).await;
+        let _ = drained(&mut f);
+        let task_id = f.task_id;
+
+        f.engine
+            .track_request(MERGE_CONN, "p:r1".into(), true)
+            .await;
+        assert_eq!(row(&f.engine, task_id).await.status, WorkTaskStatus::Merging);
+        assert!(f.engine.tasks_awaiting_user().await.contains(&task_id));
+        assert!(
+            task_upserted(&drained(&mut f), task_id),
+            "the card must learn it waits"
+        );
+
+        // A second request on the same generation is not a new edge.
+        f.engine
+            .track_request(MERGE_CONN, "p:r2".into(), true)
+            .await;
+        assert!(!task_upserted(&drained(&mut f), task_id));
+
+        f.engine
+            .track_request(MERGE_CONN, "p:r1".into(), false)
+            .await;
+        f.engine
+            .track_request(MERGE_CONN, "p:r2".into(), false)
+            .await;
+        assert_eq!(row(&f.engine, task_id).await.status, WorkTaskStatus::Merging);
+        assert!(f.engine.tasks_awaiting_user().await.is_empty());
+        assert!(
+            task_upserted(&drained(&mut f), task_id),
+            "and that it stopped waiting"
+        );
+    }
+
+    /// Whether the engine re-announced `task_id` on the task channel.
+    fn task_upserted(events: &[crate::web::event_bridge::WebEvent], task_id: i32) -> bool {
+        events.iter().any(|e| {
+            e.channel == WORK_TASK_CHANGED_EVENT
+                && e.payload["kind"] == "upsert"
+                && e.payload["id"] == task_id
+        })
+    }
+
+    /// The merge's connection goes away while its permission is still up
+    /// (cancelled, crashed): the dropped set takes the "waiting for you" with
+    /// it, and the row — still `merging` until the settle — is re-announced.
+    #[tokio::test]
+    async fn retiring_a_parked_merge_connection_stops_awaiting_the_user() {
+        const MERGE_CONN: &str = "conn-of-the-merge";
+        let mut f = delivery_fixture(FakeForge::default()).await;
+        interrupt_merge(&f, MERGE_CONN, false).await;
+        f.engine
+            .track_request(MERGE_CONN, "p:r1".into(), true)
+            .await;
+        let _ = drained(&mut f);
+
+        let task_id = f.task_id;
+        f.engine.retire_connection(MERGE_CONN, task_id).await;
+
+        assert!(f.engine.tasks_awaiting_user().await.is_empty());
+        assert!(task_upserted(&drained(&mut f), task_id));
+    }
+
+    /// A running task's edge is unchanged: it still flips the status, and the
+    /// engine's set is the same one `merge_awaiting_input` reads (which the
+    /// list only stamps on `merging` rows — see `mark_merge_awaiting`).
+    #[tokio::test]
+    async fn a_running_tasks_permission_still_flips_the_status() {
+        let (engine, task_id) = running_task().await;
+        engine.on_event(&permission_request(PARENT_CONN, "r1")).await;
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::AwaitingInput);
+        assert!(engine.tasks_awaiting_user().await.contains(&task_id));
     }
 
     /// The dead generation's index entry has no other way out — `reconcile_once`

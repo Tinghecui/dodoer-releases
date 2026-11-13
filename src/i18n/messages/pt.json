@@ -6369,6 +6369,7 @@
     "statusAwaitingInput": "Aguardando entrada",
     "statusReview": "Para revisar",
     "statusMerging": "Fazendo merge",
+    "statusMergingAwaitingInput": "Fazendo merge · Aguardando entrada",
     "statusDone": "Concluída",
     "statusFailed": "Falhou",
     "statusCanceled": "Cancelada",

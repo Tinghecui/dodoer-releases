@@ -21,6 +21,7 @@ import {
   canDefer,
   hasNothingToMerge,
   isDeferred,
+  isMergeAwaitingInput,
   isMergeQueued,
   mustDeliverToPr,
   usesMergeRequests,
@@ -99,7 +100,8 @@ type ActionLabelKey =
  * and the secondaries (edit / archive) on the right, always ending in "查看会话"
  * when a session exists — unless the primary already opens it ("去回应" on a
  * task awaiting input). The full set — with labels — lives in the detail
- * sheet. `merging` has no primary: it cannot be canceled.
+ * sheet. `merging` has no primary: it cannot be canceled — unless its agent
+ * is parked on the user (`isMergeAwaitingInput`), where "去回应" leads.
  *
  * "以后处理" (handle later) is the attention column's way out without a
  * decision: a reviewed or failed task can be put aside (see `canDefer`) and
@@ -235,6 +237,19 @@ export function buildTaskActions(
         if (canDefer(task)) secondaries.push(deferToggle(task, t, handlers))
         break
       case "merging":
+        // The merge's agent stopped for a permission (its own `git status` /
+        // `git merge`) or a question: answering it in the session is the only
+        // way the merge goes on, so it leads exactly as on `awaiting_input` —
+        // minus the cancel, which a merge never offers.
+        if (isMergeAwaitingInput(task)) {
+          primary = {
+            icon: MessageSquareReply,
+            label: t("actionRespond"),
+            hint: t("actionRespondHint"),
+            onClick: handlers.onViewSession,
+          }
+          primaryOpensSession = true
+        }
         break
       case "failed":
         primary = {

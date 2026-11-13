@@ -21,6 +21,7 @@ import { formatScheduleFull, formatScheduleShort } from "@/lib/task-schedule"
 import { cn } from "@/lib/utils"
 import {
   isDeferred,
+  isMergeAwaitingInput,
   isMergeQueued,
   worktreeWasRemoved,
 } from "./task-acceptance"
@@ -71,6 +72,9 @@ export function statusLabelKey(status: WorkTask["status"]): StatusLabelKey {
  * attention statuses an outlined amber pill, `done` a bare green check,
  * `failed` a tinted red pill, the rest a muted pill.
  *
+ * A merge whose agent is parked on the user reads 合并中 · 等待输入 in the
+ * awaiting-input pill (#137): still merging, but the next move is theirs.
+ *
  * A task put aside to handle later reads as exactly that — a muted pill with a
  * clock, whatever its review or failure underneath (the tooltip still names
  * it): it waits under Done, where an amber "to review" would claim it needs
@@ -90,16 +94,21 @@ export function StatusChip({
 }) {
   const t = useTranslations("Tasks")
   // An interrupted failure (restart) reads differently from an agent failure.
+  const mergeAwaiting = isMergeAwaitingInput(task)
   const statusLabel =
     task.status === "failed" && task.failure_reason === "interrupted"
       ? t("statusInterrupted")
-      : t(statusLabelKey(task.status))
+      : mergeAwaiting
+        ? t("statusMergingAwaitingInput")
+        : t(statusLabelKey(task.status))
   const deferred = isDeferred(task)
   const label = deferred ? t("statusDeferred") : statusLabel
 
   let tone: string
   let icon: React.ReactNode = null
-  switch (deferred ? "deferred" : task.status) {
+  switch (
+    deferred ? "deferred" : mergeAwaiting ? "awaiting_input" : task.status
+  ) {
     case "deferred":
       tone =
         "gap-1 rounded-full bg-muted px-2 py-1 text-[0.625rem] text-muted-foreground"

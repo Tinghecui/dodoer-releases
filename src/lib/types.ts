@@ -2304,6 +2304,11 @@ export interface WorkTask {
    *  is working, but on shrinking the session rather than on the task. The one
    *  thing that explains a card sitting in 准备中 / 合并中 for minutes. */
   compacting?: boolean
+  /** A `merging` generation is parked on the user (a permission for its own
+   *  `git status` / `git merge`, a question, a plan approval). The status
+   *  stays `merging`; this is what turns the card into 合并中 · 等待输入 with
+   *  去回应 (#137). Always false / absent on every other status. */
+  merge_awaiting_input?: boolean
   created_at: string
   updated_at: string
   started_at: string | null

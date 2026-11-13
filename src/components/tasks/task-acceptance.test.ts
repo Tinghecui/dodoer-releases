@@ -8,6 +8,7 @@ import {
   hasNothingToMerge,
   isAnotherTaskMerging,
   isDeferred,
+  isMergeAwaitingInput,
   isMergeQueued,
   isWorktreeGone,
   mergeQueueRanks,
@@ -630,6 +631,38 @@ describe("the actions a task awaiting input offers", () => {
       expect(live.primary).toBe("actionCancel")
       expect(live.secondaries).toEqual(["actionViewSession"])
     }
+  })
+})
+
+// #137: the merge's agent stopped for a permission (its own `git status` /
+// `git merge`). Still `merging`, but the next move is the user's.
+describe("the actions a merge waiting on the user offers", () => {
+  const parked = (overrides?: Partial<WorkTask>) =>
+    task({ status: "merging", merge_awaiting_input: true, ...overrides })
+
+  it("reads the mark only on a merging task with a session", () => {
+    expect(isMergeAwaitingInput(parked())).toBe(true)
+    expect(isMergeAwaitingInput(task({ status: "merging" }))).toBe(false)
+    expect(isMergeAwaitingInput(parked({ conversation_id: null }))).toBe(false)
+    // The mark means nothing on any other status.
+    for (const status of ["running", "awaiting_input", "review"] as const) {
+      expect(isMergeAwaitingInput(parked({ status }))).toBe(false)
+    }
+  })
+
+  it("leads with answering the agent, in its session — and no cancel", () => {
+    const waiting = actions(parked())
+    expect(waiting.primary).toBe("actionRespond")
+    expect(waiting.primaryHint).toBe("actionRespondHint")
+    expect(waiting.click("actionRespond")).toEqual(["viewSession"])
+    // A merge never offers cancel, and the primary already is the viewer.
+    expect(waiting.secondaries).toEqual([])
+  })
+
+  it("leaves a merge that waits on nobody without a primary", () => {
+    const merging = actions(task({ status: "merging" }))
+    expect(merging.primary).toBeNull()
+    expect(merging.secondaries).toEqual(["actionViewSession"])
   })
 })
 

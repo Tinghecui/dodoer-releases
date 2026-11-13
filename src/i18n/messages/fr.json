@@ -6369,6 +6369,7 @@
     "statusAwaitingInput": "En attente de saisie",
     "statusReview": "À valider",
     "statusMerging": "Fusion en cours",
+    "statusMergingAwaitingInput": "Fusion en cours · En attente de saisie",
     "statusDone": "Terminée",
     "statusFailed": "Échouée",
     "statusCanceled": "Annulée",

@@ -62,6 +62,7 @@ pub async fn work_task_list_core(
     let mut infos = work_task_service::list(&db.conn, folder_id).await?;
     annotate_worktree_missing(db, &mut infos).await?;
     annotate_agent_type(db, &mut infos).await?;
+    annotate_merge_awaiting(&mut infos).await;
     Ok(infos)
 }
 
@@ -69,7 +70,32 @@ pub async fn work_task_get_core(db: &AppDatabase, id: i32) -> Result<WorkTaskInf
     let mut infos = vec![work_task_service::get(&db.conn, id).await?];
     annotate_worktree_missing(db, &mut infos).await?;
     annotate_agent_type(db, &mut infos).await?;
+    annotate_merge_awaiting(&mut infos).await;
     Ok(infos.pop().expect("annotated the one row"))
+}
+
+/// Stamp `merge_awaiting_input` on every `merging` row whose generation the
+/// engine holds a blocking request for (#137). No engine (a test, a boot that
+/// has not started it yet) means no live generation either, so nothing to mark.
+async fn annotate_merge_awaiting(infos: &mut [WorkTaskInfo]) {
+    if !infos.iter().any(|t| t.status == WorkTaskStatus::Merging) {
+        return;
+    }
+    let Some(engine) = crate::work_task::engine() else {
+        return;
+    };
+    let awaiting = engine.tasks_awaiting_user().await;
+    mark_merge_awaiting(infos, &awaiting);
+}
+
+/// The pure half of [`annotate_merge_awaiting`]: only a `merging` row is
+/// marked — `awaiting_input` already says it in the status, and a set the
+/// engine still holds for a row that just settled must not leak onto it.
+fn mark_merge_awaiting(infos: &mut [WorkTaskInfo], awaiting: &std::collections::HashSet<i32>) {
+    for info in infos.iter_mut() {
+        info.merge_awaiting_input =
+            info.status == WorkTaskStatus::Merging && awaiting.contains(&info.id);
+    }
 }
 
 /// Stamp `worktree_missing` on every row whose recorded worktree can no longer
@@ -1379,6 +1405,36 @@ mod tests {
         let listed = work_task_list_core(&db, Some(folder_id)).await.unwrap();
         let stamped: Vec<Option<String>> = listed.into_iter().map(|t| t.agent_type).collect();
         assert!(stamped.iter().all(|a| a.is_some()), "{stamped:?}");
+    }
+
+    /// #137: only a `merging` row the engine holds a blocking request for is
+    /// marked. An `awaiting_input` / `running` row already says it in its
+    /// status, so a set held for one never leaks onto the card as a merge.
+    #[tokio::test]
+    async fn merge_awaiting_marks_only_merging_rows_the_engine_holds() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-merge-awaiting").await;
+        let mut infos = Vec::new();
+        for title in ["merging, held", "merging, free", "running, held"] {
+            infos.push(
+                work_task_service::create(&db.conn, draft(folder_id, title, None))
+                    .await
+                    .unwrap(),
+            );
+        }
+        infos[0].status = WorkTaskStatus::Merging;
+        infos[1].status = WorkTaskStatus::Merging;
+        infos[2].status = WorkTaskStatus::Running;
+        let held: std::collections::HashSet<i32> =
+            [infos[0].id, infos[2].id].into_iter().collect();
+
+        mark_merge_awaiting(&mut infos, &held);
+        let marks: Vec<bool> = infos.iter().map(|t| t.merge_awaiting_input).collect();
+        assert_eq!(marks, vec![true, false, false]);
+
+        // Answered: the next read clears it.
+        mark_merge_awaiting(&mut infos, &std::collections::HashSet::new());
+        assert!(infos.iter().all(|t| !t.merge_awaiting_input));
     }
 
     /// A folder with no default and no settings anywhere leaves the field

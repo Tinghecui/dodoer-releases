@@ -6369,6 +6369,7 @@
     "statusAwaitingInput": "입력 대기",
     "statusReview": "검토 대기",
     "statusMerging": "병합 중",
+    "statusMergingAwaitingInput": "병합 중 · 입력 대기",
     "statusDone": "완료",
     "statusFailed": "실패",
     "statusCanceled": "취소됨",

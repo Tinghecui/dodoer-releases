@@ -6369,6 +6369,7 @@
     "statusAwaitingInput": "Wartet auf Eingabe",
     "statusReview": "Zur Prüfung",
     "statusMerging": "Wird gemergt",
+    "statusMergingAwaitingInput": "Wird gemergt · Wartet auf Eingabe",
     "statusDone": "Fertig",
     "statusFailed": "Fehlgeschlagen",
     "statusCanceled": "Abgebrochen",

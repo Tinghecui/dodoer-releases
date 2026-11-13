@@ -82,6 +82,7 @@ import {
   deliversIntoOpenPr,
   hasNothingToMerge,
   isDeferred,
+  isMergeAwaitingInput,
   isMergeQueued,
   mustDeliverToPr,
   taskPullRequestUrl,
@@ -476,10 +477,14 @@ export function TaskDetailSheet({
   /** The agent is parked on a prompt only the user can answer — in the
    *  session viewer, so only once there is a session (always, in practice:
    *  the engine enters this status from `running`, which binds one). */
+  /** A merge parked the same way (#137): still `merging`, answered in the
+   *  same session viewer. */
+  const mergeAwaitingInput = !archived && isMergeAwaitingInput(task)
   const awaitingInput =
-    task.status === "awaiting_input" &&
-    !archived &&
-    task.conversation_id != null
+    (task.status === "awaiting_input" &&
+      !archived &&
+      task.conversation_id != null) ||
+    mergeAwaitingInput
   /** Accepted already, waiting for the project's one merge slot. */
   const mergeQueued = isReview && isMergeQueued(task)
   /** Put aside to handle later ("以后处理") — it waits under Done. */
@@ -669,6 +674,17 @@ export function TaskDetailSheet({
           })
           break
         case "merging":
+          // Its agent waits on a permission (its own `git status` /
+          // `git merge`) or a question: answering it is the only way the merge
+          // goes on. No cancel beside it — a merge never offers one.
+          if (mergeAwaitingInput) {
+            zoneActions.push({
+              icon: MessageSquareReply,
+              label: t("actionRespond"),
+              filled: true,
+              onClick: () => setSessionOpen(true),
+            })
+          }
           break
         // The two restarts open the note box rather than firing: the send
         // button inside it is what actually restarts (see `submitRestart`).

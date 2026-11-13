@@ -247,6 +247,32 @@ describe("TaskCard awaiting input", () => {
   })
 })
 
+// #137: a merge parked on a permission reads as waiting, not as plain merging.
+describe("TaskCard merge awaiting input", () => {
+  const parked = () =>
+    task({ status: "merging", merge_awaiting_input: true, conversation_id: 42 })
+
+  it("says merging · awaiting input and leads with Respond", async () => {
+    const onViewSession = vi.fn()
+    renderCard(parked(), { onViewSession })
+
+    expect(
+      screen.getByText(enMessages.Tasks.statusMergingAwaitingInput)
+    ).toBeInTheDocument()
+    expect(screen.queryByText(enMessages.Tasks.statusMerging)).toBeNull()
+    const respond = screen.getByRole("button", { name: "Respond" })
+    await userEvent.click(respond)
+    expect(onViewSession).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole("button", { name: "View session" })).toBeNull()
+  })
+
+  it("keeps a merge that waits on nobody as plain merging", () => {
+    renderCard(task({ status: "merging", conversation_id: 42 }))
+    expect(screen.getByText(enMessages.Tasks.statusMerging)).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Respond" })).toBeNull()
+  })
+})
+
 describe("TaskCard worktree-removed badge", () => {
   it("flags a deleted worktree in any status — done and canceled included", () => {
     // Detached after removal: the pointer is gone, the branch remains.

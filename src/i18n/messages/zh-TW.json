@@ -6369,6 +6369,7 @@
     "statusAwaitingInput": "等待輸入",
     "statusReview": "待驗收",
     "statusMerging": "合併中",
+    "statusMergingAwaitingInput": "合併中 · 等待輸入",
     "statusDone": "已完成",
     "statusFailed": "失敗",
     "statusCanceled": "已取消",

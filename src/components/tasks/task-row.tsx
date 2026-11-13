@@ -20,7 +20,7 @@ import {
   TaskAgentMark,
   WorktreeRemovedChip,
 } from "./task-card"
-import { isDeferred } from "./task-acceptance"
+import { isDeferred, isMergeAwaitingInput } from "./task-acceptance"
 import {
   buildTaskActions,
   type TaskActionHandlers,
@@ -106,7 +106,8 @@ export function TaskRow({
     !isDeferred(task) &&
     (task.status === "review" ||
       task.status === "awaiting_input" ||
-      task.status === "failed")
+      task.status === "failed" ||
+      isMergeAwaitingInput(task))
 
   const showError =
     task.last_error && (task.status === "failed" || task.status === "review")

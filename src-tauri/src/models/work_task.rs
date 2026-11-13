@@ -103,6 +103,17 @@ pub struct WorkTaskInfo {
     /// explains a card sitting in `preparing`/`merging` for minutes.
     #[serde(default)]
     pub compacting: bool,
+    /// A `merging` generation is parked on the user — a permission (the
+    /// agent's `git status` / `git merge`), a question, a plan approval. The
+    /// status stays `merging`, which is what the merge slot, crash recovery
+    /// and the settle all key on; this is the overlay the card reads to say
+    /// "merging · waiting for you" and offer Respond (#137). Filled by
+    /// `work_task_list_core` / `work_task_get_core` from the engine's
+    /// outstanding-request sets — in memory, like the sets themselves, so
+    /// there is nothing to go stale across a restart. Always false on every
+    /// other status (`awaiting_input` already says it).
+    #[serde(default)]
+    pub merge_awaiting_input: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,

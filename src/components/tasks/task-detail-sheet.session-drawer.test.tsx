@@ -201,6 +201,32 @@ describe("task drawer awaiting input", () => {
     expect(onCancel).toHaveBeenCalledWith(row)
   })
 
+  // #137: the merge's agent waits on a permission; the status stays merging.
+  it("treats a merge waiting on the user the same, minus the cancel", async () => {
+    const user = userEvent.setup()
+    mount(task({ status: "merging", merge_awaiting_input: true }))
+
+    expect(
+      screen.getByText(enMessages.Tasks.statusMergingAwaitingInput)
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(enMessages.Tasks.awaitingInputHint)
+    ).toBeInTheDocument()
+    expect(panelButton("Cancel task")).toBeUndefined()
+    const respond = panelButton("Respond")
+    expect(respond).toHaveAttribute("data-variant", "default")
+    await user.click(respond!)
+    await waitFor(() => expect(screen.getByText("Session")).toBeInTheDocument())
+  })
+
+  it("leaves a merge that waits on nobody without a respond", () => {
+    mount(task({ status: "merging" }))
+    expect(panelButton("Respond")).toBeUndefined()
+    expect(
+      screen.queryByText(enMessages.Tasks.awaitingInputHint)
+    ).not.toBeInTheDocument()
+  })
+
   it("leaves a running task's panel to its cancel", () => {
     mount(task({ status: "running" }))
     expect(panelButton("Cancel")).toHaveAttribute("data-variant", "default")

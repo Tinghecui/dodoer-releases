@@ -1,5 +1,8 @@
 import { create } from "zustand"
-import { blockingPrompts } from "@/lib/blocking-prompts"
+import {
+  blockingPrompts,
+  isPlanApprovalPermission,
+} from "@/lib/blocking-prompts"
 import type { ConnectionState } from "@/contexts/acp-connections-context"
 
 /**
@@ -37,7 +40,9 @@ type AwaitingConn = Pick<
 >
 
 /** What one connection waits on; `null` when it waits on nobody. With more
- *  than one prompt up, the order they stack in above the composer wins. */
+ *  than one prompt up, the order they stack in above the composer wins. A
+ *  permission request that is a plan approval (Claude Code's ExitPlanMode,
+ *  codex's plan review) reads as "plan", like Grok's own plan approval. */
 export function awaitingUserOf(
   conn: Pick<
     AwaitingConn,
@@ -46,7 +51,9 @@ export function awaitingUserOf(
 ): AwaitingUserKind | null {
   const prompts = blockingPrompts(conn)
   if (!prompts) return null
-  if (prompts.permission) return "permission"
+  if (prompts.permission) {
+    return isPlanApprovalPermission(prompts.permission) ? "plan" : "permission"
+  }
   if (prompts.askQuestion) return "question"
   return "plan"
 }

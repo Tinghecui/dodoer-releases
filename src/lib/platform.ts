@@ -243,6 +243,40 @@ export async function getCurrentWindow() {
 }
 
 /**
+ * Close a tool window of the app's own — the commit / merge / push windows
+ * `openAppWindow` opens. Desktop: the Tauri window. Web: `window.close()`,
+ * which a browser honours for a window a script opened (`window.open`), which
+ * is how those windows open in the browser. Not {@link closeCurrentWindow}:
+ * its web branch is `history.back()`, which in such a window only goes back
+ * to the `about:blank` placeholder it was reserved with.
+ *
+ * Resolves whether the window is now closing. `false` when it can't be closed
+ * (the user opened the page's link in a tab of their own, or the Tauri call
+ * failed), so the caller can leave the page in a usable state instead.
+ */
+export async function closeAppWindow(): Promise<boolean> {
+  if (isDesktop()) {
+    try {
+      const win = await getCurrentWindow()
+      if (!win) return false
+      await win.close()
+      return true
+    } catch (err) {
+      console.error("[closeAppWindow] failed to close window:", err)
+      return false
+    }
+  }
+  try {
+    window.close()
+  } catch {
+    return false
+  }
+  // Set at once by a close the browser goes through with; a refused one (a
+  // tab the user opened) leaves it false.
+  return window.closed === true
+}
+
+/**
  * Close the current window.
  * Desktop: closes Tauri window. Web: navigates back or closes tab.
  */

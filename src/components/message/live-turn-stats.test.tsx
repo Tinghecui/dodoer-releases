@@ -95,6 +95,44 @@ describe("extractLiveEditStats", () => {
     expect(first).toEqual({ files: 1, additions: 2, deletions: 0 })
   })
 
+  it("leaves out a write the user turned down or that failed", () => {
+    // Rejected live: the permission request's "No" ends the call as failed.
+    const rejected = toolBlock(writeInput("a\nb\nc", "notes.txt"))
+    if (rejected.type !== "tool_call") throw new Error("fixture")
+    rejected.info.status = "failed"
+    // Reopened conversation: the detail load's approval stamp says rejected.
+    const stamped = toolBlock(writeInput("x", "other.txt"))
+    if (stamped.type !== "tool_call") throw new Error("fixture")
+    stamped.info.meta = {
+      "codeg.approval": { option_kind: "reject_once", option_name: "No" },
+    }
+    const landed = toolBlock(writeInput("p\nq", "kept.txt"))
+
+    expect(extractLiveEditStats(msg([rejected, stamped]))).toEqual({
+      files: 0,
+      additions: 0,
+      deletions: 0,
+    })
+    expect(extractLiveEditStats(msg([rejected, stamped, landed]))).toEqual({
+      files: 1,
+      additions: 2,
+      deletions: 0,
+    })
+  })
+
+  it("still counts an approved write", () => {
+    const approved = toolBlock(writeInput("a", "ok.txt"))
+    if (approved.type !== "tool_call") throw new Error("fixture")
+    approved.info.meta = {
+      "codeg.approval": { option_kind: "allow_once", option_name: "Yes" },
+    }
+    expect(extractLiveEditStats(msg([approved]))).toEqual({
+      files: 1,
+      additions: 1,
+      deletions: 0,
+    })
+  })
+
   it("reuses a cached block's contribution when it reappears in a new message", () => {
     // The reducer preserves an unchanged block's reference across streaming
     // tokens, so the same block object shows up in successive messages. The

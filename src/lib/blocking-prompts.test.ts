@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest"
 
-import { blockingPrompts } from "@/lib/blocking-prompts"
+import {
+  blockingPrompts,
+  isPlanApprovalPermission,
+} from "@/lib/blocking-prompts"
 
 const PERMISSION = { request_id: "req-1", tool_call: {}, options: [] }
 const QUESTION = {
@@ -69,5 +72,88 @@ describe("blockingPrompts", () => {
       "question:q-1",
       "plan:plan-1",
     ])
+  })
+})
+
+describe("isPlanApprovalPermission", () => {
+  const ask = (tool_call: unknown) => ({ tool_call })
+
+  it("recognizes Claude Code's ExitPlanMode however the request names it", () => {
+    // AIR request with the live call merged in: kind + `_meta.claudeCode`.
+    expect(
+      isPlanApprovalPermission(
+        ask({
+          toolCallId: "t1",
+          title: "Approve Plan",
+          kind: "switch_mode",
+          rawInput: { plan: "1. edit README" },
+          _meta: {
+            permission: { title: "Ready to code?" },
+            claudeCode: { toolName: "ExitPlanMode" },
+          },
+        })
+      )
+    ).toBe(true)
+    // Bare AIR request, before the live call is merged: only the plan.
+    expect(
+      isPlanApprovalPermission(
+        ask({ toolCallId: "t1", rawInput: { plan: "1. edit README" } })
+      )
+    ).toBe(true)
+    // Non-AIR shape: the tool's own name.
+    expect(
+      isPlanApprovalPermission(ask({ name: "ExitPlanMode", rawInput: {} }))
+    ).toBe(true)
+    // Serialized as a JSON string.
+    expect(
+      isPlanApprovalPermission(
+        ask(
+          JSON.stringify({ kind: "switch_mode", raw_input: { plan: "do it" } })
+        )
+      )
+    ).toBe(true)
+  })
+
+  it("recognizes codex's plan review gate by its marker", () => {
+    expect(
+      isPlanApprovalPermission(
+        ask({
+          title: "Implement this plan?",
+          _meta: { codex: { kind: "plan_review", planItemId: "p1" } },
+        })
+      )
+    ).toBe(true)
+  })
+
+  it("leaves ordinary permissions, and EnterPlanMode, as permissions", () => {
+    expect(isPlanApprovalPermission(null)).toBe(false)
+    expect(isPlanApprovalPermission(ask(null))).toBe(false)
+    expect(isPlanApprovalPermission(ask({}))).toBe(false)
+    expect(
+      isPlanApprovalPermission(
+        ask({
+          title: "ls -la",
+          kind: "execute",
+          rawInput: { command: "ls -la" },
+          _meta: { claudeCode: { toolName: "Bash" } },
+        })
+      )
+    ).toBe(false)
+    expect(
+      isPlanApprovalPermission(
+        ask({
+          title: "Enter plan mode",
+          kind: "switch_mode",
+          rawInput: {},
+          _meta: { claudeCode: { toolName: "EnterPlanMode" } },
+        })
+      )
+    ).toBe(false)
+    // A `plan` in the input of a tool that is not a plan-mode tool.
+    expect(
+      isPlanApprovalPermission(
+        ask({ kind: "edit", rawInput: { plan: "x", file_path: "/a" } })
+      )
+    ).toBe(false)
   })
 })

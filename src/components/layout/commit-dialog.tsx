@@ -422,8 +422,12 @@ export function CommitWorkspace({
     }
   }, [folderPath, folderName, loadDiff])
 
-  useEffect(() => {
-    if (!folderPath) return
+  // Start over from the repository as it is now: no diff, no message, the
+  // file list (and its selection) re-read. On a new folder, and after a
+  // commit — the host usually closes the window then, but one that stays open
+  // (a browser tab that won't close) must not keep offering the files it just
+  // committed.
+  const resetAndReload = useCallback(() => {
     setDiffOriginal("")
     setDiffModified("")
     setDiffImage(null)
@@ -433,8 +437,14 @@ export function CommitWorkspace({
     setHasMessage(false)
     setMessageInputKey((key) => key + 1)
     setUntrackedOpen(false)
+    setSelected(new Set())
     void loadStatus()
-  }, [folderPath, loadStatus])
+  }, [loadStatus])
+
+  useEffect(() => {
+    if (!folderPath) return
+    resetAndReload()
+  }, [folderPath, resetAndReload])
 
   const handleViewDiff = useCallback(
     (file: string) => {
@@ -504,6 +514,8 @@ export function CommitWorkspace({
             count: result.committed_files,
           }),
         })
+        // Before the push: the commit stands even if pushing it fails.
+        resetAndReload()
 
         if (andPush) {
           try {
@@ -527,7 +539,15 @@ export function CommitWorkspace({
         setCommitting(false)
       }
     },
-    [folderId, folderPath, onCommitted, selected, t, withCredentialRetry]
+    [
+      folderId,
+      folderPath,
+      onCommitted,
+      resetAndReload,
+      selected,
+      t,
+      withCredentialRetry,
+    ]
   )
 
   // --- Context menu actions ---

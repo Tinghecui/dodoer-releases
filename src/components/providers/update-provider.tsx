@@ -42,7 +42,7 @@ import {
   writeLastCheck,
 } from "@/lib/update-check-storage"
 import { getTransport } from "@/lib/transport"
-import { getCachedCoworkInfo } from "@/lib/cowork/info"
+import { isCoworkInfoLoaded, loadCoworkInfo } from "@/lib/cowork/info"
 import { extractAppCommandError } from "@/lib/app-error"
 import type { AppCommandError } from "@/lib/types"
 
@@ -177,6 +177,25 @@ function countdown(
     }
     tick()
   })
+}
+
+/**
+ * Whether an automatic (background) check must not ask the server now.
+ * Cowork pins the codeg version (CODEG_UPDATE_DISABLED): the server refuses
+ * update checks with a 403, so don't ask in the background. Whether it does
+ * is only known once `cowork_info` has answered, and the pages that load it
+ * (account menu, system settings) are not always open — so load it here
+ * rather than read a cache that may still be empty. If it could not be
+ * loaded (server restarting, network), skip this round; the next tick or tab
+ * focus tries again. A desktop window, remote or not, checks the desktop app
+ * instead, which Cowork does not pin. A manual check is not gated: the
+ * server's refusal is the answer the user asked for.
+ */
+async function backgroundCheckBlocked(): Promise<boolean> {
+  if (usesTauriUpdater()) return false
+  const info = await loadCoworkInfo()
+  if (!isCoworkInfoLoaded()) return true
+  return info?.updateDisabled === true
 }
 
 export function UpdateProvider({ children }: { children: React.ReactNode }) {
@@ -533,7 +552,10 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     setLastCheckedAt(null)
     // Ask again now: waiting for the next scheduled tick could leave the UI
     // blank for 6h if this landed after the startup timer had already run.
-    void checkNowRef.current({ silent: true })
+    void backgroundCheckBlocked().then((blocked) => {
+      if (!blocked && mountedRef.current)
+        void checkNowRef.current({ silent: true })
+    })
   }, [])
 
   /**
@@ -682,12 +704,10 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let cancelled = false
 
-    const maybeCheck = () => {
+    const maybeCheck = async () => {
       if (cancelled) return
-      // Cowork pins the codeg version (CODEG_UPDATE_DISABLED): the server
-      // refuses update checks, so don't ask in the background. A desktop
-      // window, remote or not, checks the desktop app instead.
-      if (!usesTauriUpdater() && getCachedCoworkInfo()?.updateDisabled) return
+      if (await backgroundCheckBlocked()) return
+      if (cancelled) return
       // Storage is the cross-window source of truth. Adopt a sibling window's
       // newer answer BEFORE deciding whether to fetch: it is what suppresses
       // our own request, so skipping without taking it would leave this window
@@ -706,9 +726,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       void checkNowRef.current({ silent: true })
     }
 
-    const first = setTimeout(maybeCheck, FIRST_CHECK_DELAY_MS)
-    const interval = setInterval(maybeCheck, CHECK_INTERVAL_MS)
-    const onVisibility = () => maybeCheck()
+    const first = setTimeout(() => void maybeCheck(), FIRST_CHECK_DELAY_MS)
+    const interval = setInterval(() => void maybeCheck(), CHECK_INTERVAL_MS)
+    const onVisibility = () => void maybeCheck()
     document.addEventListener("visibilitychange", onVisibility)
 
     return () => {

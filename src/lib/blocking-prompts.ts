@@ -2,6 +2,13 @@ import type {
   ConnectionState,
   PendingPermission,
 } from "@/contexts/acp-connections-context"
+import {
+  asRecord,
+  extractPlanMarkdown,
+  isPlanModeToolName,
+  normalizeToolName,
+} from "@/lib/plan-parse"
+import { codexMarksPlanReview } from "@/lib/tool-call-normalization"
 import type {
   PendingPlanApprovalState,
   PendingQuestionState,
@@ -47,4 +54,55 @@ export function blockingPrompts(
   if (planApproval) ids.push(`plan:${planApproval.approval_id}`)
   if (ids.length === 0) return null
   return { permission, askQuestion, planApproval, ids }
+}
+
+function toolCallRecord(toolCall: unknown): Record<string, unknown> | null {
+  if (typeof toolCall !== "string") return asRecord(toolCall)
+  try {
+    return asRecord(JSON.parse(toolCall))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether a permission request is really a plan approval. Only Grok raises
+ * one of its own (`pendingPlanApproval`); Claude Code's ExitPlanMode ("Ready
+ * to code?") and codex-acp's Plan-mode review gate ask through an ordinary
+ * permission request, so "what is the user asked for" has to look inside it.
+ *
+ * Read off the request's tool call, as the connection store holds it (the
+ * live call's `kind` and `_meta.claudeCode.toolName` merged in):
+ * - Claude Code's own tool name, `ExitPlanMode` (in `_meta.claudeCode`, or
+ *   `name`, which claude-agent-acp sends a non-AIR client);
+ * - codex-acp's `_meta.codex.kind === "plan_review"` marker;
+ * - otherwise a plan-mode tool (`switch_mode` kind, …) whose input carries a
+ *   plan. The AIR request names no tool at all — only the plan in `rawInput`
+ *   — so a plan with no kind counts too. EnterPlanMode (also `switch_mode`,
+ *   no plan) stays an ordinary permission.
+ */
+export function isPlanApprovalPermission(
+  permission: Pick<PendingPermission, "tool_call"> | null | undefined
+): boolean {
+  const call = toolCallRecord(permission?.tool_call)
+  if (!call) return false
+  const meta = asRecord(call._meta)
+  const names = [
+    asRecord(meta?.claudeCode)?.toolName,
+    call.name,
+    call.toolName,
+    call.tool_name,
+  ]
+  if (
+    names.some(
+      (name) =>
+        typeof name === "string" && normalizeToolName(name) === "exitplanmode"
+    )
+  ) {
+    return true
+  }
+  if (codexMarksPlanReview(meta)) return true
+  if (!extractPlanMarkdown(call)) return false
+  const kind = typeof call.kind === "string" ? call.kind.trim() : ""
+  return kind === "" || isPlanModeToolName(kind)
 }

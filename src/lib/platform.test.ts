@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   tauriDialogOpen: vi.fn<(options: unknown) => Promise<unknown>>(
     async () => null
   ),
+  tauriWindowClose: vi.fn<() => Promise<void>>(async () => {}),
 }))
 
 vi.mock("@/lib/transport", () => ({
@@ -39,7 +40,12 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: mocks.tauriDialogOpen,
 }))
 
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ close: mocks.tauriWindowClose }),
+}))
+
 import {
+  closeAppWindow,
   openFileDialog,
   openPath,
   openUrl,
@@ -175,5 +181,63 @@ describe("openFileDialog", () => {
     mocks.isDesktop.mockReturnValue(true)
     await openFileDialog({ title: "Pick" })
     expect(mocks.tauriDialogOpen).toHaveBeenCalledWith({ title: "Pick" })
+  })
+})
+
+describe("closeAppWindow", () => {
+  beforeEach(() => {
+    mocks.tauriWindowClose.mockReset()
+    mocks.tauriWindowClose.mockResolvedValue(undefined)
+  })
+
+  it("closes the browser window the app opened, not the Tauri one", async () => {
+    let closed = false
+    const close = vi.spyOn(window, "close").mockImplementation(() => {
+      closed = true
+    })
+    // jsdom has no `window.closed`; a browser sets it as the close begins.
+    Object.defineProperty(window, "closed", {
+      configurable: true,
+      get: () => closed,
+    })
+    try {
+      await expect(closeAppWindow()).resolves.toBe(true)
+      expect(close).toHaveBeenCalledTimes(1)
+      expect(mocks.tauriWindowClose).not.toHaveBeenCalled()
+    } finally {
+      close.mockRestore()
+      Reflect.deleteProperty(window, "closed")
+    }
+  })
+
+  it("reports a browser tab that refuses to close", async () => {
+    // A tab the user opened on the link: the browser ignores `close()`.
+    const close = vi.spyOn(window, "close").mockImplementation(() => {})
+    const back = vi.spyOn(window.history, "back")
+    try {
+      await expect(closeAppWindow()).resolves.toBe(false)
+      // Never `history.back()`: that would land on the blank placeholder.
+      expect(back).not.toHaveBeenCalled()
+    } finally {
+      close.mockRestore()
+      back.mockRestore()
+    }
+  })
+
+  it("closes the Tauri window on desktop, and reports a failure", async () => {
+    mocks.isDesktop.mockReturnValue(true)
+    const close = vi.spyOn(window, "close").mockImplementation(() => {})
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      await expect(closeAppWindow()).resolves.toBe(true)
+      expect(mocks.tauriWindowClose).toHaveBeenCalledTimes(1)
+      expect(close).not.toHaveBeenCalled()
+
+      mocks.tauriWindowClose.mockRejectedValueOnce(new Error("gone"))
+      await expect(closeAppWindow()).resolves.toBe(false)
+    } finally {
+      close.mockRestore()
+      error.mockRestore()
+    }
   })
 })

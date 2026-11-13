@@ -74,6 +74,33 @@ describe("awaitingUserOf", () => {
       )
     ).toBe("permission")
   })
+
+  it("reads Claude Code's ExitPlanMode permission as a plan approval", () => {
+    const exitPlan = {
+      request_id: "r2",
+      tool_call: {
+        title: "Ready to code?",
+        kind: "switch_mode",
+        rawInput: { plan: "1. add a line to README" },
+      },
+      options: [],
+    }
+    expect(
+      awaitingUserOf(conn("c", "s", { pendingPermission: exitPlan }))
+    ).toBe("plan")
+    const bash = {
+      request_id: "r3",
+      tool_call: {
+        title: "ls",
+        kind: "execute",
+        rawInput: { command: "ls" },
+      },
+      options: [],
+    }
+    expect(awaitingUserOf(conn("c", "s", { pendingPermission: bash }))).toBe(
+      "permission"
+    )
+  })
 })
 
 describe("publishAwaitingUser", () => {

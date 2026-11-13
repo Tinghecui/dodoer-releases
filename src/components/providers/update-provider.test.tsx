@@ -35,7 +35,14 @@ let checkResult: () => unknown = () => ({
 // an older server whose app_update_status 404s).
 let callImpl: ((endpoint: string) => Promise<unknown>) | null = null
 
+// What `cowork_info` answers. Defaults to an upstream (non-Cowork) server's
+// 501, which settles the info as "not Cowork" so background checks run.
+let coworkInfoResult: () => unknown = () => {
+  throw { code: "not_implemented", message: "not implemented" }
+}
+
 const call = vi.fn(async (endpoint: string) => {
+  if (endpoint === "cowork_info") return coworkInfoResult()
   if (callImpl) return callImpl(endpoint)
   if (endpoint === "app_update_state") {
     return callQueue.length ? callQueue.shift()! : snapshot
@@ -77,6 +84,7 @@ vi.mock("@/lib/transport", () => ({
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
 import { UpdateProvider, useAppUpdate } from "./update-provider"
+import { resetCoworkInfoForTests } from "@/lib/cowork/info"
 import enMessages from "@/i18n/messages/en.json"
 
 function Probe() {
@@ -106,6 +114,10 @@ beforeEach(() => {
   liveHandler = null
   callQueue = []
   callImpl = null
+  coworkInfoResult = () => {
+    throw { code: "not_implemented", message: "not implemented" }
+  }
+  resetCoworkInfoForTests(undefined)
   snapshot = { seq: 0, status: "idle" }
   checkResult = () => ({
     currentVersion: "0.21.7",
@@ -712,6 +724,60 @@ describe("UpdateProvider — check scheduling", () => {
       await vi.advanceTimersByTimeAsync(10_000)
     })
     expect(checkCalls()).toBe(1)
+  })
+
+  const coworkInfoCalls = () =>
+    call.mock.calls.filter(([e]) => e === "cowork_info").length
+
+  it("asks Cowork first and never checks when it disables updates", async () => {
+    // No page has loaded the Cowork info yet (the account menu and system
+    // settings do; appearance / MCP / agents settings don't).
+    coworkInfoResult = () => ({ product: "Cowork", updateDisabled: true })
+    render(availabilityTree())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+    expect(coworkInfoCalls()).toBe(1)
+    expect(checkCalls()).toBe(0)
+
+    // Nor on a later tab focus.
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(checkCalls()).toBe(0)
+  })
+
+  it("checks as usual on a Cowork server that allows updates", async () => {
+    coworkInfoResult = () => ({ product: "Cowork", updateDisabled: false })
+    render(availabilityTree())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+    expect(coworkInfoCalls()).toBe(1)
+    expect(checkCalls()).toBe(1)
+  })
+
+  it("skips the round while the Cowork info cannot be loaded, and retries", async () => {
+    coworkInfoResult = () => {
+      throw new Error("network down")
+    }
+    render(availabilityTree())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+    expect(coworkInfoCalls()).toBe(1)
+    expect(checkCalls()).toBe(0)
+
+    // The server is back with updates disabled: the next try asks again and
+    // still doesn't check.
+    coworkInfoResult = () => ({ product: "Cowork", updateDisabled: true })
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(coworkInfoCalls()).toBe(2)
+    expect(checkCalls()).toBe(0)
   })
 })
 

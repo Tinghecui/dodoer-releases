@@ -922,6 +922,21 @@ function collectErroredToolUseIds(turns: readonly MessageTurn[]): Set<string> {
 }
 
 /**
+ * The part of `writeDidNotLand` that the tool call itself carries: its ACP
+ * status is `failed` (a rejected permission request ends the call as failed
+ * too), or a detail load stamped a rejection on it (`meta["codeg.approval"]`).
+ * Shared with the live turn's "nF +x/-y" figures (`live-turn-stats.tsx`),
+ * whose live tool calls have the same two fields and no `tool_result` blocks.
+ */
+export function toolCallFailedOrRejected(call: {
+  status?: string | null
+  meta?: Record<string, unknown> | null
+}): boolean {
+  if (call.status === "failed") return true
+  return approvalFromMeta(call.meta)?.decision === "rejected"
+}
+
+/**
  * Whether a write-type tool call is known NOT to have changed its file: the
  * user turned its permission request down, or it ran and failed. Either way
  * the agent's proposed content never reached the disk, so listing it as a
@@ -944,8 +959,7 @@ function writeDidNotLand(
   nextBlock: ContentBlock | undefined,
   erroredToolUseIds: ReadonlySet<string>
 ): boolean {
-  if (block.status === "failed") return true
-  if (approvalFromMeta(block.meta)?.decision === "rejected") return true
+  if (toolCallFailedOrRejected(block)) return true
   if (block.tool_use_id) return erroredToolUseIds.has(block.tool_use_id)
   return (
     nextBlock?.type === "tool_result" &&

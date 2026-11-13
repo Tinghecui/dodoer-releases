@@ -3,11 +3,8 @@
 import { Suspense, useCallback, useEffect, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { useTranslations } from "next-intl"
-const getCurrentWindow = async () => {
-  const m = await import("@tauri-apps/api/window")
-  return m.getCurrentWindow()
-}
 import { Loader2 } from "lucide-react"
+import { toast } from "sonner"
 import { PushWorkspace } from "@/components/layout/push-workspace"
 import { AppTitleBar } from "@/components/layout/app-title-bar"
 import { AppToaster } from "@/components/ui/app-toaster"
@@ -15,6 +12,7 @@ import { getFolder } from "@/lib/api"
 import type { FolderDetail } from "@/lib/types"
 import { RemoteConnectionGate } from "@/contexts/remote-connection-context"
 import { brandTitle } from "@/lib/cowork/brand"
+import { closeAppWindow } from "@/lib/platform"
 
 const TOAST_DURATION_MS = 6000
 
@@ -33,14 +31,14 @@ function PushPageInner() {
     error: null,
   })
 
-  const closeWindow = useCallback(async () => {
-    try {
-      const win = await getCurrentWindow()
-      await win.close()
-    } catch (err) {
-      console.error("[PushPage] failed to close window:", err)
-    }
-  }, [])
+  // Desktop closes the window; so does a browser, for the window the app
+  // opened. A tab that won't close (the user opened this link themselves)
+  // gets the confirmation the closing window makes unnecessary.
+  const handlePushed = useCallback(() => {
+    void closeAppWindow().then((closed) => {
+      if (!closed) toast.success(t("toasts.pushSuccess"))
+    })
+  }, [t])
 
   const folderId = Number(searchParams.get("folderId") ?? "0")
   const normalizedFolderId = Number.isFinite(folderId) ? folderId : 0
@@ -118,7 +116,7 @@ function PushPageInner() {
             folderName={folder.name}
             folderId={folder.id}
             initialBranch={initialBranch}
-            onPushed={closeWindow}
+            onPushed={handlePushed}
           />
         ) : null}
       </main>

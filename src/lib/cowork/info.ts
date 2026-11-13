@@ -87,6 +87,13 @@ export function getCachedCoworkInfo(): CoworkInfo | null {
   return cached ?? null
 }
 
+/** Whether the server has answered: `getCachedCoworkInfo()` is null both
+ *  while unknown (not loaded, or the last load failed) and for a server that
+ *  is not Cowork; this tells the two apart. */
+export function isCoworkInfoLoaded(): boolean {
+  return cached !== undefined
+}
+
 function subscribe(listener: () => void): () => void {
   listeners.add(listener)
   return () => listeners.delete(listener)

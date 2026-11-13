@@ -7,6 +7,7 @@ import type {
   LiveMessage,
 } from "@/contexts/acp-connections-context"
 import { inferLiveToolName } from "@/lib/tool-call-normalization"
+import { toolCallFailedOrRejected } from "@/lib/session-files"
 import { formatElapsedLabel } from "@/lib/format-elapsed"
 import {
   countUnifiedDiffLineChanges,
@@ -276,6 +277,9 @@ function computeBlockEditContribution(
   })
   if (toolName !== "edit" && toolName !== "write" && toolName !== "apply_patch")
     return null
+  // A write the user turned down, or that failed, changed nothing on disk —
+  // the reply's change card skips it the same way (`extractReplyFileChanges`).
+  if (toolCallFailedOrRejected(block.info)) return null
 
   const files = new Set<string>()
   let additions = 0

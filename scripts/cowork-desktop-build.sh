@@ -1,10 +1,13 @@
 #!/bin/bash
-# 编桌面版 dodoer.app（Apple Silicon，ad-hoc 签名），冒烟，打成发布用的文件。跑在 GitHub 托管的 macOS 机器上（公开镜像的 desktop-macos.yml）。
+# 编桌面版 dodoer.app（Apple Silicon，固定的自签名证书签名），冒烟，打成发布用的文件。跑在 GitHub 托管的 macOS 机器上（公开镜像的 desktop-macos.yml）。
 # 只有一种包：完整版，自带 codeg-server 子进程做本机 daemon；主窗口是开始页，本机工作区和服务器上的工作区都从那里开
 # （COWORK.md「桌面端：一种包、开始页」）。2026-11-09 以前还有一种纯客户端版，已经去掉。
 #
 #   用法：scripts/cowork-desktop-build.sh [full]（参数可省，只认 full）
 #   环境：VERSION（桌面版本号 1.Y.Z）、TAURI_SIGNING_PRIVATE_KEY（+ _PASSWORD）；
+#        DODOER_SIGNING_IDENTITY：签 app 的证书（钥匙串里的 SHA-1，desktop-macos.yml 从 Secret DODOER_CODESIGN_P12 导入）。
+#        不给就 ad-hoc 签名，只在自己的 Mac 上试编时这样：ad-hoc 的包每一版签名都不同，macOS 的屏幕录制、辅助功能等授权
+#        装了新版就失效，所以 CI 里（CI 非空）不给就报错；
 #        GITHUB_OUTPUT 有就写 full_name / full_updater
 #
 # 经 beforeBuildCommand 编前端（out/）和 sidecar（src-tauri/binaries/）。清空 dist/，产物都在 dist/：
@@ -30,15 +33,35 @@ configs=(--config src-tauri/tauri.jenny.conf.json --config src-tauri/tauri.cowor
 [[ "$edition" == full ]] || fail "不认识的版本 ${edition}：只有 full（纯客户端版 2026-11-09 已经去掉）"
 prefix=dodoer
 expect_endpoint="$releases/latest.json"
+identity="${DODOER_SIGNING_IDENTITY:--}"
+if [[ "$identity" == - && -n "${CI:-}" ]]; then
+  fail "CI 里没给 DODOER_SIGNING_IDENTITY：不能发 ad-hoc 签名的包（装上以后 macOS 授权会失效）"
+fi
 
-echo "==> [$edition] tauri build（只出 .app，ad-hoc 签名，版本 ${VERSION}）"
+echo "==> [$edition] tauri build（只出 .app，签名身份 ${identity}，版本 ${VERSION}）"
 rm -f "$bundle"/dodoer.app.tar.gz*
 rm -rf "$app"
 # tauri.cowork-desktop.conf.json 打开自动更新（我们的公钥和 dodoer-releases 的 latest.json），
 # createUpdaterArtifacts 让 bundle 里多出 dodoer.app.tar.gz + .sig
 pnpm tauri build --bundles app "${configs[@]}" \
-  --config "{\"version\":\"$VERSION\",\"bundle\":{\"macOS\":{\"signingIdentity\":\"-\"}}}"
+  --config "{\"version\":\"$VERSION\",\"bundle\":{\"macOS\":{\"signingIdentity\":\"$identity\"}}}"
 test -d "$app" || fail "没编出 $app"
+
+echo "==> [$edition] 签名"
+codesign --verify --deep --strict --verbose=2 "$app"
+# macOS 记授权用的是「指定要求」（designated requirement）：用证书签的是 identifier + 证书哈希，每一版都一样；
+# ad-hoc 的是 cdhash，每一版都变。核对它真的指着我们的证书，不然发出去大家的授权又会失效
+bundle_id=$(defaults read "$app/Contents/Info.plist" CFBundleIdentifier)
+requirement=$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p')
+echo "designated requirement: $requirement"
+if [[ "$identity" != - ]]; then
+  want=$(tr 'A-F' 'a-f' <<<"$identity")
+  [[ "$requirement" == *"identifier \"$bundle_id\""* ]] || fail "指定要求里没有 identifier \"$bundle_id\""
+  [[ "$requirement" =~ certificate\ (root|leaf)\ =\ H\"$want\" ]] || fail "指定要求没指着证书 $identity"
+  for other in codeg-server codeg-mcp codeg-cli; do
+    echo "$other: $(codesign -d -r- "$app/Contents/MacOS/$other" 2>&1 | sed -n 's/^designated => //p')"
+  done
+fi
 
 echo "==> [$edition] 冒烟"
 exe=$(defaults read "$app/Contents/Info.plist" CFBundleExecutable)

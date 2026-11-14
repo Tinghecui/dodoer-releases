@@ -127,9 +127,7 @@ pub async fn acp_disconnect(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpDisconnectParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    let manager = &state.connection_manager;
-    manager
-        .disconnect(&params.connection_id)
+    acp_commands::acp_disconnect_core(&state.connection_manager, &params.connection_id)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(()))
@@ -1652,6 +1650,20 @@ mod tests {
     use super::*;
 
     use crate::acp::agent_mentions::append_agent_routes;
+
+    /// #201: deleting a live conversation disconnects it server-side, then the
+    /// client's tab close disconnects the same id again. That second call must
+    /// succeed (HTTP 200), not surface `ConnectionNotFound` as a 500.
+    #[tokio::test]
+    async fn disconnect_of_an_unknown_connection_succeeds() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState::new_for_test(db, dir.path().to_path_buf()));
+        let params: AcpDisconnectParams =
+            serde_json::from_value(serde_json::json!({ "connectionId": "already-gone" })).unwrap();
+        let result = acp_disconnect(Extension(state), Json(params)).await;
+        assert!(result.is_ok(), "expected Ok, got {:?}", result.err());
+    }
 
     /// The editor reopens what it just saved from this response, so the web
     /// endpoint must return the saved item as the desktop command does.

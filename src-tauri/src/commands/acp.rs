@@ -12620,13 +12620,34 @@ pub async fn acp_answer_plan_approval(
         .await
 }
 
+/// Disconnecting is idempotent: a connection that is already gone (deleting
+/// a conversation disconnects it server-side before the client closes its tab,
+/// another window reaped it, the agent exited) is the outcome the caller asked
+/// for, so `ConnectionNotFound` is success rather than an error (#201 — the
+/// web handler used to turn it into a 500 the browser logged on every delete).
+pub async fn acp_disconnect_core(
+    manager: &ConnectionManager,
+    connection_id: &str,
+) -> Result<(), AcpError> {
+    match manager.disconnect(connection_id).await {
+        Err(AcpError::ConnectionNotFound(_)) => {
+            tracing::debug!(
+                "[ACP] disconnect connection={} already gone, treating as done",
+                connection_id
+            );
+            Ok(())
+        }
+        other => other,
+    }
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_disconnect(
     connection_id: String,
     manager: State<'_, ConnectionManager>,
 ) -> Result<(), AcpError> {
-    manager.disconnect(&connection_id).await
+    acp_disconnect_core(&manager, &connection_id).await
 }
 
 #[cfg(feature = "tauri-runtime")]

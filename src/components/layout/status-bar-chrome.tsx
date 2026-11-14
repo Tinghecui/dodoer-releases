@@ -87,12 +87,12 @@ function rememberConnected() {
   }
 }
 
-export function StatusBarChrome() {
+export function StatusBarChrome({ className }: { className?: string }) {
   if (!isDesktop()) return null
-  return <ChromeItem />
+  return <ChromeItem className={className} />
 }
 
-function ChromeItem() {
+function ChromeItem({ className }: { className?: string }) {
   const t = useTranslations("ChromeSettings")
   const [status, setStatus] = useState<ChromeStatus | null>(null)
   const [tabs, setTabs] = useState<ChromeTab[]>([])
@@ -176,7 +176,10 @@ function ChromeItem() {
         <button
           aria-label={t("title")}
           title={`${t("title")} · ${statusLine}`}
-          className="relative flex items-center transition-colors hover:text-foreground"
+          className={cn(
+            "relative flex shrink-0 items-center transition-colors hover:text-foreground",
+            className
+          )}
         >
           <Chrome
             className={cn(
@@ -187,7 +190,7 @@ function ChromeItem() {
           />
         </button>
       </PopoverTrigger>
-      <PopoverContent side="top" align="end" className="w-80 gap-2 p-2.5">
+      <PopoverContent side="top" align="start" className="w-80 gap-2 p-2.5">
         <span className="flex items-center gap-1.5 truncate text-xs font-medium">
           {t("title")}
           <span className="rounded-full bg-muted px-1.5 py-0.5 text-3xs font-medium text-muted-foreground">

@@ -38,6 +38,7 @@ export function StatusBar() {
               listening. Renders nothing outside the local desktop. */}
           <StatusBarWebService />
           <StatusBarHostSsh />
+          <StatusBarChrome />
           <StatusBarMcp />
           <StatusBarAlerts />
           <ResourceMeter />
@@ -69,6 +70,9 @@ export function StatusBar() {
  * to the server named right there, and a lent computer must show without
  * opening anything. The right half is behind the top-right status button on
  * desktop widths, where nobody sees a mark until they look for it.
+ *
+ * The person's own Chrome follows it, for the same reason: its glyph's
+ * colour is the connection's state, which is no use behind a button.
  */
 export function StatusBarLeft({ className }: { className?: string }) {
   return (
@@ -83,6 +87,7 @@ export function StatusBarLeft({ className }: { className?: string }) {
       <StatusBarStats />
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
         <StatusBarHostSsh className="h-6 rounded-full px-1.5 hover:bg-[var(--g-hover)]" />
+        <StatusBarChrome className="h-6 rounded-full px-1.5 hover:bg-[var(--g-hover)]" />
         <ResourceMeter />
         <CoworkAccountMenu
           className="shrink-0 rounded-full hover:bg-[var(--g-hover)]"
@@ -95,7 +100,7 @@ export function StatusBarLeft({ className }: { className?: string }) {
 
 /**
  * Right half of the status bar: update, background tasks, command launcher,
- * computer use, Chrome, MCP and alerts. Update, tasks and computer use render only
+ * computer use, MCP and alerts. Update, tasks and computer use render only
  * when there is something to show, exactly as before.
  */
 export function StatusBarRight({ className }: { className?: string }) {
@@ -114,10 +119,8 @@ export function StatusBarRight({ className }: { className?: string }) {
       {/* Computer use: which windows agents may see right now. Renders
           nothing unless the desktop runtime has it switched on. */}
       <StatusBarComputer />
-      {/* The person's own Chrome: connected or not, and its tabs. Beside
-          computer use because both say what an agent could reach. Renders
-          nothing until this computer has connected once. */}
-      <StatusBarChrome />
+      {/* The person's own Chrome is in StatusBarLeft on desktop widths, its
+          state always on screen. */}
       {/* Web service (remote access): whether the desktop is reachable over
           HTTP right now, and how far. Beside computer use because both say
           what is exposed. Local desktop only. */}

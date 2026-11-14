@@ -19,7 +19,7 @@ vi.mock("@/components/layout/status-bar-computer", () => ({
   StatusBarComputer: () => null,
 }))
 vi.mock("@/components/layout/status-bar-chrome", () => ({
-  StatusBarChrome: () => null,
+  StatusBarChrome: () => <span data-testid="chrome" />,
 }))
 vi.mock("@/components/layout/status-bar-update", () => ({
   StatusBarUpdate: () => null,
@@ -106,7 +106,27 @@ describe("StatusBar", () => {
     cleanup()
     render(<StatusBarLeft />)
     const item = screen.getByTestId("host-ssh")
-    expect(item.nextElementSibling).toBe(screen.getByTestId("resource-meter"))
     expect(item.parentElement?.firstElementChild).toBe(item)
+  })
+
+  /** The Chrome glyph's colour is the connection's state: behind the
+   *  top-right status button it would say nothing. It follows the
+   *  lent-computer item, before the resource meter. */
+  it("puts the Chrome item in the sidebar foot when wide", () => {
+    render(<StatusBarRight />)
+    expect(screen.queryByTestId("chrome")).toBeNull()
+    cleanup()
+    render(<StatusBarLeft />)
+    const item = screen.getByTestId("chrome")
+    expect(item.previousElementSibling).toBe(screen.getByTestId("host-ssh"))
+    expect(item.nextElementSibling).toBe(screen.getByTestId("resource-meter"))
+  })
+
+  it("carries the Chrome item in the narrow layout", () => {
+    viewport.mobile = true
+    render(<StatusBar />)
+    expect(screen.getByTestId("host-ssh").nextElementSibling).toBe(
+      screen.getByTestId("chrome")
+    )
   })
 })

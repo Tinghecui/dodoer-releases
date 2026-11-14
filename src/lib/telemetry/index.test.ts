@@ -6,6 +6,8 @@ const backend = vi.hoisted(() => ({
   reportError: vi.fn(),
   beginApiCall: vi.fn(() => ({ headers: { "sentry-trace": "t" }, end() {} })),
   noteWs: vi.fn(),
+  turnStarted: vi.fn(() => ({ noteEvent: vi.fn(), end: vi.fn() })),
+  sendFeedback: vi.fn(),
 }))
 vi.mock("./sentry", () => {
   backend.loaded = true
@@ -21,7 +23,10 @@ import {
   normalizeClientTelemetry,
   reportError,
   resetTelemetryForTests,
+  sendFeedback,
   startTelemetry,
+  subscribeTelemetry,
+  turnStarted,
   type ClientTelemetry,
 } from "./index"
 
@@ -45,9 +50,16 @@ describe("while telemetry is off", () => {
     expect(call.headers).toEqual({})
     call.end("ok")
     noteWs({ type: "connecting" })
+    const turn = turnStarted("claude_code")
+    turn.noteEvent("content_delta")
+    turn.end("complete")
+    expect(
+      sendFeedback("it broke", { conversationId: 1, agent: "claude_code" })
+    ).toBe(false)
     expect(isTelemetryOn()).toBe(false)
     expect(backend.loaded).toBe(false)
     expect(backend.beginApiCall).not.toHaveBeenCalled()
+    expect(backend.turnStarted).not.toHaveBeenCalled()
   })
 
   it("keeps at most 20 errors for later", () => {
@@ -76,6 +88,25 @@ describe("startTelemetry", () => {
     // Its own envelopes are never timed: that would report about reporting.
     expect(beginApiCall(ENVELOPE_COMMAND, "web").headers).toEqual({})
     expect(backend.beginApiCall).toHaveBeenCalledTimes(1)
+  })
+
+  it("tells subscribers once it has started", async () => {
+    const listener = vi.fn()
+    const unsubscribe = subscribeTelemetry(listener)
+    await startTelemetry(CONFIG, "web")
+    expect(listener).toHaveBeenCalledTimes(1)
+    unsubscribe()
+  })
+
+  it("hands turns and feedback to the SDK once started", async () => {
+    await startTelemetry(CONFIG, "web")
+    turnStarted("codex").end("stranded")
+    expect(backend.turnStarted).toHaveBeenCalledWith("codex")
+    const context = { conversationId: 7, agent: "codex" }
+    expect(sendFeedback("   ", context)).toBe(false)
+    expect(sendFeedback("stuck", context)).toBe(true)
+    expect(backend.sendFeedback).toHaveBeenCalledTimes(1)
+    expect(backend.sendFeedback).toHaveBeenCalledWith("stuck", context)
   })
 
   it("never rejects when the SDK fails to start", async () => {

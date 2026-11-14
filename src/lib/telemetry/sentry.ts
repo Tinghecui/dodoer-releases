@@ -3,8 +3,10 @@
 // telemetry on downloads it (docs/telemetry.md §5.3).
 //
 // Collected: uncaught and reported errors, the page load, API call spans
-// (`beginApiCall`), the event socket's drops and reconnects (`noteWs`), and
-// breadcrumbs of clicks and navigations. Not collected: console output,
+// (`beginApiCall`), the event socket's drops and reconnects (`noteWs`), turns
+// (`turnStarted`, with a warning for each the fallback had to settle), what
+// users write in "Report a problem", and breadcrumbs of clicks and
+// navigations. Not collected: console output,
 // fetch/XHR (API calls are timed in the transports instead), request bodies,
 // cookies, IPs, session replays. Everything is scrubbed (`scrub.ts`).
 
@@ -14,6 +16,8 @@ import {
   browserSessionIntegration,
   browserTracingIntegration,
   captureException,
+  captureFeedback,
+  captureMessage,
   createTransport,
   dedupeIntegration,
   eventFiltersIntegration,
@@ -44,7 +48,10 @@ import {
   type ApiCall,
   type ApiResult,
   type ClientTelemetry,
+  type FeedbackContext,
   type Surface,
+  type Turn,
+  type TurnEnd,
   type WsNote,
 } from "./index"
 import { scrubRecord, scrubText } from "./scrub"
@@ -57,6 +64,9 @@ export const MAX_ERRORS = 30
 export const REPEAT_WINDOW_MS = 60_000
 /** Logs one page sends per minute at most. */
 export const LOGS_PER_MINUTE = 120
+/** Longest feedback kept: it was written to be read, so it is not cut to
+ *  the length of an error message. */
+export const MAX_FEEDBACK_CHARS = 4000
 
 const SPAN_OK = 1
 const SPAN_ERROR = 2
@@ -331,9 +341,15 @@ export function beginApiCall(command: string, surface: Surface): ApiCall {
 let connectingSince: number | null = null
 let readySince: number | null = null
 let reconnect: { span: Span; since: number } | null = null
+/** The socket's last step ("none" in a remote desktop window, whose events
+ *  come through the app), and how often it closed on this page. */
+let wsState: WsNote["type"] | "none" = "none"
+let wsCloses = 0
 
 export function noteWs(note: WsNote): void {
   const now = performance.now()
+  wsState = note.type
+  if (note.type === "closed") wsCloses++
   switch (note.type) {
     case "connecting":
       connectingSince ??= now
@@ -397,6 +413,116 @@ export function noteWs(note: WsNote): void {
   }
 }
 
+// ─── Turns ────────────────────────────────────────────────────────────────
+
+/** Echoes of the send itself, not a sign the reply is coming. */
+const ECHO_EVENTS = new Set(["user_message", "user_prompt_sent"])
+/** The reply itself: what the user sees appear. */
+const REPLY_EVENTS = new Set([
+  "content_delta",
+  "thinking",
+  "tool_call",
+  "plan_update",
+  "permission_request",
+  "question_request",
+  "plan_approval_request",
+])
+/** Event types a stranded-turn warning lists, in the order they came. */
+const MAX_EVENT_TYPES = 20
+const QUIET_ENDS: ReadonlySet<TurnEnd> = new Set([
+  "complete",
+  "busy",
+  "replaced",
+  "closed",
+])
+
+export function turnStarted(agent: string): Turn {
+  const started = performance.now()
+  const closesBefore = wsCloses
+  const span = rootSpan("chat turn", "ui.turn", config?.tracesSampleRate ?? 0, {
+    "codeg.agent": agent,
+  })
+  const since = () => Math.round(performance.now() - started)
+  let events = 0
+  let firstEventMs: number | null = null
+  let firstReplyMs: number | null = null
+  const types: string[] = []
+  let ended = false
+  return {
+    noteEvent(type) {
+      if (ended) return
+      events++
+      if (types.length < MAX_EVENT_TYPES) types.push(type)
+      if (ECHO_EVENTS.has(type)) return
+      firstEventMs ??= since()
+      if (REPLY_EVENTS.has(type)) firstReplyMs ??= since()
+    },
+    end(how, details = {}) {
+      if (ended) return
+      ended = true
+      const facts = {
+        outcome: how,
+        agent,
+        duration_ms: since(),
+        events,
+        first_event_ms: firstEventMs ?? -1,
+        first_reply_ms: firstReplyMs ?? -1,
+        ws_drops: wsCloses - closesBefore,
+        ws_state: wsState,
+        conn_status: details.connStatus ?? "none",
+        row_status: details.rowStatus ?? "none",
+        ...pageState(),
+      }
+      for (const [key, value] of Object.entries(facts)) {
+        span.setAttribute(`codeg.${key}`, value)
+      }
+      span.setStatus(
+        QUIET_ENDS.has(how)
+          ? { code: SPAN_OK }
+          : { code: SPAN_ERROR, message: how }
+      )
+      span.end()
+      if (how === "stranded") {
+        // The #172 symptom: counted as one issue, whoever it happens to.
+        withScope((scope) => {
+          scope.setFingerprint(["stranded-turn"])
+          scope.setContext("turn", { ...facts, event_types: types.join(" ") })
+          captureMessage("Turn finished without reaching this tab", "warning")
+        })
+      } else if (!QUIET_ENDS.has(how)) {
+        logger.warn("Turn failed", facts)
+      }
+    },
+  }
+}
+
+// ─── Feedback ─────────────────────────────────────────────────────────────
+
+export function sendFeedback(message: string, context: FeedbackContext): void {
+  withScope((scope) => {
+    // Feedback skips `beforeSend`: its request and breadcrumbs are scrubbed
+    // here instead.
+    scope.addEventProcessor((event) => scrubEvent(event as SentryErrorEvent))
+    captureFeedback(
+      {
+        message: scrubText(message.trim(), MAX_FEEDBACK_CHARS),
+        source: "account-menu",
+        url:
+          typeof location === "undefined" ? undefined : pathOnly(location.href),
+        tags: {
+          conversation_id: context.conversationId ?? "none",
+          agent: context.agent ?? "none",
+          ws_state: wsState,
+          ws_closes: wsCloses,
+          ...pageState(),
+        },
+      },
+      {},
+      scope
+    )
+  })
+}
+
 /** Test hook: forget budgets and socket state. */
 export function resetForTests(): void {
   config = null
@@ -407,4 +533,6 @@ export function resetForTests(): void {
   connectingSince = null
   readySince = null
   reconnect = null
+  wsState = "none"
+  wsCloses = 0
 }

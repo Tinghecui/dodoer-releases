@@ -63,15 +63,13 @@ function scrubLongToken(token: string): string {
     : token
 }
 
-function truncate(text: string): string {
+function truncate(text: string, limit: number): string {
   const chars = Array.from(text)
-  return chars.length > MAX_CHARS
-    ? `${chars.slice(0, MAX_CHARS).join("")}…`
-    : text
+  return chars.length > limit ? `${chars.slice(0, limit).join("")}…` : text
 }
 
-/** Scrub one string. */
-export function scrubText(text: string): string {
+/** Scrub one string, keeping at most `limit` characters. */
+export function scrubText(text: string, limit = MAX_CHARS): string {
   const s = text
     .replace(URL_RE, scrubUrl)
     .replace(JWT_RE, REDACTED)
@@ -82,7 +80,7 @@ export function scrubText(text: string): string {
     .replace(HOME_PATH_RE, `$1~/${REDACTED}`)
     .replace(DEEP_PATH_RE, `$1$2/${REDACTED}`)
     .replace(LONG_TOKEN_RE, scrubLongToken)
-  return truncate(s)
+  return truncate(s, limit)
 }
 
 /** Whether a field named `key` is dropped whole. */

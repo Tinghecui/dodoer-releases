@@ -140,6 +140,16 @@ const en = {
     "Its agents will be able to run any command here as you: read, change and delete your files, start apps, and use the accounts you are signed in to. It cannot be limited to a folder. You can stop lending from this icon at any time.",
   hostSshConfirm: "Lend",
   hostSshCancel: "Cancel",
+  // "Report a problem" in the account menu (`feedback-dialog.tsx`).
+  feedback: "Report a problem",
+  feedbackHint:
+    "Say what happened. Sent with it: the number of the conversation that is open, the versions and the state of the connection — never what the conversation says. Paths and tokens are taken out of your text.",
+  feedbackPlaceholder:
+    "For example: after I sent a message it kept showing it as in progress",
+  feedbackSend: "Send",
+  feedbackCancel: "Cancel",
+  feedbackSent: "Sent. Thank you!",
+  feedbackNotSent: "Not sent: this server does not collect diagnostics.",
 }
 
 export type CoworkTextKey = keyof typeof en
@@ -255,6 +265,14 @@ const zhCN: Record<CoworkTextKey, string> = {
     "它的智能体将能以你的身份在这台电脑上执行任何命令：读、改、删你的文件，启动软件，使用你已登录的账号。没法只限定某个文件夹。随时可以点这个图标停止借出。",
   hostSshConfirm: "借出",
   hostSshCancel: "取消",
+  feedback: "反馈问题",
+  feedbackHint:
+    "写下遇到了什么。会一起发出：当前打开的对话的编号、版本号、连接状态；不会带上对话内容。你写的文字里的路径和令牌会被去掉。",
+  feedbackPlaceholder: "比如：发出消息后一直显示进行中",
+  feedbackSend: "发送",
+  feedbackCancel: "取消",
+  feedbackSent: "已发送，谢谢！",
+  feedbackNotSent: "没发出去：这台服务器没有开诊断数据上报。",
 }
 
 const zhTW: Record<CoworkTextKey, string> = {
@@ -370,6 +388,14 @@ const zhTW: Record<CoworkTextKey, string> = {
     "它的智慧體將能以你的身分在這台電腦上執行任何命令：讀、改、刪你的檔案，啟動軟體，使用你已登入的帳號。無法只限定某個資料夾。隨時可以點這個圖示停止借出。",
   hostSshConfirm: "借出",
   hostSshCancel: "取消",
+  feedback: "回報問題",
+  feedbackHint:
+    "寫下遇到了什麼。會一起送出：目前開啟的對話的編號、版本號、連線狀態；不會帶上對話內容。你寫的文字裡的路徑和權杖會被移除。",
+  feedbackPlaceholder: "例如：送出訊息後一直顯示進行中",
+  feedbackSend: "送出",
+  feedbackCancel: "取消",
+  feedbackSent: "已送出，謝謝！",
+  feedbackNotSent: "沒有送出：這台伺服器沒有開啟診斷資料回報。",
 }
 
 const CATALOGS: Record<string, Record<CoworkTextKey, string>> = {

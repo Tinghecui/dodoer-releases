@@ -48,6 +48,7 @@ import {
   STRANDED_TURN_GRACE_MS,
   type SentTurnWatch,
 } from "@/components/conversations/stranded-turn"
+import { turnStarted, type Turn } from "@/lib/telemetry"
 import { FolderTabsEmptyState } from "@/components/conversations/folder-tabs-empty-state"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import {
@@ -1000,6 +1001,8 @@ const ConversationTabView = memo(function ConversationTabView({
     modeId: string | null
     // Cowork fork (#172): see `isStrandedTurn`.
     watch: SentTurnWatch
+    // Cowork fork: timed for telemetry (docs/telemetry.md §5.3).
+    turn: Turn
   } | null>(null)
   useEffect(() => {
     const wasPrompting = prevConnStatusRef.current === "prompting"
@@ -1016,6 +1019,7 @@ const ConversationTabView = memo(function ConversationTabView({
     if (sent && failed) {
       mqRequeueFailed(sent.draft, sent.modeId, authFailed ? "auth" : undefined)
     }
+    sent?.turn.end(failed ? "error" : "complete", { connStatus })
 
     // Turn completed — promote liveMessage + optimisticTurns to localTurns.
     // Don't pass conn.liveMessage: this panel no longer subscribes to it (the
@@ -1044,6 +1048,8 @@ const ConversationTabView = memo(function ConversationTabView({
     mqRequeueFailed,
     syncTurnMetadata,
   ])
+  // Cowork fork: a turn still open when the panel goes away is told so.
+  useEffect(() => () => lastSentRef.current?.turn.end("closed"), [])
 
   // Cowork fork (#172): settle a turn this tab never saw run. The effect above
   // needs the prompting→idle edge; when the reply's events miss this tab it
@@ -1085,6 +1091,10 @@ const ConversationTabView = memo(function ConversationTabView({
         return
       }
       lastSentRef.current = null
+      sent?.turn.end("stranded", {
+        connStatus: connStatusRef.current,
+        rowStatus: row?.status,
+      })
       console.warn(
         "[conversation] turn finished without reaching this tab; reloading it",
         effectiveConversationId
@@ -1335,12 +1345,14 @@ const ConversationTabView = memo(function ConversationTabView({
     )
   )
 
-  // Cowork fork: note a turn refused for credentials (see `turnAuthFailedRef`).
+  // Cowork fork: note a turn refused for credentials (see `turnAuthFailedRef`),
+  // and what reached this tab during a turn it sent (telemetry).
   useAcpEvent(
     useCallback(
       (envelope: EventEnvelope) => {
-        if (envelope.type !== "error") return
         if (envelope.connection_id !== conn.connectionId) return
+        lastSentRef.current?.turn.noteEvent(envelope.type)
+        if (envelope.type !== "error") return
         if (envelope.code === "turn_failed_auth_required") {
           turnAuthFailedRef.current = true
         }
@@ -1627,6 +1639,7 @@ const ConversationTabView = memo(function ConversationTabView({
       // into the queue above the input box — it auto-sends when the current
       // turn completes, identical to enqueuing while already prompting. Stamp
       // the bounce so the flush backs off instead of immediately retrying.
+      lastSentRef.current?.turn.end("replaced")
       lastSentRef.current = {
         draft,
         modeId: selectedModeIdArg ?? null,
@@ -1634,9 +1647,11 @@ const ConversationTabView = memo(function ConversationTabView({
           summaryUpdatedAt: rowUpdatedAtRef.current,
           sawPrompting: false,
         },
+        turn: turnStarted(selectedAgentRef.current),
       }
       turnAuthFailedRef.current = false
       const onTurnInProgress = () => {
+        lastSentRef.current?.turn.end("busy")
         lastSentRef.current = null
         lastFlushBounceAtRef.current = Date.now()
         removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
@@ -1661,6 +1676,7 @@ const ConversationTabView = memo(function ConversationTabView({
       // deterministic failure would retry — and toast — forever), and the
       // items behind it wait so the order holds.
       const onSendFailed = () => {
+        lastSentRef.current?.turn.end("send_failed")
         lastSentRef.current = null
         removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
         mqRequeueFailed(draft, selectedModeIdArg ?? null)
@@ -1803,6 +1819,7 @@ const ConversationTabView = memo(function ConversationTabView({
           //      marked failed (attachments included), ahead of anything
           //      queued meanwhile, with a retry button,
           //   5. surface the error on the welcome banner so it isn't silent.
+          lastSentRef.current?.turn.end("send_failed")
           lastSentRef.current = null
           removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
           setSyncState(effectiveConversationId, "idle")

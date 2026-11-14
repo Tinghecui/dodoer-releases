@@ -4,6 +4,13 @@ import type { ErrorEvent as SentryErrorEvent } from "@sentry/browser"
 const sdk = vi.hoisted(() => ({
   init: vi.fn(),
   logger: { info: vi.fn(), warn: vi.fn() },
+  captureFeedback: vi.fn(),
+  captureMessage: vi.fn(),
+  scope: {
+    setFingerprint: vi.fn(),
+    setContext: vi.fn(),
+    addEventProcessor: vi.fn(),
+  },
   spans: [] as Array<{
     name: string
     attributes: Record<string, unknown>
@@ -25,13 +32,15 @@ vi.mock("@sentry/browser", () => {
     httpContextIntegration: integration,
     linkedErrorsIntegration: integration,
     captureException: vi.fn(),
+    captureFeedback: sdk.captureFeedback,
+    captureMessage: sdk.captureMessage,
     createTransport: vi.fn(),
     makeBrowserOfflineTransport: vi.fn(() => () => ({})),
     init: sdk.init,
     logger: sdk.logger,
     setTags: vi.fn(),
     setUser: vi.fn(),
-    withScope: vi.fn(),
+    withScope: (fn: (scope: typeof sdk.scope) => void) => fn(sdk.scope),
     startNewTrace: (fn: () => unknown) => fn(),
     startInactiveSpan: (options: {
       name: string
@@ -73,7 +82,9 @@ import {
   resetForTests,
   scrubBreadcrumb,
   scrubEvent,
+  sendFeedback,
   start,
+  turnStarted,
 } from "./sentry"
 
 const CONFIG = {
@@ -205,6 +216,129 @@ describe("noteWs", () => {
     expect(sdk.spans[0]).toMatchObject({
       ended: true,
       status: { code: 2, message: "unauthenticated" },
+    })
+  })
+})
+
+describe("turnStarted", () => {
+  it("times a turn from the send to its end", () => {
+    start(CONFIG, "web")
+    const turn = turnStarted("claude_code")
+    turn.noteEvent("user_message")
+    turn.noteEvent("status_changed")
+    turn.noteEvent("content_delta")
+    turn.noteEvent("turn_complete")
+    turn.end("complete", { connStatus: "connected" })
+    turn.end("error")
+    expect(sdk.spans).toHaveLength(1)
+    const [span] = sdk.spans
+    expect(span).toMatchObject({
+      name: "chat turn",
+      ended: true,
+      status: { code: 1 },
+    })
+    expect(span.attributes).toMatchObject({
+      "codeg.sample_rate": 0.5,
+      "codeg.agent": "claude_code",
+      "codeg.outcome": "complete",
+      "codeg.events": 4,
+      "codeg.ws_drops": 0,
+      "codeg.conn_status": "connected",
+      "codeg.row_status": "none",
+    })
+    expect(span.attributes["codeg.first_event_ms"]).toBeGreaterThanOrEqual(0)
+    expect(span.attributes["codeg.first_reply_ms"]).toBeGreaterThanOrEqual(0)
+    expect(sdk.logger.warn).not.toHaveBeenCalled()
+    expect(sdk.captureMessage).not.toHaveBeenCalled()
+  })
+
+  it("reports a turn the fallback settled as one warning", () => {
+    start(CONFIG, "web")
+    noteWs({ type: "ready", attempts: 0 })
+    const turn = turnStarted("codex")
+    turn.noteEvent("user_message")
+    noteWs({ type: "closed", code: 1006, wasClean: false })
+    noteWs({ type: "reconnecting", reason: "closed" })
+    turn.end("stranded", { connStatus: "connected", rowStatus: "completed" })
+    expect(sdk.scope.setFingerprint).toHaveBeenCalledWith(["stranded-turn"])
+    expect(sdk.scope.setContext).toHaveBeenCalledWith(
+      "turn",
+      expect.objectContaining({
+        outcome: "stranded",
+        agent: "codex",
+        events: 1,
+        first_event_ms: -1,
+        first_reply_ms: -1,
+        ws_drops: 1,
+        ws_state: "reconnecting",
+        conn_status: "connected",
+        row_status: "completed",
+        event_types: "user_message",
+      })
+    )
+    expect(sdk.captureMessage).toHaveBeenCalledWith(
+      "Turn finished without reaching this tab",
+      "warning"
+    )
+    const turnSpan = sdk.spans.find((s) => s.name === "chat turn")
+    expect(turnSpan?.status).toEqual({ code: 2, message: "stranded" })
+  })
+
+  it("logs a failed turn, not one that waits in the queue", () => {
+    start(CONFIG, "web")
+    turnStarted("codex").end("busy")
+    turnStarted("codex").end("replaced")
+    turnStarted("codex").end("closed")
+    expect(sdk.logger.warn).not.toHaveBeenCalled()
+    turnStarted("codex").end("error")
+    turnStarted("codex").end("send_failed")
+    expect(sdk.logger.warn).toHaveBeenCalledTimes(2)
+    expect(sdk.logger.warn).toHaveBeenLastCalledWith(
+      "Turn failed",
+      expect.objectContaining({ outcome: "send_failed" })
+    )
+  })
+})
+
+describe("sendFeedback", () => {
+  it("sends the scrubbed text with the open conversation", () => {
+    start(CONFIG, "web")
+    noteWs({ type: "ready", attempts: 0 })
+    sendFeedback("  stuck at /home/bob/secret-proj  ", {
+      conversationId: 42,
+      agent: "claude_code",
+    })
+    const [params, , scope] = sdk.captureFeedback.mock.calls[0]
+    expect(params).toMatchObject({
+      message: "stuck at ~/<redacted>",
+      source: "account-menu",
+      url: "/",
+      tags: {
+        conversation_id: 42,
+        agent: "claude_code",
+        ws_state: "ready",
+        ws_closes: 0,
+      },
+    })
+    expect(scope).toBe(sdk.scope)
+    // Feedback skips `beforeSend`, so the scope scrubs it instead.
+    const [processor] = sdk.scope.addEventProcessor.mock.calls[0]
+    expect(
+      processor({
+        type: "feedback",
+        request: { url: "https://h.example/w?folder=/home/bob" },
+      })
+    ).toEqual({ type: "feedback", request: { url: "/w" } })
+  })
+
+  it("keeps a long report whole up to its own limit", () => {
+    start(CONFIG, "web")
+    sendFeedback("a".repeat(1200), { conversationId: null, agent: null })
+    const [params] = sdk.captureFeedback.mock.calls[0]
+    expect(params.message).toHaveLength(1200)
+    expect(params.tags).toMatchObject({
+      conversation_id: "none",
+      agent: "none",
     })
   })
 })

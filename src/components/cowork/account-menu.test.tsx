@@ -19,8 +19,29 @@ const account = vi.hoisted(() => ({
 }))
 vi.mock("@/lib/cowork/account", () => account)
 
-const toast = vi.hoisted(() => ({ error: vi.fn() }))
+const toast = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }))
 vi.mock("sonner", () => ({ toast }))
+
+const telemetry = vi.hoisted(() => ({
+  on: false,
+  isTelemetryOn: () => telemetry.on,
+  subscribeTelemetry: () => () => {},
+  sendFeedback: vi.fn(() => true),
+}))
+vi.mock("@/lib/telemetry", () => telemetry)
+
+const tabs = vi.hoisted(() => ({
+  state: {
+    activeTabId: "t2",
+    rawTabs: [
+      { id: "t1", conversationId: 5, agentType: "codex" },
+      { id: "t2", conversationId: 42, agentType: "claude_code" },
+    ],
+  },
+}))
+vi.mock("@/stores/tab-store", () => ({
+  useTabStore: { getState: () => tabs.state },
+}))
 
 const upgrade = vi.hoisted(() => ({
   hint: null as null | { current: string; latest: string; url: string | null },
@@ -60,6 +81,8 @@ beforeEach(() => {
   account.canSignOut = true
   account.canOpenInDesktop = true
   account.openCoworkInDesktop.mockResolvedValue(undefined)
+  telemetry.on = false
+  telemetry.sendFeedback.mockReturnValue(true)
 })
 
 describe("CoworkAccountMenu", () => {
@@ -179,6 +202,70 @@ describe("CoworkAccountMenu", () => {
     await userEvent.click(trigger)
     const menu = await screen.findByRole("menu")
     expect(menu).toHaveAttribute("data-side", "bottom")
+  })
+
+  it("takes a problem report while telemetry is on", async () => {
+    state.info = portalInfo
+    telemetry.on = true
+    renderMenu()
+    await userEvent.click(screen.getByRole("button", { name: "Account" }))
+    const items = await screen.findAllByRole("menuitem")
+    expect(items.map((i) => i.textContent)).toEqual([
+      "Open in desktop app",
+      "Report a problem",
+      "My account",
+      "Sign out / switch account",
+    ])
+    await userEvent.click(items[1])
+    const dialog = await screen.findByRole("dialog")
+    expect(dialog).toHaveTextContent("never what the conversation says")
+    const send = screen.getByRole("button", { name: "Send" })
+    expect(send).toBeDisabled()
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Report a problem" }),
+      "stuck in progress"
+    )
+    await userEvent.click(send)
+    expect(telemetry.sendFeedback).toHaveBeenCalledWith("stuck in progress", {
+      conversationId: 42,
+      agent: "claude_code",
+    })
+    expect(toast.success).toHaveBeenCalledWith("Sent. Thank you!")
+    await vi.waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    )
+  })
+
+  it("keeps the report when it could not be sent", async () => {
+    state.info = portalInfo
+    telemetry.on = true
+    telemetry.sendFeedback.mockReturnValue(false)
+    renderMenu("zh-CN")
+    await userEvent.click(screen.getByRole("button", { name: "账户" }))
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "反馈问题" })
+    )
+    const box = await screen.findByRole("textbox", { name: "反馈问题" })
+    await userEvent.type(box, "卡住了")
+    await userEvent.click(screen.getByRole("button", { name: "发送" }))
+    expect(toast.error).toHaveBeenCalledWith(
+      "没发出去：这台服务器没有开诊断数据上报。"
+    )
+    expect(box).toHaveValue("卡住了")
+  })
+
+  it("offers the problem report in a remote desktop window too", async () => {
+    state.info = portalInfo
+    telemetry.on = true
+    account.canSignOut = false
+    account.canOpenInDesktop = false
+    renderMenu()
+    await userEvent.click(screen.getByRole("button", { name: "Account" }))
+    const items = await screen.findAllByRole("menuitem")
+    expect(items.map((i) => i.textContent)).toEqual([
+      "Report a problem",
+      "My account",
+    ])
   })
 
   it("is translated", async () => {

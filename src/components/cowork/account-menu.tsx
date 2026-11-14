@@ -1,6 +1,13 @@
 "use client"
 
-import { ArrowUpCircle, LogOut, MonitorDown, UserRound } from "lucide-react"
+import { useState } from "react"
+import {
+  ArrowUpCircle,
+  LogOut,
+  MessageSquareWarning,
+  MonitorDown,
+  UserRound,
+} from "lucide-react"
 import { toast } from "sonner"
 import {
   DropdownMenu,
@@ -10,6 +17,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
+import {
+  CoworkFeedbackDialog,
+  useTelemetryOn,
+} from "@/components/cowork/feedback-dialog"
 import {
   coworkCanOpenInDesktop,
   coworkCanSignOut,
@@ -38,6 +49,9 @@ import { cn } from "@/lib/utils"
  * In a desktop window bound to a remote Cowork workspace the menu keeps only
  * "My account" (opened in the system browser): the upgrade hint and sign-out
  * both ride on the portal session cookie, which the desktop app doesn't have.
+ *
+ * While the server collects telemetry, "Report a problem" opens a box whose
+ * text goes there too (`feedback-dialog.tsx`), in either kind of window.
  */
 export function CoworkAccountMenu({
   className,
@@ -53,70 +67,87 @@ export function CoworkAccountMenu({
   const t = useCoworkText()
   const session = coworkCanSignOut()
   const upgrade = useCoworkUpgradeHint(info?.portal === true && session)
+  const telemetryOn = useTelemetryOn()
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
   if (!info?.portal) return null
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          className={cn("relative h-6 w-6 hover:text-foreground/80", className)}
-          title={t("account")}
-          aria-label={t("account")}
-        >
-          <UserRound className={cn("h-3.5 w-3.5", iconClassName)} />
-          {upgrade && (
-            <span
-              data-testid="cowork-upgrade-dot"
-              className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary"
-            />
-          )}
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" side={side} className="min-w-52">
-        {upgrade && (
-          <>
-            <DropdownMenuItem
-              disabled={!upgrade.url}
-              onSelect={() => openCoworkUpgrade(upgrade)}
-            >
-              <ArrowUpCircle className="h-3.5 w-3.5 shrink-0" />
-              {t("upgradeAvailable", { version: upgrade.latest })}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-          </>
-        )}
-        {coworkCanOpenInDesktop() && (
-          <DropdownMenuItem
-            onSelect={() => {
-              openCoworkInDesktop().catch((err: unknown) => {
-                toast.error(
-                  t("openInDesktopFailed", {
-                    message: err instanceof Error ? err.message : String(err),
-                  })
-                )
-              })
-            }}
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(
+              "relative h-6 w-6 hover:text-foreground/80",
+              className
+            )}
+            title={t("account")}
+            aria-label={t("account")}
           >
-            <MonitorDown className="h-3.5 w-3.5 shrink-0" />
-            {t("openInDesktop")}
-          </DropdownMenuItem>
-        )}
-        <DropdownMenuItem onSelect={() => openCoworkAccount()}>
-          <UserRound className="h-3.5 w-3.5 shrink-0" />
-          {t("myAccount")}
-        </DropdownMenuItem>
-        {session && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => coworkSignOut()}>
-              <LogOut className="h-3.5 w-3.5 shrink-0" />
-              {t("signOut")}
+            <UserRound className={cn("h-3.5 w-3.5", iconClassName)} />
+            {upgrade && (
+              <span
+                data-testid="cowork-upgrade-dot"
+                className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary"
+              />
+            )}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" side={side} className="min-w-52">
+          {upgrade && (
+            <>
+              <DropdownMenuItem
+                disabled={!upgrade.url}
+                onSelect={() => openCoworkUpgrade(upgrade)}
+              >
+                <ArrowUpCircle className="h-3.5 w-3.5 shrink-0" />
+                {t("upgradeAvailable", { version: upgrade.latest })}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
+          {coworkCanOpenInDesktop() && (
+            <DropdownMenuItem
+              onSelect={() => {
+                openCoworkInDesktop().catch((err: unknown) => {
+                  toast.error(
+                    t("openInDesktopFailed", {
+                      message: err instanceof Error ? err.message : String(err),
+                    })
+                  )
+                })
+              }}
+            >
+              <MonitorDown className="h-3.5 w-3.5 shrink-0" />
+              {t("openInDesktop")}
             </DropdownMenuItem>
-          </>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+          )}
+          {telemetryOn && (
+            <DropdownMenuItem onSelect={() => setFeedbackOpen(true)}>
+              <MessageSquareWarning className="h-3.5 w-3.5 shrink-0" />
+              {t("feedback")}
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem onSelect={() => openCoworkAccount()}>
+            <UserRound className="h-3.5 w-3.5 shrink-0" />
+            {t("myAccount")}
+          </DropdownMenuItem>
+          {session && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => coworkSignOut()}>
+                <LogOut className="h-3.5 w-3.5 shrink-0" />
+                {t("signOut")}
+              </DropdownMenuItem>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <CoworkFeedbackDialog
+        open={feedbackOpen}
+        onOpenChange={setFeedbackOpen}
+      />
+    </>
   )
 }

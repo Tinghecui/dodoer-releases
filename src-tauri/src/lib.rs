@@ -1895,6 +1895,8 @@ mod tauri_app {
                 background_commands::background_market_download,
                 app_update_commands::app_update_state,
                 app_update_commands::perform_app_update,
+                app_update_commands::app_rollback_target,
+                app_update_commands::perform_app_rollback,
                 app_update_commands::restart_app,
                 project_boot::detect_package_manager,
                 project_boot::create_shadcn_project,

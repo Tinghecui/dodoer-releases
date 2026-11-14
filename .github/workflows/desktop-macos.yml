@@ -270,9 +270,10 @@ jobs:
           done
           body=$(printf '%s\n\n对应 %s。\n\n安装包 `%s.zip`（也叫 `%s`；`%s` 是同一个文件，给门户的下载链接用）。打开后在开始页选「在这台电脑上工作」或者一台服务器，本机和服务器上的工作区可以同时开着。\n\n已经装了 dodoer 的（包括以前的纯客户端版），app 里会提示更新，点更新、重启就是这一版。\n第一次装：解压后把 dodoer.app 拖进「应用程序」，再在终端执行 `xattr -dr com.apple.quarantine /Applications/dodoer.app`（没有 Apple 开发者签名）。\n' \
             "$notes" "$TAG" "$NAME" "$ALIAS" "$CLIENT_ALIAS")
-          # release-train.yml 按这个标记删老的自动版本；Release 建在编的这个提交上（手动 tag 照旧建在 main 上）
-          target=main
-          if [[ "$TRAIN" == true ]]; then body=$(printf '%s\n\n%s' "$body" "<!-- release-train -->"); target="$GITHUB_SHA"; fi
+          # release-train.yml 按这个标记删老的自动版本。tag v$VERSION 建在编的这个提交上（手动 tag 也是，不再建在 main 上）：
+          # 桌面 app「回退到上一版」之前，从上一版 tag 的源码读它认的数据库迁移（src-tauri/src/update/rollback.rs）
+          target=$(git rev-parse HEAD)
+          if [[ "$TRAIN" == true ]]; then body=$(printf '%s\n\n%s' "$body" "<!-- release-train -->"); fi
           files=("dist/$NAME.zip" "dist/$NAME.zip.sha256" "dist/$ALIAS" "dist/$ALIAS.sha256"
                  "dist/$CLIENT_ALIAS" "dist/$CLIENT_ALIAS.sha256"
                  "dist/$UPDATER" "dist/$UPDATER.sig" dist/latest.json dist/latest-client.json)

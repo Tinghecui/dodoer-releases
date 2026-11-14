@@ -26,6 +26,7 @@ import {
   readServerVersionStrict,
   restartApp,
   rollbackServer,
+  startAppRollback,
   startAppUpdate,
   subscribeAppUpdateState,
   usesTauriUpdater,
@@ -44,6 +45,7 @@ import {
 import { getTransport } from "@/lib/transport"
 import { isCoworkInfoLoaded, loadCoworkInfo } from "@/lib/cowork/info"
 import { extractAppCommandError } from "@/lib/app-error"
+import { compareVersions } from "@/lib/cowork/compat"
 import type { AppCommandError } from "@/lib/types"
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -156,6 +158,10 @@ export interface UpdateContextValue {
   restart: () => Promise<void>
   /** Revert to the previously-installed server bundle (server mode only). */
   rollback: () => Promise<void>
+  /** Desktop only: begin downloading `version`, the release before the
+   * running one (see `getAppRollbackTarget`). It then goes like an update:
+   * progress in {@link state}, and {@link restart} switches over. */
+  startRollback: (version: string) => Promise<void>
 }
 
 const UpdateContext = createContext<UpdateContextValue | null>(null)
@@ -756,11 +762,37 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     }
   }, [applyState, t])
 
+  const startRollback = useCallback(
+    async (version: string) => {
+      try {
+        applyState(await startAppRollback(version))
+      } catch (err) {
+        const { rawMessage } = normalizeAppUpdateError(err)
+        toast.error(t("desktopRollbackFailed", { message: rawMessage }))
+        console.error("[Update] rollback start failed:", err)
+      }
+    },
+    [applyState, t]
+  )
+
   const restart = useCallback(async () => {
     setIsRestarting(true)
     // Desktop relaunches the whole app — nothing to verify, the new process
     // boots into the updated build.
     if (usesTauriUpdater()) {
+      // Going back to an older release: there, the check offers the one being
+      // left again. Keep its badge quiet; the dismissal lapses by itself once
+      // a newer release is out. Written now rather than when the rollback
+      // started, since a check in between (nothing newer than this one) would
+      // have dropped it.
+      const staged = stateRef.current.version
+      if (
+        staged &&
+        currentVersion &&
+        compareVersions(staged, currentVersion) < 0
+      ) {
+        writeDismissedVersion(currentVersion)
+      }
       try {
         await restartApp()
         // Success: the app is relaunching; stay busy until it does.
@@ -876,7 +908,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       setRestartCountdown(null)
       setIsRestarting(false)
     }
-  }, [t])
+  }, [currentVersion, t])
 
   const rollback = useCallback(async () => {
     setIsRollingBack(true)
@@ -986,6 +1018,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       startUpdate,
       restart,
       rollback,
+      startRollback,
     }),
     [
       state,
@@ -1013,6 +1046,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       startUpdate,
       restart,
       rollback,
+      startRollback,
     ]
   )
 

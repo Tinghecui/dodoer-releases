@@ -68,6 +68,7 @@ function makeCtx(overrides: Partial<UpdateContextValue>): UpdateContextValue {
     startUpdate,
     restart,
     rollback: vi.fn(async () => {}),
+    startRollback: vi.fn(async () => {}),
     ...overrides,
   }
 }

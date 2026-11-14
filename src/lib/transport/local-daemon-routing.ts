@@ -21,6 +21,7 @@ export type LocalDaemonRoute = "daemon" | "shell" | "both"
 export const SHELL_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   "acp_open_hermes_setup_terminal",
   "acp_reveal_hermes_home",
+  "app_rollback_target",
   "backup_create",
   "browser_agent_act",
   "browser_agent_capture",
@@ -99,6 +100,7 @@ export const SHELL_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   "open_project_boot_window",
   "open_remote_workspace",
   "open_system_notification_settings",
+  "perform_app_rollback",
   "pet_show_context_menu",
   "pet_window_record_position",
   "read_clipboard_files",

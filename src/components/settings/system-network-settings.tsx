@@ -22,6 +22,7 @@ import { toast } from "sonner"
 import { useAppI18n } from "@/components/i18n-provider"
 import { CliAccessSettings } from "@/components/settings/cli-access-settings"
 import { DataSyncSettings } from "@/components/settings/data-sync-settings"
+import { DesktopRollback } from "@/components/settings/desktop-rollback"
 import { ReleaseNotes } from "@/components/settings/release-notes"
 import { SettingsSection } from "@/components/shared/settings-section"
 import {
@@ -55,6 +56,7 @@ import {
 import { isLocalDesktop, openUrl } from "@/lib/platform"
 import { SettingScopeBadge } from "@/components/settings/settings-scope"
 import type { AppLocale } from "@/lib/types"
+import { compareVersions } from "@/lib/cowork/compat"
 import { readLastCheck } from "@/lib/update-check-storage"
 import { describeAppUpdateError, usesTauriUpdater } from "@/lib/updater"
 import { useAppUpdate } from "@/components/providers/update-provider"
@@ -619,7 +621,13 @@ export function SystemNetworkSettings() {
             )}
 
             {updateReady && (
-              <p className="text-muted-foreground">{t("updateReadyHint")}</p>
+              <p className="text-muted-foreground">
+                {updateState.version &&
+                currentVersion &&
+                compareVersions(updateState.version, currentVersion) < 0
+                  ? t("rollbackReadyHint", { version: updateState.version })
+                  : t("updateReadyHint")}
+              </p>
             )}
 
             {restartCountdown !== null && (
@@ -656,6 +664,8 @@ export function SystemNetworkSettings() {
                 </Button>
               </div>
             )}
+
+            <DesktopRollback />
 
             {blockerHint && (
               <p className="text-2xs leading-5 text-amber-500">{blockerHint}</p>

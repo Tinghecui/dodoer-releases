@@ -13,6 +13,10 @@
 //! right place per runtime), but drive the platform updater instead of the
 //! in-place tarball swap.
 //!
+//! `perform_app_rollback` goes back to the release before this one the same
+//! way: that release's own manifest is the endpoint and the version check
+//! takes the older version ([`crate::update::rollback`]).
+//!
 //! Every platform downloads first and switches over only when the user asks
 //! for the restart. macOS and Linux put the new version in place at the end of
 //! the download. Windows keeps the downloaded installer until the restart and
@@ -24,6 +28,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::app_error::AppCommandError;
+use crate::update::rollback::{self, AppRollbackTarget, ReleaseSource};
 use crate::update::state::{self as update_state, AppUpdateState, AppUpdateStateHandle};
 use crate::web::event_bridge::EventEmitter;
 
@@ -51,12 +56,100 @@ pub async fn perform_app_update(
     }
 
     tauri::async_runtime::spawn(async move {
-        if let Err(message) = run_download(app, handle.clone(), emitter.clone()).await {
+        if let Err(message) = run_download(app, handle.clone(), emitter.clone(), None).await {
             update_state::set_error(&handle, &emitter, message);
         }
     });
 
     Ok(snap)
+}
+
+/// Where the updater checks, when it is a GitHub repository's latest release
+/// (the only kind of update source with older releases to go back to).
+fn rollback_source(app: &tauri::AppHandle) -> Option<ReleaseSource> {
+    let endpoints: Vec<String> = app
+        .config()
+        .plugins
+        .0
+        .get("updater")?
+        .get("endpoints")?
+        .as_array()?
+        .iter()
+        .filter_map(|endpoint| endpoint.as_str().map(str::to_string))
+        .collect();
+    ReleaseSource::from_endpoints(&endpoints)
+}
+
+/// The release `perform_app_rollback` would go back to, and whether it can
+/// open this app's database. None when there is no older release, or no
+/// update source to have one.
+#[tauri::command]
+pub async fn app_rollback_target(
+    app: tauri::AppHandle,
+) -> Result<Option<AppRollbackTarget>, AppCommandError> {
+    let Some(source) = rollback_source(&app) else {
+        return Ok(None);
+    };
+    rollback::find_target(&source, &app.package_info().version).await
+}
+
+/// Begin a download of `version`, the release before this one, like an
+/// update: progress arrives as `app_update_state`, and `restart_app` switches
+/// over. Looks the release up again, so that only the previous release, and
+/// only one that opens this app's database, is ever installed.
+#[tauri::command]
+pub async fn perform_app_rollback(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppUpdateStateHandle>,
+    version: String,
+) -> Result<AppUpdateState, AppCommandError> {
+    let source = rollback_source(&app).ok_or_else(|| {
+        AppCommandError::configuration_missing("This build has no releases to roll back to")
+    })?;
+    let target = rollback::find_target(&source, &app.package_info().version)
+        .await?
+        .filter(|target| target.version == version)
+        .ok_or_else(|| {
+            AppCommandError::invalid_input(format!("{version} is not the release before this one"))
+        })?;
+    if !target.unknown_migrations.is_empty() {
+        return Err(AppCommandError::invalid_input(format!(
+            "{version} cannot open this app's database (it lacks {})",
+            target.unknown_migrations.join(", ")
+        )));
+    }
+    let downgrade = Downgrade {
+        manifest: url::Url::parse(&source.manifest_url(&target.tag))
+            .map_err(|e| AppCommandError::invalid_input(e.to_string()))?,
+        version: semver::Version::parse(&target.version)
+            .map_err(|e| AppCommandError::invalid_input(e.to_string()))?,
+    };
+
+    let handle = state.inner().clone();
+    let emitter = EventEmitter::Tauri(app.clone());
+    let (started, snap) = update_state::try_begin(&handle, &emitter);
+    if !started {
+        // An update is already downloading or staged; leave it be.
+        return Err(AppCommandError::invalid_input(
+            "An update is already in progress",
+        ));
+    }
+    tauri::async_runtime::spawn(async move {
+        if let Err(message) =
+            run_download(app, handle.clone(), emitter.clone(), Some(downgrade)).await
+        {
+            update_state::set_error(&handle, &emitter, message);
+        }
+    });
+
+    Ok(snap)
+}
+
+/// Where a rollback goes: the older release's own manifest, and its version,
+/// the only one the check then takes.
+struct Downgrade {
+    manifest: url::Url,
+    version: semver::Version,
 }
 
 /// Bound on the pre-download manifest re-check. `tauri-plugin-updater` applies
@@ -107,21 +200,32 @@ fn staged_install() -> MutexGuard<'static, Option<StagedInstall>> {
 /// the relaunch either. The plugin calls this hook just before it launches the
 /// installer, in place of its default one, which only did
 /// `cleanup_before_exit`. `quit` records that it ran.
+///
+/// With a `downgrade`, the updater checks that release's manifest instead,
+/// and takes its (older) version, where it otherwise only takes a newer one.
 fn updater(
     app: &tauri::AppHandle,
     quit: Arc<AtomicBool>,
+    downgrade: Option<&Downgrade>,
 ) -> tauri_plugin_updater::Result<tauri_plugin_updater::Updater> {
     let quitting = app.clone();
-    app.updater_builder()
-        .on_before_exit(move || {
-            quit.store(true, Ordering::SeqCst);
-            // `install` runs on a blocking thread (see `install_and_quit`),
-            // where this is a plain call. On a runtime worker it would not
-            // be, and `shut_down`'s `block_on`s would panic.
-            tokio::task::block_in_place(|| crate::shut_down(&quitting));
-            quitting.cleanup_before_exit();
-        })
-        .build()
+    let mut builder = app.updater_builder().on_before_exit(move || {
+        quit.store(true, Ordering::SeqCst);
+        // `install` runs on a blocking thread (see `install_and_quit`),
+        // where this is a plain call. On a runtime worker it would not
+        // be, and `shut_down`'s `block_on`s would panic.
+        tokio::task::block_in_place(|| crate::shut_down(&quitting));
+        quitting.cleanup_before_exit();
+    });
+    if let Some(downgrade) = downgrade {
+        let version = downgrade.version.clone();
+        builder = builder
+            .endpoints(vec![downgrade.manifest.clone()])?
+            .version_comparator(move |current, release| {
+                release.version == version && release.version < current
+            });
+    }
+    builder.build()
 }
 
 /// Re-check and download the update, driving progress into the shared handle,
@@ -132,9 +236,10 @@ async fn run_download(
     app: tauri::AppHandle,
     handle: AppUpdateStateHandle,
     emitter: EventEmitter,
+    downgrade: Option<Downgrade>,
 ) -> Result<(), String> {
     let quit = Arc::new(AtomicBool::new(false));
-    let updater = updater(&app, quit.clone()).map_err(|e| e.to_string())?;
+    let updater = updater(&app, quit.clone(), downgrade.as_ref()).map_err(|e| e.to_string())?;
     let update = tokio::time::timeout(CHECK_TIMEOUT, updater.check())
         .await
         // "timed out" is what the frontend's `normalizeAppUpdateError` keys on
@@ -143,7 +248,10 @@ async fn run_download(
         .map_err(|e| e.to_string())?
         // The renderer only enables the button when a check found an update,
         // but a release could vanish between check and click.
-        .ok_or_else(|| "No update available".to_string())?;
+        .ok_or_else(|| match &downgrade {
+            Some(downgrade) => format!("Release {} is no longer available", downgrade.version),
+            None => "No update available".to_string(),
+        })?;
     let version = update.version.clone();
 
     let pe = Arc::new(update_state::ProgressEmitter::new(

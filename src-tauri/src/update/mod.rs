@@ -11,6 +11,10 @@
 //! - **Standalone** (no supervisor): the worker re-execs itself.
 
 pub mod install;
+// Desktop only (`commands::app_update`); compiled for the tests in every mode.
+#[cfg(any(feature = "tauri-runtime", test))]
+#[cfg_attr(not(feature = "tauri-runtime"), allow(dead_code))]
+pub mod rollback;
 pub mod runtime;
 pub mod state;
 pub mod verify;

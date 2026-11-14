@@ -153,6 +153,35 @@ export function startAppUpdate(): Promise<AppUpdateState> {
   return updateTransport().call<AppUpdateState>("perform_app_update")
 }
 
+/** Where the desktop app's "roll back" goes: the release before the running
+ * one. `unknownMigrations` lists what its database holds that that release
+ * does not know; when there is any, it would not start on it, and the backend
+ * refuses the rollback. */
+export interface AppRollbackTarget {
+  version: string
+  tag: string
+  date?: string | null
+  unknownMigrations: string[]
+}
+
+/** Desktop only: look up the release before the running one (null when there
+ * is none). Asks GitHub, so call it when the user asks to roll back, not on
+ * every render. */
+export function getAppRollbackTarget(): Promise<AppRollbackTarget | null> {
+  return getShellTransport().call<AppRollbackTarget | null>(
+    "app_rollback_target"
+  )
+}
+
+/** Desktop only: begin downloading `version`, the release before the running
+ * one. It then goes like an update: progress via
+ * {@link subscribeAppUpdateState}, and {@link restartApp} switches over. */
+export function startAppRollback(version: string): Promise<AppUpdateState> {
+  return getShellTransport().call<AppUpdateState>("perform_app_rollback", {
+    version,
+  })
+}
+
 /** Relaunch into the freshly-installed bytes. Desktop relaunches the app;
  * server triggers the supervised/re-exec restart (the caller then drives the
  * countdown + health poll using the `ReadyToRestart` snapshot's metadata). */

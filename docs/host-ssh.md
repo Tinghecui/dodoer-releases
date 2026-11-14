@@ -171,7 +171,11 @@ codeg-mcp 多一个工具组（设置里和浏览器、电脑操作并排），�
 ### 5.6 macOS 的权限
 
 - 实测里权限两边完全一样，说明 SSH 会话的权限跟起它的 app 走。产品里就是 dodoer：给 dodoer 开了「完全磁盘访问」，SSH 会话就读得到；没开就读不到。用户只面对 dodoer 这一个名字。
-- dodoer 现在是 ad-hoc 签名，每次更新后系统可能把它当成新 app，权限要重新给。这是签名的事，不在这里解决。
+- dodoer 现在是 ad-hoc 签名，每次更新后系统可能把它当成新 app，权限要重新给。根治是签名的事（固定的签名身份，另一个 PR）；这里做兜底，见下。
+- **2026-11-15 真机上碰到了**：装了新版 dodoer 后，系统设置里「录屏与系统录音」的 dodoer 开关还亮着，`ssh desktop 'screencapture …'` 却报 `could not create image from display`。系统日志（`/usr/bin/log show --predicate 'subsystem == "com.apple.TCC"'`）里两句话说清楚了：一是归属没问题——`responsible_path=/Applications/dodoer.app`，经 SSH 跑的命令确实算 dodoer 的；二是 `Failed to match existing code requirement for subject app.codeg`——授权记的是旧版的代码哈希，和新版对不上。重开 dodoer 没用；`tccutil reset ScreenCapture app.codeg`（普通账号就能跑，不用 sudo）清掉旧授权后，dodoer 一申请系统就弹「“dodoer”想要录制此电脑的屏幕和音频」，允许、dodoer 重开，截屏就成了。用户自己分不清「开关亮着」和「授权有效」。
+- **借出面板里的「macOS 权限」**（`host_ssh/permissions.rs`，命令 `host_ssh_permissions`、`host_ssh_repair_permission`）：借出时列出屏幕录制、辅助功能两项，「已授权」或「未授权或已失效」（`CGPreflightScreenCaptureAccess`、`AXIsProcessTrusted`，只查不问，分不出没给过和失效了）。没生效的给「修复」：`/usr/bin/tccutil reset <ScreenCapture|Accessibility> <bundle id>`（bundle id 取 app 配置里的 `identifier`，正式包是 `app.codeg`），再用 `CGRequestScreenCaptureAccess` / `AXIsProcessTrustedWithOptions(prompt)` 让系统弹框。面板打开时、窗口回到前台时（多半是从系统设置回来）重新查。macOS 在一个进程第一次答「没有」之后，整个进程生命期都记着，所以允许之后要重开 dodoer 才显示「已授权」（屏幕录制系统会主动要求重开）。
+- 这是有意破例：电脑操作那边规定只有 helper 能以自己的名义申请权限，dodoer 本身拿着权限算泄露（电脑操作设置里那条黄字提醒）。借出命令行时 dodoer 拿着权限正是目的，但代价一样——**本机工作区的智能体也跟着拿到**，面板的说明文字里写了。申请只在用户点「修复」时发生。
+- dodoer 是从终端里启动的（开发时），查到的是终端的权限，`tccutil` 改 dodoer 的授权也没用：这时不给「修复」，只说明原因（`responsibility_get_pid_responsible_for_pid` 判断）。
 
 ## 6. 安全
 

@@ -24,10 +24,15 @@
  * one for every local window, one per remote window — and told to the
  * backend again when the app starts, which keeps it only in memory.
  *
- * Desktop only (Chrome is on the computer the app runs on), and only once the
- * person has connected on this computer at least once: first connecting takes
- * the instructions on the settings page, which is where a person who has
- * never heard of it starts.
+ * In a remote window the switch also turns this computer's browser tools on
+ * (`lendBrowserSwitch`): the server's agents reach Chrome through the tabs
+ * the app lends, and the app lends none while its own switch is off.
+ *
+ * Desktop only (Chrome is on the computer the app runs on), and there from
+ * the start: the switch is in this panel, so hiding the glyph until the first
+ * connection left a person told to "open the Chrome panel" with nothing to
+ * open (2026-11-14). The panel connects, and links to the settings page for
+ * the instructions a first connection may need.
  */
 
 import { useEffect, useState } from "react"
@@ -83,22 +88,12 @@ import {
 } from "@/lib/browser/chrome-api"
 import type { GrantLevel } from "@/lib/browser/types"
 import { getCurrentWindowLabel } from "@/lib/browser/window-label"
+import { lendBrowserSwitch } from "@/lib/cowork/remote-browser"
 import { isDesktop } from "@/lib/platform"
 import { cn } from "@/lib/utils"
 
 /** The mark the browser uses for "an agent can reach this". */
 const AGENT_MARK = "text-violet-600 dark:text-violet-400"
-
-/** Set the first time this computer's app connects to Chrome. */
-export const CONNECTED_BEFORE_KEY = "chrome:connected-before"
-
-function connectedBefore(): boolean {
-  try {
-    return localStorage.getItem(CONNECTED_BEFORE_KEY) === "1"
-  } catch {
-    return false
-  }
-}
 
 /** Where a scope's switch is remembered across restarts: the backend keeps
  *  it only for as long as the app runs. */
@@ -122,12 +117,14 @@ function rememberAgents(scope: string, on: boolean) {
   }
 }
 
-function rememberConnected() {
-  try {
-    localStorage.setItem(CONNECTED_BEFORE_KEY, "1")
-  } catch {
-    // Without storage the glyph shows only while connected.
-  }
+/** Agents on a server reach Chrome through the tabs this app lends it, which
+ *  takes the app's own browser tools being on. Nothing to do in a local
+ *  window; a failure leaves the switch as it is, to be seen in the list of
+ *  computers. */
+function lendBrowser() {
+  lendBrowserSwitch("browser").catch((error) => {
+    console.error("[StatusBarChrome] failed to lend the browser:", error)
+  })
 }
 
 export function StatusBarChrome({ className }: { className?: string }) {
@@ -154,7 +151,10 @@ function ChromeItem({ className }: { className?: string }) {
       .then((on) =>
         !on && rememberedAgents(scope) ? chromeSetAgents(true) : on
       )
-      .then(settle)
+      .then((on) => {
+        if (on) lendBrowser()
+        settle(on)
+      })
       .catch(() => {})
     return () => {
       cancelled = true
@@ -216,12 +216,6 @@ function ChromeItem({ className }: { className?: string }) {
   const state = status?.state ?? "disconnected"
   const problem = status?.problem ?? null
 
-  useEffect(() => {
-    if (state === "connected") rememberConnected()
-  }, [state])
-
-  if (state === "disconnected" && !connectedBefore()) return null
-
   const share = async (tabId: string, level: GrantLevel) => {
     try {
       await chromeShare(tabId, level)
@@ -232,8 +226,10 @@ function ChromeItem({ className }: { className?: string }) {
 
   const switchAgents = async (on: boolean) => {
     try {
-      setAgents(await chromeSetAgents(on))
+      const now = await chromeSetAgents(on)
+      setAgents(now)
       rememberAgents(scope, on)
+      if (now) lendBrowser()
     } catch (error) {
       toast.error(t("agentsFailed", { message: toErrorMessage(error) }))
     }

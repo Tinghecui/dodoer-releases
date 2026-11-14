@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   chromeAgents: vi.fn(),
   chromeSetAgents: vi.fn(),
   chromeActivate: vi.fn(),
+  lendBrowserSwitch: vi.fn<(key: string) => Promise<void>>(async () => {}),
   windowLabel: "main",
   /** The backend's switch for the window's scope. */
   lent: false,
@@ -66,15 +67,14 @@ vi.mock("@/lib/browser/browser-tab-store", () => ({
 vi.mock("@/lib/browser/window-label", () => ({
   getCurrentWindowLabel: () => mocks.windowLabel,
 }))
+vi.mock("@/lib/cowork/remote-browser", () => ({
+  lendBrowserSwitch: mocks.lendBrowserSwitch,
+}))
 vi.mock("@/lib/platform", () => ({ isDesktop: () => mocks.desktop }))
 vi.mock("@/lib/api", () => ({ openSettingsWindow: mocks.openSettingsWindow }))
 vi.mock("sonner", () => ({ toast: mocks.toast }))
 
-import {
-  agentsKey,
-  CONNECTED_BEFORE_KEY,
-  StatusBarChrome,
-} from "./status-bar-chrome"
+import { agentsKey, StatusBarChrome } from "./status-bar-chrome"
 import enMessages from "@/i18n/messages/en.json"
 
 function status(over: Partial<ChromeStatus> = {}): ChromeStatus {
@@ -139,6 +139,7 @@ beforeEach(() => {
     return on
   })
   mocks.chromeActivate.mockReset().mockResolvedValue(undefined)
+  mocks.lendBrowserSwitch.mockClear()
   mocks.windowLabel = "main"
   mocks.grants.clear()
   mocks.owners.clear()
@@ -155,28 +156,18 @@ describe("StatusBarChrome", () => {
     expect(mocks.chromeStatus).not.toHaveBeenCalled()
   })
 
-  it("stays out of the way until this computer has connected once", async () => {
-    const { container } = await mount()
-    expect(container).toBeEmptyDOMElement()
-
-    await act(async () => {
-      mocks.heardStatus?.(status({ state: "waiting" }))
-    })
+  it("is there before this computer has ever connected, to connect from", async () => {
+    await mount()
     expect(
       screen.getByRole("button", { name: "Your own Chrome" })
-    ).toBeInTheDocument()
-    await act(async () => {
-      mocks.heardStatus?.(CONNECTED)
-    })
-    expect(localStorage.getItem(CONNECTED_BEFORE_KEY)).toBe("1")
+    ).toHaveAttribute("title", "Your own Chrome · Not connected")
 
-    // From now on it shows while disconnected too, to connect again from.
-    await act(async () => {
-      mocks.heardStatus?.(status({ problem: "lost" }))
-    })
+    await openPanel()
     expect(
-      screen.getByRole("button", { name: "Your own Chrome" })
+      screen.getByRole("switch", { name: "Let agents use my Chrome" })
     ).toBeInTheDocument()
+    await press("Connect to Chrome")
+    expect(mocks.chromeConnect).toHaveBeenCalled()
   })
 
   it("lists Chrome's open pages by title and host, for the person only", async () => {
@@ -277,10 +268,15 @@ describe("StatusBarChrome", () => {
     // Per scope: this remote window's own.
     expect(localStorage.getItem(agentsKey("remote-workspace-7"))).toBe("1")
     expect(localStorage.getItem(agentsKey("local"))).toBeNull()
+    // The server's agents get there through the tabs this app lends.
+    expect(mocks.lendBrowserSwitch).toHaveBeenCalledTimes(1)
+    expect(mocks.lendBrowserSwitch).toHaveBeenCalledWith("browser")
 
     await userEvent.click(toggle)
     expect(mocks.chromeSetAgents).toHaveBeenLastCalledWith(false)
     expect(localStorage.getItem(agentsKey("remote-workspace-7"))).toBe("0")
+    // Turning it off leaves the app's own browser tools as they are.
+    expect(mocks.lendBrowserSwitch).toHaveBeenCalledTimes(1)
   })
 
   it("hands a remembered switch back to the backend when the app starts", async () => {
@@ -288,6 +284,7 @@ describe("StatusBarChrome", () => {
     mocks.chromeStatus.mockResolvedValue(CONNECTED)
     await mount()
     expect(mocks.chromeSetAgents).toHaveBeenCalledWith(true)
+    expect(mocks.lendBrowserSwitch).toHaveBeenCalledWith("browser")
     await openPanel()
     expect(
       screen.getByRole("switch", { name: "Let agents use my Chrome" })
@@ -295,7 +292,6 @@ describe("StatusBarChrome", () => {
   })
 
   it("says agents will fail while the switch is on and Chrome is not connected", async () => {
-    localStorage.setItem(CONNECTED_BEFORE_KEY, "1")
     mocks.lent = true
     await mount()
     await openPanel()
@@ -345,7 +341,6 @@ describe("StatusBarChrome", () => {
   })
 
   it("sends problems the settings page explains to the settings page", async () => {
-    localStorage.setItem(CONNECTED_BEFORE_KEY, "1")
     mocks.chromeStatus.mockResolvedValue(status({ problem: "file-denied" }))
     await mount()
     await openPanel()
@@ -364,7 +359,6 @@ describe("StatusBarChrome", () => {
   })
 
   it("reports a command that failed outright", async () => {
-    localStorage.setItem(CONNECTED_BEFORE_KEY, "1")
     mocks.chromeConnect.mockRejectedValue(new Error("no such command"))
     await mount()
     await openPanel()

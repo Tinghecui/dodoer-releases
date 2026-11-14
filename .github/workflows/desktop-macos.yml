@@ -281,7 +281,24 @@ jobs:
             gh release upload "$rel" -R "$RELEASE_REPO" --clobber "${files[@]}"
           else
             # --latest：本仓库也放 server 包的 Release，Latest 要明确给桌面版（app 从 releases/latest/download/ 查更新）
-            gh release create "$rel" -R "$RELEASE_REPO" --target "$target" --latest \
-              --title "dodoer ${VERSION}（${TAG}）" --notes "$body" "${files[@]}"
+            create() { gh release create "$rel" -R "$RELEASE_REPO" --target "$1" --latest \
+                         --title "dodoer ${VERSION}（${TAG}）" --notes "$body" "${files[@]}"; }
+            if ! create "$target" 2>"$RUNNER_TEMP/create.err"; then
+              cat "$RUNNER_TEMP/create.err" >&2
+              grep -q 'HTTP 403' "$RUNNER_TEMP/create.err" || exit 1
+              # 403：编的时候 main 上又合了改 .github/workflows 的提交，GITHUB_TOKEN 不能把 tag 建在 workflow 跟 main 不一样的提交上。
+              # 「回退到上一版」只从 tag 的源码读数据库迁移，迁移跟 main 一样的话 tag 建在 main 上读到的也一样；不一样就只能手动补发
+              git fetch -q --depth=1 origin main
+              main=$(git rev-parse FETCH_HEAD)
+              dir=src-tauri/src/db/migration
+              if [[ $(git rev-parse "$target:$dir") != $(git rev-parse "$main:$dir") ]]; then
+                echo "::error::tag $rel 建不到编的这个提交（$target）上：编的时候 main 上又合了改 .github/workflows 的提交（GITHUB_TOKEN 不能把 tag 建在 workflow 跟 main 不一样的提交上）。$dir 跟 main（$main）不一样，不能改建在 main 上（「回退到上一版」从 tag 的源码读迁移）。手动补发：下载这次 run 的 artifact，用有 workflow 权限的令牌照这一步的命令 gh release create $rel --target $target --latest"
+                exit 1
+              fi
+              echo "::warning::tag $rel 建不到编的这个提交（$target）上（编的时候 main 上又合了改 .github/workflows 的提交），改建在 main（$main）上：$dir 两边一样"
+              create "$main"
+            else
+              cat "$RUNNER_TEMP/create.err" >&2
+            fi
           fi
           echo "### dodoer $VERSION 已发布：https://github.com/$RELEASE_REPO/releases/tag/$rel" >> "$GITHUB_STEP_SUMMARY"

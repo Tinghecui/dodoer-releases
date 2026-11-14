@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import {
+  applyConversationPrStatuses,
   applyPrStatuses,
   loadPrStatusEnabled,
   setPrStatusEnabled,
@@ -7,7 +8,11 @@ import {
 } from "./pr-status-store"
 
 beforeEach(() => {
-  usePrStatusStore.setState({ byFolder: new Map(), enabled: true })
+  usePrStatusStore.setState({
+    byFolder: new Map(),
+    byConversation: new Map(),
+    enabled: true,
+  })
   localStorage.clear()
 })
 
@@ -29,6 +34,27 @@ describe("applyPrStatuses", () => {
     expect(after).not.toBe(before)
     expect(after.get(1)).toBe(entry)
     expect(after.get(2)).toEqual({ kind: "no_pr", branch: "x" })
+  })
+})
+
+describe("applyConversationPrStatuses", () => {
+  it("fills its own map and leaves the folders' alone", () => {
+    applyPrStatuses([{ folder_id: 1, status: { kind: "unavailable" } }])
+    const folders = usePrStatusStore.getState().byFolder
+    applyConversationPrStatuses([
+      { conversation_id: 1, status: { kind: "no_pr", branch: "feat" } },
+    ])
+    const state = usePrStatusStore.getState()
+    expect(state.byFolder).toBe(folders)
+    expect(state.byConversation.get(1)).toEqual({
+      kind: "no_pr",
+      branch: "feat",
+    })
+    const before = state.byConversation
+    applyConversationPrStatuses([
+      { conversation_id: 1, status: { kind: "no_pr", branch: "feat" } },
+    ])
+    expect(usePrStatusStore.getState().byConversation).toBe(before)
   })
 })
 

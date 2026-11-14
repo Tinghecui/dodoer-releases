@@ -1287,7 +1287,7 @@ impl ClaudeParser {
 /// Locate `<session_id>.jsonl` under any project directory of the Claude
 /// history roots ([`resolve_claude_projects_dirs_for_env`]); the first root
 /// that has it wins, so `~/.claude` beats the relay root on duplicate ids.
-fn find_session_file_in_roots(base_dirs: &[PathBuf], session_id: &str) -> Option<PathBuf> {
+pub(crate) fn find_session_file_in_roots(base_dirs: &[PathBuf], session_id: &str) -> Option<PathBuf> {
     base_dirs
         .iter()
         .find_map(|dir| find_session_file_in(dir, session_id))

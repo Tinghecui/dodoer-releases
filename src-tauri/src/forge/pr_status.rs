@@ -15,8 +15,15 @@
 //! interval has passed, and a changed answer is also pushed as
 //! [`FOLDER_PR_STATUS_EVENT`] so other clients pick it up between their own
 //! polls. Nobody looking means nothing is fetched.
+//!
+//! Conversations NOT in a codeg worktree are asked about separately, per
+//! conversation ([`conversation_pr_statuses_core`]): a Claude agent may have
+//! made a worktree of its own, or opened a pull request from wherever it was.
+//! Its transcript says which ([`super::agent_pr`]); same cache rules, own map.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::hash::Hash;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,16 +32,22 @@ use serde::Serialize;
 
 use super::deliver::ForgePr;
 use super::{
-    auth, cnb, deliver, gitea, github, gitlab, ForgeChangeDetail, ForgeCheckList, ForgeCheckState,
-    ForgeError, ForgeProvider, ResolvedAuth,
+    agent_pr, auth, cnb, deliver, gitea, github, gitlab, ForgeChangeDetail, ForgeCheckList,
+    ForgeCheckState, ForgeError, ForgeProvider, ResolvedAuth,
 };
 use crate::commands::folders::get_folder_core;
-use crate::commands::forge::folder_forge_remote_core;
+use crate::commands::forge::forge_remote_at;
+use crate::db::service::{agent_setting_service, conversation_service};
 use crate::db::AppDatabase;
+use crate::models::AgentType;
+use crate::parsers::claude;
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
 /// Pushed with one [`FolderPrStatusEntry`] whenever a folder's answer changes.
 pub const FOLDER_PR_STATUS_EVENT: &str = "folder://pr-status";
+/// Pushed with one [`ConversationPrStatusEntry`] whenever a conversation's
+/// answer changes.
+pub const CONVERSATION_PR_STATUS_EVENT: &str = "conversation://pr-status";
 
 /// At most this many folders per request — a sidebar shows a handful of
 /// worktrees, and the cap keeps one request from fanning out without bound.
@@ -66,7 +79,8 @@ const RETRY_AFTER_ERROR: Duration = Duration::from_secs(120);
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FolderPrStatus {
     Pr(PrHint),
-    /// The worktree's branch has no pull request.
+    /// The worktree's branch has no pull request (and, for a conversation,
+    /// its agent opened none).
     NoPr {
         branch: String,
     },
@@ -122,6 +136,12 @@ pub struct FolderPrStatusEntry {
     pub status: FolderPrStatus,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConversationPrStatusEntry {
+    pub conversation_id: i32,
+    pub status: FolderPrStatus,
+}
+
 // ── cache ───────────────────────────────────────────────────────────────────
 
 struct Slot {
@@ -130,17 +150,26 @@ struct Slot {
     due: Instant,
 }
 
-#[derive(Default)]
-struct Cache {
-    slots: HashMap<i32, Slot>,
-    /// Folders a request is looking up right now, and since when.
-    claims: HashMap<i32, Instant>,
+/// Keyed by folder id or by conversation id — one cache each.
+struct Cache<K> {
+    slots: HashMap<K, Slot>,
+    /// Keys a request is looking up right now, and since when.
+    claims: HashMap<K, Instant>,
 }
 
-impl Cache {
+impl<K> Default for Cache<K> {
+    fn default() -> Self {
+        Self {
+            slots: HashMap::new(),
+            claims: HashMap::new(),
+        }
+    }
+}
+
+impl<K: Copy + Eq + Hash> Cache<K> {
     /// Which of `ids` this request should look up now, claiming them so a
     /// concurrent request does not look them up too.
-    fn claim(&mut self, ids: &[i32], force: bool, now: Instant) -> Vec<i32> {
+    fn claim(&mut self, ids: &[K], force: bool, now: Instant) -> Vec<K> {
         let mut claimed = Vec::new();
         for &id in ids {
             if let Some(since) = self.claims.get(&id) {
@@ -164,14 +193,14 @@ impl Cache {
         claimed
     }
 
-    /// Record a lookup's outcome. Returns the entry to push when the answer
+    /// Record a lookup's outcome. Returns the status to push when the answer
     /// changed.
     fn settle(
         &mut self,
-        id: i32,
+        id: K,
         outcome: Result<FolderPrStatus, ForgeError>,
         now: Instant,
-    ) -> Option<FolderPrStatusEntry> {
+    ) -> Option<FolderPrStatus> {
         self.claims.remove(&id);
         let previous = self.slots.get(&id).map(|slot| slot.status.clone());
         let (status, wait) = match outcome {
@@ -203,25 +232,18 @@ impl Cache {
                 due: now + wait,
             },
         );
-        changed.then_some(FolderPrStatusEntry {
-            folder_id: id,
-            status,
-        })
+        changed.then_some(status)
     }
 
-    fn snapshot(&self, ids: &[i32]) -> Vec<FolderPrStatusEntry> {
+    fn snapshot(&self, ids: &[K]) -> Vec<(K, FolderPrStatus)> {
         ids.iter()
-            .filter_map(|id| {
-                self.slots.get(id).map(|slot| FolderPrStatusEntry {
-                    folder_id: *id,
-                    status: slot.status.clone(),
-                })
-            })
+            .filter_map(|id| self.slots.get(id).map(|slot| (*id, slot.status.clone())))
             .collect()
     }
 }
 
-static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Default::default);
+static CACHE: LazyLock<Mutex<Cache<i32>>> = LazyLock::new(Default::default);
+static CONVERSATION_CACHE: LazyLock<Mutex<Cache<i32>>> = LazyLock::new(Default::default);
 
 fn ttl_for(status: &FolderPrStatus) -> Duration {
     match status {
@@ -246,37 +268,79 @@ pub async fn folder_pr_statuses_core(
     folder_ids: Vec<i32>,
     force: bool,
 ) -> Vec<FolderPrStatusEntry> {
-    let mut ids = folder_ids;
+    let (changed, entries) =
+        cached_statuses(&CACHE, folder_ids, force, |id| lookup(db, id)).await;
+    let entry =
+        |(folder_id, status): (i32, FolderPrStatus)| FolderPrStatusEntry { folder_id, status };
+    for entry in changed.into_iter().map(entry) {
+        emit_event(emitter, FOLDER_PR_STATUS_EVENT, &entry);
+    }
+    entries.into_iter().map(entry).collect()
+}
+
+/// [`folder_pr_statuses_core`] for conversations outside codeg worktrees:
+/// the pull request of the worktree their agent is in now, else the one it
+/// opened (see [`lookup_conversation`]).
+pub async fn conversation_pr_statuses_core(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    conversation_ids: Vec<i32>,
+    force: bool,
+) -> Vec<ConversationPrStatusEntry> {
+    let (changed, entries) = cached_statuses(&CONVERSATION_CACHE, conversation_ids, force, |id| {
+        lookup_conversation(db, id)
+    })
+    .await;
+    let entry = |(conversation_id, status): (i32, FolderPrStatus)| ConversationPrStatusEntry {
+        conversation_id,
+        status,
+    };
+    for entry in changed.into_iter().map(entry) {
+        emit_event(emitter, CONVERSATION_PR_STATUS_EVENT, &entry);
+    }
+    entries.into_iter().map(entry).collect()
+}
+
+/// Look up the due ones of `ids` with `lookup`, then answer all of them from
+/// `cache`: `(changed, all)`.
+async fn cached_statuses<F, Fut>(
+    cache: &Mutex<Cache<i32>>,
+    ids: Vec<i32>,
+    force: bool,
+    lookup: F,
+) -> (Vec<(i32, FolderPrStatus)>, Vec<(i32, FolderPrStatus)>)
+where
+    F: Fn(i32) -> Fut,
+    Fut: Future<Output = Result<FolderPrStatus, ForgeError>>,
+{
+    let mut ids = ids;
     ids.sort_unstable();
     ids.dedup();
     ids.truncate(MAX_FOLDERS_PER_REQUEST);
 
-    let claimed = match CACHE.lock() {
+    let claimed = match cache.lock() {
         Ok(mut cache) => cache.claim(&ids, force, Instant::now()),
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), Vec::new()),
     };
 
+    let lookup = &lookup;
     let outcomes: Vec<(i32, Result<FolderPrStatus, ForgeError>)> = futures::stream::iter(claimed)
-        .map(|id| async move { (id, lookup(db, id).await) })
+        .map(|id| async move { (id, lookup(id).await) })
         .buffer_unordered(CONCURRENT_LOOKUPS)
         .collect()
         .await;
 
-    let (changed, entries) = match CACHE.lock() {
+    match cache.lock() {
         Ok(mut cache) => {
             let now = Instant::now();
-            let changed: Vec<FolderPrStatusEntry> = outcomes
+            let changed = outcomes
                 .into_iter()
-                .filter_map(|(id, outcome)| cache.settle(id, outcome, now))
+                .filter_map(|(id, outcome)| cache.settle(id, outcome, now).map(|s| (id, s)))
                 .collect();
             (changed, cache.snapshot(&ids))
         }
-        Err(_) => return Vec::new(),
-    };
-    for entry in &changed {
-        emit_event(emitter, FOLDER_PR_STATUS_EVENT, entry);
+        Err(_) => (Vec::new(), Vec::new()),
     }
-    entries
 }
 
 // ── lookup ──────────────────────────────────────────────────────────────────
@@ -288,24 +352,82 @@ async fn lookup(db: &AppDatabase, folder_id: i32) -> Result<FolderPrStatus, Forg
     if folder.parent_id.is_none() {
         return Ok(FolderPrStatus::Unavailable);
     }
-    let Some(branch) = current_branch(&folder.path).await else {
+    lookup_branch_at(db, &folder.path).await
+}
+
+/// A conversation outside codeg's worktrees. Claude only: its transcript is
+/// the one that says where the agent is ([`agent_pr`]).
+///
+/// The worktree the agent is in now wins when its branch has a pull request
+/// (or the forge needs an account); otherwise the newest pull request the
+/// agent opened — from a worktree it has left since, or with a `git -C` that
+/// never moved its `cwd`. The main checkout itself never counts: its branch
+/// is shared with every other conversation there.
+async fn lookup_conversation(
+    db: &AppDatabase,
+    conversation_id: i32,
+) -> Result<FolderPrStatus, ForgeError> {
+    let Ok(conversation) = conversation_service::get_by_id(&db.conn, conversation_id).await else {
         return Ok(FolderPrStatus::Unavailable);
     };
-    let remote = match folder_forge_remote_core(db, folder_id).await {
+    if !matches!(conversation.agent_type, AgentType::ClaudeCode) {
+        return Ok(FolderPrStatus::Unavailable);
+    }
+    let Some(session_id) = conversation.external_id.clone() else {
+        return Ok(FolderPrStatus::Unavailable);
+    };
+    let folder_path = get_folder_core(db, conversation.folder_id)
+        .await
+        .map(|folder| folder.path)
+        .unwrap_or_default();
+    // The agent's own environment: a `CLAUDE_CONFIG_DIR` in its settings
+    // (ccr's `~/.claudr`) moves the transcripts.
+    let env = agent_setting_service::load_agent_env(&db.conn, AgentType::ClaudeCode).await;
+    let roots = claude::resolve_claude_projects_dirs_for_env(&env);
+    let trail = tokio::task::spawn_blocking(move || {
+        agent_pr::read_trail(conversation_id, &roots, &session_id, &folder_path)
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(trail) = trail else {
+        return Ok(FolderPrStatus::Unavailable);
+    };
+
+    let mut in_worktree = None;
+    if let Some(cwd) = trail.cwd.as_deref() {
+        if let Some(root) = linked_worktree_root(cwd).await {
+            let status = lookup_branch_at(db, &root).await?;
+            if matches!(
+                status,
+                FolderPrStatus::Pr(_) | FolderPrStatus::NoAccount { .. }
+            ) {
+                return Ok(status);
+            }
+            in_worktree = Some(status);
+        }
+    }
+    if let Some(url) = trail.created_pr.as_deref() {
+        let status = lookup_pr_url(db, url).await?;
+        if !matches!(status, FolderPrStatus::Unavailable) {
+            return Ok(status);
+        }
+    }
+    Ok(in_worktree.unwrap_or(FolderPrStatus::Unavailable))
+}
+
+/// The pull request of the branch checked out at `path`.
+async fn lookup_branch_at(db: &AppDatabase, path: &str) -> Result<FolderPrStatus, ForgeError> {
+    let Some(branch) = current_branch(path).await else {
+        return Ok(FolderPrStatus::Unavailable);
+    };
+    let remote = match forge_remote_at(&db.conn, path).await {
         Ok(Some(remote)) if remote.supported => remote,
         _ => return Ok(FolderPrStatus::Unavailable),
     };
-    let auth = match auth::resolve_read_auth(&db.conn, remote.provider, &remote.server_host).await {
+    let auth = match read_auth(db, remote.provider, &remote.server_host).await? {
         Ok(auth) => auth,
-        Err(ForgeError::NoAccount { provider, host }) => {
-            return Ok(FolderPrStatus::NoAccount { provider, host })
-        }
-        // A pinned account without a token, a host codeg cannot read: adding
-        // an account would not help, so there is nothing to say.
-        Err(ForgeError::Auth(_)) | Err(ForgeError::UnsupportedHost { .. }) => {
-            return Ok(FolderPrStatus::Unavailable)
-        }
-        Err(err) => return Err(err),
+        Err(answer) => return Ok(answer),
     };
 
     let pulls = match remote.provider {
@@ -340,38 +462,151 @@ async fn lookup(db: &AppDatabase, folder_id: i32) -> Result<FolderPrStatus, Forg
         }));
     }
 
-    let detail: ForgeChangeDetail = match remote.provider {
-        ForgeProvider::GitHub => {
-            github::change_detail(&auth, &remote.owner_repo, pull.number).await?
-        }
-        ForgeProvider::GitLab => {
-            gitlab::change_detail(&auth, &remote.owner_repo, pull.number).await?
-        }
-        ForgeProvider::Gitea => {
-            gitea::change_detail(&auth, &remote.owner_repo, pull.number).await?
-        }
-        ForgeProvider::Cnb => cnb::change_detail(&auth, &remote.owner_repo, pull.number).await?,
-    };
-    let review_decision = match remote.provider {
-        ForgeProvider::GitHub => {
-            github_review_decision(&auth, &remote.owner_repo, pull.number).await
-        }
-        ForgeProvider::GitLab | ForgeProvider::Gitea | ForgeProvider::Cnb => None,
-    };
-
-    Ok(FolderPrStatus::Pr(PrHint {
-        provider: remote.provider,
-        number: pull.number,
+    let detail =
+        change_detail(&auth, remote.provider, &remote.owner_repo, pull.number).await?;
+    let review_decision =
+        review_decision(&auth, remote.provider, &remote.owner_repo, pull.number).await;
+    Ok(FolderPrStatus::Pr(hint_from_detail(
+        remote.provider,
         url,
-        state,
-        draft: detail.draft,
-        branch,
-        base_ref: pull.base_ref,
-        mergeable: detail.mergeable,
-        merge_state: detail.merge_state,
+        detail,
         review_decision,
-        checks: summarize_checks(&detail.checks),
-    }))
+    )))
+}
+
+/// The pull request at `url` (one the agent opened), by its number.
+async fn lookup_pr_url(db: &AppDatabase, url: &str) -> Result<FolderPrStatus, ForgeError> {
+    let Some(pr) = agent_pr::parse_pr_url(url) else {
+        return Ok(FolderPrStatus::Unavailable);
+    };
+    // The same normalization a git remote of that repository gets.
+    let Some((host, owner_repo)) =
+        super::parse_remote_url(&format!("https://{}/{}", pr.host, pr.repo))
+    else {
+        return Ok(FolderPrStatus::Unavailable);
+    };
+    let profile = super::host_profile(&db.conn, &host).await;
+    if !profile.recognized {
+        return Ok(FolderPrStatus::Unavailable);
+    }
+    let owner_repo = super::strip_base_path(&owner_repo, &profile.base_path);
+    let auth = match read_auth(db, profile.provider, &host).await? {
+        Ok(auth) => auth,
+        Err(answer) => return Ok(answer),
+    };
+    let detail = change_detail(&auth, profile.provider, &owner_repo, pr.number).await?;
+    let review_decision = if detail.state == "open" {
+        review_decision(&auth, profile.provider, &owner_repo, pr.number).await
+    } else {
+        None
+    };
+    let url = super::sanitize_web_url(url).unwrap_or_default();
+    Ok(FolderPrStatus::Pr(hint_from_detail(
+        profile.provider,
+        url,
+        detail,
+        review_decision,
+    )))
+}
+
+/// Credentials to read `host` with — or, as `Ok(Err(..))`, the answer to
+/// give without asking the forge.
+async fn read_auth(
+    db: &AppDatabase,
+    provider: ForgeProvider,
+    host: &str,
+) -> Result<Result<ResolvedAuth, FolderPrStatus>, ForgeError> {
+    match auth::resolve_read_auth(&db.conn, provider, host).await {
+        Ok(auth) => Ok(Ok(auth)),
+        Err(ForgeError::NoAccount { provider, host }) => {
+            Ok(Err(FolderPrStatus::NoAccount { provider, host }))
+        }
+        // A pinned account without a token, a host codeg cannot read: adding
+        // an account would not help, so there is nothing to say.
+        Err(ForgeError::Auth(_)) | Err(ForgeError::UnsupportedHost { .. }) => {
+            Ok(Err(FolderPrStatus::Unavailable))
+        }
+        Err(err) => Err(err),
+    }
+}
+
+async fn change_detail(
+    auth: &ResolvedAuth,
+    provider: ForgeProvider,
+    owner_repo: &str,
+    number: i64,
+) -> Result<ForgeChangeDetail, ForgeError> {
+    match provider {
+        ForgeProvider::GitHub => github::change_detail(auth, owner_repo, number).await,
+        ForgeProvider::GitLab => gitlab::change_detail(auth, owner_repo, number).await,
+        ForgeProvider::Gitea => gitea::change_detail(auth, owner_repo, number).await,
+        ForgeProvider::Cnb => cnb::change_detail(auth, owner_repo, number).await,
+    }
+}
+
+async fn review_decision(
+    auth: &ResolvedAuth,
+    provider: ForgeProvider,
+    owner_repo: &str,
+    number: i64,
+) -> Option<String> {
+    match provider {
+        ForgeProvider::GitHub => github_review_decision(auth, owner_repo, number).await,
+        ForgeProvider::GitLab | ForgeProvider::Gitea | ForgeProvider::Cnb => None,
+    }
+}
+
+/// A change's detail as the sidebar shows it; CI, review and mergeability
+/// only while it is open.
+fn hint_from_detail(
+    provider: ForgeProvider,
+    url: String,
+    detail: ForgeChangeDetail,
+    review_decision: Option<String>,
+) -> PrHint {
+    let open = detail.state == "open";
+    PrHint {
+        provider,
+        number: detail.number,
+        url,
+        draft: open && detail.draft,
+        branch: detail.head_ref,
+        base_ref: detail.base_ref,
+        mergeable: detail.mergeable.filter(|_| open),
+        merge_state: detail.merge_state.filter(|_| open),
+        review_decision: review_decision.filter(|_| open),
+        checks: if open {
+            summarize_checks(&detail.checks)
+        } else {
+            PrChecksSummary::default()
+        },
+        state: detail.state,
+    }
+}
+
+/// The top of the linked worktree `cwd` is in; `None` for a main checkout,
+/// a path that is gone, or no repository at all.
+async fn linked_worktree_root(cwd: &str) -> Option<String> {
+    let output = crate::process::tokio_command("git")
+        .args([
+            "-C",
+            cwd,
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+            "--show-toplevel",
+        ])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut lines = text.lines();
+    let (git_dir, common_dir, top) = (lines.next()?, lines.next()?, lines.next()?);
+    (git_dir != common_dir && !top.is_empty()).then(|| top.to_string())
 }
 
 /// The worktree's checked-out branch; `None` when detached or not a repo.
@@ -654,7 +889,7 @@ mod tests {
             t0 + FORCE_MIN_GAP,
         );
         assert!(pushed.is_none());
-        assert_eq!(cache.snapshot(&[1])[0].status, open_hint(1));
+        assert_eq!(cache.snapshot(&[1])[0].1, open_hint(1));
     }
 
     #[test]

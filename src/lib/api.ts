@@ -68,6 +68,7 @@ import type {
   ForgePanelSettings,
   ForgeRemote,
   FolderPrStatusEntry,
+  ConversationPrStatusEntry,
   ForgeSettingsStore,
   ForgeSort,
   ForgeStateAction,
@@ -6594,6 +6595,19 @@ export async function folderPrStatuses(
   force = false
 ): Promise<FolderPrStatusEntry[]> {
   return getTransport().call("folder_pr_statuses", { folderIds, force })
+}
+
+/** `folderPrStatuses` for conversations outside codeg worktrees (Claude
+ *  only): the backend reads the agent's transcript for the worktree it is in
+ *  and the pull request it opened. Pushed as `conversation://pr-status`. */
+export async function conversationPrStatuses(
+  conversationIds: number[],
+  force = false
+): Promise<ConversationPrStatusEntry[]> {
+  return getTransport().call("conversation_pr_statuses", {
+    conversationIds,
+    force,
+  })
 }
 
 /** Everything the client gets to decide about a list request. The REPOSITORY

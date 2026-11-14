@@ -4,6 +4,7 @@
 //! response caching (see `.docs/architecture/2026-08-17-*` for what is out of
 //! scope and why REST-direct beat shelling out to `gh`/`glab`).
 
+pub mod agent_pr;
 pub mod auth;
 pub mod auto;
 pub mod cnb;

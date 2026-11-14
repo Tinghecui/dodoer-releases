@@ -169,9 +169,13 @@ export function SidebarConversationHoverDetails({
         <InfoItem label={t("gitBranch")}>
           <LtrValue>{branch || none}</LtrValue>
         </InfoItem>
-        {/* Worktrees only: the branch's pull request, or how to see it. */}
-        {isWorktree && conversation.parent_id == null && (
-          <SidebarPrDetails folderId={folderId} />
+        {/* The worktree branch's pull request (a codeg worktree's, or one
+            the agent made or opened itself), or how to see it. */}
+        {conversation.parent_id == null && (
+          <SidebarPrDetails
+            folderId={isWorktree ? folderId : null}
+            conversationId={conversation.id}
+          />
         )}
         <InfoItem label={t("folderPath")}>
           <LtrValue>{folder?.path || none}</LtrValue>

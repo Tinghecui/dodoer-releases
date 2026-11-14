@@ -14,7 +14,11 @@ vi.mock("@/components/agent-icon", () => ({
 
 import { SidebarPrDetails, SidebarPrIndicator } from "./sidebar-pr-status"
 import { SidebarConversationHoverDetails } from "./sidebar-conversation-hover-details"
-import { applyPrStatuses, usePrStatusStore } from "@/stores/pr-status-store"
+import {
+  applyConversationPrStatuses,
+  applyPrStatuses,
+  usePrStatusStore,
+} from "@/stores/pr-status-store"
 import {
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
@@ -61,7 +65,11 @@ function withIntl(node: ReactNode) {
 }
 
 beforeEach(() => {
-  usePrStatusStore.setState({ byFolder: new Map(), enabled: true })
+  usePrStatusStore.setState({
+    byFolder: new Map(),
+    byConversation: new Map(),
+    enabled: true,
+  })
   openUrl.mockClear()
 })
 
@@ -79,6 +87,24 @@ describe("SidebarPrIndicator", () => {
     expect(
       screen.getByText("Pull request #42, Open, checks running, 2 of 4 done")
     ).toBeTruthy()
+  })
+
+  it("falls back to the conversation's own pull request", () => {
+    applyConversationPrStatuses([{ conversation_id: 8, status: hint() }])
+    withIntl(
+      <>
+        <SidebarPrIndicator folderId={1} />
+        <SidebarPrIndicator folderId={1} conversationId={8} />
+      </>
+    )
+    expect(screen.getAllByText("#42")).toHaveLength(1)
+
+    // A worktree folder's answer wins over the conversation's.
+    cleanup()
+    applyPrStatuses([{ folder_id: 1, status: hint({ number: 7 }) }])
+    withIntl(<SidebarPrIndicator folderId={1} conversationId={8} />)
+    expect(screen.getByText("#7")).toBeTruthy()
+    expect(screen.queryByText("#42")).toBeNull()
   })
 
   it("marks drafts and drops the checks once merged", () => {
@@ -210,7 +236,7 @@ describe("the hover bubble", () => {
     }
   }
 
-  it("shows the pull request for a worktree conversation only", () => {
+  it("shows a worktree folder's pull request for worktree conversations only", () => {
     resetAppWorkspaceStore()
     useAppWorkspaceStore.setState({
       allFolders: [folder(1, null), folder(2, 1)],
@@ -225,5 +251,13 @@ describe("the hover bubble", () => {
     withIntl(<SidebarConversationHoverDetails conversation={conv(1)} />)
     expect(screen.queryByText("#1")).toBeNull()
     expect(screen.queryByText("Pull request")).toBeNull()
+
+    // Outside worktrees: the conversation's own (its agent's) pull request.
+    cleanup()
+    applyConversationPrStatuses([
+      { conversation_id: 7, status: hint({ number: 9 }) },
+    ])
+    withIntl(<SidebarConversationHoverDetails conversation={conv(1)} />)
+    expect(screen.getByText("#9")).toBeTruthy()
   })
 })

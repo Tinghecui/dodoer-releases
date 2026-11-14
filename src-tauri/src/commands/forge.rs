@@ -1956,6 +1956,25 @@ pub async fn folder_pr_statuses(
     .await)
 }
 
+/// Pull-request status of the given conversations outside codeg worktrees,
+/// for the sidebar — see [`forge::pr_status::conversation_pr_statuses_core`].
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn conversation_pr_statuses(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    conversation_ids: Vec<i32>,
+    force: Option<bool>,
+) -> Result<Vec<forge::pr_status::ConversationPrStatusEntry>, AppCommandError> {
+    Ok(forge::pr_status::conversation_pr_statuses_core(
+        &db,
+        &EventEmitter::Tauri(app),
+        conversation_ids,
+        force.unwrap_or(false),
+    )
+    .await)
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn forge_list_issues(

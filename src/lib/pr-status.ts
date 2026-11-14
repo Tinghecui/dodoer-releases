@@ -2,6 +2,11 @@ import type { FolderPrStatus, PrChecksSummary, PrHint } from "@/lib/types"
 
 /** Pushed by the backend whenever a folder's pull-request status changes. */
 export const FOLDER_PR_STATUS_EVENT = "folder://pr-status"
+/** Same, for a conversation outside codeg worktrees. */
+export const CONVERSATION_PR_STATUS_EVENT = "conversation://pr-status"
+
+/** The backend answers at most this many per request. */
+const MAX_CONVERSATIONS = 64
 
 /** How the row's checks glyph reads. `fraction` is the share of finished
  *  checks, floored to quarters so the pie moves in visible steps. */
@@ -61,4 +66,40 @@ export function worktreeFolderIds(
     if (worktrees.has(conversation.folder_id)) ids.add(conversation.folder_id)
   }
   return [...ids].sort((a, b) => a - b)
+}
+
+/** The conversations whose OWN pull request the sidebar asks about: Claude
+ *  conversations outside codeg worktrees (the agent may have made a worktree
+ *  itself, or opened a pull request from wherever it was — its transcript
+ *  says), top-level only. The most recently updated ones up to the backend's
+ *  cap, ascending by id. */
+export function agentPrConversationIds(
+  folders: readonly { id: number; parent_id: number | null }[],
+  conversations: readonly {
+    id: number
+    folder_id: number
+    agent_type: string
+    external_id: string | null
+    updated_at: string
+    parent_id?: number | null
+  }[]
+): number[] {
+  const worktrees = new Set<number>()
+  for (const folder of folders) {
+    if (folder.parent_id != null) worktrees.add(folder.id)
+  }
+  return conversations
+    .filter(
+      (c) =>
+        c.agent_type === "claude_code" &&
+        c.external_id != null &&
+        c.parent_id == null &&
+        !worktrees.has(c.folder_id)
+    )
+    .sort((a, b) =>
+      a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0
+    )
+    .slice(0, MAX_CONVERSATIONS)
+    .map((c) => c.id)
+    .sort((a, b) => a - b)
 }

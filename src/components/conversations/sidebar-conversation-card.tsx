@@ -713,7 +713,10 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                       re-renders only when its folder's status changes. Like
                       the branch chip, sub-sessions leave it to their parent. */}
                       {!isSubsession && (
-                        <SidebarPrIndicator folderId={conversation.folder_id} />
+                        <SidebarPrIndicator
+                          folderId={conversation.folder_id}
+                          conversationId={conversation.id}
+                        />
                       )}
                       <ConversationActivityBadge
                         awaiting={awaiting}

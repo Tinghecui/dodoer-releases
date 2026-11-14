@@ -2184,6 +2184,7 @@ mod tauri_app {
                 work_task_commands::work_task_template_delete,
                 forge_commands::folder_forge_remote,
                 forge_commands::folder_pr_statuses,
+                forge_commands::conversation_pr_statuses,
                 forge_commands::forge_list_issues,
                 forge_commands::forge_issue_detail,
                 forge_commands::forge_tab_count,

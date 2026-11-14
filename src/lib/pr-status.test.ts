@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  agentPrConversationIds,
   checksIndicator,
   prVisualState,
   samePrStatus,
@@ -98,6 +99,52 @@ describe("worktreeFolderIds", () => {
     expect(
       worktreeFolderIds([{ id: 1, parent_id: null }], [{ folder_id: 1 }])
     ).toEqual([])
+  })
+})
+
+describe("agentPrConversationIds", () => {
+  const conversation = (
+    id: number,
+    overrides: Partial<{
+      folder_id: number
+      agent_type: string
+      external_id: string | null
+      updated_at: string
+      parent_id: number | null
+    }> = {}
+  ) => ({
+    id,
+    folder_id: 1,
+    agent_type: "claude_code",
+    external_id: `s-${id}`,
+    updated_at: `2026-11-14T10:00:${String(id).padStart(2, "0")}Z`,
+    parent_id: null,
+    ...overrides,
+  })
+  const folders = [
+    { id: 1, parent_id: null },
+    { id: 2, parent_id: 1 },
+  ]
+
+  it("lists top-level Claude conversations outside codeg worktrees", () => {
+    expect(
+      agentPrConversationIds(folders, [
+        conversation(4),
+        conversation(3, { folder_id: 2 }),
+        conversation(2, { agent_type: "codex" }),
+        conversation(5, { external_id: null }),
+        conversation(6, { parent_id: 4 }),
+        conversation(1),
+      ])
+    ).toEqual([1, 4])
+  })
+
+  it("keeps the most recently updated up to the cap", () => {
+    const many = Array.from({ length: 70 }, (_, i) => conversation(i + 1))
+    const ids = agentPrConversationIds(folders, many)
+    expect(ids).toHaveLength(64)
+    expect(ids[0]).toBe(7)
+    expect(ids[63]).toBe(70)
   })
 })
 

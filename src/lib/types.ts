@@ -2851,6 +2851,14 @@ export interface FolderPrStatusEntry {
   status: FolderPrStatus
 }
 
+/** A conversation outside codeg worktrees: the pull request of the worktree
+ *  its agent made, or of one it opened (mirrors Rust
+ *  `pr_status::ConversationPrStatusEntry`). */
+export interface ConversationPrStatusEntry {
+  conversation_id: number
+  status: FolderPrStatus
+}
+
 /** Latest task (any state) for a source key — the row chip's data. */
 export interface ForgeTaskLink {
   source_key: string

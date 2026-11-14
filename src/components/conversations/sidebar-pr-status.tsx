@@ -137,16 +137,19 @@ function rowChecks(hint: PrHint): ChecksIndicator | null {
  * Display only — the row's right slot swaps to the quick actions on hover,
  * and the hover bubble (`SidebarPrDetails`) carries the link.
  *
- * Renders nothing unless the folder is a worktree whose branch has a pull
- * request; the poller only asks about worktree folders.
+ * Renders nothing unless there is a pull request: the worktree folder's
+ * branch's, or — for a conversation outside codeg worktrees — the one of the
+ * worktree its agent made or the one it opened (see `PrStatusPoller`).
  */
 export const SidebarPrIndicator = memo(function SidebarPrIndicator({
   folderId,
+  conversationId,
 }: {
   folderId: number
+  conversationId?: number
 }) {
   const t = useTranslations("Folder.prStatus")
-  const status = usePrStatus(folderId)
+  const status = usePrStatus(folderId, conversationId)
   if (!status || status.kind !== "pr") return null
   const visual = prVisualState(status)
   const { Icon, className, labelKey } = PR_STATE_GLYPH[visual]
@@ -208,14 +211,21 @@ function checksBreakdown(t: PrT, checks: PrChecksSummary): string {
 /**
  * The hover bubble's pull-request field: a link to the pull request with its
  * state, review and checks — or, when there is no account to read the forge
- * with, how to get one. Nothing for a folder that is not a worktree.
+ * with, how to get one. Nothing when neither the folder nor the
+ * conversation has an answer.
  *
  * Request-free like the rest of the bubble: it reads what the poller already
  * stored.
  */
-export function SidebarPrDetails({ folderId }: { folderId: number }) {
+export function SidebarPrDetails({
+  folderId,
+  conversationId,
+}: {
+  folderId: number | null
+  conversationId?: number
+}) {
   const t = useTranslations("Folder.prStatus")
-  const status = usePrStatus(folderId)
+  const status = usePrStatus(folderId, conversationId)
   if (!status || status.kind === "unavailable") return null
 
   if (status.kind === "no_account") {

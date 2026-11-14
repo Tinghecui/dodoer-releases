@@ -219,6 +219,29 @@ pub async fn folder_pr_statuses(
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPrStatusesParams {
+    pub conversation_ids: Vec<i32>,
+    #[serde(default)]
+    pub force: bool,
+}
+
+pub async fn conversation_pr_statuses(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ConversationPrStatusesParams>,
+) -> Result<Json<Vec<crate::forge::pr_status::ConversationPrStatusEntry>>, AppCommandError> {
+    Ok(Json(
+        crate::forge::pr_status::conversation_pr_statuses_core(
+            &state.db,
+            &state.emitter,
+            params.conversation_ids,
+            params.force,
+        )
+        .await,
+    ))
+}
+
 pub async fn forge_list_issues(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ListIssuesParams>,

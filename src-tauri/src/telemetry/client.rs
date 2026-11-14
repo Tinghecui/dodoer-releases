@@ -369,6 +369,11 @@ fn send_loop(tasks: Receiver<Task>, target: Target) {
             return;
         }
     };
+    // In the runtime for the thread's whole life, not just inside `block_on`:
+    // dropping a response hands its connection back to the pool, which starts
+    // a timer and panics without a runtime ("there is no reactor running") —
+    // on 2026-11-14 that killed this thread after its first send.
+    let _context = runtime.enter();
     let http = reqwest::Client::builder()
         .timeout(SEND_TIMEOUT)
         .build()
@@ -689,6 +694,64 @@ pub(in crate::telemetry) async fn forward_envelope(params: EnvelopeParams) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in for Sentry on localhost: answers every request on a
+    /// kept-alive connection with 200 and a small JSON body, like Sentry does.
+    fn fake_sentry() -> u16 {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    loop {
+                        let mut length = 0usize;
+                        loop {
+                            let mut line = String::new();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                                return;
+                            }
+                            if line == "\r\n" {
+                                break;
+                            }
+                            let lower = line.to_ascii_lowercase();
+                            if let Some(value) = lower.strip_prefix("content-length:") {
+                                length = value.trim().parse().unwrap_or(0);
+                            }
+                        }
+                        let mut body = vec![0; length];
+                        if reader.read_exact(&mut body).is_err() {
+                            return;
+                        }
+                        let reply = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                                     content-length: 11\r\n\r\n{\"id\":\"ab\"}";
+                        if stream.write_all(reply.as_bytes()).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    /// The sender thread outlives Sentry's answers (2026-11-14: it panicked
+    /// after the first one, outside its runtime, and nothing was sent again).
+    #[test]
+    fn sender_keeps_sending_after_a_reply() {
+        let port = fake_sentry();
+        let target = Target::new(&format!("http://key@127.0.0.1:{port}/1")).unwrap();
+        let transport = HttpTransport::start(target);
+        for round in 0..3 {
+            transport.send_envelope(Envelope::new());
+            assert!(
+                transport.flush(Duration::from_secs(10)),
+                "the sender thread stopped after {round} sends"
+            );
+        }
+    }
 
     #[test]
     fn budgets_stop_at_the_limit() {

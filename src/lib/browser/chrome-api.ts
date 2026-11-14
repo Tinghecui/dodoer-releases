@@ -6,6 +6,7 @@
 // reason: Chrome runs on this computer, whichever server the window's
 // workspace lives on.
 
+import type { GrantLevel } from "@/lib/browser/types"
 import { getShellTransport } from "@/lib/transport"
 import type { UnsubscribeFn } from "@/lib/transport/types"
 
@@ -36,8 +37,8 @@ export interface ChromeStatus {
 
 /** One web page open in the connected Chrome. Mirrors `ChromeTab` in
  *  `src-tauri/src/browser/chrome/tabs.rs`: a title and a host name, never the
- *  full address. What the person has open is theirs to see; no agent is
- *  told of these tabs. */
+ *  full address. What the person has open is theirs to see; an agent is told
+ *  of a tab only once the person hands it over (`chromeShare`). */
 export interface ChromeTab {
   /** The app's own name for the tab. */
   id: string
@@ -72,6 +73,19 @@ export function chromeConnect(endpoint?: string): Promise<ChromeStatus> {
 /** The connected Chrome's web pages, oldest first; empty when not connected. */
 export function chromeTabs(): Promise<ChromeTab[]> {
   return getShellTransport().call<ChromeTab[]>("browser_chrome_tabs")
+}
+
+/**
+ * Hand the Chrome tab `tabId` to agents at `level`, or take it back with
+ * `"none"`. Once handed over the tab is in the built-in browser's tab states
+ * under the same id (`browser://state`, owner `chrome`), which is where its
+ * level is read from.
+ */
+export function chromeShare(tabId: string, level: GrantLevel): Promise<void> {
+  return getShellTransport().call<void>("browser_chrome_share", {
+    tabId,
+    level,
+  })
 }
 
 /** End the connection, or the attempt at one. */

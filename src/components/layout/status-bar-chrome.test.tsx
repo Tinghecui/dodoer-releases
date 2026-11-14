@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -10,6 +11,10 @@ const mocks = vi.hoisted(() => ({
   chromeTabs: vi.fn(),
   chromeConnect: vi.fn(),
   chromeDisconnect: vi.fn(),
+  chromeShare: vi.fn(),
+  /** Shared levels by the browser tab store's key, as `browser://state`
+   *  would have left them. */
+  grants: new Map<string, "read" | "control">(),
   heardStatus: null as ((status: unknown) => void) | null,
   heardTabs: null as ((tabs: unknown) => void) | null,
   openSettingsWindow: vi.fn(async () => {}),
@@ -21,6 +26,7 @@ vi.mock("@/lib/browser/chrome-api", () => ({
   chromeTabs: mocks.chromeTabs,
   chromeConnect: mocks.chromeConnect,
   chromeDisconnect: mocks.chromeDisconnect,
+  chromeShare: mocks.chromeShare,
   subscribeChromeStatus: (handler: (status: unknown) => void) => {
     mocks.heardStatus = handler
     return Promise.resolve(() => {})
@@ -28,6 +34,13 @@ vi.mock("@/lib/browser/chrome-api", () => ({
   subscribeChromeTabs: (handler: (tabs: unknown) => void) => {
     mocks.heardTabs = handler
     return Promise.resolve(() => {})
+  },
+}))
+vi.mock("@/lib/browser/browser-tab-store", () => ({
+  browserWorkspaceTabId: (id: string) => `browser:${id}`,
+  useBrowserTabState: (key: string | null) => {
+    const level = key ? mocks.grants.get(key) : undefined
+    return level ? { agentGrant: { level } } : null
   },
 }))
 vi.mock("@/lib/platform", () => ({ isDesktop: () => mocks.desktop }))
@@ -91,6 +104,8 @@ beforeEach(() => {
   mocks.chromeTabs.mockReset().mockResolvedValue([])
   mocks.chromeConnect.mockReset().mockResolvedValue(CONNECTED)
   mocks.chromeDisconnect.mockReset().mockResolvedValue(status())
+  mocks.chromeShare.mockReset().mockResolvedValue(undefined)
+  mocks.grants.clear()
   mocks.openSettingsWindow.mockClear()
   mocks.toast.error.mockReset()
 })
@@ -141,7 +156,9 @@ describe("StatusBarChrome", () => {
 
     await openPanel()
     expect(screen.getByText("Open in Chrome: 2")).toBeInTheDocument()
-    expect(screen.getByText(/agents cannot see these tabs/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/Agents see only the tabs you hand to them/)
+    ).toBeInTheDocument()
     expect(screen.getByText("Inbox")).toBeInTheDocument()
     expect(screen.getByText("mail.example.com")).toBeInTheDocument()
     // A page without a title goes by its host.
@@ -159,6 +176,54 @@ describe("StatusBarChrome", () => {
     expect(
       screen.getByText("No web pages are open in Chrome.")
     ).toBeInTheDocument()
+  })
+
+  it("hands a tab to agents, and takes it back", async () => {
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    mocks.chromeTabs.mockResolvedValue(TABS)
+    await mount()
+    await openPanel()
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Hand to agents · Inbox" })
+    )
+    // Nothing to take back from a tab nobody was given.
+    expect(screen.queryByRole("menuitem", { name: "Take back" })).toBeNull()
+    await userEvent.click(
+      screen.getByRole("menuitem", { name: /Read and act/ })
+    )
+    expect(mocks.chromeShare).toHaveBeenCalledWith("1", "control")
+
+    // The level comes back on the tab's state, under the same id.
+    mocks.grants.set("browser:1", "read")
+    await act(async () => {
+      mocks.heardTabs?.([...TABS])
+    })
+    const shared = screen.getByRole("button", {
+      name: "Hand to agents · Inbox",
+    })
+    expect(shared).toHaveTextContent("Read only")
+    await userEvent.click(shared)
+    expect(
+      screen.getByRole("menuitem", { name: /Read only: agents can see/ })
+    ).toHaveAttribute("data-disabled")
+    await userEvent.click(screen.getByRole("menuitem", { name: "Take back" }))
+    expect(mocks.chromeShare).toHaveBeenLastCalledWith("1", "none")
+  })
+
+  it("says so when a tab could not be handed over", async () => {
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    mocks.chromeTabs.mockResolvedValue(TABS)
+    mocks.chromeShare.mockRejectedValue(new Error("Chrome is not connected"))
+    await mount()
+    await openPanel()
+    await userEvent.click(
+      screen.getByRole("button", { name: "Hand to agents · Inbox" })
+    )
+    await userEvent.click(screen.getByRole("menuitem", { name: /Read only/ }))
+    expect(mocks.toast.error).toHaveBeenCalledWith(
+      "Could not hand the tab over: Chrome is not connected"
+    )
   })
 
   it("disconnects, and connects again, from the panel", async () => {

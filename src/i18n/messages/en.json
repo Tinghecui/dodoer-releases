@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "Your own Chrome",
-    "description": "Lets agents work in the Chrome you use every day, where you are already signed in. Experimental: for now dodoer only connects and lists the web pages Chrome has open, at the bottom right of the window — agents cannot see, read or act on anything in Chrome yet.",
+    "description": "Lets agents work in the Chrome you use every day, where you are already signed in. Experimental: hand a tab to agents from the Chrome panel at the bottom right of the window, and they can read it, click and fill in forms there. Agents see no other tab.",
     "statusDisconnected": "Not connected",
     "statusWaiting": "Waiting for you to click Allow in Chrome…",
     "statusConnected": "Connected",
@@ -5856,10 +5856,17 @@
     "failed": "Chrome connection failed: {message}",
     "experimental": "Experimental",
     "tabsTitle": "Open in Chrome: {count}",
-    "tabsHidden": "Only you see this list; agents cannot see these tabs. Handing a tab to an agent comes in a later version.",
+    "tabsHidden": "Agents see only the tabs you hand to them, and use your sign-in on those sites.",
     "tabsEmpty": "No web pages are open in Chrome.",
     "openSettings": "Chrome settings",
-    "panelNeedsSettings": "dodoer could not find where to connect to Chrome. Open Chrome settings below to see what to do."
+    "panelNeedsSettings": "dodoer could not find where to connect to Chrome. Open Chrome settings below to see what to do.",
+    "share": "Hand to agents",
+    "shareRead": "Read only: agents can see this page",
+    "shareControl": "Read and act: agents can also click and fill in forms",
+    "levelRead": "Read only",
+    "levelControl": "Can act",
+    "stopSharing": "Take back",
+    "shareFailed": "Could not hand the tab over: {message}"
   },
   "BrowserSettings": {
     "title": "Built-in browser",

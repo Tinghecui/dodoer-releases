@@ -201,6 +201,18 @@ impl CdpClient {
         }
     }
 
+    /// Ask Chrome for `method` without waiting for its answer, which is
+    /// dropped when it comes: for what is said on the way out (letting a tab
+    /// go), from places that cannot wait.
+    pub fn send(&self, method: &str, params: Value, session: Option<&str>) {
+        let id = self.inner.last_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut frame = json!({ "id": id, "method": method, "params": params });
+        if let Some(session) = session {
+            frame["sessionId"] = json!(session);
+        }
+        let _ = self.inner.outgoing.send(frame.to_string());
+    }
+
     /// Everything Chrome says from now on, for every tab; a subscriber picks
     /// out its own by [`CdpEvent::session`].
     pub fn events(&self) -> broadcast::Receiver<CdpEvent> {

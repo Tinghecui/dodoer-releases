@@ -2570,6 +2570,16 @@ async fn eval_on_shared_page(
     if !level.allows(GrantLevel::Control) {
         return Err((Some(agent::AgentOutcome::Refused), control_required(tab_id)));
     }
+    // A tab of the person's own Chrome: the dialog that asks them about the
+    // code would be shown by a window that does not exist (its owner is no
+    // window), and Chrome has a switch of its own for this, still to come
+    // (`docs/agent-chrome.md` 5.4). Reading and acting need none of it.
+    if surface.kind() == SurfaceKind::External {
+        return Err((
+            Some(agent::AgentOutcome::Refused),
+            AppCommandError::permission_denied(crate::browser::surface_external::NO_PAGE_SCRIPT),
+        ));
+    }
 
     // Where the page is now, from codeg's world, held against the grant — and
     // the origin of the grant that admitted it, which is what the dialog will
@@ -3041,6 +3051,20 @@ pub async fn agent_close_tab_core(
             );
         }
         return Err(err);
+    }
+    // The person's own page, in their own Chrome: closing it is theirs. Said
+    // only to an agent the tab was handed to (`may_drive_tab` above).
+    if registry.read(tab_id, |tab| tab.state.surface) == Some(SurfaceKind::External) {
+        events::emit_agent_activity(
+            app,
+            tab_id,
+            agent::AgentAction::Close,
+            agent::AgentOutcome::Refused,
+            now_millis(),
+        );
+        return Err(AppCommandError::permission_denied(
+            "this tab is open in the person's own Chrome; agents cannot close it, ask the person to",
+        ));
     }
     close_core(app, registry, tab_id, None)
 }

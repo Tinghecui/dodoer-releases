@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "Votre propre Chrome",
-    "description": "Permet aux agents de travailler dans le Chrome que vous utilisez tous les jours, où vous êtes déjà connecté. Expérimental : pour l’instant, dodoer se connecte seulement et liste les pages web ouvertes dans Chrome, en bas à droite de la fenêtre — les agents ne peuvent encore rien voir, lire ni manipuler dans Chrome.",
+    "description": "Permet aux agents de travailler dans le Chrome que vous utilisez tous les jours, où vous êtes déjà connecté. Expérimental : confiez un onglet aux agents depuis le panneau Chrome en bas à droite de la fenêtre, et ils pourront le lire, y cliquer et remplir des formulaires. Les agents ne voient aucun autre onglet.",
     "statusDisconnected": "Non connecté",
     "statusWaiting": "En attente de votre clic sur Autoriser dans Chrome…",
     "statusConnected": "Connecté",
@@ -5856,10 +5856,17 @@
     "failed": "Échec de la connexion à Chrome : {message}",
     "experimental": "Expérimental",
     "tabsTitle": "Ouvertes dans Chrome : {count}",
-    "tabsHidden": "Vous seul voyez cette liste ; les agents ne voient pas ces onglets. Confier un onglet à un agent arrivera dans une version ultérieure.",
+    "tabsHidden": "Les agents ne voient que les onglets que vous leur confiez, et y utilisent votre connexion.",
     "tabsEmpty": "Aucune page web n’est ouverte dans Chrome.",
     "openSettings": "Réglages de Chrome",
-    "panelNeedsSettings": "dodoer n’a pas trouvé où se connecter à Chrome. Ouvrez les réglages de Chrome ci-dessous pour savoir quoi faire."
+    "panelNeedsSettings": "dodoer n’a pas trouvé où se connecter à Chrome. Ouvrez les réglages de Chrome ci-dessous pour savoir quoi faire.",
+    "share": "Confier aux agents",
+    "shareRead": "Lecture seule : les agents peuvent voir cette page",
+    "shareControl": "Lire et agir : ils peuvent aussi cliquer et remplir des formulaires",
+    "levelRead": "Lecture seule",
+    "levelControl": "Peut agir",
+    "stopSharing": "Reprendre",
+    "shareFailed": "Impossible de confier l’onglet : {message}"
   },
   "BrowserSettings": {
     "title": "Navigateur intégré",

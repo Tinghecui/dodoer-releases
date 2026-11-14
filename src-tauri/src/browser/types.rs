@@ -12,6 +12,9 @@ pub enum SurfaceKind {
     Child,
     /// Owned top-level window (`WebviewWindowBuilder::parent`).
     Window,
+    /// A tab of the person's own Chrome, handed to agents over the DevTools
+    /// protocol (`browser::chrome`). Not shown by the app at all.
+    External,
 }
 
 /// What a tab shows: a web page, or a local HTML document served through the

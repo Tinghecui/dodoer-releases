@@ -2,7 +2,9 @@
 // `src-tauri/src/browser/types.rs`. Field names are camelCase and enum values
 // kebab-case on both sides; change them together.
 
-export type SurfaceKind = "child" | "window"
+/** `external`: a tab of the person's own Chrome handed to agents. Shown by
+ *  Chrome, never by the app. */
+export type SurfaceKind = "child" | "window" | "external"
 
 /** What a tab shows: a web page, or a local HTML file through the document
  *  guest (`codeg-doc:`), which the file column hosts in place of the inline

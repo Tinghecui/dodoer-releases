@@ -33,6 +33,7 @@ export const SHELL_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   "browser_chrome_connect",
   "browser_chrome_disconnect",
   "browser_chrome_open_privacy_settings",
+  "browser_chrome_share",
   "browser_chrome_status",
   "browser_chrome_tabs",
   "browser_clear_data",

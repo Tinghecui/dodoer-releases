@@ -34,6 +34,16 @@ pub struct ChromeTab {
     pub host: String,
 }
 
+/// A listed tab with what the backend keeps of it: what attaching to it
+/// takes, and the address the panel is not given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub tab: ChromeTab,
+    /// Chrome's target id.
+    pub target: String,
+    pub url: String,
+}
+
 /// A page target as Chrome last described it.
 struct Known {
     id: String,
@@ -84,19 +94,28 @@ impl TabList {
     /// The web pages among the tabs, oldest first. Chrome's own pages
     /// (`chrome://`, extensions, DevTools) are not listed.
     pub(super) fn tabs(&self) -> Vec<ChromeTab> {
-        let mut listed: Vec<(&Known, String)> = self
+        self.listed().into_iter().map(|listed| listed.tab).collect()
+    }
+
+    /// [`Self::tabs`], each with its target and address.
+    pub(super) fn listed(&self) -> Vec<Listed> {
+        let mut listed: Vec<(&String, &Known, String)> = self
             .known
-            .values()
-            .filter(|known| known.subtype.is_none())
-            .filter_map(|known| host_of(&known.url).map(|host| (known, host)))
+            .iter()
+            .filter(|(_, known)| known.subtype.is_none())
+            .filter_map(|(target, known)| host_of(&known.url).map(|host| (target, known, host)))
             .collect();
-        listed.sort_by_key(|(known, _)| known.seen);
+        listed.sort_by_key(|(_, known, _)| known.seen);
         listed
             .into_iter()
-            .map(|(known, host)| ChromeTab {
-                id: known.id.clone(),
-                title: known.title.clone(),
-                host,
+            .map(|(target, known, host)| Listed {
+                tab: ChromeTab {
+                    id: known.id.clone(),
+                    title: known.title.clone(),
+                    host,
+                },
+                target: target.clone(),
+                url: known.url.clone(),
             })
             .collect()
     }
@@ -145,7 +164,7 @@ fn host_of(address: &str) -> Option<String> {
 /// Follow Chrome's tabs on `client`, handing every changed list to
 /// `publish`. Returns only if Chrome will not say what it has open; the
 /// caller stops it when the connection ends.
-pub(super) async fn follow(client: &CdpClient, mut publish: impl FnMut(Vec<ChromeTab>)) {
+pub(super) async fn follow(client: &CdpClient, mut publish: impl FnMut(Vec<Listed>)) {
     // Subscribed before asking: Chrome answers by describing every target it
     // already has, and those must not be missed.
     let mut events = client.events();
@@ -158,7 +177,7 @@ pub(super) async fn follow(client: &CdpClient, mut publish: impl FnMut(Vec<Chrom
         match events.recv().await {
             Ok(event) => {
                 if event.session.is_none() && list.apply(&event.method, &event.params) {
-                    publish(list.tabs());
+                    publish(list.listed());
                 }
             }
             // Fell behind and missed some: which, is unknown, so ask for all.
@@ -167,7 +186,7 @@ pub(super) async fn follow(client: &CdpClient, mut publish: impl FnMut(Vec<Chrom
                     return;
                 };
                 list.reset(&all["targetInfos"]);
-                publish(list.tabs());
+                publish(list.listed());
             }
             Err(RecvError::Closed) => return,
         }
@@ -269,6 +288,17 @@ mod tests {
     }
 
     #[test]
+    fn the_backend_keeps_the_target_and_address_of_each_tab() {
+        let mut list = TabList::default();
+        let (method, params) = created(info("T", "https://a.example/path?q=1", "A"));
+        list.apply(method, &params);
+        let listed = list.listed();
+        assert_eq!(listed[0].target, "T");
+        assert_eq!(listed[0].url, "https://a.example/path?q=1");
+        assert_eq!(listed[0].tab, list.tabs()[0]);
+    }
+
+    #[test]
     fn a_closed_tab_leaves_the_list() {
         let mut list = TabList::default();
         let (method, params) = created(info("A", "https://a.example/", "A"));
@@ -308,10 +338,15 @@ mod tests {
             .await
             .unwrap();
         let mut chrome = connections.recv().await.unwrap();
-        let (lists, mut heard) = mpsc::unbounded_channel();
+        let (lists, mut heard) = mpsc::unbounded_channel::<Vec<ChromeTab>>();
         let following = {
             let client = client.clone();
-            tokio::spawn(async move { follow(&client, |tabs| lists.send(tabs).unwrap()).await })
+            tokio::spawn(async move {
+                follow(&client, |listed| {
+                    lists.send(listed.into_iter().map(|listed| listed.tab).collect()).unwrap()
+                })
+                .await
+            })
         };
 
         let call = chrome.next_call().await;

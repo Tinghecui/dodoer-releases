@@ -5,6 +5,7 @@
 //! refuse. So there is no connecting at startup and no reconnecting when the
 //! connection is lost — the state says so and waits to be asked again.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -16,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::cdp::{CdpClient, ConnectError};
 use super::endpoint::{self, Endpoint, EndpointError};
-use super::tabs::{self, ChromeTab};
+use super::tabs::{self, ChromeTab, Listed};
 
 /// How long the person has to answer Chrome's dialog. They were sent there by
 /// the button they just pressed, so this is generous rather than tight.
@@ -135,6 +136,8 @@ struct Shared {
     status: watch::Sender<ChromeStatus>,
     /// The connected Chrome's web pages; empty whenever it is not connected.
     tabs: watch::Sender<Vec<ChromeTab>>,
+    /// The same tabs by id, with what attaching to one takes.
+    listed: Mutex<HashMap<String, Listed>>,
 }
 
 /// Cheap to clone; every clone is the same link.
@@ -167,6 +170,7 @@ impl ChromeLink {
                 slot: Mutex::new(Slot::default()),
                 status,
                 tabs,
+                listed: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -189,6 +193,16 @@ impl ChromeLink {
     /// Every later list of tabs.
     pub fn tab_changes(&self) -> watch::Receiver<Vec<ChromeTab>> {
         self.shared.tabs.subscribe()
+    }
+
+    /// The listed tab `id`, with its target and full address — what handing
+    /// it to agents takes. Never sent to the frontend.
+    pub fn listed(&self, id: &str) -> Option<Listed> {
+        self.listed_tabs().get(id).cloned()
+    }
+
+    fn listed_tabs(&self) -> MutexGuard<'_, HashMap<String, Listed>> {
+        self.shared.listed.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// The connection, while there is one.
@@ -320,6 +334,7 @@ impl ChromeLink {
         // show tabs that may since have closed. Emptied first, so whoever
         // hears "not connected" finds no tabs.
         if status.state != ChromeState::Connected {
+            self.listed_tabs().clear();
             self.shared.tabs.send_if_modified(|tabs| {
                 let had = !tabs.is_empty();
                 tabs.clear();
@@ -332,11 +347,16 @@ impl ChromeLink {
 
     /// Publish `list` — unless the connection it came from has been replaced
     /// or has ended since.
-    fn publish_tabs(&self, generation: u64, list: Vec<ChromeTab>) {
+    fn publish_tabs(&self, generation: u64, listed: Vec<Listed>) {
         let slot = self.slot();
         if slot.generation != generation || slot.client.is_none() {
             return;
         }
+        let list: Vec<ChromeTab> = listed.iter().map(|listed| listed.tab.clone()).collect();
+        *self.listed_tabs() = listed
+            .into_iter()
+            .map(|listed| (listed.tab.id.clone(), listed))
+            .collect();
         self.shared.tabs.send_if_modified(|tabs| {
             let changed = *tabs != list;
             *tabs = list;
@@ -645,10 +665,15 @@ mod tests {
         assert!(link.tabs().is_empty());
 
         let _chrome = connected_with_a_tab(&link, &mut connections).await;
-        assert_eq!(link.tabs()[0].host, "example.com");
+        let tab = link.tabs()[0].clone();
+        assert_eq!(tab.host, "example.com");
+        let listed = link.listed(&tab.id).unwrap();
+        assert_eq!(listed.target, "T");
+        assert_eq!(listed.url, "https://example.com/");
 
         link.disconnect();
         assert!(link.tabs().is_empty());
+        assert!(link.listed(&tab.id).is_none());
     }
 
     #[tokio::test]

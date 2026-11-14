@@ -40,6 +40,8 @@
 //! - `events`     — state fan-out to the frontend
 //! - `chrome`     — the connection to the person's own Chrome
 //!   (`docs/agent-chrome.md`)
+//! - `surface_external` — the surface of a Chrome tab handed to agents
+//! - `chrome_share` — handing a Chrome tab to agents and taking it back
 //! - `smoke`      — dev-only puppet driven by a JSON control file (feature
 //!   `browser-smoke`, never in a release build)
 
@@ -110,6 +112,10 @@ pub mod surface;
 pub mod surface_child;
 #[cfg(feature = "tauri-runtime")]
 pub mod surface_window;
+#[cfg(feature = "tauri-runtime")]
+pub mod surface_external;
+#[cfg(feature = "tauri-runtime")]
+pub mod chrome_share;
 
 #[cfg(feature = "tauri-runtime")]
 pub mod shim;

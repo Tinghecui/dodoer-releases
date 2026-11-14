@@ -7,7 +7,9 @@ use std::sync::Once;
 use tauri::{AppHandle, State};
 
 use crate::app_error::AppCommandError;
+use crate::browser::agent::GrantLevel;
 use crate::browser::chrome::{ChromeLink, ChromeStatus, ChromeTab, STATUS_EVENT, TABS_EVENT};
+use crate::browser::{chrome_share, BrowserRegistry};
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
 /// macOS's list of which app may read which other app's files — where the
@@ -61,6 +63,21 @@ pub async fn browser_chrome_tabs(
 ) -> Result<Vec<ChromeTab>, AppCommandError> {
     announce(&app, &link);
     Ok(link.tabs())
+}
+
+/// Hand the Chrome tab `tab_id` (an id from the tab list) to agents at
+/// `level`, or take it back with `none`. The person's doing, from the panel:
+/// no agent can reach this.
+#[tauri::command]
+pub async fn browser_chrome_share(
+    app: AppHandle,
+    link: State<'_, ChromeLink>,
+    registry: State<'_, BrowserRegistry>,
+    tab_id: String,
+    level: GrantLevel,
+) -> Result<(), AppCommandError> {
+    announce(&app, &link);
+    chrome_share::share(&app, &link, &registry, &tab_id, level).await
 }
 
 /// Connect, and answer once that has ended one way or the other — which is

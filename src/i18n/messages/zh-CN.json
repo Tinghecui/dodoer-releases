@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "我自己的 Chrome",
-    "description": "让智能体在你平时用的 Chrome 里干活，那里的网站你都已经登录了。试验功能：目前只能连接，并在窗口右下角列出 Chrome 开着的网页；智能体还看不到、也不能读取或操作 Chrome 里的页面。",
+    "description": "让智能体在你平时用的 Chrome 里干活，那里的网站你都已经登录了。试验功能：在窗口右下角的 Chrome 面板里把标签交给智能体，它就能读取这个页面、在上面点击和填写；别的标签智能体看不到。",
     "statusDisconnected": "未连接",
     "statusWaiting": "等你在 Chrome 里点「允许」…",
     "statusConnected": "已连接",
@@ -5856,10 +5856,17 @@
     "failed": "连接 Chrome 出错：{message}",
     "experimental": "试验",
     "tabsTitle": "Chrome 里开着的网页：{count}",
-    "tabsHidden": "这个列表只有你看得到，智能体看不到这些标签。把标签交给智能体，以后的版本才有。",
+    "tabsHidden": "智能体只看得到你交给它的标签，在那些网站上它用的是你的登录状态。",
     "tabsEmpty": "Chrome 里没有开着的网页。",
     "openSettings": "Chrome 设置",
-    "panelNeedsSettings": "dodoer 找不到该连到 Chrome 的哪里。点下面的「Chrome 设置」看怎么办。"
+    "panelNeedsSettings": "dodoer 找不到该连到 Chrome 的哪里。点下面的「Chrome 设置」看怎么办。",
+    "share": "交给智能体",
+    "shareRead": "只读：智能体能看这个页面",
+    "shareControl": "读取并操作：智能体还能点击和填写",
+    "levelRead": "只读",
+    "levelControl": "可操作",
+    "stopSharing": "收回",
+    "shareFailed": "没能交给智能体：{message}"
   },
   "BrowserSettings": {
     "title": "内置浏览器",

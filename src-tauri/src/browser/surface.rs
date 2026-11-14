@@ -7,6 +7,7 @@
 
 use tauri::Url;
 
+use super::surface_external::{self as external, ExternalHandle};
 use super::surface_window;
 use super::types::{Bounds, SurfaceKind, ViewportSize};
 
@@ -93,12 +94,21 @@ pub enum BrowserSurface {
     Child(ChildHandle),
     /// Boxed: `WebviewWindow` is ~900 bytes and the enum is cloned around.
     Window(Box<tauri::WebviewWindow>),
+    /// A tab of the person's own Chrome that they handed to agents
+    /// (`surface_external`). Everything about where and how it is shown is
+    /// Chrome's: those operations do nothing here.
+    External(ExternalHandle),
 }
 
 // The child arm is compiled out without browser-child; keep each operation
 // in one match instead of repeating its conditional compilation.
 macro_rules! per_surface {
-    ($self:ident, child: |$c:ident| $child:expr, window: |$w:ident| $window:expr) => {
+    (
+        $self:ident,
+        child: |$c:ident| $child:expr,
+        window: |$w:ident| $window:expr,
+        external: |$e:ident| $external:expr
+    ) => {
         match $self {
             #[cfg(all(
                 feature = "browser-child",
@@ -106,38 +116,42 @@ macro_rules! per_surface {
             ))]
             BrowserSurface::Child($c) => $child,
             BrowserSurface::Window($w) => $window,
+            BrowserSurface::External($e) => $external,
         }
     };
 }
 
 impl BrowserSurface {
     pub fn kind(&self) -> SurfaceKind {
-        per_surface!(self, child: |_c| SurfaceKind::Child, window: |_w| SurfaceKind::Window)
+        per_surface!(self, child: |_c| SurfaceKind::Child, window: |_w| SurfaceKind::Window, external: |_e| SurfaceKind::External)
     }
 
+    /// Whether the surface sits inside a workspace window. Not an owned
+    /// window, and not a Chrome tab.
     pub fn is_embedded(&self) -> bool {
-        self.kind() != SurfaceKind::Window
+        self.kind() == SurfaceKind::Child
     }
 
     /// Whether the page ↔ host channel can be installed on this surface. Not
     /// the same question as `is_embedded`: the owned window is where the shim
     /// lives on Linux, and answers like a tab.
     pub fn has_channel(&self) -> bool {
-        per_surface!(self, child: |_c| true, window: |_w| surface_window::HAS_CHANNEL)
+        per_surface!(self, child: |_c| true, window: |_w| surface_window::HAS_CHANNEL, external: |_e| false)
     }
 
     pub fn label(&self) -> &str {
-        per_surface!(self, child: |c| c.label(), window: |w| w.label())
+        per_surface!(self, child: |c| c.label(), window: |w| w.label(), external: |e| e.label())
     }
 
     pub fn navigate(&self, url: Url) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.load_url(url.as_str())?),
-            window: |w| Ok(w.navigate(url)?))
+            window: |w| Ok(w.navigate(url)?),
+            external: |e| e.navigate(&url))
     }
 
     pub fn reload(&self) -> Result<(), SurfaceError> {
-        per_surface!(self, child: |c| Ok(c.reload()?), window: |w| Ok(w.reload()?))
+        per_surface!(self, child: |c| Ok(c.reload()?), window: |w| Ok(w.reload()?), external: |e| e.reload())
     }
 
     /// Dev puppet only. Owned windows are deliberately not asked: wry's
@@ -148,11 +162,12 @@ impl BrowserSurface {
     pub fn url(&self) -> Result<Url, SurfaceError> {
         per_surface!(self,
             child: |c| Url::parse(&c.url()?).map_err(|e| SurfaceError(e.to_string())),
-            window: |w| surface_window::url(w))
+            window: |w| surface_window::url(w),
+            external: |e| e.url())
     }
 
     pub fn eval(&self, js: &str) -> Result<(), SurfaceError> {
-        per_surface!(self, child: |c| Ok(c.evaluate_script(js)?), window: |w| Ok(w.eval(js)?))
+        per_surface!(self, child: |c| Ok(c.evaluate_script(js)?), window: |w| Ok(w.eval(js)?), external: |_e| { let _ = js; Ok(()) })
     }
 
     pub fn eval_with_callback(
@@ -162,7 +177,8 @@ impl BrowserSurface {
     ) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.evaluate_script_with_callback(js, callback)?),
-            window: |w| Ok(w.eval_with_callback(js, callback)?))
+            window: |w| Ok(w.eval_with_callback(js, callback)?),
+            external: |_e| { let _ = (js, callback); Err(SurfaceError(external::NO_PAGE_SCRIPT.into())) })
     }
 
     /// Find in page. Only embedded surfaces have it: an owned window is a
@@ -175,17 +191,19 @@ impl BrowserSurface {
     ) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.find(query, forward, callback)?),
-            window: |w| surface_window::find(w, query, forward, callback))
+            window: |w| surface_window::find(w, query, forward, callback),
+            external: |_e| { let _ = (query, forward, callback); Err(SurfaceError(external::NOT_OURS.into())) })
     }
 
     pub fn clear_find(&self) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.clear_find()?),
-            window: |w| surface_window::clear_find(w))
+            window: |w| surface_window::clear_find(w),
+            external: |_e| Ok(()))
     }
 
     pub fn hide(&self) -> Result<(), SurfaceError> {
-        per_surface!(self, child: |c| Ok(c.set_visible(false)?), window: |w| Ok(w.hide()?))
+        per_surface!(self, child: |c| Ok(c.set_visible(false)?), window: |w| Ok(w.hide()?), external: |_e| Ok(()))
     }
 
     pub fn show(&self) -> Result<(), SurfaceError> {
@@ -193,15 +211,16 @@ impl BrowserSurface {
             child: |c| Ok(c.set_visible(true)?),
             // Un-hiding alone can leave the window behind its owner; showing
             // it is a request to see it.
-            window: |w| { w.show()?; w.set_focus()?; Ok(()) })
+            window: |w| { w.show()?; w.set_focus()?; Ok(()) },
+            external: |_e| Ok(()))
     }
 
     pub fn set_focus(&self) -> Result<(), SurfaceError> {
-        per_surface!(self, child: |c| Ok(c.focus()?), window: |w| Ok(w.set_focus()?))
+        per_surface!(self, child: |c| Ok(c.focus()?), window: |w| Ok(w.set_focus()?), external: |_e| Ok(()))
     }
 
     pub fn close(&self) -> Result<(), SurfaceError> {
-        per_surface!(self, child: |c| Ok(c.close()?), window: |w| Ok(w.close()?))
+        per_surface!(self, child: |c| Ok(c.close()?), window: |w| Ok(w.close()?), external: |e| { e.close(); Ok(()) })
     }
 
     /// Show the engine's web inspector for this page. `true` when it is up and
@@ -222,7 +241,8 @@ impl BrowserSurface {
     pub fn open_devtools(&self) -> Result<bool, SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.open_devtools()?),
-            window: |w| { w.open_devtools(); Ok(false) })
+            window: |w| { w.open_devtools(); Ok(false) },
+            external: |_e| Ok(false))
     }
 
     /// Whether the inspector is still up. Only ever asked of a surface that
@@ -230,7 +250,8 @@ impl BrowserSurface {
     pub fn devtools_visible(&self) -> Result<bool, SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.devtools_visible()?),
-            window: |_w| Ok(false))
+            window: |_w| Ok(false),
+            external: |_e| Ok(false))
     }
 
     /// Only meaningful for embedded surfaces; an owned window keeps whatever
@@ -238,13 +259,15 @@ impl BrowserSurface {
     pub fn set_bounds(&self, bounds: Bounds) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.set_bounds(bounds)?),
-            window: |_w| { let _ = bounds; Ok(()) })
+            window: |_w| { let _ = bounds; Ok(()) },
+            external: |_e| { let _ = bounds; Ok(()) })
     }
 
     pub fn install_channel(&self) -> Result<bool, SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.install_channel()?),
-            window: |w| surface_window::install_channel(w))
+            window: |w| surface_window::install_channel(w),
+            external: |_e| Ok(false))
     }
 
     pub fn eval_in_world(
@@ -254,7 +277,8 @@ impl BrowserSurface {
     ) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.eval_in_world(expression, callback)?),
-            window: |w| surface_window::eval_in_world(w, expression, callback))
+            window: |w| surface_window::eval_in_world(w, expression, callback),
+            external: |e| { e.eval_in_world(expression, callback); Ok(()) })
     }
 
     /// Whether this surface can deliver real input events at a point — as
@@ -263,7 +287,7 @@ impl BrowserSurface {
     /// synthesized input short of the window's own event queue, which goes to
     /// wherever the pointer happens to be on screen, not to a page point.
     pub fn supports_trusted_input(&self) -> bool {
-        per_surface!(self, child: |_c| cfg!(target_os = "windows"), window: |_w| false)
+        per_surface!(self, child: |_c| cfg!(target_os = "windows"), window: |_w| false, external: |_e| true)
     }
 
     /// Deliver `gesture` as real input; `done` hears whether the engine took
@@ -279,7 +303,8 @@ impl BrowserSurface {
             window: |_w| {
                 let _ = (gesture, done);
                 Err(SurfaceError("this surface delivers no trusted input".into()))
-            })
+            },
+            external: |e| { e.dispatch_pointer(gesture, done); Ok(()) })
     }
 
     pub fn snapshot_png(
@@ -288,7 +313,8 @@ impl BrowserSurface {
     ) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.snapshot_png(callback)?),
-            window: |w| surface_window::snapshot_png(w, callback))
+            window: |w| surface_window::snapshot_png(w, callback),
+            external: |e| { e.snapshot_png(callback); Ok(()) })
     }
 
     /// The frame as displayed now, JPEG-encoded (for the freeze frame shown
@@ -300,19 +326,22 @@ impl BrowserSurface {
     ) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.snapshot_jpeg(quality, callback)?),
-            window: |w| surface_window::snapshot_jpeg(w, quality, callback))
+            window: |w| surface_window::snapshot_jpeg(w, quality, callback),
+            external: |_e| { let _ = (quality, callback); Err(SurfaceError(external::NOT_OURS.into())) })
     }
 
     pub fn go_back(&self) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.go_back()?),
-            window: |w| surface_window::go_back(w))
+            window: |w| surface_window::go_back(w),
+            external: |e| e.go(-1))
     }
 
     pub fn go_forward(&self) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.go_forward()?),
-            window: |w| surface_window::go_forward(w))
+            window: |w| surface_window::go_forward(w),
+            external: |e| e.go(1))
     }
 
     /// Engine-side "still loading", used to notice failed navigations (wry
@@ -320,34 +349,38 @@ impl BrowserSurface {
     pub fn is_loading(&self) -> Result<bool, SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.is_loading()?),
-            window: |w| surface_window::is_loading(w))
+            window: |w| surface_window::is_loading(w),
+            external: |e| Ok(e.is_loading()))
     }
 
     pub fn can_go_back(&self) -> Result<bool, SurfaceError> {
-        per_surface!(self, child: |c| Ok(c.can_go_back()?), window: |w| surface_window::can_go_back(w))
+        per_surface!(self, child: |c| Ok(c.can_go_back()?), window: |w| surface_window::can_go_back(w), external: |e| Ok(e.can_go_back()))
     }
 
     pub fn can_go_forward(&self) -> Result<bool, SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.can_go_forward()?),
-            window: |w| surface_window::can_go_forward(w))
+            window: |w| surface_window::can_go_forward(w),
+            external: |e| Ok(e.can_go_forward()))
     }
 
     pub fn stop(&self) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.stop()?),
-            window: |w| surface_window::stop(w))
+            window: |w| surface_window::stop(w),
+            external: |e| e.stop())
     }
 
     /// Dev puppet only.
     pub fn debug_view(&self) -> Result<serde_json::Value, SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.debug_view()?),
-            window: |w| surface_window::debug_view(w))
+            window: |w| surface_window::debug_view(w),
+            external: |_e| Ok(serde_json::json!({ "surface": "external" })))
     }
 
     pub fn set_zoom(&self, factor: f64) -> Result<(), SurfaceError> {
-        per_surface!(self, child: |c| Ok(c.zoom(factor)?), window: |w| Ok(w.set_zoom(factor)?))
+        per_surface!(self, child: |c| Ok(c.zoom(factor)?), window: |w| Ok(w.set_zoom(factor)?), external: |_e| { let _ = factor; Ok(()) })
     }
 
     /// Apply the bounds and page zoom the registry holds for this tab, as
@@ -356,7 +389,7 @@ impl BrowserSurface {
     /// keeps whatever size and position the user gave it, and is sized to an
     /// emulated device rather than zoomed (`set_window_inner_size`).
     pub fn sync_geometry(&self) -> Result<(), SurfaceError> {
-        per_surface!(self, child: |c| Ok(c.sync_geometry()?), window: |_w| Ok(()))
+        per_surface!(self, child: |c| Ok(c.sync_geometry()?), window: |_w| Ok(()), external: |_e| Ok(()))
     }
 
     /// An owned window's content size, in logical pixels. `None` for an
@@ -368,7 +401,8 @@ impl BrowserSurface {
                 let scale = w.scale_factor()?;
                 let size = w.inner_size()?.to_logical::<f64>(scale);
                 Ok(Some(ViewportSize { width: size.width, height: size.height }))
-            })
+            },
+            external: |_e| Ok(None))
     }
 
     /// Size an owned window's content to `size`, letting it go no smaller
@@ -386,7 +420,8 @@ impl BrowserSurface {
                 w.set_min_size(Some(tauri::LogicalSize::new(min.width, min.height)))?;
                 w.set_size(tauri::LogicalSize::new(size.width, size.height))?;
                 Ok(())
-            })
+            },
+            external: |_e| { let _ = (size, min); Ok(()) })
     }
 
     /// Wipe cookies, caches and storage. Every tab shares one data store, so
@@ -394,7 +429,8 @@ impl BrowserSurface {
     pub fn clear_browsing_data(&self) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.clear_all_browsing_data()?),
-            window: |w| Ok(w.clear_all_browsing_data()?))
+            window: |w| Ok(w.clear_all_browsing_data()?),
+            external: |_e| Err(SurfaceError(external::NOT_OURS.into())))
     }
 
     /// Re-decide the identity the surface presents for the page it shows
@@ -403,7 +439,8 @@ impl BrowserSurface {
     pub fn refresh_user_agent(&self) -> Result<(), SurfaceError> {
         per_surface!(self,
             child: |c| Ok(c.refresh_user_agent()?),
-            window: |w| surface_window::refresh_user_agent(w))
+            window: |w| surface_window::refresh_user_agent(w),
+            external: |_e| Ok(()))
     }
 }
 

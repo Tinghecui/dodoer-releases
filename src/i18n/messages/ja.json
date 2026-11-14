@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "自分の Chrome",
-    "description": "ふだん使っている Chrome でエージェントに作業させます。そこではすでに各サイトにログインしています。試験的な機能：いまは接続して、Chrome で開いているウェブページをウィンドウ右下に一覧表示するだけです。エージェントは Chrome のページをまだ見ることも、読むことも、操作することもできません。",
+    "description": "ふだん使っている Chrome でエージェントに作業させます。そこではすでに各サイトにログインしています。試験的な機能：ウィンドウ右下の Chrome パネルでタブをエージェントに渡すと、そのページを読んだり、クリックやフォーム入力をしたりできます。ほかのタブはエージェントには見えません。",
     "statusDisconnected": "未接続",
     "statusWaiting": "Chrome で「許可」をクリックするのを待っています…",
     "statusConnected": "接続済み",
@@ -5856,10 +5856,17 @@
     "failed": "Chrome への接続でエラーが発生しました：{message}",
     "experimental": "試験的",
     "tabsTitle": "Chrome で開いているページ：{count}",
-    "tabsHidden": "この一覧はあなたにだけ表示され、エージェントにはこれらのタブは見えません。タブをエージェントに渡す機能は今後のバージョンで追加されます。",
+    "tabsHidden": "エージェントに見えるのは渡したタブだけで、そのサイトではあなたのログイン状態を使います。",
     "tabsEmpty": "Chrome で開いているウェブページはありません。",
     "openSettings": "Chrome の設定",
-    "panelNeedsSettings": "dodoer は Chrome の接続先を見つけられませんでした。下の「Chrome の設定」で対処方法を確認してください。"
+    "panelNeedsSettings": "dodoer は Chrome の接続先を見つけられませんでした。下の「Chrome の設定」で対処方法を確認してください。",
+    "share": "エージェントに渡す",
+    "shareRead": "読み取りのみ：エージェントはこのページを見られます",
+    "shareControl": "読み取りと操作：クリックやフォーム入力もできます",
+    "levelRead": "読み取りのみ",
+    "levelControl": "操作可",
+    "stopSharing": "取り戻す",
+    "shareFailed": "タブを渡せませんでした：{message}"
   },
   "BrowserSettings": {
     "title": "内蔵ブラウザ",

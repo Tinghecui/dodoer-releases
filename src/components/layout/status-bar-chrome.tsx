@@ -10,10 +10,12 @@
  * attached to my browser?" is the one thing here a person should be able to
  * see without opening anything.
  *
- * The tab list is the person's alone. It is a title and a host name per tab,
- * and nothing in it reaches an agent: Chrome's tabs are not in the browser
- * registry agents are served from. Handing a tab over, jumping to it and
- * pausing agents come to this popover in later steps.
+ * The tab list is the person's alone: a title and a host name per tab, and
+ * no agent is told of any of it. Each tab can be handed to agents from here —
+ * to read, or to read and act — which puts that one tab in the browser
+ * registry agents are served from, under the same id; its level is read back
+ * from the built-in browser's tab states, where every other shared tab's is.
+ * Jumping to a tab and pausing agents come in a later step.
  *
  * Desktop only (Chrome is on the computer the app runs on), and only once the
  * person has connected on this computer at least once: first connecting takes
@@ -23,10 +25,16 @@
 
 import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
-import { Chrome, Globe, Settings2 } from "lucide-react"
+import { ChevronDown, Chrome, Globe, Settings2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Popover,
   PopoverContent,
@@ -39,8 +47,13 @@ import {
 import { openSettingsWindow } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
+  browserWorkspaceTabId,
+  useBrowserTabState,
+} from "@/lib/browser/browser-tab-store"
+import {
   chromeConnect,
   chromeDisconnect,
+  chromeShare,
   chromeStatus,
   chromeTabs,
   subscribeChromeStatus,
@@ -48,8 +61,12 @@ import {
   type ChromeStatus,
   type ChromeTab,
 } from "@/lib/browser/chrome-api"
+import type { GrantLevel } from "@/lib/browser/types"
 import { isDesktop } from "@/lib/platform"
 import { cn } from "@/lib/utils"
+
+/** The mark the browser uses for "an agent can reach this". */
+const AGENT_MARK = "text-violet-600 dark:text-violet-400"
 
 /** Set the first time this computer's app connects to Chrome. */
 export const CONNECTED_BEFORE_KEY = "chrome:connected-before"
@@ -127,6 +144,14 @@ function ChromeItem() {
   }, [state])
 
   if (state === "disconnected" && !connectedBefore()) return null
+
+  const share = async (tabId: string, level: GrantLevel) => {
+    try {
+      await chromeShare(tabId, level)
+    } catch (error) {
+      toast.error(t("shareFailed", { message: toErrorMessage(error) }))
+    }
+  }
 
   const run = async (action: () => Promise<ChromeStatus>) => {
     try {
@@ -227,20 +252,11 @@ function ChromeItem() {
             ) : (
               <ul className="max-h-64 divide-y overflow-y-auto border-t">
                 {tabs.map((tab) => (
-                  <li
+                  <ChromeTabRow
                     key={tab.id}
-                    className="flex items-center gap-2 px-2 py-1.5"
-                  >
-                    <Globe className="size-3.5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-2xs font-medium">
-                        {tab.title || tab.host}
-                      </span>
-                      <span className="block truncate text-3xs text-muted-foreground">
-                        {tab.host}
-                      </span>
-                    </span>
-                  </li>
+                    tab={tab}
+                    onShare={(level) => void share(tab.id, level)}
+                  />
                 ))}
               </ul>
             )}
@@ -263,5 +279,76 @@ function ChromeItem() {
         </Button>
       </PopoverContent>
     </Popover>
+  )
+}
+
+/** One of Chrome's open pages, with what agents may do there and the way to
+ *  change it. */
+function ChromeTabRow({
+  tab,
+  onShare,
+}: {
+  tab: ChromeTab
+  onShare: (level: GrantLevel) => void
+}) {
+  const t = useTranslations("ChromeSettings")
+  const state = useBrowserTabState(browserWorkspaceTabId(tab.id))
+  const level = state?.agentGrant?.level ?? "none"
+  return (
+    <li className="flex items-center gap-2 px-2 py-1.5">
+      <Globe
+        className={cn(
+          "size-3.5 shrink-0",
+          level === "none" ? "text-muted-foreground" : AGENT_MARK
+        )}
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-2xs font-medium">
+          {tab.title || tab.host}
+        </span>
+        <span className="block truncate text-3xs text-muted-foreground">
+          {tab.host}
+        </span>
+      </span>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-label={`${t("share")} · ${tab.title || tab.host}`}
+            className={cn(
+              level === "read" && AGENT_MARK,
+              level === "control" && "text-red-600 dark:text-red-400"
+            )}
+          >
+            {level === "none"
+              ? t("share")
+              : level === "read"
+                ? t("levelRead")
+                : t("levelControl")}
+            <ChevronDown className="size-3" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-56">
+          <DropdownMenuItem
+            disabled={level === "read"}
+            onSelect={() => onShare("read")}
+          >
+            {t("shareRead")}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={level === "control"}
+            onSelect={() => onShare("control")}
+          >
+            {t("shareControl")}
+          </DropdownMenuItem>
+          {level === "none" ? null : (
+            <DropdownMenuItem onSelect={() => onShare("none")}>
+              {t("stopSharing")}
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </li>
   )
 }

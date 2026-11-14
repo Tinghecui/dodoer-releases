@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "Tu propio Chrome",
-    "description": "Permite que los agentes trabajen en el Chrome que usas a diario, donde ya has iniciado sesión. Experimental: por ahora dodoer solo se conecta y muestra las páginas web abiertas en Chrome, abajo a la derecha de la ventana; los agentes aún no pueden ver, leer ni actuar sobre nada en Chrome.",
+    "description": "Permite que los agentes trabajen en el Chrome que usas a diario, donde ya has iniciado sesión. Experimental: pasa una pestaña a los agentes desde el panel de Chrome, abajo a la derecha de la ventana, y podrán leerla, hacer clic y rellenar formularios en ella. Los agentes no ven ninguna otra pestaña.",
     "statusDisconnected": "Sin conexión",
     "statusWaiting": "Esperando a que hagas clic en Permitir en Chrome…",
     "statusConnected": "Conectado",
@@ -5856,10 +5856,17 @@
     "failed": "Error al conectar con Chrome: {message}",
     "experimental": "Experimental",
     "tabsTitle": "Abiertas en Chrome: {count}",
-    "tabsHidden": "Solo tú ves esta lista; los agentes no ven estas pestañas. Pasar una pestaña a un agente llegará en una versión posterior.",
+    "tabsHidden": "Los agentes solo ven las pestañas que les pasas, y en esos sitios usan tu sesión iniciada.",
     "tabsEmpty": "No hay páginas web abiertas en Chrome.",
     "openSettings": "Ajustes de Chrome",
-    "panelNeedsSettings": "dodoer no encontró dónde conectarse a Chrome. Abre los ajustes de Chrome de abajo para ver qué hacer."
+    "panelNeedsSettings": "dodoer no encontró dónde conectarse a Chrome. Abre los ajustes de Chrome de abajo para ver qué hacer.",
+    "share": "Pasar a los agentes",
+    "shareRead": "Solo lectura: los agentes pueden ver esta página",
+    "shareControl": "Leer y actuar: también pueden hacer clic y rellenar formularios",
+    "levelRead": "Solo lectura",
+    "levelControl": "Puede actuar",
+    "stopSharing": "Recuperar",
+    "shareFailed": "No se pudo pasar la pestaña: {message}"
   },
   "BrowserSettings": {
     "title": "Navegador integrado",

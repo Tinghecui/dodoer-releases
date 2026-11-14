@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "내 Chrome",
-    "description": "평소에 쓰는 Chrome에서 에이전트가 작업하게 합니다. 그곳에는 이미 여러 사이트에 로그인되어 있습니다. 실험 기능: 지금은 연결하고 Chrome에 열린 웹 페이지를 창 오른쪽 아래에 보여 주기만 합니다. 에이전트는 아직 Chrome의 페이지를 보거나 읽거나 조작할 수 없습니다.",
+    "description": "평소에 쓰는 Chrome에서 에이전트가 작업하게 합니다. 그곳에는 이미 여러 사이트에 로그인되어 있습니다. 실험 기능: 창 오른쪽 아래의 Chrome 패널에서 탭을 에이전트에게 넘기면, 에이전트가 그 페이지를 읽고 클릭하거나 양식을 채울 수 있습니다. 다른 탭은 에이전트가 볼 수 없습니다.",
     "statusDisconnected": "연결되지 않음",
     "statusWaiting": "Chrome에서 「허용」을 클릭하기를 기다리는 중…",
     "statusConnected": "연결됨",
@@ -5856,10 +5856,17 @@
     "failed": "Chrome 연결 중 오류가 발생했습니다: {message}",
     "experimental": "실험",
     "tabsTitle": "Chrome에 열린 페이지: {count}",
-    "tabsHidden": "이 목록은 나만 볼 수 있으며, 에이전트는 이 탭들을 볼 수 없습니다. 탭을 에이전트에게 넘기는 기능은 이후 버전에서 제공됩니다.",
+    "tabsHidden": "에이전트는 넘겨준 탭만 볼 수 있으며, 그 사이트에서는 내 로그인 상태를 사용합니다.",
     "tabsEmpty": "Chrome에 열린 웹 페이지가 없습니다.",
     "openSettings": "Chrome 설정",
-    "panelNeedsSettings": "dodoer가 Chrome에 연결할 곳을 찾지 못했습니다. 아래의 Chrome 설정에서 방법을 확인하세요."
+    "panelNeedsSettings": "dodoer가 Chrome에 연결할 곳을 찾지 못했습니다. 아래의 Chrome 설정에서 방법을 확인하세요.",
+    "share": "에이전트에게 넘기기",
+    "shareRead": "읽기 전용: 에이전트가 이 페이지를 볼 수 있습니다",
+    "shareControl": "읽기 및 조작: 클릭하고 양식을 채울 수도 있습니다",
+    "levelRead": "읽기 전용",
+    "levelControl": "조작 가능",
+    "stopSharing": "되돌려받기",
+    "shareFailed": "탭을 넘기지 못했습니다: {message}"
   },
   "BrowserSettings": {
     "title": "내장 브라우저",

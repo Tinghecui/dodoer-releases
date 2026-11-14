@@ -8,21 +8,25 @@
 //! was measured on a real Chrome before any of it was written, and the steps
 //! still to come are in `docs/agent-chrome.md`.
 //!
-//! So far this is the connection and the list of Chrome's tabs, which only
-//! the person sees: no tab is in the browser registry, so no agent can name,
-//! read or act on one yet.
+//! A tab is listed for the person (`tabs`) and nothing more until they hand
+//! it to agents: then it is attached to (`page`) and registered with the
+//! built-in browser's tabs, where the agent tools find it
+//! (`browser::chrome_share`, desktop only).
 //!
 //! - `endpoint` — where a running Chrome says it can be reached
 //! - `cdp`      — the DevTools protocol over one WebSocket
 //! - `link`     — the one connection the app keeps, and its state
 //! - `tabs`     — which web pages the connected Chrome has open
+//! - `page`     — one tab handed to agents: script, clicks, screenshots
 
 pub mod cdp;
 pub mod endpoint;
 pub mod link;
+pub mod page;
 pub mod tabs;
 
 pub use link::{ChromeLink, ChromeStatus};
+pub use page::{ChromePage, PageEvent};
 pub use tabs::ChromeTab;
 
 /// Backend → frontend: the state of the connection changed (`ChromeStatus`).

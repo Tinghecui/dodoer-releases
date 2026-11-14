@@ -1,6 +1,6 @@
 # 智能体接管用户日常用的 Chrome
 
-状态：方向已定（2026-11-14，用户）；第 10 节的真机实测做了三轮，这条路走得通。第 1 步（连接）已合并，第 2 步（面板里列出 Chrome 的标签）已写，见第 7 节；智能体还碰不到 Chrome 的标签。
+状态：方向已定（2026-11-14，用户）；第 10 节的真机实测做了三轮，这条路走得通。第 1、2 步（连接、面板里列出 Chrome 的标签）已合并，第 3 步（把标签交给智能体，读和操作）已写，见第 7 节。
 
 ## 1. 问题
 
@@ -173,7 +173,14 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
    - 底部状态栏的 Chrome 图标和面板（`src/components/layout/status-bar-chrome.tsx`）：连接状态、连接 / 取消 / 断开、Chrome 里开着的网页（标题和主机名），写明「只有你看得到，智能体看不到」；连不上时简短说原因，要看步骤或粘贴地址的转到设置页。
    - 没做：「来源」标记（谁开的）。第 2 步里所有标签都是用户开的，等第 3、4 步智能体能开标签了再加。原来写的 `BrowserSurface::External`、状态同步挪到第 3 步，见 5.2 的分层。
    - 验收：面板里的标签和 Chrome 对得上，在 Chrome 里开、关、换网页面板跟着变；本机智能体 `browser_list_tabs` 看不到任何 Chrome 标签；退出 Chrome 面板变成未连接、列表清空。
-3. **读和操作**。`BrowserSurface::External`、交出去的标签登记进注册表和状态同步（5.2），隔离 world 里跑 bundle、真点击、控制台、截图、开 / 跳转 / 关标签、页面对话框；面板里「交给智能体」。验收：本机智能体能读、能填用户共享的标签。
+3. **把标签交给智能体：读和操作**。已写。
+   - 面板里每个标签一个「交给智能体」：只读 / 读取并操作 / 收回。新命令 `browser_chrome_share(tabId, level)`，只在 app 里，智能体调不到。
+   - `browser/chrome/page.rs`：交出去的标签 attach 上（flatten session），开 `Page`、`Runtime`、焦点模拟。`codeg` 隔离 world 现建现用，文档换了就重建；回的信封和其他平台一样（`{"ok":true,"value":…}`），所以 snapshot / act / capture 这些 core 一行没改。真点击是 `Input.dispatchMouseEvent`（`supports_trusted_input` 为真），截图是 `Page.captureScreenshot` 的 png。页面那边说的话（主框架换文档、加载完、同文档换地址、标题、控制台）变成 `PageEvent`。
+   - `browser/surface_external.rs`：`BrowserSurface::External`。其他 surface 在主线程上同步回答，这里只能等 CDP 回来，所以地址、在不在加载、能不能后退用页面最后报的；导航、刷新这些发出去就返回，结果由页面事件报回来。摆位置、缩放、查找、开发者工具、冻结画面对它什么也不做；`eval`（往页面里画东西用的）也什么都不做，dodoer 不往用户的页面里写东西。`close()` 只是 detach，**永远不关用户的 Chrome 标签**。
+   - `browser/chrome_share.rs`：交出去时登记进 `BrowserRegistry`（`owner_window: "chrome"`、`surface: external`、不属于任何 profile），用列表里的同一个编号；页面事件接到 `hooks::page_load` / `title_changed` 和 `channel::handle_message`（控制台、同文档换地址走 helper 的 `nav-state` 那一支），共享收回、离开交出去时的网站（`revoke_if_departed`）、Chrome 关了这个标签、连接断了，都把它从注册表拿掉（= detach）。
+   - 智能体这边：`browser_eval`（执行智能体自己写的代码）对 Chrome 标签一律拒绝——确认框挂在标签所属的窗口上，`chrome` 不是窗口，弹不出来；Chrome 自己的那个开关（5.4）以后再做。`browser_close_tab` 对 Chrome 标签拒绝：那是用户的标签。远端窗口的智能体看不到（`scoped` 只认自己窗口的标签），第 5 步再借。
+   - 没做：智能体在 Chrome 里开新标签（第 4 步，和单独窗口、名单一起）；`browser_list_tabs` 里的 `browser: "chrome"` 字段（`AgentTabSummary` 在测试里有四处字面量，留给第 5 步一起改）；页面弹的 `alert` / `confirm`（5.3 那一行）。
+   - 验收：面板里把一个登录着的网站的标签交给智能体（读取并操作），本机智能体 `browser_list_tabs` 看得到它、`browser_snapshot` 读到登录后的页面、点击和填写生效（页面收到的点击 `isTrusted` 为真）；只读时点击回「需要操作权限」；收回后智能体看不到；在 Chrome 里关掉这个标签、或者页面跳到别的网站，面板里它变回「交给智能体」。
 4. **共享规则和人接手**。智能体开的标签自动共享、单独窗口（做法见 5.6）、敏感网站名单、暂停、跳到标签、「新标签开在哪」、Chrome 的执行代码开关。
 5. **借给远端和收尾**。`scoped` 的范围规则、连接状态变了重新注册；`COWORK.md` 改动清单，本文档按实现更新。
 
@@ -272,7 +279,8 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 - 连着的时候 Chrome 顶上一直有「正受到控制」的提示（Chrome 自己加的，dodoer 去不掉）。好处是用户一眼看得出 dodoer 还连着；不想看到它就断开。
 - 智能体第一次在 Chrome 里开网页时，Chrome 会跳到前面（开智能体自己的窗口时躲不掉）。
 - macOS 27 起要先在系统设置里给 dodoer 读 Chrome 数据目录的权限；这一步 dodoer 替不了用户。
-- 真点击靠焦点模拟送到后台和最小化的标签上（实测可行）；开着时页面以为自己一直在前台。
+- 真点击靠焦点模拟送到后台和最小化的标签上（实测可行）；交给智能体的标签开着它，页面以为自己一直在前台，收回时随 detach 一起去掉。
+- 交出去的标签开了 `Runtime` 域（控制台和隔离 world 要用）。有的风控脚本靠这个认出「有调试器连着」；没交出去的标签不受影响。
 - Chrome 里有多个用户（头像菜单里的）时，它们在同一个进程里，dodoer 都看得到；第一版不区分，面板里一起列出来。
 - 标签没法在 Chrome 里做记号：哪些标签交给了智能体，只能在 dodoer 的面板里看。
 - 反爬严的网站（看 CDP 痕迹的那类风控）可能认出来；这个方案不承诺过得了它们。

@@ -127,6 +127,7 @@ mod tauri_app {
         assistants as assistant_commands, automation as automation_commands,
         background as background_commands, backup,
         browser as browser_commands,
+        browser_chrome as browser_chrome_commands,
         canvas as canvas_commands,
         chat_authoring as chat_authoring_commands, chat_channel as chat_channel_commands,
         clipboard as clipboard_commands,
@@ -810,6 +811,7 @@ mod tauri_app {
             ))
             .manage(ConnectionManager::new())
             .manage(crate::browser::BrowserRegistry::default())
+            .manage(crate::browser::chrome::ChromeLink::for_this_computer())
             .manage(crate::browser::egress::EgressRegistry::default())
             .manage(crate::browser::BrowserDownloads::default())
             .manage(crate::browser::DocGuests::default())
@@ -1619,6 +1621,10 @@ mod tauri_app {
                 browser_commands::browser_list_downloads,
                 browser_commands::browser_reveal_download,
                 browser_commands::browser_clear_downloads,
+                browser_chrome_commands::browser_chrome_status,
+                browser_chrome_commands::browser_chrome_connect,
+                browser_chrome_commands::browser_chrome_disconnect,
+                browser_chrome_commands::browser_chrome_open_privacy_settings,
                 browser_commands::browser_set_host_rules,
                 browser_commands::browser_set_sign_in_user_agent,
                 browser_commands::browser_set_blank_page_theme,

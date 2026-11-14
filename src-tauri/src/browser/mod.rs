@@ -38,6 +38,8 @@
 //! - `shim`       — per-platform WebKit / WebView2 calls (worlds, eval, snapshot)
 //! - `hooks`      — webview callbacks (page load, title) → registry + events
 //! - `events`     — state fan-out to the frontend
+//! - `chrome`     — the connection to the person's own Chrome
+//!   (`docs/agent-chrome.md`)
 //! - `smoke`      — dev-only puppet driven by a JSON control file (feature
 //!   `browser-smoke`, never in a release build)
 
@@ -54,6 +56,11 @@
 // process has no handle on at all.
 pub mod agent;
 pub mod capture;
+// A WebSocket client and the rules around it; no webview here either. Only
+// the desktop app ever makes the connection, and it is compiled in both
+// runtimes for the sake of its tests: CI type-checks the desktop build and
+// runs the tests of the server build alone.
+pub mod chrome;
 pub mod console;
 pub mod eval;
 // The terminal that prints a dev server's address runs in both runtimes, so

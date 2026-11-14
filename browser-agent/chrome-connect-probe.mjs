@@ -7,15 +7,19 @@
  *
  * Needs Node 22+ (the global WebSocket) and Chrome 144+ with the switch at
  * chrome://inspect/#remote-debugging turned on. Chrome asks the person to
- * allow each connection; this makes two. It opens one background tab on
- * example.com and closes it again; nothing else in the browser is touched,
- * and no address or title of the person's own tabs is printed.
+ * allow the connection. It opens a few tabs on example.com, some of them in
+ * windows of their own (minimized, or minimized later), and closes them again;
+ * nothing else in the browser is touched, and no address or title of the
+ * person's own tabs is printed. What only the person at the screen can see —
+ * whether Chrome jumped in front of what they were doing — it asks them, a
+ * yes or a no at a time.
  *
  * Manual, not part of `pnpm test`: it needs a person's own browser.
  */
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { createInterface } from "node:readline/promises"
 
 const lines = []
 function say(key, value) {
@@ -120,8 +124,29 @@ function cdp(ws) {
 
 const failure = (reply) => reply.error?.message ?? "失败"
 
+/** A yes or no from the person watching the screen, kept with the rest. */
+async function ask(key, question) {
+  if (!process.stdin.isTTY) {
+    say(key, "没问（不是在终端里跑的）")
+    return null
+  }
+  const terminal = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  })
+  const typed = await terminal.question(
+    `\n>>> ${question}\n>>> 有就输入 y，没有就输入 n，然后按回车: `
+  )
+  terminal.close()
+  const answer = typed.trim().toLowerCase()
+  const yes = answer.startsWith("y") || answer.startsWith("有")
+  const no = answer.startsWith("n") || answer.startsWith("没")
+  say(key, yes ? "有" : no ? "没有" : `答的是「${typed.trim()}」`)
+  return yes
+}
+
 console.log("Chrome 如果弹窗问是否允许远程调试，请点「允许」。")
-const ws = await connect("第一次连接")
+const ws = await connect("连接")
 if (!ws) process.exit(1)
 const send = cdp(ws)
 
@@ -135,97 +160,285 @@ say(
     failure(targets)
 )
 
-const made = await send("Target.createTarget", {
-  url: "https://example.com",
-  background: true,
-})
-const targetId = made.result?.targetId
-say("后台新开标签", targetId ? "成功" : failure(made))
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-if (targetId) {
+/** Runs `expression` in the tab behind `session`; the value, or why not. */
+async function evaluate(session, expression, extra = {}) {
+  const reply = await send(
+    "Runtime.evaluate",
+    { expression, returnByValue: true, ...extra },
+    session
+  )
+  return (
+    reply.result?.exceptionDetails?.text ??
+    reply.result?.result?.value ??
+    failure(reply)
+  )
+}
+
+/** Opens a tab on example.com and attaches to it. `null` when Chrome said no. */
+async function openTab(label, params) {
+  const made = await send("Target.createTarget", {
+    url: "https://example.com",
+    ...params,
+  })
+  const targetId = made.result?.targetId
+  if (!targetId) {
+    say(label, failure(made))
+    return null
+  }
+  const tab = await attach(targetId)
+  say(label, tab ? "成功" : "开了，但接不上")
+  return tab
+}
+
+async function attach(targetId) {
   const attached = await send("Target.attachToTarget", {
     targetId,
     flatten: true,
   })
   const session = attached.result?.sessionId
-  say("接上这个标签", session ? "成功" : failure(attached))
+  if (!session) return null
   await send("Page.enable", {}, session)
-  await new Promise((resolve) => setTimeout(resolve, 3000))
-
-  const evaluate = async (expression, extra = {}) => {
-    const reply = await send(
-      "Runtime.evaluate",
-      { expression, returnByValue: true, ...extra },
-      session
+  for (let i = 0; i < 16; i++) {
+    const state = await evaluate(
+      session,
+      "location.href !== 'about:blank' && document.readyState"
     )
-    return (
-      reply.result?.exceptionDetails?.text ??
-      reply.result?.result?.value ??
-      failure(reply)
-    )
+    if (state === "complete") break
+    await sleep(500)
   }
+  const placed = await send("Browser.getWindowForTarget", { targetId })
+  return { targetId, session, windowId: placed.result?.windowId }
+}
 
-  say(
-    "后台标签读页面",
-    await evaluate("document.title + ' / ' + document.visibilityState")
-  )
-  say("navigator.webdriver", await evaluate("String(navigator.webdriver)"))
-
-  const tree = await send("Page.getFrameTree", {}, session)
-  const world = await send(
-    "Page.createIsolatedWorld",
-    { frameId: tree.result?.frameTree.frame.id, worldName: "probe" },
-    session
-  )
-  const contextId = world.result?.executionContextId
-  say(
-    "隔离环境",
-    contextId
-      ? await evaluate("document.querySelectorAll('*').length + ' 个元素'", {
-          contextId,
-        })
-      : failure(world)
-  )
-
+/** A real (browser-level) click on the tab, and whether the page got it. */
+async function click(tab) {
   await evaluate(
-    "document.addEventListener('click', (e) => { window.__probe = String(e.isTrusted) }); 1"
+    tab.session,
+    "window.__probe = undefined; document.addEventListener('click', (e) => { window.__probe = String(e.isTrusted) }, { once: true }); 1"
   )
   for (const type of ["mousePressed", "mouseReleased"]) {
     await send(
       "Input.dispatchMouseEvent",
       { type, x: 60, y: 60, button: "left", clickCount: 1 },
-      session
+      tab.session
     )
   }
-  say(
-    "后台标签真点击 isTrusted",
-    await evaluate("window.__probe ?? '没收到点击'")
+  await sleep(300)
+  const got = await evaluate(tab.session, "window.__probe ?? '没收到'")
+  const state = await evaluate(
+    tab.session,
+    "document.visibilityState + (document.hasFocus() ? '，有焦点' : '，没焦点')"
   )
+  return `${got === "true" ? "收到了，isTrusted 是 true" : got}（页面 ${state}）`
+}
 
+/** The same click once the page has been told it is focused. */
+async function clickFocused(tab) {
+  const emulated = await send(
+    "Emulation.setFocusEmulationEnabled",
+    { enabled: true },
+    tab.session
+  )
+  return emulated.error ? failure(emulated) : await click(tab)
+}
+
+async function screenshot(tab) {
   const shot = await send(
     "Page.captureScreenshot",
     { format: "jpeg", quality: 30 },
-    session
+    tab.session
   )
-  say(
-    "后台标签截图",
-    shot.result?.data
-      ? `成功 ${Math.round(shot.result.data.length / 1024)}KB`
-      : failure(shot)
-  )
-
-  const closed = await send("Target.closeTarget", { targetId })
-  say("关掉测试标签", closed.result?.success ? "成功" : failure(closed))
+  return shot.result?.data
+    ? `成功 ${Math.round(shot.result.data.length / 1024)}KB`
+    : failure(shot)
 }
 
+const opened = []
+
+// A tab behind the one the person is looking at.
+const hidden = await openTab("后台新开标签", { background: true })
+if (hidden) {
+  opened.push(hidden)
+  say(
+    "后台标签读页面",
+    await evaluate(
+      hidden.session,
+      "document.title + ' / ' + document.visibilityState"
+    )
+  )
+  say(
+    "navigator.webdriver",
+    await evaluate(hidden.session, "String(navigator.webdriver)")
+  )
+
+  const tree = await send("Page.getFrameTree", {}, hidden.session)
+  const world = await send(
+    "Page.createIsolatedWorld",
+    { frameId: tree.result?.frameTree.frame.id, worldName: "probe" },
+    hidden.session
+  )
+  const contextId = world.result?.executionContextId
+  say(
+    "隔离环境",
+    contextId
+      ? await evaluate(
+          hidden.session,
+          "document.querySelectorAll('*').length + ' 个元素'",
+          { contextId }
+        )
+      : failure(world)
+  )
+
+  say("后台标签真点击", await click(hidden))
+
+  // Whether a page told it is focused takes the click a background tab
+  // otherwise never sees. Before the screenshot, which might wake the tab by
+  // itself: the two were in the other order once, and could not be told
+  // apart.
+  say("后台标签假装有焦点后真点击", await clickFocused(hidden))
+  say("后台标签截图", await screenshot(hidden))
+}
+
+// A window that is never on screen: born minimized. If Chrome honours it,
+// the agent's window can come into being without interrupting anybody.
+console.log(
+  "\n马上要开一个「一出生就最小化」的窗口。请留意：Chrome 有没有自己跳到最前面。"
+)
+await sleep(3000)
+const quiet = await openTab("最小化着开窗口", {
+  newWindow: true,
+  background: true,
+  windowState: "minimized",
+})
+if (quiet) {
+  opened.push(quiet)
+  const placed = await send("Browser.getWindowBounds", {
+    windowId: quiet.windowId,
+  })
+  say(
+    "这个窗口是不是单独的",
+    quiet.windowId === hidden?.windowId ? "不是（落在用户的窗口）" : "是"
+  )
+  say(
+    "这个窗口现在的状态",
+    placed.result?.bounds?.windowState ?? failure(placed)
+  )
+  await sleep(1500)
+  await ask(
+    "最小化着开窗口时 Chrome 有没有跳出来",
+    "刚才 Chrome 有没有自己跳到最前面，或者闪出一个窗口？"
+  )
+  say("最小化着开的窗口里真点击", await click(quiet))
+  say("最小化着开的窗口里假装有焦点后真点击", await clickFocused(quiet))
+  say("最小化着开的窗口里截图", await screenshot(quiet))
+}
+
+// A window of the agent's own, opened the ordinary way: where its tabs would
+// live, so that each is the current tab of its window without taking the
+// person's.
+console.log("\n马上要开一个普通的新窗口。请留意：Chrome 有没有自己跳到最前面。")
+await sleep(3000)
+const own = await openTab("单独窗口开标签", {
+  newWindow: true,
+  background: true,
+})
+if (own) {
+  opened.push(own)
+  await sleep(1500)
+  await ask(
+    "普通新窗口出现时 Chrome 有没有跳出来",
+    "刚才 Chrome 有没有自己跳到最前面，打断你？"
+  )
+  say(
+    "单独窗口和后台标签是不是同一个窗口",
+    own.windowId === hidden?.windowId ? "是（没有新开窗口）" : "不是"
+  )
+  say("单独窗口里真点击", await click(own))
+
+  // Chrome has no "open in this window". The two ways a second tab might
+  // still land beside the first:
+  const next = await openTab("再开一个标签（不指定窗口）", { background: true })
+  if (next) {
+    opened.push(next)
+    say(
+      "它落在",
+      next.windowId === own.windowId
+        ? "智能体的窗口"
+        : next.windowId === hidden?.windowId
+          ? "用户的窗口"
+          : "别的窗口"
+    )
+  }
+
+  const before = await send("Target.getTargets")
+  const known = new Set(before.result?.targetInfos.map((t) => t.targetId))
+  await evaluate(
+    own.session,
+    "window.open('https://example.com/?probe', '_blank', 'noopener'); 1",
+    { userGesture: true }
+  )
+  await sleep(1500)
+  const after = await send("Target.getTargets")
+  const popped = after.result?.targetInfos.find(
+    (t) => t.type === "page" && !known.has(t.targetId)
+  )
+  if (popped) {
+    const tab = await attach(popped.targetId)
+    if (tab) {
+      opened.push(tab)
+      say(
+        "从智能体的标签里 window.open",
+        tab.windowId === own.windowId ? "开在智能体的窗口" : "开在别的窗口"
+      )
+      say("这样开出来的标签真点击", await click(tab))
+      say("原来那个标签这时真点击", await click(own))
+    } else {
+      opened.push({ targetId: popped.targetId })
+      say("从智能体的标签里 window.open", "开了，但接不上")
+    }
+  } else {
+    say("从智能体的标签里 window.open", "没开出来")
+  }
+
+  // The window out of sight entirely.
+  const minimized = await send("Browser.setWindowBounds", {
+    windowId: own.windowId,
+    bounds: { windowState: "minimized" },
+  })
+  if (minimized.error) {
+    say("把智能体的窗口最小化", failure(minimized))
+  } else {
+    await sleep(1500)
+    const front = opened.at(-1).session ? opened.at(-1) : own
+    say("窗口最小化后真点击", await click(front))
+    say("窗口最小化后截图", await screenshot(front))
+  }
+}
+
+// Chrome's own notice that something outside is driving it: whether there is
+// one, and whether it leaves with the connection.
+const noticed = await ask(
+  "连着时 Chrome 有没有「正受到控制」的提示",
+  "现在看一眼 Chrome：窗口顶上有没有一条「Chrome 正受到自动测试软件控制」之类的提示？"
+)
+
+let left = 0
+for (const tab of opened) {
+  const closed = await send("Target.closeTarget", { targetId: tab.targetId })
+  if (!closed.result?.success) left += 1
+}
+say("关掉测试标签", left === 0 ? "成功" : `有 ${left} 个没关掉，请手动关`)
+
 ws.close()
-await new Promise((resolve) => setTimeout(resolve, 1500))
-console.log("现在测第二次连接：如果又弹窗，请再点「允许」。")
-const again = await connect("第二次连接")
-again?.close()
+if (noticed) {
+  await sleep(2000)
+  await ask(
+    "断开后还有没有那条提示",
+    "脚本已经断开连接。再看一眼 Chrome：顶上还有没有那条提示？"
+  )
+}
 
 console.log(`\n===== 把下面这段贴给我 =====\n${lines.join("\n")}`)
-console.log(
-  "另外请告诉我：1) 一共弹了几次窗  2) Chrome 顶上有没有出现提示条，写的什么"
-)
 process.exit(0)

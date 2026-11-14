@@ -7,6 +7,9 @@ pub mod background;
 pub mod backup;
 #[cfg(feature = "tauri-runtime")]
 pub mod browser;
+/// The connection to the person's own Chrome, as the settings page drives it.
+#[cfg(feature = "tauri-runtime")]
+pub mod browser_chrome;
 /// The browser tool group's on/off switch. Unlike `browser` itself this is not
 /// desktop-only: the shared codeg-mcp plumbing reads it in both runtimes.
 pub mod browser_tools;

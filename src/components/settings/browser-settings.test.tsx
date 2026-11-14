@@ -18,6 +18,10 @@ vi.mock("@/lib/browser/browser-api", () => ({
   browserCapabilitiesNow: mocks.browserCapabilitiesNow,
 }))
 vi.mock("@/lib/platform", () => ({ isDesktop: () => mocks.desktop.value }))
+// The Chrome card talks to the app's shell on mount and has tests of its own.
+vi.mock("./chrome-connect-settings", () => ({
+  ChromeConnectSettings: () => <div data-testid="chrome-connect" />,
+}))
 vi.mock("sonner", () => ({ toast: mocks.toast }))
 
 import { BrowserSettings } from "./browser-settings"
@@ -98,6 +102,11 @@ beforeEach(() => {
 })
 
 describe("BrowserSettings", () => {
+  it("offers the connection to the person's own Chrome", async () => {
+    await renderSection()
+    expect(screen.getByTestId("chrome-connect")).toBeInTheDocument()
+  })
+
   it("shows one picker per link source", async () => {
     await renderSection()
     for (const source of [
@@ -182,6 +191,9 @@ describe("BrowserSettings", () => {
     expect(
       screen.queryByRole("button", { name: "Remove rule" })
     ).not.toBeInTheDocument()
+    // A browser the administrator turned off is not one to hand agents
+    // another of.
+    expect(screen.queryByTestId("chrome-connect")).toBeNull()
   })
 
   // Notifying is the default, as it is in every editor that forwards a port
@@ -590,6 +602,8 @@ describe("BrowserSettings in a browser session", () => {
     expect(
       screen.queryByRole("combobox", { name: "Running code on a page" })
     ).toBeNull()
+    // Chrome is on the computer the app runs on; a browser session has no app.
+    expect(screen.queryByTestId("chrome-connect")).toBeNull()
     // Nothing on the page needs the answer, and the backend behind a browser
     // session has no browser to describe.
     expect(mocks.browserCapabilitiesNow).not.toHaveBeenCalled()

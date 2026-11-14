@@ -1,6 +1,6 @@
 # 智能体接管用户日常用的 Chrome
 
-状态：方向已定（2026-11-14，用户）；第 10 节的真机实测已过，这条路走得通。还没开始写代码。
+状态：方向已定（2026-11-14，用户）；第 10 节的真机实测做了三轮，这条路走得通。第 1 步（连接）已写，见第 7 节；Chrome 的标签还没接进来，智能体还用不了。
 
 ## 1. 问题
 
@@ -83,7 +83,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 | 工具 | CDP |
 |---|---|
 | `browser_snapshot`、点击 / 输入 / 选择（脚本部分） | `Page.createIsolatedWorld` 建隔离 world，`Runtime.evaluate` 在里面跑 `agent.bundle.js`，和内置的 `eval_in_world` 同一个契约 |
-| 真点击、悬停 | `Input.dispatchMouseEvent`，接在 `dispatch_pointer` 上。**只在标签是它那个窗口的当前标签时用**：实测后台标签收不到这样的点击。标签在后台时退回页面侧脚本派发的点击（内置浏览器在 macOS 上现在就是这样），不为了一次点击把标签切到前台 |
+| 真点击、悬停 | `Input.dispatchMouseEvent`，接在 `dispatch_pointer` 上。**接上一个要操作的标签时先开 `Emulation.setFocusEmulationEnabled`**（让页面认为自己有焦点、看得见）：实测后台新开、从没显示过的标签不开它收不到点击，开了就收得到，`isTrusted` 为真；标签被别的标签盖住、窗口最小化时也收得到。所以不用为了一次点击把标签切到前台，也不用退回脚本派发的点击。共享收回时把它关掉。副作用：开着时页面的 `visibilityState` 是 `visible`，「切到后台就暂停」的页面不会暂停 |
 | `browser_console_messages` | `Runtime.consoleAPICalled`、`Runtime.exceptionThrown`，喂进现有的控制台存储（`browser/console.rs`） |
 | `browser_screenshot` | `Page.captureScreenshot`（元素截图用 clip） |
 | `browser_open_tab` / `browser_navigate` / `browser_close_tab` | `Target.createTarget` / `Page.navigate` / `Target.closeTarget`，地址先过 `address_refusal` 和 5.5 的名单。智能体只能关自己开的标签 |
@@ -114,7 +114,12 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 
 ### 5.6 人接手
 
-- **看得见**：智能体开的标签放在 **单独的 Chrome 窗口** 里（`Target.createTarget` 带 `newWindow`），不往用户正在用的窗口里塞标签、不抢用户的当前标签。用户想看就切到那个窗口。CDP 没有「开到指定窗口」的参数，智能体的多个标签能不能收在同一个窗口里要在第 1 步试；不行就一个标签一个窗口。单独的窗口还有一个用处：标签在自己窗口里是当前标签，真点击才送得到（见 5.3）；窗口被别的窗口挡住时算不算「当前」，也在第 1 步试。
+- **看得见**：智能体开的标签放在 **单独的 Chrome 窗口** 里，不往用户正在用的窗口里塞标签、不抢用户的当前标签。用户想看就切到那个窗口。实测（第 10 节第二轮）定下来的做法：
+  - 第一个标签用 `Target.createTarget` 带 `newWindow` 开，得到智能体的窗口。
+  - 之后的标签**从这个窗口里已有的标签上 `window.open`**（带 `noopener`），它们开在同一个窗口里。`Target.createTarget` 不带 `newWindow` 时落在用户的窗口，CDP 没有「开到指定窗口」的参数，所以不用它开第二个。为此窗口里留一个 dodoer 自己的起始标签（空白页，写一句「这个窗口是 dodoer 的智能体在用」），新标签都从它上面开；智能体的页面跳到哪里都不影响。
+  - 窗口**最小化着也能干活**：点击和截图都正常。但 dodoer 不替用户把它收起来（用户 2026-11-14 定的：人能随时看到智能体在干什么更重要）；用户自己收起来也不影响智能体。
+  - **开这个窗口时 Chrome 会跳到前面，躲不掉**：第三轮试了让窗口一出生就最小化（`windowState: "minimized"`），Chrome 没照做，照样跳了出来。所以窗口一条连接只开一次（智能体第一次在 Chrome 里开网页时），之后一直复用，**开出来就让它留在前面，不收起来**。这一跳正好也是告诉用户「智能体开始在 Chrome 里干活了」。用户 Chrome 全屏用的时候（用户平时就是），新窗口也是全屏的、在单独的一屏里；用户说目前问题不大。第 4 步再看：之后从这个窗口里 `window.open` 会不会又跳一次。
+  - 退路：标签直接开在用户窗口的后台（开了焦点模拟后那里也收得到点击，不跳出来）。代价是智能体的标签和用户的混在一起，Chrome 里又做不了记号。
 - **人来做一步**：碰到登录、验证码、付款确认，智能体照现在的办法在对话里问用户（侧栏「等你回答」）。dodoer 的面板里每个标签有「跳到这个标签」（`Target.activateTarget` + 把 Chrome 提到前面），用户做完回对话里说一声，智能体接着干。
 - **把自己的页面交给智能体**：面板里列出 Chrome 现在开着的标签（标题和域名，只给用户看），点「交给智能体」。
 - **立刻停手**：面板顶上一个「暂停」开关。打开后所有 Chrome 标签的读和操作一律拒绝（回「用户暂停了对 Chrome 的操作」），共享状态不动，关掉就恢复。断开连接是更彻底的停。
@@ -149,10 +154,17 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 每步一个 PR，可单独合并、回滚。Rust 只在 CI 上编译和测试；每步都要在 Mac 上的桌面包里验一次才算完。
 
 0. **真机实测**（第 10 节）。`browser-agent/chrome-connect-probe.mjs`。已做，通过。
-1. **CDP 客户端和连接**。新目录 `src-tauri/src/browser/chrome/`：WebSocket 上的 JSON-RPC（请求和应答按 id 配对、事件订阅、按 session 分发）、读 `DevToolsActivePort`（分清没有、macOS 不让读两种情况）、手动贴端点的退路、连接状态机（未连接 / 等用户允许 / 已连接）；设置页的说明和「连接 Chrome」。顺带试两件事：智能体的标签能不能收在同一个窗口里；单独窗口里的标签在窗口被挡住时收不收得到真点击。单元测试用假的 CDP 服务。
+1. **CDP 客户端和连接**。已写（#213）。`src-tauri/src/browser/chrome/`：
+   - `endpoint.rs`：`DevToolsActivePort` 在哪（macOS / Windows / Linux 的默认数据目录）、读它（没有 → `Missing`，系统不让读 → `Denied`，两种分开）、认用户手动贴的端点（第二行、两行一起、两行被单行输入框挤成一串、`ws://127.0.0.1:…` 地址；主机不是本机的一律不认）。
+   - `cdp.rs`：一条 WebSocket 上的 CDP。`call(方法, 参数, session)` 按 id 等应答，30 秒没回算超时；其余的帧是事件，带着 `sessionId` 广播给订阅的人；连接一断，等着的调用全部以 `Closed` 结束。单条消息上限调到 256 MiB（长页面的截图是一整帧 base64）。
+   - `link.rs`：`ChromeLink`，app 里唯一的那条连接和它的状态（未连接 / 等用户允许 / 已连接），未连接时带原因（开关没开、macOS 不让读、文件读不出、贴的不是端点、Chrome 没在跑、被拒绝、没人点允许、连接断了）。等允许最多 120 秒。已连接或正在连时再点连接什么都不做（再拨一次就是再弹一次窗）。断了不重连。
+   - `commands/browser_chrome.rs`：`browser_chrome_status / connect / disconnect / open_privacy_settings` 四个命令，状态变化发 `browser://chrome` 事件。连不上不算命令出错，原因在状态里。
+   - 设置 → 内置浏览器里多一张卡片「我自己的 Chrome」（`src/components/settings/chrome-connect-settings.tsx`）：两步说明、连接 / 取消 / 断开、每种原因各一句该怎么办；读不到文件时出现「粘贴地址来连接」一行和「打开系统设置」。卡片上写明是试验功能、现在只能连接。管理员关掉内置浏览器时不显示。
+   - 这个模块在服务器版里也编译（它不碰 webview）：CI 对桌面版只做类型检查，测试只在服务器版那一格跑，不这样它的测试就没人跑。服务器版里没有任何东西调用它。
+   - 「标签能不能收在同一个窗口」「什么情况下收得到真点击」没有放进产品代码里试，加在实测脚本里了（第 10 节），不用等桌面包。
 2. **标签进注册表**。`BrowserSurface::External`、target 发现、来源标记、状态同步；面板列出标签。验收：智能体的 `browser_list_tabs` 里还看不到任何 Chrome 标签（都没共享），面板里看得到。
 3. **读和操作**。隔离 world 里跑 bundle、真点击、控制台、截图、开 / 跳转 / 关标签、页面对话框；面板里「交给智能体」。验收：本机智能体能读、能填用户共享的标签。
-4. **共享规则和人接手**。智能体开的标签自动共享、单独窗口、敏感网站名单、暂停、跳到标签、「新标签开在哪」、Chrome 的执行代码开关。
+4. **共享规则和人接手**。智能体开的标签自动共享、单独窗口（做法见 5.6）、敏感网站名单、暂停、跳到标签、「新标签开在哪」、Chrome 的执行代码开关。
 5. **借给远端和收尾**。`scoped` 的范围规则、连接状态变了重新注册；`COWORK.md` 改动清单，本文档按实现更新。
 
 第 3 步做完就能用本机智能体试填表，第 5 步做完服务器上的智能体才用得上。
@@ -187,6 +199,10 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 - 在 Chrome 里执行代码：出厂关。
 - 断开后不自动重连。
 
+用户 2026-11-14 看了第三轮实测后定的：
+
+- 智能体的窗口开出来留在前面，dodoer 不把它收起来：人能随时看到、随时接手更重要。Chrome 全屏时新窗口占一屏、会跳过去，用户说目前问题不大。
+
 ## 10. 实测结果
 
 2026-11-14，用户的 Mac mini：macOS 27.0.1，正在跑的 Chrome 是 154.0.8037.98（默认用户，开着 11 个标签），`browser-agent/chrome-connect-probe.mjs`。
@@ -196,31 +212,62 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 | 默认用户上连不连得上 | 连得上。之前看到的那份「Chrome 150 上连不上」的报告（ChromeDevTools/chrome-devtools-mcp#2283）实际是下一行的 macOS 权限问题 |
 | 读 `DevToolsActivePort` | 文件在，终端读不了（`EPERM`，macOS 27 的 app 数据保护）。这次是在 Chrome 里打开文件、手动把端点给脚本的 |
 | 允许弹窗 | 每条连接一次；连了两次，弹了两次 |
-| 连着时 Chrome 顶上的提示条 | 没有 |
+| 连着时 Chrome 顶上的提示条 | 第一轮用户说 Chrome 没弹出什么；第二、三轮有「正受到控制」的提示，断开后消失（第三轮当场问的） |
 | `navigator.webdriver` | `false` |
 | `Target.createTarget`（后台）、`Target.attachToTarget`、`Page.createIsolatedWorld` | 都能用 |
 | 后台标签：读页面、隔离 world、截图 | 都正常（`visibilityState` 是 `hidden`，截图 146KB） |
 | 后台标签：`Input.dispatchMouseEvent` 的点击 | 页面没收到 |
 
-由此改的设计：5.1 加了 macOS 权限那一步和手动贴端点的退路；5.3 的真点击只在标签是窗口的当前标签时用，后台时退回脚本点击。不需要走扩展。
+由此改的设计：5.1 加了 macOS 权限那一步和手动贴端点的退路。不需要走扩展。
 
-还没测的（放在第 1 步里试，不挡开工）：
+第二轮（同一天，同一台机器，脚本加了窗口和点击的几项；一条连接，弹窗一次）：
+
+| 问题 | 结果 |
+|---|---|
+| 后台新开的标签，真点击 | 没收到（`hidden`） |
+| 同一个标签开 `Emulation.setFocusEmulationEnabled` 之后 | 收到了，`isTrusted` 为真；页面的 `visibilityState` 变成 `visible`。注意：这一轮里两次点击之间还截了一次图，是哪一样起的作用没分开，第三轮把截图挪到了后面 |
+| `Target.createTarget` 带 `newWindow` | 开出单独的窗口；里面的标签真点击收得到 |
+| 再 `Target.createTarget`（不带 `newWindow`） | 落在用户的窗口，不是智能体的窗口 |
+| 从智能体窗口里的标签 `window.open` | 开在智能体的窗口；新标签真点击收得到 |
+| 这时被盖住的那个标签（`hidden`，没开焦点模拟） | 真点击也收得到。所以「后台」本身不是收不到的原因，从没显示过才是（或者焦点模拟对它不是必需的）；产品里一律开焦点模拟，不依赖这个区别 |
+| 把智能体的窗口最小化（`Browser.setWindowBounds`） | 真点击收得到，截图成功（115KB） |
+| 新窗口出现时 | 用户说「浏览器也弹出了」：Chrome 自己到了前面 |
+
+由此改的设计：5.3 的真点击改成「先开焦点模拟」，不再有「只对当前标签有效、后台退回脚本点击」这条；5.6 定了智能体的标签怎么收在同一个窗口里（`window.open`），窗口可以最小化着用；新窗口跳出来的问题留给第三轮。
+
+第三轮（同一天，同一台机器；跳没跳出来、提示在不在是脚本当场问的）：
+
+| 问题 | 结果 |
+|---|---|
+| `Target.createTarget` 带 `windowState: "minimized"` | Chrome 没照做：窗口开出来是 `fullscreen`，Chrome 跳到了前面。新窗口是全屏的，说明用户的 Chrome 多半是全屏用的（macOS 上全屏 app 的新窗口也全屏、占一屏） |
+| 普通方式开新窗口 | 也跳到了前面 |
+| 再 `Target.createTarget`（不带 `newWindow`） | 这次落在「别的窗口」（第二轮是用户的窗口）：落在哪个窗口看 Chrome 最后用的是哪个，拿不准。再次说明第二个标签要用 `window.open` 开 |
+| 从智能体窗口里的标签 `window.open` | 开在智能体的窗口（和第二轮一样） |
+| 真点击 | 每一种情况都收到了，`isTrusted` 为真，开不开焦点模拟都一样。这次后台新开的标签一开始就是 `visible`，第二轮那个「没收到」没能复现，也就没分清当时是什么起的作用；产品里照旧一律开焦点模拟 |
+| 最小化的窗口里点击、截图 | 正常（和第二轮一样） |
+| 「正受到控制」的提示 | 连着时有，断开后没了 |
+
+由此定的：开窗口时跳出来躲不掉，窗口一条连接只开一次、开了就复用（5.6）；dodoer 一直连着，所以这条提示会一直在，连接没断用户就看得见（第 11 节）。
+
+
+还没测的（要等桌面包在用户的 Mac 上试，不挡开工）：
 
 - dodoer（一个有界面的 app，不是终端）第一次读那个文件时，系统设置的「文件与文件夹」里会不会出现 dodoer 的「Google Chrome」开关；不出现的话只能让用户给「完全磁盘访问权限」或用手动贴端点。
-- 智能体的多个标签能不能收在同一个 Chrome 窗口里；单独窗口里的当前标签在窗口被挡住、最小化时收不收得到真点击。
 - 前端收到 `surface: "external"`、`owner_window: "chrome"` 的 `browser://state` 时现有的标签 store 怎么处理（预期是没有对应的工作区标签、存了但没人用；不行就不向标签 store 广播，只给面板）。
 
 ## 11. 已知局限
 
 - 只有 macOS、只认 Google Chrome，要 144 以上，要用户自己开开关。
 - Chrome 每次重启都要重新点一次「连接 Chrome」和「允许」。
+- 连着的时候 Chrome 顶上一直有「正受到控制」的提示（Chrome 自己加的，dodoer 去不掉）。好处是用户一眼看得出 dodoer 还连着；不想看到它就断开。
+- 智能体第一次在 Chrome 里开网页时，Chrome 会跳到前面（开智能体自己的窗口时躲不掉）。
 - macOS 27 起要先在系统设置里给 dodoer 读 Chrome 数据目录的权限；这一步 dodoer 替不了用户。
-- 真点击只对窗口里的当前标签有效；后台标签上的点击是脚本派发的，认 `isTrusted` 的网站不认它。
+- 真点击靠焦点模拟送到后台和最小化的标签上（实测可行）；开着时页面以为自己一直在前台。
 - Chrome 里有多个用户（头像菜单里的）时，它们在同一个进程里，dodoer 都看得到；第一版不区分，面板里一起列出来。
 - 标签没法在 Chrome 里做记号：哪些标签交给了智能体，只能在 dodoer 的面板里看。
 - 反爬严的网站（看 CDP 痕迹的那类风控）可能认出来；这个方案不承诺过得了它们。
 - 文件上传、下载、打印对话框、Chrome 自己的权限弹窗（定位、通知）智能体处理不了，要人在 Chrome 里点。
-- 远程调试开关是 Chrome 的新功能，行为可能随版本变；只用 CDP 里标了稳定的方法。
+- 远程调试开关是 Chrome 的新功能，行为可能随版本变。CDP 的方法尽量用标了稳定的；焦点模拟（`Emulation.setFocusEmulationEnabled`）和窗口那几个（`Browser.getWindowForTarget`、`Browser.setWindowBounds`、`Target.createTarget` 的 `windowState`）是试验性的，Chrome 改了要跟着改。
 
 ## 12. 放弃或推后的方案
 

@@ -6,7 +6,8 @@
  * browser tabs get the web inspector, which native surface hosts them, whether
  * background tabs are unloaded after a while, where downloads land, the
  * browser profiles (create, clear, delete; which one new tabs open in) and the
- * sign-in user-agent switch.
+ * sign-in user-agent switch — and, in a card of its own
+ * (`chrome-connect-settings.tsx`), the connection to the person's own Chrome.
  *
  * It used to be one folded block at the bottom of `/settings/general` — five
  * pickers tall is what made it fold, and a page of its own is what made the
@@ -49,6 +50,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 
+import { ChromeConnectSettings } from "@/components/settings/chrome-connect-settings"
 import { SettingCard, SettingRow } from "@/components/shared/setting-card"
 import {
   AlertDialog,
@@ -782,6 +784,13 @@ export function BrowserSettings() {
             </>
           ) : null}
         </SettingCard>
+
+        {/* The other browser an agent can be given: the person's own Chrome,
+            which is on this computer and nowhere else. Not offered where an
+            administrator has turned browser tabs off altogether. */}
+        {desktop && !(policy && !policy.enabled) ? (
+          <ChromeConnectSettings />
+        ) : null}
 
         <SettingCard>
           {/* Both rows are about the terminal: one is what a click on a link

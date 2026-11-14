@@ -3,7 +3,7 @@
 # （cowork-release.yml）和桌面 app 1.Y.(Z+1)（desktop-macos.yml，成为 Latest，装好的 app 提示更新）。
 #
 # - 一次只发一班：前一班还在编，新的推送排队，排队的只留最新的一个（concurrency），编的时候合进来的几个 PR 攒到下一班
-# - 编包和这个提交的 Test 同时开始，Test 过了才发（scripts/cowork-wait-test.sh）；Test 没过或被更新的推送顶掉，这一班不发
+# - 编包和这个提交的 Test 同时开始，Test 过了才发（scripts/cowork-wait-test.sh）；Test 没过先重跑一次没过的 job，还没过或被更新的推送顶掉，这一班不发
 # - 不发：这个提交已经有 tag（手动发过）、上一版以来只改了文档（*.md、docs/）
 # - 更新说明：上一版以来公开 main 上各个提交说明里的「- 标题（#号）」行（public-sync.sh 推 main 时写进去，标题过了 denylist）
 # - 不给 cowork 开 runtime.lock 的 PR（那个只有手动 tag 才开）；员工的服务器从门户升级 codeg
@@ -16,10 +16,10 @@ on:
   push:
     branches: [main]
 
-# cowork-release.yml、desktop-macos.yml 的发布 job 要 contents: write（发 Release）和 actions: read（查 Test）；调用方给的不能比它们小
+# cowork-release.yml、desktop-macos.yml 的发布 job 要 contents: write（发 Release）和 actions: write（查 Test、重跑没过的 job）；调用方给的不能比它们小
 permissions:
   contents: write
-  actions: read
+  actions: write
 
 concurrency:
   group: release-train

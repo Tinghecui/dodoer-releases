@@ -153,7 +153,7 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: write
-      actions: read # scripts/cowork-wait-test.sh 查 Test
+      actions: write # scripts/cowork-wait-test.sh 查 Test、没过时重跑一次
     env:
       COWORK_REPO_TOKEN: ${{ secrets.COWORK_REPO_TOKEN }}
     steps:

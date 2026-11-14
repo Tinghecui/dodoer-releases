@@ -1934,9 +1934,11 @@ impl SessionState {
             | AcpEvent::TurnRetrying { .. }
             | AcpEvent::NativeSessionTitle { .. }
             | AcpEvent::TranscriptRolledOver { .. }
+            | AcpEvent::BackgroundTurn { .. }
             | AcpEvent::UserPromptSent { .. } => {
                 // 这些事件不直接修改 SessionState 的可见字段。
                 // UserPromptSent 是纯通知事件，仅供 chat-channel 推送消费。
+                // BackgroundTurn 只给 lifecycle 写会话行用（Cowork 加的）。
                 // TurnRetrying 与 Claude 的 api_retry 一样是前端瞬态提示（重试横幅），
                 // 不进快照——回合边界会清除它。
                 // ConfigOptionRejected 是对一次交互的提示（选择器被降级/拒绝），
@@ -1944,6 +1946,44 @@ impl SessionState {
             }
         }
         self.last_activity_at = Utc::now();
+    }
+
+    /// Cowork fork: this connection's background work as the sidebar counts it
+    /// — `(count, labels)`, the same reading as the frontend's
+    /// `backgroundPendingOf`. The live AIR async tasks and the transcript
+    /// watcher's outstanding count observe overlapping work, so the larger of
+    /// the two, never the sum. Labels come from the async tasks, else from the
+    /// watcher's own task list; there may be fewer of them than `count`.
+    pub fn background_pending(&self) -> (u32, Vec<String>) {
+        let live: Vec<_> = self
+            .async_tasks
+            .values()
+            .filter(|t| !crate::acp::types::async_task_state_is_terminal(&t.state))
+            .collect();
+        let count = (live.len() as u32).max(self.background_outstanding);
+        if count == 0 {
+            return (0, Vec::new());
+        }
+        let mut names: Vec<String> = live
+            .iter()
+            .map(|t| {
+                if t.name.is_empty() {
+                    t.description.clone()
+                } else {
+                    t.name.clone()
+                }
+            })
+            .filter(|name| !name.is_empty())
+            .collect();
+        if names.is_empty() {
+            names = self
+                .background_outstanding_tasks
+                .iter()
+                .filter_map(|t| t.description.clone())
+                .filter(|description| !description.is_empty())
+                .collect();
+        }
+        (count, names)
     }
 
     /// Whether this connection has launched background work (async sub-agent /
@@ -3645,6 +3685,68 @@ mod tests {
         });
         assert!(!s.has_active_background_work(Utc::now()));
         assert!(s.background_outstanding_tasks.is_empty());
+    }
+
+    /// Cowork fork: the sidebar's reading of a connection's background work —
+    /// the larger of the two overlapping sources, labelled from the async
+    /// tasks first and the watcher's task list otherwise.
+    #[test]
+    fn background_pending_takes_the_larger_source_and_its_labels() {
+        let mut s = fresh_state();
+        assert_eq!(s.background_pending(), (0, vec![]));
+
+        s.apply_event(&AcpEvent::BackgroundActivity {
+            session_id: "sid".into(),
+            turns: vec![],
+            outstanding: 2,
+            outstanding_tasks: vec![
+                crate::acp::types::BackgroundOutstandingTask {
+                    task_id: "b1".into(),
+                    kind: crate::acp::types::BackgroundTaskKind::Shell,
+                    tool_use_id: None,
+                    description: Some("Watch CI".into()),
+                    started_at_ms: 1_000,
+                },
+                crate::acp::types::BackgroundOutstandingTask {
+                    task_id: "b2".into(),
+                    kind: crate::acp::types::BackgroundTaskKind::Shell,
+                    tool_use_id: None,
+                    description: None,
+                    started_at_ms: 2_000,
+                },
+            ],
+            settled: vec![],
+            watermark: 1,
+        });
+        assert_eq!(s.background_pending(), (2, vec!["Watch CI".to_string()]));
+
+        // A live async task names the work instead; the count stays the
+        // larger source's, not the sum.
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: AsyncTaskDelta {
+                name: Some("pnpm test".into()),
+                task_type: Some("shell".into()),
+                ..async_task_delta("t1", true)
+            },
+        });
+        assert_eq!(s.background_pending(), (2, vec!["pnpm test".to_string()]));
+
+        // Settled everywhere: nothing.
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: AsyncTaskDelta {
+                state: Some("completed".into()),
+                ..async_task_delta("t1", false)
+            },
+        });
+        s.apply_event(&AcpEvent::BackgroundActivity {
+            session_id: "sid".into(),
+            turns: vec![],
+            outstanding: 0,
+            outstanding_tasks: vec![],
+            settled: vec![],
+            watermark: 2,
+        });
+        assert_eq!(s.background_pending(), (0, vec![]));
     }
 
     #[test]

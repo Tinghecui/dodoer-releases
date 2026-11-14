@@ -76,8 +76,8 @@ use crate::models::agent::AgentType;
 use crate::models::message::MessageTurn;
 use crate::parsers::claude::{
     capture_tag, capture_title_record, claude_uri_link, find_clear_rollover_successor,
-    find_session_file_in, group_into_turns, is_compact_command, is_meta_message,
-    queued_human_prompt, queued_task_notification, slash_command_display,
+    find_session_file_in, group_into_turns, is_compact_command, is_interrupt_marker,
+    is_meta_message, queued_human_prompt, queued_task_notification, slash_command_display,
     task_notification_is_interim, task_notification_result_regex, task_notification_status_regex,
     task_notification_summary_regex, task_notification_task_id_regex,
     task_notification_tool_use_id_regex, unescape_task_notification_text, ClaudeRecordAccumulator,
@@ -122,6 +122,12 @@ const MAX_EPISODE_MESSAGES: usize = 512;
 /// hard cap on per-tick work. Double the boundary threshold so normal
 /// boundary rotation always wins for multi-turn episodes.
 const FORCE_ROTATE_MESSAGES: usize = MAX_EPISODE_MESSAGES * 2;
+/// Cowork fork: how long an out-of-turn turn may go without a single new
+/// transcript record before it is taken as over (`background_turn_running`).
+/// Only a safety net for an ending the transcript never shows; a long tool call
+/// or a foreground sub-agent can be silent for minutes, and one that outlives
+/// this simply reopens the turn with its next record.
+const BACKGROUND_TURN_STALE: Duration = Duration::from_secs(30 * 60);
 
 /// How a transcript record supplied its turn-initiating text. Verbatim text
 /// can use the ledger's ordinary prefix match; a slash command reconstructed
@@ -635,6 +641,9 @@ async fn run_watch(
     // lingered, able to swallow a later same-text cron refire.
     let spawn_epoch = std::time::SystemTime::now();
     let mut first_arm_done = false;
+    // Cowork fork: the last `background_turn_running` reported as
+    // `AcpEvent::BackgroundTurn`.
+    let mut reported_background_turn = false;
     // A wire title the notification loop holds for this watch wakes it, so the
     // title is settled within a tick of arriving (`publish_tick_titles`).
     let wire_title_wake = Arc::clone(&state.read().await.wire_title_wake);
@@ -756,6 +765,26 @@ async fn run_watch(
                 );
             }
             emit_with_state(&state, &emitter, event).await;
+        }
+
+        // Cowork fork: after the activity, so a client rendering the turn
+        // has its records before the row says it ended.
+        let background_turn = ws.background_turn_running();
+        if background_turn != reported_background_turn {
+            reported_background_turn = background_turn;
+            tracing::info!(
+                "[bg-watch] background turn connection={} running={}",
+                conn_id,
+                background_turn
+            );
+            emit_with_state(
+                &state,
+                &emitter,
+                AcpEvent::BackgroundTurn {
+                    running: background_turn,
+                },
+            )
+            .await;
         }
     }
 }
@@ -975,6 +1004,15 @@ pub(crate) struct WatchState {
     /// watch would silently fall back onto the dead transcript. Cleared by
     /// `rearm`: a fork/resume is a different session, not this chain.
     rolled_over_id: Option<String>,
+    /// Cowork fork: the model is working on a turn no codeg prompt asked for —
+    /// its answer to a `<task-notification>`, a cron or `/loop` fire. Set and
+    /// cleared by the records of the open episode ([`background_turn_edge`]),
+    /// cleared when a codeg prompt takes the transcript over (that turn is the
+    /// wire's, settled by its own `TurnComplete`) and past
+    /// [`BACKGROUND_TURN_STALE`]. `run_watch` reports its edges as
+    /// `AcpEvent::BackgroundTurn`, which the lifecycle worker writes onto the
+    /// conversation row.
+    background_turn_running: bool,
 }
 
 impl WatchState {
@@ -1012,7 +1050,14 @@ impl WatchState {
             pending_transcript_id: None,
             read_failed: false,
             rolled_over_id: None,
+            background_turn_running: false,
         }
+    }
+
+    /// Whether the agent is running a turn of its own right now (see the
+    /// field).
+    pub(crate) fn background_turn_running(&self) -> bool {
+        self.background_turn_running
     }
 
     /// The session's name as this watch currently understands it: the user's
@@ -1204,6 +1249,20 @@ impl WatchState {
             keep
         });
         let expired_any = self.tasks.len() != before;
+
+        // Cowork fork: an out-of-turn turn whose ending the transcript never
+        // showed (see `BACKGROUND_TURN_STALE`).
+        if self.background_turn_running
+            && self
+                .last_disk_activity
+                .is_some_and(|at| at.elapsed() >= BACKGROUND_TURN_STALE)
+        {
+            tracing::info!(
+                "[bg-watch] background turn silent for {:?}, taking it as over",
+                BACKGROUND_TURN_STALE
+            );
+            self.background_turn_running = false;
+        }
 
         // Locate the transcript (it may not exist yet for a brand-new
         // session; retry every tick until it does). After a `/clear` the ACP
@@ -1882,6 +1941,7 @@ impl WatchState {
                 self.mode = Mode::Foreground;
                 self.foreground_awaiting_reply = true;
                 self.foreground_submission_id = None;
+                self.background_turn_running = false;
                 return;
             }
         }
@@ -1897,6 +1957,7 @@ impl WatchState {
                 self.mode = Mode::Foreground;
                 self.foreground_awaiting_reply = true;
                 self.foreground_submission_id = record_submission_id(value);
+                self.background_turn_running = false;
                 return;
             }
             // A `<task-notification>` is never part of a submission: it is
@@ -1997,6 +2058,9 @@ impl WatchState {
             }
             if let Some(episode) = self.episode.as_mut() {
                 episode.acc.feed_value(value.clone());
+            }
+            if let Some(running) = background_turn_edge(value) {
+                self.background_turn_running = running;
             }
         }
     }
@@ -2134,6 +2198,56 @@ fn turn_initiator_text(value: &serde_json::Value) -> Option<TurnInitiatorText> {
         return None;
     }
     Some(TurnInitiatorText::Verbatim(text))
+}
+
+/// Cowork fork: what a record of an out-of-turn episode says about whether the
+/// model is working (`WatchState::background_turn_running`). `Some(true)` while
+/// it is: mid-answer, waiting on a tool it called, or about to answer a prompt
+/// no codeg prompt sent (a `<task-notification>`, a cron or `/loop` fire).
+/// `Some(false)` once its answer ended or the turn was interrupted. `None` for
+/// the records that say neither: bookkeeping, a local slash command and its
+/// output (the adapter's own idle `/compact`), a compaction summary, a
+/// sub-agent's records.
+fn background_turn_edge(value: &serde_json::Value) -> Option<bool> {
+    if value.get("isSidechain").and_then(|v| v.as_bool()) == Some(true) {
+        return None;
+    }
+    match value.get("type").and_then(|t| t.as_str())? {
+        "assistant" => {
+            // Claude Code writes the message's stop reason on each of its
+            // block records; null while the message still streams.
+            let stop_reason = value
+                .pointer("/message/stop_reason")
+                .and_then(|s| s.as_str());
+            Some(matches!(
+                stop_reason,
+                None | Some("tool_use") | Some("pause_turn")
+            ))
+        }
+        "user" => {
+            if is_interrupt_marker(value) {
+                return Some(false);
+            }
+            let content = value.pointer("/message/content")?;
+            let tool_results_only = content.as_array().is_some_and(|blocks| {
+                !blocks.is_empty()
+                    && blocks
+                        .iter()
+                        .all(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+            });
+            if tool_results_only {
+                // A tool it called came back: it carries on.
+                return Some(true);
+            }
+            match turn_initiator_text(value)? {
+                TurnInitiatorText::ReconstructedSlashCommand(_) => None,
+                TurnInitiatorText::Verbatim(text) => {
+                    (!text.trim_start().starts_with("<local-command-")).then_some(true)
+                }
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Whether `value` is one of the records a compaction writes ahead of its
@@ -6027,6 +6141,114 @@ mod tests {
         assert_eq!(
             ws.pending_title.take().as_deref(),
             Some("Find current vLLM stable release tag")
+        );
+    }
+
+    /// Cowork fork: an assistant record carrying the message's stop reason, as
+    /// Claude Code 2.1.302 writes every block record of a message.
+    fn assistant_stopped(uuid: &str, stop_reason: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"2026-07-07T03:47:08.000Z","uuid":"{uuid}","message":{{"role":"assistant","content":[{{"type":"text","text":"done"}}],"stop_reason":"{stop_reason}"}}}}"#
+        )
+    }
+
+    fn tool_result(uuid: &str) -> String {
+        format!(
+            r#"{{"type":"user","timestamp":"2026-07-07T03:47:09.000Z","uuid":"{uuid}","message":{{"role":"user","content":[{{"tool_use_id":"toolu_09","type":"tool_result","content":"ok"}}]}}}}"#
+        )
+    }
+
+    /// Cowork fork: the agent's answer to a `<task-notification>` is a turn of
+    /// its own — running from the notification through its tool calls, over
+    /// at the `end_turn` record.
+    #[test]
+    fn a_notification_answer_runs_until_its_end_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let _ = tick_now(&mut ws, &ledger);
+        assert!(!ws.background_turn_running());
+
+        write_lines(&path, &[&notification("bash1", "completed")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert!(ws.background_turn_running(), "woken by the notification");
+
+        write_lines(
+            &path,
+            &[&assistant_stopped("a-1", "tool_use"), &tool_result("u-1")],
+        );
+        let _ = tick_now(&mut ws, &ledger);
+        assert!(ws.background_turn_running(), "still at work between tools");
+
+        write_lines(&path, &[&assistant_stopped("a-2", "end_turn")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert!(!ws.background_turn_running(), "its answer ended the turn");
+    }
+
+    /// Cowork fork: a codeg prompt taking the transcript over ends the
+    /// out-of-turn turn here — the prompt's own `TurnComplete` settles the row
+    /// — and an interrupt ends one as well.
+    #[test]
+    fn a_codeg_prompt_or_an_interrupt_ends_the_background_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let _ = tick_now(&mut ws, &ledger);
+
+        write_lines(&path, &[&cron_prompt("check the build")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert!(ws.background_turn_running(), "a cron fire starts a turn");
+
+        ledger.record_text("what now?");
+        write_lines(&path, &[&user_prompt_array("u-codeg", "what now?")]);
+        let _ = tick_prompting(&mut ws, &ledger);
+        assert!(
+            !ws.background_turn_running(),
+            "the codeg prompt's turn belongs to the wire"
+        );
+
+        write_lines(
+            &path,
+            &[
+                &assistant_stopped("a-3", "end_turn"),
+                &notification("bash2", "completed"),
+            ],
+        );
+        let _ = tick_now(&mut ws, &ledger);
+        assert!(ws.background_turn_running());
+        write_lines(
+            &path,
+            &[&user_prompt_array("u-int", "[Request interrupted by user]")],
+        );
+        let _ = tick_now(&mut ws, &ledger);
+        assert!(!ws.background_turn_running(), "interrupted");
+    }
+
+    /// Cowork fork: records that start no model work leave the state alone —
+    /// a sub-agent's own records, a local command's output.
+    #[test]
+    fn background_turn_edge_ignores_records_that_start_no_model_work() {
+        let parse = |line: String| serde_json::from_str::<serde_json::Value>(&line).unwrap();
+        let sidechain = parse(
+            r#"{"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":[],"stop_reason":"tool_use"}}"#
+                .to_string(),
+        );
+        assert_eq!(background_turn_edge(&sidechain), None);
+        let stdout = parse(cron_prompt("<local-command-stdout>Compacted</local-command-stdout>"));
+        assert_eq!(background_turn_edge(&stdout), None);
+        assert_eq!(background_turn_edge(&parse(ai_title("t"))), None);
+        assert_eq!(
+            background_turn_edge(&parse(assistant_stopped("a", "end_turn"))),
+            Some(false)
+        );
+        assert_eq!(
+            background_turn_edge(&parse(assistant_text("a", "streaming"))),
+            Some(true),
+            "no stop reason yet: still streaming"
         );
     }
 }

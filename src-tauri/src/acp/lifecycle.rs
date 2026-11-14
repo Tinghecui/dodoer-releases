@@ -38,8 +38,9 @@ use tokio::sync::RwLock;
 /// of times per turn, so 64 slots is comfortable headroom for a sustained
 /// SQLite stall without forcing the dispatcher to block on `send`.
 /// (SessionStarted, TurnComplete, ConversationLinked, NativeSessionTitle,
-/// TranscriptRolledOver, ToolApproval, Disconnected, Error.) `ToolApproval`
-/// is one per answered permission card, so it is paced by a person.
+/// TranscriptRolledOver, ToolApproval, BackgroundTurn, Disconnected, Error.)
+/// `ToolApproval` is one per answered permission card, so it is paced by a
+/// person; `BackgroundTurn` is two per turn the agent runs on its own.
 const WORKER_QUEUE_CAPACITY: usize = 64;
 
 /// Whether an event needs to reach the per-connection worker. Mirrors the
@@ -70,6 +71,9 @@ fn is_lifecycle_relevant(event: &AcpEvent) -> bool {
             | AcpEvent::NativeSessionTitle { .. }
             | AcpEvent::TranscriptRolledOver { .. }
             | AcpEvent::ToolApproval { .. }
+            // Cowork fork: a turn the agent ran on its own starting / ending.
+            // Two per such turn at most.
+            | AcpEvent::BackgroundTurn { .. }
             | AcpEvent::StatusChanged {
                 status: ConnectionStatus::Disconnected
             }
@@ -319,6 +323,63 @@ async fn settle_cancelled_turn(
     Ok(())
 }
 
+/// Cowork fork: mirror a turn the agent ran on its own (`AcpEvent::BackgroundTurn`)
+/// onto the conversation row, as a prompt's turn is: `InProgress` when it
+/// starts, `PendingReview` when it ends, then `ConversationStatusChanged` so
+/// every client's sidebar follows (spinner, then the unread dot and the end
+/// time). Before this the row stayed on the last prompt's end — no spinner
+/// while the agent worked, and dated by a turn long gone.
+///
+/// `prompt_in_flight`: a prompt codeg sent owns the connection's turn — one the
+/// agent folded into its own, or the next one, with this worker behind on the
+/// event. Its `InProgress` is already on the row and its `TurnComplete` settles
+/// it, so this leaves the row alone. The end is a conditional
+/// `InProgress → PendingReview`: a row the user stopped (`Cancelled`) or marked
+/// done since is not overwritten.
+async fn write_background_turn_status(
+    db_conn: &DatabaseConnection,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    conversation_id: i32,
+    running: bool,
+    prompt_in_flight: bool,
+) -> Result<(), DbError> {
+    if prompt_in_flight {
+        return Ok(());
+    }
+    let status = if running {
+        conversation_service::update_status(
+            db_conn,
+            conversation_id,
+            ConversationStatus::InProgress,
+        )
+        .await?;
+        ConversationStatus::InProgress
+    } else {
+        let changed = conversation_service::update_status_if(
+            db_conn,
+            conversation_id,
+            ConversationStatus::InProgress,
+            ConversationStatus::PendingReview,
+        )
+        .await?;
+        if !changed {
+            return Ok(());
+        }
+        ConversationStatus::PendingReview
+    };
+    emit_with_state(
+        state,
+        emitter,
+        AcpEvent::ConversationStatusChanged {
+            conversation_id,
+            status,
+        },
+    )
+    .await;
+    Ok(())
+}
+
 /// `cached` is the worker's `CachedConn` for the event's connection: the
 /// `TurnComplete` arm falls back to it when the manager no longer has the
 /// connection (see [`live_or_cached`]). The other arms only act on a live one.
@@ -546,6 +607,29 @@ async fn handle_event(
                 return Ok(());
             };
             tool_approval_service::record(db_conn, cid, approval).await
+        }
+        AcpEvent::BackgroundTurn { running } => {
+            let Some((state_arc, emitter)) =
+                manager.get_state_and_emitter(&envelope.connection_id).await
+            else {
+                return Ok(());
+            };
+            let (conversation_id, prompt_in_flight) = {
+                let snap = state_arc.read().await;
+                (snap.conversation_id, snap.turn_in_flight)
+            };
+            let Some(cid) = conversation_id else {
+                return Ok(());
+            };
+            write_background_turn_status(
+                db_conn,
+                &state_arc,
+                &emitter,
+                cid,
+                *running,
+                prompt_in_flight,
+            )
+            .await
         }
         // Other events don't need cross-connection DB persistence today; extend
         // this dispatcher with new arms as the lifecycle scope grows.
@@ -4446,6 +4530,111 @@ mod tests {
             read_row_status(&db, sentinel.id).await,
             ConversationStatus::InProgress,
             "row must be untouched when no conversation_id is bound to the connection"
+        );
+    }
+
+    fn background_turn(seq: u64, running: bool) -> EventEnvelope {
+        EventEnvelope {
+            seq,
+            connection_id: "c1".to_string(),
+            payload: AcpEvent::BackgroundTurn { running },
+        }
+    }
+
+    /// Cowork fork: a turn the agent runs on its own moves the row like a
+    /// prompt's turn — `in_progress` while it runs, `pending_review` after —
+    /// and every client hears it on `conversation://changed`.
+    #[tokio::test]
+    async fn handle_event_background_turn_moves_the_row_like_a_prompt_turn() {
+        use crate::web::event_bridge::{WebEventBroadcaster, CONVERSATION_CHANGED_EVENT};
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/bg-turn").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        conversation_service::update_status(&db.conn, conv.id, ConversationStatus::PendingReview)
+            .await
+            .unwrap();
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let mgr = ConnectionManager::new();
+        {
+            let mut map = mgr.connections.lock().await;
+            let mut conn = fake_connection_with_state("c1", Some(conv.id));
+            conn.emitter = EventEmitter::test_web_only(broadcaster.clone());
+            map.insert("c1".to_string(), conn);
+        }
+
+        handle_event(&db.conn, &mgr, &background_turn(1, true), None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_row_status(&db, conv.id).await,
+            ConversationStatus::InProgress
+        );
+        let evt = rx.try_recv().expect("the start should reach every client");
+        assert_eq!(evt.channel, CONVERSATION_CHANGED_EVENT);
+        let p = &*evt.payload;
+        assert_eq!(p["id"], conv.id);
+        assert_eq!(p["status"], "in_progress");
+
+        handle_event(&db.conn, &mgr, &background_turn(2, false), None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_row_status(&db, conv.id).await,
+            ConversationStatus::PendingReview
+        );
+        let evt = rx.try_recv().expect("the end should reach every client");
+        let p = &*evt.payload;
+        assert_eq!(p["status"], "pending_review");
+    }
+
+    /// Cowork fork: the end of an agent's own turn never overwrites a row the
+    /// user stopped or marked done meanwhile, and a prompt codeg sent owns the
+    /// row while it runs.
+    #[tokio::test]
+    async fn handle_event_background_turn_leaves_settled_rows_and_prompt_turns_alone() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/bg-turn-guard").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let mgr = ConnectionManager::new();
+        let state = {
+            let mut map = mgr.connections.lock().await;
+            let conn = fake_connection_with_state("c1", Some(conv.id));
+            let state = conn.state.clone();
+            map.insert("c1".to_string(), conn);
+            state
+        };
+
+        conversation_service::update_status(&db.conn, conv.id, ConversationStatus::Cancelled)
+            .await
+            .unwrap();
+        handle_event(&db.conn, &mgr, &background_turn(1, false), None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_row_status(&db, conv.id).await,
+            ConversationStatus::Cancelled,
+            "a stopped row stays stopped"
+        );
+
+        // A prompt codeg sent is running: its turn owns the row, both ways.
+        conversation_service::update_status(&db.conn, conv.id, ConversationStatus::InProgress)
+            .await
+            .unwrap();
+        state.write().await.turn_in_flight = true;
+        handle_event(&db.conn, &mgr, &background_turn(2, false), None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_row_status(&db, conv.id).await,
+            ConversationStatus::InProgress,
+            "the prompt's own TurnComplete settles the row"
         );
     }
 

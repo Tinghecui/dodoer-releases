@@ -838,6 +838,19 @@ export type ConversationChange =
 
 export const CONVERSATION_CHANGED_EVENT = "conversation://changed"
 
+/** Cowork fork: one conversation's background work still out after its turn
+ *  ended, for the sidebar's hourglass on rows this client holds no connection
+ *  to. Mirrors the Rust `BackgroundPendingEntry`; `count: 0` clears it. Listed
+ *  by `acp_list_background_pending`, then kept current on
+ *  `BACKGROUND_PENDING_EVENT`. */
+export interface BackgroundPendingEntry {
+  conversation_id: number
+  count: number
+  names: string[]
+}
+
+export const BACKGROUND_PENDING_EVENT = "conversation://background"
+
 /** Why `moveConversations` left a conversation where it was. Mirrors the Rust
  *  `MoveSkipReason`. */
 export type MoveSkipReason =
@@ -3557,6 +3570,14 @@ export type AcpEvent =
       // apply this event itself.
       type: "transcript_rolled_over"
       transcript_id: string
+    }
+  | {
+      // Cowork fork: the agent began / finished a turn no prompt asked for.
+      // The backend writes the conversation row; the frontend does not apply
+      // this event itself (the row change arrives as
+      // `conversation_status_changed`).
+      type: "background_turn"
+      running: boolean
     }
   | {
       type: "conversation_status_changed"

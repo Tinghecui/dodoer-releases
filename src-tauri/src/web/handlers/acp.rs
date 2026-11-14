@@ -591,6 +591,14 @@ pub async fn acp_list_connections(
     Ok(Json(result))
 }
 
+/// Cowork fork: see `ConnectionManager::list_background_pending`.
+pub async fn acp_list_background_pending(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<Vec<crate::acp::types::BackgroundPendingEntry>>, AppCommandError> {
+    let manager = &state.connection_manager;
+    Ok(Json(manager.list_background_pending().await))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpGetSessionSnapshotParams {

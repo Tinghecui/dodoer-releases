@@ -808,6 +808,16 @@ pub enum AcpEvent {
         /// `grokSubagentSession` + `grokSubagentProgress`).
         meta: serde_json::Value,
     },
+    /// Cowork fork: the agent began (`running: true`) or finished (`false`) a
+    /// turn no codeg prompt asked for — its answer to a background task's
+    /// `<task-notification>`, a cron or `/loop` fire. Such a turn has no ACP
+    /// wire boundary, so the background watcher reads it off the session
+    /// transcript (`acp::background_watch`; Claude only). The lifecycle worker
+    /// mirrors it onto the conversation row the way it does a prompt's turn —
+    /// `in_progress`, then `pending_review` — so every client's sidebar spins
+    /// while it runs and dates the row by its end. The frontend applies
+    /// nothing from it: the row change reaches it as `ConversationStatusChanged`.
+    BackgroundTurn { running: bool },
     /// A `delegate_to_agent` MCP tool call from the parent agent has spawned a
     /// child sub-session and the child's prompt is in flight. Emitted as soon
     /// as the broker registers the pending call. The frontend uses this to
@@ -997,6 +1007,22 @@ pub struct BackgroundOutstandingTask {
     pub description: Option<String>,
     /// When the producer first saw it launched (or resumed), Unix ms.
     pub started_at_ms: i64,
+}
+
+/// Cowork fork: one conversation's background work still out after its turn
+/// ended, as every client's sidebar shows it — including the clients that hold
+/// no connection to its session. Broadcast on
+/// [`crate::web::event_bridge::BACKGROUND_PENDING_EVENT`] whenever it changes
+/// (`count: 0` clears it) and listed by `acp_list_background_pending` for a
+/// client that just loaded or reconnected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundPendingEntry {
+    pub conversation_id: i32,
+    /// Live pieces of background work; `0` when there are none.
+    pub count: u32,
+    /// Their labels, when the agent named them (may be fewer than `count`).
+    #[serde(default)]
+    pub names: Vec<String>,
 }
 
 /// One background task settled by a `<task-notification>` transcript record,

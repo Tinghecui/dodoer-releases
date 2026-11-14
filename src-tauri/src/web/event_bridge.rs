@@ -4,6 +4,7 @@ use std::sync::Arc;
 use serde::{ser::SerializeStruct, Serialize, Serializer};
 use tokio::sync::{broadcast, RwLock};
 
+use crate::acp::types::{BackgroundPendingEntry, ConnectionStatus};
 use crate::acp::{AcpEvent, EventBusMetrics, EventEnvelope, InternalEventBus, SessionState};
 
 /// Broadcast-delivered event.
@@ -148,6 +149,16 @@ impl EventEmitter {
 
 /// Global side-channel for cross-client conversation list/status sync.
 pub const CONVERSATION_CHANGED_EVENT: &str = "conversation://changed";
+
+/// Cowork fork: global side-channel for the sidebar's "waiting on background
+/// work" hourglass. Payload: [`BackgroundPendingEntry`], one per conversation
+/// whose count or labels changed (`count: 0` clears it). Emitted centrally from
+/// [`emit_with_state`], like the `Status` bridge onto
+/// [`CONVERSATION_CHANGED_EVENT`], so a client holding no connection to the
+/// session still learns it. A channel of its own rather than a new
+/// [`ConversationChange`] kind: older clients read any kind they don't know
+/// as a status change and would blank the row's status.
+pub const BACKGROUND_PENDING_EVENT: &str = "conversation://background";
 
 /// Global side-channel announcing a live-feedback enable/disable. The settings
 /// UI runs in a SEPARATE window (`openSettingsWindow`), so the conversation
@@ -580,12 +591,29 @@ pub async fn emit_with_state_built<F>(
 where
     F: FnOnce(&mut SessionState) -> Option<AcpEvent>,
 {
-    let (envelope_arc, stream, evicted, turn_file_jobs) = {
+    let (envelope_arc, stream, evicted, turn_file_jobs, background_changes) = {
         let mut s = state.write().await;
         let Some(payload) = build(&mut s) else {
             return false;
         };
+        // Cowork fork: read before and after under the same lock, so the
+        // broadcast below says exactly what this event changed.
+        let background_before = moves_background_pending(&payload)
+            .then(|| (s.conversation_id, s.background_pending()));
         s.apply_event(&payload);
+        let background_changes = match background_before {
+            Some(before) => {
+                // The CLI and the background work in it end with the
+                // connection, whatever the counts last said.
+                let after = if is_disconnect(&payload) {
+                    (0, Vec::new())
+                } else {
+                    s.background_pending()
+                };
+                background_pending_changes(before, (s.conversation_id, after))
+            }
+            None => Vec::new(),
+        };
         s.event_seq += 1;
         let envelope = Arc::new(EventEnvelope {
             seq: s.event_seq,
@@ -594,7 +622,13 @@ where
         });
         let evicted = s.push_recent_event(Arc::clone(&envelope));
         let turn_file_jobs = std::mem::take(&mut s.turn_file_jobs);
-        (envelope, s.event_stream(), evicted, turn_file_jobs)
+        (
+            envelope,
+            s.event_stream(),
+            evicted,
+            turn_file_jobs,
+            background_changes,
+        )
     };
 
     // Office auto-preview: confirm the files this turn's tool calls named.
@@ -674,7 +708,78 @@ where
             );
         }
     }
+    // Cowork fork: the same for the sidebar's background-work hourglass.
+    for change in background_changes {
+        emit_event(emitter, BACKGROUND_PENDING_EVENT, change);
+    }
     true
+}
+
+/// Cowork fork: whether applying `payload` can change what
+/// [`SessionState::background_pending`] reports, or which conversation it is
+/// reported for. Checked before the state is touched, so the hot path (content
+/// and tool-call deltas) skips the before/after reading.
+fn moves_background_pending(payload: &AcpEvent) -> bool {
+    matches!(
+        payload,
+        AcpEvent::BackgroundActivity { .. }
+            | AcpEvent::AsyncTask { .. }
+            | AcpEvent::SessionStarted { .. }
+            | AcpEvent::ConversationLinked { .. }
+            | AcpEvent::StatusChanged {
+                status: ConnectionStatus::Disconnected
+            }
+    )
+}
+
+fn is_disconnect(payload: &AcpEvent) -> bool {
+    matches!(
+        payload,
+        AcpEvent::StatusChanged {
+            status: ConnectionStatus::Disconnected
+        }
+    )
+}
+
+/// A connection's conversation and its [`SessionState::background_pending`].
+type BackgroundPendingReading = (Option<i32>, (u32, Vec<String>));
+
+/// Cowork fork: the [`BACKGROUND_PENDING_EVENT`] broadcasts that take every
+/// client from a connection's `before` reading to its `after` one — none when
+/// nothing changed or no conversation is bound; for a connection re-linked to
+/// another conversation, a clear for the old row and the new row's state.
+fn background_pending_changes(
+    before: BackgroundPendingReading,
+    after: BackgroundPendingReading,
+) -> Vec<BackgroundPendingEntry> {
+    let (before_id, (before_count, before_names)) = before;
+    let (after_id, (after_count, after_names)) = after;
+    let mut changes = Vec::new();
+    if before_id != after_id {
+        if let Some(conversation_id) = before_id.filter(|_| before_count > 0) {
+            changes.push(BackgroundPendingEntry {
+                conversation_id,
+                count: 0,
+                names: Vec::new(),
+            });
+        }
+        if let Some(conversation_id) = after_id.filter(|_| after_count > 0) {
+            changes.push(BackgroundPendingEntry {
+                conversation_id,
+                count: after_count,
+                names: after_names,
+            });
+        }
+    } else if let Some(conversation_id) = after_id {
+        if before_count != after_count || before_names != after_names {
+            changes.push(BackgroundPendingEntry {
+                conversation_id,
+                count: after_count,
+                names: after_names,
+            });
+        }
+    }
+    changes
 }
 
 #[cfg(test)]
@@ -746,6 +851,86 @@ mod tests {
             rx.try_recv().is_err(),
             "non-status ACP events must not emit on conversation://changed"
         );
+    }
+
+    fn background_activity(outstanding: u32, watermark: u64) -> AcpEvent {
+        AcpEvent::BackgroundActivity {
+            session_id: "sid".into(),
+            turns: vec![],
+            outstanding,
+            outstanding_tasks: vec![],
+            settled: vec![],
+            watermark,
+        }
+    }
+
+    /// Cowork fork: background work reaches every client's sidebar, not just
+    /// the ones attached to the connection — on a change only, and cleared
+    /// when the connection ends.
+    #[tokio::test]
+    async fn emit_with_state_bridges_background_pending_to_global_channel() {
+        let state = fresh_state();
+        state.write().await.conversation_id = Some(7);
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        emit_with_state(&state, &emitter, background_activity(1, 10)).await;
+        let evt = rx
+            .try_recv()
+            .expect("background work should bridge to the global channel");
+        assert_eq!(evt.channel, BACKGROUND_PENDING_EVENT);
+        let p = &*evt.payload;
+        assert_eq!(p["conversation_id"], 7);
+        assert_eq!(p["count"], 1);
+
+        // Same count again (a turn surfaced, nothing settled): no broadcast.
+        emit_with_state(&state, &emitter, background_activity(1, 20)).await;
+        assert!(rx.try_recv().is_err(), "an unchanged count must stay quiet");
+
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Disconnected,
+            },
+        )
+        .await;
+        let evt = rx
+            .try_recv()
+            .expect("the connection ending should clear the hourglass");
+        assert_eq!(evt.channel, BACKGROUND_PENDING_EVENT);
+        let p = &*evt.payload;
+        assert_eq!(p["conversation_id"], 7);
+        assert_eq!(p["count"], 0);
+    }
+
+    #[test]
+    fn background_pending_changes_cover_relinks_and_unbound_connections() {
+        let none = (0, Vec::new());
+        let one = || (1, vec!["Watch CI".to_string()]);
+        // Unbound: nobody's row to mark.
+        assert!(background_pending_changes((None, none.clone()), (None, one())).is_empty());
+        // Unchanged.
+        assert!(background_pending_changes((Some(7), one()), (Some(7), one())).is_empty());
+        // Labels alone changing still broadcasts.
+        let renamed = background_pending_changes(
+            (Some(7), (1, vec!["a".to_string()])),
+            (Some(7), (1, vec!["b".to_string()])),
+        );
+        assert_eq!(renamed.len(), 1);
+        assert_eq!(renamed[0].names, vec!["b".to_string()]);
+        // Re-linked with work out: clear the old row, mark the new one.
+        let relinked = background_pending_changes((Some(7), one()), (Some(8), one()));
+        assert_eq!(
+            relinked
+                .iter()
+                .map(|c| (c.conversation_id, c.count))
+                .collect::<Vec<_>>(),
+            vec![(7, 0), (8, 1)]
+        );
+        // First link of a connection with nothing out: nothing to say.
+        assert!(background_pending_changes((None, none.clone()), (Some(7), none)).is_empty());
     }
 
     #[test]

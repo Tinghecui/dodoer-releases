@@ -92,6 +92,7 @@ import type {
   AgentStats,
   SidebarData,
   ConnectionInfo,
+  BackgroundPendingEntry,
   ConversationConnectionInfo,
   LiveSessionSnapshot,
   FeedbackItem,
@@ -511,6 +512,15 @@ export async function acpTouchConnection(
 
 export async function acpListConnections(): Promise<ConnectionInfo[]> {
   return getTransport().call("acp_list_connections")
+}
+
+/** Cowork fork: the conversations with background work still out on the
+ *  server, for the sidebar's hourglass (kept current afterwards by
+ *  `conversation://background`). */
+export async function acpListBackgroundPending(): Promise<
+  BackgroundPendingEntry[]
+> {
+  return getTransport().call("acp_list_background_pending")
 }
 
 export async function acpGetSessionSnapshot(

@@ -12667,6 +12667,16 @@ pub async fn acp_list_connections(
     Ok(manager.list_connections().await)
 }
 
+/// Cowork fork: the conversations with background work still out, for the
+/// sidebar's hourglass (see `ConnectionManager::list_background_pending`).
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_list_background_pending(
+    manager: State<'_, ConnectionManager>,
+) -> Result<Vec<crate::acp::types::BackgroundPendingEntry>, AcpError> {
+    Ok(manager.list_background_pending().await)
+}
+
 pub(crate) async fn acp_get_session_snapshot_core(
     manager: &ConnectionManager,
     connection_id: &str,

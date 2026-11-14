@@ -5782,6 +5782,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // Backend re-points conversation.external_id after Claude `/clear`.
           // Sidebar converges via `conversation://changed`; do not reconnect.
           break
+        case "background_turn":
+          // Cowork fork: the backend writes the row; its status change arrives
+          // as `conversation_status_changed`. The turn's content renders
+          // through `background_activity`, so nothing to do here.
+          break
         case "conversation_linked":
           // Backend just bound (or reaffirmed) the connection's DB conversation
           // row. Phase 3a frontend pre-creates rows for new-tab sends so this

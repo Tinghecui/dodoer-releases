@@ -3483,6 +3483,49 @@ impl ConnectionManager {
         connections.values().map(|c| c.info()).collect()
     }
 
+    /// Cowork fork: every conversation with background work still out on a
+    /// live connection — what a client's sidebar starts from, before
+    /// `conversation://background` keeps it current. Several connections bound
+    /// to one conversation report the busiest, like the frontend's own
+    /// `publishBackgroundPending`. Lock discipline mirrors
+    /// [`Self::list_active_sessions`].
+    pub async fn list_background_pending(
+        &self,
+    ) -> Vec<crate::acp::types::BackgroundPendingEntry> {
+        let connections = self.connections.lock().await;
+        let mut by_conversation: HashMap<i32, crate::acp::types::BackgroundPendingEntry> =
+            HashMap::new();
+        for conn in connections.values() {
+            let state = conn.state.read().await;
+            if state.status == ConnectionStatus::Disconnected {
+                continue;
+            }
+            let Some(conversation_id) = state.conversation_id else {
+                continue;
+            };
+            let (count, names) = state.background_pending();
+            if count == 0 {
+                continue;
+            }
+            let busier = by_conversation
+                .get(&conversation_id)
+                .is_none_or(|have| count > have.count);
+            if busier {
+                by_conversation.insert(
+                    conversation_id,
+                    crate::acp::types::BackgroundPendingEntry {
+                        conversation_id,
+                        count,
+                        names,
+                    },
+                );
+            }
+        }
+        let mut entries: Vec<_> = by_conversation.into_values().collect();
+        entries.sort_by_key(|e| e.conversation_id);
+        entries
+    }
+
     /// Raw per-connection rows for the pet panel's active-session list.
     /// "Active" = the connection is currently `Prompting`, awaiting a
     /// permission, or in an `Error` state — the sessions a user would want to
@@ -8048,6 +8091,40 @@ mod tests {
             .expect("should find c1");
         assert_eq!(found, "c1");
         assert!(mgr.find_connection_by_conversation_id(999).await.is_none());
+    }
+
+    /// Cowork fork: the sidebar's seed lists bound, live connections with work
+    /// out — the busiest one per conversation.
+    #[tokio::test]
+    async fn list_background_pending_reports_bound_live_connections_with_work() {
+        let mgr = ConnectionManager::new();
+        let with_work = |id: &str, conv_id: Option<i32>, outstanding: u32| {
+            let conn = fake_connection(id, conv_id);
+            if let Ok(mut state) = conn.state.try_write() {
+                state.background_outstanding = outstanding;
+            }
+            conn
+        };
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert("c1".to_string(), with_work("c1", Some(42), 1));
+            map.insert("c2".to_string(), with_work("c2", Some(42), 3));
+            map.insert("c3".to_string(), with_work("c3", Some(43), 0));
+            map.insert("c4".to_string(), with_work("c4", None, 2));
+            let gone = with_work("c5", Some(44), 2);
+            if let Ok(mut state) = gone.state.try_write() {
+                state.status = ConnectionStatus::Disconnected;
+            }
+            map.insert("c5".to_string(), gone);
+        }
+        let entries = mgr.list_background_pending().await;
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.conversation_id, e.count))
+                .collect::<Vec<_>>(),
+            vec![(42, 3)]
+        );
     }
 
     #[tokio::test]

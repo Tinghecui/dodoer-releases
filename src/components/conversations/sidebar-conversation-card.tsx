@@ -380,8 +380,13 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   // The turn ended but background work it launched (a background shell, a
   // monitor) is still out: the agent is not done — it is woken again when
   // that settles — so the row keeps the running colour and an hourglass, and
-  // holds back the unread dot until the work is in.
-  const background = useBackgroundPending(conversation.external_id)
+  // holds back the unread dot until the work is in. Cowork fork: the
+  // conversation id lets the server's reading cover a session this client
+  // holds no connection to.
+  const background = useBackgroundPending(
+    conversation.external_id,
+    conversation.id
+  )
   const isWaiting = !isRunning && background != null
   // The agent stopped mid-turn to ask the user something (a question, a
   // permission, a plan approval): still `in_progress`, but it is the user's

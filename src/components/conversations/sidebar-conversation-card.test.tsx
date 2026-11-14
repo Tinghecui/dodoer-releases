@@ -30,6 +30,7 @@ import {
 } from "@/stores/canceled-task-store"
 import {
   publishBackgroundPending,
+  replaceServerBackgroundPending,
   useBackgroundPendingStore,
 } from "@/stores/background-pending-store"
 import {
@@ -1287,7 +1288,10 @@ describe("SidebarConversationCard waiting on background work", () => {
       seen: {},
       markedUnread: {},
     })
-    useBackgroundPendingStore.setState({ bySession: new Map() })
+    useBackgroundPendingStore.setState({
+      bySession: new Map(),
+      byConversation: new Map(),
+    })
   })
 
   const ended = {
@@ -1367,6 +1371,24 @@ describe("SidebarConversationCard waiting on background work", () => {
       ])
     )
     const { container } = renderCard(ended)
+    expect(badge(container)).toBeNull()
+  })
+
+  // Cowork fork: a row whose session has no connection in this window still
+  // shows the hourglass, from the server's reading.
+  it("shows the server's hourglass for a session with no connection here", () => {
+    act(() =>
+      replaceServerBackgroundPending([
+        { conversation_id: 21, count: 1, names: ["Watch CI"] },
+      ])
+    )
+    const { container } = renderCard(ended)
+    expect(badge(container)?.getAttribute("title")).toBe(
+      "Waiting on 1 background task: Watch CI"
+    )
+    expect(container.querySelector("[data-jenny-unread-dot]")).toBeNull()
+
+    act(() => replaceServerBackgroundPending([]))
     expect(badge(container)).toBeNull()
   })
 })

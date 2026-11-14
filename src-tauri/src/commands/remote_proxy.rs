@@ -2433,6 +2433,9 @@ pub(crate) fn http_url_to_ws_url(base_url: &str, path: &str) -> String {
 /// share and the `browser_eval` prompt included. Computer use is not lent.
 struct DesktopWsHost {
     window: String,
+    /// For what the app holds that changes while a socket lasts: whether
+    /// this window's agents may use the person's Chrome.
+    app: AppHandle,
     config: crate::acp::browser_tools::BrowserToolsRuntimeConfig,
     tools: crate::host_bridge::HostTools,
     /// Cowork fork: the server's address, as the connection stores it — what
@@ -2460,6 +2463,7 @@ impl DesktopWsHost {
             .map(|lending| Arc::clone(lending.inner()));
         Some(Self {
             window,
+            app: app.clone(),
             config,
             tools: crate::host_bridge::HostTools {
                 browser: Arc::new(browser),
@@ -2474,11 +2478,29 @@ impl DesktopWsHost {
 #[async_trait::async_trait]
 impl WsHost for DesktopWsHost {
     async fn capabilities(&self) -> Vec<String> {
-        host_capabilities(&self.config).await
+        use tauri::Manager;
+        let mut capabilities = host_capabilities(&self.config).await;
+        // The person lets this window's agents use their own Chrome: said
+        // beside `browser`, through which Chrome is reached, so that a server
+        // with several computers to choose from sends its calls to this one
+        // (`docs/host-choice.md`).
+        let lends_chrome = !capabilities.is_empty()
+            && self
+                .app
+                .try_state::<crate::browser::chrome::ChromeLending>()
+                .is_some_and(|lending| lending.is_lent(&self.window));
+        if lends_chrome {
+            capabilities.push(crate::web::host_registry::CAPABILITY_CHROME.to_string());
+        }
+        capabilities
     }
 
     fn window(&self) -> String {
         self.window.clone()
+    }
+
+    fn device(&self) -> Option<crate::host_device::HostDevice> {
+        crate::host_device::this_device()
     }
 
     async fn dispatch(&self, call: crate::host_bridge::BridgeCall) -> Value {
@@ -3263,7 +3285,7 @@ mod tests {
             let register = next_test_text(&mut socket).await;
             assert!(matches!(
                 serde_json::from_str::<ClientMsg>(&register).unwrap(),
-                ClientMsg::HostRegister { ref capabilities, window: Some(ref w), shell: None }
+                ClientMsg::HostRegister { ref capabilities, window: Some(ref w), shell: None, .. }
                     if capabilities == &["browser"] && w == "remote-workspace-7"
             ));
             let call = ServerMsg::HostCall {

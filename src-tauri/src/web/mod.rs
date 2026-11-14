@@ -4,6 +4,7 @@ pub mod browser_tunnel;
 pub mod compression;
 pub mod event_bridge;
 pub mod handlers;
+pub mod host_choice;
 pub mod host_registry;
 pub mod host_tunnel;
 pub mod port_probe;

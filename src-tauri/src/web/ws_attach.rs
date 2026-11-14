@@ -88,6 +88,11 @@ pub enum ClientMsg {
         /// server whose `server_info` names `host_ssh`.
         #[serde(default)]
         shell: Option<crate::host_ssh::tunnel::ShellHost>,
+        /// The computer the app is on (`host_device`), for a person with
+        /// the app open on several to say which one their agents use
+        /// (`docs/host-choice.md`). An app from before this names none.
+        #[serde(default)]
+        device: Option<crate::host_device::HostDevice>,
     },
     /// Cowork fork: a host's answer to `host_call` — the host bridge's
     /// outcome for that call, as `host_bridge::dispatch` returns it.
@@ -400,12 +405,12 @@ mod tests {
         .unwrap();
         assert!(matches!(
             register,
-            ClientMsg::HostRegister { ref capabilities, window: Some(ref w), shell: None }
+            ClientMsg::HostRegister { ref capabilities, window: Some(ref w), shell: None, device: None }
                 if capabilities == &["browser"] && w == "remote-workspace-3"
         ));
         assert!(matches!(
             serde_json::from_str::<ClientMsg>(r#"{"action":"host_register"}"#).unwrap(),
-            ClientMsg::HostRegister { ref capabilities, window: None, shell: None }
+            ClientMsg::HostRegister { ref capabilities, window: None, shell: None, device: None }
                 if capabilities.is_empty()
         ));
         let shell: ClientMsg = serde_json::from_str(
@@ -417,6 +422,16 @@ mod tests {
             shell,
             ClientMsg::HostRegister { shell: Some(ref s), .. }
                 if s.host_key == "ssh-ed25519 AAAA" && s.user == "me"
+        ));
+        let named: ClientMsg = serde_json::from_str(
+            r#"{"action":"host_register","capabilities":["browser","chrome"],
+                "device":{"id":"0123456789abcdef","name":"Mac mini"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            named,
+            ClientMsg::HostRegister { device: Some(ref d), .. }
+                if d.id == "0123456789abcdef" && d.name == "Mac mini"
         ));
         assert!(matches!(
             serde_json::from_str::<ClientMsg>(

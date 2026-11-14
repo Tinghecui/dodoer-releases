@@ -57,6 +57,9 @@ pub mod git_repo;
 /// Cowork fork: the desktop app's browser and computer use, served to its
 /// child daemon (`local_daemon`).
 pub mod host_bridge;
+/// Cowork fork: the computer this app is on, as it names it to servers
+/// (`docs/host-choice.md`).
+pub mod host_device;
 /// Cowork fork: lending this computer's shell to a remote workspace
 /// (`docs/host-ssh.md`).
 pub mod host_ssh;
@@ -1946,6 +1949,7 @@ mod tauri_app {
                 crate::commands::host_ssh::host_ssh_self_test,
                 crate::commands::host_ssh::host_ssh_permissions,
                 crate::commands::host_ssh::host_ssh_repair_permission,
+                crate::commands::host_ssh::host_device,
                 crate::commands::browser_tools::get_browser_tools_settings,
                 crate::commands::browser_tools::set_browser_tools_settings,
                 crate::commands::computer_tools::get_computer_tools_settings,

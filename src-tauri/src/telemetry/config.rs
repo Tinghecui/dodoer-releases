@@ -14,6 +14,7 @@ pub const POLLED_COMMANDS: &[(&str, f32)] = &[
     ("get_git_head", 0.01),
     ("get_codeg_mcp_service_status", 0.01),
     ("get_system_resources", 0.01),
+    ("get_host_devices", 0.01),
     ("health", 0.01),
 ];
 

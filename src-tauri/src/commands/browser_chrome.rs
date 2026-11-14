@@ -105,6 +105,9 @@ pub async fn browser_chrome_set_agents(
 ) -> Result<bool, AppCommandError> {
     let scope = chrome_share::scope_of_window(window.label());
     chrome_share::set_lent(&app, &registry, &lending, &scope, on);
+    // A server choosing among several computers goes by this
+    // (`CAPABILITY_CHROME`): tell the ones this app is registered with.
+    crate::commands::remote_proxy::refresh_host_registrations(&app);
     Ok(on)
 }
 

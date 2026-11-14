@@ -16,6 +16,14 @@
 //! here can grant or answer one. When no app is registered, or it goes away
 //! or does not answer, the tools answer as a runtime without a browser does,
 //! with a note telling the agent what the person can do about it.
+//!
+//! Several apps may be registered at once — the same person on two computers
+//! — and which one takes a call is theirs to say (`docs/host-choice.md`):
+//! each app names the computer it is on (`host_device`), and the person can
+//! fix the browser, or the command line, to one of them ([`HostChoices`],
+//! `web::host_choice`). Left alone, a call goes to the computer whose Chrome
+//! they let agents use ([`CAPABILITY_CHROME`]), else to the one they used
+//! last.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -24,6 +32,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use axum::extract::ws::WebSocket;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use super::ws_attach::ServerMsg;
@@ -37,6 +46,7 @@ use crate::browser::capture::CaptureRequest;
 use crate::browser::console::ConsoleQuery;
 use crate::browser::eval::EvalRequest;
 use crate::host_bridge::{BridgeCall, BrowserCall};
+use crate::host_device::HostDevice;
 use crate::host_ssh::tunnel::{ShellHost, CAPABILITY as CAPABILITY_SHELL, TUNNELS_PER_MINUTE};
 
 /// The `server_info` feature a desktop app looks for before registering.
@@ -44,6 +54,12 @@ pub const FEATURE: &str = "host_bridge_ws";
 
 /// The capability a host names to be lent browser calls.
 pub const CAPABILITY_BROWSER: &str = "browser";
+
+/// The capability a host names beside `browser` while the person lets this
+/// server's agents use their own Chrome there (`browser::chrome::lending`).
+/// Nothing is asked by it: with several computers lending their tabs, it
+/// says which one the person means.
+pub const CAPABILITY_CHROME: &str = "chrome";
 
 /// How long a call may take. `tab_op` waits on a page load.
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -61,11 +77,36 @@ pub const NO_DESKTOP_NOTE: &str =
      open this workspace in the desktop app and to share the tab with agents from the \
      browser toolbar, then try again.";
 
+/// What an agent is told when the person fixed the browser to a computer
+/// that lends none right now. Never another computer's instead: an agent
+/// working on the wrong one is what fixing it is for.
+pub fn browser_away_note(name: &str) -> String {
+    format!(
+        "The user fixed this workspace's browser to {}, and no desktop app there lends its \
+         browser right now. Ask the user to open this workspace in the desktop app on that \
+         computer, or to choose another computer from the computers icon at the foot of the \
+         sidebar, then try again.",
+        named(name)
+    )
+}
+
+/// A computer as a note names it.
+pub fn named(name: &str) -> String {
+    if name.is_empty() {
+        "one particular computer".to_string()
+    } else {
+        format!("the computer \"{name}\"")
+    }
+}
+
 /// Why a call got no answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostCallError {
     /// No registered host has the capability.
     NoHost,
+    /// The person fixed the capability to a computer that does not lend it
+    /// now ([`HostRegistry::pinned_name`] says which).
+    PinnedAway,
     /// The host's socket closed before it answered.
     Gone,
     /// The host did not answer in time.
@@ -77,6 +118,9 @@ pub enum HostCallError {
 pub enum TunnelError {
     /// No registered host lends its shell.
     NoHost,
+    /// The person fixed `ssh desktop` to the computer of this name, and it
+    /// lends no shell now.
+    PinnedAway(String),
     /// [`TUNNELS_PER_MINUTE`] opened in the last minute already.
     Busy,
     /// The host answered that it cannot, and why.
@@ -85,6 +129,101 @@ pub enum TunnelError {
     Gone,
     /// The host did not dial back in time.
     TimedOut,
+}
+
+/// A computer the person fixed a capability to, with the name it had then:
+/// what there is to show while it is away.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PinnedDevice {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// Which computer takes what, where the person said so. `None` leaves it to
+/// [`Inner::pick`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostChoices {
+    /// For browser calls.
+    #[serde(default)]
+    pub browser: Option<PinnedDevice>,
+    /// For `ssh desktop`.
+    #[serde(default)]
+    pub shell: Option<PinnedDevice>,
+}
+
+impl HostChoices {
+    fn of(&self, capability: &str) -> Option<&PinnedDevice> {
+        match capability {
+            CAPABILITY_BROWSER => self.browser.as_ref(),
+            CAPABILITY_SHELL => self.shell.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn slot(&mut self, capability: &str) -> Option<&mut Option<PinnedDevice>> {
+        match capability {
+            CAPABILITY_BROWSER => Some(&mut self.browser),
+            CAPABILITY_SHELL => Some(&mut self.shell),
+            _ => None,
+        }
+    }
+}
+
+/// Why a choice was not taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChooseError {
+    /// Not something a computer is chosen for.
+    NoSuchCapability,
+    /// No app registered now is on that computer.
+    NoSuchDevice,
+}
+
+/// One computer with an app registered here, and what it lends.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LendingDevice {
+    /// What [`HostDevices::browser_now`] and `shell_now` name it by: its
+    /// id, or one of the socket's for an app that names no computer.
+    pub key: String,
+    /// What a choice names it by. `None` for an app from before computers
+    /// had ids: it takes calls, but cannot be fixed on.
+    pub id: Option<String>,
+    pub name: String,
+    pub browser: bool,
+    /// Its person lets this server's agents use their own Chrome there.
+    pub chrome: bool,
+    pub shell: bool,
+}
+
+/// The computers registered, the person's choices, and where the next call
+/// of each kind goes: what the chooser shows (`web::host_choice`).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostDevices {
+    /// The one used last first.
+    pub devices: Vec<LendingDevice>,
+    pub choices: HostChoices,
+    /// The [`LendingDevice::key`] a browser call goes to now, if anywhere.
+    pub browser_now: Option<String>,
+    /// The one `ssh desktop` reaches now.
+    pub shell_now: Option<String>,
+}
+
+/// Why [`Inner::pick`] found nobody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Missing {
+    NoHost,
+    PinnedAway,
+}
+
+impl From<Missing> for HostCallError {
+    fn from(missing: Missing) -> Self {
+        match missing {
+            Missing::NoHost => Self::NoHost,
+            Missing::PinnedAway => Self::PinnedAway,
+        }
+    }
 }
 
 /// What a tunnel's waiting end gets: the socket the host dialed, or the
@@ -96,6 +235,8 @@ struct Host {
     tx: mpsc::Sender<ServerMsg>,
     capabilities: Vec<String>,
     window: Option<String>,
+    /// The computer it is on, when the app says.
+    device: Option<HostDevice>,
     /// The shell it lends, with the `shell` capability.
     shell: Option<ShellHost>,
     /// When it registered or last had focus, on the registry's clock: the
@@ -108,6 +249,24 @@ impl Host {
     fn lends(&self, capability: &str) -> bool {
         self.capabilities.iter().any(|c| c == capability)
             && (capability != CAPABILITY_SHELL || self.shell.is_some())
+    }
+
+    /// Whether it is on the computer with this id.
+    fn is_on(&self, device_id: &str) -> bool {
+        self.device.as_ref().is_some_and(|d| d.id == device_id)
+    }
+
+    /// Chrome is reached through the tabs a host lends: nothing without them.
+    fn lends_chrome(&self) -> bool {
+        self.lends(CAPABILITY_BROWSER) && self.lends(CAPABILITY_CHROME)
+    }
+
+    /// Its [`LendingDevice::key`].
+    fn key(&self) -> String {
+        match &self.device {
+            Some(device) => device.id.clone(),
+            None => format!("host-{}", self.id),
+        }
     }
 }
 
@@ -132,6 +291,8 @@ struct Inner {
     next_host: u64,
     next_call: u64,
     clock: u64,
+    /// The computers the person fixed things to.
+    choices: HostChoices,
 }
 
 impl Inner {
@@ -140,23 +301,91 @@ impl Inner {
         self.clock
     }
 
-    /// The host with `capability` the person used last.
-    fn pick(&self, capability: &str) -> Option<&Host> {
-        self.hosts
-            .iter()
-            .filter(|h| h.lends(capability))
-            .max_by_key(|h| h.active_at)
+    /// The host that takes a call for `capability`.
+    ///
+    /// On the computer the person fixed it to, and on no other: with that
+    /// one away the call fails and says so, because the next one in line is
+    /// a different computer. Fixed to nothing, a browser call goes to a
+    /// computer whose Chrome agents may use before one that lends only the
+    /// built-in browser, and among equals to the one the person used last.
+    fn pick(&self, capability: &str) -> Result<&Host, Missing> {
+        let lending = self.hosts.iter().filter(|h| h.lends(capability));
+        match self.choices.of(capability) {
+            Some(pinned) => lending
+                .filter(|h| h.is_on(&pinned.id))
+                .max_by_key(|h| h.active_at)
+                .ok_or(Missing::PinnedAway),
+            None => lending
+                .max_by_key(|h| {
+                    (
+                        capability == CAPABILITY_BROWSER && h.lends_chrome(),
+                        h.active_at,
+                    )
+                })
+                .ok_or(Missing::NoHost),
+        }
     }
 
-    /// The shells lent now, the one used last first.
+    /// The shells lent now, the one [`pick`](Self::pick) asks first.
     fn shells(&self) -> Vec<ShellHost> {
+        let pinned = self.choices.of(CAPABILITY_SHELL);
         let mut hosts: Vec<&Host> = self
             .hosts
             .iter()
             .filter(|h| h.lends(CAPABILITY_SHELL))
             .collect();
-        hosts.sort_by_key(|h| std::cmp::Reverse(h.active_at));
+        hosts.sort_by_key(|h| {
+            std::cmp::Reverse((pinned.is_some_and(|p| h.is_on(&p.id)), h.active_at))
+        });
         hosts.into_iter().filter_map(|h| h.shell.clone()).collect()
+    }
+
+    /// Every computer with an app registered, the one used last first; two
+    /// sockets of one computer are one entry.
+    fn devices(&self) -> HostDevices {
+        let mut hosts: Vec<&Host> = self.hosts.iter().collect();
+        hosts.sort_by_key(|h| std::cmp::Reverse(h.active_at));
+        let mut devices: Vec<LendingDevice> = Vec::new();
+        for host in hosts {
+            let key = host.key();
+            let browser = host.lends(CAPABILITY_BROWSER);
+            let chrome = host.lends_chrome();
+            let shell = host.lends(CAPABILITY_SHELL);
+            match devices.iter_mut().find(|d| d.key == key) {
+                Some(device) => {
+                    device.browser |= browser;
+                    device.chrome |= chrome;
+                    device.shell |= shell;
+                }
+                None => devices.push(LendingDevice {
+                    key,
+                    id: host.device.as_ref().map(|d| d.id.clone()),
+                    name: host
+                        .device
+                        .as_ref()
+                        .map(|d| d.name.clone())
+                        .unwrap_or_default(),
+                    browser,
+                    chrome,
+                    shell,
+                }),
+            }
+        }
+        HostDevices {
+            devices,
+            choices: self.choices.clone(),
+            browser_now: self.pick(CAPABILITY_BROWSER).ok().map(Host::key),
+            shell_now: self.pick(CAPABILITY_SHELL).ok().map(Host::key),
+        }
+    }
+
+    /// The name of the computer `capability` is fixed to; empty when it has
+    /// none, or nothing is fixed.
+    fn pinned_name(&self, capability: &str) -> String {
+        self.choices
+            .of(capability)
+            .map(|pinned| pinned.name.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -175,6 +404,13 @@ impl Default for HostRegistry {
             shells: watch::channel(Vec::new()).0,
         }
     }
+}
+
+/// A computer's id as the logs name it. Not its name: that is a person's
+/// ("James's Mac mini"), and these lines leave the server
+/// (`telemetry::config::INFO_LOG_TARGETS`).
+fn short(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
 }
 
 /// A shell as a desktop sent it, if it can be used as it is.
@@ -220,20 +456,36 @@ impl HostRegistry {
         window: Option<String>,
         shell: Option<ShellHost>,
     ) -> HostRegistration {
+        self.register_on(tx, capabilities, window, shell, None)
+    }
+
+    /// [`register`](Self::register), for an app that says which computer it
+    /// is on.
+    pub fn register_on(
+        self: &Arc<Self>,
+        tx: mpsc::Sender<ServerMsg>,
+        capabilities: Vec<String>,
+        window: Option<String>,
+        shell: Option<ShellHost>,
+        device: Option<HostDevice>,
+    ) -> HostRegistration {
+        let device = device.and_then(HostDevice::sound);
         let mut inner = self.lock();
         inner.next_host += 1;
         let id = inner.next_host;
         let active_at = inner.tick();
         tracing::info!(
-            "[host-registry] host {id} registered ({}; {})",
+            "[host-registry] host {id} registered ({}; {}; computer {})",
             capabilities.join(","),
-            window.as_deref().unwrap_or("?")
+            window.as_deref().unwrap_or("?"),
+            device.as_ref().map_or("?", |d| short(&d.id))
         );
         inner.hosts.push(Host {
             id,
             tx,
             capabilities,
             window,
+            device,
             shell: sound(shell),
             active_at,
         });
@@ -259,19 +511,83 @@ impl HostRegistry {
         self.shells.subscribe()
     }
 
+    /// The computers registered, the choices, and where calls go now.
+    pub fn devices(&self) -> HostDevices {
+        self.lock().devices()
+    }
+
+    /// The choices as they were stored, when the server starts
+    /// (`web::host_choice::restore`).
+    pub fn set_choices(&self, choices: HostChoices) {
+        let mut inner = self.lock();
+        inner.choices = choices;
+        self.publish_shells(&inner);
+    }
+
+    /// Fix `capability` (`browser` or `shell`) to the computer `device_id`
+    /// — one with an app registered now, so that its name is known — or to
+    /// none. The choices as they are afterwards, for keeping.
+    pub fn choose(
+        &self,
+        capability: &str,
+        device_id: Option<&str>,
+    ) -> Result<HostChoices, ChooseError> {
+        let mut inner = self.lock();
+        let pinned = match device_id {
+            None => None,
+            Some(id) => Some(
+                inner
+                    .hosts
+                    .iter()
+                    .filter_map(|h| h.device.as_ref())
+                    .find(|d| d.id == id)
+                    .map(|d| PinnedDevice {
+                        id: d.id.clone(),
+                        name: d.name.clone(),
+                    })
+                    .ok_or(ChooseError::NoSuchDevice)?,
+            ),
+        };
+        let slot = inner
+            .choices
+            .slot(capability)
+            .ok_or(ChooseError::NoSuchCapability)?;
+        tracing::info!(
+            "[host-registry] {capability} fixed to computer {}",
+            pinned.as_ref().map_or("(none)", |p| short(&p.id))
+        );
+        *slot = pinned;
+        self.publish_shells(&inner);
+        Ok(inner.choices.clone())
+    }
+
+    /// The name of the computer `capability` is fixed to, for a note to an
+    /// agent; empty when it has none.
+    pub fn pinned_name(&self, capability: &str) -> String {
+        self.lock().pinned_name(capability)
+    }
+
     fn update(
         &self,
         id: u64,
         capabilities: Vec<String>,
         window: Option<String>,
         shell: Option<ShellHost>,
+        device: Option<HostDevice>,
     ) {
         let mut inner = self.lock();
         let now = inner.tick();
         if let Some(host) = inner.hosts.iter_mut().find(|h| h.id == id) {
+            if host.capabilities != capabilities {
+                tracing::info!(
+                    "[host-registry] host {id} now lends ({})",
+                    capabilities.join(",")
+                );
+            }
             host.capabilities = capabilities;
             host.window = window;
             host.shell = sound(shell);
+            host.device = device.and_then(HostDevice::sound);
             host.active_at = now;
         }
         self.publish_shells(&inner);
@@ -297,7 +613,7 @@ impl HostRegistry {
         tracing::info!("[host-registry] host {id} gone");
     }
 
-    /// Ask the host lending its shell that the person used last for a
+    /// Ask the host lending its shell that [`Inner::pick`] names for a
     /// tunnel that lets `client_key` in, and wait up to `timeout` for it to
     /// dial back ([`claim_tunnel`](Self::claim_tunnel)).
     pub async fn open_tunnel(
@@ -307,8 +623,14 @@ impl HostRegistry {
     ) -> Result<WebSocket, TunnelError> {
         let (tunnel_id, tx, rx) = {
             let mut inner = self.lock();
-            let Some(host) = inner.pick(CAPABILITY_SHELL) else {
-                return Err(TunnelError::NoHost);
+            let host = match inner.pick(CAPABILITY_SHELL) {
+                Ok(host) => host,
+                Err(Missing::NoHost) => return Err(TunnelError::NoHost),
+                Err(Missing::PinnedAway) => {
+                    return Err(TunnelError::PinnedAway(
+                        inner.pinned_name(CAPABILITY_SHELL),
+                    ))
+                }
             };
             let host_id = host.id;
             let tx = host.tx.clone();
@@ -390,7 +712,7 @@ impl HostRegistry {
         pending.reply.send(outcome).is_ok()
     }
 
-    /// Send `call` to the host with `capability` the person used last and
+    /// Send `call` to the host [`Inner::pick`] names for `capability` and
     /// wait for its outcome.
     pub async fn call(
         &self,
@@ -400,9 +722,7 @@ impl HostRegistry {
     ) -> Result<serde_json::Value, HostCallError> {
         let (call_id, tx, rx) = {
             let mut inner = self.lock();
-            let Some(host) = inner.pick(capability) else {
-                return Err(HostCallError::NoHost);
-            };
+            let host = inner.pick(capability)?;
             let host_id = host.id;
             let tx = host.tx.clone();
             let window = host.window.clone();
@@ -460,7 +780,20 @@ impl HostRegistration {
         window: Option<String>,
         shell: Option<ShellHost>,
     ) {
-        self.registry.update(self.id, capabilities, window, shell);
+        self.update_on(capabilities, window, shell, None);
+    }
+
+    /// [`update`](Self::update), for an app that says which computer it is
+    /// on.
+    pub fn update_on(
+        &self,
+        capabilities: Vec<String>,
+        window: Option<String>,
+        shell: Option<ShellHost>,
+        device: Option<HostDevice>,
+    ) {
+        self.registry
+            .update(self.id, capabilities, window, shell, device);
     }
 
     /// The host's `host_tunnel_result`: it will not dial `tunnel_id`.
@@ -487,7 +820,7 @@ impl Drop for HostRegistration {
 }
 
 /// The browser tools of a codeg-server with no desktop app of its own: each
-/// call goes to the registered desktop app the person used last.
+/// call goes to the registered desktop app [`Inner::pick`] names.
 pub struct RemoteHostBrowser {
     hosts: Arc<HostRegistry>,
 }
@@ -497,25 +830,29 @@ impl RemoteHostBrowser {
         Self { hosts }
     }
 
-    /// The host's outcome, or `None` when there is none to give — the
-    /// caller answers as a runtime without a browser.
-    async fn ask<T: DeserializeOwned>(&self, call: BrowserCall, timeout: Duration) -> Option<T> {
+    /// The host's outcome; or, when there is none to give, the note the
+    /// caller answers with as a runtime without a browser would.
+    async fn ask<T: DeserializeOwned>(
+        &self,
+        call: BrowserCall,
+        timeout: Duration,
+    ) -> Result<T, String> {
         match self
             .hosts
             .call(CAPABILITY_BROWSER, BridgeCall::Browser(call), timeout)
             .await
         {
-            Ok(outcome) => match serde_json::from_value(outcome) {
-                Ok(outcome) => Some(outcome),
-                Err(e) => {
-                    tracing::warn!("[host-registry] a host answered something unreadable: {e}");
-                    None
-                }
-            },
-            Err(HostCallError::NoHost) => None,
+            Ok(outcome) => serde_json::from_value(outcome).map_err(|e| {
+                tracing::warn!("[host-registry] a host answered something unreadable: {e}");
+                NO_DESKTOP_NOTE.to_string()
+            }),
+            Err(HostCallError::NoHost) => Err(NO_DESKTOP_NOTE.to_string()),
+            Err(HostCallError::PinnedAway) => Err(browser_away_note(
+                &self.hosts.pinned_name(CAPABILITY_BROWSER),
+            )),
             Err(e) => {
                 tracing::warn!("[host-registry] browser call failed: {e:?}");
-                None
+                Err(NO_DESKTOP_NOTE.to_string())
             }
         }
     }
@@ -526,7 +863,7 @@ impl BrowserToolAccess for RemoteHostBrowser {
     async fn list_tabs(&self) -> BrowserTabsOutcome {
         self.ask(BrowserCall::ListTabs, CALL_TIMEOUT)
             .await
-            .unwrap_or_else(|| BrowserTabsOutcome::unavailable(NO_DESKTOP_NOTE))
+            .unwrap_or_else(|note| BrowserTabsOutcome::unavailable(&note))
     }
 
     async fn snapshot(&self, tab_id: &str, max_chars: Option<usize>) -> BrowserSnapshotOutcome {
@@ -534,8 +871,8 @@ impl BrowserToolAccess for RemoteHostBrowser {
             tab_id: tab_id.to_string(),
             max_chars,
         };
-        self.ask(call, CALL_TIMEOUT).await.unwrap_or_else(|| {
-            BrowserSnapshotOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
+        self.ask(call, CALL_TIMEOUT).await.unwrap_or_else(|note| {
+            BrowserSnapshotOutcome::refused(tab_id, ERROR_UNAVAILABLE, note)
         })
     }
 
@@ -544,8 +881,8 @@ impl BrowserToolAccess for RemoteHostBrowser {
             tab_id: tab_id.to_string(),
             request,
         };
-        self.ask(call, CALL_TIMEOUT).await.unwrap_or_else(|| {
-            BrowserActOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
+        self.ask(call, CALL_TIMEOUT).await.unwrap_or_else(|note| {
+            BrowserActOutcome::refused(tab_id, ERROR_UNAVAILABLE, note)
         })
     }
 
@@ -554,8 +891,8 @@ impl BrowserToolAccess for RemoteHostBrowser {
             tab_id: tab_id.to_string(),
             query,
         };
-        self.ask(call, CALL_TIMEOUT).await.unwrap_or_else(|| {
-            BrowserConsoleOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
+        self.ask(call, CALL_TIMEOUT).await.unwrap_or_else(|note| {
+            BrowserConsoleOutcome::refused(tab_id, ERROR_UNAVAILABLE, note)
         })
     }
 
@@ -564,8 +901,8 @@ impl BrowserToolAccess for RemoteHostBrowser {
             tab_id: tab_id.to_string(),
             request,
         };
-        self.ask(call, CALL_TIMEOUT).await.unwrap_or_else(|| {
-            BrowserCaptureOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
+        self.ask(call, CALL_TIMEOUT).await.unwrap_or_else(|note| {
+            BrowserCaptureOutcome::refused(tab_id, ERROR_UNAVAILABLE, note)
         })
     }
 
@@ -574,8 +911,8 @@ impl BrowserToolAccess for RemoteHostBrowser {
             tab_id: tab_id.to_string(),
             request,
         };
-        self.ask(call, EVAL_TIMEOUT).await.unwrap_or_else(|| {
-            BrowserEvalOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
+        self.ask(call, EVAL_TIMEOUT).await.unwrap_or_else(|note| {
+            BrowserEvalOutcome::refused(tab_id, ERROR_UNAVAILABLE, note)
         })
     }
 
@@ -583,8 +920,8 @@ impl BrowserToolAccess for RemoteHostBrowser {
         let named = op.tab_id().map(str::to_string);
         self.ask(BrowserCall::TabOp { op }, CALL_TIMEOUT)
             .await
-            .unwrap_or_else(|| {
-                BrowserTabOutcome::refused(named.as_deref(), ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
+            .unwrap_or_else(|note| {
+                BrowserTabOutcome::refused(named.as_deref(), ERROR_UNAVAILABLE, note)
             })
     }
 }
@@ -916,5 +1253,318 @@ mod tests {
         });
         tunnel_order(&mut a_rx).await;
         assert!(b_rx.try_recv().is_err());
+    }
+
+    fn device(id: &str, name: &str) -> HostDevice {
+        HostDevice {
+            id: format!("{id}-0123456789"),
+            name: name.to_string(),
+        }
+    }
+
+    fn lends_chrome() -> Vec<String> {
+        vec![
+            CAPABILITY_BROWSER.to_string(),
+            CAPABILITY_CHROME.to_string(),
+        ]
+    }
+
+    /// Who a browser call is sent to: the receiver that gets a `host_call`.
+    async fn asked(registry: &Arc<HostRegistry>) -> Result<(), HostCallError> {
+        registry
+            .call(
+                CAPABILITY_BROWSER,
+                BridgeCall::Browser(BrowserCall::ListTabs),
+                Duration::from_millis(20),
+            )
+            .await
+            .map(|_| ())
+    }
+
+    /// With several computers lending their tabs, the one whose Chrome
+    /// agents may use takes the call, whichever was used last.
+    #[tokio::test]
+    async fn a_computer_lending_its_chrome_goes_before_the_one_used_last() {
+        let registry = Arc::new(HostRegistry::new());
+        let (mini_tx, mut mini_rx) = mpsc::channel(8);
+        let mini = registry.register_on(
+            mini_tx,
+            browser(),
+            None,
+            None,
+            Some(device("mini", "Mac mini")),
+        );
+        let (book_tx, mut book_rx) = mpsc::channel(8);
+        let book = registry.register_on(
+            book_tx,
+            lends_chrome(),
+            None,
+            None,
+            Some(device("book", "MacBook")),
+        );
+        mini.focus();
+        assert_eq!(asked(&registry).await, Err(HostCallError::TimedOut));
+        assert!(matches!(
+            book_rx.try_recv(),
+            Ok(ServerMsg::HostCall { .. })
+        ));
+        assert!(mini_rx.try_recv().is_err());
+        let now = registry.devices();
+        assert_eq!(now.browser_now, Some(device("book", "").id));
+        assert_eq!(
+            now.devices.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            ["Mac mini", "MacBook"],
+            "the one used last first"
+        );
+        assert!(now.devices[1].chrome && !now.devices[0].chrome);
+
+        // The switch off again: back to the one used last.
+        book.update_on(browser(), None, None, Some(device("book", "MacBook")));
+        mini.focus();
+        assert_eq!(asked(&registry).await, Err(HostCallError::TimedOut));
+        assert!(matches!(
+            mini_rx.try_recv(),
+            Ok(ServerMsg::HostCall { .. })
+        ));
+    }
+
+    /// `chrome` without `browser` is a switch on a computer that lends no
+    /// tabs: nothing to prefer.
+    #[tokio::test]
+    async fn chrome_counts_only_with_the_tabs_it_is_reached_through() {
+        let registry = Arc::new(HostRegistry::new());
+        let (tx, _rx) = mpsc::channel(8);
+        let _only_chrome = registry.register_on(
+            tx,
+            vec![CAPABILITY_CHROME.to_string()],
+            None,
+            None,
+            Some(device("book", "MacBook")),
+        );
+        assert_eq!(asked(&registry).await, Err(HostCallError::NoHost));
+        let now = registry.devices();
+        assert!(!now.devices[0].chrome && !now.devices[0].browser);
+        assert_eq!(now.browser_now, None);
+    }
+
+    /// A computer the person fixed the browser to takes every call, and
+    /// while it is away nobody does.
+    #[tokio::test]
+    async fn a_fixed_computer_takes_the_calls_and_nobody_stands_in_for_it() {
+        let registry = Arc::new(HostRegistry::new());
+        let (mini_tx, mut mini_rx) = mpsc::channel(8);
+        let mini = registry.register_on(
+            mini_tx,
+            browser(),
+            None,
+            None,
+            Some(device("mini", "Mac mini")),
+        );
+        let (book_tx, mut book_rx) = mpsc::channel(8);
+        let _book = registry.register_on(
+            book_tx,
+            lends_chrome(),
+            None,
+            None,
+            Some(device("book", "MacBook")),
+        );
+        let mini_id = device("mini", "").id;
+        let choices = registry
+            .choose(CAPABILITY_BROWSER, Some(&mini_id))
+            .expect("a computer that is here");
+        assert_eq!(
+            choices.browser,
+            Some(PinnedDevice {
+                id: mini_id.clone(),
+                name: "Mac mini".into()
+            })
+        );
+        assert_eq!(choices.shell, None);
+        assert_eq!(asked(&registry).await, Err(HostCallError::TimedOut));
+        assert!(matches!(
+            mini_rx.try_recv(),
+            Ok(ServerMsg::HostCall { .. })
+        ));
+        assert!(book_rx.try_recv().is_err());
+
+        // Its app closes: the MacBook is not asked in its place.
+        drop(mini);
+        assert_eq!(asked(&registry).await, Err(HostCallError::PinnedAway));
+        assert!(book_rx.try_recv().is_err());
+        assert_eq!(registry.devices().browser_now, None);
+        let tools = RemoteHostBrowser::new(Arc::clone(&registry));
+        let note = tools.list_tabs().await.note.unwrap_or_default();
+        assert!(note.contains("\"Mac mini\""), "{note}");
+        let refused = tools.snapshot("t1", None).await;
+        assert_eq!(refused.error.as_deref(), Some(ERROR_UNAVAILABLE));
+        assert_eq!(refused.note.as_deref(), Some(note.as_str()));
+
+        // Back to whoever is there.
+        registry.choose(CAPABILITY_BROWSER, None).unwrap();
+        assert_eq!(asked(&registry).await, Err(HostCallError::TimedOut));
+        assert!(matches!(
+            book_rx.try_recv(),
+            Ok(ServerMsg::HostCall { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn only_a_computer_that_is_here_can_be_chosen_and_only_for_what_is_lent() {
+        let registry = Arc::new(HostRegistry::new());
+        let (tx, _rx) = mpsc::channel(8);
+        let _unnamed = registry.register(tx, browser(), None, None);
+        let (named_tx, _named_rx) = mpsc::channel(8);
+        let _named = registry.register_on(
+            named_tx,
+            browser(),
+            None,
+            None,
+            Some(device("book", "MacBook")),
+        );
+        let book_id = device("book", "").id;
+        assert_eq!(
+            registry.choose(CAPABILITY_BROWSER, Some("nobody-0123456789")),
+            Err(ChooseError::NoSuchDevice)
+        );
+        assert_eq!(
+            registry.choose("computer", Some(&book_id)),
+            Err(ChooseError::NoSuchCapability)
+        );
+        assert_eq!(registry.devices().choices, HostChoices::default());
+        // An app that names no computer is listed, and cannot be chosen.
+        let now = registry.devices();
+        assert_eq!(now.devices.len(), 2);
+        let unnamed = now.devices.iter().find(|d| d.id.is_none()).unwrap();
+        assert!(unnamed.key.starts_with("host-") && unnamed.browser);
+        // An id an app made up is not kept.
+        let (odd_tx, _odd_rx) = mpsc::channel(8);
+        let _odd = registry.register_on(
+            odd_tx,
+            browser(),
+            None,
+            None,
+            Some(HostDevice {
+                id: "two words".into(),
+                name: "Odd".into(),
+            }),
+        );
+        assert_eq!(
+            registry.choose(CAPABILITY_BROWSER, Some("two words")),
+            Err(ChooseError::NoSuchDevice)
+        );
+    }
+
+    /// Two sockets of one computer — a window for the tabs, a reconnect —
+    /// are one computer, lending what either lends.
+    #[tokio::test]
+    async fn two_sockets_of_one_computer_are_one_entry() {
+        let registry = Arc::new(HostRegistry::new());
+        let (a_tx, _a_rx) = mpsc::channel(8);
+        let _a = registry.register_on(
+            a_tx,
+            browser(),
+            None,
+            None,
+            Some(device("book", "MacBook")),
+        );
+        let (b_tx, _b_rx) = mpsc::channel(8);
+        let _b = registry.register_on(
+            b_tx,
+            lends_shell(),
+            None,
+            Some(shell_host("me")),
+            Some(device("book", "MacBook")),
+        );
+        let now = registry.devices();
+        assert_eq!(now.devices.len(), 1);
+        assert!(now.devices[0].browser && now.devices[0].shell);
+        assert_eq!(now.browser_now, now.shell_now);
+    }
+
+    /// `ssh desktop` follows the computer the shell is fixed to: asked,
+    /// listed first for the server's ssh files, and not replaced while away.
+    #[tokio::test]
+    async fn a_fixed_shell_is_asked_listed_first_and_not_stood_in_for() {
+        let registry = Arc::new(HostRegistry::new());
+        let mut shells = registry.watch_shells();
+        let (a_tx, mut a_rx) = mpsc::channel(8);
+        let a = registry.register_on(
+            a_tx,
+            lends_shell(),
+            None,
+            Some(shell_host("a")),
+            Some(device("mini", "Mac mini")),
+        );
+        let (b_tx, mut b_rx) = mpsc::channel(8);
+        let _b = registry.register_on(
+            b_tx,
+            lends_shell(),
+            None,
+            Some(shell_host("b")),
+            Some(device("book", "MacBook")),
+        );
+        assert_eq!(*shells.borrow_and_update(), vec![shell_host("b"), shell_host("a")]);
+        let mini_id = device("mini", "").id;
+        registry.choose(CAPABILITY_SHELL, Some(&mini_id)).unwrap();
+        assert!(shells.has_changed().unwrap(), "the ssh files follow");
+        assert_eq!(*shells.borrow_and_update(), vec![shell_host("a"), shell_host("b")]);
+        assert_eq!(registry.devices().shell_now, Some(mini_id.clone()));
+        let r = Arc::clone(&registry);
+        tokio::spawn(async move {
+            let _ = r
+                .open_tunnel("ssh-ed25519 KEY", Duration::from_secs(5))
+                .await;
+        });
+        tunnel_order(&mut a_rx).await;
+        assert!(b_rx.try_recv().is_err());
+
+        drop(a);
+        assert_eq!(
+            registry
+                .open_tunnel("ssh-ed25519 KEY", Duration::from_secs(5))
+                .await
+                .err(),
+            Some(TunnelError::PinnedAway("Mac mini".into()))
+        );
+        assert!(b_rx.try_recv().is_err());
+        // The browser was never fixed: it goes on as before.
+        assert_eq!(registry.devices().choices.browser, None);
+    }
+
+    /// What was stored comes back when the server starts, before any app
+    /// has registered.
+    #[tokio::test]
+    async fn stored_choices_hold_before_their_computer_is_back() {
+        let registry = Arc::new(HostRegistry::new());
+        let stored: HostChoices = serde_json::from_str(
+            r#"{"browser":{"id":"mini-0123456789","name":"Mac mini"}}"#,
+        )
+        .unwrap();
+        assert_eq!(stored.shell, None);
+        registry.set_choices(stored.clone());
+        assert_eq!(registry.devices().choices, stored);
+        let (tx, mut rx) = mpsc::channel(8);
+        let _book = registry.register_on(
+            tx,
+            browser(),
+            None,
+            None,
+            Some(device("book", "MacBook")),
+        );
+        assert_eq!(asked(&registry).await, Err(HostCallError::PinnedAway));
+        assert!(rx.try_recv().is_err());
+        let (mini_tx, mut mini_rx) = mpsc::channel(8);
+        let _mini = registry.register_on(
+            mini_tx,
+            browser(),
+            None,
+            None,
+            Some(device("mini", "Mac mini")),
+        );
+        assert_eq!(asked(&registry).await, Err(HostCallError::TimedOut));
+        assert!(matches!(
+            mini_rx.try_recv(),
+            Ok(ServerMsg::HostCall { .. })
+        ));
     }
 }

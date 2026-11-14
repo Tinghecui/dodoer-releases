@@ -45,6 +45,9 @@ vi.mock("@/components/cowork/resource-meter", () => ({
 vi.mock("@/components/cowork/status-bar-host-ssh", () => ({
   StatusBarHostSsh: () => <span data-testid="host-ssh" />,
 }))
+vi.mock("@/components/cowork/status-bar-host-choice", () => ({
+  StatusBarHostChoice: () => <span data-testid="host-choice" />,
+}))
 
 import { StatusBar, StatusBarLeft, StatusBarRight } from "./status-bar"
 
@@ -119,7 +122,25 @@ describe("StatusBar", () => {
     render(<StatusBarLeft />)
     const item = screen.getByTestId("chrome")
     expect(item.previousElementSibling).toBe(screen.getByTestId("host-ssh"))
+    expect(item.nextElementSibling).toBe(screen.getByTestId("host-choice"))
+  })
+
+  /** Which computer the agents use: amber while a fixed one is away, so it
+   *  is with the other two that say what this computer hands over. */
+  it("puts the computer chooser after them, wide and narrow", () => {
+    render(<StatusBarRight />)
+    expect(screen.queryByTestId("host-choice")).toBeNull()
+    cleanup()
+    render(<StatusBarLeft />)
+    const item = screen.getByTestId("host-choice")
+    expect(item.previousElementSibling).toBe(screen.getByTestId("chrome"))
     expect(item.nextElementSibling).toBe(screen.getByTestId("resource-meter"))
+    cleanup()
+    viewport.mobile = true
+    render(<StatusBar />)
+    expect(screen.getByTestId("chrome").nextElementSibling).toBe(
+      screen.getByTestId("host-choice")
+    )
   })
 
   it("carries the Chrome item in the narrow layout", () => {

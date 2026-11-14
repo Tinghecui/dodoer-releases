@@ -118,7 +118,7 @@ agent ── ssh desktop
   桌面端把 `client_key` 记进 `authorized_keys`（这个连接此前没给过的话），然后**主动**连 `GET /ws/host-tunnel?id=<tunnel_id>`（认证和它的 `/ws/events` 一样，子协议 `codeg-host-tunnel`），连上后在这条 WebSocket 和 `127.0.0.1:<端口>` 之间原样搬字节（二进制帧）。连不上本机 SSH 服务、开关已关，就回 `{"action":"host_tunnel_result","tunnel_id":…,"error":"…"}`。借出收回、SSH 服务停了，桌面端立刻关掉这台服务器的所有通道，已经连上的会话随之结束（`Lending::withdrawn`）。
 - 服务器把桌面端拨进来的这条和等着的那一头（5.3）配上对，两边原样搬字节；15 秒没人拨进来就失败。`tunnel_id` 是 128 位随机数，一次有效。
 - 桌面端每个事件 socket 按自己的服务器注册：借出、停止借出、SSH 服务起停、浏览器开关变了，各 socket 都重新算一遍再发 `host_register`（`remote_proxy` 的 `HOST_CHANGES`）。
-- 选哪台电脑：和借浏览器一样，最近注册或最近获得焦点的那个带 `shell` 能力的 host。
+- 选哪台电脑：和借浏览器一样，最近注册或最近获得焦点的那个带 `shell` 能力的 host。2026-11-14 起用户可以固定到某一台（`docs/host-choice.md`）；固定的那台没借出时 `ssh desktop` 报错，不换一台。
 - **一条 SSH 连接一条 WebSocket，靠 SSH 自己的连接复用压住数量**（5.3 的 `ControlMaster`）。Cowork 的 nginx 对 `/ws/` 是每分钟 20 个新连接，超了会被 fail2ban 封 IP；所以 codeg-server 自己再限一道（每分钟最多 6 条新通道），超了直接回「稍后再试」，不让请求走到 nginx 那里去。真不够用再改成一条 WebSocket 里跑多路。
 
 ### 5.3 服务器端：`ssh desktop`
@@ -141,14 +141,14 @@ agent ── ssh desktop
     StrictHostKeyChecking yes
     ProxyCommand <codeg-cli 的绝对路径> desktop proxy
     ControlMaster auto
-    ControlPath <目录>/cm-%C
+    ControlPath <目录>/cm-<主机密钥摘要的前 8 位>
     ControlPersist 10m
     ServerAliveInterval 30
   ```
 
 - 第一次借出时在 `~/.ssh/config` 最前面加一行 `Include <目录>/config`（带注释说明是谁加的；文件不存在就建）。这样 `ssh desktop`、`scp`、`rsync`、`git` 都直接能用，不用带参数。
-- 这些文件跟着借出走（`web::host_tunnel` 的 `spawn_file_sync`）：有桌面借出就写，`known_hosts` 里是所有借出的桌面的主机密钥，`User` 用最近用的那台的登录名；最后一个借出的桌面走了 30 秒后删私钥和 `known_hosts`（事件 socket 重连会先注销再注册，不能一断就换钥匙）。`config` 和 `Include` 那行留着。
-- `config` 最后一行是 `Host *`：`Include` 进来的 `Host` 块即使延续到 `~/.ssh/config` 后面的内容，也等于全局，不影响用户原来的配置。`ControlPath` 是 `<目录>/cm`（只有一台主机，不用 `%C`）；目录路径太长就不开共享连接。`~/.ssh/config` 是符号链接时改它指向的文件。
+- 这些文件跟着借出走（`web::host_tunnel` 的 `spawn_file_sync`）：有桌面借出就写，`known_hosts` 里是所有借出的桌面的主机密钥，`User` 用 `ssh desktop` 会去的那台（固定的，否则最近用的）的登录名；最后一个借出的桌面走了 30 秒后删私钥和 `known_hosts`（事件 socket 重连会先注销再注册，不能一断就换钥匙）。`config` 和 `Include` 那行留着。
+- `config` 最后一行是 `Host *`：`Include` 进来的 `Host` 块即使延续到 `~/.ssh/config` 后面的内容，也等于全局，不影响用户原来的配置。`ControlPath` 是 `<目录>/cm-<主机密钥的 sha256 前 8 位>`：一台电脑一个，换了电脑（`docs/host-choice.md` 第 7 节）下一条 `ssh desktop` 就新开连接，不顺着旧连接进原来那台；目录路径太长就不开共享连接。`~/.ssh/config` 是符号链接时改它指向的文件。
 - **`codeg-cli desktop proxy`**（新子命令）：按 `codeg-cli` 现有的规则找到本机的 codeg-server（智能体的 shell 里有 `CODEG_CLI_ENDPOINT_FILE`），连它的 `GET /api/cli_host_tunnel`（CLI 的路由，回环端口上用 CLI 自己的令牌；能力名 `host_tunnel`），把自己的标准输入输出接到通道上。服务器先配好对再升级 WebSocket，所以每种失败都是一句话，代理把它打在标准错误上、`ssh` 原样显示：没人借出时是「No dodoer desktop app lends this workspace its command line right now…」，还有每分钟超过 6 条、桌面拒绝、15 秒没拨回来。用户在设置里关了「命令行访问」时，`ssh desktop` 也不通。
 - 私钥是服务器上的一个文件，不是只在内存里（`ssh` 客户端要读文件）。它只有这个账号能读，借出结束就删，而且**单有它没用**：到那台电脑的路只有 codeg-server 里的通道这一条，通道只在桌面 app 借出时存在。
 - 服务器上别的账号用不了：入口要这个账号的 codeg-server 的 token。Cowork 里每个员工一个 codeg-server，只够得着自己连上来的那台电脑。

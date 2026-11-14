@@ -146,6 +146,17 @@ pub async fn host_ssh_set_lent(
     Ok(lending.status(&server).await)
 }
 
+/// The computer this app is on, as it names it to servers (`host_device`):
+/// for a window to mark its own among the computers its server lists
+/// (`docs/host-choice.md`). `None` when it has no id to go by.
+#[tauri::command]
+pub async fn host_device() -> Result<Option<crate::host_device::HostDevice>, AppCommandError> {
+    // Finding the name runs a program the first time: off the main thread.
+    tauri::async_runtime::spawn_blocking(crate::host_device::this_device)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))
+}
+
 /// Log in to the running service once, the way a lent connection will.
 #[tauri::command]
 pub async fn host_ssh_self_test(

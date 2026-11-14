@@ -927,6 +927,15 @@ pub fn api_routes() -> Router {
             "/get_system_resources",
             post(crate::system_resources::get_system_resources_http),
         )
+        // Which of the person's computers the agents use (`web::host_choice`).
+        .route(
+            "/get_host_devices",
+            post(crate::web::host_choice::get_host_devices),
+        )
+        .route(
+            "/set_host_choice",
+            post(crate::web::host_choice::set_host_choice),
+        )
         // Dropped by the 0.43 base; desktop apps up to 1.4.0 still call it.
         .route(
             "/acp_fetch_kimi_models",

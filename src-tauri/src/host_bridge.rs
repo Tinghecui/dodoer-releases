@@ -510,6 +510,7 @@ pub mod ws_host {
     use tokio_tungstenite::tungstenite::http::HeaderMap;
 
     use super::BridgeCall;
+    use crate::host_device::HostDevice;
     use crate::host_ssh::tunnel::{self, ShellHost};
 
     /// Where a tunnel the server asked for is dialed, with the event
@@ -536,6 +537,11 @@ pub mod ws_host {
         async fn dispatch(&self, call: BridgeCall) -> Value;
         /// The shell this app lends the socket's server now, if it does.
         async fn shell(&self) -> Option<ShellHost> {
+            None
+        }
+        /// The computer this app is on, for a server to tell two of the
+        /// person's computers apart (`docs/host-choice.md`).
+        fn device(&self) -> Option<HostDevice> {
             None
         }
         /// Told whenever what [`capabilities`](Self::capabilities) or
@@ -575,7 +581,12 @@ pub mod ws_host {
         server_info_names(frame, tunnel::FEATURE)
     }
 
-    pub fn register_frame(capabilities: &[String], window: &str, shell: Option<&ShellHost>) -> String {
+    pub fn register_frame(
+        capabilities: &[String],
+        window: &str,
+        shell: Option<&ShellHost>,
+        device: Option<&HostDevice>,
+    ) -> String {
         let mut frame = json!({
             "action": "host_register",
             "capabilities": capabilities,
@@ -583,6 +594,9 @@ pub mod ws_host {
         });
         if let Some(shell) = shell {
             frame["shell"] = json!(shell);
+        }
+        if let Some(device) = device {
+            frame["device"] = json!(device);
         }
         frame.to_string()
     }
@@ -595,7 +609,12 @@ pub mod ws_host {
         if shell.is_some() {
             capabilities.push(tunnel::CAPABILITY.to_string());
         }
-        register_frame(&capabilities, &host.window(), shell.as_ref())
+        register_frame(
+            &capabilities,
+            &host.window(),
+            shell.as_ref(),
+            host.device().as_ref(),
+        )
     }
 
     /// A `host_tunnel`: its id and the key to let in.
@@ -730,10 +749,10 @@ mod tests {
     fn ws_host_frames_match_the_servers_messages() {
         use crate::web::ws_attach::{ClientMsg, ServerMsg};
         let register =
-            ws_host::register_frame(&["browser".to_string()], "remote-workspace-3", None);
+            ws_host::register_frame(&["browser".to_string()], "remote-workspace-3", None, None);
         assert!(matches!(
             serde_json::from_str::<ClientMsg>(&register).unwrap(),
-            ClientMsg::HostRegister { ref capabilities, window: Some(ref w), shell: None }
+            ClientMsg::HostRegister { ref capabilities, window: Some(ref w), shell: None, .. }
                 if capabilities == &["browser"] && w == "remote-workspace-3"
         ));
         let shell = crate::host_ssh::ShellHost {
@@ -741,14 +760,20 @@ mod tests {
             user: "me".into(),
             platform: Some("macos".into()),
         };
+        let device = crate::host_device::HostDevice {
+            id: "0123456789abcdef".into(),
+            name: "James's Mac mini".into(),
+        };
         let lending = ws_host::register_frame(
             &["browser".to_string(), "shell".to_string()],
             "remote-workspace-3",
             Some(&shell),
+            Some(&device),
         );
         assert!(matches!(
             serde_json::from_str::<ClientMsg>(&lending).unwrap(),
-            ClientMsg::HostRegister { shell: Some(ref s), .. } if *s == shell
+            ClientMsg::HostRegister { shell: Some(ref s), device: Some(ref d), .. }
+                if *s == shell && *d == device
         ));
         let order = serde_json::to_value(ServerMsg::HostTunnel {
             tunnel_id: "t9".into(),

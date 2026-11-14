@@ -163,6 +163,32 @@ const en = {
   feedbackCancel: "Cancel",
   feedbackSent: "Sent. Thank you!",
   feedbackNotSent: "Not sent: this server does not collect diagnostics.",
+  // Which of the person's computers the agents use
+  // (`status-bar-host-choice.tsx`, `docs/host-choice.md`).
+  hostChoiceTitle: "Which computer agents use",
+  hostChoiceTooltipAway: "A computer you fixed is not connected",
+  hostChoiceIntro:
+    "Computers with dodoer open on this workspace can lend its agents their browser and command line. With several connected, say here which one is used.",
+  hostChoiceEmpty: "No computer is connected right now.",
+  hostChoiceThis: "This computer",
+  hostChoiceUnnamed: "Unnamed computer",
+  hostChoiceOld: "Update dodoer there to be able to fix on it",
+  hostChoiceLendsBrowser: "Browser",
+  hostChoiceLendsChrome: "Chrome",
+  hostChoiceLendsShell: "Command line",
+  hostChoiceLendsNothing: "Lends nothing",
+  hostChoiceBrowser: "Browser",
+  hostChoiceShell: "Command line (ssh desktop)",
+  hostChoiceAuto: "Automatic",
+  hostChoiceAutoBrowserHint:
+    "Automatic: the computer where you turned on “Let agents use my Chrome”, otherwise the one you used last.",
+  hostChoiceAutoShellHint: "Automatic: the lent computer you used last.",
+  hostChoiceNow: "Now: {name}",
+  hostChoiceNone: "No computer lends this right now.",
+  hostChoiceAway:
+    "Fixed to {name}, which does not lend this right now, so agents' calls fail. Open dodoer on that computer, or choose again.",
+  hostChoiceAwayOption: "{name} (not connected)",
+  hostChoiceFailed: "Could not change it: {message}",
 }
 
 export type CoworkTextKey = keyof typeof en
@@ -299,6 +325,30 @@ const zhCN: Record<CoworkTextKey, string> = {
   feedbackCancel: "取消",
   feedbackSent: "已发送，谢谢！",
   feedbackNotSent: "没发出去：这台服务器没有开诊断数据上报。",
+  hostChoiceTitle: "智能体用哪台电脑",
+  hostChoiceTooltipAway: "固定的电脑没连上",
+  hostChoiceIntro:
+    "开着 dodoer 并连到这个工作区的电脑，可以把浏览器和命令行借给这里的智能体。几台同时连着时，在这里定用哪台。",
+  hostChoiceEmpty: "现在没有电脑连着。",
+  hostChoiceThis: "这台",
+  hostChoiceUnnamed: "未命名的电脑",
+  hostChoiceOld: "那台的 dodoer 更新后才能固定用它",
+  hostChoiceLendsBrowser: "浏览器",
+  hostChoiceLendsChrome: "Chrome",
+  hostChoiceLendsShell: "命令行",
+  hostChoiceLendsNothing: "没有借出",
+  hostChoiceBrowser: "浏览器",
+  hostChoiceShell: "命令行（ssh desktop）",
+  hostChoiceAuto: "自动",
+  hostChoiceAutoBrowserHint:
+    "自动：优先用打开了「让智能体用我的 Chrome」的电脑，否则用你最近操作过的那台。",
+  hostChoiceAutoShellHint: "自动：用你最近操作过的那台借出的电脑。",
+  hostChoiceNow: "现在用：{name}",
+  hostChoiceNone: "现在没有电脑借出这一项。",
+  hostChoiceAway:
+    "固定用「{name}」，但它现在没借出这一项，智能体的调用会失败。在那台电脑上打开 dodoer，或者重新选。",
+  hostChoiceAwayOption: "{name}（没连上）",
+  hostChoiceFailed: "没改成：{message}",
 }
 
 const zhTW: Record<CoworkTextKey, string> = {
@@ -435,6 +485,30 @@ const zhTW: Record<CoworkTextKey, string> = {
   feedbackCancel: "取消",
   feedbackSent: "已送出，謝謝！",
   feedbackNotSent: "沒有送出：這台伺服器沒有開啟診斷資料回報。",
+  hostChoiceTitle: "智慧體用哪台電腦",
+  hostChoiceTooltipAway: "固定的電腦沒連上",
+  hostChoiceIntro:
+    "開著 dodoer 並連到這個工作區的電腦，可以把瀏覽器和命令列借給這裡的智慧體。幾台同時連著時，在這裡決定用哪台。",
+  hostChoiceEmpty: "現在沒有電腦連著。",
+  hostChoiceThis: "這台",
+  hostChoiceUnnamed: "未命名的電腦",
+  hostChoiceOld: "那台的 dodoer 更新後才能固定用它",
+  hostChoiceLendsBrowser: "瀏覽器",
+  hostChoiceLendsChrome: "Chrome",
+  hostChoiceLendsShell: "命令列",
+  hostChoiceLendsNothing: "沒有借出",
+  hostChoiceBrowser: "瀏覽器",
+  hostChoiceShell: "命令列（ssh desktop）",
+  hostChoiceAuto: "自動",
+  hostChoiceAutoBrowserHint:
+    "自動：優先用開啟了「讓智慧體用我的 Chrome」的電腦，否則用你最近操作過的那台。",
+  hostChoiceAutoShellHint: "自動：用你最近操作過的那台借出的電腦。",
+  hostChoiceNow: "現在用：{name}",
+  hostChoiceNone: "現在沒有電腦借出這一項。",
+  hostChoiceAway:
+    "固定用「{name}」，但它現在沒借出這一項，智慧體的呼叫會失敗。在那台電腦上開啟 dodoer，或者重新選。",
+  hostChoiceAwayOption: "{name}（沒連上）",
+  hostChoiceFailed: "沒改成：{message}",
 }
 
 const CATALOGS: Record<string, Record<CoworkTextKey, string>> = {

@@ -390,14 +390,16 @@ async fn handle_client_msg(
             capabilities,
             window,
             shell,
+            device,
         } => match host {
-            Some(registration) => registration.update(capabilities, window, shell),
+            Some(registration) => registration.update_on(capabilities, window, shell, device),
             None => {
-                *host = Some(state.host_registry.register(
+                *host = Some(state.host_registry.register_on(
                     outbound_tx.clone(),
                     capabilities,
                     window,
                     shell,
+                    device,
                 ))
             }
         },

@@ -24,6 +24,7 @@ const KEY: &str = "id_ed25519";
 const KEY_PUB: &str = "id_ed25519.pub";
 const KNOWN_HOSTS: &str = "known_hosts";
 const CONFIG: &str = "config";
+/// The shared connection's socket: `cm-<the computer it reaches>`.
 const CONTROL: &str = "cm";
 
 /// A socket path is cut at about 104 bytes, and `ssh` adds a random suffix
@@ -72,8 +73,9 @@ impl ClientFiles {
     }
 
     /// Everything `ssh desktop` needs while `hosts` lend their shells, the
-    /// one used last first: a key (kept while there is one), their host keys,
-    /// the configuration (logging in as the first), the include.
+    /// one it reaches first (`HostRegistry::shells`): a key (kept while
+    /// there is one), their host keys, the configuration (logging in as the
+    /// first), the include.
     pub async fn prepare(&self, hosts: &[ShellHost]) -> Result<(), String> {
         let Some(newest) = hosts.iter().find(|host| host.is_sound()) else {
             return Ok(());
@@ -99,7 +101,7 @@ impl ClientFiles {
         let program = self.program.clone().unwrap_or_else(cli_program);
         write_private(
             &self.dir.join(CONFIG),
-            &config_text(&self.dir, &newest.user, &program)?,
+            &config_text(&self.dir, newest, &program)?,
         )?;
         if let Some(ssh_config) = &self.ssh_config {
             include(ssh_config, &self.dir.join(CONFIG))?;
@@ -142,7 +144,20 @@ fn config_path(path: &Path) -> Option<String> {
     Some(format!("\"{}\"", text.replace('%', "%%")))
 }
 
-fn config_text(dir: &Path, user: &str, program: &Path) -> Result<String, String> {
+/// The shared connection's socket for the computer with this host key. One
+/// per computer: `ssh desktop` keeps a connection for ten minutes, and when
+/// the computer it reaches changes — the person used another one, or fixed
+/// it to one (`docs/host-choice.md`) — the next `ssh desktop` must not ride
+/// the connection still open to the last.
+fn control_name(host_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(host_key.trim().as_bytes());
+    let short: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    format!("{CONTROL}-{short}")
+}
+
+fn config_text(dir: &Path, host: &ShellHost, program: &Path) -> Result<String, String> {
+    let user = &host.user;
     let path = |name: &str| {
         config_path(&dir.join(name))
             .ok_or_else(|| format!("{} cannot go into an ssh configuration", dir.display()))
@@ -153,11 +168,11 @@ fn config_text(dir: &Path, user: &str, program: &Path) -> Result<String, String>
         .ok_or_else(|| format!("{} cannot go into an ssh configuration", program.display()))?;
     // `ssh` runs it with the shell, after reading its `%` tokens.
     let proxy = crate::git_credential::sh_single_quote(program_text).replace('%', "%%");
-    let control = dir.join(CONTROL);
-    let multiplex = if control.as_os_str().len() <= SOCKET_PATH_MAX {
+    let socket = control_name(&host.host_key);
+    let multiplex = if dir.join(&socket).as_os_str().len() <= SOCKET_PATH_MAX {
         format!(
             "  ControlMaster auto\n  ControlPath {}\n  ControlPersist 10m\n",
-            path(CONTROL)?
+            path(&socket)?
         )
     } else {
         "  ControlMaster no\n".to_string()
@@ -304,7 +319,7 @@ mod tests {
     fn the_configuration_sends_desktop_through_the_proxy() {
         let text = config_text(
             Path::new("/srv/data/host-ssh"),
-            "me",
+            &host("me", KEY_A),
             Path::new("/opt/codeg/codeg-cli"),
         )
         .unwrap();
@@ -315,7 +330,22 @@ mod tests {
         assert!(text.contains("  UserKnownHostsFile \"/srv/data/host-ssh/known_hosts\"\n"));
         assert!(text.contains("  StrictHostKeyChecking yes\n"));
         assert!(text.contains("  ProxyCommand '/opt/codeg/codeg-cli' desktop proxy\n"));
-        assert!(text.contains("  ControlPath \"/srv/data/host-ssh/cm\"\n"));
+        let control = control_name(KEY_A);
+        assert!(control.starts_with("cm-") && control.len() == "cm-".len() + 8);
+        assert!(text.contains(&format!(
+            "  ControlPath \"/srv/data/host-ssh/{control}\"\n"
+        )));
+        // Another computer, another connection: a change of computer does
+        // not ride the one still open to the last.
+        let other = config_text(
+            Path::new("/srv/data/host-ssh"),
+            &host("me", KEY_B),
+            Path::new("/opt/codeg/codeg-cli"),
+        )
+        .unwrap();
+        assert_ne!(control_name(KEY_B), control);
+        assert!(other.contains(&control_name(KEY_B)) && !other.contains(&control));
+        assert_eq!(control_name(&format!(" {KEY_A}\n")), control);
         assert!(
             text.trim_end().ends_with("Host *"),
             "what follows the include is for every host again"
@@ -325,19 +355,19 @@ mod tests {
     #[test]
     fn a_long_folder_gets_no_shared_connection_and_odd_paths_are_kept_whole() {
         let long = PathBuf::from(format!("/{}", "d".repeat(120)));
-        let text = config_text(&long, "me", Path::new("/usr/bin/codeg-cli")).unwrap();
+        let text = config_text(&long, &host("me", KEY_A), Path::new("/usr/bin/codeg-cli")).unwrap();
         assert!(text.contains("ControlMaster no"));
         assert!(!text.contains("ControlPath"));
 
         let odd = config_text(
             Path::new("/data/50%/host-ssh"),
-            "me",
+            &host("me", KEY_A),
             Path::new("/opt/it's/codeg-cli"),
         )
         .unwrap();
         assert!(odd.contains("IdentityFile \"/data/50%%/host-ssh/id_ed25519\""));
         assert!(odd.contains(r#"ProxyCommand '/opt/it'\''s/codeg-cli' desktop proxy"#));
-        assert!(config_text(Path::new("/a\"b"), "me", Path::new("/x")).is_err());
+        assert!(config_text(Path::new("/a\"b"), &host("me", KEY_A), Path::new("/x")).is_err());
     }
 
     #[test]

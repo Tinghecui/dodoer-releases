@@ -56,6 +56,10 @@ pub const FEATURES: &[&str] = &[
     // registers a `shell` and dials the tunnels `ssh desktop` asks for
     // (`host_ssh::tunnel`, `docs/host-ssh.md`).
     "host_ssh",
+    // `/api/get_host_devices` and `/api/set_host_choice`: which of the
+    // person's computers takes browser calls and `ssh desktop`
+    // (`web::host_choice`, `docs/host-choice.md`).
+    "host_choice",
 ];
 
 /// The contract as one value: the `server_info` frame carries it as is
@@ -102,7 +106,13 @@ mod tests {
         );
         assert_eq!(
             fields["features"],
-            serde_json::json!(["cowork_info", "host_bridge_ws", "system_resources", "host_ssh"])
+            serde_json::json!([
+                "cowork_info",
+                "host_bridge_ws",
+                "system_resources",
+                "host_ssh",
+                "host_choice"
+            ])
         );
     }
 
@@ -115,6 +125,7 @@ mod tests {
     #[test]
     fn the_shell_feature_is_the_one_desktops_look_for() {
         assert!(FEATURES.contains(&crate::host_ssh::tunnel::FEATURE));
+        assert!(FEATURES.contains(&crate::web::host_choice::FEATURE));
     }
 
     #[test]

@@ -10,7 +10,7 @@
 # mode turns the bridge off), as an unprivileged user. Lines starting with
 # "CHECK" compare against the expected value; the last line counts failures.
 set -u
-apt-get update -qq >/dev/null && apt-get install -y -qq curl procps ca-certificates >/dev/null 2>&1
+apt-get update -qq >/dev/null && apt-get install -y -qq curl procps ca-certificates sqlite3 >/dev/null 2>&1
 L=/usr/local/lib/cowork-codeg
 mkdir -p $L && tar -xzf /pkg.tar.gz -C $L
 echo "== package: $(ls $L | tr '\n' ' ') version=$(cat $L/COWORK-VERSION)"
@@ -96,6 +96,11 @@ for p in $(pgrep -u 1500 | grep -vx "$SP"); do
   echo "descendant $p $(cat /proc/$p/comm): secret vars $(env_of | grep -cE '^(PASEO_PASSWORD|COWORK_PASSWORD|CODEG_TOKEN|COWORK_TOKEN)'), token value $(env_of | grep -c -- "$TOKEN")"
 done
 echo "descendants checked: $n"
+echo "== ACP-ADAPTERS / DB-MIGRATIONS: what Cowork goes by when it switches codeg versions from the portal"
+chk "ACP-ADAPTERS pins claude-agent-acp and codex-acp" "$(grep -cE '^acp-(claude-agent-acp|codex-acp)=[0-9]' $L/ACP-ADAPTERS)" 2
+# Cowork swaps an employee's database for a snapshot when it holds a migration this list lacks, so
+# the list must be exactly the names the server records (a missing one would throw away a good database).
+chk "DB-MIGRATIONS = the migrations the server applied" "$(sqlite3 $H/.codeg/codeg.db 'select version from seaql_migrations order by version' | diff - <(LC_ALL=C sort $L/DB-MIGRATIONS) >/dev/null && echo same)" same
 echo "== codeg-cli in the package, first on the terminals' PATH (cowork-codeg #171)"
 chk "package has an executable codeg-cli" "$(test -x $L/codeg-cli && echo yes)" yes
 chk "codeg-cli --help as the employee" "$(setpriv --reuid=1500 --regid=1500 --clear-groups $L/codeg-cli --help >/dev/null 2>&1; echo $?)" 0

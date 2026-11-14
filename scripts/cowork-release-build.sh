@@ -9,8 +9,9 @@
 # <build-dir> is an rsync'ed copy of this repo owned by gha-runner, e.g.
 # /data/gha-runner/cowork-codeg-build/release. Output:
 #   <build-dir>/dist/cowork-codeg-server-linux-x64.tar.gz (+ .sha256)
-# containing codeg-server, codeg-mcp, codeg-cli, web/, LICENSE, COWORK-VERSION
-# at the top level (extract straight into /usr/local/lib/cowork-codeg).
+# containing codeg-server, codeg-mcp, codeg-cli, web/, LICENSE, COWORK-VERSION,
+# ACP-ADAPTERS, DB-MIGRATIONS at the top level (extract straight into
+# /usr/local/lib/cowork-codeg).
 # codeg-server puts the directory it runs from first on the PATH of its
 # terminals and agents when codeg-cli is there (cli_run::shim::plan_server).
 # GitHub Actions builds the binaries itself (.github/public/workflows/
@@ -64,6 +65,17 @@ package() {
   cp -a --no-preserve=ownership "$DIR/out" "$stage/web"
   cp "$DIR/LICENSE" "$stage/"
   echo "${COWORK_VERSION:-unknown}" > "$stage/COWORK-VERSION"
+  # Cowork 从门户单独换 codeg 版本时按这两个文件办事（Tinghecui/cowork 的 deploy/server/）：
+  # ACP-ADAPTERS 是这一版 registry.rs 钉的 ACP 适配器，一行一个 acp-<命令>=<版本>，和 cowork 的 runtime.lock 同格式，
+  # cowork 照它给所有员工全局装适配器；DB-MIGRATIONS 是这一版认的数据库迁移，一行一个（就是 seaql_migrations 里记的名字），
+  # 换回这一版时员工的库里要是有它不认的迁移，它起不来，cowork 就把库换回快照。
+  sed -n -E 's|^ *package: "@agentclientprotocol/([a-z0-9-]+)@([0-9][^"]*)",.*|acp-\1=\2|p' \
+    "$DIR/src-tauri/src/acp/registry.rs" | sort -u > "$stage/ACP-ADAPTERS"
+  grep -oE 'Box::new\(m[0-9]{8}_[0-9]{6}_[a-z0-9_]+::Migration\)' "$DIR/src-tauri/src/db/migration/mod.rs" \
+    | sed -E 's/^Box::new\(([^:]+)::Migration\)$/\1/' > "$stage/DB-MIGRATIONS"
+  grep -q '^acp-claude-agent-acp=' "$stage/ACP-ADAPTERS" && grep -q '^acp-codex-acp=' "$stage/ACP-ADAPTERS" \
+    || { echo "ACP-ADAPTERS 里没有 claude-agent-acp 或 codex-acp（registry.rs 的写法变了？）" >&2; exit 1; }
+  [ -s "$stage/DB-MIGRATIONS" ] || { echo "DB-MIGRATIONS 是空的（db/migration/mod.rs 的写法变了？）" >&2; exit 1; }
   (cd "$stage" && tar --owner=0 --group=0 --numeric-owner -czf "../$NAME.tar.gz" .)
   (cd "$DIR/dist" && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
   own "$DIR/dist"

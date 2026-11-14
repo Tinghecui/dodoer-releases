@@ -616,18 +616,24 @@ mod tests {
         let captured: Arc<Mutex<Option<PanicReport>>> = Arc::new(Mutex::new(None));
         let sink = captured.clone();
         // Only record this thread's panic: `cargo test` runs tests in parallel,
-        // and a `should_panic` test elsewhere would otherwise land here.
+        // and a `should_panic` test elsewhere would otherwise land here. Every
+        // other panic goes on to the hook that was there: dropping it would
+        // leave a test failing alongside this one with no message at all.
         let want = std::thread::current().id();
-        let previous = std::panic::take_hook();
+        let previous: Arc<dyn Fn(&PanicHookInfo<'_>) + Send + Sync> =
+            Arc::from(std::panic::take_hook());
+        let forward = previous.clone();
         std::panic::set_hook(Box::new(move |info| {
             if std::thread::current().id() == want {
                 if let Ok(mut slot) = sink.lock() {
                     *slot = Some(capture(info));
                 }
+            } else {
+                forward(info);
             }
         }));
         let unwound = std::panic::catch_unwind(|| panic!("boom {}", 7));
-        std::panic::set_hook(previous);
+        std::panic::set_hook(Box::new(move |info| previous(info)));
 
         assert!(unwound.is_err(), "the closure must have panicked");
         let report = captured

@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "Votre propre Chrome",
-    "description": "Permet aux agents de travailler dans le Chrome que vous utilisez tous les jours, où vous êtes déjà connecté. Expérimental : confiez un onglet aux agents depuis le panneau Chrome en bas à droite de la fenêtre, et ils pourront le lire, y cliquer et remplir des formulaires. Les agents ne voient aucun autre onglet.",
+    "description": "Permet aux agents de travailler dans le Chrome que vous utilisez tous les jours, où vous êtes déjà connecté. Expérimental : confiez un onglet aux agents depuis le panneau Chrome en bas à gauche de la fenêtre, et ils pourront le lire, y cliquer et remplir des formulaires. Les agents ne voient aucun autre onglet.",
     "statusDisconnected": "Non connecté",
     "statusWaiting": "En attente de votre clic sur Autoriser dans Chrome…",
     "statusConnected": "Connecté",

@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "我自己的 Chrome",
-    "description": "讓智慧體在你平常用的 Chrome 裡工作，那裡的網站你都已經登入了。實驗功能：在視窗右下角的 Chrome 面板裡把分頁交給智慧體，它就能讀取這個頁面、在上面點擊和填寫；其他分頁智慧體看不到。",
+    "description": "讓智慧體在你平常用的 Chrome 裡工作，那裡的網站你都已經登入了。實驗功能：在視窗左下角的 Chrome 面板裡把分頁交給智慧體，它就能讀取這個頁面、在上面點擊和填寫；其他分頁智慧體看不到。",
     "statusDisconnected": "未連線",
     "statusWaiting": "等你在 Chrome 裡點「允許」…",
     "statusConnected": "已連線",

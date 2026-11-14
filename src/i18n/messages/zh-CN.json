@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "我自己的 Chrome",
-    "description": "让智能体在你平时用的 Chrome 里干活，那里的网站你都已经登录了。试验功能：在窗口右下角的 Chrome 面板里把标签交给智能体，它就能读取这个页面、在上面点击和填写；别的标签智能体看不到。",
+    "description": "让智能体在你平时用的 Chrome 里干活，那里的网站你都已经登录了。试验功能：在窗口左下角的 Chrome 面板里把标签交给智能体，它就能读取这个页面、在上面点击和填写；别的标签智能体看不到。",
     "statusDisconnected": "未连接",
     "statusWaiting": "等你在 Chrome 里点「允许」…",
     "statusConnected": "已连接",

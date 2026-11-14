@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "Tu propio Chrome",
-    "description": "Permite que los agentes trabajen en el Chrome que usas a diario, donde ya has iniciado sesión. Experimental: pasa una pestaña a los agentes desde el panel de Chrome, abajo a la derecha de la ventana, y podrán leerla, hacer clic y rellenar formularios en ella. Los agentes no ven ninguna otra pestaña.",
+    "description": "Permite que los agentes trabajen en el Chrome que usas a diario, donde ya has iniciado sesión. Experimental: pasa una pestaña a los agentes desde el panel de Chrome, abajo a la izquierda de la ventana, y podrán leerla, hacer clic y rellenar formularios en ella. Los agentes no ven ninguna otra pestaña.",
     "statusDisconnected": "Sin conexión",
     "statusWaiting": "Esperando a que hagas clic en Permitir en Chrome…",
     "statusConnected": "Conectado",

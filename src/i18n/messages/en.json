@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "Your own Chrome",
-    "description": "Lets agents work in the Chrome you use every day, where you are already signed in. Experimental: hand a tab to agents from the Chrome panel at the bottom right of the window, and they can read it, click and fill in forms there. Agents see no other tab.",
+    "description": "Lets agents work in the Chrome you use every day, where you are already signed in. Experimental: hand a tab to agents from the Chrome panel at the bottom left of the window, and they can read it, click and fill in forms there. Agents see no other tab.",
     "statusDisconnected": "Not connected",
     "statusWaiting": "Waiting for you to click Allow in Chrome…",
     "statusConnected": "Connected",

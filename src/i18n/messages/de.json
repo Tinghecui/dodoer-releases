@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "Dein eigenes Chrome",
-    "description": "Lässt Agenten in dem Chrome arbeiten, das du täglich benutzt und in dem du bereits angemeldet bist. Experimentell: Übergib im Chrome-Bereich unten rechts im Fenster einen Tab an die Agenten, dann können sie ihn lesen, dort klicken und Formulare ausfüllen. Andere Tabs sehen Agenten nicht.",
+    "description": "Lässt Agenten in dem Chrome arbeiten, das du täglich benutzt und in dem du bereits angemeldet bist. Experimentell: Übergib im Chrome-Bereich unten links im Fenster einen Tab an die Agenten, dann können sie ihn lesen, dort klicken und Formulare ausfüllen. Andere Tabs sehen Agenten nicht.",
     "statusDisconnected": "Nicht verbunden",
     "statusWaiting": "Warte darauf, dass du in Chrome auf „Zulassen“ klickst…",
     "statusConnected": "Verbunden",

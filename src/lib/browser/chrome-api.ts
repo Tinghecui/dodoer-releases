@@ -88,6 +88,43 @@ export function chromeShare(tabId: string, level: GrantLevel): Promise<void> {
   })
 }
 
+/**
+ * Whether this window's agents may use the person's Chrome: the app's own
+ * agents in a local window, that server's in a remote one. With it on, a web
+ * page they open goes to a Chrome window kept for agents, signed in as the
+ * person, and the tabs the person hands over reach them too.
+ */
+export function chromeAgents(): Promise<boolean> {
+  return getShellTransport().call<boolean>("browser_chrome_agents")
+}
+
+/** Turn this window's switch on or off. Off lets go of the pages its agents
+ *  opened; they stay open in Chrome. */
+export function chromeSetAgents(on: boolean): Promise<boolean> {
+  return getShellTransport().call<boolean>("browser_chrome_set_agents", { on })
+}
+
+/** Bring a Chrome tab (an id from the list) to the front. */
+export function chromeActivate(tabId: string): Promise<void> {
+  return getShellTransport().call<void>("browser_chrome_activate", { tabId })
+}
+
+/** The `ownerWindow` of a page an agent opened in Chrome starts with this
+ *  (`AGENT_OWNER_PREFIX` in `src-tauri/src/browser/chrome/lending.rs`). */
+export const AGENT_OWNER_PREFIX = "chrome@"
+
+/** The labels of remote workspace windows start with this
+ *  (`REMOTE_WORKSPACE_LABEL_PREFIX` in
+ *  `src-tauri/src/commands/workspace_windows.rs`). */
+const REMOTE_WINDOW_PREFIX = "remote-workspace-"
+
+/** Whose switch a window's is, as the backend names it (`scope_of_window` in
+ *  `src-tauri/src/browser/chrome_share.rs`): a remote window's own, and one
+ *  for every local window together — the app's own agents. */
+export function chromeAgentsScope(windowLabel: string): string {
+  return windowLabel.startsWith(REMOTE_WINDOW_PREFIX) ? windowLabel : "local"
+}
+
 /** End the connection, or the attempt at one. */
 export function chromeDisconnect(): Promise<ChromeStatus> {
   return getShellTransport().call<ChromeStatus>("browser_chrome_disconnect")

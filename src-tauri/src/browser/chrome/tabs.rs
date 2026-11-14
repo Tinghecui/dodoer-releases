@@ -6,8 +6,8 @@
 //!
 //! The list is the person's alone. These tabs are not in the browser
 //! registry (`browser::registry`), so no agent tool can name one, let alone
-//! read it; a tab gets there only once the person hands it over (a later
-//! step, `docs/agent-chrome.md` section 7).
+//! read it; a tab gets there only once the person hands it over, or when an
+//! agent opened it (`browser::chrome_share`).
 //!
 //! What leaves this module is the least the panel needs — a title and a host
 //! name. Paths and queries stay here: they are where sign-in links and
@@ -20,6 +20,18 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast::error::RecvError;
 
 use super::cdp::CdpClient;
+
+/// The app's name for the tab that is Chrome's target `target`: the same
+/// every time it is asked, so that the list and whoever opened the tab agree
+/// on it without asking each other, and a tab keeps its name when the list
+/// starts over. Derived one way: the name does not give the target id away.
+pub fn tab_id(target: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("codeg-chrome-tab:{target}").as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    uuid::Uuid::from_bytes(bytes).to_string()
+}
 
 /// Mirrored by `ChromeTab` in `src/lib/browser/chrome-api.ts`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -141,7 +153,7 @@ impl TabList {
                 self.known.insert(
                     target.to_string(),
                     Known {
-                        id: uuid::Uuid::new_v4().to_string(),
+                        id: tab_id(target),
                         seen: self.seen,
                         url: text("url"),
                         title: text("title"),
@@ -296,6 +308,18 @@ mod tests {
         assert_eq!(listed[0].target, "T");
         assert_eq!(listed[0].url, "https://a.example/path?q=1");
         assert_eq!(listed[0].tab, list.tabs()[0]);
+    }
+
+    /// Whoever opened a tab names it without asking the list, and the list
+    /// calls it the same.
+    #[test]
+    fn a_tab_is_named_after_its_target_and_nothing_else() {
+        let mut list = TabList::default();
+        let (method, params) = created(info("T", "https://a.example/", "A"));
+        list.apply(method, &params);
+        assert_eq!(list.tabs()[0].id, tab_id("T"));
+        assert_ne!(tab_id("T"), tab_id("U"));
+        assert!(uuid::Uuid::parse_str(&tab_id("T")).is_ok());
     }
 
     #[test]

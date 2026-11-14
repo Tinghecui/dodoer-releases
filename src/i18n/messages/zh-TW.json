@@ -5838,7 +5838,7 @@
   },
   "ChromeSettings": {
     "title": "我自己的 Chrome",
-    "description": "讓智慧體在你平常用的 Chrome 裡工作，那裡的網站你都已經登入了。實驗功能：在視窗左下角的 Chrome 面板裡把分頁交給智慧體，它就能讀取這個頁面、在上面點擊和填寫；其他分頁智慧體看不到。",
+    "description": "讓智慧體在你平常用的 Chrome 裡工作，那裡的網站你都已經登入了。實驗功能：在視窗左下角的 Chrome 面板裡打開「讓智慧體用我的 Chrome」，智慧體開的網頁會放在單獨的一個視窗裡；也可以把你自己的分頁交給它。這些頁面它能讀取、點擊和填寫，你其他的分頁它看不到。",
     "statusDisconnected": "未連線",
     "statusWaiting": "等你在 Chrome 裡點「允許」…",
     "statusConnected": "已連線",
@@ -5878,7 +5878,14 @@
     "levelRead": "唯讀",
     "levelControl": "可操作",
     "stopSharing": "收回",
-    "shareFailed": "沒能交給智慧體：{message}"
+    "shareFailed": "沒能交給智慧體：{message}",
+    "agentsSwitch": "讓智慧體用我的 Chrome",
+    "agentsHint": "打開後，在這裡工作的智慧體開的網頁會開在你 Chrome 裡單獨的一個視窗，帶著你的登入狀態。你自己開的分頁仍要點「交給智慧體」才給它看；郵件、支付、網銀這類網站它打不開。",
+    "agentsOffline": "已打開，但 Chrome 沒連上：智慧體這時開網頁會失敗。連上 Chrome，或者關掉這個開關。",
+    "agentsFailed": "沒能更改這個開關：{message}",
+    "openedByAgent": "智慧體開的",
+    "jumpTo": "跳到這個分頁",
+    "jumpFailed": "沒能跳到這個分頁：{message}"
   },
   "BrowserSettings": {
     "title": "內建瀏覽器",

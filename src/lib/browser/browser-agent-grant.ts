@@ -5,6 +5,7 @@
 // The backend remains the only party that grants — this reads a preference and
 // asks, exactly as the share menu does.
 
+import { serverTakesTabs } from "@/lib/cowork/remote-browser"
 import { isRemoteDesktopMode } from "@/lib/transport"
 
 import { browserAgentGrant } from "./browser-api"
@@ -130,10 +131,12 @@ export function applyDefaultAgentGrant(state: BrowserTabState): void {
   // Every window hears every tab's state; only the one the tab lives in acts,
   // so a second workspace window does not ask for the same grant again.
   if (state.ownerWindow !== getCurrentWindowLabel()) return
-  // A remote workspace's agents run on its host and cannot reach a browser of
-  // this computer: a standing share here would only ever reach the agents of
-  // some other window.
-  if (isRemoteDesktopMode()) return
+  // A remote workspace's agents run on its host. They reach this window's tabs
+  // through a server that takes them (`docs/remote-browser.md`), and then the
+  // default applies as it does locally; a server from before that cannot, and
+  // a standing share here would only ever reach the agents of some other
+  // window.
+  if (isRemoteDesktopMode() && !serverTakesTabs()) return
   const origin = shareableOrigin(state)
   if (!origin) {
     // A tab between documents, or on an address no grant can bind to. Its

@@ -13,6 +13,15 @@ vi.mock("./browser-api", () => ({
   browserAgentGrant: mocks.browserAgentGrant,
 }))
 
+const remote = vi.hoisted(() => ({ window: false, serverTakesTabs: false }))
+vi.mock("@/lib/transport", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/transport")>()),
+  isRemoteDesktopMode: () => remote.window,
+}))
+vi.mock("@/lib/cowork/remote-browser", () => ({
+  serverTakesTabs: () => remote.serverTakesTabs,
+}))
+
 import {
   resetBrowserPrefsForTests,
   setBrowserDefaultAgentGrant,
@@ -78,6 +87,8 @@ describe("the standing sharing default", () => {
     mocks.browserAgentGrant.mockClear()
     resetBrowserPrefsForTests()
     resetDefaultAgentGrantForTests()
+    remote.window = false
+    remote.serverTakesTabs = false
   })
   afterEach(() => {
     resetBrowserPrefsForTests()
@@ -92,6 +103,20 @@ describe("the standing sharing default", () => {
     setBrowserDefaultAgentGrant("read")
     applyDefaultAgentGrant(state())
     expect(mocks.browserAgentGrant).toHaveBeenLastCalledWith("abc", "read")
+  })
+
+  // Cowork fork: a remote window whose server takes its tabs shares at the
+  // settings' level like a local one; one whose server cannot reach them
+  // shares nothing.
+  it("in a remote window, shares only when its server takes the tabs", () => {
+    remote.window = true
+    applyDefaultAgentGrant(state())
+    expect(mocks.browserAgentGrant).not.toHaveBeenCalled()
+
+    remote.serverTakesTabs = true
+    setBrowserDefaultAgentGrant("read")
+    applyDefaultAgentGrant(on("https://example.org"))
+    expect(asked()).toEqual(["read"])
   })
 
   // The decisive one: a page emits a stream of `browser://state` events, and

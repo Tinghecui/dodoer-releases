@@ -22,6 +22,8 @@ vi.mock("@/lib/transport", () => ({
 import {
   HOST_BRIDGE_FEATURE,
   lendBrowserSwitch,
+  resetServerTakesTabsForTests,
+  serverTakesTabs,
   useCanShareWithAgents,
 } from "./remote-browser"
 
@@ -34,6 +36,7 @@ beforeEach(() => {
   shellCall.mockReset()
   shellCall.mockResolvedValue(undefined)
   serverInfo = null
+  resetServerTakesTabsForTests()
 })
 
 describe("useCanShareWithAgents", () => {
@@ -53,6 +56,17 @@ describe("useCanShareWithAgents", () => {
     // A server downgraded on reconnect takes it back.
     act(() => serverInfo?.(info(["cowork_info"])))
     expect(result.current).toBe(false)
+  })
+})
+
+describe("serverTakesTabs", () => {
+  it("follows the server's server_info from the first ask", () => {
+    expect(serverTakesTabs()).toBe(false)
+    serverInfo?.(info(["cowork_info", HOST_BRIDGE_FEATURE]))
+    expect(serverTakesTabs()).toBe(true)
+    // A server downgraded on reconnect takes it back.
+    serverInfo?.(info(["cowork_info"]))
+    expect(serverTakesTabs()).toBe(false)
   })
 })
 

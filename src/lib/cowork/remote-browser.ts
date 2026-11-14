@@ -40,6 +40,37 @@ export function useCanShareWithAgents(): boolean {
   return !remote || lends
 }
 
+/** The last answer `serverTakesTabs` heard, and whether it is listening. */
+let takesTabs = false
+let watching = false
+
+/**
+ * `useCanShareWithAgents` for code outside React: whether this remote window's
+ * server takes its tabs, as of the last `server_info`. It starts listening on
+ * the first ask; a `server_info` already in hand answers that ask at once.
+ */
+export function serverTakesTabs(): boolean {
+  if (!watching) {
+    let transport: ReturnType<typeof getTransport>
+    try {
+      transport = getTransport()
+    } catch {
+      // No transport yet: ask again next time.
+      return false
+    }
+    watching = true
+    transport.onServerInfo?.((info) => {
+      takesTabs = serverHasFeature(info, HOST_BRIDGE_FEATURE)
+    })
+  }
+  return takesTabs
+}
+
+export function resetServerTakesTabsForTests(): void {
+  takesTabs = false
+  watching = false
+}
+
 /**
  * In a remote window, turning a browser switch on for the server turns it on
  * for this computer too: the tabs are this computer's, and the app lends them

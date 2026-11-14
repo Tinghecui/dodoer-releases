@@ -1,4 +1,4 @@
-# 公开镜像 Tinghecui/dodoer-releases 的桌面版 dodoer.app（macOS arm64，ad-hoc 签名；文件在私有仓库 cowork-codeg 的
+# 公开镜像 Tinghecui/dodoer-releases 的桌面版 dodoer.app（macOS arm64，固定的自签名证书签名；文件在私有仓库 cowork-codeg 的
 # .github/public/workflows/ 里维护）。跑在 GitHub 托管的 macOS 机器上，公开仓库不收费。
 # 编法、冒烟、打包都在 scripts/cowork-desktop-build.sh 里。只有一种包（完整版，自带 codeg-server；2026-11-09 去掉了纯客户端版），
 # 一台机器编前端、sidecar 和主程序，最后 publish 发版。
@@ -16,6 +16,10 @@
 #   Release 建在这个提交上；发之前等这个提交的 Test 过（scripts/cowork-wait-test.sh），说明用调用方给的改动清单
 #
 # 自动更新包用 TAURI_SIGNING_PRIVATE_KEY（+ _PASSWORD）签，签名绑定版本号（requireSignedVersion）。私钥丢了已经装好的 app 就再也收不到更新。
+# app 本身用 DODOER_CODESIGN_P12（+ _PASSWORD）里的自签名证书签（不是 Apple 开发者证书，「无法验证开发者」照旧）：macOS 的
+# 屏幕录制、辅助功能、钥匙串「始终允许」记的是签名证书，证书不变，更新以后这些授权就还在。ad-hoc 签名记的是每一版自己的哈希，
+# 每更新一次就悄悄失效一次（开关还亮着）。证书备份在生产机 /root/dodoer-codesign/（只有 root 能读）；丢了可以换一张，代价是
+# 换证书的那一版装上以后，大家要重新授权一次。
 # 公开仓库的日志和 artifact 谁都能看：步骤里别打印代码之外的东西（密钥都走 secrets，会被打码）。
 name: desktop-macos
 
@@ -62,6 +66,10 @@ on:
         required: true
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
         required: false
+      DODOER_CODESIGN_P12:
+        required: true
+      DODOER_CODESIGN_PASSWORD:
+        required: true
 
 permissions:
   contents: read
@@ -186,6 +194,39 @@ jobs:
           restore-keys: pnpm-macos-
       - run: pnpm install --frozen-lockfile
 
+      # 证书导进一个临时钥匙串，加进搜索列表让 codesign 找得到；身份用证书的 SHA-1 指定（自签名证书不受信任，
+      # find-identity -v 列不出它，按名字找不稳，codesign 按哈希找不看信任）
+      - name: 签名证书（临时钥匙串）
+        env:
+          P12: ${{ secrets.DODOER_CODESIGN_P12 }}
+          P12_PASSWORD: ${{ secrets.DODOER_CODESIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$P12" || -z "$P12_PASSWORD" ]]; then
+            echo "::error::缺 Secret DODOER_CODESIGN_P12 / DODOER_CODESIGN_PASSWORD：不签名的包装上以后屏幕录制等授权会失效"
+            exit 1
+          fi
+          kc="$RUNNER_TEMP/dodoer-codesign.keychain-db"
+          kc_pw=$(openssl rand -hex 16)
+          echo "::add-mask::$kc_pw"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/codesign.p12"
+          security create-keychain -p "$kc_pw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kc_pw" "$kc"
+          security import "$RUNNER_TEMP/codesign.p12" -k "$kc" -f pkcs12 -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/codesign.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pw" "$kc" >/dev/null
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          sha1=$(security find-certificate -c "dodoer code signing" -Z "$kc" | awk '/SHA-1 hash:/ {print $3}')
+          if [[ ! "$sha1" =~ ^[0-9A-F]{40}$ ]]; then
+            echo "::error::临时钥匙串里没有 dodoer code signing 证书"
+            exit 1
+          fi
+          security find-identity -p codesigning "$kc"
+          echo "DODOER_SIGNING_IDENTITY=$sha1" >> "$GITHUB_ENV"
+          echo "DODOER_SIGNING_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+
       - id: build
         name: tauri build、冒烟、打包
         env:
@@ -193,6 +234,13 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: scripts/cowork-desktop-build.sh full
+
+      - name: 删掉临时钥匙串
+        if: always()
+        run: |
+          if [[ -n "${DODOER_SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$DODOER_SIGNING_KEYCHAIN" || true
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

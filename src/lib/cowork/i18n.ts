@@ -140,6 +140,19 @@ const en = {
     "Its agents will be able to run any command here as you: read, change and delete your files, start apps, and use the accounts you are signed in to. It cannot be limited to a folder. You can stop lending from this icon at any time.",
   hostSshConfirm: "Lend",
   hostSshCancel: "Cancel",
+  hostSshPermissions: "macOS permissions",
+  hostSshPermScreenRecording: "Screen Recording",
+  hostSshPermAccessibility: "Accessibility",
+  hostSshPermGranted: "Granted",
+  hostSshPermMissing: "Not granted or stale",
+  hostSshPermFix: "Fix",
+  hostSshPermHint:
+    "Commands agents run over SSH use dodoer's permissions. After dodoer updates, the switch in System Settings can stay on while the grant no longer works. Fix clears the old grant and brings up the system's request: allow dodoer there, and macOS asks to reopen it. Granted, these permissions also reach the agents of workspaces on this computer.",
+  hostSshPermNotSelf:
+    "dodoer was started from another app (a terminal?), so these are that app's permissions and can't be fixed here. Open dodoer from Applications to see its own.",
+  hostSshPermAsked:
+    "Asked. Turn dodoer on in System Settings, then reopen dodoer when macOS asks; the status updates after that.",
+  hostSshPermFixFailed: "Couldn't fix: {detail}",
   // "Report a problem" in the account menu (`feedback-dialog.tsx`).
   feedback: "Report a problem",
   feedbackHint:
@@ -265,6 +278,19 @@ const zhCN: Record<CoworkTextKey, string> = {
     "它的智能体将能以你的身份在这台电脑上执行任何命令：读、改、删你的文件，启动软件，使用你已登录的账号。没法只限定某个文件夹。随时可以点这个图标停止借出。",
   hostSshConfirm: "借出",
   hostSshCancel: "取消",
+  hostSshPermissions: "macOS 权限",
+  hostSshPermScreenRecording: "屏幕录制",
+  hostSshPermAccessibility: "辅助功能",
+  hostSshPermGranted: "已授权",
+  hostSshPermMissing: "未授权或已失效",
+  hostSshPermFix: "修复",
+  hostSshPermHint:
+    "智能体经 SSH 执行的命令，用的是 dodoer 的权限。dodoer 更新后，系统设置里的开关可能还亮着，实际已经失效。点「修复」会清掉旧授权，并弹出系统的授权框：在那里允许 dodoer，macOS 会要求重开 dodoer。注意：授权后，这台电脑上本机工作区的智能体也能用这些权限。",
+  hostSshPermNotSelf:
+    "dodoer 是从别的程序（比如终端）里启动的，这里显示的是那个程序的权限，在这里修复不了。从「应用程序」打开 dodoer 再看。",
+  hostSshPermAsked:
+    "已发出授权请求。在系统设置里打开 dodoer 的开关，按提示重开 dodoer，之后这里会更新。",
+  hostSshPermFixFailed: "修复失败：{detail}",
   feedback: "反馈问题",
   feedbackHint:
     "写下遇到了什么。会一起发出：当前打开的对话的编号、版本号、连接状态；不会带上对话内容。你写的文字里的路径和令牌会被去掉。",
@@ -388,6 +414,19 @@ const zhTW: Record<CoworkTextKey, string> = {
     "它的智慧體將能以你的身分在這台電腦上執行任何命令：讀、改、刪你的檔案，啟動軟體，使用你已登入的帳號。無法只限定某個資料夾。隨時可以點這個圖示停止借出。",
   hostSshConfirm: "借出",
   hostSshCancel: "取消",
+  hostSshPermissions: "macOS 權限",
+  hostSshPermScreenRecording: "螢幕錄製",
+  hostSshPermAccessibility: "輔助使用",
+  hostSshPermGranted: "已授權",
+  hostSshPermMissing: "未授權或已失效",
+  hostSshPermFix: "修復",
+  hostSshPermHint:
+    "智慧體經 SSH 執行的命令，用的是 dodoer 的權限。dodoer 更新後，系統設定裡的開關可能還亮著，實際已經失效。點「修復」會清掉舊授權，並跳出系統的授權視窗：在那裡允許 dodoer，macOS 會要求重開 dodoer。注意：授權後，這台電腦上本機工作區的智慧體也能用這些權限。",
+  hostSshPermNotSelf:
+    "dodoer 是從別的程式（例如終端機）裡啟動的，這裡顯示的是那個程式的權限，在這裡修復不了。從「應用程式」打開 dodoer 再看。",
+  hostSshPermAsked:
+    "已送出授權請求。在系統設定裡打開 dodoer 的開關，依提示重開 dodoer，之後這裡會更新。",
+  hostSshPermFixFailed: "修復失敗：{detail}",
   feedback: "回報問題",
   feedbackHint:
     "寫下遇到了什麼。會一起送出：目前開啟的對話的編號、版本號、連線狀態；不會帶上對話內容。你寫的文字裡的路徑和權杖會被移除。",

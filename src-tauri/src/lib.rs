@@ -1940,6 +1940,8 @@ mod tauri_app {
                 crate::commands::host_ssh::host_ssh_status,
                 crate::commands::host_ssh::host_ssh_set_lent,
                 crate::commands::host_ssh::host_ssh_self_test,
+                crate::commands::host_ssh::host_ssh_permissions,
+                crate::commands::host_ssh::host_ssh_repair_permission,
                 crate::commands::browser_tools::get_browser_tools_settings,
                 crate::commands::browser_tools::set_browser_tools_settings,
                 crate::commands::computer_tools::get_computer_tools_settings,

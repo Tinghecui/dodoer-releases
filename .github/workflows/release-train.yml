@@ -1,0 +1,126 @@
+# 公开镜像 Tinghecui/dodoer-releases 的自动发版（文件在私有仓库 cowork-codeg 的 .github/public/workflows/ 里维护）。
+# 私有仓库的 product 分支每合一次，public-sync 推到这边的 main，这里就发下一个修订版：server 包 cowork-codeg-v0.Y.(Z+1)
+# （cowork-release.yml）和桌面 app 1.Y.(Z+1)（desktop-macos.yml，成为 Latest，装好的 app 提示更新）。
+#
+# - 一次只发一班：前一班还在编，新的推送排队，排队的只留最新的一个（concurrency），编的时候合进来的几个 PR 攒到下一班
+# - 编包和这个提交的 Test 同时开始，Test 过了才发（scripts/cowork-wait-test.sh）；Test 没过或被更新的推送顶掉，这一班不发
+# - 不发：这个提交已经有 tag（手动发过）、上一版以来只改了文档（*.md、docs/）
+# - 更新说明：上一版以来公开 main 上各个提交说明里的「- 标题（#号）」行（public-sync.sh 推 main 时写进去，标题过了 denylist）
+# - 不给 cowork 开 runtime.lock 的 PR（那个只有手动 tag 才开）；员工的服务器从门户升级 codeg
+# - 发完删老的自动版本（说明里带 <!-- release-train --> 的），server 包、桌面包各留最近 30 个
+#
+# 次版本（换 upstream 底座之类）照旧在私有仓库手动打 tag cowork-codeg-v0.Y.0（COWORK.md「发版流程」），这里接着从它往上数。
+name: release-train
+
+on:
+  push:
+    branches: [main]
+
+# cowork-release.yml、desktop-macos.yml 的发布 job 要 contents: write（发 Release）和 actions: read（查 Test）；调用方给的不能比它们小
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-train
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: 版本号、更新说明
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      tag: ${{ steps.plan.outputs.tag }}
+      notes: ${{ steps.plan.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 要所有 tag 和上一版以来的提交说明
+      - id: plan
+        name: 发不发、发哪个号
+        run: |
+          set -euo pipefail
+          tag_re='^cowork-codeg-v0\.([0-9]+)\.([0-9]+)$'
+          skip() { echo "release=false" >> "$GITHUB_OUTPUT"; echo "这次不发：$*" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
+
+          here=$(git tag --points-at HEAD | grep -E "$tag_re" | head -1 || true)
+          [[ -z "$here" ]] || skip "这个提交已经发过（$here）"
+          last=$(git tag -l 'cowork-codeg-v*' | grep -E "$tag_re" | sort -V | tail -1 || true)
+          [[ -n "$last" ]] || { echo "::error::没有 cowork-codeg-v0.Y.Z 的 tag，不知道从哪个号往上数"; exit 1; }
+          changed=$(git diff --name-only "$last" HEAD | grep -vE '(\.md$|^docs/)' || true)
+          [[ -n "$changed" ]] || skip "$last 以来只改了文档"
+
+          [[ "$last" =~ $tag_re ]]
+          minor="${BASH_REMATCH[1]}"; patch=$(( BASH_REMATCH[2] + 1 ))
+          tag="cowork-codeg-v0.$minor.$patch"; desktop="1.$minor.$patch"
+          # server 会叫比 MIN_DESKTOP_VERSION 旧的桌面 app 去更新（同 cowork-release.yml 对 tag 的检查）
+          min=$(sed -n 's/^pub const MIN_DESKTOP_VERSION: &str = "\(.*\)";$/\1/p' src-tauri/src/compat.rs)
+          [[ "$min" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::读不出 MIN_DESKTOP_VERSION：$min"; exit 1; }
+          if [[ "$(printf '%s\n%s\n' "$min" "$desktop" | sort -V | head -1)" != "$min" ]]; then
+            echo "::error::$tag 的桌面 app 是 $desktop，比 compat.rs 的 MIN_DESKTOP_VERSION（$min）旧：先手动打一个更高的次版本 tag"
+            exit 1
+          fi
+
+          items=$(git log --reverse --format=%B "$last..HEAD" | grep -E '^- .+（#[0-9]+）$' | awk '!seen[$0]++' || true)
+          notes=$(printf '## 改动（%s 以来）\n\n%s' "$last" "${items:-- 小改动和修复}")
+          {
+            echo "release=true"
+            echo "tag=$tag"
+            echo "notes<<__RELEASE_NOTES__"
+            printf '%s\n' "$notes"
+            echo "__RELEASE_NOTES__"
+          } >> "$GITHUB_OUTPUT"
+          { echo "### 发 $tag（桌面 $desktop）"; echo; printf '%s\n' "$notes"; } >> "$GITHUB_STEP_SUMMARY"
+
+  server:
+    name: server 包
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    uses: ./.github/workflows/cowork-release.yml
+    with:
+      version: ${{ needs.plan.outputs.tag }}
+      ref: ${{ github.sha }}
+      notes: ${{ needs.plan.outputs.notes }}
+      train: true
+
+  desktop:
+    name: 桌面包
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    uses: ./.github/workflows/desktop-macos.yml
+    with:
+      tag: ${{ needs.plan.outputs.tag }}
+      notes: ${{ needs.plan.outputs.notes }}
+      train: true
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+  prune:
+    name: 删老的自动版本
+    needs: [plan, server, desktop]
+    if: ${{ !cancelled() && needs.plan.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: server 包、桌面包各留最近 30 个
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: "30"
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select((.body // "") | contains("<!-- release-train -->")) | "\(.created_at) \(.tag_name)"' \
+            | sort -r > "$RUNNER_TEMP/auto.txt"
+          for prefix in cowork-codeg-v v1.; do
+            awk -v p="$prefix" 'index($2, p) == 1 { print $2 }' "$RUNNER_TEMP/auto.txt" | tail -n "+$((KEEP + 1))" \
+              | while read -r t; do
+                  gh release delete "$t" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag && echo "删了 $t"
+                done
+          done

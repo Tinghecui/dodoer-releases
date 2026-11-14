@@ -1,8 +1,9 @@
 #!/bin/bash
 # 把本仓库的一个提交同步成公开仓库 Tinghecui/dodoer-releases 的一个干净提交（规则见 COWORK.md「公开镜像」）：
 # 导出该提交的文件 → 删掉 .github/public/exclude.txt 列的 → .github/public/workflows 挪到 .github/workflows →
-# 按 denylist.txt / allowlist.txt 扫一遍，命中就不推 → 在公开仓库里做一个提交（作者固定、信息只带主题行）推上去。
+# 按 denylist.txt / allowlist.txt 扫一遍，命中就不推 → 在公开仓库里做一个提交（作者固定、信息只带主题行；推 main 时再列上合进来的 PR）推上去。
 # 公开仓库的历史和本仓库无关：main 是一条线，每个提交对应本仓库 product 分支的一次推送；PR 分支 pr/<n> 是 main 上的一个提交。
+# 推 main 时提交说明里列出上一次同步以来合进来的 PR（「- 标题（#号）」，标题也过 denylist），公开那边的 release-train.yml 拿它写更新说明。
 #
 #   用法：scripts/public-sync.sh export <ref> <目录>                  只导出、扫描，不碰公开仓库（本地自查用）
 #        scripts/public-sync.sh push <ref> main                       推到公开仓库的 main（树没变就不推）
@@ -27,12 +28,14 @@ AUTHOR_EMAIL=54262737+Tinghecui@users.noreply.github.com
 fail() { echo "::error::$*" >&2; exit 1; }
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 
+deny="$tmp/deny.re" allow="$tmp/allow.re"
+grep -v '^[[:space:]]*#' "$cfg/denylist.txt" | grep -v '^[[:space:]]*$' > "$deny"
+grep -v '^[[:space:]]*#' "$cfg/allowlist.txt" | grep -v '^[[:space:]]*$' > "$allow"
+
 # 扫描：第一个参数是目录或文件，其余是额外要扫的文本（提交信息）。命中返回 1
 scan() {
   local target="$1"; shift
-  local deny="$tmp/deny.re" allow="$tmp/allow.re" hits="$tmp/hits"
-  grep -v '^[[:space:]]*#' "$cfg/denylist.txt" | grep -v '^[[:space:]]*$' > "$deny"
-  grep -v '^[[:space:]]*#' "$cfg/allowlist.txt" | grep -v '^[[:space:]]*$' > "$allow"
+  local hits="$tmp/hits"
   : > "$hits"
   # -I 跳过二进制；allowlist 为空时 grep -f 空文件会什么都不匹配，所以单独处理
   if [[ -d "$target" ]]; then grep -rEIin -f "$deny" "$target" >> "$hits" || true
@@ -87,6 +90,30 @@ write_tree() {
     && GIT_INDEX_FILE="$tmp/index" git write-tree)
 }
 
+# 一行文本命中 denylist（allowlist 放行的不算）返回 0
+denied() {
+  local hits
+  hits=$(printf '%s\n' "$1" | grep -EIi -f "$deny" || true)
+  if [[ -n "$hits" && -s "$allow" ]]; then hits=$(printf '%s\n' "$hits" | grep -vEi -f "$allow" || true); fi
+  [[ -n "$hits" ]]
+}
+
+# <上一次同步的提交> <这次的提交>：这段里合进 product 的 PR，一行一个「- 标题（#号）」。标题命中 denylist 的写成「一项内部改动」；
+# 上一次同步的提交不知道、不在本地（checkout 不够深）或不是祖先时什么都不列（说明里少几行，不影响同步）
+pr_list() {
+  local from="$1" to="$2" c n title
+  [[ -n "$from" ]] && git cat-file -e "$from^{commit}" 2>/dev/null && git merge-base --is-ancestor "$from" "$to" || return 0
+  while read -r c; do
+    [[ "$(git log -1 --format=%s "$c")" =~ ^Merge\ pull\ request\ \#([0-9]+)\  ]] || continue
+    n="${BASH_REMATCH[1]}"
+    # PR 标题是合并提交说明的第一行正文；去掉 feat(cowork): 这种前缀
+    title=$(git log -1 --format=%b "$c" | sed '/^[[:space:]]*$/d' | head -1 | sed -E 's/^[a-z]+(\([^)]*\))?!?: *//')
+    [[ -n "$title" ]] || continue
+    if denied "$title"; then title="一项内部改动"; fi
+    printf -- '- %s（#%s）\n' "$title" "$n"
+  done < <(git log --first-parent --merges --reverse --format=%H "$from..$to")
+}
+
 commit_tree() { # <tree> <parent> <message>
   (cd "$PUBLIC_DIR" && GIT_AUTHOR_NAME=$AUTHOR_NAME GIT_AUTHOR_EMAIL=$AUTHOR_EMAIL GIT_COMMITTER_NAME=$AUTHOR_NAME GIT_COMMITTER_EMAIL=$AUTHOR_EMAIL \
     git commit-tree "$1" -p "$2" -m "$3")
@@ -121,6 +148,9 @@ source: cowork-codeg@${sha}"
       if [[ "$tree" == "$(git -C "$PUBLIC_DIR" rev-parse "$base^{tree}")" ]]; then
         echo "公开 main 已经是这棵树（${base}），不用推"; commit=$base
       else
+        prev=$(git -C "$PUBLIC_DIR" log -1 --format=%B "$base" | sed -nE 's/^source: cowork-codeg@([0-9a-f]{40})$/\1/p' | tail -1)
+        prs=$(pr_list "$prev" "$sha")
+        if [[ -n "$prs" ]]; then msg=$(printf '%s\n\n%s\n\nsource: cowork-codeg@%s' "$subject" "$prs" "$sha"); fi
         commit=$(commit_tree "$tree" "$base" "$msg")
         git -C "$PUBLIC_DIR" push -q origin "$commit:refs/heads/main"
         echo "推到公开 main：$commit"

@@ -12,6 +12,8 @@
 # - 私有 PR 打了 macos-build 标签：public-sync 把它同步到 macos/pr/<n>，这里编、冒烟、不发，结果报回那个 PR（「公开 CI / desktop-macos」）。
 #   PR 再推会重编（上一次没编完的取消），去掉标签或关掉 PR 就删 macos/pr/<n>
 # - 手动触发（Actions → desktop-macos → Run workflow）：编任意分支只放 artifact；ref 填正式版 tag 并勾 publish 可以补发
+# - release-train.yml 调它（workflow_call，train 为真）：product 每合一次就编触发的那个提交、发下一个修订版。tag 还没有，
+#   Release 建在这个提交上；发之前等这个提交的 Test 过（scripts/cowork-wait-test.sh），说明用调用方给的改动清单
 #
 # 自动更新包用 TAURI_SIGNING_PRIVATE_KEY（+ _PASSWORD）签，签名绑定版本号（requireSignedVersion）。私钥丢了已经装好的 app 就再也收不到更新。
 # 公开仓库的日志和 artifact 谁都能看：步骤里别打印代码之外的东西（密钥都走 secrets，会被打码）。
@@ -39,13 +41,35 @@ on:
         type: boolean
         required: false
         default: false
+  workflow_call:
+    inputs:
+      tag:
+        description: "要发的 cowork-codeg-vX.Y.Z（还没有这个 tag）；编的是调用方触发的那个提交"
+        type: string
+        required: true
+      notes:
+        description: "Release 说明里的改动清单（markdown），也是 latest.json 的 notes"
+        type: string
+        required: false
+        default: ""
+      train:
+        description: "自动发版：发之前等这个提交的 Test 过"
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: true
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
 
 permissions:
   contents: read
 
-# 发版一组、不取消；macos/pr/<n> 每个 PR 一组，新推的取消没编完的；每晚和手动触发按 ref 一组
+# 发版一组、不取消；自动发版单独一组（release-train.yml 自己一次只跑一班），别和每晚的 main 排在一组里被顶掉；
+# macos/pr/<n> 每个 PR 一组，新推的取消没编完的；每晚和手动触发按 ref 一组
 concurrency:
-  group: desktop-macos-${{ startsWith(github.ref, 'refs/tags/') && 'release' || github.ref }}
+  group: desktop-macos-${{ inputs.train && 'train' || (startsWith(github.ref, 'refs/tags/') && 'release' || github.ref) }}
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/heads/macos/pr/') }}
 
 jobs:
@@ -74,10 +98,14 @@ jobs:
         env:
           REF: ${{ inputs.ref || github.ref_name }}
           PUBLISH_INPUT: ${{ inputs.publish }}
+          TAG_INPUT: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           tag_re='^cowork-codeg-v([0-9]+)\.([0-9]+)\.([0-9]+)$'
-          if [[ "$REF" =~ $tag_re ]]; then
+          if [[ -n "$TAG_INPUT" ]]; then
+            # release-train.yml：要发的号由它定，tag 发 Release 时才建
+            tag="$TAG_INPUT"; publish=true
+          elif [[ "$REF" =~ $tag_re ]]; then
             tag="$REF"
             if [[ "$GITHUB_EVENT_NAME" == push || "$PUBLISH_INPUT" == true ]]; then publish=true; else publish=false; fi
           else
@@ -104,8 +132,12 @@ jobs:
           set -euo pipefail
           build=true
           if [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
-            prev=$(gh run list -R "$GITHUB_REPOSITORY" -w desktop-macos.yml -c "$GITHUB_SHA" -s success -L 1 \
-              --json databaseId,event -q '.[0] | select(.) | "\(.databaseId)（\(.event)）"')
+            # 自动发版那次编的桌面包算在 release-train 的 run 里
+            prev=""
+            for wf in desktop-macos.yml release-train.yml; do
+              [[ -n "$prev" ]] || prev=$(gh run list -R "$GITHUB_REPOSITORY" -w "$wf" -c "$GITHUB_SHA" -s success -L 1 \
+                --json databaseId,event -q '.[0] | select(.) | "\(.databaseId)（\(.event)）"' || true)
+            done
             if [[ -n "$prev" ]]; then
               build=false
               echo "main 的 ${GITHUB_SHA:0:12} 已经编过：run ${prev}，今晚不编" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -178,23 +210,36 @@ jobs:
     needs: [prepare, build]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 自动发版要在这里等 Test（一般早就跑完了，最多等 60 分钟）
+    timeout-minutes: 75
     permissions:
       contents: write
+      actions: read # scripts/cowork-wait-test.sh 查 Test
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          # 自动发版的 tag 还没有，按提交取
+          ref: ${{ inputs.train && github.sha || needs.prepare.outputs.tag }}
+      - id: gate
+        name: 等这个提交的 Test 过（自动发版）
+        if: inputs.train
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/cowork-wait-test.sh "$GITHUB_SHA"
       - uses: actions/download-artifact@v4
+        if: ${{ !inputs.train || steps.gate.outputs.ok == 'true' }}
         with:
           path: dist
           merge-multiple: true
       - name: 发 Release
+        if: ${{ !inputs.train || steps.gate.outputs.ok == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_REPO: ${{ github.repository }}
           TAG: ${{ needs.prepare.outputs.tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
+          NOTES_INPUT: ${{ inputs.notes }}
+          TRAIN: ${{ inputs.train }}
         run: |
           set -euo pipefail
           # 文件名按 cowork-desktop-build.sh 的规则找（不经 job outputs 传）
@@ -206,9 +251,13 @@ jobs:
           ALIAS=$(one "dodoer-macos-arm64.zip")
           CLIENT_ALIAS=$(one "dodoer-client-macos-arm64.zip")
           rel="v$VERSION"
-          git fetch -q --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG" 2>/dev/null || true
-          subject=$(git tag -l --format='%(contents:subject)' "$TAG" 2>/dev/null || true)
-          notes="${subject:-$TAG}"
+          if [[ -n "$NOTES_INPUT" ]]; then
+            notes="$NOTES_INPUT"
+          else
+            git fetch -q --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG" 2>/dev/null || true
+            subject=$(git tag -l --format='%(contents:subject)' "$TAG" 2>/dev/null || true)
+            notes="${subject:-$TAG}"
+          fi
           for out in latest.json latest-client.json; do
             jq -n --arg version "$VERSION" --arg notes "$notes" \
               --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -221,6 +270,9 @@ jobs:
           done
           body=$(printf '%s\n\n对应 %s。\n\n安装包 `%s.zip`（也叫 `%s`；`%s` 是同一个文件，给门户的下载链接用）。打开后在开始页选「在这台电脑上工作」或者一台服务器，本机和服务器上的工作区可以同时开着。\n\n已经装了 dodoer 的（包括以前的纯客户端版），app 里会提示更新，点更新、重启就是这一版。\n第一次装：解压后把 dodoer.app 拖进「应用程序」，再在终端执行 `xattr -dr com.apple.quarantine /Applications/dodoer.app`（没有 Apple 开发者签名）。\n' \
             "$notes" "$TAG" "$NAME" "$ALIAS" "$CLIENT_ALIAS")
+          # release-train.yml 按这个标记删老的自动版本；Release 建在编的这个提交上（手动 tag 照旧建在 main 上）
+          target=main
+          if [[ "$TRAIN" == true ]]; then body=$(printf '%s\n\n%s' "$body" "<!-- release-train -->"); target="$GITHUB_SHA"; fi
           files=("dist/$NAME.zip" "dist/$NAME.zip.sha256" "dist/$ALIAS" "dist/$ALIAS.sha256"
                  "dist/$CLIENT_ALIAS" "dist/$CLIENT_ALIAS.sha256"
                  "dist/$UPDATER" "dist/$UPDATER.sig" dist/latest.json dist/latest-client.json)
@@ -228,7 +280,7 @@ jobs:
             gh release upload "$rel" -R "$RELEASE_REPO" --clobber "${files[@]}"
           else
             # --latest：本仓库也放 server 包的 Release，Latest 要明确给桌面版（app 从 releases/latest/download/ 查更新）
-            gh release create "$rel" -R "$RELEASE_REPO" --target main --latest \
+            gh release create "$rel" -R "$RELEASE_REPO" --target "$target" --latest \
               --title "dodoer ${VERSION}（${TAG}）" --notes "$body" "${files[@]}"
           fi
           echo "### dodoer $VERSION 已发布：https://github.com/$RELEASE_REPO/releases/tag/$rel" >> "$GITHUB_STEP_SUMMARY"

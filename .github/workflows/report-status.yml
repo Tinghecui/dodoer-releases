@@ -1,5 +1,5 @@
 # 公开镜像 Tinghecui/dodoer-releases 的 CI 结果报回私有仓库 cowork-codeg（文件在私有仓库 .github/public/workflows/ 里维护）。
-# 同步过来的提交说明最后一行是 `source: cowork-codeg@<40 位 sha>`；Test / cowork-release / desktop-macos 开始时给那个私有提交
+# 同步过来的提交说明最后一行是 `source: cowork-codeg@<40 位 sha>`；Test / cowork-release / desktop-macos / release-train 开始时给那个私有提交
 # 打 pending，结束时打 success / failure（context「公开 CI / <workflow 名>」），私有 PR 上就能直接看到公开这边的结果。
 # 要 Secret SOURCE_STATUS_TOKEN：只对 Tinghecui/cowork-codeg 有 Commit statuses 读写权限的 fine-grained token；没配就跳过。
 # workflow_run 用的是 main 上的这个文件，带 secrets；这里不 checkout、不执行触发它的 run 里的任何东西，提交说明只按正则取 sha。
@@ -7,7 +7,7 @@ name: report-status
 
 on:
   workflow_run:
-    workflows: [Test, cowork-release, desktop-macos]
+    workflows: [Test, cowork-release, desktop-macos, release-train]
     types: [requested, completed]
 
 permissions: {}

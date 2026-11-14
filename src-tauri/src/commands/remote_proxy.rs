@@ -1712,8 +1712,13 @@ pub async fn remote_ws_subscribe(
     let task_db = db.conn.clone();
     let target = WsTarget::of(&conn);
     let task_entry = entry.clone();
+    let task_server = conn.base_url.clone();
 
     tauri::async_runtime::spawn(async move {
+        // Cowork fork: this window's server is one this computer's shell may
+        // be lent to, for as long as the window is open (`host_ssh`).
+        let _open_window =
+            crate::commands::host_ssh::window_opened(&task_app, connection_id, &task_server).await;
         run_ws_task(
             task_app,
             task_proxy,

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { cleanup, render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const viewport = vi.hoisted(() => ({ mobile: false }))
@@ -42,6 +42,9 @@ vi.mock("@/components/cowork/account-menu", () => ({
 vi.mock("@/components/cowork/resource-meter", () => ({
   ResourceMeter: () => <div data-testid="resource-meter" />,
 }))
+vi.mock("@/components/cowork/status-bar-host-ssh", () => ({
+  StatusBarHostSsh: () => <span data-testid="host-ssh" />,
+}))
 
 import { StatusBar, StatusBarLeft, StatusBarRight } from "./status-bar"
 
@@ -81,5 +84,29 @@ describe("StatusBar", () => {
     viewport.mobile = mobile
     render(mobile ? <StatusBar /> : <StatusBarRight />)
     expect(screen.getByTestId("web-service")).toBeInTheDocument()
+  })
+
+  /** Cowork: a lent computer is a thing exposed, like the web service — its
+   *  mark sits right after it in the narrow bar. (The item itself renders
+   *  nothing outside a remote desktop window.) */
+  it("carries the lent-computer item in the narrow layout", () => {
+    viewport.mobile = true
+    render(<StatusBar />)
+    expect(screen.getByTestId("web-service").nextElementSibling).toBe(
+      screen.getByTestId("host-ssh")
+    )
+  })
+
+  /** Wide, the right half is behind the top-right status button: a lent
+   *  computer must not be hidden there. It leads the sidebar foot's far
+   *  end, beside the server's name, always on screen. */
+  it("puts the lent-computer item in the sidebar foot when wide", () => {
+    render(<StatusBarRight />)
+    expect(screen.queryByTestId("host-ssh")).toBeNull()
+    cleanup()
+    render(<StatusBarLeft />)
+    const item = screen.getByTestId("host-ssh")
+    expect(item.nextElementSibling).toBe(screen.getByTestId("resource-meter"))
+    expect(item.parentElement?.firstElementChild).toBe(item)
   })
 })

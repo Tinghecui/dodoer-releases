@@ -112,6 +112,34 @@ const en = {
   // sent on its own.
   queueRestoredReason:
     "It had not been sent when the page reloaded, and is not sent again on its own so it cannot go out twice.",
+  // Lending this computer's shell to a remote workspace
+  // (`status-bar-host-ssh.tsx`, `docs/host-ssh.md`).
+  hostSshTitle: "Lend this computer to agents",
+  hostSshTooltipOn: "This computer is lent to this workspace's agents",
+  hostSshTooltipOff: "This computer is not lent to this workspace",
+  hostSshLent: "Lent",
+  hostSshNotLent: "Not lent",
+  hostSshHintOff:
+    "Once lent, the agents of {server} can run any command on this computer as you, and read and change your files. Lend it only to a server you trust.",
+  hostSshHintOn:
+    "The agents of {server} can run commands on this computer as you, while this window is open.",
+  hostSshServerNotReady:
+    "This server cannot reach a lent computer yet — it needs a newer Cowork. For now lending only readies this computer, and the self-test is all that logs in.",
+  hostSshNotRunning: "The SSH service did not start: {detail}",
+  hostSshLend: "Lend this computer",
+  hostSshStop: "Stop lending",
+  hostSshWorking: "Working…",
+  hostSshSelfTest: "Self-test",
+  hostSshTesting: "Testing…",
+  hostSshSelfTestOk:
+    "Self-test passed: it logged in and ran a command. Tools it finds: {tools}",
+  hostSshSelfTestNoTools: "none",
+  hostSshSelfTestFailed: "Self-test failed: {detail}",
+  hostSshConfirmTitle: "Lend this computer to {server}?",
+  hostSshConfirmBody:
+    "Its agents will be able to run any command here as you: read, change and delete your files, start apps, and use the accounts you are signed in to. It cannot be limited to a folder. You can stop lending from this icon at any time.",
+  hostSshConfirm: "Lend",
+  hostSshCancel: "Cancel",
 }
 
 export type CoworkTextKey = keyof typeof en
@@ -202,6 +230,31 @@ const zhCN: Record<CoworkTextKey, string> = {
   turnFailedAuthRequiredPortal:
     "{agent} 需要你重新登录后才能执行本轮回复。请到门户「我的账户 → AI 账户」配置，然后重新发送这条消息。",
   queueRestoredReason: "页面刷新时还没发出去，为免重复发送，不会自动续发。",
+  hostSshTitle: "把这台电脑借给智能体",
+  hostSshTooltipOn: "这台电脑已借给这个工作区的智能体",
+  hostSshTooltipOff: "这台电脑没有借给这个工作区",
+  hostSshLent: "已借出",
+  hostSshNotLent: "未借出",
+  hostSshHintOff:
+    "借出后，「{server}」的智能体能以你的身份在这台电脑上执行任何命令、读写你的文件。只借给你信任的服务器。",
+  hostSshHintOn:
+    "「{server}」的智能体可以以你的身份在这台电脑上执行命令，只在这个窗口开着时有效。",
+  hostSshServerNotReady:
+    "这台服务器现在还连不到借出的电脑，要等 Cowork 升级。目前借出只是把这台电脑这一侧准备好，只有自检会登录进来。",
+  hostSshNotRunning: "SSH 服务没有启动：{detail}",
+  hostSshLend: "借出这台电脑",
+  hostSshStop: "停止借出",
+  hostSshWorking: "处理中…",
+  hostSshSelfTest: "自检",
+  hostSshTesting: "自检中…",
+  hostSshSelfTestOk: "自检通过：能登录、能执行命令。找得到的工具：{tools}",
+  hostSshSelfTestNoTools: "没有",
+  hostSshSelfTestFailed: "自检没通过：{detail}",
+  hostSshConfirmTitle: "把这台电脑借给「{server}」？",
+  hostSshConfirmBody:
+    "它的智能体将能以你的身份在这台电脑上执行任何命令：读、改、删你的文件，启动软件，使用你已登录的账号。没法只限定某个文件夹。随时可以点这个图标停止借出。",
+  hostSshConfirm: "借出",
+  hostSshCancel: "取消",
 }
 
 const zhTW: Record<CoworkTextKey, string> = {
@@ -292,6 +345,31 @@ const zhTW: Record<CoworkTextKey, string> = {
   turnFailedAuthRequiredPortal:
     "{agent} 需要你重新登入後才能執行本輪回覆。請到入口網站「我的帳戶 → AI 帳戶」設定，然後重新傳送這則訊息。",
   queueRestoredReason: "頁面重新整理時還沒送出，為避免重複傳送，不會自動續傳。",
+  hostSshTitle: "把這台電腦借給智慧體",
+  hostSshTooltipOn: "這台電腦已借給這個工作區的智慧體",
+  hostSshTooltipOff: "這台電腦沒有借給這個工作區",
+  hostSshLent: "已借出",
+  hostSshNotLent: "未借出",
+  hostSshHintOff:
+    "借出後，「{server}」的智慧體能以你的身分在這台電腦上執行任何命令、讀寫你的檔案。只借給你信任的伺服器。",
+  hostSshHintOn:
+    "「{server}」的智慧體可以以你的身分在這台電腦上執行命令，只在這個視窗開著時有效。",
+  hostSshServerNotReady:
+    "這台伺服器現在還連不到借出的電腦，要等 Cowork 升級。目前借出只是把這台電腦這一側準備好，只有自我檢查會登入進來。",
+  hostSshNotRunning: "SSH 服務沒有啟動：{detail}",
+  hostSshLend: "借出這台電腦",
+  hostSshStop: "停止借出",
+  hostSshWorking: "處理中…",
+  hostSshSelfTest: "自我檢查",
+  hostSshTesting: "檢查中…",
+  hostSshSelfTestOk: "自我檢查通過：能登入、能執行命令。找得到的工具：{tools}",
+  hostSshSelfTestNoTools: "沒有",
+  hostSshSelfTestFailed: "自我檢查沒通過：{detail}",
+  hostSshConfirmTitle: "把這台電腦借給「{server}」？",
+  hostSshConfirmBody:
+    "它的智慧體將能以你的身分在這台電腦上執行任何命令：讀、改、刪你的檔案，啟動軟體，使用你已登入的帳號。無法只限定某個資料夾。隨時可以點這個圖示停止借出。",
+  hostSshConfirm: "借出",
+  hostSshCancel: "取消",
 }
 
 const CATALOGS: Record<string, Record<CoworkTextKey, string>> = {

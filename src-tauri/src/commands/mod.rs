@@ -54,6 +54,10 @@ pub mod folders;
 pub mod forge;
 /// The `ui-render` skill and the agents it is enabled for (Skill Packs > UI).
 pub mod generative_ui;
+/// Cowork fork: the windows' side of lending this computer's shell to a
+/// remote workspace (`docs/host-ssh.md`).
+#[cfg(feature = "tauri-runtime")]
+pub mod host_ssh;
 /// Folder commands set to run on the desktop's own machine ("Run on this
 /// computer"), even from a remote-desktop window. Desktop-only by design.
 #[cfg(feature = "tauri-runtime")]

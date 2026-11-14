@@ -255,9 +255,17 @@ jobs:
         working-directory: src-tauri
         run: cargo check ${{ matrix.cargo_args }}
 
+      - name: sshd（host_ssh 的测试要起真的）
+        # `host_ssh` 的测试用普通账号起系统的 sshd（只听 127.0.0.1、临时密钥），托管机器上不一定装了 openssh-server。
+        # 下面的 CODEG_HOST_SSH_TEST_STRICT 让「没装所以跳过」变成失败，免得这几个测试悄悄不跑
+        if: matrix.mode == 'server'
+        run: test -x /usr/sbin/sshd || (sudo apt-get update && sudo apt-get install -y openssh-server)
+
       - name: cargo test
         if: ${{ !matrix.check_only }}
         working-directory: src-tauri
+        env:
+          CODEG_HOST_SSH_TEST_STRICT: ${{ matrix.mode == 'server' && '1' || '' }}
         run: cargo test ${{ matrix.cargo_args }}
 
       - name: cargo clippy

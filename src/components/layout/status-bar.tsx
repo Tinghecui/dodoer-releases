@@ -13,6 +13,7 @@ import { QuickActionsDropdown } from "@/components/layout/quick-actions-dropdown
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
 import { CoworkAccountMenu } from "@/components/cowork/account-menu"
+import { StatusBarHostSsh } from "@/components/cowork/status-bar-host-ssh"
 import { ResourceMeter } from "@/components/cowork/resource-meter"
 
 export function StatusBar() {
@@ -36,6 +37,7 @@ export function StatusBar() {
               shrunk below the breakpoint must still say the web service is
               listening. Renders nothing outside the local desktop. */}
           <StatusBarWebService />
+          <StatusBarHostSsh />
           <StatusBarMcp />
           <StatusBarAlerts />
           <ResourceMeter />
@@ -62,6 +64,11 @@ export function StatusBar() {
  * the sidebar foot's far end. The foot (or, with the sidebar collapsed, the
  * bottom-left capsule) is always on screen, and it is where the workspace's
  * name already sits — the meter says how that machine is doing.
+ *
+ * The lent-computer item leads that group for the same reasons: lending is
+ * to the server named right there, and a lent computer must show without
+ * opening anything. The right half is behind the top-right status button on
+ * desktop widths, where nobody sees a mark until they look for it.
  */
 export function StatusBarLeft({ className }: { className?: string }) {
   return (
@@ -75,6 +82,7 @@ export function StatusBarLeft({ className }: { className?: string }) {
       <QuickActionsDropdown />
       <StatusBarStats />
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
+        <StatusBarHostSsh className="h-6 rounded-full px-1.5 hover:bg-[var(--g-hover)]" />
         <ResourceMeter />
         <CoworkAccountMenu
           className="shrink-0 rounded-full hover:bg-[var(--g-hover)]"
@@ -114,6 +122,8 @@ export function StatusBarRight({ className }: { className?: string }) {
           HTTP right now, and how far. Beside computer use because both say
           what is exposed. Local desktop only. */}
       <StatusBarWebService />
+      {/* Cowork: the lent-computer item is in StatusBarLeft on desktop
+          widths, always on screen. */}
       {/* codeg-mcp service health, next to the alerts bell: both answer "is
           something wrong right now?". */}
       <StatusBarMcp />

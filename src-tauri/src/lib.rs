@@ -55,6 +55,9 @@ pub mod git_repo;
 /// Cowork fork: the desktop app's browser and computer use, served to its
 /// child daemon (`local_daemon`).
 pub mod host_bridge;
+/// Cowork fork: lending this computer's shell to a remote workspace
+/// (`docs/host-ssh.md`).
+pub mod host_ssh;
 pub mod intern;
 pub mod keyring_store;
 // Cowork fork: shims for desktop apps that still run a 0.40 frontend.
@@ -207,6 +210,8 @@ mod tauri_app {
         if let Some(cm) = app.try_state::<ConnectionManager>() {
             tauri::async_runtime::block_on(cm.disconnect_all());
         }
+        // The SSH service lent to remote workspaces (`host_ssh`).
+        crate::commands::host_ssh::stop_on_exit(app);
         // The child daemon (`local_daemon`): SIGTERM, so it cancels running
         // turns and closes as `codeg-server` does, then kill.
         crate::commands::local_daemon::stop_on_exit(app);
@@ -1118,6 +1123,11 @@ mod tauri_app {
                     .await;
                 });
 
+                // Cowork fork: which remote workspaces this computer's shell
+                // is lent to (`docs/host-ssh.md`). Before any window, so the
+                // first remote one finds it.
+                crate::commands::host_ssh::start(app.handle(), &db.conn, &effective_data_dir);
+
                 // Computer use: the helper, the window table, and the two
                 // background duties (end every grant when the group is
                 // switched off; end grants that go unused). Started after
@@ -1920,6 +1930,9 @@ mod tauri_app {
                 session_info_commands::set_session_info_settings,
                 chat_authoring_commands::get_chat_authoring_settings,
                 chat_authoring_commands::set_chat_authoring_settings,
+                crate::commands::host_ssh::host_ssh_status,
+                crate::commands::host_ssh::host_ssh_set_lent,
+                crate::commands::host_ssh::host_ssh_self_test,
                 crate::commands::browser_tools::get_browser_tools_settings,
                 crate::commands::browser_tools::set_browser_tools_settings,
                 crate::commands::computer_tools::get_computer_tools_settings,

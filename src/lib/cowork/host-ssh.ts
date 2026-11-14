@@ -38,6 +38,17 @@ export interface HostSshSelfTest {
   detail: string | null
 }
 
+/** `Permission` in `src-tauri/src/host_ssh/permissions.rs`. */
+export type HostSshPermission = "screenRecording" | "accessibility"
+
+/** `Permissions` there: the macOS permissions a lent shell borrows from the
+ *  app, as they stand for this run of it. */
+export interface HostSshPermissions {
+  applicable: boolean
+  selfResponsible: boolean
+  items: { permission: HostSshPermission; granted: boolean }[]
+}
+
 export function getHostSshStatus(connectionId: number): Promise<HostSshStatus> {
   return getShellTransport().call("host_ssh_status", { connectionId })
 }
@@ -51,6 +62,17 @@ export function setHostSshLent(
 
 export function runHostSshSelfTest(): Promise<HostSshSelfTest> {
   return getShellTransport().call("host_ssh_self_test")
+}
+
+export function getHostSshPermissions(): Promise<HostSshPermissions> {
+  return getShellTransport().call("host_ssh_permissions")
+}
+
+/** Clear the app's grant and ask again: the system's dialog comes up. */
+export function repairHostSshPermission(
+  permission: HostSshPermission
+): Promise<HostSshPermissions> {
+  return getShellTransport().call("host_ssh_repair_permission", { permission })
 }
 
 /** The connection whose server this window could lend the computer to: a

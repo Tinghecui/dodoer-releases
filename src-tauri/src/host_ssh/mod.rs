@@ -11,9 +11,12 @@
 //! itself (`tunnel`, `docs/host-ssh.md` 5.2): the app lets the server's key
 //! in for it ([`Lending::admit`]) and ends it the moment the lending ends
 //! ([`Lending::withdrawn`]). The server's side of `ssh desktop` — its key,
-//! the host keys it accepts, its `ssh` configuration — is `client`.
+//! the host keys it accepts, its `ssh` configuration — is `client`. What a
+//! lent shell may do on macOS follows the app's own permissions, which
+//! `permissions` checks and repairs.
 
 pub mod client;
+pub mod permissions;
 mod sshd;
 pub mod tunnel;
 

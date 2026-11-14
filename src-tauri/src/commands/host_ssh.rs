@@ -18,6 +18,7 @@ use tauri::{Manager, State};
 use crate::app_error::AppCommandError;
 use crate::db::service::{app_metadata_service, remote_workspace_connection_service};
 use crate::db::AppDatabase;
+use crate::host_ssh::permissions::{Permission, Permissions};
 use crate::host_ssh::{Lending, LendingStatus, OpenWindow, SelfTest, Sshd};
 use crate::local_daemon::LOCAL_CONNECTION_ID;
 use crate::web::event_bridge::{emit_event, EventEmitter};
@@ -154,4 +155,30 @@ pub async fn host_ssh_self_test(
         .self_test()
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))
+}
+
+/// Where the macOS permissions a lent shell borrows from the app stand
+/// (`host_ssh::permissions`). Asks nothing of the person.
+#[tauri::command]
+pub async fn host_ssh_permissions() -> Result<Permissions, AppCommandError> {
+    tauri::async_runtime::spawn_blocking(crate::host_ssh::permissions::status)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))
+}
+
+/// Clear the app's grant of `permission` and ask for it again — the
+/// system's dialog comes up. Only from a person's click in the panel.
+#[tauri::command]
+pub async fn host_ssh_repair_permission(
+    app: tauri::AppHandle,
+    permission: Permission,
+) -> Result<Permissions, AppCommandError> {
+    let bundle_id = app.config().identifier.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::host_ssh::permissions::repair(permission, &bundle_id)?;
+        Ok::<_, String>(crate::host_ssh::permissions::status())
+    })
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?
+    .map_err(AppCommandError::task_execution_failed)
 }

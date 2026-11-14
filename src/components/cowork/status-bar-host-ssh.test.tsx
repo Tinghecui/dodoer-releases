@@ -2,7 +2,11 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { HostSshStatus } from "@/lib/cowork/host-ssh"
+import type {
+  HostSshPermission,
+  HostSshPermissions,
+  HostSshStatus,
+} from "@/lib/cowork/host-ssh"
 
 const env = vi.hoisted(() => ({
   call: vi.fn(),
@@ -48,11 +52,37 @@ function status(overrides: Partial<HostSshStatus> = {}): HostSshStatus {
   }
 }
 
+function permissions(
+  granted: Partial<Record<HostSshPermission, boolean>> = {},
+  overrides: Partial<HostSshPermissions> = {}
+): HostSshPermissions {
+  return {
+    applicable: true,
+    selfResponsible: true,
+    items: [
+      {
+        permission: "screenRecording",
+        granted: granted.screenRecording ?? true,
+      },
+      { permission: "accessibility", granted: granted.accessibility ?? true },
+    ],
+    ...overrides,
+  }
+}
+
 /** What the app answers: the status, and each switch as asked. */
-function app(initial: HostSshStatus) {
+function app(
+  initial: HostSshStatus,
+  initialPermissions: HostSshPermissions = permissions()
+) {
   let current = initial
+  let grants = initialPermissions
+  let repairError: string | null = null
   env.call.mockImplementation(
-    async (command: string, args?: { lent?: boolean }) => {
+    async (
+      command: string,
+      args?: { lent?: boolean; permission?: HostSshPermission }
+    ) => {
       if (command === "host_ssh_status") return current
       if (command === "host_ssh_set_lent") {
         current = status({ lent: !!args?.lent, running: !!args?.lent })
@@ -61,12 +91,23 @@ function app(initial: HostSshStatus) {
       if (command === "host_ssh_self_test") {
         return { ok: true, tools: ["git", "node"], detail: null }
       }
+      if (command === "host_ssh_permissions") return grants
+      if (command === "host_ssh_repair_permission") {
+        if (repairError) throw new Error(repairError)
+        return grants
+      }
       throw new Error(`unexpected ${command}`)
     }
   )
   return {
     set(next: HostSshStatus) {
       current = next
+    },
+    setPermissions(next: HostSshPermissions) {
+      grants = next
+    },
+    failRepair(message: string) {
+      repairError = message
     },
   }
 }
@@ -84,6 +125,12 @@ const trigger = () =>
 
 const setLentCalls = () =>
   env.call.mock.calls.filter(([command]) => command === "host_ssh_set_lent")
+
+const callsOf = (name: string) =>
+  env.call.mock.calls.filter(([command]) => command === name)
+
+const permissionRow = (permission: HostSshPermission) =>
+  document.querySelector(`[data-host-ssh-permission="${permission}"]`)
 
 beforeEach(() => {
   env.call.mockReset()
@@ -225,5 +272,125 @@ describe("StatusBarHostSsh", () => {
     await waitFor(() =>
       expect(button).toHaveAttribute("data-host-ssh-lent", "true")
     )
+  })
+  describe("macOS permissions", () => {
+    it("says which are in force while lent, and offers to fix the rest", async () => {
+      app(
+        status({ lent: true, running: true }),
+        permissions({ screenRecording: false })
+      )
+      mount()
+      fireEvent.click(await trigger())
+      await waitFor(() =>
+        expect(permissionRow("screenRecording")).not.toBeNull()
+      )
+      expect(permissionRow("screenRecording")).toHaveAttribute(
+        "data-granted",
+        "false"
+      )
+      expect(permissionRow("screenRecording")).toHaveTextContent(
+        "Not granted or stale"
+      )
+      expect(permissionRow("accessibility")).toHaveAttribute(
+        "data-granted",
+        "true"
+      )
+      expect(permissionRow("accessibility")).toHaveTextContent("Granted")
+      // One Fix, for the one not in force.
+      expect(screen.getAllByRole("button", { name: "Fix" })).toHaveLength(1)
+    })
+
+    it("fixes one only when asked, then says what to do next", async () => {
+      app(
+        status({ lent: true, running: true }),
+        permissions({ screenRecording: false })
+      )
+      mount()
+      fireEvent.click(await trigger())
+      const fix = await screen.findByRole("button", { name: "Fix" })
+      expect(callsOf("host_ssh_repair_permission")).toEqual([])
+      fireEvent.click(fix)
+      await waitFor(() =>
+        expect(callsOf("host_ssh_repair_permission")).toEqual([
+          ["host_ssh_repair_permission", { permission: "screenRecording" }],
+        ])
+      )
+      await waitFor(() =>
+        expect(
+          document.querySelector("[data-host-ssh-permission-asked]")
+        ).not.toBeNull()
+      )
+    })
+
+    it("says why a fix did not go through", async () => {
+      const answers = app(
+        status({ lent: true, running: true }),
+        permissions({ accessibility: false })
+      )
+      answers.failRepair("tccutil failed: no such service")
+      mount()
+      fireEvent.click(await trigger())
+      fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
+      expect(
+        await screen.findByText("Couldn't fix: tccutil failed: no such service")
+      ).toBeInTheDocument()
+    })
+
+    it("asks again when the window comes back to the front", async () => {
+      const answers = app(
+        status({ lent: true, running: true }),
+        permissions({ screenRecording: false })
+      )
+      mount()
+      fireEvent.click(await trigger())
+      await screen.findByRole("button", { name: "Fix" })
+      answers.setPermissions(permissions())
+      act(() => {
+        window.dispatchEvent(new Event("focus"))
+      })
+      await waitFor(() =>
+        expect(permissionRow("screenRecording")).toHaveAttribute(
+          "data-granted",
+          "true"
+        )
+      )
+      expect(screen.queryByRole("button", { name: "Fix" })).toBeNull()
+    })
+
+    it("offers no fix for permissions that are another app's", async () => {
+      app(
+        status({ lent: true, running: true }),
+        permissions({ screenRecording: false }, { selfResponsible: false })
+      )
+      mount()
+      fireEvent.click(await trigger())
+      await waitFor(() =>
+        expect(permissionRow("screenRecording")).not.toBeNull()
+      )
+      expect(screen.queryByRole("button", { name: "Fix" })).toBeNull()
+      expect(screen.getByText(/started from another app/)).toBeInTheDocument()
+    })
+
+    it("is not asked about while not lent, nor shown where there are none", async () => {
+      app(status(), permissions({ screenRecording: false }))
+      mount()
+      fireEvent.click(await trigger())
+      await screen.findByRole("button", { name: "Lend this computer" })
+      expect(callsOf("host_ssh_permissions")).toEqual([])
+      expect(document.querySelector("[data-host-ssh-permissions]")).toBeNull()
+    })
+
+    it("shows nothing on a system without such permissions", async () => {
+      app(
+        status({ lent: true, running: true }),
+        permissions({}, { applicable: false, items: [] })
+      )
+      mount()
+      fireEvent.click(await trigger())
+      await waitFor(() =>
+        expect(callsOf("host_ssh_permissions")).not.toEqual([])
+      )
+      expect(document.querySelector("[data-host-ssh-permissions]")).toBeNull()
+    })
   })
 })

@@ -15,9 +15,14 @@
  * is a passive signal: the glyph carries the violet mark the browser and
  * computer use show for "an agent can reach this" for as long as the
  * computer is lent.
+ *
+ * Lent, it also says whether the macOS permissions a lent shell borrows from
+ * the app are in force: an update of the app leaves the switch in System
+ * Settings on while the grant behind it no longer matches, and "Fix" clears
+ * it and asks again.
  */
 
-import { useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Laptop } from "lucide-react"
 
 import {
@@ -39,9 +44,13 @@ import {
 import { useRemoteConnection } from "@/contexts/remote-connection-context"
 import { toErrorMessage } from "@/lib/app-error"
 import {
+  getHostSshPermissions,
+  repairHostSshPermission,
   runHostSshSelfTest,
   setHostSshLent,
   useHostSsh,
+  type HostSshPermission,
+  type HostSshPermissions,
   type HostSshSelfTest,
 } from "@/lib/cowork/host-ssh"
 import { useCoworkText } from "@/lib/cowork/i18n"
@@ -61,6 +70,31 @@ export function StatusBarHostSsh({ className }: { className?: string }) {
   const [error, setError] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
   const [test, setTest] = useState<HostSshSelfTest | null>(null)
+  const [permissions, setPermissions] = useState<HostSshPermissions | null>(
+    null
+  )
+  const [repairing, setRepairing] = useState<HostSshPermission | null>(null)
+  const [asked, setAsked] = useState(false)
+  const [permissionError, setPermissionError] = useState<string | null>(null)
+  const watchPermissions = open && !!status?.lent
+
+  const loadPermissions = useCallback(async () => {
+    try {
+      setPermissions(await getHostSshPermissions())
+    } catch {
+      // Keep the last answer; opening the panel again asks again.
+    }
+  }, [])
+
+  // Asked while the panel is open on a lent computer, and again whenever the
+  // window comes back to the front — from System Settings, most likely.
+  useEffect(() => {
+    if (!watchPermissions) return
+    void loadPermissions()
+    const onFocus = () => void loadPermissions()
+    window.addEventListener("focus", onFocus)
+    return () => window.removeEventListener("focus", onFocus)
+  }, [watchPermissions, loadPermissions])
 
   if (connectionId === null || !status?.supported) return null
 
@@ -71,7 +105,23 @@ export function StatusBarHostSsh({ className }: { className?: string }) {
     setOpen(next)
     if (!next) return
     setError(null)
+    setPermissionError(null)
+    setAsked(false)
     void refresh()
+  }
+
+  const repair = async (permission: HostSshPermission) => {
+    setRepairing(permission)
+    setPermissionError(null)
+    setAsked(false)
+    try {
+      setPermissions(await repairHostSshPermission(permission))
+      setAsked(true)
+    } catch (e) {
+      setPermissionError(toErrorMessage(e))
+    } finally {
+      setRepairing(null)
+    }
   }
 
   const apply = async (next: boolean) => {
@@ -183,6 +233,78 @@ export function StatusBarHostSsh({ className }: { className?: string }) {
                   })
                 : t("hostSshSelfTestFailed", { detail: test.detail ?? "" })}
             </p>
+          )}
+
+          {lent && permissions?.applicable && (
+            <div
+              data-host-ssh-permissions=""
+              className="flex flex-col gap-1 rounded-md border px-2 py-1.5"
+            >
+              <span className="text-2xs font-medium">
+                {t("hostSshPermissions")}
+              </span>
+              {permissions.items.map((item) => (
+                <div
+                  key={item.permission}
+                  data-host-ssh-permission={item.permission}
+                  data-granted={item.granted ? "true" : "false"}
+                  className="flex min-h-6 items-center justify-between gap-2 text-2xs"
+                >
+                  <span>
+                    {t(
+                      item.permission === "screenRecording"
+                        ? "hostSshPermScreenRecording"
+                        : "hostSshPermAccessibility"
+                    )}
+                  </span>
+                  {item.granted ? (
+                    <span className="text-emerald-700 dark:text-emerald-300">
+                      {t("hostSshPermGranted")}
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5">
+                      <span className={TROUBLE_TONE}>
+                        {t("hostSshPermMissing")}
+                      </span>
+                      {permissions.selfResponsible && (
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={repairing !== null}
+                          onClick={() => void repair(item.permission)}
+                        >
+                          {t(
+                            repairing === item.permission
+                              ? "hostSshWorking"
+                              : "hostSshPermFix"
+                          )}
+                        </Button>
+                      )}
+                    </span>
+                  )}
+                </div>
+              ))}
+              <p className="text-3xs text-muted-foreground">
+                {t(
+                  permissions.selfResponsible
+                    ? "hostSshPermHint"
+                    : "hostSshPermNotSelf"
+                )}
+              </p>
+              {asked && (
+                <p
+                  data-host-ssh-permission-asked=""
+                  className="text-3xs text-violet-600 dark:text-violet-400"
+                >
+                  {t("hostSshPermAsked")}
+                </p>
+              )}
+              {permissionError && (
+                <p role="alert" className="text-3xs break-words text-red-400">
+                  {t("hostSshPermFixFailed", { detail: permissionError })}
+                </p>
+              )}
+            </div>
           )}
 
           <Button

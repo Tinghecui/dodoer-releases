@@ -5838,7 +5838,7 @@
   },
   "ChromeSettings": {
     "title": "我自己的 Chrome",
-    "description": "让智能体在你平时用的 Chrome 里干活，那里的网站你都已经登录了。试验功能：在窗口左下角的 Chrome 面板里把标签交给智能体，它就能读取这个页面、在上面点击和填写；别的标签智能体看不到。",
+    "description": "让智能体在你平时用的 Chrome 里干活，那里的网站你都已经登录了。试验功能：在窗口左下角的 Chrome 面板里打开「让智能体用我的 Chrome」，智能体开的网页会放在单独的一个窗口里；也可以把你自己的标签交给它。这些页面它能读取、点击和填写，你别的标签它看不到。",
     "statusDisconnected": "未连接",
     "statusWaiting": "等你在 Chrome 里点「允许」…",
     "statusConnected": "已连接",
@@ -5878,7 +5878,14 @@
     "levelRead": "只读",
     "levelControl": "可操作",
     "stopSharing": "收回",
-    "shareFailed": "没能交给智能体：{message}"
+    "shareFailed": "没能交给智能体：{message}",
+    "agentsSwitch": "让智能体用我的 Chrome",
+    "agentsHint": "打开后，在这里干活的智能体开的网页会开在你 Chrome 里单独的一个窗口，带着你的登录状态。你自己开的标签仍要点「交给智能体」才给它看；邮箱、支付、网银这类网站它打不开。",
+    "agentsOffline": "已打开，但 Chrome 没连上：智能体这时开网页会失败。连上 Chrome，或者关掉这个开关。",
+    "agentsFailed": "没能改这个开关：{message}",
+    "openedByAgent": "智能体开的",
+    "jumpTo": "跳到这个标签",
+    "jumpFailed": "没能跳到这个标签：{message}"
   },
   "BrowserSettings": {
     "title": "内置浏览器",

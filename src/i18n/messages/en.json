@@ -5838,7 +5838,7 @@
   },
   "ChromeSettings": {
     "title": "Your own Chrome",
-    "description": "Lets agents work in the Chrome you use every day, where you are already signed in. Experimental: hand a tab to agents from the Chrome panel at the bottom left of the window, and they can read it, click and fill in forms there. Agents see no other tab.",
+    "description": "Lets agents work in the Chrome you use every day, where you are already signed in. Experimental: from the Chrome panel at the bottom left of the window, let agents use your Chrome — the pages they open go to a window of their own — or hand them one of your tabs. They can read those pages, click and fill in forms there; they see none of your other tabs.",
     "statusDisconnected": "Not connected",
     "statusWaiting": "Waiting for you to click Allow in Chrome…",
     "statusConnected": "Connected",
@@ -5878,7 +5878,14 @@
     "levelRead": "Read only",
     "levelControl": "Can act",
     "stopSharing": "Take back",
-    "shareFailed": "Could not hand the tab over: {message}"
+    "shareFailed": "Could not hand the tab over: {message}",
+    "agentsSwitch": "Let agents use my Chrome",
+    "agentsHint": "When on, the pages agents working here open go to a separate window of your Chrome, signed in as you. Tabs you opened yourself still need “Hand to agents”; mail, payment and bank sites stay off limits.",
+    "agentsOffline": "On, but Chrome is not connected: agents opening a page will fail until you connect it or turn this off.",
+    "agentsFailed": "Could not change the switch: {message}",
+    "openedByAgent": "Opened by an agent",
+    "jumpTo": "Show this tab",
+    "jumpFailed": "Could not switch to the tab: {message}"
   },
   "BrowserSettings": {
     "title": "Built-in browser",

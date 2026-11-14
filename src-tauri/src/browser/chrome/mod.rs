@@ -11,20 +11,30 @@
 //! A tab is listed for the person (`tabs`) and nothing more until they hand
 //! it to agents: then it is attached to (`page`) and registered with the
 //! built-in browser's tabs, where the agent tools find it
-//! (`browser::chrome_share`, desktop only).
+//! (`browser::chrome_share`, desktop only). Once the person lets agents use
+//! their Chrome, an agent can also open pages there, in a window of their
+//! own (`agent_window`) and never on the sites listed in `sensitive`.
 //!
 //! - `endpoint` — where a running Chrome says it can be reached
 //! - `cdp`      — the DevTools protocol over one WebSocket
 //! - `link`     — the one connection the app keeps, and its state
 //! - `tabs`     — which web pages the connected Chrome has open
 //! - `page`     — one tab handed to agents: script, clicks, screenshots
+//! - `agent_window` — the window agents open their pages in
+//! - `lending`  — whose agents may use it, and which tabs each is told of
+//! - `sensitive` — the sites agents are kept off in that Chrome
 
+pub mod agent_window;
 pub mod cdp;
 pub mod endpoint;
+pub mod lending;
 pub mod link;
 pub mod page;
+pub mod sensitive;
 pub mod tabs;
 
+pub use agent_window::AgentWindow;
+pub use lending::ChromeLending;
 pub use link::{ChromeLink, ChromeStatus};
 pub use page::{ChromePage, PageEvent};
 pub use tabs::ChromeTab;

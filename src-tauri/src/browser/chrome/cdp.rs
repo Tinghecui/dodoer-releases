@@ -227,6 +227,11 @@ impl CdpClient {
         self.inner.closed.is_cancelled()
     }
 
+    /// Whether `other` is a clone of this very connection.
+    pub fn same(&self, other: &CdpClient) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Returns once the connection is over, whoever ended it.
     pub async fn closed(&self) {
         self.inner.closed.cancelled().await;

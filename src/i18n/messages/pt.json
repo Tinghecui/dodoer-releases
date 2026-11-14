@@ -5838,7 +5838,7 @@
   },
   "ChromeSettings": {
     "title": "O seu próprio Chrome",
-    "description": "Permite que os agentes trabalhem no Chrome que você usa todos os dias, onde você já está conectado às suas contas. Experimental: passe uma aba aos agentes no painel do Chrome, no canto inferior esquerdo da janela, e eles poderão lê-la, clicar e preencher formulários nela. Os agentes não veem nenhuma outra aba.",
+    "description": "Permite que os agentes trabalhem no Chrome que você usa todos os dias, onde você já está conectado às suas contas. Experimental: no painel do Chrome, no canto inferior esquerdo da janela, deixe os agentes usarem o seu Chrome (as páginas que eles abrirem vão para uma janela própria) ou passe a eles uma das suas abas. Eles podem ler essas páginas, clicar e preencher formulários nelas; não veem nenhuma outra aba sua.",
     "statusDisconnected": "Não conectado",
     "statusWaiting": "Aguardando você clicar em Permitir no Chrome…",
     "statusConnected": "Conectado",
@@ -5878,7 +5878,14 @@
     "levelRead": "Só leitura",
     "levelControl": "Pode agir",
     "stopSharing": "Retomar",
-    "shareFailed": "Não foi possível passar a aba: {message}"
+    "shareFailed": "Não foi possível passar a aba: {message}",
+    "agentsSwitch": "Deixar os agentes usarem meu Chrome",
+    "agentsHint": "Ligado, as páginas que os agentes que trabalham aqui abrirem vão para uma janela separada do seu Chrome, com a sua sessão. As abas que você mesmo abriu continuam precisando de “Passar aos agentes”; sites de e-mail, pagamento e banco ficam fora do alcance deles.",
+    "agentsOffline": "Ligado, mas o Chrome não está conectado: os agentes não conseguirão abrir páginas até você conectá-lo ou desligar isto.",
+    "agentsFailed": "Não foi possível mudar o interruptor: {message}",
+    "openedByAgent": "Aberta por um agente",
+    "jumpTo": "Mostrar esta aba",
+    "jumpFailed": "Não foi possível mudar para a aba: {message}"
   },
   "BrowserSettings": {
     "title": "Navegador integrado",

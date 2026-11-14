@@ -5838,7 +5838,7 @@
   },
   "ChromeSettings": {
     "title": "Votre propre Chrome",
-    "description": "Permet aux agents de travailler dans le Chrome que vous utilisez tous les jours, où vous êtes déjà connecté. Expérimental : confiez un onglet aux agents depuis le panneau Chrome en bas à gauche de la fenêtre, et ils pourront le lire, y cliquer et remplir des formulaires. Les agents ne voient aucun autre onglet.",
+    "description": "Permet aux agents de travailler dans le Chrome que vous utilisez tous les jours, où vous êtes déjà connecté. Expérimental : depuis le panneau Chrome en bas à gauche de la fenêtre, laissez les agents utiliser votre Chrome (les pages qu'ils ouvrent vont dans une fenêtre à eux) ou confiez-leur un de vos onglets. Ils peuvent lire ces pages, y cliquer et remplir des formulaires ; ils ne voient aucun de vos autres onglets.",
     "statusDisconnected": "Non connecté",
     "statusWaiting": "En attente de votre clic sur Autoriser dans Chrome…",
     "statusConnected": "Connecté",
@@ -5878,7 +5878,14 @@
     "levelRead": "Lecture seule",
     "levelControl": "Peut agir",
     "stopSharing": "Reprendre",
-    "shareFailed": "Impossible de confier l’onglet : {message}"
+    "shareFailed": "Impossible de confier l’onglet : {message}",
+    "agentsSwitch": "Laisser les agents utiliser mon Chrome",
+    "agentsHint": "Activé, les pages qu'ouvrent les agents qui travaillent ici s'ouvrent dans une fenêtre à part de votre Chrome, connectée à vos comptes. Les onglets que vous avez ouverts vous-même demandent toujours « Confier aux agents » ; les sites de messagerie, de paiement et de banque leur restent interdits.",
+    "agentsOffline": "Activé, mais Chrome n'est pas connecté : les agents ne pourront pas ouvrir de page tant que vous ne l'aurez pas connecté ou désactivé ceci.",
+    "agentsFailed": "Impossible de changer l'interrupteur : {message}",
+    "openedByAgent": "Ouverte par un agent",
+    "jumpTo": "Afficher cet onglet",
+    "jumpFailed": "Impossible de passer à l'onglet : {message}"
   },
   "BrowserSettings": {
     "title": "Navigateur intégré",

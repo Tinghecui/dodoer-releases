@@ -12,9 +12,17 @@ const mocks = vi.hoisted(() => ({
   chromeConnect: vi.fn(),
   chromeDisconnect: vi.fn(),
   chromeShare: vi.fn(),
+  chromeAgents: vi.fn(),
+  chromeSetAgents: vi.fn(),
+  chromeActivate: vi.fn(),
+  windowLabel: "main",
+  /** The backend's switch for the window's scope. */
+  lent: false,
   /** Shared levels by the browser tab store's key, as `browser://state`
    *  would have left them. */
   grants: new Map<string, "read" | "control">(),
+  /** Owners by the same key: a page an agent opened is `chrome@<scope>`. */
+  owners: new Map<string, string>(),
   heardStatus: null as ((status: unknown) => void) | null,
   heardTabs: null as ((tabs: unknown) => void) | null,
   openSettingsWindow: vi.fn(async () => {}),
@@ -22,11 +30,17 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock("@/lib/browser/chrome-api", () => ({
+  AGENT_OWNER_PREFIX: "chrome@",
+  chromeAgentsScope: (label: string) =>
+    label.startsWith("remote-workspace-") ? label : "local",
   chromeStatus: mocks.chromeStatus,
   chromeTabs: mocks.chromeTabs,
   chromeConnect: mocks.chromeConnect,
   chromeDisconnect: mocks.chromeDisconnect,
   chromeShare: mocks.chromeShare,
+  chromeAgents: mocks.chromeAgents,
+  chromeSetAgents: mocks.chromeSetAgents,
+  chromeActivate: mocks.chromeActivate,
   subscribeChromeStatus: (handler: (status: unknown) => void) => {
     mocks.heardStatus = handler
     return Promise.resolve(() => {})
@@ -39,15 +53,28 @@ vi.mock("@/lib/browser/chrome-api", () => ({
 vi.mock("@/lib/browser/browser-tab-store", () => ({
   browserWorkspaceTabId: (id: string) => `browser:${id}`,
   useBrowserTabState: (key: string | null) => {
-    const level = key ? mocks.grants.get(key) : undefined
-    return level ? { agentGrant: { level } } : null
+    if (!key) return null
+    const level = mocks.grants.get(key)
+    const owner = mocks.owners.get(key)
+    if (!level && !owner) return null
+    return {
+      ownerWindow: owner ?? "chrome",
+      agentGrant: level ? { level } : null,
+    }
   },
+}))
+vi.mock("@/lib/browser/window-label", () => ({
+  getCurrentWindowLabel: () => mocks.windowLabel,
 }))
 vi.mock("@/lib/platform", () => ({ isDesktop: () => mocks.desktop }))
 vi.mock("@/lib/api", () => ({ openSettingsWindow: mocks.openSettingsWindow }))
 vi.mock("sonner", () => ({ toast: mocks.toast }))
 
-import { CONNECTED_BEFORE_KEY, StatusBarChrome } from "./status-bar-chrome"
+import {
+  agentsKey,
+  CONNECTED_BEFORE_KEY,
+  StatusBarChrome,
+} from "./status-bar-chrome"
 import enMessages from "@/i18n/messages/en.json"
 
 function status(over: Partial<ChromeStatus> = {}): ChromeStatus {
@@ -105,7 +132,16 @@ beforeEach(() => {
   mocks.chromeConnect.mockReset().mockResolvedValue(CONNECTED)
   mocks.chromeDisconnect.mockReset().mockResolvedValue(status())
   mocks.chromeShare.mockReset().mockResolvedValue(undefined)
+  mocks.lent = false
+  mocks.chromeAgents.mockReset().mockImplementation(async () => mocks.lent)
+  mocks.chromeSetAgents.mockReset().mockImplementation(async (on: boolean) => {
+    mocks.lent = on
+    return on
+  })
+  mocks.chromeActivate.mockReset().mockResolvedValue(undefined)
+  mocks.windowLabel = "main"
   mocks.grants.clear()
+  mocks.owners.clear()
   mocks.openSettingsWindow.mockClear()
   mocks.toast.error.mockReset()
 })
@@ -224,6 +260,72 @@ describe("StatusBarChrome", () => {
     expect(mocks.toast.error).toHaveBeenCalledWith(
       "Could not hand the tab over: Chrome is not connected"
     )
+  })
+
+  it("lets this window's agents use Chrome, and remembers it", async () => {
+    mocks.windowLabel = "remote-workspace-7"
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    await mount()
+    await openPanel()
+    const toggle = screen.getByRole("switch", {
+      name: "Let agents use my Chrome",
+    })
+    expect(toggle).toHaveAttribute("aria-checked", "false")
+    await userEvent.click(toggle)
+    expect(mocks.chromeSetAgents).toHaveBeenCalledWith(true)
+    expect(toggle).toHaveAttribute("aria-checked", "true")
+    // Per scope: this remote window's own.
+    expect(localStorage.getItem(agentsKey("remote-workspace-7"))).toBe("1")
+    expect(localStorage.getItem(agentsKey("local"))).toBeNull()
+
+    await userEvent.click(toggle)
+    expect(mocks.chromeSetAgents).toHaveBeenLastCalledWith(false)
+    expect(localStorage.getItem(agentsKey("remote-workspace-7"))).toBe("0")
+  })
+
+  it("hands a remembered switch back to the backend when the app starts", async () => {
+    localStorage.setItem(agentsKey("local"), "1")
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    await mount()
+    expect(mocks.chromeSetAgents).toHaveBeenCalledWith(true)
+    await openPanel()
+    expect(
+      screen.getByRole("switch", { name: "Let agents use my Chrome" })
+    ).toHaveAttribute("aria-checked", "true")
+  })
+
+  it("says agents will fail while the switch is on and Chrome is not connected", async () => {
+    localStorage.setItem(CONNECTED_BEFORE_KEY, "1")
+    mocks.lent = true
+    await mount()
+    await openPanel()
+    expect(
+      screen.getByText(/On, but Chrome is not connected/)
+    ).toBeInTheDocument()
+  })
+
+  it("marks the pages agents opened, and brings any tab to the front", async () => {
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    mocks.chromeTabs.mockResolvedValue(TABS)
+    mocks.owners.set("browser:1", "chrome@local")
+    mocks.grants.set("browser:1", "control")
+    await mount()
+    await openPanel()
+    expect(
+      screen.getByText("Opened by an agent · mail.example.com")
+    ).toBeInTheDocument()
+    // Theirs: nothing to hand over.
+    expect(
+      screen.queryByRole("button", { name: "Hand to agents · Inbox" })
+    ).toBeNull()
+    expect(
+      screen.getByRole("button", { name: "Hand to agents · localhost" })
+    ).toBeInTheDocument()
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show this tab · Inbox" })
+    )
+    expect(mocks.chromeActivate).toHaveBeenCalledWith("1")
   })
 
   it("disconnects, and connects again, from the panel", async () => {

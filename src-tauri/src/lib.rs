@@ -821,6 +821,7 @@ mod tauri_app {
             .manage(ConnectionManager::new())
             .manage(crate::browser::BrowserRegistry::default())
             .manage(crate::browser::chrome::ChromeLink::for_this_computer())
+            .manage(crate::browser::chrome::ChromeLending::default())
             .manage(crate::browser::egress::EgressRegistry::default())
             .manage(crate::browser::BrowserDownloads::default())
             .manage(crate::browser::DocGuests::default())
@@ -1641,6 +1642,9 @@ mod tauri_app {
                 browser_chrome_commands::browser_chrome_open_privacy_settings,
                 browser_chrome_commands::browser_chrome_tabs,
                 browser_chrome_commands::browser_chrome_share,
+                browser_chrome_commands::browser_chrome_agents,
+                browser_chrome_commands::browser_chrome_set_agents,
+                browser_chrome_commands::browser_chrome_activate,
                 browser_commands::browser_set_host_rules,
                 browser_commands::browser_set_sign_in_user_agent,
                 browser_commands::browser_set_blank_page_theme,

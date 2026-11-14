@@ -5838,7 +5838,7 @@
   },
   "ChromeSettings": {
     "title": "Tu propio Chrome",
-    "description": "Permite que los agentes trabajen en el Chrome que usas a diario, donde ya has iniciado sesión. Experimental: pasa una pestaña a los agentes desde el panel de Chrome, abajo a la izquierda de la ventana, y podrán leerla, hacer clic y rellenar formularios en ella. Los agentes no ven ninguna otra pestaña.",
+    "description": "Permite que los agentes trabajen en el Chrome que usas a diario, donde ya has iniciado sesión. Experimental: desde el panel de Chrome, abajo a la izquierda de la ventana, deja que los agentes usen tu Chrome (las páginas que abran irán a una ventana propia) o pásales una de tus pestañas. Podrán leer esas páginas, hacer clic y rellenar formularios en ellas; no ven ninguna otra pestaña tuya.",
     "statusDisconnected": "Sin conexión",
     "statusWaiting": "Esperando a que hagas clic en Permitir en Chrome…",
     "statusConnected": "Conectado",
@@ -5878,7 +5878,14 @@
     "levelRead": "Solo lectura",
     "levelControl": "Puede actuar",
     "stopSharing": "Recuperar",
-    "shareFailed": "No se pudo pasar la pestaña: {message}"
+    "shareFailed": "No se pudo pasar la pestaña: {message}",
+    "agentsSwitch": "Dejar que los agentes usen mi Chrome",
+    "agentsHint": "Activado, las páginas que abran los agentes que trabajan aquí se abren en una ventana aparte de tu Chrome, con tu sesión iniciada. Las pestañas que abriste tú siguen necesitando «Pasar a los agentes»; los sitios de correo, pagos y bancos quedan fuera de su alcance.",
+    "agentsOffline": "Activado, pero Chrome no está conectado: los agentes no podrán abrir páginas hasta que lo conectes o lo desactives.",
+    "agentsFailed": "No se pudo cambiar el interruptor: {message}",
+    "openedByAgent": "Abierta por un agente",
+    "jumpTo": "Mostrar esta pestaña",
+    "jumpFailed": "No se pudo cambiar a la pestaña: {message}"
   },
   "BrowserSettings": {
     "title": "Navegador integrado",

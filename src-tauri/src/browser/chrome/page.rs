@@ -151,6 +151,17 @@ impl ChromePage {
         Ok(())
     }
 
+    /// Close the tab in Chrome. Only for a tab an agent opened: the person's
+    /// own tabs are theirs to close. The page says [`PageEvent::Gone`] once
+    /// Chrome has closed it.
+    pub fn close_target(&self) {
+        self.inner.client.send(
+            "Target.closeTarget",
+            json!({ "targetId": self.inner.target }),
+            None,
+        );
+    }
+
     /// Hand the tab back: the session ends and focus emulation with it. The
     /// tab itself stays open — it is the person's.
     pub fn detach(&self) {

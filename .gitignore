@@ -84,6 +84,7 @@ src-tauri/binaries/
 # Keep product documentation; new investigation material stays local by default.
 /docs/*
 !/docs/CLIENT-PRIVACY.md
+!/docs/agent-chrome.md
 !/docs/agents/
 !/docs/chat-channels/
 !/docs/cli.md

@@ -150,13 +150,17 @@ const HANDLE_EVENT_RETRY_BACKOFFS: &[Duration] =
 ///
 /// Final failure is logged at ERROR — this is the only signal the
 /// subscriber is dropping correctness on the floor, so it must be noisy.
+///
+/// `cached` is the worker's `CachedConn` for this connection, if any: see
+/// [`live_or_cached`].
 async fn handle_event_with_retry(
     db_conn: &DatabaseConnection,
     manager: &ConnectionManager,
     envelope: &EventEnvelope,
     broker: Option<&Arc<DelegationBroker>>,
+    cached: Option<&CachedConn>,
 ) {
-    match handle_event(db_conn, manager, envelope, broker).await {
+    match handle_event(db_conn, manager, envelope, broker, cached).await {
         Ok(()) => return,
         Err(e) => {
             tracing::warn!(
@@ -167,7 +171,7 @@ async fn handle_event_with_retry(
     }
     for (attempt, backoff) in HANDLE_EVENT_RETRY_BACKOFFS.iter().enumerate() {
         tokio::time::sleep(*backoff).await;
-        match handle_event(db_conn, manager, envelope, broker).await {
+        match handle_event(db_conn, manager, envelope, broker, cached).await {
             Ok(()) => return,
             Err(e) => {
                 let attempt_num = attempt + 2;
@@ -189,13 +193,31 @@ async fn handle_event_with_retry(
     // Given up. A turn's status write is released, so a CLI run's fallback —
     // the one other writer — may still make it.
     if matches!(envelope.payload, AcpEvent::TurnComplete { .. }) {
-        if let Some(state) = manager.get_state(&envelope.connection_id).await {
+        if let Some((state, _)) = live_or_cached(manager, &envelope.connection_id, cached).await {
             state
                 .write()
                 .await
                 .release_turn_status(envelope.seq, TurnStatusWriter::Lifecycle);
         }
     }
+}
+
+/// The connection's `(state, emitter)`: its live manager entry, else the
+/// worker's `CachedConn`. Whoever drives a connection may disconnect it the
+/// moment its turn ends — the task engine does, on the very `TurnComplete` this
+/// worker is about to handle (cowork-codeg#199) — so the manager can have
+/// dropped the entry before the worker gets to the event. Without the cache the
+/// turn's status write would be skipped, and the trailing `Disconnected` would
+/// then read the still-`InProgress` row as an interrupted turn.
+async fn live_or_cached(
+    manager: &ConnectionManager,
+    connection_id: &str,
+    cached: Option<&CachedConn>,
+) -> Option<(Arc<RwLock<SessionState>>, EventEmitter)> {
+    if let Some(live) = manager.get_state_and_emitter(connection_id).await {
+        return Some(live);
+    }
+    cached.map(|c| (c.state.clone(), c.emitter.clone()))
 }
 
 /// The conversation status a `TurnComplete` with `stop_reason` leaves the row
@@ -209,9 +231,12 @@ async fn handle_event_with_retry(
 /// CONNECTION survives (the agent rejected the prompt — with ACP's -32000 when
 /// it wants the user to sign in, with anything else when it simply would not
 /// run this one), but their turn is just as dead as the others — leaving those
-/// rows out would strand them at InProgress for good. `cancelled` is already
-/// written by `manager.cancel()` (eager CAS InProgress → Cancelled at the
-/// user-cancel entry point), so it — and any future reason — writes nothing.
+/// rows out would strand them at InProgress for good. `cancelled` — and any
+/// future reason — writes nothing here: a user's stop has already been written
+/// by `manager.cancel()` (eager CAS InProgress → Cancelled at the user-cancel
+/// entry point), and a turn the agent cancelled itself is settled by the
+/// conditional [`settle_cancelled_turn`] instead, never by this unconditional
+/// write.
 pub(crate) fn turn_complete_status(stop_reason: &str) -> Option<ConversationStatus> {
     match stop_reason {
         "end_turn" => Some(ConversationStatus::PendingReview),
@@ -250,11 +275,59 @@ pub(crate) async fn write_turn_status(
     Ok(())
 }
 
-pub(crate) async fn handle_event(
+/// A `TurnComplete{cancelled}` the user's stop did not already settle: the
+/// agent ended its own turn as cancelled — Claude Code does when the user
+/// answers a plan card with "No, keep planning" (cowork-codeg#197). Nothing
+/// else moves that row, so without this it stayed `InProgress` (sidebar
+/// "running") until the idle sweep reaped the connection. A conditional
+/// InProgress → Cancelled, the same CAS `manager.cancel()` makes: a row the
+/// user's stop already flipped, or that is `PendingReview` / `Completed`, is
+/// left alone, and so is the `ConversationStatusChanged` broadcast.
+///
+/// `next_turn_started`: the connection is already running another prompt, so
+/// the `InProgress` on the row is that prompt's, not this turn's — a stop
+/// followed straight by a new message, with this worker behind on the old
+/// turn's event. Left alone too.
+async fn settle_cancelled_turn(
+    db_conn: &DatabaseConnection,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    conversation_id: i32,
+    next_turn_started: bool,
+) -> Result<(), DbError> {
+    if next_turn_started {
+        return Ok(());
+    }
+    let changed = conversation_service::update_status_if(
+        db_conn,
+        conversation_id,
+        ConversationStatus::InProgress,
+        ConversationStatus::Cancelled,
+    )
+    .await?;
+    if changed {
+        emit_with_state(
+            state,
+            emitter,
+            AcpEvent::ConversationStatusChanged {
+                conversation_id,
+                status: ConversationStatus::Cancelled,
+            },
+        )
+        .await;
+    }
+    Ok(())
+}
+
+/// `cached` is the worker's `CachedConn` for the event's connection: the
+/// `TurnComplete` arm falls back to it when the manager no longer has the
+/// connection (see [`live_or_cached`]). The other arms only act on a live one.
+async fn handle_event(
     db_conn: &DatabaseConnection,
     manager: &ConnectionManager,
     envelope: &EventEnvelope,
     broker: Option<&Arc<DelegationBroker>>,
+    cached: Option<&CachedConn>,
 ) -> Result<(), DbError> {
     match &envelope.payload {
         // NOTE: parent-side `delegate_to_agent` tool_call_id capture used to
@@ -324,16 +397,21 @@ pub(crate) async fn handle_event(
             // would not run this one), but their turn is just as dead as the
             // others — leaving those rows out of this arm would strand them at
             // InProgress for good.
-            // `cancelled` is already written by `manager.cancel()` (eager
-            // CAS InProgress → Cancelled at the user-cancel entry point), so
-            // we leave it alone here. `completed` transitions remain
-            // frontend-driven.
+            // `cancelled` from the user's stop is already written by
+            // `manager.cancel()` (eager CAS InProgress → Cancelled at the
+            // user-cancel entry point); one the agent ended on its own gets
+            // the same conditional CAS here (`settle_cancelled_turn`).
+            // `completed` transitions remain frontend-driven.
+            //
+            // The connection may already be gone from the manager — the task
+            // engine disconnects on this same event — so fall back to the
+            // worker's cache rather than skip the write (cowork-codeg#199).
             let Some((state_arc, emitter)) =
-                manager.get_state_and_emitter(&envelope.connection_id).await
+                live_or_cached(manager, &envelope.connection_id, cached).await
             else {
                 return Ok(());
             };
-            let (conversation_id, last_text, claimed) = {
+            let (conversation_id, last_text, claimed, next_turn_started) = {
                 let mut snap = state_arc.write().await;
                 // Re-entrant for this worker: a retry of this same envelope
                 // claims again and goes on. Only a CLI run's fallback that
@@ -343,6 +421,9 @@ pub(crate) async fn handle_event(
                     snap.conversation_id,
                     snap.last_assistant_text.clone(),
                     claimed,
+                    // This turn's own flag was cleared as the event was
+                    // applied, so a set one is a later prompt's.
+                    snap.turn_in_flight,
                 )
             };
             // No conversation row bound (defensive — should never happen in
@@ -353,6 +434,10 @@ pub(crate) async fn handle_event(
             };
             if claimed {
                 write_turn_status(db_conn, &state_arc, &emitter, cid, stop_reason).await?;
+                if stop_reason == "cancelled" {
+                    settle_cancelled_turn(db_conn, &state_arc, &emitter, cid, next_turn_started)
+                        .await?;
+                }
             }
 
             // If this conversation was spawned by a delegation, resolve the
@@ -3283,7 +3368,14 @@ async fn connection_worker_loop(
                 terminal_dispatched = true;
             }
             _ => {
-                handle_event_with_retry(&db, &manager, envelope, broker.as_ref()).await;
+                handle_event_with_retry(
+                    &db,
+                    &manager,
+                    envelope,
+                    broker.as_ref(),
+                    cache.get(&connection_id),
+                )
+                .await;
             }
         }
     }
@@ -3509,7 +3601,9 @@ mod tests {
                 session_id: "ext-99".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
             .await
             .unwrap();
@@ -3551,7 +3645,9 @@ mod tests {
                     approval: approval.clone(),
                 },
             };
-            handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+            handle_event(&db.conn, &mgr, &env, None, None)
+                .await
+                .unwrap();
         }
         // The unbound connection's copy had nowhere to go.
         let kept = tool_approval_service::list_by_conversation(&db.conn, conv.id)
@@ -3587,7 +3683,9 @@ mod tests {
                 transcript_id: "new-sess".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
             .await
             .unwrap();
@@ -3601,7 +3699,9 @@ mod tests {
                 transcript_id: "newer-sess".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env2, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env2, None, None)
+            .await
+            .unwrap();
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
             .await
             .unwrap();
@@ -3636,7 +3736,9 @@ mod tests {
                 session_id: "ext-99".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
 
         // external_id persisted on the row...
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
@@ -3680,7 +3782,9 @@ mod tests {
                 title: "  Fix login flow  ".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
 
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
             .await
@@ -3728,7 +3832,7 @@ mod tests {
                 title: "agent title".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &locked_env, None)
+        handle_event(&db.conn, &mgr, &locked_env, None, None)
             .await
             .unwrap();
         let unbound_env = EventEnvelope {
@@ -3738,7 +3842,7 @@ mod tests {
                 title: "should not land anywhere".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &unbound_env, None)
+        handle_event(&db.conn, &mgr, &unbound_env, None, None)
             .await
             .unwrap();
 
@@ -3799,7 +3903,9 @@ mod tests {
                 session_id: "session-S2".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
 
         // The deleted row is untouched: still deleted, still S1, same updated_at.
         let after = conversation::Entity::find_by_id(conv.id)
@@ -3847,7 +3953,9 @@ mod tests {
                 session_id: "should-not-write".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
 
         // Sentinel row must still have no external_id — dispatcher correctly
         // skipped the write because the connection had no conversation_id.
@@ -3909,7 +4017,9 @@ mod tests {
                 agent_type: "claude_code".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
         assert_eq!(
             read_row_status(&db, conv.id).await,
             ConversationStatus::PendingReview
@@ -3950,7 +4060,9 @@ mod tests {
         conversation_service::update_status(&db.conn, conv.id, ConversationStatus::Completed)
             .await
             .unwrap();
-        handle_event(&db.conn, &mgr, &turn(7), None).await.unwrap();
+        handle_event(&db.conn, &mgr, &turn(7), None, None)
+            .await
+            .unwrap();
         assert_eq!(
             read_row_status(&db, conv.id).await,
             ConversationStatus::Completed,
@@ -3958,7 +4070,9 @@ mod tests {
         );
 
         // The next turn is the worker's again, retries included.
-        handle_event(&db.conn, &mgr, &turn(9), None).await.unwrap();
+        handle_event(&db.conn, &mgr, &turn(9), None, None)
+            .await
+            .unwrap();
         assert_eq!(
             read_row_status(&db, conv.id).await,
             ConversationStatus::PendingReview
@@ -3966,7 +4080,9 @@ mod tests {
         conversation_service::update_status(&db.conn, conv.id, ConversationStatus::InProgress)
             .await
             .unwrap();
-        handle_event(&db.conn, &mgr, &turn(9), None).await.unwrap();
+        handle_event(&db.conn, &mgr, &turn(9), None, None)
+            .await
+            .unwrap();
         assert_eq!(
             read_row_status(&db, conv.id).await,
             ConversationStatus::PendingReview,
@@ -4002,7 +4118,7 @@ mod tests {
         // Every attempt fails.
         db.conn.clone().close().await.unwrap();
 
-        handle_event_with_retry(&db.conn, &mgr, &turn, None).await;
+        handle_event_with_retry(&db.conn, &mgr, &turn, None, None).await;
 
         assert!(
             state
@@ -4071,7 +4187,9 @@ mod tests {
                     agent_type: "open_code".into(),
                 },
             };
-            handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+            handle_event(&db.conn, &mgr, &env, None, None)
+                .await
+                .unwrap();
             assert_eq!(
                 read_row_status(&db, conv.id).await,
                 ConversationStatus::Cancelled,
@@ -4080,11 +4198,38 @@ mod tests {
         }
     }
 
+    fn turn_complete(seq: u64, stop_reason: &str) -> EventEnvelope {
+        EventEnvelope {
+            seq,
+            connection_id: "c1".to_string(),
+            payload: AcpEvent::TurnComplete {
+                session_id: "ext-1".into(),
+                stop_reason: stop_reason.into(),
+                agent_type: "claude_code".into(),
+            },
+        }
+    }
+
+    /// The `ConversationStatusChanged` statuses waiting on a connection's
+    /// stream, in order.
+    fn drain_status_changes(
+        rx: &mut tokio::sync::broadcast::Receiver<Arc<EventEnvelope>>,
+    ) -> Vec<ConversationStatus> {
+        let mut out = Vec::new();
+        while let Ok(env) = rx.try_recv() {
+            if let AcpEvent::ConversationStatusChanged { status, .. } = &env.payload {
+                out.push(status.clone());
+            }
+        }
+        out
+    }
+
+    /// cowork-codeg#197: the agent ended its own turn as cancelled (Claude
+    /// Code does when a plan card is answered "No, keep planning"), so no
+    /// `manager.cancel()` flipped the row first. It must not strand at
+    /// InProgress — the sidebar would show the chat as running for good.
     #[tokio::test]
-    async fn handle_event_skips_write_on_cancelled_stop_reason() {
-        // `cancelled` is already written by `manager.cancel()` (eager CAS
-        // InProgress → Cancelled at the user-cancel entry point), so the
-        // TurnComplete arm must not double-write.
+    async fn handle_event_settles_a_turn_the_agent_cancelled() {
         let db = test_helpers::fresh_in_memory_db().await;
         let folder_id = test_helpers::seed_folder(&db, "/tmp/turn-cancelled").await;
         let conv =
@@ -4093,27 +4238,178 @@ mod tests {
                 .unwrap();
 
         let mgr = ConnectionManager::new();
-        {
-            let mut map = mgr.connections.lock().await;
-            map.insert(
-                "c1".to_string(),
-                fake_connection_with_state("c1", Some(conv.id)),
-            );
-        }
-        let env = EventEnvelope {
-            seq: 1,
-            connection_id: "c1".to_string(),
-            payload: AcpEvent::TurnComplete {
-                session_id: "ext-1".into(),
-                stop_reason: "cancelled".into(),
-                agent_type: "claude_code".into(),
-            },
-        };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        let conn = fake_connection_with_state("c1", Some(conv.id));
+        let mut rx = conn.state.read().await.event_stream().subscribe();
+        mgr.connections.lock().await.insert("c1".to_string(), conn);
+
+        handle_event(&db.conn, &mgr, &turn_complete(1, "cancelled"), None, None)
+            .await
+            .unwrap();
         assert_eq!(
             read_row_status(&db, conv.id).await,
-            ConversationStatus::InProgress,
-            "TurnComplete{{cancelled}} must not overwrite the row — user-cancel path owns it"
+            ConversationStatus::Cancelled
+        );
+        assert_eq!(
+            drain_status_changes(&mut rx),
+            vec![ConversationStatus::Cancelled],
+            "the sidebar learns the turn is over"
+        );
+    }
+
+    /// The `cancelled` write is conditional: a row the user's stop already
+    /// flipped (`manager.cancel()`), or one that reached review or was marked
+    /// done, keeps its status and is not re-announced.
+    #[tokio::test]
+    async fn handle_event_cancelled_turn_leaves_a_settled_row_alone() {
+        for settled in [
+            ConversationStatus::Cancelled,
+            ConversationStatus::PendingReview,
+            ConversationStatus::Completed,
+        ] {
+            let db = test_helpers::fresh_in_memory_db().await;
+            let folder_id = test_helpers::seed_folder(&db, "/tmp/turn-cancelled-settled").await;
+            let conv = conversation_service::create(
+                &db.conn,
+                folder_id,
+                AgentType::ClaudeCode,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            conversation_service::update_status(&db.conn, conv.id, settled.clone())
+                .await
+                .unwrap();
+
+            let mgr = ConnectionManager::new();
+            let conn = fake_connection_with_state("c1", Some(conv.id));
+            let mut rx = conn.state.read().await.event_stream().subscribe();
+            mgr.connections.lock().await.insert("c1".to_string(), conn);
+
+            handle_event(&db.conn, &mgr, &turn_complete(1, "cancelled"), None, None)
+                .await
+                .unwrap();
+            assert_eq!(read_row_status(&db, conv.id).await, settled);
+            assert!(
+                drain_status_changes(&mut rx).is_empty(),
+                "{settled:?}: nothing changed, nothing to announce"
+            );
+        }
+    }
+
+    /// A stop followed straight by a new message: by the time the worker gets
+    /// the old turn's `TurnComplete{cancelled}`, the row's InProgress is the
+    /// new prompt's. Settling it would mark a running turn as interrupted.
+    #[tokio::test]
+    async fn handle_event_cancelled_turn_spares_the_next_prompt() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/turn-cancelled-next").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection_with_state("c1", Some(conv.id));
+        conn.state.write().await.turn_in_flight = true;
+        mgr.connections.lock().await.insert("c1".to_string(), conn);
+
+        handle_event(&db.conn, &mgr, &turn_complete(1, "cancelled"), None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_row_status(&db, conv.id).await,
+            ConversationStatus::InProgress
+        );
+    }
+
+    /// cowork-codeg#199: the task engine disconnects a task's connection on
+    /// the same `TurnComplete` the worker is about to handle, so the manager
+    /// may no longer have it. The worker's cache stands in: the turn still
+    /// writes PendingReview, and the trailing `Disconnected` (InProgress →
+    /// Cancelled CAS) then leaves it be — not the red "turn unfinished" mark.
+    #[tokio::test]
+    async fn turn_complete_after_the_connection_left_the_manager_writes_through_the_cache() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/turn-cached").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection_with_state("c1", Some(conv.id));
+        let mut rx = conn.state.read().await.event_stream().subscribe();
+        mgr.connections.lock().await.insert("c1".to_string(), conn);
+        let mut cache: HashMap<String, CachedConn> = HashMap::new();
+        seed_cache(&mut cache, &mgr, "c1", conv.id).await;
+        // The engine's disconnect lands before the worker reads the event.
+        mgr.connections.lock().await.remove("c1");
+
+        handle_event(
+            &db.conn,
+            &mgr,
+            &turn_complete(1, "end_turn"),
+            None,
+            cache.get("c1"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            read_row_status(&db, conv.id).await,
+            ConversationStatus::PendingReview
+        );
+        assert_eq!(
+            drain_status_changes(&mut rx),
+            vec![ConversationStatus::PendingReview]
+        );
+
+        handle_terminal_event(&db.conn, &mut cache, "c1")
+            .await
+            .unwrap();
+        assert_eq!(
+            read_row_status(&db, conv.id).await,
+            ConversationStatus::PendingReview,
+            "the disconnect after a finished turn is not an interruption"
+        );
+    }
+
+    /// The give-up path releases the turn through the cache too, so a CLI
+    /// run's fallback can still write a turn whose connection already left
+    /// the manager.
+    #[tokio::test]
+    async fn a_turn_the_worker_gives_up_on_is_released_through_the_cache() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/turn-cached-given-up").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection_with_state("c1", Some(conv.id));
+        let state = conn.state.clone();
+        mgr.connections.lock().await.insert("c1".to_string(), conn);
+        let mut cache: HashMap<String, CachedConn> = HashMap::new();
+        seed_cache(&mut cache, &mgr, "c1", conv.id).await;
+        mgr.connections.lock().await.remove("c1");
+        // Every attempt fails.
+        db.conn.clone().close().await.unwrap();
+
+        handle_event_with_retry(
+            &db.conn,
+            &mgr,
+            &turn_complete(4, "end_turn"),
+            None,
+            cache.get("c1"),
+        )
+        .await;
+
+        assert!(
+            state
+                .write()
+                .await
+                .claim_turn_status(4, TurnStatusWriter::CliFallback),
+            "the worker let go of the turn it could not write"
         );
     }
 
@@ -4143,7 +4439,9 @@ mod tests {
                 agent_type: "claude_code".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
         assert_eq!(
             read_row_status(&db, sentinel.id).await,
             ConversationStatus::InProgress,
@@ -4388,7 +4686,9 @@ mod tests {
             connection_id: "c1".to_string(),
             payload: AcpEvent::ContentDelta { text: "hi".into(), parent_tool_use_id: None },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
 
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
             .await
@@ -5301,9 +5601,15 @@ mod tests {
 
         // The parent's turn still runs: it collects the result itself.
         let before = parent_updated_at().await;
-        handle_event(&db.conn, &mgr, &child_turn(1, "end_turn"), Some(&broker))
-            .await
-            .unwrap();
+        handle_event(
+            &db.conn,
+            &mgr,
+            &child_turn(1, "end_turn"),
+            Some(&broker),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             parent_updated_at().await,
             before,
@@ -5316,18 +5622,30 @@ mod tests {
             .unwrap();
         let before = parent_updated_at().await;
         tokio::time::sleep(Duration::from_millis(5)).await;
-        handle_event(&db.conn, &mgr, &child_turn(2, "cancelled"), Some(&broker))
-            .await
-            .unwrap();
+        handle_event(
+            &db.conn,
+            &mgr,
+            &child_turn(2, "cancelled"),
+            Some(&broker),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             parent_updated_at().await,
             before,
             "a sub-agent the user cancelled is not news"
         );
 
-        handle_event(&db.conn, &mgr, &child_turn(3, "end_turn"), Some(&broker))
-            .await
-            .unwrap();
+        handle_event(
+            &db.conn,
+            &mgr,
+            &child_turn(3, "end_turn"),
+            Some(&broker),
+            None,
+        )
+        .await
+        .unwrap();
         assert!(
             parent_updated_at().await > before,
             "a sub-agent done after its parent's turn marks the parent unread"

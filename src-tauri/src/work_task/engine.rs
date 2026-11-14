@@ -10600,6 +10600,106 @@ mod tests {
         }
     }
 
+    /// cowork-codeg#199: the engine disconnects a task's connection the moment
+    /// its turn ends — on the same `TurnComplete` the lifecycle worker writes
+    /// the conversation's status from. The worker reaching the event after
+    /// the connection left the manager must still record the finished turn,
+    /// or the `Disconnected` right behind it reads the row as interrupted and
+    /// the sidebar shows a task that went to review as "turn unfinished".
+    #[tokio::test]
+    async fn a_task_turn_that_ends_well_leaves_its_conversation_pending_review() {
+        let (engine, task_id) = running_task().await;
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        let conv_id = task.conversation_id.expect("task conversation");
+        engine
+            .manager
+            .insert_test_connection(PARENT_CONN, AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        engine
+            .manager
+            .get_state(PARENT_CONN)
+            .await
+            .expect("connection state")
+            .write()
+            .await
+            .conversation_id = Some(conv_id);
+
+        let bus = Arc::new(InternalEventBus::new(Default::default()));
+        let lifecycle = tokio::spawn(crate::acp::lifecycle_subscriber_task(
+            engine.db.conn.clone(),
+            engine.manager.clone_ref(),
+            bus.clone(),
+            None,
+        ));
+        // The prompt's link, as `send_prompt_linked` announces it, then a
+        // `SessionStarted` whose write shows the worker is past the link.
+        bus.send(Arc::new(env(
+            PARENT_CONN,
+            AcpEvent::ConversationLinked {
+                conversation_id: conv_id,
+                folder_id: task.folder_id,
+                parent_conversation_id: None,
+                parent_tool_use_id: None,
+            },
+        )));
+        bus.send(Arc::new(env(
+            PARENT_CONN,
+            AcpEvent::SessionStarted {
+                session_id: "sess-199".into(),
+            },
+        )));
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while conversation_service::get_by_id(&engine.db.conn, conv_id)
+            .await
+            .expect("conversation")
+            .external_id
+            .as_deref()
+            != Some("sess-199")
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker never got the link"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // The engine wins the race: it settles the task and disconnects
+        // before the worker reads the same `TurnComplete`.
+        let turn = turn_complete_envelope(PARENT_CONN, 2, "end_turn");
+        engine.on_event(&turn).await;
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::Review);
+        assert!(
+            engine.manager.get_state(PARENT_CONN).await.is_none(),
+            "the engine let the connection go"
+        );
+        bus.send(Arc::new(turn));
+        bus.send(Arc::new(env(
+            PARENT_CONN,
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Disconnected,
+            },
+        )));
+        drop(bus);
+        let _ = lifecycle.await;
+
+        // The worker drains after the dispatcher exits; wait out both events.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut status = engine.conversation_status(conv_id).await;
+        while status == Some(ConversationStatus::InProgress) && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            status = engine.conversation_status(conv_id).await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            engine.conversation_status(conv_id).await,
+            Some(ConversationStatus::PendingReview),
+            "a task turn that went to review is not an interrupted one"
+        );
+    }
+
     /// #538: pre-prompt compaction runs on the same connection the work turn
     /// then uses. Its `TurnComplete` is fenced, but a lagging `Error` (or a
     /// failed compaction tool call) is dequeued only after launch has indexed

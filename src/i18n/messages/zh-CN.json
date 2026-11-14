@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "我自己的 Chrome",
-    "description": "让智能体在你平时用的 Chrome 里干活，那里的网站你都已经登录了。试验功能：目前只能连接，智能体还不能读取或操作 Chrome 里的页面。",
+    "description": "让智能体在你平时用的 Chrome 里干活，那里的网站你都已经登录了。试验功能：目前只能连接，并在窗口右下角列出 Chrome 开着的网页；智能体还看不到、也不能读取或操作 Chrome 里的页面。",
     "statusDisconnected": "未连接",
     "statusWaiting": "等你在 Chrome 里点「允许」…",
     "statusConnected": "已连接",
@@ -5853,7 +5853,13 @@
     "pasteConnect": "连接",
     "copied": "已复制",
     "copyFailed": "复制失败",
-    "failed": "连接 Chrome 出错：{message}"
+    "failed": "连接 Chrome 出错：{message}",
+    "experimental": "试验",
+    "tabsTitle": "Chrome 里开着的网页：{count}",
+    "tabsHidden": "这个列表只有你看得到，智能体看不到这些标签。把标签交给智能体，以后的版本才有。",
+    "tabsEmpty": "Chrome 里没有开着的网页。",
+    "openSettings": "Chrome 设置",
+    "panelNeedsSettings": "dodoer 找不到该连到 Chrome 的哪里。点下面的「Chrome 设置」看怎么办。"
   },
   "BrowserSettings": {
     "title": "内置浏览器",

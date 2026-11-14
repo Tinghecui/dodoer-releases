@@ -1,6 +1,6 @@
 # 智能体接管用户日常用的 Chrome
 
-状态：方向已定（2026-11-14，用户）；第 10 节的真机实测做了三轮，这条路走得通。第 1 步（连接）已写，见第 7 节；Chrome 的标签还没接进来，智能体还用不了。
+状态：方向已定（2026-11-14，用户）；第 10 节的真机实测做了三轮，这条路走得通。第 1 步（连接）已合并，第 2 步（面板里列出 Chrome 的标签）已写，见第 7 节；智能体还碰不到 Chrome 的标签。
 
 ## 1. 问题
 
@@ -70,13 +70,18 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 
 ### 5.2 Chrome 的标签怎么进 dodoer
 
+分两层（第 2 步写的时候定的，原来的写法是所有标签都进注册表）：
+
+- **列表**（`browser/chrome/tabs.rs`，第 2 步）：连上后 `Target.setDiscoverTargets`，Chrome 里每个 `page` 类型、地址是 http(s) 的 target 记一项，给面板看。只记标题和主机名往外发，路径和查询串不出后端（登录链接、令牌在那里）。每项一个 dodoer 自己发的 uuid，CDP 的 target id 不出后端。不 attach、不开任何 CDP 域，页面察觉不到。**这一层不进 `BrowserRegistry`**：智能体的工具都从注册表取标签，没进注册表的标签它们连编号都拿不到，比在 `browser_list_tabs` 里加一道过滤牢靠（查代码时发现现在的 `summarize_tab` 会把没共享的标签连域名一起列给本机智能体）。
+- **注册表**（第 3 步起）：用户把标签交给智能体、或者智能体自己开了标签，这个标签才登记进 `BrowserRegistry`，下面几条说的是它：
+
 - `BrowserSurface` 加一种 `External(ExternalHandle)`，`SurfaceKind` 加 `external`。`ExternalHandle` 里是 CDP 的 target id 和 session。内嵌 webview 才有的操作（位置、显示隐藏、缩放、冻结画面、查找）对它是空操作。
-- 连上后 `Target.setDiscoverTargets`：Chrome 里每个 `page` 类型的 target 登记成一个标签。标签 id 是 dodoer 自己发的 uuid，和内置标签一个样子，CDP 的 target id 不出 dodoer。
+- 登记时沿用列表里那个 uuid 当标签 id，和内置标签一个样子。
 - 每个标签记一个来源：**智能体开的**（经 `browser_open_tab` 建的）还是 **用户开的**（其余全部）。
 - 状态同步：`Page.frameNavigated`（主框架）、`Page.loadEventFired`、`Target.targetInfoChanged` 更新 `BrowserTabState` 的 `url` / `origin` / `title` / `loading`，走 `browser/hooks.rs` 里内置标签用的同一组函数。
 - `owner_window` 填固定的 `chrome`：它不属于任何 dodoer 窗口。
-- **只接要用的标签**：没共享的用户标签只登记、不 attach，不在它上面开任何 CDP 域，对那个页面没有任何影响；共享了才 attach。
-- `browser_list_tabs`：**用户开的、没共享的标签不列出来**（内置浏览器会列出域名，但那里的标签本来就是给工作用的；用户日常 Chrome 里开着什么网站不该让智能体知道）。列出来的每一项加一个可选字段 `browser: "chrome"`。老服务器不认识这个字段，会丢掉，不影响别的。
+- **只接要用的标签**：没共享的用户标签只在列表里、不进注册表、不 attach，不在它上面开任何 CDP 域，对那个页面没有任何影响；共享了才登记、才 attach。共享收回时从注册表里拿掉。
+- `browser_list_tabs`：**用户开的、没共享的标签不列出来**（内置浏览器会列出域名，但那里的标签本来就是给工作用的；用户日常 Chrome 里开着什么网站不该让智能体知道）。按上面的分层，它们本来就不在注册表里。列出来的每一项加一个可选字段 `browser: "chrome"`。老服务器不认识这个字段，会丢掉，不影响别的。
 
 ### 5.3 读和操作
 
@@ -138,7 +143,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 ### 5.9 界面
 
 - **设置 → 浏览器**加一节「Chrome」：两步说明、「连接 Chrome」/「断开」、连接状态、敏感网站名单、新标签开在哪、「在 Chrome 里执行代码」、「也借给远端工作区」。
-- **面板**：工作区右上角浏览器入口旁，列 Chrome 的标签（智能体开的 / 用户共享的 / 用户没共享的三组）、每个标签的共享级别、「交给智能体」「停止共享」「跳到这个标签」、活动记录，顶上是连接状态和「暂停」。
+- **面板**：底部状态栏右半边的 Chrome 图标（用户 2026-11-14 定的；原来写的「工作区右上角浏览器入口」现在的界面上没有）。图标颜色就是连接状态：绿 = 已连接，闪 = 等 Chrome 里点允许，灰 = 未连接。这台电脑连上过一次之后才出现，第一次连接从设置页开始（那里有两步说明）。点开是弹出面板，列 Chrome 的标签（智能体开的 / 用户共享的 / 用户没共享的三组）、每个标签的共享级别、「交给智能体」「停止共享」「跳到这个标签」、活动记录，顶上是连接状态和「暂停」。
 - 十种语言的文案都要加。
 
 ## 6. 安全
@@ -162,8 +167,13 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
    - 设置 → 内置浏览器里多一张卡片「我自己的 Chrome」（`src/components/settings/chrome-connect-settings.tsx`）：两步说明、连接 / 取消 / 断开、每种原因各一句该怎么办；读不到文件时出现「粘贴地址来连接」一行和「打开系统设置」。卡片上写明是试验功能、现在只能连接。管理员关掉内置浏览器时不显示。
    - 这个模块在服务器版里也编译（它不碰 webview）：CI 对桌面版只做类型检查，测试只在服务器版那一格跑，不这样它的测试就没人跑。服务器版里没有任何东西调用它。
    - 「标签能不能收在同一个窗口」「什么情况下收得到真点击」没有放进产品代码里试，加在实测脚本里了（第 10 节），不用等桌面包。
-2. **标签进注册表**。`BrowserSurface::External`、target 发现、来源标记、状态同步；面板列出标签。验收：智能体的 `browser_list_tabs` 里还看不到任何 Chrome 标签（都没共享），面板里看得到。
-3. **读和操作**。隔离 world 里跑 bundle、真点击、控制台、截图、开 / 跳转 / 关标签、页面对话框；面板里「交给智能体」。验收：本机智能体能读、能填用户共享的标签。
+2. **面板里列出 Chrome 的标签**。已写。
+   - `browser/chrome/tabs.rs`：`Target.setDiscoverTargets` 跟着 Chrome 的标签走（开、关、换网页、改标题），只留 http(s) 的网页，按打开的先后排；漏了事件（`broadcast` 落后）就用 `Target.getTargets` 整个重来，标签的编号不变。往外只给 `{ id, title, host }`。
+   - `link.rs`：连上后在同一个任务里跟标签，连接断了或用户断开就把列表清空（清空在状态变成「未连接」之前，听到「未连接」的人不会看到旧标签）。新命令 `browser_chrome_tabs`，变化时发 `browser://chrome-tabs`。
+   - 底部状态栏的 Chrome 图标和面板（`src/components/layout/status-bar-chrome.tsx`）：连接状态、连接 / 取消 / 断开、Chrome 里开着的网页（标题和主机名），写明「只有你看得到，智能体看不到」；连不上时简短说原因，要看步骤或粘贴地址的转到设置页。
+   - 没做：「来源」标记（谁开的）。第 2 步里所有标签都是用户开的，等第 3、4 步智能体能开标签了再加。原来写的 `BrowserSurface::External`、状态同步挪到第 3 步，见 5.2 的分层。
+   - 验收：面板里的标签和 Chrome 对得上，在 Chrome 里开、关、换网页面板跟着变；本机智能体 `browser_list_tabs` 看不到任何 Chrome 标签；退出 Chrome 面板变成未连接、列表清空。
+3. **读和操作**。`BrowserSurface::External`、交出去的标签登记进注册表和状态同步（5.2），隔离 world 里跑 bundle、真点击、控制台、截图、开 / 跳转 / 关标签、页面对话框；面板里「交给智能体」。验收：本机智能体能读、能填用户共享的标签。
 4. **共享规则和人接手**。智能体开的标签自动共享、单独窗口（做法见 5.6）、敏感网站名单、暂停、跳到标签、「新标签开在哪」、Chrome 的执行代码开关。
 5. **借给远端和收尾**。`scoped` 的范围规则、连接状态变了重新注册；`COWORK.md` 改动清单，本文档按实现更新。
 

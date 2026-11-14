@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "Votre propre Chrome",
-    "description": "Permet aux agents de travailler dans le Chrome que vous utilisez tous les jours, où vous êtes déjà connecté. Expérimental : pour l’instant, seule la connexion est établie — les agents ne peuvent encore rien lire ni manipuler dans Chrome.",
+    "description": "Permet aux agents de travailler dans le Chrome que vous utilisez tous les jours, où vous êtes déjà connecté. Expérimental : pour l’instant, dodoer se connecte seulement et liste les pages web ouvertes dans Chrome, en bas à droite de la fenêtre — les agents ne peuvent encore rien voir, lire ni manipuler dans Chrome.",
     "statusDisconnected": "Non connecté",
     "statusWaiting": "En attente de votre clic sur Autoriser dans Chrome…",
     "statusConnected": "Connecté",
@@ -5853,7 +5853,13 @@
     "pasteConnect": "Se connecter",
     "copied": "Copié",
     "copyFailed": "Copie impossible",
-    "failed": "Échec de la connexion à Chrome : {message}"
+    "failed": "Échec de la connexion à Chrome : {message}",
+    "experimental": "Expérimental",
+    "tabsTitle": "Ouvertes dans Chrome : {count}",
+    "tabsHidden": "Vous seul voyez cette liste ; les agents ne voient pas ces onglets. Confier un onglet à un agent arrivera dans une version ultérieure.",
+    "tabsEmpty": "Aucune page web n’est ouverte dans Chrome.",
+    "openSettings": "Réglages de Chrome",
+    "panelNeedsSettings": "dodoer n’a pas trouvé où se connecter à Chrome. Ouvrez les réglages de Chrome ci-dessous pour savoir quoi faire."
   },
   "BrowserSettings": {
     "title": "Navigateur intégré",

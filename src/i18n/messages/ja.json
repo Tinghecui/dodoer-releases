@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "自分の Chrome",
-    "description": "ふだん使っている Chrome でエージェントに作業させます。そこではすでに各サイトにログインしています。試験的な機能：いまは接続だけで、エージェントは Chrome のページをまだ読むことも操作することもできません。",
+    "description": "ふだん使っている Chrome でエージェントに作業させます。そこではすでに各サイトにログインしています。試験的な機能：いまは接続して、Chrome で開いているウェブページをウィンドウ右下に一覧表示するだけです。エージェントは Chrome のページをまだ見ることも、読むことも、操作することもできません。",
     "statusDisconnected": "未接続",
     "statusWaiting": "Chrome で「許可」をクリックするのを待っています…",
     "statusConnected": "接続済み",
@@ -5853,7 +5853,13 @@
     "pasteConnect": "接続",
     "copied": "コピーしました",
     "copyFailed": "コピーできませんでした",
-    "failed": "Chrome への接続でエラーが発生しました：{message}"
+    "failed": "Chrome への接続でエラーが発生しました：{message}",
+    "experimental": "試験的",
+    "tabsTitle": "Chrome で開いているページ：{count}",
+    "tabsHidden": "この一覧はあなたにだけ表示され、エージェントにはこれらのタブは見えません。タブをエージェントに渡す機能は今後のバージョンで追加されます。",
+    "tabsEmpty": "Chrome で開いているウェブページはありません。",
+    "openSettings": "Chrome の設定",
+    "panelNeedsSettings": "dodoer は Chrome の接続先を見つけられませんでした。下の「Chrome の設定」で対処方法を確認してください。"
   },
   "BrowserSettings": {
     "title": "内蔵ブラウザ",

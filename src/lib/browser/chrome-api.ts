@@ -34,7 +34,20 @@ export interface ChromeStatus {
   portFileUrl: string | null
 }
 
+/** One web page open in the connected Chrome. Mirrors `ChromeTab` in
+ *  `src-tauri/src/browser/chrome/tabs.rs`: a title and a host name, never the
+ *  full address. What the person has open is theirs to see; no agent is
+ *  told of these tabs. */
+export interface ChromeTab {
+  /** The app's own name for the tab. */
+  id: string
+  title: string
+  host: string
+}
+
 export const CHROME_STATUS_EVENT = "browser://chrome"
+
+export const CHROME_TABS_EVENT = "browser://chrome-tabs"
 
 /** Where the switch is. Chrome opens `chrome://` addresses only when they are
  *  typed or pasted into its own address bar, so this is copied, never opened. */
@@ -56,6 +69,11 @@ export function chromeConnect(endpoint?: string): Promise<ChromeStatus> {
   })
 }
 
+/** The connected Chrome's web pages, oldest first; empty when not connected. */
+export function chromeTabs(): Promise<ChromeTab[]> {
+  return getShellTransport().call<ChromeTab[]>("browser_chrome_tabs")
+}
+
 /** End the connection, or the attempt at one. */
 export function chromeDisconnect(): Promise<ChromeStatus> {
   return getShellTransport().call<ChromeStatus>("browser_chrome_disconnect")
@@ -75,4 +93,11 @@ export function subscribeChromeStatus(
     CHROME_STATUS_EVENT,
     handler
   )
+}
+
+/** Every change of the tab list, emptied when the connection ends. */
+export function subscribeChromeTabs(
+  handler: (tabs: ChromeTab[]) => void
+): Promise<UnsubscribeFn> {
+  return getShellTransport().subscribe<ChromeTab[]>(CHROME_TABS_EVENT, handler)
 }

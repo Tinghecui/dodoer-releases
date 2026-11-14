@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "내 Chrome",
-    "description": "평소에 쓰는 Chrome에서 에이전트가 작업하게 합니다. 그곳에는 이미 여러 사이트에 로그인되어 있습니다. 실험 기능: 지금은 연결만 되며, 에이전트는 아직 Chrome의 페이지를 읽거나 조작할 수 없습니다.",
+    "description": "평소에 쓰는 Chrome에서 에이전트가 작업하게 합니다. 그곳에는 이미 여러 사이트에 로그인되어 있습니다. 실험 기능: 지금은 연결하고 Chrome에 열린 웹 페이지를 창 오른쪽 아래에 보여 주기만 합니다. 에이전트는 아직 Chrome의 페이지를 보거나 읽거나 조작할 수 없습니다.",
     "statusDisconnected": "연결되지 않음",
     "statusWaiting": "Chrome에서 「허용」을 클릭하기를 기다리는 중…",
     "statusConnected": "연결됨",
@@ -5853,7 +5853,13 @@
     "pasteConnect": "연결",
     "copied": "복사됨",
     "copyFailed": "복사하지 못했습니다",
-    "failed": "Chrome 연결 중 오류가 발생했습니다: {message}"
+    "failed": "Chrome 연결 중 오류가 발생했습니다: {message}",
+    "experimental": "실험",
+    "tabsTitle": "Chrome에 열린 페이지: {count}",
+    "tabsHidden": "이 목록은 나만 볼 수 있으며, 에이전트는 이 탭들을 볼 수 없습니다. 탭을 에이전트에게 넘기는 기능은 이후 버전에서 제공됩니다.",
+    "tabsEmpty": "Chrome에 열린 웹 페이지가 없습니다.",
+    "openSettings": "Chrome 설정",
+    "panelNeedsSettings": "dodoer가 Chrome에 연결할 곳을 찾지 못했습니다. 아래의 Chrome 설정에서 방법을 확인하세요."
   },
   "BrowserSettings": {
     "title": "내장 브라우저",

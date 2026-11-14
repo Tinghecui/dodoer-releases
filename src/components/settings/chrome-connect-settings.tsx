@@ -37,7 +37,8 @@ import {
 import { copyTextToClipboard } from "@/lib/utils"
 
 // Literal message keys per problem — next-intl only resolves literal keys.
-const PROBLEM_KEYS = {
+// The status bar's Chrome panel says the same.
+export const PROBLEM_KEYS = {
   "switch-off": "problemSwitchOff",
   "file-denied": "problemFileDenied",
   "file-unreadable": "problemFileUnreadable",
@@ -51,7 +52,7 @@ const PROBLEM_KEYS = {
 /** The problems whose way out is an endpoint the person copies by hand:
  *  the app could not read where Chrome listens, or what they pasted last
  *  time was not it. */
-const NEEDS_PASTE: ReadonlySet<ChromeProblem> = new Set([
+export const NEEDS_PASTE: ReadonlySet<ChromeProblem> = new Set([
   "file-denied",
   "file-unreadable",
   "bad-endpoint",

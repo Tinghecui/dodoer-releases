@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "Dein eigenes Chrome",
-    "description": "Lässt Agenten in dem Chrome arbeiten, das du täglich benutzt und in dem du bereits angemeldet bist. Experimentell: Vorerst wird nur die Verbindung hergestellt – Agenten können in Chrome noch nichts lesen oder bedienen.",
+    "description": "Lässt Agenten in dem Chrome arbeiten, das du täglich benutzt und in dem du bereits angemeldet bist. Experimentell: Vorerst verbindet sich dodoer nur und zeigt unten rechts im Fenster, welche Webseiten in Chrome offen sind – Agenten können in Chrome noch nichts sehen, lesen oder bedienen.",
     "statusDisconnected": "Nicht verbunden",
     "statusWaiting": "Warte darauf, dass du in Chrome auf „Zulassen“ klickst…",
     "statusConnected": "Verbunden",
@@ -5853,7 +5853,13 @@
     "pasteConnect": "Verbinden",
     "copied": "Kopiert",
     "copyFailed": "Kopieren fehlgeschlagen",
-    "failed": "Verbindung mit Chrome fehlgeschlagen: {message}"
+    "failed": "Verbindung mit Chrome fehlgeschlagen: {message}",
+    "experimental": "Experimentell",
+    "tabsTitle": "In Chrome geöffnet: {count}",
+    "tabsHidden": "Nur du siehst diese Liste; Agenten sehen diese Tabs nicht. Einen Tab an einen Agenten übergeben kommt in einer späteren Version.",
+    "tabsEmpty": "In Chrome sind keine Webseiten geöffnet.",
+    "openSettings": "Chrome-Einstellungen",
+    "panelNeedsSettings": "dodoer hat nicht gefunden, wo es sich mit Chrome verbinden soll. Öffne unten die Chrome-Einstellungen, um zu sehen, was zu tun ist."
   },
   "BrowserSettings": {
     "title": "Integrierter Browser",

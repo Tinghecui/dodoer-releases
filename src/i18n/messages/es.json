@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "Tu propio Chrome",
-    "description": "Permite que los agentes trabajen en el Chrome que usas a diario, donde ya has iniciado sesión. Experimental: por ahora solo establece la conexión; los agentes aún no pueden leer ni actuar sobre nada en Chrome.",
+    "description": "Permite que los agentes trabajen en el Chrome que usas a diario, donde ya has iniciado sesión. Experimental: por ahora dodoer solo se conecta y muestra las páginas web abiertas en Chrome, abajo a la derecha de la ventana; los agentes aún no pueden ver, leer ni actuar sobre nada en Chrome.",
     "statusDisconnected": "Sin conexión",
     "statusWaiting": "Esperando a que hagas clic en Permitir en Chrome…",
     "statusConnected": "Conectado",
@@ -5853,7 +5853,13 @@
     "pasteConnect": "Conectar",
     "copied": "Copiado",
     "copyFailed": "No se pudo copiar",
-    "failed": "Error al conectar con Chrome: {message}"
+    "failed": "Error al conectar con Chrome: {message}",
+    "experimental": "Experimental",
+    "tabsTitle": "Abiertas en Chrome: {count}",
+    "tabsHidden": "Solo tú ves esta lista; los agentes no ven estas pestañas. Pasar una pestaña a un agente llegará en una versión posterior.",
+    "tabsEmpty": "No hay páginas web abiertas en Chrome.",
+    "openSettings": "Ajustes de Chrome",
+    "panelNeedsSettings": "dodoer no encontró dónde conectarse a Chrome. Abre los ajustes de Chrome de abajo para ver qué hacer."
   },
   "BrowserSettings": {
     "title": "Navegador integrado",

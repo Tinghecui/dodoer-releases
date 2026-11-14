@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "Your own Chrome",
-    "description": "Lets agents work in the Chrome you use every day, where you are already signed in. Experimental: for now this only makes the connection — agents cannot read or act on anything in Chrome yet.",
+    "description": "Lets agents work in the Chrome you use every day, where you are already signed in. Experimental: for now dodoer only connects and lists the web pages Chrome has open, at the bottom right of the window — agents cannot see, read or act on anything in Chrome yet.",
     "statusDisconnected": "Not connected",
     "statusWaiting": "Waiting for you to click Allow in Chrome…",
     "statusConnected": "Connected",
@@ -5853,7 +5853,13 @@
     "pasteConnect": "Connect",
     "copied": "Copied",
     "copyFailed": "Could not copy",
-    "failed": "Chrome connection failed: {message}"
+    "failed": "Chrome connection failed: {message}",
+    "experimental": "Experimental",
+    "tabsTitle": "Open in Chrome: {count}",
+    "tabsHidden": "Only you see this list; agents cannot see these tabs. Handing a tab to an agent comes in a later version.",
+    "tabsEmpty": "No web pages are open in Chrome.",
+    "openSettings": "Chrome settings",
+    "panelNeedsSettings": "dodoer could not find where to connect to Chrome. Open Chrome settings below to see what to do."
   },
   "BrowserSettings": {
     "title": "Built-in browser",

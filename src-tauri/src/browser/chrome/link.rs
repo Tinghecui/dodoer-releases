@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::cdp::{CdpClient, ConnectError};
 use super::endpoint::{self, Endpoint, EndpointError};
+use super::tabs::{self, ChromeTab};
 
 /// How long the person has to answer Chrome's dialog. They were sent there by
 /// the button they just pressed, so this is generous rather than tight.
@@ -132,6 +133,8 @@ struct Shared {
     allow_wait: Duration,
     slot: Mutex<Slot>,
     status: watch::Sender<ChromeStatus>,
+    /// The connected Chrome's web pages; empty whenever it is not connected.
+    tabs: watch::Sender<Vec<ChromeTab>>,
 }
 
 /// Cheap to clone; every clone is the same link.
@@ -155,6 +158,7 @@ impl ChromeLink {
             port_file_url: port_file_url.clone(),
             ..ChromeStatus::default()
         });
+        let (tabs, _) = watch::channel(Vec::new());
         Self {
             shared: Arc::new(Shared {
                 port_file,
@@ -162,6 +166,7 @@ impl ChromeLink {
                 allow_wait,
                 slot: Mutex::new(Slot::default()),
                 status,
+                tabs,
             }),
         }
     }
@@ -173,6 +178,17 @@ impl ChromeLink {
     /// Every later state, for whoever shows it.
     pub fn changes(&self) -> watch::Receiver<ChromeStatus> {
         self.shared.status.subscribe()
+    }
+
+    /// The connected Chrome's web pages, oldest first, for the person to see
+    /// (`tabs`).
+    pub fn tabs(&self) -> Vec<ChromeTab> {
+        self.shared.tabs.borrow().clone()
+    }
+
+    /// Every later list of tabs.
+    pub fn tab_changes(&self) -> watch::Receiver<Vec<ChromeTab>> {
+        self.shared.tabs.subscribe()
     }
 
     /// The connection, while there is one.
@@ -300,14 +316,45 @@ impl ChromeLink {
             product: step.product,
             port_file_url: self.shared.port_file_url.clone(),
         };
+        // Not connected, nothing open: a list kept past the connection would
+        // show tabs that may since have closed. Emptied first, so whoever
+        // hears "not connected" finds no tabs.
+        if status.state != ChromeState::Connected {
+            self.shared.tabs.send_if_modified(|tabs| {
+                let had = !tabs.is_empty();
+                tabs.clear();
+                had
+            });
+        }
         self.shared.status.send_replace(status.clone());
         status
     }
 
+    /// Publish `list` — unless the connection it came from has been replaced
+    /// or has ended since.
+    fn publish_tabs(&self, generation: u64, list: Vec<ChromeTab>) {
+        let slot = self.slot();
+        if slot.generation != generation || slot.client.is_none() {
+            return;
+        }
+        self.shared.tabs.send_if_modified(|tabs| {
+            let changed = *tabs != list;
+            *tabs = list;
+            changed
+        });
+    }
+
+    /// Follow the connection's tabs for as long as it lasts, and say so when
+    /// Chrome ends it.
     fn watch(&self, generation: u64, client: CdpClient) {
         let link = self.clone();
         tokio::spawn(async move {
-            client.closed().await;
+            let following = tabs::follow(&client, |list| link.publish_tabs(generation, list));
+            tokio::select! {
+                _ = client.closed() => {}
+                // A Chrome that would not list its tabs is still connected.
+                _ = following => client.closed().await,
+            }
             link.settle(generation, |slot| {
                 slot.client = None;
                 Step::failed(Failure::of(ChromeProblem::Lost))
@@ -354,7 +401,9 @@ async fn dial(
 mod tests {
     use tempfile::TempDir;
 
-    use super::super::cdp::testing::{chrome, listen};
+    use tokio::sync::mpsc;
+
+    use super::super::cdp::testing::{chrome, listen, FakeChrome};
     use super::*;
 
     const PRODUCT: &str = "Chrome/154.0.8037.98";
@@ -559,6 +608,61 @@ mod tests {
         link.disconnect();
         let status = link.connect(Some("ws://example.com:9222/devtools/browser/test")).await;
         assert_eq!(status.problem, Some(ChromeProblem::BadEndpoint));
+    }
+
+    /// Connects to the fake Chrome, which then says it has one tab open.
+    async fn connected_with_a_tab(
+        link: &ChromeLink,
+        connections: &mut mpsc::UnboundedReceiver<FakeChrome>,
+    ) -> FakeChrome {
+        let mut tab_changes = link.tab_changes();
+        let connect = connecting(link, None);
+        let mut chrome = connections.recv().await.unwrap();
+        chrome.greet(PRODUCT).await;
+        connect.await.unwrap();
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Target.setDiscoverTargets");
+        chrome
+            .say(json!({
+                "method": "Target.targetCreated",
+                "params": { "targetInfo": { "targetId": "T", "type": "page", "url": "https://example.com/", "title": "Example" } },
+            }))
+            .await;
+        chrome.answer(&call, json!({})).await;
+        tokio::time::timeout(Duration::from_secs(10), tab_changes.wait_for(|tabs| tabs.len() == 1))
+            .await
+            .expect("the tab was never listed")
+            .unwrap();
+        chrome
+    }
+
+    #[tokio::test]
+    async fn lists_the_tabs_of_the_connected_chrome_until_it_is_disconnected() {
+        let (mut connections, port) = chrome().await;
+        let dir = tempfile::tempdir().unwrap();
+        write_port_file(&dir, port);
+        let link = link(&dir);
+        assert!(link.tabs().is_empty());
+
+        let _chrome = connected_with_a_tab(&link, &mut connections).await;
+        assert_eq!(link.tabs()[0].host, "example.com");
+
+        link.disconnect();
+        assert!(link.tabs().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_lost_connection_takes_its_tabs_with_it() {
+        let (mut connections, port) = chrome().await;
+        let dir = tempfile::tempdir().unwrap();
+        write_port_file(&dir, port);
+        let link = link(&dir);
+        let mut changes = link.changes();
+
+        let chrome = connected_with_a_tab(&link, &mut connections).await;
+        drop(chrome);
+        state(&mut changes, ChromeState::Disconnected).await;
+        assert!(link.tabs().is_empty());
     }
 
     #[test]

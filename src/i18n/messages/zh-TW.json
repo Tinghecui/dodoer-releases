@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "我自己的 Chrome",
-    "description": "讓智慧體在你平常用的 Chrome 裡工作，那裡的網站你都已經登入了。實驗功能：目前只能連線，智慧體還不能讀取或操作 Chrome 裡的頁面。",
+    "description": "讓智慧體在你平常用的 Chrome 裡工作，那裡的網站你都已經登入了。實驗功能：目前只能連線，並在視窗右下角列出 Chrome 開著的網頁；智慧體還看不到、也不能讀取或操作 Chrome 裡的頁面。",
     "statusDisconnected": "未連線",
     "statusWaiting": "等你在 Chrome 裡點「允許」…",
     "statusConnected": "已連線",
@@ -5853,7 +5853,13 @@
     "pasteConnect": "連線",
     "copied": "已複製",
     "copyFailed": "複製失敗",
-    "failed": "連線 Chrome 發生錯誤：{message}"
+    "failed": "連線 Chrome 發生錯誤：{message}",
+    "experimental": "實驗",
+    "tabsTitle": "Chrome 裡開著的網頁：{count}",
+    "tabsHidden": "這個清單只有你看得到，智慧體看不到這些分頁。把分頁交給智慧體，之後的版本才有。",
+    "tabsEmpty": "Chrome 裡沒有開著的網頁。",
+    "openSettings": "Chrome 設定",
+    "panelNeedsSettings": "dodoer 找不到該連到 Chrome 的哪裡。點下面的「Chrome 設定」看怎麼辦。"
   },
   "BrowserSettings": {
     "title": "內建瀏覽器",

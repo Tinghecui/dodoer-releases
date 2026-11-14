@@ -5,6 +5,7 @@ import { StatusBarTasks } from "@/components/layout/status-bar-tasks"
 import { StatusBarAlerts } from "@/components/layout/status-bar-alerts"
 import { StatusBarMcp } from "@/components/layout/status-bar-mcp"
 import { StatusBarComputer } from "@/components/layout/status-bar-computer"
+import { StatusBarChrome } from "@/components/layout/status-bar-chrome"
 import { StatusBarUpdate } from "@/components/layout/status-bar-update"
 import { StatusBarWebService } from "@/components/layout/status-bar-web-service"
 import { CommandDropdown } from "@/components/layout/command-dropdown"
@@ -86,7 +87,7 @@ export function StatusBarLeft({ className }: { className?: string }) {
 
 /**
  * Right half of the status bar: update, background tasks, command launcher,
- * computer use, MCP and alerts. Update, tasks and computer use render only
+ * computer use, Chrome, MCP and alerts. Update, tasks and computer use render only
  * when there is something to show, exactly as before.
  */
 export function StatusBarRight({ className }: { className?: string }) {
@@ -105,6 +106,10 @@ export function StatusBarRight({ className }: { className?: string }) {
       {/* Computer use: which windows agents may see right now. Renders
           nothing unless the desktop runtime has it switched on. */}
       <StatusBarComputer />
+      {/* The person's own Chrome: connected or not, and its tabs. Beside
+          computer use because both say what an agent could reach. Renders
+          nothing until this computer has connected once. */}
+      <StatusBarChrome />
       {/* Web service (remote access): whether the desktop is reachable over
           HTTP right now, and how far. Beside computer use because both say
           what is exposed. Local desktop only. */}

@@ -7,7 +7,7 @@ use std::sync::Once;
 use tauri::{AppHandle, State};
 
 use crate::app_error::AppCommandError;
-use crate::browser::chrome::{ChromeLink, ChromeStatus, STATUS_EVENT};
+use crate::browser::chrome::{ChromeLink, ChromeStatus, ChromeTab, STATUS_EVENT, TABS_EVENT};
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
 /// macOS's list of which app may read which other app's files — where the
@@ -17,18 +17,27 @@ const FILES_AND_FOLDERS_PANE: &str =
 
 static ANNOUNCING: Once = Once::new();
 
-/// Start telling the frontend about every change of state. Called by each
-/// command before it does anything, so the first of them starts it and no
-/// change can come before it: Chrome quitting is a change nobody asked for,
-/// and the page showing "connected" has no other way to hear of it.
+/// Start telling the frontend about every change of state and of the tab
+/// list. Called by each command before it does anything, so the first of
+/// them starts it and no change can come before it: Chrome quitting is a
+/// change nobody asked for, and the page showing "connected" has no other
+/// way to hear of it.
 fn announce(app: &AppHandle, link: &ChromeLink) {
     ANNOUNCING.call_once(|| {
-        let app = app.clone();
+        let emitter = EventEmitter::Tauri(app.clone());
         let mut changes = link.changes();
+        let to_status = emitter.clone();
         tauri::async_runtime::spawn(async move {
             while changes.changed().await.is_ok() {
                 let status = changes.borrow_and_update().clone();
-                emit_event(&EventEmitter::Tauri(app.clone()), STATUS_EVENT, status);
+                emit_event(&to_status, STATUS_EVENT, status);
+            }
+        });
+        let mut tab_changes = link.tab_changes();
+        tauri::async_runtime::spawn(async move {
+            while tab_changes.changed().await.is_ok() {
+                let tabs = tab_changes.borrow_and_update().clone();
+                emit_event(&emitter, TABS_EVENT, tabs);
             }
         });
     });
@@ -41,6 +50,17 @@ pub async fn browser_chrome_status(
 ) -> Result<ChromeStatus, AppCommandError> {
     announce(&app, &link);
     Ok(link.status())
+}
+
+/// The connected Chrome's web pages, for the panel; empty when not
+/// connected. Never handed to agents: it is what the person has open.
+#[tauri::command]
+pub async fn browser_chrome_tabs(
+    app: AppHandle,
+    link: State<'_, ChromeLink>,
+) -> Result<Vec<ChromeTab>, AppCommandError> {
+    announce(&app, &link);
+    Ok(link.tabs())
 }
 
 /// Connect, and answer once that has ended one way or the other — which is

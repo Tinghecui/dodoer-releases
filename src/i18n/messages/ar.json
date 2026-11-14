@@ -5826,7 +5826,7 @@
   },
   "ChromeSettings": {
     "title": "متصفح Chrome الخاص بك",
-    "description": "يتيح للوكلاء العمل في Chrome الذي تستخدمه كل يوم، حيث سجّلت الدخول بالفعل. ميزة تجريبية: في الوقت الحالي يُنشأ الاتصال فقط — لا يستطيع الوكلاء بعدُ قراءة أي شيء في Chrome أو التصرف فيه.",
+    "description": "يتيح للوكلاء العمل في Chrome الذي تستخدمه كل يوم، حيث سجّلت الدخول بالفعل. ميزة تجريبية: في الوقت الحالي يتصل dodoer فقط ويعرض صفحات الويب المفتوحة في Chrome في أسفل النافذة — لا يستطيع الوكلاء بعدُ رؤية أي شيء في Chrome أو قراءته أو التصرف فيه.",
     "statusDisconnected": "غير متصل",
     "statusWaiting": "في انتظار أن تنقر على «سماح» في Chrome…",
     "statusConnected": "متصل",
@@ -5853,7 +5853,13 @@
     "pasteConnect": "اتصال",
     "copied": "تم النسخ",
     "copyFailed": "تعذّر النسخ",
-    "failed": "فشل الاتصال بـ Chrome: {message}"
+    "failed": "فشل الاتصال بـ Chrome: {message}",
+    "experimental": "تجريبي",
+    "tabsTitle": "مفتوحة في Chrome: {count}",
+    "tabsHidden": "أنت وحدك ترى هذه القائمة؛ لا يرى الوكلاء هذه الألسنة. تسليم لسان إلى وكيل سيأتي في إصدار لاحق.",
+    "tabsEmpty": "لا توجد صفحات ويب مفتوحة في Chrome.",
+    "openSettings": "إعدادات Chrome",
+    "panelNeedsSettings": "لم يجد dodoer مكان الاتصال بـ Chrome. افتح إعدادات Chrome أدناه لمعرفة ما يجب فعله."
   },
   "BrowserSettings": {
     "title": "المتصفح المدمج",

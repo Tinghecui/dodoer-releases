@@ -18,6 +18,9 @@ vi.mock("@/components/layout/status-bar-mcp", () => ({
 vi.mock("@/components/layout/status-bar-computer", () => ({
   StatusBarComputer: () => null,
 }))
+vi.mock("@/components/layout/status-bar-chrome", () => ({
+  StatusBarChrome: () => null,
+}))
 vi.mock("@/components/layout/status-bar-update", () => ({
   StatusBarUpdate: () => null,
 }))

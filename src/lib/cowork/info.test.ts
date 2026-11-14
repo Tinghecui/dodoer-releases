@@ -61,6 +61,23 @@ describe("normalizeCoworkInfo", () => {
     expect(normalizeCoworkInfo(null)).toBeNull()
     expect(normalizeCoworkInfo("x")).toBeNull()
   })
+  it("carries telemetry only when the server reports", () => {
+    const telemetry = {
+      dsn: "https://key@o1.ingest.us.sentry.io/2",
+      environment: "ai-qa",
+      release: "cowork-codeg-v0.6.0",
+      tracesSampleRate: 1,
+      commandSampleRates: { health: 0.01 },
+      user: "james",
+    }
+    expect(normalizeCoworkInfo({ ...INFO, telemetry })).toEqual({
+      ...INFO,
+      telemetry,
+    })
+    expect(normalizeCoworkInfo({ ...INFO, telemetry: { dsn: "" } })).toEqual(
+      INFO
+    )
+  })
 })
 
 describe("loadCoworkInfo", () => {

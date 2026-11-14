@@ -7,6 +7,7 @@ import type { AttachTransportHost } from "./web-event-stream"
 import { WebEventStream } from "./web-event-stream"
 import { ServerInfoChannel } from "./server-info"
 import type { ServerCompat } from "@/lib/cowork/compat"
+import { beginApiCall, type ApiResult } from "@/lib/telemetry"
 import type {
   CallOptions,
   EventStream,
@@ -85,6 +86,28 @@ function isAuthenticationFailed(err: unknown): boolean {
     return (err as RustError).code === "authentication_failed"
   }
   return false
+}
+
+// Cowork fork: the codes the server answers with a 5xx
+// (`web/handlers/error.rs`). The proxy hands back the error, not the
+// status, so telemetry reads the status class off the code.
+const SERVER_ERROR_CODES = new Set([
+  "database_error",
+  "io_error",
+  "external_command_failed",
+  "window_operation_failed",
+  "task_execution_failed",
+])
+
+/** How a failed proxied call ended, for telemetry. */
+export function telemetryResultOf(err: unknown): ApiResult {
+  const code =
+    err && typeof err === "object" ? (err as RustError).code : undefined
+  if (code === "network_error") return "network"
+  if (code === "authentication_failed") return 401
+  if (code === "not_implemented") return 501
+  if (code && SERVER_ERROR_CODES.has(code)) return 500
+  return code ? 400 : "error"
 }
 
 /**
@@ -202,6 +225,8 @@ export class RemoteDesktopTransport implements Transport {
     options?: CallOptions
   ): Promise<T> {
     const initialRequest = !this.hasReadiedOnce
+    // Cowork fork: telemetry (a no-op while off), see `@/lib/telemetry`.
+    const span = beginApiCall(command, "remote-desktop")
     try {
       // Forward `timeoutMs` through to `remote_http_call`. Without this,
       // the Rust client's 30s default fires before the backend can answer
@@ -213,8 +238,10 @@ export class RemoteDesktopTransport implements Transport {
         args: args ?? {},
         timeoutMs: options?.timeoutMs,
       })
+      span.end("ok")
       return result
     } catch (err) {
+      span.end(telemetryResultOf(err))
       if (this.destroyed) throw err
       // The Rust proxy returns 401 from the remote server as
       // `AppErrorCode::AuthenticationFailed`. Surface the connection-expired

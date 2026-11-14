@@ -12,6 +12,7 @@ import type { ServerCompat } from "@/lib/cowork/compat"
 import { buildCodegWebSocketProtocols } from "./ws-auth"
 import { parseJsonOrThrow } from "../json-parse-error"
 import { isFetchNetworkError } from "../app-error"
+import { beginApiCall, noteWs } from "../telemetry"
 import {
   codegAuthHeaders,
   getCodegToken,
@@ -185,6 +186,8 @@ export class WebTransport implements Transport {
       () => controller.abort(),
       effectiveTimeoutMs
     )
+    // Cowork fork: telemetry (a no-op while off), see `@/lib/telemetry`.
+    const span = beginApiCall(command, "web")
     let res: Response
     try {
       res = await fetch(`${this.baseUrl}/api/${command}`, {
@@ -192,14 +195,17 @@ export class WebTransport implements Transport {
         headers: {
           "Content-Type": "application/json",
           ...codegAuthHeaders(token),
+          ...span.headers,
         },
         body: JSON.stringify(args ?? {}),
         signal: controller.signal,
       })
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
+        span.end("timeout")
         throw new Error("Request timed out")
       }
+      span.end(isFetchNetworkError(err) ? "network" : "error")
       // Cowork fork: no response came back at all (offline, DNS, connection
       // refused). The event socket may not notice for a long while — a
       // browser gone offline keeps an established WebSocket open — so treat
@@ -210,6 +216,7 @@ export class WebTransport implements Transport {
     } finally {
       window.clearTimeout(timeout)
     }
+    span.end(res.ok ? "ok" : res.status)
     if (res.status === 401) {
       // Definitive auth failure. Surface the unified unauthorized dialog
       // rather than an abrupt redirect — a hard `location.href` here would
@@ -317,6 +324,7 @@ export class WebTransport implements Transport {
     }
     this.teardownWs()
     this.wsFailCount = 0
+    noteWs({ type: "reconnecting", reason: "manual" })
     this.setConnState("reconnecting")
     void this.probeHealth()
   }
@@ -338,6 +346,7 @@ export class WebTransport implements Transport {
     // teardownWs detaches onclose, which is where this normally happens:
     // anything subscribing from now on waits for the next `__ready__`.
     this.resetReady()
+    noteWs({ type: "reconnecting", reason: "network_lost" })
     this.setConnState("reconnecting")
     void this.probeHealth()
   }
@@ -359,6 +368,7 @@ export class WebTransport implements Transport {
     // the socket or re-arm the backoff behind the session-expired dialog.
     this.invalidateProbe()
     this.teardownWs()
+    noteWs({ type: "unauthorized" })
     this.setConnState(source === "proxy" ? "proxyUnauthorized" : "unauthorized")
   }
 
@@ -480,6 +490,7 @@ export class WebTransport implements Transport {
 
     const wsUrl = this.baseUrl.replace(/^http/, "ws") + "/ws/events"
     this.ws = new WebSocket(wsUrl, buildCodegWebSocketProtocols(token))
+    noteWs({ type: "connecting" })
 
     this.ws.onopen = () => {
       this.wsOpen = true
@@ -526,6 +537,7 @@ export class WebTransport implements Transport {
           // backoff counter and clear the reconnect dialog. Reset happens here
           // (not in onopen) so a socket that opens then drops before `__ready__`
           // keeps growing its backoff instead of restarting from 1s.
+          noteWs({ type: "ready", attempts: this.wsFailCount })
           this.wsFailCount = 0
           this.setConnState("connected")
           void this.serverInfo.hello((frame) => this.sendWsFrame(frame))
@@ -564,7 +576,14 @@ export class WebTransport implements Transport {
       }
     }
 
-    this.ws.onclose = () => {
+    // Cowork fork: the close event says how it went, for telemetry. Optional
+    // because tests fire the handler bare.
+    this.ws.onclose = (event?: CloseEvent) => {
+      noteWs({
+        type: "closed",
+        code: event?.code ?? 0,
+        wasClean: event?.wasClean ?? false,
+      })
       this.ws = null
       this.wsOpen = false
       this.serverInfo.reset()
@@ -577,6 +596,9 @@ export class WebTransport implements Transport {
       // recovery. We never log out here — only a definitive 401 from the
       // health probe can do that (see probeHealth).
       if (this.destroyed) return
+      if (this.connState === "connected") {
+        noteWs({ type: "reconnecting", reason: "closed" })
+      }
       this.setConnState("reconnecting")
       this.scheduleReconnect()
     }

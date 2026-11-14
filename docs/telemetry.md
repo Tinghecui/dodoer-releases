@@ -1,6 +1,6 @@
 # 遥测：看清「哪里坏了、是谁的问题」
 
-状态：第 1 步（服务端）已写，见 `src-tauri/src/telemetry/`；前端、对话收尾和反馈还没做。实现和下面方案不一样的地方记在第 10 节。
+状态：第 1 步（服务端，`src-tauri/src/telemetry/`）和第 2 步（前端，`src/lib/telemetry/`）已写；对话收尾和反馈还没做。实现和下面方案不一样的地方记在第 10 节。
 
 ## 1. 问题
 
@@ -288,10 +288,21 @@ pub fn client_config() -> Option<ClientTelemetry>;
 - **录屏**：屏幕上全是对话和代码，全遮了又没什么可看；免费档只有 50 段。等接行为分析时再议。
 - **从外面定时探测服务器**：推后。部署上如果限制了来源地址，探测进不来；心跳加浏览器那头的数据已经够用。
 
-## 10. 实现时改了的地方（第 1 步）
+## 10. 实现时改了的地方
+
+### 第 1 步（服务端）
 
 - **依赖**：只用 `sentry-core` 和 `sentry-tracing`（都关掉默认 feature），不用 `sentry` 这个总包。总包的默认集成（panic、上下文、调用栈）本来就不要，它的传输层要 reqwest 0.13，会再带一套 HTTP/TLS。发送自己写：一个线程、一个有界队列、仓库已有的 reqwest 0.12。
 - **初始化分两处**：读环境变量并删掉放在 `cowork::init_process_env`（那里是唯一保证单线程、最先读环境的地方）；建客户端放在日志建好之后（它要打日志），仍在 tokio runtime 之前。日志层先装上，客户端没建好之前什么都不做。
 - **轮询名单不放共享的 JSON 文件**：Docker 构建的前后端两段各只拷自己的目录，跨目录读文件会让其中一段编不过。名单只在 Rust 里（`config::POLLED_COMMANDS`），经 `cowork_info.telemetry.commandSampleRates` 告诉前端。脱敏用例只有测试读，放在 `src/lib/telemetry/scrub-cases.json`，Rust 测试用 `include_str!` 读它。
 - **`trace_request` 的签名**：多传 `request_id` 和「后面的处理」（一个闭包），因为 `request_id` 是现有中间件生成的。
 - **限速**：Sentry 回的限速头按最长的那个整体暂停，不分类别。
+
+### 第 2 步（前端）
+
+- **入口的函数**：`startTelemetry` / `reportError` / `beginApiCall` / `noteWs` / `installEarlyCapture`。`turnStarted` / `turnSettled` / `sendFeedback` 留到第 3 步。
+- **信封怎么带上 DSN**：SDK 只在设了 `tunnel` 时把 DSN 写进信封头，所以设了 `tunnel`，但传输层不用这个地址，直接走 `telemetry_envelope` 接口。服务端拒收（404 / 400）当成发完了，不重试；没送到、或者服务端连不上 Sentry（502），才留在离线缓存里重发。
+- **启动的触发点**：`TelemetryInit` 只读已经缓存的 `cowork_info`，自己不去要。账户菜单和更新检查会加载它；在登录页要只会拿到 401。
+- **桌面端远端窗口**：代理只回错误不回状态，接口结果按错误码推（`network_error` 算网络失败，服务端映射成 5xx 的那几个码算 500，`not_implemented` 算 501）。
+- **追踪**：每次接口调用单独开一条追踪（页面不跳转，挂在页面加载下面的话那条追踪永远不结束）。只开页面加载的追踪，不开路由跳转、INP、长任务。SDK 11 默认把 span 流式发送，转发接口不用区分。
+- **用量**：日志每页每分钟最多 120 条，错误每页 30 条、相同的 60 秒一次。

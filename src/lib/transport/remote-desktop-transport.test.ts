@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Event } from "@tauri-apps/api/event"
-import { RemoteDesktopTransport } from "./remote-desktop-transport"
+import {
+  RemoteDesktopTransport,
+  telemetryResultOf,
+} from "./remote-desktop-transport"
 import type { AttachHandlers, RemoteTransportConfig } from "./types"
 
 const ipc = vi.hoisted(() => ({
@@ -394,5 +397,18 @@ describe("remote desktop event recovery", () => {
     )
     expect(settled).toHaveBeenCalledTimes(1)
     await subscription
+  })
+})
+
+// Cowork fork: the proxy hands back errors, not statuses; telemetry reads
+// the status class off the code.
+describe("telemetryResultOf", () => {
+  it("maps the proxy's error codes to how the call ended", () => {
+    expect(telemetryResultOf({ code: "network_error" })).toBe("network")
+    expect(telemetryResultOf({ code: "authentication_failed" })).toBe(401)
+    expect(telemetryResultOf({ code: "not_implemented" })).toBe(501)
+    expect(telemetryResultOf({ code: "database_error" })).toBe(500)
+    expect(telemetryResultOf({ code: "invalid_input" })).toBe(400)
+    expect(telemetryResultOf(new Error("boom"))).toBe("error")
   })
 })

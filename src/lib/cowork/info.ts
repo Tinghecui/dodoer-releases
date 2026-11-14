@@ -9,6 +9,7 @@
 import { useEffect, useSyncExternalStore } from "react"
 import { extractAppCommandError } from "@/lib/app-error"
 import { isDesktop, isRemoteDesktopWindow } from "@/lib/platform"
+import { normalizeClientTelemetry, type ClientTelemetry } from "@/lib/telemetry"
 import { getTransport } from "@/lib/transport"
 import {
   getWebConnectionSnapshot,
@@ -23,6 +24,8 @@ export interface CoworkInfo {
   /** Served behind the Cowork portal (account menu, SSO). */
   portal: boolean
   updateDisabled: boolean
+  /** Present when the server reports to Sentry (`CODEG_TELEMETRY_WEB_DSN`). */
+  telemetry?: ClientTelemetry
 }
 
 export function normalizeCoworkInfo(raw: unknown): CoworkInfo | null {
@@ -32,11 +35,13 @@ export function normalizeCoworkInfo(raw: unknown): CoworkInfo | null {
     typeof r.projectsRoot === "string" && r.projectsRoot.trim()
       ? r.projectsRoot
       : null
+  const telemetry = normalizeClientTelemetry(r.telemetry)
   return {
     product: typeof r.product === "string" && r.product ? r.product : "Cowork",
     projectsRoot: root,
     portal: r.portal === true,
     updateDisabled: r.updateDisabled === true,
+    ...(telemetry && { telemetry }),
   }
 }
 

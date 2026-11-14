@@ -2,7 +2,7 @@
 # tag cowork-codeg-vX.Y.Z 同步过来就出包、冒烟、发到本仓库的 Release；改了打包脚本、依赖清单的 pr/<n> 分支也跑一遍（到冒烟为止，不发布）。
 # qa-package.yml 也调它（workflow_call）：私有仓库的 AI QA 要测还没发版的代码时推 qa/<run> 分支过来，编到冒烟为止、不发布，产物给 AI QA 下载。
 # release-train.yml 也调它（train 为真）：product 每合一次就发下一个修订版，Test 过了才发（scripts/cowork-wait-test.sh），说明用调用方给的改动清单。
-# 手动 tag 发完给 cowork 开 runtime.lock 的 PR（最后一步，要 Secret COWORK_REPO_TOKEN，没配就跳过）；自动发版不开。
+# 手动 tag 发完给 cowork 开 runtime.lock 的 PR 并开 auto-merge（最后一步，要 Secret COWORK_REPO_TOKEN，没配就跳过）；自动发版不开。
 # 全部在 GitHub 托管的 ubuntu-22.04 上（glibc 2.35），编出来的二进制要求 glibc >= 2.35。
 name: cowork-release
 
@@ -307,4 +307,7 @@ jobs:
               "dodoer-releases 的 \`cowork-release\` 自动开的：$release_url" \
               "- \`deploy/runtime.lock\`：\`codeg=$VERSION\`，sha256 \`$sha\`${adapters:+；ACP 适配器${adapters}}" \
               "- \`package.json\` $old → $new，CHANGELOG 新建了 $new 一节：codeg 这一条，加上 changelog.d/ 里攒的条目——按需要改改说明" \
-              "合并到 main 就发 cowork $new（release.yml 看到 version 没有 tag 就打包、发 Release、打 tag）。")"
+              "合并到 main 就发 cowork $new（release.yml 看到 version 没有 tag 就打包、发 Release、打 tag）。开了 auto-merge，检查绿了自己合。")"
+          # 和别的 PR 一样开 auto-merge（2026-11-14 起不再等人说合）：坏包发不出去，cowork 那边 main 上 publish 要 bundle 和测试都过
+          gh pr merge "$branch" --repo Tinghecui/cowork --auto --merge \
+            || echo "::warning::cowork 的 runtime.lock PR 开 auto-merge 没成，手动执行 gh pr merge $branch -R Tinghecui/cowork --auto --merge"

@@ -56,6 +56,9 @@ jobs:
 
           [[ "$last" =~ $tag_re ]]
           minor="${BASH_REMATCH[1]}"; patch=$(( BASH_REMATCH[2] + 1 ))
+          # server 包 403 没发、桌面包改建在 main 上发了的时候（desktop-macos.yml），v1.Y.Z 比 server 包的号多走了一步。
+          # 再用这个号的话桌面包只换掉那个 Release 的文件，已经装了它的 app 版本号一样、收不到更新，所以接着往上数
+          while git rev-parse -q --verify "refs/tags/v1.$minor.$patch" >/dev/null; do patch=$(( patch + 1 )); done
           tag="cowork-codeg-v0.$minor.$patch"; desktop="1.$minor.$patch"
           # server 会叫比 MIN_DESKTOP_VERSION 旧的桌面 app 去更新（同 cowork-release.yml 对 tag 的检查）
           min=$(sed -n 's/^pub const MIN_DESKTOP_VERSION: &str = "\(.*\)";$/\1/p' src-tauri/src/compat.rs)

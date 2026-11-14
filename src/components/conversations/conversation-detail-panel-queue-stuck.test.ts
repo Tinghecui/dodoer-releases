@@ -71,6 +71,31 @@ describe("no usable agent fails the waiting message", () => {
     expect(retry).toContain("onClick: handleOpenAgentsSettings")
   })
 
+  it("reconnects a dropped connection when a usable agent's message is retried (#200)", () => {
+    const retry = between(
+      "const handleQueueRetry = useCallback(",
+      "const queueHeadFailure ="
+    )
+    const usable = retry.slice(
+      retry.indexOf("if (agentUnavailableReason == null) {"),
+      retry.indexOf("return\n")
+    )
+    // Un-fail first, then start the connection the auto-flush waits for —
+    // the same states handleSend reconnects from.
+    expect(usable.indexOf("mqRetry(id)")).toBeGreaterThan(-1)
+    expect(usable.indexOf("mqRetry(id)")).toBeLessThan(
+      usable.indexOf("handleFocus()")
+    )
+    expect(usable).toContain("connStatusRef.current")
+    expect(usable).toContain("status == null")
+    expect(usable).toContain('status === "disconnected"')
+    expect(usable).toContain('status === "error"')
+    // A connection coming up, up, or mid-turn is left alone.
+    expect(usable).not.toContain('"connecting"')
+    expect(usable).not.toContain('"connected"')
+    expect(usable).not.toContain('"prompting"')
+  })
+
   it("routes both composers' retry and hint through the panel", () => {
     expect(source).not.toContain("onQueueRetry={mqRetry}")
     expect(source.split("onQueueRetry={handleQueueRetry}")).toHaveLength(3)

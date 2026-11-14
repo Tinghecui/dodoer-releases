@@ -3063,6 +3063,7 @@
       "toasts": {
         "commitCompleted": "코드 커밋이 완료되었습니다",
         "pushFailed": "푸시 실패",
+        "pushSkippedNoRemote": "커밋했지만 Git 원격이 구성되지 않아 푸시하지 않았습니다. 「원격 관리」에서 원격을 추가하세요",
         "committedFiles": "{count, plural, one {#개 파일 커밋됨} other {#개 파일 커밋됨}}",
         "addedToVcs": "VCS에 추가되었습니다",
         "addToVcsFailed": "VCS에 추가하지 못했습니다",
@@ -3094,7 +3095,8 @@
         "unselectTracked": "추적된 변경 선택 해제",
         "selectTracked": "추적된 변경 선택",
         "unselectUntracked": "추적되지 않은 파일 선택 해제",
-        "selectUntracked": "추적되지 않은 파일 선택"
+        "selectUntracked": "추적되지 않은 파일 선택",
+        "moreCommitActions": "다른 커밋 방식"
       },
       "loading": "로딩 중...",
       "selectionCount": "{selected} / {total}개 파일",

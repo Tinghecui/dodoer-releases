@@ -3063,6 +3063,7 @@
       "toasts": {
         "commitCompleted": "Commit de código concluído",
         "pushFailed": "Falha no envio",
+        "pushSkippedNoRemote": "Confirmado, mas nenhum remoto Git está configurado, então nada foi enviado. Adicione um em «Gerenciar remotos»",
         "committedFiles": "{count, plural, one {# arquivo commitado} other {# arquivos commitados}}",
         "addedToVcs": "Adicionado ao VCS",
         "addToVcsFailed": "Falha ao adicionar ao VCS",
@@ -3094,7 +3095,8 @@
         "unselectTracked": "Desmarcar alterações rastreadas",
         "selectTracked": "Selecionar alterações rastreadas",
         "unselectUntracked": "Desmarcar arquivos não rastreados",
-        "selectUntracked": "Selecionar arquivos não rastreados"
+        "selectUntracked": "Selecionar arquivos não rastreados",
+        "moreCommitActions": "Mais opções de confirmação"
       },
       "loading": "Carregando...",
       "selectionCount": "{selected} / {total} arquivos",

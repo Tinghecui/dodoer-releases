@@ -3063,6 +3063,7 @@
       "toasts": {
         "commitCompleted": "اكتمل التزام الكود",
         "pushFailed": "فشل الدفع",
+        "pushSkippedNoRemote": "تم الإيداع، لكن لم يتم تكوين مستودع Git بعيد، لذا لم يتم الدفع. أضف واحدًا في «إدارة المستودعات البعيدة»",
         "committedFiles": "{count, plural, one {# ملف تم الالتزام به} other {# ملفات تم الالتزام بها}}",
         "addedToVcs": "تمت الإضافة إلى VCS",
         "addToVcsFailed": "فشلت الإضافة إلى VCS",
@@ -3094,7 +3095,8 @@
         "unselectTracked": "إلغاء تحديد التغييرات المتعقبة",
         "selectTracked": "تحديد التغييرات المتعقبة",
         "unselectUntracked": "إلغاء تحديد الملفات غير المتعقبة",
-        "selectUntracked": "تحديد الملفات غير المتعقبة"
+        "selectUntracked": "تحديد الملفات غير المتعقبة",
+        "moreCommitActions": "خيارات إيداع إضافية"
       },
       "loading": "جارٍ التحميل...",
       "selectionCount": "{selected} / {total} ملفات",

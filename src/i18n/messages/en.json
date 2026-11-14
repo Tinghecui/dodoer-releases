@@ -3063,6 +3063,7 @@
       "toasts": {
         "commitCompleted": "Code commit completed",
         "pushFailed": "Push failed",
+        "pushSkippedNoRemote": "Committed, but no Git remote is configured, so nothing was pushed. Add a remote in Manage Remotes",
         "committedFiles": "Committed {count, plural, one {# file} other {# files}}",
         "addedToVcs": "Added to VCS",
         "addToVcsFailed": "Failed to add to VCS",
@@ -3094,7 +3095,8 @@
         "unselectTracked": "Unselect tracked changes",
         "selectTracked": "Select tracked changes",
         "unselectUntracked": "Unselect untracked files",
-        "selectUntracked": "Select untracked files"
+        "selectUntracked": "Select untracked files",
+        "moreCommitActions": "More commit options"
       },
       "loading": "Loading...",
       "selectionCount": "{selected} / {total} files",

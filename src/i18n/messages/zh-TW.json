@@ -3063,6 +3063,7 @@
       "toasts": {
         "commitCompleted": "提交程式碼完成",
         "pushFailed": "推送失敗",
+        "pushSkippedNoRemote": "已提交，但未設定 Git 遠端儲存庫，未推送。請在「管理遠端」中新增遠端地址",
         "committedFiles": "已提交 {count} 個檔案",
         "addedToVcs": "已加入到 VCS",
         "addToVcsFailed": "加入到 VCS 失敗",
@@ -3094,7 +3095,8 @@
         "unselectTracked": "取消選擇已追蹤變更",
         "selectTracked": "選擇已追蹤變更",
         "unselectUntracked": "取消選擇未追蹤檔案",
-        "selectUntracked": "選擇未追蹤檔案"
+        "selectUntracked": "選擇未追蹤檔案",
+        "moreCommitActions": "更多提交方式"
       },
       "loading": "載入中...",
       "selectionCount": "{selected} / {total} 個檔案",

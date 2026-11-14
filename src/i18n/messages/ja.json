@@ -3063,6 +3063,7 @@
       "toasts": {
         "commitCompleted": "コードコミットが完了しました",
         "pushFailed": "プッシュに失敗しました",
+        "pushSkippedNoRemote": "コミットしましたが、Git リモートが設定されていないためプッシュしていません。「リモート管理」からリモートを追加してください",
         "committedFiles": "{count, plural, one {# 個のファイルをコミット} other {# 個のファイルをコミット}}",
         "addedToVcs": "VCS に追加しました",
         "addToVcsFailed": "VCS への追加に失敗しました",
@@ -3094,7 +3095,8 @@
         "unselectTracked": "追跡中の変更の選択を解除",
         "selectTracked": "追跡中の変更を選択",
         "unselectUntracked": "未追跡ファイルの選択を解除",
-        "selectUntracked": "未追跡ファイルを選択"
+        "selectUntracked": "未追跡ファイルを選択",
+        "moreCommitActions": "その他のコミット方法"
       },
       "loading": "読み込み中...",
       "selectionCount": "{selected} / {total} ファイル",

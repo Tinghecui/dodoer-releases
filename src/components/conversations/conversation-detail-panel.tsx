@@ -2741,10 +2741,20 @@ const ConversationTabView = memo(function ConversationTabView({
   // again, so it stays failed: say why, with the way to fix it, and give a
   // failed connection another try (as focusing the composer does) so that the
   // next click can go through.
+  //
+  // With a usable agent the connection may still be down: an agent turned
+  // back on in Settings only clears the old failure, it does not connect
+  // (#141), so the auto-flush would wait for a connection nobody starts and
+  // the message would sit under "waiting for the agent" forever (#200). Start
+  // it here, the same way handleSend does; a connection already coming up or
+  // up is left alone.
   const handleQueueRetry = useCallback(
     (id: string) => {
       if (agentUnavailableReason == null) {
         mqRetry(id)
+        const status = connStatusRef.current
+        if (status == null || status === "disconnected" || status === "error")
+          handleFocus()
         return
       }
       handleFocus()

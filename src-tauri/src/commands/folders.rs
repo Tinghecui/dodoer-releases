@@ -129,6 +129,31 @@ pub(crate) fn classify_remote_git_error(operation: &str, stderr: &[u8]) -> AppCo
             .with_detail(msg);
     }
 
+    // Cowork fork (#202): no remote to talk to. A push with no remote named
+    // falls back to `origin`, and in a repository without one git only says
+    // "'origin' does not appear to be a git repository" (or, with no remote
+    // at all and no name given, "No configured push destination"). Say what
+    // is missing and where to add it. No `detail`: the UI shows `detail` in
+    // place of `message`, which would put git's words back; the line git
+    // said goes in the message instead, so a remote whose URL is wrong (the
+    // same wording) is still told apart.
+    if lower.contains("does not appear to be a git repository")
+        || lower.contains("no configured push destination")
+    {
+        let said = msg
+            .lines()
+            .map(str::trim)
+            .find(|line| {
+                let line = line.to_lowercase();
+                line.contains("does not appear to be a git repository")
+                    || line.contains("no configured push destination")
+            })
+            .unwrap_or(msg.as_str());
+        return AppCommandError::configuration_missing(format!(
+            "git {operation}: no usable Git remote. Add one in Manage Remotes. (git: {said})"
+        ));
+    }
+
     AppCommandError::external_command(format!("git {operation} failed"), msg)
 }
 
@@ -7083,6 +7108,54 @@ mod tests {
     use super::*;
     use crate::db::test_helpers::fresh_in_memory_db;
     use crate::models::agent::AgentType;
+
+    /// #202: pushing from a repository without a remote reads as "no
+    /// remote, add one", not as git's bare "'origin' does not appear to be a
+    /// git repository" — and with nothing in `detail`, which the UI would
+    /// show in place of the message.
+    #[test]
+    fn a_push_without_a_remote_says_there_is_no_remote() {
+        use crate::app_error::AppErrorCode;
+
+        let stderr = b"fatal: 'origin' does not appear to be a git repository\n\
+                       fatal: Could not read from remote repository.\n\n\
+                       Please make sure you have the correct access rights\n\
+                       and the repository exists.";
+        let err = classify_remote_git_error("push", stderr);
+        assert!(matches!(err.code, AppErrorCode::ConfigurationMissing), "{err:?}");
+        let message = &err.message;
+        assert!(message.starts_with("git push: no usable Git remote"), "{message}");
+        assert!(message.contains("Manage Remotes"), "{message}");
+        assert!(
+            message.contains("(git: fatal: 'origin' does not appear to be a git repository)"),
+            "{message}"
+        );
+        assert!(err.detail.is_none(), "{:?}", err.detail);
+
+        let stderr = b"fatal: No configured push destination.\n\
+                       Either specify the URL from the command-line or configure a remote";
+        let err = classify_remote_git_error("push", stderr);
+        assert!(matches!(err.code, AppErrorCode::ConfigurationMissing), "{err:?}");
+        let message = &err.message;
+        assert!(message.starts_with("git push: no usable Git remote"), "{message}");
+        assert!(message.contains("(git: fatal: No configured push destination.)"), "{message}");
+    }
+
+    #[test]
+    fn other_remote_failures_keep_their_classification() {
+        use crate::app_error::AppErrorCode;
+
+        let stderr = b"! [rejected]        main -> main (fetch first)\n\
+                       error: failed to push some refs";
+        let err = classify_remote_git_error("push", stderr);
+        assert!(matches!(err.code, AppErrorCode::ExternalCommandFailed), "{err:?}");
+        assert_eq!(err.message, "git push failed");
+        assert!(err.detail.as_deref().unwrap_or("").contains("(fetch first)"));
+
+        let stderr = b"fatal: Authentication failed for 'https://example.com/repo.git/'";
+        let err = classify_remote_git_error("fetch", stderr);
+        assert!(matches!(err.code, AppErrorCode::AuthenticationFailed), "{err:?}");
+    }
 
     #[test]
     fn conversation_worktree_dir_flattens_the_branch() {

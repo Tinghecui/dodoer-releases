@@ -3063,6 +3063,7 @@
       "toasts": {
         "commitCompleted": "Commit de code terminé",
         "pushFailed": "Échec du push",
+        "pushSkippedNoRemote": "Validé, mais aucun dépôt distant Git n'est configuré : rien n'a été poussé. Ajoutez-en un dans « Gérer les dépôts distants »",
         "committedFiles": "{count, plural, one {# fichier commit} other {# fichiers commit}}",
         "addedToVcs": "Ajouté à VCS",
         "addToVcsFailed": "Échec de l’ajout à VCS",
@@ -3094,7 +3095,8 @@
         "unselectTracked": "Désélectionner les changements suivis",
         "selectTracked": "Sélectionner les changements suivis",
         "unselectUntracked": "Désélectionner les fichiers non suivis",
-        "selectUntracked": "Sélectionner les fichiers non suivis"
+        "selectUntracked": "Sélectionner les fichiers non suivis",
+        "moreCommitActions": "Autres options de validation"
       },
       "loading": "Chargement...",
       "selectionCount": "{selected} / {total} fichiers",

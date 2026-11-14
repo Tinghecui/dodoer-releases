@@ -43,6 +43,7 @@ import {
 import {
   gitAddFiles,
   gitCommit,
+  gitListRemotes,
   gitPush,
   gitRollbackFile,
   gitShowFile,
@@ -518,6 +519,19 @@ export function CommitWorkspace({
         resetAndReload()
 
         if (andPush) {
+          // Cowork fork (#202): with no remote, the push would only fail with
+          // git's own "'origin' does not appear to be a git repository" in a
+          // passing toast. Say so instead, and keep it in the window (which
+          // stays open) so the user knows the commit was not pushed. A failed
+          // lookup is not the answer "no remote": the push then tries and
+          // reports for itself.
+          const remotes = await gitListRemotes(folderPath).catch(() => null)
+          if (remotes != null && remotes.length === 0) {
+            const message = t("toasts.pushSkippedNoRemote")
+            toast.warning(message)
+            setError(message)
+            return
+          }
           try {
             const hint: GitRemoteHint = { folderPath }
             await withCredentialRetry(
@@ -1372,6 +1386,7 @@ export function CommitWorkspace({
                           selected.size === 0
                         }
                         className="rounded-l-none border-l border-l-primary-foreground/20 px-1.5"
+                        aria-label={t("aria.moreCommitActions")}
                       >
                         <ChevronDown className="h-3.5 w-3.5" />
                       </Button>

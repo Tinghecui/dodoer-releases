@@ -3063,6 +3063,7 @@
       "toasts": {
         "commitCompleted": "Code-Commit abgeschlossen",
         "pushFailed": "Push fehlgeschlagen",
+        "pushSkippedNoRemote": "Committet, aber kein Git-Remote konfiguriert, daher nicht gepusht. Füge einen unter Remotes verwalten hinzu",
         "committedFiles": "{count, plural, one {# Datei committet} other {# Dateien committet}}",
         "addedToVcs": "Zu VCS hinzugefügt",
         "addToVcsFailed": "Hinzufügen zu VCS fehlgeschlagen",
@@ -3094,7 +3095,8 @@
         "unselectTracked": "Auswahl verfolgter Änderungen aufheben",
         "selectTracked": "Verfolgte Änderungen auswählen",
         "unselectUntracked": "Auswahl nicht verfolgter Dateien aufheben",
-        "selectUntracked": "Nicht verfolgte Dateien auswählen"
+        "selectUntracked": "Nicht verfolgte Dateien auswählen",
+        "moreCommitActions": "Weitere Commit-Optionen"
       },
       "loading": "Wird geladen...",
       "selectionCount": "{selected} / {total} Dateien",

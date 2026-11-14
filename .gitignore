@@ -89,6 +89,7 @@ src-tauri/binaries/
 !/docs/chat-channels/
 !/docs/cli.md
 !/docs/conversation-mindmap.md
+!/docs/host-ssh.md
 !/docs/images/
 !/docs/proxy-auth.md
 !/docs/readme/

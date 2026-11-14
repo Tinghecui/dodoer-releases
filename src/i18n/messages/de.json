@@ -5838,7 +5838,7 @@
   },
   "ChromeSettings": {
     "title": "Dein eigenes Chrome",
-    "description": "Lässt Agenten in dem Chrome arbeiten, das du täglich benutzt und in dem du bereits angemeldet bist. Experimentell: Übergib im Chrome-Bereich unten links im Fenster einen Tab an die Agenten, dann können sie ihn lesen, dort klicken und Formulare ausfüllen. Andere Tabs sehen Agenten nicht.",
+    "description": "Lässt Agenten in dem Chrome arbeiten, das du täglich benutzt und in dem du bereits angemeldet bist. Experimentell: Erlaube Agenten im Chrome-Bereich unten links im Fenster, dein Chrome zu benutzen – die Seiten, die sie öffnen, landen in einem eigenen Fenster –, oder übergib ihnen einen deiner Tabs. Diese Seiten können sie lesen, dort klicken und Formulare ausfüllen; deine anderen Tabs sehen sie nicht.",
     "statusDisconnected": "Nicht verbunden",
     "statusWaiting": "Warte darauf, dass du in Chrome auf „Zulassen“ klickst…",
     "statusConnected": "Verbunden",
@@ -5878,7 +5878,14 @@
     "levelRead": "Nur lesen",
     "levelControl": "Darf bedienen",
     "stopSharing": "Zurücknehmen",
-    "shareFailed": "Der Tab konnte nicht übergeben werden: {message}"
+    "shareFailed": "Der Tab konnte nicht übergeben werden: {message}",
+    "agentsSwitch": "Agenten mein Chrome benutzen lassen",
+    "agentsHint": "Eingeschaltet öffnen sich die Seiten, die Agenten hier öffnen, in einem eigenen Fenster deines Chrome, mit deiner Anmeldung. Tabs, die du selbst geöffnet hast, brauchen weiterhin „An Agenten übergeben“; Mail-, Zahlungs- und Bankseiten bleiben tabu.",
+    "agentsOffline": "Eingeschaltet, aber Chrome ist nicht verbunden: Agenten können keine Seiten öffnen, bis du es verbindest oder dies ausschaltest.",
+    "agentsFailed": "Der Schalter ließ sich nicht umlegen: {message}",
+    "openedByAgent": "Von einem Agenten geöffnet",
+    "jumpTo": "Diesen Tab zeigen",
+    "jumpFailed": "Konnte nicht zum Tab wechseln: {message}"
   },
   "BrowserSettings": {
     "title": "Integrierter Browser",

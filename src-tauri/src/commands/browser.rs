@@ -1495,6 +1495,17 @@ fn open_failed(detail: &str) -> AppCommandError {
         .with_i18n(BROWSER_I18N_KEY_OPEN_FAILED, std::collections::BTreeMap::new())
 }
 
+/// [`open_failed`] for the person's Chrome, saying why in the message itself:
+/// the agent is told the message, and most of these are for the person to
+/// put right (connect Chrome, say).
+fn chrome_open_failed(detail: &str) -> AppCommandError {
+    AppCommandError::window(
+        format!("Could not open the page in the person's Chrome: {detail}"),
+        detail.to_string(),
+    )
+    .with_i18n(BROWSER_I18N_KEY_OPEN_FAILED, std::collections::BTreeMap::new())
+}
+
 fn control_required(tab_id: &str) -> AppCommandError {
     AppCommandError::permission_denied(format!(
         "browser tab {tab_id} is shared for reading only; acting on it needs the person to \
@@ -1562,8 +1573,21 @@ fn now_millis() -> i64 {
 /// discards it, because grouping tabs is the tab strip's business. One user,
 /// one set of tabs; what any given agent may *read* of them is the grant, and
 /// that is decided per tab by the person, not by which chat is asking.
-pub fn agent_list_tabs_core(registry: &BrowserRegistry) -> Vec<agent::AgentTabSummary> {
-    registry.list().iter().filter_map(agent::summarize_tab).collect()
+///
+/// Cowork fork: `scope` is a remote window's label for that server's agents,
+/// who are told of their own window's tabs only; and the person's Chrome
+/// reaches each set of agents as its switch says (`chrome::lending`).
+pub fn agent_list_tabs_core(
+    registry: &BrowserRegistry,
+    lending: Option<&crate::browser::chrome::ChromeLending>,
+    scope: Option<&str>,
+) -> Vec<agent::AgentTabSummary> {
+    registry
+        .list()
+        .iter()
+        .filter(|state| crate::browser::chrome::lending::reaches(lending, &state.owner_window, scope))
+        .filter_map(agent::summarize_tab)
+        .collect()
 }
 
 /// Share a tab with agents, change the level, or take it back.
@@ -2977,6 +3001,48 @@ pub async fn agent_open_tab_core(
     Ok((settled.summary, settled.load_error))
 }
 
+/// Open `raw_url` for an agent of `scope` in the person's own Chrome, whose
+/// switch for that scope is on (`chrome::lending::opens_in_chrome`), and
+/// answer with the tab once it holds a page — as [`agent_open_tab_core`] does
+/// for the built-in browser. A Chrome that is not connected is said to be,
+/// rather than the page quietly opening in the built-in browser, where none
+/// of the person's sign-ins are and the agent would be looking at a sign-in
+/// page for no reason it could see.
+pub async fn agent_open_chrome_tab_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    link: &crate::browser::chrome::ChromeLink,
+    lending: &crate::browser::chrome::ChromeLending,
+    scope: &str,
+    raw_url: &str,
+) -> Result<(agent::AgentTabSummary, Option<String>), AppCommandError> {
+    let url = address_refusal(app, raw_url)?;
+    let tab_id = crate::browser::chrome_share::open_for_agent(app, link, registry, lending, scope, &url)
+        .await
+        .map_err(|err| {
+            if err.i18n_key.as_deref() == Some(crate::browser::chrome_share::BROWSER_I18N_KEY_SENSITIVE) {
+                err
+            } else {
+                chrome_open_failed(&err.message)
+            }
+        })?;
+    let deadline = std::time::Instant::now() + open_request::SETTLE_TIMEOUT;
+    let Some(settled) = wait_for_settled_tab(registry, &tab_id, None, deadline).await else {
+        return Err(chrome_open_failed(
+            "the page was opened and then went away before it loaded anything (closed, or gone to a \
+             site agents may not use there)",
+        ));
+    };
+    events::emit_agent_activity(
+        app,
+        &tab_id,
+        agent::AgentAction::Open,
+        agent::AgentOutcome::Done,
+        now_millis(),
+    );
+    Ok((settled.summary, settled.load_error))
+}
+
 /// Point an existing tab at another address.
 ///
 /// The same act as clicking a link on the page, and gated the same way. The
@@ -3021,6 +3087,11 @@ async fn drive_tab_to(
     // standing on any tab read the user's site rules one address at a time.
     let generation = may_drive_tab(registry, tab_id)?;
     let url = address_refusal(app, raw_url).map_err(|e| (Some(agent::AgentOutcome::Failed), e))?;
+    // In the person's own Chrome, the sites agents are kept off.
+    if registry.read(tab_id, |tab| tab.state.surface) == Some(SurfaceKind::External) {
+        crate::browser::chrome_share::sensitive_check(&url)
+            .map_err(|e| (Some(agent::AgentOutcome::Refused), e))?;
+    }
     navigate_core(app, registry, tab_id, url.as_str())
         .map_err(|e| (Some(agent::AgentOutcome::Failed), e))?;
     let deadline = std::time::Instant::now() + open_request::SETTLE_TIMEOUT;
@@ -3052,9 +3123,25 @@ pub async fn agent_close_tab_core(
         }
         return Err(err);
     }
-    // The person's own page, in their own Chrome: closing it is theirs. Said
-    // only to an agent the tab was handed to (`may_drive_tab` above).
-    if registry.read(tab_id, |tab| tab.state.surface) == Some(SurfaceKind::External) {
+    // A page an agent opened in the person's Chrome is closed there. Theirs
+    // to close, though, is a page of their own they handed over: said only
+    // to an agent the tab was handed to (`may_drive_tab` above).
+    let chrome = registry
+        .read(tab_id, |tab| match &tab.surface {
+            BrowserSurface::External(handle) => Some((
+                handle.clone(),
+                tab.state
+                    .owner_window
+                    .starts_with(crate::browser::chrome::lending::AGENT_OWNER_PREFIX),
+            )),
+            _ => None,
+        })
+        .flatten();
+    if let Some((handle, opened_by_agent)) = chrome {
+        if opened_by_agent {
+            handle.close_tab();
+            return close_core(app, registry, tab_id, None);
+        }
         events::emit_agent_activity(
             app,
             tab_id,
@@ -3389,16 +3476,22 @@ impl McpBrowserTools {
         }
     }
 
-    /// Whether `tab_id` is open in a window outside the scope. Such a tab is
-    /// answered as one that does not exist: these agents are not told it is
-    /// there. A tab that does not exist at all is left to the core, which
-    /// says so itself.
+    /// Whether `tab_id` is open in a window outside the scope — or is a tab
+    /// of the person's Chrome these agents are not lent (`chrome::lending`).
+    /// Such a tab is answered as one that does not exist: these agents are
+    /// not told it is there. A tab that does not exist at all is left to the
+    /// core, which says so itself.
     fn out_of_scope(&self, registry: &BrowserRegistry, tab_id: &str) -> bool {
-        self.scope.as_deref().is_some_and(|window| {
-            registry
-                .read(tab_id, |tab| tab.state.owner_window != window)
-                .unwrap_or(false)
-        })
+        let lending = self.app.try_state::<crate::browser::chrome::ChromeLending>();
+        registry
+            .read(tab_id, |tab| {
+                !crate::browser::chrome::lending::reaches(
+                    lending.as_deref(),
+                    &tab.state.owner_window,
+                    self.scope.as_deref(),
+                )
+            })
+            .unwrap_or(false)
     }
 
     /// The registry, or `None` when this build has no browser to speak of.
@@ -3423,14 +3516,8 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         let Some(registry) = self.registry().await else {
             return BrowserTabsOutcome::unavailable(NO_BROWSER_NOTE);
         };
-        let tabs = match self.scope.as_deref() {
-            Some(window) => registry
-                .list_for_owner(window)
-                .iter()
-                .filter_map(agent::summarize_tab)
-                .collect(),
-            None => agent_list_tabs_core(&registry),
-        };
+        let lending = self.app.try_state::<crate::browser::chrome::ChromeLending>();
+        let tabs = agent_list_tabs_core(&registry, lending.as_deref(), self.scope.as_deref());
         BrowserTabsOutcome { tabs, note: None }
     }
 
@@ -3692,12 +3779,28 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         let named = op.tab_id().map(str::to_string);
         let answer = match &op {
             BrowserTabOp::Open { url } => {
-                let Some(requests) = self.app.try_state::<open_request::OpenRequests>() else {
-                    return BrowserTabOutcome::refused(None, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
-                };
-                agent_open_tab_core(&self.app, &registry, &requests, url, self.scope.clone())
-                    .await
-                    .map(|(tab, load_error)| BrowserTabOutcome::tab(tab, load_error))
+                // The person lets these agents use their Chrome: a web page
+                // goes there, signed in as them (`chrome::lending`).
+                let scope = crate::browser::chrome::lending::scope_key(self.scope.as_deref());
+                let chrome = self
+                    .app
+                    .try_state::<crate::browser::chrome::ChromeLending>()
+                    .zip(self.app.try_state::<crate::browser::chrome::ChromeLink>())
+                    .filter(|(lending, _)| {
+                        crate::browser::chrome::lending::opens_in_chrome(lending, scope, url)
+                    });
+                if let Some((lending, link)) = chrome {
+                    agent_open_chrome_tab_core(&self.app, &registry, &link, &lending, scope, url)
+                        .await
+                        .map(|(tab, load_error)| BrowserTabOutcome::tab(tab, load_error))
+                } else {
+                    let Some(requests) = self.app.try_state::<open_request::OpenRequests>() else {
+                        return BrowserTabOutcome::refused(None, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
+                    };
+                    agent_open_tab_core(&self.app, &registry, &requests, url, self.scope.clone())
+                        .await
+                        .map(|(tab, load_error)| BrowserTabOutcome::tab(tab, load_error))
+                }
             }
             BrowserTabOp::Navigate { tab_id, url } => {
                 agent_navigate_core(&self.app, &registry, tab_id, url)
@@ -3737,6 +3840,16 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
                         err.message.trim_end_matches('.')
                     ),
                 ),
+                Some(crate::browser::chrome_share::BROWSER_I18N_KEY_SENSITIVE) => {
+                    BrowserTabOutcome::refused(
+                        named,
+                        ERROR_BLOCKED,
+                        format!(
+                            "{}. Ask the person to do this part themselves, in their Chrome.",
+                            err.message.trim_end_matches('.')
+                        ),
+                    )
+                }
                 Some(BROWSER_I18N_KEY_OPEN_FAILED) => {
                     BrowserTabOutcome::refused(named, ERROR_OPEN_FAILED, err.message)
                 }

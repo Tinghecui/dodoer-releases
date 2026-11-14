@@ -1,5 +1,5 @@
 //! The surface behind a tab of the person's own Chrome that they handed to
-//! agents (`browser::chrome::page`).
+//! agents, or that an agent opened there (`browser::chrome::page`).
 //!
 //! The other surfaces answer on the main thread; this one answers over the
 //! DevTools connection, which only ever answers later. So what the registry
@@ -46,6 +46,12 @@ impl ExternalHandle {
 
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    /// Close the tab in Chrome (`ChromePage::close_target`): for a tab an
+    /// agent opened, never for one the person handed over.
+    pub fn close_tab(&self) {
+        self.page.close_target();
     }
 
     pub fn url(&self) -> Result<Url, SurfaceError> {

@@ -1,6 +1,7 @@
 //! The connection to the person's own Chrome (`browser::chrome`), as the
-//! settings page drives it. The app's alone: Chrome is on the computer the
-//! app runs on, whichever server a window's workspace lives on.
+//! settings page and the Chrome panel drive it. The app's alone: Chrome is on
+//! the computer the app runs on, whichever server a window's workspace lives
+//! on.
 
 use std::sync::Once;
 
@@ -8,7 +9,7 @@ use tauri::{AppHandle, State};
 
 use crate::app_error::AppCommandError;
 use crate::browser::agent::GrantLevel;
-use crate::browser::chrome::{ChromeLink, ChromeStatus, ChromeTab, STATUS_EVENT, TABS_EVENT};
+use crate::browser::chrome::{ChromeLending, ChromeLink, ChromeStatus, ChromeTab, STATUS_EVENT, TABS_EVENT};
 use crate::browser::{chrome_share, BrowserRegistry};
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
@@ -78,6 +79,44 @@ pub async fn browser_chrome_share(
 ) -> Result<(), AppCommandError> {
     announce(&app, &link);
     chrome_share::share(&app, &link, &registry, &tab_id, level).await
+}
+
+/// Whether the agents of the calling window may use the person's Chrome
+/// (`chrome::lending`): the app's own agents for a local window, that
+/// server's for a remote one.
+#[tauri::command]
+pub async fn browser_chrome_agents(
+    window: tauri::WebviewWindow,
+    lending: State<'_, ChromeLending>,
+) -> Result<bool, AppCommandError> {
+    Ok(lending.is_lent(&chrome_share::scope_of_window(window.label())))
+}
+
+/// The person's switch for the calling window's agents. A window sets its
+/// own and nobody else's; turning it off lets go of the pages those agents
+/// opened in Chrome, which stay open there.
+#[tauri::command]
+pub async fn browser_chrome_set_agents(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    registry: State<'_, BrowserRegistry>,
+    lending: State<'_, ChromeLending>,
+    on: bool,
+) -> Result<bool, AppCommandError> {
+    let scope = chrome_share::scope_of_window(window.label());
+    chrome_share::set_lent(&app, &registry, &lending, &scope, on);
+    Ok(on)
+}
+
+/// Bring the Chrome tab `tab_id` (an id from the tab list) to the front.
+#[tauri::command]
+pub async fn browser_chrome_activate(
+    app: AppHandle,
+    link: State<'_, ChromeLink>,
+    tab_id: String,
+) -> Result<(), AppCommandError> {
+    announce(&app, &link);
+    chrome_share::activate(&link, &tab_id).await
 }
 
 /// Connect, and answer once that has ended one way or the other — which is

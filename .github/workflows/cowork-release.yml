@@ -234,16 +234,7 @@ jobs:
             # release-train.yml 按这个标记删老的自动版本
             if [[ "$TRAIN" == true ]]; then body=$(printf '%s\n\n%s' "$body" "<!-- release-train -->"); fi
             # tag 还没有（自动发版）就建在编的这个提交上；已经有了 --target 不起作用
-            if ! gh release create "$VERSION" --latest=false "${pre[@]}" --target "$(git rev-parse HEAD)" --title "$VERSION" --notes "$body" \
-                   2>"$RUNNER_TEMP/create.err"; then
-              cat "$RUNNER_TEMP/create.err" >&2
-              # 不改建在 main 上（桌面包那边会）：release-train 按这个 tag 算「上次发到哪」，建在 main 上就把没编进这个包的提交也算成发过了
-              if grep -q 'HTTP 403' "$RUNNER_TEMP/create.err"; then
-                echo "::error::tag $VERSION 建不到编的这个提交（$(git rev-parse HEAD)）上：编的时候 main 上又合了改 .github/workflows 的提交，GITHUB_TOKEN 不能把 tag 建在 workflow 跟 main 不一样的提交上。这一班的 server 包没发，下一次合并到 product 会用同一个版本号连这些改动一起发"
-              fi
-              exit 1
-            fi
-            cat "$RUNNER_TEMP/create.err" >&2
+            gh release create "$VERSION" --latest=false "${pre[@]}" --target "$(git rev-parse HEAD)" --title "$VERSION" --notes "$body"
           fi
           gh release upload "$VERSION" "dist/$NAME.tar.gz" "dist/$NAME.tar.gz.sha256" --clobber
           cat "dist/$NAME.tar.gz.sha256"

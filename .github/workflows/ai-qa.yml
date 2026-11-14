@@ -90,6 +90,7 @@ jobs:
       AGENT_MODEL: ${{ inputs.agent_model || vars.AIQA_AGENT_MODEL || 'claude-haiku-5-5' }}
       CLAUDE_AUTH: ${{ inputs.claude_auth || vars.AIQA_CLAUDE_AUTH || 'oauth' }}
       ROTATE: ${{ vars.AIQA_ROTATE || '8' }}
+      SEGMENTS: ${{ vars.AIQA_SEGMENTS || '3' }}
       TRIAGE: ${{ vars.AIQA_TRIAGE || '12' }}
       AIQA_ADAPTER_VERSION: ${{ vars.AIQA_ADAPTER_VERSION }}
     steps:

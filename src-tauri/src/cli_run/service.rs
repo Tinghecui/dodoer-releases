@@ -447,6 +447,9 @@ pub struct CliRunService {
     launcher: Arc<dyn AgentLauncher>,
     timings: Timings,
     opener: OnceLock<Arc<dyn SessionOpener>>,
+    /// Cowork fork: the tunnels to a desktop's lent shell this (server)
+    /// runtime opens for `codeg-cli desktop proxy` (`web::host_tunnel`).
+    host_tunnels: OnceLock<Arc<crate::web::host_tunnel::HostTunnels>>,
     registry: StdMutex<Registry>,
     installs: Arc<super::agent_install::AgentInstalls>,
 }
@@ -499,6 +502,7 @@ impl CliRunService {
             launcher,
             timings,
             opener: OnceLock::new(),
+            host_tunnels: OnceLock::new(),
             registry: StdMutex::new(Registry::default()),
             installs: Arc::default(),
         })
@@ -511,6 +515,15 @@ impl CliRunService {
     /// Install how this (desktop) runtime opens a conversation. Once.
     pub fn set_opener(&self, opener: Arc<dyn SessionOpener>) {
         let _ = self.opener.set(opener);
+    }
+
+    /// Cowork fork: reach desktops' lent shells through `tunnels`. Once.
+    pub fn set_host_tunnels(&self, tunnels: Arc<crate::web::host_tunnel::HostTunnels>) {
+        let _ = self.host_tunnels.set(tunnels);
+    }
+
+    pub fn host_tunnels(&self) -> Option<Arc<crate::web::host_tunnel::HostTunnels>> {
+        self.host_tunnels.get().cloned()
     }
 
     pub fn capabilities(&self) -> Vec<String> {
@@ -526,6 +539,9 @@ impl CliRunService {
         ];
         if self.opener.get().is_some() {
             caps.push(capability::OPEN_SESSION.to_string());
+        }
+        if self.host_tunnels.get().is_some() {
+            caps.push(capability::HOST_TUNNEL.to_string());
         }
         caps
     }

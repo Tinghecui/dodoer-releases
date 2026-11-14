@@ -52,6 +52,10 @@ pub const FEATURES: &[&str] = &[
     // `/api/get_system_resources`: CPU, memory and disk of the server's
     // machine (`system_resources`).
     "system_resources",
+    // A desktop app may lend this server's agents its command line: it
+    // registers a `shell` and dials the tunnels `ssh desktop` asks for
+    // (`host_ssh::tunnel`, `docs/host-ssh.md`).
+    "host_ssh",
 ];
 
 /// The contract as one value: the `server_info` frame carries it as is
@@ -98,7 +102,7 @@ mod tests {
         );
         assert_eq!(
             fields["features"],
-            serde_json::json!(["cowork_info", "host_bridge_ws", "system_resources"])
+            serde_json::json!(["cowork_info", "host_bridge_ws", "system_resources", "host_ssh"])
         );
     }
 
@@ -106,6 +110,11 @@ mod tests {
     fn server_info_and_health_say_the_same() {
         let info = serde_json::to_value(server_info()).unwrap();
         assert_eq!(info, serde_json::Value::Object(health_fields()));
+    }
+
+    #[test]
+    fn the_shell_feature_is_the_one_desktops_look_for() {
+        assert!(FEATURES.contains(&crate::host_ssh::tunnel::FEATURE));
     }
 
     #[test]

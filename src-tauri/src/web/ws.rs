@@ -389,16 +389,27 @@ async fn handle_client_msg(
         ClientMsg::HostRegister {
             capabilities,
             window,
+            shell,
         } => match host {
-            Some(registration) => registration.update(capabilities, window),
+            Some(registration) => registration.update(capabilities, window, shell),
             None => {
                 *host = Some(state.host_registry.register(
                     outbound_tx.clone(),
                     capabilities,
                     window,
+                    shell,
                 ))
             }
         },
+        ClientMsg::HostTunnelResult { tunnel_id, error } => {
+            let why = error.unwrap_or_else(|| "the desktop app did not say".to_string());
+            let refused = host
+                .as_ref()
+                .is_some_and(|registration| registration.refuse_tunnel(&tunnel_id, why));
+            if !refused {
+                tracing::debug!("[WS] host_tunnel_result answers no waiting tunnel");
+            }
+        }
         ClientMsg::HostResult { call_id, outcome } => {
             let answered = host
                 .as_ref()

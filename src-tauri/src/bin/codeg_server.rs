@@ -516,6 +516,19 @@ async fn async_main(
         ));
     }
 
+    // Cowork fork: `ssh desktop` from this server's agents to the computer
+    // a desktop app lends them (`web::host_tunnel`, `docs/host-ssh.md`). Not
+    // for a desktop app's own daemon: its agents are on that computer.
+    if !std::env::var(codeg_lib::local_daemon::CHILD_ENV).is_ok_and(|v| v == "1") {
+        let host_tunnels = codeg_lib::web::host_tunnel::HostTunnels::new(
+            Arc::clone(&state.host_registry),
+            &state.data_dir,
+            Some(state.web_server_state.shutdown_signal()),
+        );
+        state.cli_runs.set_host_tunnels(Arc::clone(&host_tunnels));
+        host_tunnels.spawn_file_sync();
+    }
+
     // Headless `codeg-cli` runs: the policy backstop here; the loopback
     // listener and its discovery file once the server has its own socket
     // (below), so a server that fails to start publishes none.

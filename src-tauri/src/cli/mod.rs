@@ -11,6 +11,7 @@
 mod args;
 mod commands;
 mod connect;
+mod desktop;
 mod fanout;
 mod follow;
 mod manage;
@@ -193,6 +194,8 @@ fn output_format(cli: &Cli) -> args::OutputFormat {
         Some(Command::Open(o)) => json(o.json),
         Some(Command::Cancel(c)) => json(c.json),
         Some(Command::Taxonomy(t)) => taxonomy::output_format(t),
+        // Its stdout is an SSH connection: a failure is told on stderr.
+        Some(Command::Desktop(_)) => OutputFormat::Text,
     }
 }
 
@@ -220,5 +223,8 @@ async fn dispatch(cli: Cli, env: connect::Env) -> i32 {
             manage::automations(&cli.global, &automations, &env).await
         }
         Some(args::Command::Taxonomy(t)) => taxonomy::taxonomy(&cli.global, &t, &env).await,
+        Some(args::Command::Desktop(desktop)) => match desktop.action {
+            args::DesktopAction::Proxy => desktop::proxy(&cli.global, &env).await,
+        },
     }
 }

@@ -72,7 +72,7 @@ use crate::app_error::{
 };
 use crate::db::service::remote_workspace_connection_service;
 use crate::db::AppDatabase;
-use crate::host_bridge::ws_host::{self, WsHost};
+use crate::host_bridge::ws_host::{self, TunnelDial, WsHost};
 use crate::models::{RemoteWorkspaceConnectionInfo, ToHeaderMap};
 use crate::workspace_transfer::{
     TransferDirection, TransferState, WorkspaceTransferManager, WorkspaceTransferProgress,
@@ -1724,6 +1724,7 @@ pub async fn remote_ws_subscribe(
             task_proxy,
             task_db,
             connection_id,
+            task_server,
             target,
             task_entry,
             shutdown_rx,
@@ -1837,6 +1838,7 @@ async fn run_ws_task(
     proxy: Arc<RemoteProxyState>,
     db: DatabaseConnection,
     connection_id: i32,
+    server: String,
     target: WsTarget,
     entry: Arc<WsTaskEntry>,
     mut shutdown_rx: watch::Receiver<bool>,
@@ -1847,7 +1849,8 @@ async fn run_ws_task(
     let host = if connection_id == crate::local_daemon::LOCAL_CONNECTION_ID {
         None
     } else {
-        DesktopWsHost::new(&app, connection_id).map(|host| Arc::new(host) as Arc<dyn WsHost>)
+        DesktopWsHost::new(&app, connection_id, server)
+            .map(|host| Arc::new(host) as Arc<dyn WsHost>)
     };
     run_ws_connection(
         target,
@@ -1950,6 +1953,9 @@ async fn run_ws_connection<R, RFut, F, Fut>(
     let mut fail_count: u32 = 0;
     // Answers to `host_call`s, from the tasks that run them.
     let (host_out_tx, mut host_out_rx) = mpsc::channel::<String>(HOST_OUT_CAPACITY);
+    // Cowork fork: what the host lends may change (a switch, the shell's
+    // service): the socket registers again.
+    let mut host_changes = host.as_ref().and_then(|host| host.changes());
 
     'reconnect: loop {
         if *shutdown_rx.borrow() {
@@ -2011,6 +2017,9 @@ async fn run_ws_connection<R, RFut, F, Fut>(
         entry
             .lends_host
             .store(false, std::sync::atomic::Ordering::Release);
+        // Whether this socket's server takes a shell (`host_ssh`), once its
+        // `server_info` says.
+        let mut takes_shells = false;
         let mut last_received = tokio::time::Instant::now();
         let mut ping = tokio::time::interval_at(last_received + WS_PING_INTERVAL, WS_PING_INTERVAL);
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -2049,12 +2058,44 @@ async fn run_ws_connection<R, RFut, F, Fut>(
                         break;
                     }
                 }
+                () = next_host_change(&mut host_changes) => {
+                    if let Some(host) = &host {
+                        if entry.lends_host.load(std::sync::atomic::Ordering::Acquire) {
+                            let register = ws_host::registration(&**host, takes_shells).await;
+                            if !send_ws_message(&mut socket, Message::Text(register.into())).await {
+                                break;
+                            }
+                        }
+                    }
+                }
                 msg = socket.next() => match msg {
                     Some(Ok(Message::Text(text))) => {
                         last_received = tokio::time::Instant::now();
                         match serde_json::from_str::<Value>(&text) {
                             Ok(frame) => {
                                 if let Some(host) = &host {
+                                    // Cowork fork: a tunnel to the shell
+                                    // this app lends, dialed on its own task;
+                                    // not the webview's business either, and
+                                    // the key it carries stays here.
+                                    if let Some((tunnel_id, client_key)) = ws_host::parse_tunnel(&frame) {
+                                        let host = Arc::clone(host);
+                                        let answers = host_out_tx.clone();
+                                        let dial = TunnelDial {
+                                            url: ws_host::tunnel_url(&target.url, &tunnel_id),
+                                            token: target.token.clone(),
+                                            headers: target.headers.clone(),
+                                        };
+                                        tokio::spawn(async move {
+                                            if let Err(why) = host.open_tunnel(client_key, dial).await {
+                                                tracing::warn!("[RemoteProxy] no tunnel to the lent shell: {why}");
+                                                let _ = answers
+                                                    .send(ws_host::tunnel_result_frame(&tunnel_id, &why))
+                                                    .await;
+                                            }
+                                        });
+                                        continue;
+                                    }
                                     // A call for this app runs on its own
                                     // task (`eval` waits on the person) and
                                     // is not the webview's business.
@@ -2076,10 +2117,9 @@ async fn run_ws_connection<R, RFut, F, Fut>(
                                     // frame still goes on to the webview,
                                     // which asked for it.
                                     if ws_host::server_takes_hosts(&frame) {
-                                        let register = ws_host::register_frame(
-                                            &host.capabilities().await,
-                                            &host.window(),
-                                        );
+                                        takes_shells = ws_host::server_takes_shells(&frame);
+                                        let register =
+                                            ws_host::registration(&**host, takes_shells).await;
                                         if !send_ws_message(&mut socket, Message::Text(register.into())).await {
                                             break;
                                         }
@@ -2138,6 +2178,25 @@ async fn send_ws_message(socket: &mut RemoteWsSocket, message: Message) -> bool 
         Ok(Ok(()))
     )
 }
+
+/// The next change of what a host lends; never, without a host or once its
+/// sender is gone.
+async fn next_host_change(changes: &mut Option<watch::Receiver<u64>>) {
+    if let Some(receiver) = changes.as_mut() {
+        if receiver.changed().await.is_ok() {
+            return;
+        }
+    }
+    *changes = None;
+    std::future::pending::<()>().await
+}
+
+/// Cowork fork: bumped whenever what this app lends a server may read
+/// differently — the browser-tools switch, a lending of the shell, its
+/// service starting or stopping. Every remote socket registers again
+/// (`DesktopWsHost::changes`), each with what it lends its own server.
+static HOST_CHANGES: std::sync::LazyLock<watch::Sender<u64>> =
+    std::sync::LazyLock::new(|| watch::channel(0).0);
 
 /// Sleep for the exponential-backoff duration corresponding to
 /// `fail_count` (1s, 2s, 4s, … capped at `WS_BACKOFF_MAX_SECS`). Returns
@@ -2376,10 +2435,15 @@ struct DesktopWsHost {
     window: String,
     config: crate::acp::browser_tools::BrowserToolsRuntimeConfig,
     tools: crate::host_bridge::HostTools,
+    /// Cowork fork: the server's address, as the connection stores it — what
+    /// a lending of the shell is kept by (`host_ssh::server_key`).
+    server: String,
+    /// The lendings of this computer's shell (`host_ssh`).
+    lending: Option<Arc<crate::host_ssh::Lending>>,
 }
 
 impl DesktopWsHost {
-    fn new(app: &AppHandle, connection_id: i32) -> Option<Self> {
+    fn new(app: &AppHandle, connection_id: i32, server: String) -> Option<Self> {
         use tauri::Manager;
         let config = app
             .try_state::<crate::acp::browser_tools::BrowserToolsRuntimeConfig>()?
@@ -2391,6 +2455,9 @@ impl DesktopWsHost {
             config.clone(),
             window.clone(),
         );
+        let lending = app
+            .try_state::<Arc<crate::host_ssh::Lending>>()
+            .map(|lending| Arc::clone(lending.inner()));
         Some(Self {
             window,
             config,
@@ -2398,6 +2465,8 @@ impl DesktopWsHost {
                 browser: Arc::new(browser),
                 computer: Arc::new(crate::acp::computer_tools::NoComputerDesktop),
             },
+            server,
+            lending,
         })
     }
 }
@@ -2414,6 +2483,52 @@ impl WsHost for DesktopWsHost {
 
     async fn dispatch(&self, call: crate::host_bridge::BridgeCall) -> Value {
         crate::host_bridge::dispatch(&self.tools, call).await
+    }
+
+    async fn shell(&self) -> Option<crate::host_ssh::ShellHost> {
+        self.lending.as_ref()?.shell_for(&self.server).await
+    }
+
+    fn changes(&self) -> Option<watch::Receiver<u64>> {
+        Some(HOST_CHANGES.subscribe())
+    }
+
+    /// Let the server's key in, reach the SSH service, dial the server, and
+    /// carry the bytes until either end closes or the lending ends
+    /// (`docs/host-ssh.md` 5.2).
+    async fn open_tunnel(&self, client_key: String, dial: TunnelDial) -> Result<(), String> {
+        use crate::host_ssh::tunnel;
+        let lending = self
+            .lending
+            .clone()
+            .ok_or_else(|| "this app lends no shell".to_string())?;
+        let port = lending.admit(&self.server, &client_key).await?;
+        let service = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .map_err(|e| format!("could not reach the SSH service on this computer: {e}"))?;
+        let request = ws_request_with_subprotocol_auth(
+            &dial.url,
+            tunnel::TUNNEL_PROTOCOL,
+            &dial.token,
+            &dial.headers,
+        )?;
+        let (socket, _) = tokio::time::timeout(WS_CONNECT_TIMEOUT, connect_remote_ws(request))
+            .await
+            .map_err(|_| "dialing the server back timed out".to_string())?
+            .map_err(|e| format!("could not dial the server back: {}", WsConnectError::from(e)))?;
+        let server = self.server.clone();
+        tokio::spawn(async move {
+            tracing::info!("[host-ssh] a tunnel from {server} is open");
+            let (reader, writer) = service.into_split();
+            let withdrawn = Arc::clone(&lending);
+            let stop_server = server.clone();
+            let stop = async move { withdrawn.withdrawn(&stop_server, port).await };
+            if let Err(e) = tunnel::relay(socket, reader, writer, stop).await {
+                tracing::debug!("[host-ssh] a tunnel from {server} ended: {e}");
+            }
+            tracing::info!("[host-ssh] a tunnel from {server} closed");
+        });
+        Ok(())
     }
 }
 
@@ -2468,35 +2583,13 @@ pub fn notify_host_focus(app: &AppHandle, connection_id: i32) {
     send_to_hosting_sockets(app, Some(connection_id), ws_host::FOCUS_FRAME.to_string());
 }
 
-/// Cowork fork: the app's browser-tools switch changed — tell every server
-/// that takes this app as a host what it lends now.
-pub fn refresh_host_registrations(app: &AppHandle) {
-    use tauri::Manager;
-    let Some(config) = app.try_state::<crate::acp::browser_tools::BrowserToolsRuntimeConfig>()
-    else {
-        return;
-    };
-    let config = config.inner().clone();
-    let Some(proxy) = app.try_state::<Arc<RemoteProxyState>>() else {
-        return;
-    };
-    let proxy = Arc::clone(proxy.inner());
-    tauri::async_runtime::spawn(async move {
-        let capabilities = host_capabilities(&config).await;
-        let entries: Vec<(i32, Arc<WsTaskEntry>)> = {
-            let tasks = proxy.tasks.lock().await;
-            tasks
-                .iter()
-                .filter(|(id, _)| **id != crate::local_daemon::LOCAL_CONNECTION_ID)
-                .filter(|(_, entry)| entry.lends_host.load(std::sync::atomic::Ordering::Acquire))
-                .map(|(id, entry)| (*id, Arc::clone(entry)))
-                .collect()
-        };
-        for (id, entry) in entries {
-            let text = ws_host::register_frame(&capabilities, &remote_window_label(id));
-            let _ = entry.outbound_tx.try_send(text);
-        }
-    });
+/// Cowork fork: what this app lends changed — the browser-tools switch, a
+/// lending of the shell (`host_ssh`) — so every server that takes this app as
+/// a host hears what it lends now. Each socket registers again on its own
+/// (`HOST_CHANGES`), with what it lends its own server: a shell is lent to
+/// one server, not to all.
+pub fn refresh_host_registrations(_app: &AppHandle) {
+    HOST_CHANGES.send_modify(|version| *version = version.wrapping_add(1));
 }
 
 #[cfg(test)]
@@ -3170,7 +3263,7 @@ mod tests {
             let register = next_test_text(&mut socket).await;
             assert!(matches!(
                 serde_json::from_str::<ClientMsg>(&register).unwrap(),
-                ClientMsg::HostRegister { ref capabilities, window: Some(ref w) }
+                ClientMsg::HostRegister { ref capabilities, window: Some(ref w), shell: None }
                     if capabilities == &["browser"] && w == "remote-workspace-7"
             ));
             let call = ServerMsg::HostCall {

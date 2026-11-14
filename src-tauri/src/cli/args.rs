@@ -276,6 +276,24 @@ pub enum Command {
     /// The conversation mind map's nightly reorganization: `projects`,
     /// `export PROJECT`, `apply PROJECT PLAN`.
     Taxonomy(TaxonomyArgs),
+    /// The computer a dodoer desktop app lends this workspace: `desktop
+    /// proxy` is what `ssh desktop` runs to reach it.
+    Desktop(DesktopArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct DesktopArgs {
+    #[command(subcommand)]
+    pub action: DesktopAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum DesktopAction {
+    /// Carry one SSH connection between stdin and stdout and the computer a
+    /// dodoer desktop app lends this workspace: the ProxyCommand of `ssh
+    /// desktop`, which codeg-server writes into the ssh configuration. Not
+    /// for typing.
+    Proxy,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -709,6 +727,17 @@ mod tests {
         let cli = parse(&["-p", "status"]).unwrap();
         assert!(cli.command.is_none());
         assert_eq!(cli.run.prompt.as_deref(), Some("status"));
+    }
+
+    #[test]
+    fn desktop_proxy_parses() {
+        assert!(matches!(
+            parse(&["desktop", "proxy"]).unwrap().command,
+            Some(Command::Desktop(DesktopArgs {
+                action: DesktopAction::Proxy
+            }))
+        ));
+        assert!(parse(&["desktop"]).is_err(), "says which");
     }
 
     /// The two commands of issue #694, with the command name changed.

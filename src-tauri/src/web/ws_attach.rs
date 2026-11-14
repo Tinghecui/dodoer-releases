@@ -83,6 +83,11 @@ pub enum ClientMsg {
         /// the logs.
         #[serde(default)]
         window: Option<String>,
+        /// The shell the app lends, with the `shell` capability
+        /// (`host_ssh::tunnel`, `docs/host-ssh.md` 5.2). Sent only to a
+        /// server whose `server_info` names `host_ssh`.
+        #[serde(default)]
+        shell: Option<crate::host_ssh::tunnel::ShellHost>,
     },
     /// Cowork fork: a host's answer to `host_call` — the host bridge's
     /// outcome for that call, as `host_bridge::dispatch` returns it.
@@ -94,6 +99,13 @@ pub enum ClientMsg {
     /// Cowork fork: the host's window got focus, so it is the one the person
     /// is in front of — the next call goes to it.
     HostFocus,
+    /// Cowork fork: the host could not open the tunnel `host_tunnel` asked
+    /// for, and why. A tunnel it opens it dials instead (`/ws/host-tunnel`).
+    HostTunnelResult {
+        tunnel_id: String,
+        #[serde(default)]
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +151,13 @@ pub enum ServerMsg {
     HostCall {
         call_id: u64,
         call: crate::host_bridge::BridgeCall,
+    },
+    /// Cowork fork: a tunnel to the shell the host lends (`host_ssh`): let
+    /// `client_key` in, then dial `/ws/host-tunnel?id=<tunnel_id>` and join
+    /// it to the SSH service; or answer `host_tunnel_result` with why not.
+    HostTunnel {
+        tunnel_id: String,
+        client_key: String,
     },
 }
 
@@ -381,13 +400,40 @@ mod tests {
         .unwrap();
         assert!(matches!(
             register,
-            ClientMsg::HostRegister { ref capabilities, window: Some(ref w) }
+            ClientMsg::HostRegister { ref capabilities, window: Some(ref w), shell: None }
                 if capabilities == &["browser"] && w == "remote-workspace-3"
         ));
         assert!(matches!(
             serde_json::from_str::<ClientMsg>(r#"{"action":"host_register"}"#).unwrap(),
-            ClientMsg::HostRegister { ref capabilities, window: None } if capabilities.is_empty()
+            ClientMsg::HostRegister { ref capabilities, window: None, shell: None }
+                if capabilities.is_empty()
         ));
+        let shell: ClientMsg = serde_json::from_str(
+            r#"{"action":"host_register","capabilities":["browser","shell"],"window":"remote-workspace-3",
+                "shell":{"host_key":"ssh-ed25519 AAAA","user":"me","platform":"macos"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            shell,
+            ClientMsg::HostRegister { shell: Some(ref s), .. }
+                if s.host_key == "ssh-ed25519 AAAA" && s.user == "me"
+        ));
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(
+                r#"{"action":"host_tunnel_result","tunnel_id":"t1","error":"not lent"}"#
+            )
+            .unwrap(),
+            ClientMsg::HostTunnelResult { ref tunnel_id, error: Some(ref e) }
+                if tunnel_id == "t1" && e == "not lent"
+        ));
+        assert_eq!(
+            serde_json::to_value(ServerMsg::HostTunnel {
+                tunnel_id: "t1".into(),
+                client_key: "ssh-ed25519 BBBB".into(),
+            })
+            .unwrap(),
+            serde_json::json!({"type": "host_tunnel", "tunnel_id": "t1", "client_key": "ssh-ed25519 BBBB"})
+        );
         assert!(matches!(
             serde_json::from_str::<ClientMsg>(
                 r#"{"action":"host_result","call_id":7,"outcome":{"tabs":[]}}"#

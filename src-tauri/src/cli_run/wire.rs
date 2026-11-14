@@ -49,6 +49,9 @@ pub mod capability {
     /// `cli_taxonomy_apply` — the conversation mind map's nightly
     /// reorganization.
     pub const TAXONOMY: &str = "taxonomy";
+    /// Cowork fork: `cli_host_tunnel`, the server's end of `ssh desktop`
+    /// (`codeg-cli desktop proxy`, `docs/host-ssh.md`).
+    pub const HOST_TUNNEL: &str = "host_tunnel";
 }
 
 /// The exit code of `codeg-cli result` for a run that has not settled within

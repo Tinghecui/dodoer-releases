@@ -38,6 +38,12 @@ const WATCHER: &str =
     r#"exec 3<&0; "$@" & pid=$!; (cat <&3 >/dev/null; kill "$pid" 2>/dev/null) & wait "$pid""#;
 
 const TEMP_PREFIX: &str = "dodoer-ssh.";
+/// Where the service's folder is made: `/tmp`, not this process's temporary
+/// folder. An app started from a codeg terminal inherits that terminal's
+/// `TMPDIR`, a launch folder of another codeg process that a sweep may take
+/// away (`acp::scratch_dir`) — and `authorized_keys` with it, under a running
+/// service. The folder itself is the person's alone (700, a random name).
+const RUN_ROOT: &str = "/tmp";
 /// The name the host key is filed under on the other side, whatever port
 /// this run listens on.
 pub const HOST_KEY_ALIAS: &str = "dodoer-desktop";
@@ -308,7 +314,7 @@ fn read_self_test(stdout: &str, stderr: &str) -> SelfTest {
 /// the comment. `None` for anything that is not a single public key — a
 /// second line would be a second key, and options before the type would be
 /// obeyed.
-fn one_public_key(public_key: &str) -> Option<String> {
+pub(crate) fn one_public_key(public_key: &str) -> Option<String> {
     let text = public_key.trim();
     if text.lines().count() != 1 {
         return None;
@@ -351,7 +357,7 @@ fn private(path: &Path, mode: u32) {
     }
 }
 
-async fn generate_key(file: &Path, comment: &str) -> Result<(), SshdError> {
+pub(crate) async fn generate_key(file: &Path, comment: &str) -> Result<(), SshdError> {
     let mut command = Command::new(SSH_KEYGEN);
     command
         .args(["-q", "-t", "ed25519", "-N", "", "-C", comment, "-f"])
@@ -478,7 +484,7 @@ async fn launch(state_dir: &Path, path: Option<&str>) -> Result<Running, SshdErr
     }
     let dir = tempfile::Builder::new()
         .prefix(TEMP_PREFIX)
-        .tempdir()
+        .tempdir_in(RUN_ROOT)
         .map_err(|e| SshdError::Setup(format!("no temporary folder: {e}")))?;
     private(dir.path(), 0o700);
     if dir.path().to_string_lossy().contains(char::is_whitespace) {
@@ -683,7 +689,7 @@ fn last_lines(log: &Arc<StdMutex<VecDeque<String>>>) -> String {
 /// Whether a test that needs the real `sshd` must fail without one, instead
 /// of passing unseen: CI says so (`CODEG_HOST_SSH_TEST_STRICT`).
 #[cfg(test)]
-pub(super) fn test_needs_sshd() -> bool {
+pub(crate) fn test_needs_sshd() -> bool {
     std::env::var("CODEG_HOST_SSH_TEST_STRICT").is_ok_and(|v| !v.is_empty())
 }
 

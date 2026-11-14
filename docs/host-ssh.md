@@ -1,6 +1,6 @@
 # 把桌面电脑的命令行借给远端工作区
 
-状态：方向定了，Mac 上的实测做过了（第 4 节）。第 1 步（桌面端：开关、起停 SSH 服务、自检）写了，还没在 Mac 上验；通道（第 2 步）没写，所以服务器上的智能体现在还连不过来。
+状态：方向定了，Mac 上的实测做过了（第 4 节）。第 1 步（桌面端：开关、起停 SSH 服务、自检）2026-11-14 在 Mac 上验过。第 2 步（通道、`codeg-cli desktop proxy`、服务器上的 `ssh desktop` 配置）代码写了，CI 上用真的 `sshd` 和 `ssh` 从头到尾测过，还没在真的服务器和 Mac 之间验。智能体还不知道有这条路（第 3 步）。
 
 ## 1. 问题
 
@@ -71,7 +71,7 @@ agent ── ssh desktop
 
 新目录 `src-tauri/src/host_ssh/`，只在桌面 app（`tauri-runtime`）里。
 
-- **用系统自带的 `/usr/sbin/sshd`**，不内嵌 SSH 服务端。以当前用户身份跑，`-D` 前台模式，配置、密钥都在 app 自己的临时目录里（权限 700），和系统的「远程登录」、`/etc/ssh`、`~/.ssh` 都无关。
+- **用系统自带的 `/usr/sbin/sshd`**，不内嵌 SSH 服务端。以当前用户身份跑，`-D` 前台模式，配置、密钥都在 `/tmp` 下一个随机名字的临时目录里（权限 700），和系统的「远程登录」、`/etc/ssh`、`~/.ssh` 都无关。不用进程自己的 `TMPDIR`：从 codeg 终端里启动的 app 会沿用那个终端的 `TMPDIR`，那是另一个 codeg 进程的启动目录，可能被清掉。
 - 配置要点（实测里跑通的那份，加上几条收紧）：
 
   ```
@@ -93,7 +93,7 @@ agent ── ssh desktop
   ```
 
 - **`PATH`**：直接 `ssh 主机 命令` 只有系统默认的 `PATH`，找不到 `node`、`brew`。app 已经会用登录 shell 查命令（`commands/acp.rs` 的 `-lic`），同样的办法取一次 `PATH`，用 `SetEnv` 交给会话。
-- **什么时候跑**：这台服务器被借出了，**并且**它的远端窗口开着（`remote_proxy` 里那个窗口的事件 socket 任务在跑）。停止借出、最后一个这样的窗口关掉、app 退出，都立刻停掉监听并删临时目录。第 1 步还不看服务器带不带 `host_ssh`（还没有服务器带）；第 2 步改成按注册来。
+- **什么时候跑**：这台服务器被借出了，**并且**它的远端窗口开着（`remote_proxy` 里那个窗口的事件 socket 任务在跑）。停止借出、最后一个这样的窗口关掉、app 退出，都立刻停掉监听并删临时目录。不看服务器带不带 `host_ssh`：老服务器上服务照样起，只是没人连得进来，弹层里有一行说明。
 - **停的是监听，不是已经连上的会话**：`sshd` 给每条连接起的进程自成一个会话，杀监听进程杀不到它们（任何 sshd 都这样）。让它们结束的是连接断开——第 2 步里每条连接都是 app 自己接进来的，app 一关那一头它们就结束；第 1 步里只有自检会连。智能体用 `nohup` 之类留在后台的进程不会跟着结束，和普通 SSH 一样。
 - **app 异常退出**：`sshd` 会变成孤儿继续听着。两道保险：`sshd` 由一个 `/bin/sh` 包装起，包装的标准输入是 app 手里的管道，管道一断（app 没了）就杀掉 `sshd`；app 启动时按上次留下的 pid 文件再清理一遍，连同留下的临时目录。孤儿期间通道已经断了，服务器连不过来；本机别的程序没有私钥也登不上。
 - **sftp** 用 `internal-sftp`，不依赖各系统位置不同的 `sftp-server`。
@@ -115,8 +115,9 @@ agent ── ssh desktop
   {"type":"host_tunnel","tunnel_id":"<随机>","client_key":"ssh-ed25519 AAAA…"}
   ```
 
-  桌面端把 `client_key` 记进 `authorized_keys`（这个连接此前没给过的话），然后**主动**连 `GET /ws/host-tunnel?id=<tunnel_id>`（认证和它的 `/ws/events` 一样），连上后在这条 WebSocket 和 `127.0.0.1:<端口>` 之间原样搬字节（二进制帧）。连不上本机 SSH 服务、开关已关，就回 `{"action":"host_tunnel_result","tunnel_id":…,"error":"…"}`。
-- 服务器把桌面端拨进来的这条和等着的那一头（5.3）配上对，两边原样搬字节；15 秒没人拨进来就失败。`tunnel_id` 一次有效。
+  桌面端把 `client_key` 记进 `authorized_keys`（这个连接此前没给过的话），然后**主动**连 `GET /ws/host-tunnel?id=<tunnel_id>`（认证和它的 `/ws/events` 一样，子协议 `codeg-host-tunnel`），连上后在这条 WebSocket 和 `127.0.0.1:<端口>` 之间原样搬字节（二进制帧）。连不上本机 SSH 服务、开关已关，就回 `{"action":"host_tunnel_result","tunnel_id":…,"error":"…"}`。借出收回、SSH 服务停了，桌面端立刻关掉这台服务器的所有通道，已经连上的会话随之结束（`Lending::withdrawn`）。
+- 服务器把桌面端拨进来的这条和等着的那一头（5.3）配上对，两边原样搬字节；15 秒没人拨进来就失败。`tunnel_id` 是 128 位随机数，一次有效。
+- 桌面端每个事件 socket 按自己的服务器注册：借出、停止借出、SSH 服务起停、浏览器开关变了，各 socket 都重新算一遍再发 `host_register`（`remote_proxy` 的 `HOST_CHANGES`）。
 - 选哪台电脑：和借浏览器一样，最近注册或最近获得焦点的那个带 `shell` 能力的 host。
 - **一条 SSH 连接一条 WebSocket，靠 SSH 自己的连接复用压住数量**（5.3 的 `ControlMaster`）。Cowork 的 nginx 对 `/ws/` 是每分钟 20 个新连接，超了会被 fail2ban 封 IP；所以 codeg-server 自己再限一道（每分钟最多 6 条新通道），超了直接回「稍后再试」，不让请求走到 nginx 那里去。真不够用再改成一条 WebSocket 里跑多路。
 
@@ -146,7 +147,9 @@ agent ── ssh desktop
   ```
 
 - 第一次借出时在 `~/.ssh/config` 最前面加一行 `Include <目录>/config`（带注释说明是谁加的；文件不存在就建）。这样 `ssh desktop`、`scp`、`rsync`、`git` 都直接能用，不用带参数。
-- **`codeg-cli desktop proxy`**（新子命令）：按 `codeg-cli` 现有的规则找到本机的 codeg-server（智能体的 shell 里有 `CODEG_CLI_ENDPOINT_FILE`），带 token 连上去，把自己的标准输入输出接到 5.2 的通道上。没有桌面 app 借出时在标准错误里说明白：「没有桌面 app 借出命令行：请在 dodoer 桌面 app 里打开这个工作区，并打开『把这台电脑借给智能体』」。
+- 这些文件跟着借出走（`web::host_tunnel` 的 `spawn_file_sync`）：有桌面借出就写，`known_hosts` 里是所有借出的桌面的主机密钥，`User` 用最近用的那台的登录名；最后一个借出的桌面走了 30 秒后删私钥和 `known_hosts`（事件 socket 重连会先注销再注册，不能一断就换钥匙）。`config` 和 `Include` 那行留着。
+- `config` 最后一行是 `Host *`：`Include` 进来的 `Host` 块即使延续到 `~/.ssh/config` 后面的内容，也等于全局，不影响用户原来的配置。`ControlPath` 是 `<目录>/cm`（只有一台主机，不用 `%C`）；目录路径太长就不开共享连接。`~/.ssh/config` 是符号链接时改它指向的文件。
+- **`codeg-cli desktop proxy`**（新子命令）：按 `codeg-cli` 现有的规则找到本机的 codeg-server（智能体的 shell 里有 `CODEG_CLI_ENDPOINT_FILE`），连它的 `GET /api/cli_host_tunnel`（CLI 的路由，回环端口上用 CLI 自己的令牌；能力名 `host_tunnel`），把自己的标准输入输出接到通道上。服务器先配好对再升级 WebSocket，所以每种失败都是一句话，代理把它打在标准错误上、`ssh` 原样显示：没人借出时是「No dodoer desktop app lends this workspace its command line right now…」，还有每分钟超过 6 条、桌面拒绝、15 秒没拨回来。用户在设置里关了「命令行访问」时，`ssh desktop` 也不通。
 - 私钥是服务器上的一个文件，不是只在内存里（`ssh` 客户端要读文件）。它只有这个账号能读，借出结束就删，而且**单有它没用**：到那台电脑的路只有 codeg-server 里的通道这一条，通道只在桌面 app 借出时存在。
 - 服务器上别的账号用不了：入口要这个账号的 codeg-server 的 token。Cowork 里每个员工一个 codeg-server，只够得着自己连上来的那台电脑。
 
@@ -185,7 +188,7 @@ codeg-mcp 多一个工具组（设置里和浏览器、电脑操作并排），�
 |---|---|---|
 | 0 | 实测脚本 | 已完成（第 4 节） |
 | 1 | 桌面端：状态栏里的开关、起停 `sshd`、临时密钥、`PATH`、异常退出清理、「自检」（app 自己连一次、跑一条命令）。**代码写了，待 Mac 上验** | Mac 上打开开关，自检通过、列出 `node` `brew`；关开关、退出 app 后端口没了；强杀 app 后 `sshd` 跟着没了；dodoer 名下的权限是否生效 |
-| 2 | 通道：`host_ssh`、`shell` 能力、`host_tunnel`、`/ws/host-tunnel`、`codeg-cli desktop proxy`、服务器上的密钥和 `ssh` 配置 | 在服务器终端里 `ssh desktop sw_vers` 有结果；关开关后立刻连不上 |
+| 2 | 通道：`host_ssh`、`shell` 能力、`host_tunnel`、`/ws/host-tunnel`、`codeg-cli desktop proxy`、服务器上的密钥和 `ssh` 配置。**代码写了，CI 上测过，待真机验** | 在服务器终端里 `ssh desktop sw_vers` 有结果；关开关后立刻连不上 |
 | 3 | 智能体和界面：MCP 工具组、状态栏标记、一键断开、命令记录 | 智能体自己在 Mac 上完成一次排查；记录里看得到命令 |
 | 4 | 文档（`COWORK.md`）、Cowork 侧 nginx 的核对、发版 | |
 

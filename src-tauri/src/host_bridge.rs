@@ -506,44 +506,123 @@ impl ComputerToolAccess for HostBridgeClient {
 pub mod ws_host {
     use async_trait::async_trait;
     use serde_json::{json, Value};
+    use tokio::sync::watch;
+    use tokio_tungstenite::tungstenite::http::HeaderMap;
 
     use super::BridgeCall;
+    use crate::host_ssh::tunnel::{self, ShellHost};
 
-    /// What a desktop app lends a server: its tabs, scoped to one window.
+    /// Where a tunnel the server asked for is dialed, with the event
+    /// socket's own credentials.
+    #[derive(Debug, Clone)]
+    pub struct TunnelDial {
+        /// `wss://…/ws/host-tunnel?id=…`
+        pub url: String,
+        pub token: String,
+        pub headers: HeaderMap,
+    }
+
+    /// What a desktop app lends a server: its tabs, scoped to one window;
+    /// and (Cowork fork, `host_ssh`) the computer's shell.
     #[async_trait]
     pub trait WsHost: Send + Sync {
         /// What to register with: `["browser"]`, or nothing while the app's
-        /// own switch is off.
+        /// own switch is off. `shell` is added beside it by
+        /// [`registration`] when there is one.
         async fn capabilities(&self) -> Vec<String>;
         /// The window behind the socket, for the server's logs.
         fn window(&self) -> String;
         /// Run one call; the outcome as `super::dispatch` gives it.
         async fn dispatch(&self, call: BridgeCall) -> Value;
+        /// The shell this app lends the socket's server now, if it does.
+        async fn shell(&self) -> Option<ShellHost> {
+            None
+        }
+        /// Told whenever what [`capabilities`](Self::capabilities) or
+        /// [`shell`](Self::shell) answer may have changed: the socket
+        /// registers again.
+        fn changes(&self) -> Option<watch::Receiver<u64>> {
+            None
+        }
+        /// Open the tunnel the server asked for (`host_tunnel`): let
+        /// `client_key` in, dial `dial`, join it to the shell. `Ok` once it
+        /// runs on its own; `Err` says why not, for `host_tunnel_result`.
+        async fn open_tunnel(&self, client_key: String, dial: TunnelDial) -> Result<(), String> {
+            let _ = (client_key, dial);
+            Err("this app lends no shell".to_string())
+        }
     }
 
     /// The window behind the socket got focus.
     pub const FOCUS_FRAME: &str = r#"{"action":"host_focus"}"#;
 
-    /// Whether `frame` is a `server_info` saying the server takes hosts.
-    pub fn server_takes_hosts(frame: &Value) -> bool {
+    /// Whether `frame` is a `server_info` naming `feature`.
+    fn server_info_names(frame: &Value, feature: &str) -> bool {
         frame.get("type").and_then(Value::as_str) == Some("server_info")
             && frame
                 .get("features")
                 .and_then(Value::as_array)
-                .is_some_and(|features| {
-                    features
-                        .iter()
-                        .any(|f| f.as_str() == Some(crate::web::host_registry::FEATURE))
-                })
+                .is_some_and(|features| features.iter().any(|f| f.as_str() == Some(feature)))
     }
 
-    pub fn register_frame(capabilities: &[String], window: &str) -> String {
-        json!({
+    /// Whether `frame` is a `server_info` saying the server takes hosts.
+    pub fn server_takes_hosts(frame: &Value) -> bool {
+        server_info_names(frame, crate::web::host_registry::FEATURE)
+    }
+
+    /// Whether `frame` is a `server_info` saying the server takes shells.
+    pub fn server_takes_shells(frame: &Value) -> bool {
+        server_info_names(frame, tunnel::FEATURE)
+    }
+
+    pub fn register_frame(capabilities: &[String], window: &str, shell: Option<&ShellHost>) -> String {
+        let mut frame = json!({
             "action": "host_register",
             "capabilities": capabilities,
             "window": window,
+        });
+        if let Some(shell) = shell {
+            frame["shell"] = json!(shell);
+        }
+        frame.to_string()
+    }
+
+    /// What `host` registers with, on a socket whose server takes shells or
+    /// not: its capabilities, and its shell (with `shell`) when it lends one.
+    pub async fn registration(host: &dyn WsHost, takes_shells: bool) -> String {
+        let mut capabilities = host.capabilities().await;
+        let shell = if takes_shells { host.shell().await } else { None };
+        if shell.is_some() {
+            capabilities.push(tunnel::CAPABILITY.to_string());
+        }
+        register_frame(&capabilities, &host.window(), shell.as_ref())
+    }
+
+    /// A `host_tunnel`: its id and the key to let in.
+    pub fn parse_tunnel(frame: &Value) -> Option<(String, String)> {
+        if frame.get("type").and_then(Value::as_str) != Some("host_tunnel") {
+            return None;
+        }
+        let id = frame.get("tunnel_id")?.as_str()?.to_string();
+        let key = frame.get("client_key")?.as_str()?.to_string();
+        Some((id, key))
+    }
+
+    /// Why tunnel `tunnel_id` will not be dialed.
+    pub fn tunnel_result_frame(tunnel_id: &str, error: &str) -> String {
+        json!({
+            "action": "host_tunnel_result",
+            "tunnel_id": tunnel_id,
+            "error": error,
         })
         .to_string()
+    }
+
+    /// Where tunnel `tunnel_id` is dialed, given the event socket's address
+    /// (`…/ws/events`).
+    pub fn tunnel_url(events_url: &str, tunnel_id: &str) -> String {
+        let base = events_url.strip_suffix("/ws/events").unwrap_or(events_url);
+        format!("{base}{}?id={tunnel_id}", tunnel::TUNNEL_PATH)
     }
 
     /// A `host_call`: its id, and the call — `None` when this app cannot
@@ -650,12 +729,46 @@ mod tests {
     #[test]
     fn ws_host_frames_match_the_servers_messages() {
         use crate::web::ws_attach::{ClientMsg, ServerMsg};
-        let register = ws_host::register_frame(&["browser".to_string()], "remote-workspace-3");
+        let register =
+            ws_host::register_frame(&["browser".to_string()], "remote-workspace-3", None);
         assert!(matches!(
             serde_json::from_str::<ClientMsg>(&register).unwrap(),
-            ClientMsg::HostRegister { ref capabilities, window: Some(ref w) }
+            ClientMsg::HostRegister { ref capabilities, window: Some(ref w), shell: None }
                 if capabilities == &["browser"] && w == "remote-workspace-3"
         ));
+        let shell = crate::host_ssh::ShellHost {
+            host_key: "ssh-ed25519 AAAA".into(),
+            user: "me".into(),
+            platform: Some("macos".into()),
+        };
+        let lending = ws_host::register_frame(
+            &["browser".to_string(), "shell".to_string()],
+            "remote-workspace-3",
+            Some(&shell),
+        );
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(&lending).unwrap(),
+            ClientMsg::HostRegister { shell: Some(ref s), .. } if *s == shell
+        ));
+        let order = serde_json::to_value(ServerMsg::HostTunnel {
+            tunnel_id: "t9".into(),
+            client_key: "ssh-ed25519 BBBB".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            ws_host::parse_tunnel(&order),
+            Some(("t9".to_string(), "ssh-ed25519 BBBB".to_string()))
+        );
+        assert_eq!(ws_host::parse_tunnel(&serde_json::json!({"type": "pong"})), None);
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(&ws_host::tunnel_result_frame("t9", "no")).unwrap(),
+            ClientMsg::HostTunnelResult { ref tunnel_id, error: Some(ref e) }
+                if tunnel_id == "t9" && e == "no"
+        ));
+        assert_eq!(
+            ws_host::tunnel_url("wss://a.example/ws/events", "t9"),
+            "wss://a.example/ws/host-tunnel?id=t9"
+        );
         let result = ws_host::result_frame(9, serde_json::json!({"tabs": []}));
         assert!(matches!(
             serde_json::from_str::<ClientMsg>(&result).unwrap(),
@@ -687,6 +800,18 @@ mod tests {
             ws_host::parse_call(&serde_json::json!({"type": "pong"})),
             None
         );
+    }
+
+    #[test]
+    fn only_a_server_info_naming_host_ssh_takes_shells() {
+        let info = serde_json::to_value(crate::web::ws_attach::ServerMsg::ServerInfo(
+            crate::compat::server_info(),
+        ))
+        .unwrap();
+        assert!(ws_host::server_takes_shells(&info));
+        assert!(!ws_host::server_takes_shells(&serde_json::json!({
+            "type": "server_info", "features": ["host_bridge_ws"]
+        })));
     }
 
     #[test]

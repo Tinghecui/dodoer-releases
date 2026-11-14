@@ -2279,6 +2279,13 @@ pub fn build_router_with_proxy_auth(
             crate::web::browser_tunnel::frame::TUNNEL_PATH,
             get(crate::web::browser_tunnel::ws_handler),
         )
+        // Cowork fork: a desktop app dialing a tunnel to the shell it lends
+        // (`web::host_tunnel`, `docs/host-ssh.md`).
+        .route(
+            crate::host_ssh::tunnel::TUNNEL_PATH,
+            get(crate::web::host_tunnel::desktop_end)
+                .layer(Extension(Arc::clone(&state.host_registry))),
+        )
         .layer(middleware::from_fn(move |req, next| {
             auth::require_auth(req, next, web_auth_for_ws.clone())
         }));

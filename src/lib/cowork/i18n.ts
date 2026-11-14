@@ -122,7 +122,7 @@ const en = {
   hostSshHintOff:
     "Once lent, the agents of {server} can run any command on this computer as you, and read and change your files. Lend it only to a server you trust.",
   hostSshHintOn:
-    "The agents of {server} can run commands on this computer as you, while this window is open.",
+    "The agents of {server} can run commands on this computer as you (they use `ssh desktop`), while this window is open.",
   hostSshServerNotReady:
     "This server cannot reach a lent computer yet — it needs a newer Cowork. For now lending only readies this computer, and the self-test is all that logs in.",
   hostSshNotRunning: "The SSH service did not start: {detail}",
@@ -238,7 +238,7 @@ const zhCN: Record<CoworkTextKey, string> = {
   hostSshHintOff:
     "借出后，「{server}」的智能体能以你的身份在这台电脑上执行任何命令、读写你的文件。只借给你信任的服务器。",
   hostSshHintOn:
-    "「{server}」的智能体可以以你的身份在这台电脑上执行命令，只在这个窗口开着时有效。",
+    "「{server}」的智能体可以以你的身份在这台电脑上执行命令（它们用 `ssh desktop`），只在这个窗口开着时有效。",
   hostSshServerNotReady:
     "这台服务器现在还连不到借出的电脑，要等 Cowork 升级。目前借出只是把这台电脑这一侧准备好，只有自检会登录进来。",
   hostSshNotRunning: "SSH 服务没有启动：{detail}",
@@ -353,7 +353,7 @@ const zhTW: Record<CoworkTextKey, string> = {
   hostSshHintOff:
     "借出後，「{server}」的智慧體能以你的身分在這台電腦上執行任何命令、讀寫你的檔案。只借給你信任的伺服器。",
   hostSshHintOn:
-    "「{server}」的智慧體可以以你的身分在這台電腦上執行命令，只在這個視窗開著時有效。",
+    "「{server}」的智慧體可以以你的身分在這台電腦上執行命令（它們用 `ssh desktop`），只在這個視窗開著時有效。",
   hostSshServerNotReady:
     "這台伺服器現在還連不到借出的電腦，要等 Cowork 升級。目前借出只是把這台電腦這一側準備好，只有自我檢查會登入進來。",
   hostSshNotRunning: "SSH 服務沒有啟動：{detail}",

@@ -3,8 +3,9 @@
 //!
 //! Cowork fork. A remote window shows one switch, for its own server; the
 //! answer is kept in `app_metadata` by the server's address and outlives the
-//! app. Off until a person turns it on: on, that server's agents are meant
-//! to run commands here as that person.
+//! app. Off until a person turns it on: on, that server's agents run
+//! commands here as that person, through the tunnels the window's event
+//! socket opens (`remote_proxy`, `DesktopWsHost::open_tunnel`).
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -56,9 +57,13 @@ pub fn start(app: &tauri::AppHandle, conn: &DatabaseConnection, data_dir: &Path)
     let lending = Lending::new(Sshd::new(data_dir.to_path_buf()), lent);
     let mut changes = lending.subscribe();
     let emitter = EventEmitter::Tauri(app.clone());
+    let sockets = app.clone();
     tauri::async_runtime::spawn(async move {
         while changes.changed().await.is_ok() {
             emit_event(&emitter, HOST_SSH_CHANGED_EVENT, ());
+            // The servers hear it too: a shell lent, or no longer
+            // (`host_register` with or without `shell`).
+            crate::commands::remote_proxy::refresh_host_registrations(&sockets);
         }
     });
     app.manage(lending);

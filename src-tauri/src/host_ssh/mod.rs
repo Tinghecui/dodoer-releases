@@ -7,13 +7,20 @@
 //! point somewhere else. The SSH service ([`Sshd`]) runs only while a window
 //! of a lent server is open, and stops with the last of them.
 //!
-//! This is the desktop app's half. Nothing reaches the service from outside
-//! yet: the tunnel a server's `ssh` comes through is the next step
-//! (`docs/host-ssh.md` 5.2), and until then only the self-test logs in.
+//! A server's `ssh` reaches the service through a tunnel the app dials
+//! itself (`tunnel`, `docs/host-ssh.md` 5.2): the app lets the server's key
+//! in for it ([`Lending::admit`]) and ends it the moment the lending ends
+//! ([`Lending::withdrawn`]). The server's side of `ssh desktop` — its key,
+//! the host keys it accepts, its `ssh` configuration — is `client`.
 
+pub mod client;
 mod sshd;
+pub mod tunnel;
 
+#[cfg(test)]
+pub(crate) use sshd::test_needs_sshd;
 pub use sshd::{login_path, stop_survivor, supported, SelfTest, Sshd, SshdEndpoint, SshdError};
+pub use tunnel::ShellHost;
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -158,6 +165,65 @@ impl Lending {
         self.sshd.self_test().await
     }
 
+    /// The shell this computer lends `base_url`'s server now: lent to it,
+    /// and the service up.
+    pub async fn shell_for(&self, base_url: &str) -> Option<ShellHost> {
+        if !self.is_lent(base_url).await {
+            return None;
+        }
+        let endpoint = self.sshd.endpoint().await?;
+        Some(ShellHost {
+            host_key: endpoint.host_key,
+            user: endpoint.user,
+            platform: Some(std::env::consts::OS.to_string()),
+        })
+    }
+
+    /// Let `client_key` in for a tunnel of `base_url`'s server, if this
+    /// computer is lent to it; the port to join the tunnel to. `Err` says
+    /// why not, for the server to pass on.
+    pub async fn admit(&self, base_url: &str, client_key: &str) -> Result<u16, String> {
+        if !self.is_lent(base_url).await {
+            return Err("this computer is not lent to this server any more".to_string());
+        }
+        let endpoint = self
+            .sshd
+            .endpoint()
+            .await
+            .ok_or_else(|| "the SSH service on this computer is not running".to_string())?;
+        self.sshd
+            .authorize(client_key)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(endpoint.port)
+    }
+
+    /// Resolves once a tunnel of `base_url`'s server joined to the service
+    /// on `port` must end: the lending taken back, or that service gone.
+    pub async fn withdrawn(&self, base_url: &str, port: u16) {
+        // Subscribed before looking, so no change slips between the two.
+        let mut changes = self.subscribe();
+        loop {
+            let still = self.is_lent(base_url).await
+                && self
+                    .sshd
+                    .endpoint()
+                    .await
+                    .is_some_and(|endpoint| endpoint.port == port);
+            if !still || changes.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    async fn is_lent(&self, base_url: &str) -> bool {
+        self.state
+            .lock()
+            .await
+            .lent
+            .contains(&server_key(base_url))
+    }
+
     /// The app is going: stop the service whatever is lent.
     pub async fn shut_down(&self) {
         let _one = self.reconciling.lock().await;
@@ -281,6 +347,41 @@ mod tests {
         assert!(lending.status("https://a.example").await.running);
         lending.set_lent("https://a.example", false).await;
         assert!(!lending.status("https://a.example").await.running);
+    }
+
+    /// What a tunnel needs from the lending: the shell to register, a key
+    /// let in for the server lent to only, and an end when the lending ends.
+    #[tokio::test]
+    async fn a_tunnel_is_admitted_for_the_lent_server_and_ended_with_the_lending() {
+        let (lending, _state) = lending(&["https://a.example"]);
+        let _window = lending.window_opened("https://a.example").await;
+        if !supported() {
+            assert!(!sshd::test_needs_sshd(), "no sshd on this machine");
+            assert_eq!(lending.shell_for("https://a.example").await, None);
+            return;
+        }
+        let shell = lending.shell_for("https://a.example/").await.expect("lent and running");
+        assert!(shell.is_sound(), "{shell:?}");
+        assert_eq!(lending.shell_for("https://b.example").await, None);
+
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAA";
+        assert!(lending.admit("https://b.example", key).await.is_err());
+        assert!(lending.admit("https://a.example", "not a key").await.is_err());
+        let port = lending.admit("https://a.example", key).await.unwrap();
+        assert_eq!(lending.endpoint().await.unwrap().port, port);
+
+        let watching = Arc::clone(&lending);
+        let ended = tokio::spawn(async move {
+            watching.withdrawn("https://a.example", port).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!ended.is_finished(), "still lent");
+        lending.set_lent("https://a.example", false).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), ended)
+            .await
+            .expect("ends with the lending")
+            .unwrap();
+        assert!(lending.admit("https://a.example", key).await.is_err());
     }
 
     /// A closed window is put right by a task of its own: wait for it.

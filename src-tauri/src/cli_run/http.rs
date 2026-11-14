@@ -67,6 +67,13 @@ pub fn routes(service: Arc<CliRunService>) -> Router {
             "/cli_taxonomy_apply",
             post(taxonomy_apply).layer(DefaultBodyLimit::max(TAXONOMY_PLAN_BODY_LIMIT)),
         )
+        // Cowork fork: `ssh desktop`'s proxy (a WebSocket; `web::host_tunnel`).
+        // `/` + `host_ssh::tunnel::CLI_TUNNEL_ROUTE` (held to it by the test
+        // in `web::host_tunnel`).
+        .route(
+            "/cli_host_tunnel",
+            axum::routing::get(crate::web::host_tunnel::cli_end),
+        )
         .layer(Extension(service))
 }
 

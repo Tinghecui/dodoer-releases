@@ -125,6 +125,10 @@ fn main() -> ExitCode {
     // on a graceful exit.
     let _log_guard = codeg_lib::logging::init::init_server();
     codeg_lib::cowork::log_startup();
+    // Cowork fork: Sentry, when CODEG_TELEMETRY_* says so (`telemetry`). Now,
+    // before any thread exists: threads started later inherit the client.
+    // Dropped before `_log_guard`, so what is queued is sent first.
+    let _telemetry = codeg_lib::telemetry::init_server();
 
     // macOS must not pause the process every agent session runs through when
     // memory runs out. Upstream does this in the desktop app, where the daemon

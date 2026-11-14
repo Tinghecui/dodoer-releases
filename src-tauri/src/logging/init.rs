@@ -557,6 +557,8 @@ fn build_subscriber(
                         .with_writer(non_blocking)
                         .with_filter(filter_fn(|meta| !file_sink_has_own_copy(meta.target()))),
                 )
+                // Cowork fork: Sentry, idle until `telemetry::init_server`.
+                .with(crate::telemetry::tracing_layers())
                 .init();
             Some(guard)
         }
@@ -568,6 +570,8 @@ fn build_subscriber(
                 .with(filter_fn(|meta| !is_credential_dump_target(meta.target())))
                 .with(fmt::layer().with_writer(std::io::stderr))
                 .with(BufferEmitLayer)
+                // Cowork fork: Sentry, idle until `telemetry::init_server`.
+                .with(crate::telemetry::tracing_layers())
                 .init();
             None
         }

@@ -60,7 +60,10 @@ computer-helper = ["dep:x11rb"]
 # The `codeg-server` binary. Off unless asked for, for the same reason: the
 # desktop app serves its web interface from its own process and has no use
 # for a second server, so it must not ship one (70–90 MB) in its bundle.
-server-bin = []
+server-bin = ["telemetry"]
+# Cowork fork: reporting to Sentry (`src/telemetry`, docs/telemetry.md). On with
+# `server-bin` only; still off at run time unless CODEG_TELEMETRY_DSN is set.
+telemetry = ["dep:sentry-core", "dep:sentry-tracing"]
 # The `codeg-cli` binary: the headless client of a running codeg (`codeg-cli
 # run …`). Off unless asked for, like the other sidecars: the copy that ships
 # in the desktop bundle is the one `prepare-sidecars` builds.
@@ -275,6 +278,10 @@ semver = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt", "registry", "std"] }
 tracing-appender = "0.2"
+# Cowork fork: telemetry (`src/telemetry`). The SDK's own transports are off:
+# envelopes go out through the reqwest above.
+sentry-core = { version = "0.49.5", default-features = false, features = ["client", "logs"], optional = true }
+sentry-tracing = { version = "0.49.5", default-features = false, features = ["logs"], optional = true }
 jsonc-parser = { version = "0.34.0", features = ["cst", "serde"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

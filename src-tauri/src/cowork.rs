@@ -30,6 +30,7 @@
 //! | `CODEG_HOST`, `CODEG_PORT`, `CODEG_DATA_DIR`, `CODEG_STATIC_DIR` | upstream meaning; only the `COWORK_` alias is added. |
 //! | `CODEG_LISTEN` / `COWORK_LISTEN` / `PASEO_LISTEN` | `host:port` fallback for whichever of host/port is still unset. |
 //! | `CODEG_PUBLIC_ORIGIN` | portal mode: extra browser origins (comma-separated) allowed besides the request's own. |
+//! | `CODEG_TELEMETRY_*` | reporting to Sentry, off unless the DSNs are set; read and removed from the environment by [`crate::telemetry::take_env`]. See `docs/telemetry.md`. |
 //! | `CODEG_SHARED_NPM_PREFIX` | an npm prefix (absolute) where the administrator installed agents for every user, read-only to us (Cowork: `/usr`, its ACP adapters and CLIs). npx agents are also looked up in its `bin/` and read their version from its `lib/node_modules` ([`shared_npm_prefix`]). |
 //!
 //! In portal mode `CODEG_BRIDGE_PORTS` defaults to `off` (the ports after
@@ -395,6 +396,9 @@ pub fn init_process_env() -> Result<(), String> {
             .map_err(|e| format!("cannot create CODEG_PROJECTS_ROOT {}: {e}", root.display()))?;
     }
 
+    // `CODEG_TELEMETRY_*`: read here and removed, like the secrets below.
+    crate::telemetry::take_env();
+
     let stripped = strip_secret_env();
     // The original environment block stays readable at /proc/<pid>/environ
     // after `remove_var`; hide it (and our memory) from same-user processes
@@ -605,13 +609,17 @@ pub fn self_update_allowed() -> bool {
 
 // ─── HTTP API ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CoworkInfo {
     pub product: String,
     pub projects_root: Option<String>,
     pub portal: bool,
     pub update_disabled: bool,
+    /// Set when the web UI should report to Sentry (through
+    /// `/api/telemetry_envelope`); absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<crate::telemetry::ClientTelemetry>,
 }
 
 impl From<&CoworkSettings> for CoworkInfo {
@@ -624,6 +632,7 @@ impl From<&CoworkSettings> for CoworkInfo {
                 .map(|p| p.to_string_lossy().into_owned()),
             portal: s.portal,
             update_disabled: s.update_disabled,
+            telemetry: None,
         }
     }
 }
@@ -713,7 +722,9 @@ pub fn prepare_project_dir(root: &Path, name: &str) -> Result<PathBuf, AppComman
 }
 
 pub async fn cowork_info() -> Json<CoworkInfo> {
-    Json(CoworkInfo::from(&settings()))
+    let mut info = CoworkInfo::from(&settings());
+    info.telemetry = crate::telemetry::client_config();
+    Json(info)
 }
 
 // A new project is a git repository from the start (branch `main`, one empty
@@ -905,6 +916,11 @@ pub fn api_routes() -> Router {
     Router::new()
         .route("/cowork_info", post(cowork_info))
         .route("/cowork_create_project", post(cowork_create_project))
+        // The web UI's telemetry, forwarded to Sentry (`crate::telemetry`).
+        .route(
+            crate::telemetry::ENVELOPE_PATH,
+            post(crate::telemetry::forward_envelope),
+        )
         // The resource meter (`system_resources`); the desktop app has it as
         // a command too.
         .route(

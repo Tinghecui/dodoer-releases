@@ -1,0 +1,108 @@
+{
+  "text": [
+    {
+      "name": "plain message",
+      "in": "Unknown config option: fast",
+      "out": "Unknown config option: fast"
+    },
+    {
+      "name": "API path stays",
+      "in": "POST /api/acp_disconnect failed",
+      "out": "POST /api/acp_disconnect failed"
+    },
+    {
+      "name": "home path",
+      "in": "failed to open /home/cw-james/work/secret-project/src/main.rs: No such file",
+      "out": "failed to open ~/<redacted> No such file"
+    },
+    {
+      "name": "macOS home path in quotes",
+      "in": "cwd \"/Users/bob/acme\" missing",
+      "out": "cwd \"~/<redacted>\" missing"
+    },
+    {
+      "name": "deep path keeps its first segment",
+      "in": "exec /usr/local/lib/cowork-codeg/codeg-mcp failed",
+      "out": "exec /usr/<redacted> failed"
+    },
+    {
+      "name": "Windows path",
+      "in": "C:\\Users\\bob\\proj\\a.txt missing",
+      "out": "<path> missing"
+    },
+    {
+      "name": "URL keeps scheme and host only",
+      "in": "git clone https://ghp_abc@github.com/acme/secret-repo.git?ref=main#readme failed",
+      "out": "git clone https://github.com/<redacted> failed"
+    },
+    {
+      "name": "websocket URL with a token",
+      "in": "wss://james.example.com/ws/events?token=abc closed",
+      "out": "wss://james.example.com/<redacted> closed"
+    },
+    {
+      "name": "bare host URL",
+      "in": "connect https://api.example.com/ timed out",
+      "out": "connect https://api.example.com/ timed out"
+    },
+    {
+      "name": "bearer token",
+      "in": "Authorization: Bearer sk-ant-api03-AbCdEf0123456789",
+      "out": "Authorization: <redacted> <redacted>"
+    },
+    {
+      "name": "key=value secrets",
+      "in": "token=abc123def password: hunter2",
+      "out": "token=<redacted> password: <redacted>"
+    },
+    {
+      "name": "words that only contain token stay",
+      "in": "max_tokens=5 token_source=File",
+      "out": "max_tokens=5 token_source=File"
+    },
+    {
+      "name": "JWT",
+      "in": "id eyJnotreal.notreal-payload.not_signed ok",
+      "out": "id <redacted> ok"
+    },
+    {
+      "name": "e-mail address",
+      "in": "mail james@example.com about it",
+      "out": "mail <email> about it"
+    },
+    {
+      "name": "hex key",
+      "in": "key 0123456789abcdef0123456789abcdef rejected",
+      "out": "key <redacted> rejected"
+    },
+    {
+      "name": "UUIDs stay",
+      "in": "connection 3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b closed",
+      "out": "connection 3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b closed"
+    },
+    {
+      "name": "long words without digits stay",
+      "in": "abcdefghijklmnopqrstuvwxyzabcdefghij",
+      "out": "abcdefghijklmnopqrstuvwxyzabcdefghij"
+    }
+  ],
+  "fields": [
+    {
+      "name": "content fields are dropped, the rest scrubbed",
+      "in": {
+        "working_dir": "/srv/x",
+        "cwd": "/srv/y",
+        "count": 3,
+        "ok": true,
+        "note": "see /home/a/b",
+        "nested": { "prompt": "hello", "ids": ["a@b.co", 1] }
+      },
+      "out": {
+        "count": 3,
+        "ok": true,
+        "note": "see ~/<redacted>",
+        "nested": { "ids": ["<email>", 1] }
+      }
+    }
+  ]
+}

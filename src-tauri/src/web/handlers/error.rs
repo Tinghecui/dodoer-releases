@@ -29,7 +29,15 @@ fn status_for_app_error_code(code: AppErrorCode) -> StatusCode {
 impl IntoResponse for AppCommandError {
     fn into_response(self) -> Response {
         let status = status_for_app_error_code(self.code);
-        (status, Json(self)).into_response()
+        // Cowork fork: what failed, for the telemetry of a 5xx (`crate::telemetry`).
+        let report = status
+            .is_server_error()
+            .then(|| crate::telemetry::ApiError::of(&self));
+        let mut response = (status, Json(self)).into_response();
+        if let Some(report) = report {
+            response.extensions_mut().insert(report);
+        }
+        response
     }
 }
 
@@ -51,6 +59,22 @@ mod tests {
             status_for_app_error_code(AppErrorCode::AuthenticationFailed),
             StatusCode::UNPROCESSABLE_ENTITY
         );
+    }
+
+    /// A 5xx carries what failed for telemetry; a 4xx does not.
+    #[test]
+    fn server_errors_carry_their_code_for_telemetry() {
+        let response = AppCommandError::database_error("disk full").into_response();
+        let report = response
+            .extensions()
+            .get::<crate::telemetry::ApiError>()
+            .expect("a 500 carries its error");
+        assert_eq!(report.code, "database_error");
+        let response = AppCommandError::invalid_input("bad").into_response();
+        assert!(response
+            .extensions()
+            .get::<crate::telemetry::ApiError>()
+            .is_none());
     }
 
     /// #165: a row that is not there (or was soft-deleted) is a 404 end to end

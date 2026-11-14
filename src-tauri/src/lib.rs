@@ -83,6 +83,8 @@ pub mod supervise;
 // Cowork fork: CPU / memory / disk of this machine, for the resource meter.
 pub mod system_resources;
 pub mod taxonomy;
+// Cowork fork: errors, API timings and connection logs to Sentry (docs/telemetry.md).
+pub mod telemetry;
 mod terminal;
 pub mod turn_timings;
 pub mod update;

@@ -2263,7 +2263,12 @@ pub fn build_router_with_proxy_auth(
             let path = req.uri().path().to_string();
             let request_id = uuid::Uuid::new_v4();
             let span = tracing::info_span!("http", %method, %path, %request_id);
-            next.run(req).instrument(span).await
+            // Cowork fork: a Sentry transaction per request, a report per 5xx
+            // (`crate::telemetry`); straight through when telemetry is off.
+            crate::telemetry::trace_request(req, request_id, move |req| {
+                next.run(req).instrument(span)
+            })
+            .await
         },
     ));
 

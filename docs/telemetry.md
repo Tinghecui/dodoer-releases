@@ -1,6 +1,6 @@
 # 遥测：看清「哪里坏了、是谁的问题」
 
-状态：方案待确认，产品代码还没写。
+状态：第 1 步（服务端）已写，见 `src-tauri/src/telemetry/`；前端、对话收尾和反馈还没做。实现和下面方案不一样的地方记在第 10 节。
 
 ## 1. 问题
 
@@ -287,3 +287,11 @@ pub fn client_config() -> Option<ClientTelemetry>;
 - **先上 OpenTelemetry 再转给各家**：要在服务器上多跑一个转发程序。以后真要换平台，改的也只是 `telemetry.rs` 和 `sentry.ts` 两个文件。
 - **录屏**：屏幕上全是对话和代码，全遮了又没什么可看；免费档只有 50 段。等接行为分析时再议。
 - **从外面定时探测服务器**：推后。部署上如果限制了来源地址，探测进不来；心跳加浏览器那头的数据已经够用。
+
+## 10. 实现时改了的地方（第 1 步）
+
+- **依赖**：只用 `sentry-core` 和 `sentry-tracing`（都关掉默认 feature），不用 `sentry` 这个总包。总包的默认集成（panic、上下文、调用栈）本来就不要，它的传输层要 reqwest 0.13，会再带一套 HTTP/TLS。发送自己写：一个线程、一个有界队列、仓库已有的 reqwest 0.12。
+- **初始化分两处**：读环境变量并删掉放在 `cowork::init_process_env`（那里是唯一保证单线程、最先读环境的地方）；建客户端放在日志建好之后（它要打日志），仍在 tokio runtime 之前。日志层先装上，客户端没建好之前什么都不做。
+- **轮询名单不放共享的 JSON 文件**：Docker 构建的前后端两段各只拷自己的目录，跨目录读文件会让其中一段编不过。名单只在 Rust 里（`config::POLLED_COMMANDS`），经 `cowork_info.telemetry.commandSampleRates` 告诉前端。脱敏用例只有测试读，放在 `src/lib/telemetry/scrub-cases.json`，Rust 测试用 `include_str!` 读它。
+- **`trace_request` 的签名**：多传 `request_id` 和「后面的处理」（一个闭包），因为 `request_id` 是现有中间件生成的。
+- **限速**：Sentry 回的限速头按最长的那个整体暂停，不分类别。

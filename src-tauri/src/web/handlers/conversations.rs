@@ -434,6 +434,12 @@ pub async fn update_conversation_title(
         params.conversation_id,
     )
     .await;
+    // Cowork fork: and to the agent's own session (`crate::agent_title_sync`).
+    crate::agent_title_sync::sync_conversation_title_to_agent(
+        &state.db.conn,
+        params.conversation_id,
+    )
+    .await;
     Ok(Json(()))
 }
 

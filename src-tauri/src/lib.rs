@@ -15,6 +15,8 @@
 
 pub mod acp;
 pub mod acp_transcript;
+// Cowork fork: a rename in codeg reaches the agent's own session (Claude Code).
+pub mod agent_title_sync;
 pub mod agent_turn_files;
 pub use acp::{
     idle_sweep_task, idle_timeout_from_env, lifecycle_subscriber_task, SWEEP_INTERVAL_SECS,

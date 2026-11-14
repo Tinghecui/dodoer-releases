@@ -3289,6 +3289,8 @@ pub async fn update_conversation_title(
     update_conversation_title_core(&db.conn, conversation_id, title).await?;
     emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, conversation_id).await;
     sync_conversation_title_to_channels_core(&db.conn, &chat_channel_manager, conversation_id).await;
+    // Cowork fork: and to the agent's own session (`crate::agent_title_sync`).
+    crate::agent_title_sync::sync_conversation_title_to_agent(&db.conn, conversation_id).await;
     Ok(())
 }
 

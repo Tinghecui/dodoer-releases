@@ -1747,11 +1747,15 @@ mod tests {
             .collect();
         assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
 
+        // The shell creates the file before `printf` writes its line, so
+        // wait for the line: a file that merely exists may still be empty.
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !output.exists() && Instant::now() < deadline {
+        let mut text = String::new();
+        while text.is_empty() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
+            text = std::fs::read_to_string(&output).unwrap_or_default();
         }
-        let text = std::fs::read_to_string(&output).expect("spawn marker");
+        assert!(!text.is_empty(), "spawn marker");
         assert_eq!(text.lines().count(), 1, "command was run twice");
         manager.kill(&id).expect("the winning child is reachable");
         let _ = std::fs::remove_file(output);

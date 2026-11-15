@@ -228,6 +228,10 @@ pub(crate) fn connection_redirect_policy() -> reqwest::redirect::Policy {
 /// the source chain: the redirect refusal above, the connect error, the TLS
 /// failure. Without this the host-pinning error reaches the user as a bare
 /// "error following redirect" and looks like a bug rather than a decision.
+///
+/// Cowork fork: when the request never got past the proxy, the detail starts
+/// by saying so — the chain alone ("tunnel error: failed to create underlying
+/// connection: … Connection refused") reads like the server is down.
 pub(crate) fn request_error_detail(err: &reqwest::Error) -> String {
     let mut detail = err.to_string();
     let mut source: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(err);
@@ -236,25 +240,86 @@ pub(crate) fn request_error_detail(err: &reqwest::Error) -> String {
         detail.push_str(&cause.to_string());
         source = cause.source();
     }
+    if proxy_unreachable(&detail) {
+        let proxy = env_proxy_label(&crate::network::proxy::current_proxy_env_vars());
+        return format!("{}: {detail}", proxy_unreachable_hint(proxy.as_deref()));
+    }
     detail
+}
+
+/// Cowork fork: the request went to a proxy and could not connect to the proxy
+/// itself — typically a system or app proxy left pointing at a local proxy app
+/// that is no longer running. hyper-util's `TunnelError::ConnectFailed`, the
+/// HTTPS-through-HTTP-proxy path; matched on its message because the type's
+/// path depends on hyper-util features we don't enable ourselves.
+fn proxy_unreachable(detail: &str) -> bool {
+    detail.contains("tunnel error: failed to create underlying connection")
+}
+
+/// The proxy an `https://` request takes from the env (the app's proxy
+/// setting writes it there), without credentials. `None` when the env names
+/// none — the proxy then came from the system settings.
+fn env_proxy_label(vars: &[(String, String)]) -> Option<String> {
+    let value = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
+        .iter()
+        .find_map(|key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v))?;
+    match reqwest::Url::parse(value) {
+        Ok(mut url) if url.has_host() => {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            Some(url.as_str().trim_end_matches('/').to_string())
+        }
+        // A scheme-less `host:port` from the environment (`localhost:7890`
+        // even parses, as a scheme and a path): shown as written, unless it
+        // carries credentials.
+        _ if !value.contains('@') => Some(value.clone()),
+        _ => Some("(an address with credentials that does not parse)".to_string()),
+    }
+}
+
+fn proxy_unreachable_hint(env_proxy: Option<&str>) -> String {
+    match env_proxy {
+        Some(proxy) => format!(
+            "cannot reach the proxy {proxy} (Settings → Proxy, or *_PROXY in the \
+             environment the app was started with) — is the proxy app running?"
+        ),
+        None => "cannot reach the proxy set in the system's network settings — is the \
+                 proxy app running?"
+            .to_string(),
+    }
 }
 
 /// Tauri-managed singleton.
 pub struct RemoteProxyState {
     tasks: Mutex<HashMap<i32, Arc<WsTaskEntry>>>,
     destroyed_window_instances: Mutex<HashSet<String>>,
-    http: reqwest::Client,
-    workspace_http: reqwest::Client,
+    /// Cowork fork: the two clients that go through the user's proxy, built
+    /// on first use and rebuilt when the proxy changes (`proxied`).
+    proxied: std::sync::RwLock<Option<ProxiedClients>>,
     /// Cowork fork: the same two, never through a proxy, for loopback URLs.
     loopback_http: reqwest::Client,
     loopback_workspace_http: reqwest::Client,
 }
 
-impl RemoteProxyState {
-    pub fn new() -> Self {
+/// Cowork fork: the clients a remote request goes out on, and the proxy env
+/// they were built under.
+///
+/// reqwest settles a client's proxy once, when it is built: the `*_PROXY` env
+/// and, on macOS, the system proxy. Built in `RemoteProxyState::new` they
+/// came before `init_proxy_from_db` (the state is `manage`d before `setup`
+/// runs), so the app's own proxy setting never reached a remote workspace, and
+/// changing it — or turning off a system proxy whose app had quit — took a
+/// restart. Same scheme as `forge::http_client`.
+struct ProxiedClients {
+    fingerprint: Vec<(String, String)>,
+    http: reqwest::Client,
+    workspace_http: reqwest::Client,
+}
+
+impl ProxiedClients {
+    fn build(fingerprint: Vec<(String, String)>) -> Self {
         Self {
-            tasks: Mutex::new(HashMap::new()),
-            destroyed_window_instances: Mutex::new(HashSet::new()),
+            fingerprint,
             http: reqwest::Client::builder()
                 .timeout(HTTP_TIMEOUT)
                 .redirect(connection_redirect_policy())
@@ -264,6 +329,23 @@ impl RemoteProxyState {
                 .redirect(connection_redirect_policy())
                 .build()
                 .expect("failed to build reqwest workspace client for remote proxy"),
+        }
+    }
+}
+
+/// Every env var a reqwest client samples its proxy from at build time.
+fn proxy_fingerprint() -> Vec<(String, String)> {
+    let mut fingerprint = crate::network::proxy::current_proxy_env_vars();
+    fingerprint.extend(crate::network::proxy::current_no_proxy_env_vars());
+    fingerprint
+}
+
+impl RemoteProxyState {
+    pub fn new() -> Self {
+        Self {
+            tasks: Mutex::new(HashMap::new()),
+            destroyed_window_instances: Mutex::new(HashSet::new()),
+            proxied: std::sync::RwLock::new(None),
             loopback_http: reqwest::Client::builder()
                 .timeout(HTTP_TIMEOUT)
                 .redirect(connection_redirect_policy())
@@ -282,20 +364,52 @@ impl RemoteProxyState {
     /// (`local_daemon`), or a server behind an SSH tunnel — never goes
     /// through the user's proxy (reqwest does not bypass loopback for
     /// `HTTP_PROXY`, so `127.0.0.1` would be sent to the proxy).
-    fn http_for(&self, url: &str) -> &reqwest::Client {
+    fn http_for(&self, url: &str) -> reqwest::Client {
         if is_loopback_url(url) {
-            &self.loopback_http
+            self.loopback_http.clone()
         } else {
-            &self.http
+            self.proxied(|clients| &clients.http)
         }
     }
 
-    fn workspace_http_for(&self, url: &str) -> &reqwest::Client {
+    fn workspace_http_for(&self, url: &str) -> reqwest::Client {
         if is_loopback_url(url) {
-            &self.loopback_workspace_http
+            self.loopback_workspace_http.clone()
         } else {
-            &self.workspace_http
+            self.proxied(|clients| &clients.workspace_http)
         }
+    }
+
+    /// One of the proxied clients, rebuilt first when the proxy env has
+    /// changed since it was built (the app's proxy setting writes the env).
+    fn proxied(&self, pick: fn(&ProxiedClients) -> &reqwest::Client) -> reqwest::Client {
+        let fingerprint = proxy_fingerprint();
+        if let Ok(guard) = self.proxied.read() {
+            if let Some(clients) = guard.as_ref().filter(|c| c.fingerprint == fingerprint) {
+                return pick(clients).clone();
+            }
+        }
+        let clients = ProxiedClients::build(fingerprint);
+        let client = pick(&clients).clone();
+        if let Ok(mut guard) = self.proxied.write() {
+            *guard = Some(clients);
+        }
+        client
+    }
+
+    /// [`request_error_detail`] for a request sent on [`Self::http_for`] or
+    /// [`Self::workspace_http_for`]. When the proxy itself could not be
+    /// reached, the clients are dropped so the next request reads the proxy
+    /// afresh: a macOS system proxy is not in the env, so turning one off
+    /// would otherwise go unseen until a restart.
+    fn request_failed(&self, err: &reqwest::Error) -> String {
+        let detail = request_error_detail(err);
+        if proxy_unreachable(&detail) {
+            if let Ok(mut guard) = self.proxied.write() {
+                *guard = None;
+            }
+        }
+        detail
     }
 
     /// Register a forced-close cleanup hook for a concrete Tauri webview
@@ -496,7 +610,7 @@ pub async fn remote_http_call(
         request = request.timeout(requested.min(HTTP_TIMEOUT_MAX));
     }
     let response = request.send().await.map_err(|e| {
-        AppCommandError::network("Remote HTTP request failed").with_detail(request_error_detail(&e))
+        AppCommandError::network("Remote HTTP request failed").with_detail(proxy.request_failed(&e))
     })?;
 
     let status = response.status();
@@ -776,7 +890,7 @@ pub async fn remote_upload_attachment(
         .await
         .map_err(|e| {
             AppCommandError::network("Remote upload request failed")
-                .with_detail(request_error_detail(&e))
+                .with_detail(proxy.request_failed(&e))
         })?;
 
     let status = response.status();
@@ -1144,7 +1258,7 @@ async fn upload_one_workspace_path(
                 return workspace_transfer_cancelled();
             }
             AppCommandError::network("Remote workspace upload failed")
-                .with_detail(request_error_detail(&e))
+                .with_detail(proxy.request_failed(&e))
         })?;
 
     let status = response.status();
@@ -1364,7 +1478,7 @@ async fn remote_workspace_download_stream(
             .await
             .map_err(|e| {
                 AppCommandError::network("Remote workspace download ticket failed")
-                    .with_detail(request_error_detail(&e))
+                    .with_detail(proxy.request_failed(&e))
             })?;
         let status = ticket_response.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -1391,7 +1505,7 @@ async fn remote_workspace_download_stream(
             .await
             .map_err(|e| {
                 AppCommandError::network("Remote workspace download failed")
-                    .with_detail(request_error_detail(&e))
+                    .with_detail(proxy.request_failed(&e))
             })?;
 
         let status = response.status();
@@ -2671,6 +2785,103 @@ mod tests {
             outbound_tx,
             lends_host: Default::default(),
         })
+    }
+
+    // ─── A proxy that is not there ──────────────────────────────────────
+
+    /// A request to a remote over an HTTP proxy nothing listens on — the
+    /// system proxy left behind by a proxy app that has quit. Explicit
+    /// `.proxy()` turns off the env / system proxy, so this is hermetic.
+    async fn request_through_dead_proxy() -> reqwest::Error {
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::https("http://127.0.0.1:1").unwrap())
+            .build()
+            .unwrap();
+        client
+            .get("https://remote.example.test/api/health")
+            .send()
+            .await
+            .expect_err("nothing listens on the proxy port")
+    }
+
+    #[tokio::test]
+    async fn a_dead_proxy_is_named_as_the_problem() {
+        let detail = request_error_detail(&request_through_dead_proxy().await);
+        // Also pins hyper-util's wording, which `proxy_unreachable` matches.
+        assert!(proxy_unreachable(&detail), "{detail}");
+        assert!(
+            detail.starts_with("cannot reach the proxy")
+                && detail.contains("is the proxy app running?"),
+            "the hint must come first: {detail}"
+        );
+        assert!(
+            detail.contains("tunnel error"),
+            "the original chain stays: {detail}"
+        );
+    }
+
+    #[test]
+    fn only_a_failed_connection_to_the_proxy_counts_as_unreachable() {
+        assert!(proxy_unreachable(
+            "error sending request for url (https://remote.example.test:8443/api/x): client error \
+             (Connect): tunnel error: failed to create underlying connection: tcp connect error: \
+             Connection refused (os error 61)"
+        ));
+        // Straight to the server, no proxy: the server's problem, not the proxy's.
+        assert!(!proxy_unreachable(
+            "error sending request for url (https://remote.example.test/api/x): client error \
+             (Connect): tcp connect error: Connection refused (os error 61)"
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_proxied_clients_are_built_on_first_use_and_dropped_when_the_proxy_is_gone() {
+        let state = RemoteProxyState::new();
+        // Not at construction: the state is `manage`d before `init_proxy_from_db`.
+        assert!(state.proxied.read().unwrap().is_none());
+        let _ = state.http_for("https://remote.example.test");
+        assert!(state.proxied.read().unwrap().is_some());
+        // Loopback never touches them.
+        let _ = state.http_for("http://127.0.0.1:6801");
+
+        let detail = state.request_failed(&request_through_dead_proxy().await);
+        assert!(proxy_unreachable(&detail), "{detail}");
+        assert!(
+            state.proxied.read().unwrap().is_none(),
+            "the next request must read the proxy afresh"
+        );
+    }
+
+    #[test]
+    fn env_proxy_label_names_the_https_proxy_without_credentials() {
+        fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        }
+        assert_eq!(
+            env_proxy_label(&vars(&[
+                ("HTTP_PROXY", "http://127.0.0.1:1080"),
+                ("HTTPS_PROXY", "http://someone:secret@127.0.0.1:7890"),
+            ])),
+            Some("http://127.0.0.1:7890".to_string())
+        );
+        assert_eq!(
+            env_proxy_label(&vars(&[("all_proxy", "socks5://127.0.0.1:7891")])),
+            Some("socks5://127.0.0.1:7891".to_string())
+        );
+        assert_eq!(
+            env_proxy_label(&vars(&[("HTTPS_PROXY", "127.0.0.1:7890")])),
+            Some("127.0.0.1:7890".to_string())
+        );
+        let hidden = env_proxy_label(&vars(&[("HTTPS_PROXY", "someone:secret@127.0.0.1:7890")]));
+        assert!(!hidden.unwrap().contains("secret"));
+        // `HTTP_PROXY` is for `http://` targets; a remote workspace is `https://`.
+        assert_eq!(
+            env_proxy_label(&vars(&[("HTTP_PROXY", "http://127.0.0.1:1080")])),
+            None
+        );
     }
 
     // ─── Host pinning for credential-carrying requests ──────────────────

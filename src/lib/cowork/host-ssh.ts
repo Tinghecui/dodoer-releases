@@ -29,6 +29,9 @@ export interface HostSshStatus {
   lent: boolean
   running: boolean
   error: string | null
+  /** The computer is kept from sleeping while the service runs (macOS, on
+   *  AC power); missing from an app from before this. */
+  awake?: boolean
 }
 
 /** `SelfTest` in `src-tauri/src/host_ssh/sshd.rs`. */

@@ -15,6 +15,7 @@
 //! lent shell may do on macOS follows the app's own permissions, which
 //! `permissions` checks and repairs.
 
+mod awake;
 pub mod client;
 pub mod permissions;
 mod sshd;
@@ -50,6 +51,9 @@ pub struct LendingStatus {
     pub running: bool,
     /// Why it is not, when it should be.
     pub error: Option<String>,
+    /// Whether the computer is kept from sleeping now, while the service
+    /// runs (`awake`; macOS only, on AC power).
+    pub awake: bool,
 }
 
 #[derive(Default)]
@@ -67,6 +71,8 @@ struct State {
 /// it.
 pub struct Lending {
     sshd: Sshd,
+    /// Held while the service runs (`docs/devices.md` 7.3).
+    awake: awake::Awake,
     state: Mutex<State>,
     /// One start or stop at a time, decided from the state as it is then.
     reconciling: Mutex<()>,
@@ -99,6 +105,7 @@ impl Lending {
         let (changed, _) = watch::channel(0);
         Arc::new(Self {
             sshd,
+            awake: awake::Awake::new(),
             state: Mutex::new(State {
                 lent,
                 ..State::default()
@@ -150,12 +157,14 @@ impl Lending {
 
     pub async fn status(&self, base_url: &str) -> LendingStatus {
         let running = self.sshd.endpoint().await.is_some();
+        let awake = self.awake.held().await;
         let state = self.state.lock().await;
         LendingStatus {
             supported: supported(),
             lent: state.lent.contains(&server_key(base_url)),
             running,
             error: state.error.clone(),
+            awake,
         }
     }
 
@@ -231,6 +240,7 @@ impl Lending {
     pub async fn shut_down(&self) {
         let _one = self.reconciling.lock().await;
         self.sshd.stop().await;
+        self.awake.release().await;
     }
 
     /// Run the service exactly while a window of a lent server is open.
@@ -257,6 +267,13 @@ impl Lending {
                 }
             }
         };
+        // Awake exactly while the service is up: a start that failed lends
+        // nothing to stay awake for.
+        if self.sshd.endpoint().await.is_some() {
+            self.awake.hold().await;
+        } else {
+            self.awake.release().await;
+        }
         self.state.lock().await.error = error;
         self.changed.send_modify(|version| *version += 1);
     }

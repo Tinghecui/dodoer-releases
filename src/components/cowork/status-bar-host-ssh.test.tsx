@@ -233,6 +233,25 @@ describe("StatusBarHostSsh", () => {
     ).toBeInTheDocument()
   })
 
+  it("says the computer stays awake while the app keeps it so", async () => {
+    app(status({ lent: true, running: true, awake: true }))
+    mount()
+    fireEvent.click(await trigger())
+    expect(
+      await screen.findByText(
+        "While lent, this computer does not go to sleep (when on power)."
+      )
+    ).toBeInTheDocument()
+  })
+
+  it("says nothing of sleep where the app does not keep it awake", async () => {
+    app(status({ lent: true, running: true }))
+    mount()
+    fireEvent.click(await trigger())
+    await screen.findByRole("button", { name: "Self-test" })
+    expect(document.querySelector("[data-host-ssh-awake]")).toBeNull()
+  })
+
   it("offers no self-test while the service is not up, and says why", async () => {
     app(status({ lent: true, running: false, error: "sshd exited at once" }))
     mount()

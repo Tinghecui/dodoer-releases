@@ -199,6 +199,15 @@ export function StatusBarHostSsh({ className }: { className?: string }) {
             {t(lent ? "hostSshHintOn" : "hostSshHintOff", { server })}
           </p>
 
+          {lent && status.awake && (
+            <p
+              data-host-ssh-awake=""
+              className="text-2xs text-muted-foreground"
+            >
+              {t("hostSshAwake")}
+            </p>
+          )}
+
           {!serverTakes && (
             <p
               data-host-ssh-server-not-ready=""

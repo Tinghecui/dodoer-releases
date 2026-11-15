@@ -3510,6 +3510,46 @@ pub async fn move_conversations_core(
     conversation_ids: Vec<i32>,
     target_folder_id: i32,
 ) -> Result<MoveConversationsResult, AppCommandError> {
+    move_conversations_to(
+        emitter,
+        conn,
+        manager,
+        conversation_ids,
+        target_folder_id,
+        false,
+    )
+    .await
+}
+
+/// Cowork fork: [`move_conversations_core`] for an agent moving its own
+/// conversation (`commands::relocate`), which may land it in a worktree: that
+/// one-way move is the point of `continue_in_worktree`.
+pub(crate) async fn move_conversation_for_agent(
+    emitter: &EventEmitter,
+    conn: &sea_orm::DatabaseConnection,
+    manager: &crate::acp::manager::ConnectionManager,
+    conversation_id: i32,
+    target_folder_id: i32,
+) -> Result<MoveConversationsResult, AppCommandError> {
+    move_conversations_to(
+        emitter,
+        conn,
+        manager,
+        vec![conversation_id],
+        target_folder_id,
+        true,
+    )
+    .await
+}
+
+async fn move_conversations_to(
+    emitter: &EventEmitter,
+    conn: &sea_orm::DatabaseConnection,
+    manager: &crate::acp::manager::ConnectionManager,
+    conversation_ids: Vec<i32>,
+    target_folder_id: i32,
+    into_worktree: bool,
+) -> Result<MoveConversationsResult, AppCommandError> {
     use conversation_service::{RelocateOptions, RelocateOutcome, RelocateSelection, RelocateSkip};
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
@@ -3530,8 +3570,9 @@ pub async fn move_conversations_core(
         )));
     }
     // Cowork fork: nor is a worktree. A conversation in one stays with it
-    // (`MoveSkipReason::InWorktree`), so this would be a move with no way back.
-    if target.parent_id.is_some() {
+    // (`MoveSkipReason::InWorktree`), so this would be a move with no way back
+    // — unless that is the point (`into_worktree`, `commands::relocate`).
+    if target.parent_id.is_some() && !into_worktree {
         return Err(AppCommandError::invalid_input(format!(
             "folder {target_folder_id} is a worktree; conversations cannot be moved into one"
         )));
@@ -3701,7 +3742,7 @@ async fn conversation_tree_keys(
 
 /// Cowork fork: whether `folder_id` is a worktree of a project (a folder with
 /// a parent). A lookup that fails reads as "no"; the move's own checks follow.
-async fn lives_in_worktree(conn: &sea_orm::DatabaseConnection, folder_id: i32) -> bool {
+pub(crate) async fn lives_in_worktree(conn: &sea_orm::DatabaseConnection, folder_id: i32) -> bool {
     use sea_orm::EntityTrait;
     matches!(
         crate::db::entities::folder::Entity::find_by_id(folder_id).one(conn).await,

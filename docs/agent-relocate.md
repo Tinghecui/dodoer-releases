@@ -1,6 +1,6 @@
 # 智能体把自己的对话挪到干活的地方：转到新分支、收进新项目
 
-状态：2026-11-15 设计稿。方向和两个决定项用户确认过（第 2 节、第 9 节）：没提交的改动带过去，挪之前弹确认卡片。还没动代码。
+状态：2026-11-15。方向和两个决定项用户确认过（第 2 节、第 9 节）：没提交的改动带过去，挪之前弹确认卡片。第 1～4 步一起做在一个 PR 里（`src-tauri/src/commands/relocate.rs`），和设计稿不同的地方见第 11 节。
 
 ## 1. 问题
 
@@ -51,17 +51,16 @@ codeg-mcp 已经有会改界面状态的工具（`create_work_task`、`create_au
 - 只存在内存里。codeg 在挪之前重启，这条就没了，worktree 或打开的项目还在，对话留在原处；智能体下次调工具再挪一次就行，不做持久化。
 - 挪之前对话被人删了、移走了、被待办任务接管了，就放弃，记一行日志。
 - 人在这期间点了停止，照样挪：停止只是结束这一轮。
-- 挪完在对话里插一条系统提示「已转到分支 `xxx`」/「已移到项目 `xxx`」，和其他系统提示一样显示，不发给智能体。
 
 委派出去的子对话跟着根对话挪（`move_conversations_core` 原本就这样）。子对话自己调这两个工具时拒绝：子对话不单独挪。
 
 ## 5. 工具组和工具
 
-新功能组 `relocate`（`--features relocate`），默认开，和 `devices` 一样能在智能体设置里关掉。组里两个工具。
+新功能组 `relocate`（`--features relocate`）。和 `devices` 一样没有设置开关：跑智能体的进程都带上。组里两个工具。
 
 ### 5.1 `continue_in_worktree(branch?, path?)`：转到新分支
 
-- 不带 `path`：用 `create_conversation_worktree_named_core` 建 worktree，就是「在新分支开始」开关用的那一条路，位置、`.worktreeinclude`、`init_command`、分支自动起名（不带 `branch` 时）都一样。
+- 不带 `path`：`branch` 必填（智能体起名）。用 `create_conversation_worktree_core` 从当前 `HEAD` 建 worktree，就是「在新分支开始」开关用的那一条路，位置、`.worktreeinclude`、`init_command` 都一样。
 - 带 `path`：智能体已经自己 `git worktree add` 了，就用 `open_worktree_folder_core` 把它登记到这个仓库下面，不再新建。`path` 必须是这个对话所在仓库的 linked worktree。
 - 返回 worktree 的路径和分支名，以及「对话会在这一轮结束后转过去」。
 - 拒绝的情况：对话所在文件夹不是 git 仓库；对话已经在 worktree 里（worktree 之间不互相挪，和 `InWorktree` 一致）；对话属于待办任务；调用的是委派子对话。
@@ -82,7 +81,7 @@ codeg-mcp 已经有会改界面状态的工具（`create_work_task`、`create_au
 只在 `continue_in_worktree` 新建 worktree 时做；带 `path`（智能体自己建的 worktree）时不搬，智能体自己处理。
 
 - **带什么**：对话所在 checkout 里已跟踪文件的改动（暂存的和没暂存的都算），以及没跟踪、也没被忽略的新文件（`git ls-files --others --exclude-standard`）。被忽略的文件不搬，`.env` 这类靠 `.worktreeinclude` 复制，和「在新分支开始」一样。
-- **怎么带**：新 worktree 从同一个 `HEAD` 建出来，所以 `git diff --binary HEAD` 在那边一定打得上：`git apply --index` 放进去，新文件逐个复制过去。
+- **怎么带**：新 worktree 从同一个 `HEAD` 建出来，所以 `git diff --binary HEAD` 在那边一定打得上：`git apply` 放进去（暂存状态不保留，到那边都是没暂存的改动），新文件逐个复制过去。改动必须还是卡片上列的那些，人看卡片期间变了就不带，让智能体再调一次。
 - **核对再清理**：逐个比对 worktree 里的文件和原 checkout 里的一样，然后才把原 checkout 恢复（已跟踪的 `git restore --staged --worktree`，新文件删掉，都只动搬过去的那些路径）。
 - **失败就两边都不动**：打补丁、复制、比对任何一步失败，删掉新 worktree 里放进去的改动，原 checkout 不碰，工具返回失败原因。worktree 本身留着，对话也不挪。
 - **不用 `git stash`**：stash 栈是同一个仓库所有 worktree 共用的，会碰到别的会话的东西。
@@ -125,7 +124,7 @@ codeg-mcp 已经有会改界面状态的工具（`create_work_task`、`create_au
 - 工具调用在对话里显示成普通的 MCP 工具调用，写出目标路径。
 - 确认卡片和 `ask_user_question` 的卡片一样显示在对话里，等回答时侧栏有「等你回答」的黄标（#127）。
 - 侧栏：人同意后，打开文件夹 / 登记 worktree 时立刻出现新的一项（已有的 `folder://changed`）；本轮结束挪完，对话行跑到新位置（已有的移动广播）。
-- 待挪期间不加新的界面状态。挪完插一条系统提示（第 4 节），带了改动的写上带了几个文件。
+- 待挪期间不加新的界面状态，挪完也不插系统提示（第 11 节）。
 - 改回去：收进新项目的，人用「移动到项目…」挪回去；转到 worktree 的，按现有规矩不能挪出去（卡片上写明了）。不为这个功能单独加撤销。
 
 ## 7. 不做的
@@ -140,7 +139,7 @@ codeg-mcp 已经有会改界面状态的工具（`create_work_task`、`create_au
 
 | 步 | 内容 |
 |---|---|
-| 1 | 连接管理器的「待挪」和本轮结束后的挪动（第 4 节）；`relocate` 功能组；确认卡片（第 5.4 节）；`adopt_project`；系统提示 |
+| 1 | 「待挪」和本轮结束后的挪动（第 4 节）；`relocate` 功能组；确认卡片（第 5.4 节）；`adopt_project` |
 | 2 | `continue_in_worktree`（新建、登记已有的两种）；内部跳过 `parent_id` 检查 |
 | 3 | 带上没提交的改动（第 5.3 节）和卡片上的文件列表、同文件夹在跑的对话 |
 | 4 | `COWORK.md` 补一段；AI QA 加两个故事（第 10 节） |
@@ -152,7 +151,7 @@ codeg-mcp 已经有会改界面状态的工具（`create_work_task`、`create_au
 
 ## 10. 验收
 
-1. 在 `master [root]` 下的对话里说「去新分支做」，智能体调 `continue_in_worktree`；弹卡片，点「转过去」；侧栏马上出现新 worktree；回复结束后对话挪到 worktree 下面，有系统提示；下一轮 `pwd` 是 worktree 目录，前面的上下文还在。
+1. 在 `master [root]` 下的对话里说「去新分支做」，智能体调 `continue_in_worktree`；弹卡片，点「转过去」；侧栏马上出现新 worktree；回复结束后对话挪到 worktree 下面；下一轮 `pwd` 是 worktree 目录，前面的上下文还在。
 2. 同上，但智能体先自己 `git worktree add` 再带 `path` 调用：卡片写的是那个 worktree；不新建，登记后挪过去。
 3. 先让智能体在 master 上改两个文件、建一个新文件，再转分支：卡片列出三个文件；点「带上这些改动」后 worktree 里有这三处改动、master 干净；另起一次点「改动留在原处」，master 的改动不动。
 4. 让搬改动中途失败（测试里在打补丁、复制、比对三处分别注入失败）：两边都不动，工具说清楚原因，对话不挪。
@@ -162,4 +161,11 @@ codeg-mcp 已经有会改界面状态的工具（`create_work_task`、`create_au
 8. `adopt_project` 给一个已打开项目的子目录、给一个 worktree、给不存在的路径：不弹卡片直接拒绝，原因说得清楚。
 9. 在 worktree 里的对话调两个工具都拒绝；待办任务的对话拒绝；委派子对话拒绝。
 10. 卡片点了同意、回复结束前人点停止：照样挪。
-11. 智能体设置里关掉 `relocate`：两个工具都不出现。
+
+## 11. 做的时候和上面不同的地方
+
+- **不插系统提示。** codeg 没有往对话里插系统提示的现成机制；挪动靠侧栏里对话换位置、工具返回给智能体的话来体现。
+- **`branch` 必填。** 不做按消息自动起分支名：自动起名要拿第一条消息当种子，而这里智能体最清楚该叫什么。
+- **没有设置开关。** 和 `devices` 一样，只要进程装上了这组工具就注入。
+- **「待挪」不在连接管理器里，** 而是每 2 秒试一次「移动到项目…」那一套（`move_conversation_for_agent`），对话忙就下次再试，24 小时还没挪成就放弃。这样不用碰回合结束的生命周期代码。
+- **暂存状态不保留。** 带过去的改动在 worktree 里都是没暂存的。

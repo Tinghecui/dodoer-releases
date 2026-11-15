@@ -80,6 +80,9 @@ pub mod pet;
 pub mod project_boot;
 pub mod question;
 pub mod quick_messages;
+/// Cowork fork: an agent moves its own conversation to a new worktree or
+/// project (`continue_in_worktree` / `adopt_project`).
+pub mod relocate;
 #[cfg(feature = "tauri-runtime")]
 pub mod remote_proxy;
 #[cfg(feature = "tauri-runtime")]

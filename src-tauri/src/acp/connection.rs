@@ -8375,6 +8375,9 @@ where
     // Cowork fork: the person's devices, where this server serves them
     // (`web::working_device`).
     let features_arg = crate::web::working_device::with_companion_feature(features_arg);
+    // Cowork fork: the agent moving its own conversation
+    // (`commands::relocate`).
+    let features_arg = crate::commands::relocate::with_companion_feature(features_arg);
     let Some(binary_path) = locate_binary() else {
         tracing::warn!(
             "[delegation][WARN] codeg-mcp companion binary not found (checked CODEG_MCP_BIN, \

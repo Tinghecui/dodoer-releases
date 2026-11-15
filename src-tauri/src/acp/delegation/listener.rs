@@ -714,6 +714,25 @@ impl DelegationListener {
                 };
                 devices_response(&answer)?
             }
+            BrokerMessage::Relocate(req) => {
+                // Cowork fork (`commands::relocate`). Waits on the person's
+                // card, so it races peer-close as `Devices` does; dropping
+                // the wait withdraws the card.
+                let tools = crate::commands::relocate::installed();
+                let entry = self.tokens.lookup(&req.token).await;
+                let answer = match (entry, tools) {
+                    (Some(entry), Some(tools)) => {
+                        let mut probe = [0u8; 1];
+                        tokio::select! {
+                            biased;
+                            answer = tools.answer(&entry.parent_connection_id, req.op) => answer,
+                            _ = conn.read(&mut probe) => return Ok(()),
+                        }
+                    }
+                    _ => crate::commands::relocate::RelocateAnswer::unavailable(),
+                };
+                relocate_response(&answer)?
+            }
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -1468,6 +1487,17 @@ fn session_response(info: SessionInfo) -> std::io::Result<BrokerResponse> {
 /// Serialize a `web::working_device::DevicesAnswer` into a [`BrokerResponse`].
 fn devices_response(
     answer: &crate::web::working_device::DevicesAnswer,
+) -> std::io::Result<BrokerResponse> {
+    Ok(BrokerResponse {
+        outcome: serde_json::to_value(answer).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+        })?,
+    })
+}
+
+/// Serialize a `commands::relocate::RelocateAnswer` into a [`BrokerResponse`].
+fn relocate_response(
+    answer: &crate::commands::relocate::RelocateAnswer,
 ) -> std::io::Result<BrokerResponse> {
     Ok(BrokerResponse {
         outcome: serde_json::to_value(answer).map_err(|e| {

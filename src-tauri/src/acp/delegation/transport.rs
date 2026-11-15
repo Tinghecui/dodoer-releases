@@ -483,6 +483,10 @@ pub enum BrokerMessage {
     /// (`web::working_device`). Answered with a serialized
     /// `web::working_device::DevicesAnswer`.
     Devices(BrokerDevicesRequest),
+    /// Cowork fork: `continue_in_worktree` / `adopt_project`, which move the
+    /// caller's own conversation (`commands::relocate`). Answered with a
+    /// serialized `commands::relocate::RelocateAnswer`.
+    Relocate(BrokerRelocateRequest),
     /// Who may be delegated to as an assistant right now, for the
     /// companion's `tools/list` schema roster. Answered
     /// `{"assistants": [AssistantRosterEntry, ...]}` — always answered, an
@@ -530,6 +534,29 @@ pub enum DevicesOp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+}
+
+/// See [`BrokerMessage::Relocate`]. Scoped to the caller's conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerRelocateRequest {
+    pub token: String,
+    pub op: RelocateOp,
+}
+
+/// Which of the two relocate tools.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum RelocateOp {
+    /// `continue_in_worktree`: a new worktree on `branch`, or the existing
+    /// worktree at `path`.
+    Worktree {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    /// `adopt_project`: the directory at `path`.
+    Project { path: String },
 }
 
 /// The wrapped outcome the main process returns over the same socket.
@@ -892,6 +919,16 @@ pub async fn client_devices_round_trip(
     req: &BrokerDevicesRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::Devices(req.clone())).await
+}
+
+/// Dispatch a `continue_in_worktree` / `adopt_project` request and read back
+/// the serialized `commands::relocate::RelocateAnswer`. Waits on the person's
+/// card.
+pub async fn client_relocate_round_trip(
+    socket_path: &str,
+    req: &BrokerRelocateRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::Relocate(req.clone())).await
 }
 
 /// Dispatch a `computer_list_apps` request and read back the serialized

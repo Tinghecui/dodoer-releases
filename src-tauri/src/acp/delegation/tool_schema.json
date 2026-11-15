@@ -1450,5 +1450,38 @@
         }
       }
     }
+  },
+  {
+    "name": "continue_in_worktree",
+    "description": "Move this conversation to a new branch in its own git worktree, as if the user had turned on \"start in a new branch\" when they began. Call it when the user asks you to carry on in a new branch (or agrees when you suggest it), not just to look at another branch. Pass `branch` to have a new worktree made on a new branch of that name, forked from the current HEAD of this project; the uncommitted changes in this checkout can be carried over to it, which the user decides on the card. Pass `path` instead when you already made the worktree yourself (`git worktree add`); it must be a worktree of this conversation's repository, and nothing is carried over. The user is always shown a card first and may refuse. When they agree you get the worktree's path: do the rest of this turn there (absolute paths or `cd`). The conversation itself moves there once your reply has finished, and its next turn starts in the worktree; it cannot be moved back afterwards. If the tool refuses, tell the user why; do not work around it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string",
+          "description": "The new branch's name, like `fix/login-redirect`. Required unless you pass `path`."
+        },
+        "path": {
+          "type": "string",
+          "description": "The absolute path of a worktree you already made of this repository. Leave it out to have one made."
+        }
+      }
+    }
+  },
+  {
+    "name": "adopt_project",
+    "description": "Add a directory on this machine to the user's sidebar as a project, and move this conversation into it. Call it when the user asks you to (or agrees when you suggest it), typically after you created a new project directory; not to look at another directory. `path` must be an existing directory, not a git worktree (use continue_in_worktree) and not inside a project that is already open. The user is always shown a card first and may refuse, or only add the project without moving the conversation. When they agree the project appears in the sidebar at once; the conversation moves there once your reply has finished, and its next turn starts in that directory. Until then keep using absolute paths. The tool never closes, renames or removes projects. If it refuses, tell the user why; do not work around it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The directory's absolute path on this machine."
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
   }
 ]

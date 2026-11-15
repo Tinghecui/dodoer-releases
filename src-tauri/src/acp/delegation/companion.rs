@@ -220,6 +220,10 @@ pub struct CompanionFeatures {
     /// connected to this server (`web::working_device`). Only from a server
     /// that serves them.
     pub devices: bool,
+    /// Cowork fork: `continue_in_worktree` / `adopt_project`, which move the
+    /// caller's own conversation to where it works (`commands::relocate`).
+    /// Only from a process that serves them.
+    pub relocate: bool,
 }
 
 impl CompanionFeatures {
@@ -246,6 +250,7 @@ impl CompanionFeatures {
                 computer_launch: false,
                 computer_clipboard: false,
                 devices: false,
+                relocate: false,
             };
         };
         let mut f = Self {
@@ -263,6 +268,7 @@ impl CompanionFeatures {
             computer_launch: false,
             computer_clipboard: false,
             devices: false,
+            relocate: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
@@ -280,6 +286,7 @@ impl CompanionFeatures {
                 "computer_launch" => f.computer_launch = true,
                 "computer_clipboard" => f.computer_clipboard = true,
                 "devices" => f.devices = true,
+                "relocate" => f.relocate = true,
                 _ => {}
             }
         }
@@ -325,6 +332,7 @@ impl CompanionFeatures {
                 self.computer && self.computer_clipboard
             }
             "list_devices" | "use_device" => self.devices,
+            "continue_in_worktree" | "adopt_project" => self.relocate,
             "delegate_to_agent"
             | "get_delegation_status"
             | "cancel_delegation"
@@ -1145,6 +1153,40 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_devices_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_devices_result).await
+        }
+        // Cowork fork: the caller's own conversation, moved to where it works
+        // (`commands::relocate`).
+        "continue_in_worktree" | "adopt_project" => {
+            use crate::acp::delegation::transport::{
+                client_relocate_round_trip, BrokerRelocateRequest, RelocateOp,
+            };
+            let text = |key: &str| {
+                arguments
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            };
+            let op = if name == "continue_in_worktree" {
+                RelocateOp::Worktree {
+                    branch: text("branch"),
+                    path: text("path"),
+                }
+            } else {
+                RelocateOp::Project {
+                    path: text("path").unwrap_or_default(),
+                }
+            };
+            let req = BrokerRelocateRequest {
+                token: ctx.token.clone(),
+                op,
+            };
+            // Waits on the person's card; a cancelled call drops the
+            // round-trip, which withdraws it.
+            let round_trip =
+                Box::pin(async move { client_relocate_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_relocate_result).await
         }
         "browser_list_tabs" => {
             let req = BrokerBrowserTabsRequest {
@@ -3038,6 +3080,22 @@ pub fn render_devices_result(outcome: &Value) -> Value {
     })
 }
 
+/// Map a `continue_in_worktree` / `adopt_project` outcome (a serialized
+/// `commands::relocate::RelocateAnswer`) into an MCP `tools/call` result.
+/// A refusal is an error result, so the agent does not read it as done.
+pub fn render_relocate_result(outcome: &Value) -> Value {
+    let text = outcome
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("Moving this conversation is not available here.");
+    let done = outcome.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": !done,
+        "structuredContent": outcome.clone(),
+    })
+}
+
 pub fn render_browser_tabs_result(outcome: &Value) -> Value {
     let tabs = outcome.get("tabs").and_then(|v| v.as_array());
     let note = outcome.get("note").and_then(|v| v.as_str());
@@ -4613,6 +4671,7 @@ mod tests {
             computer_launch: false,
             computer_clipboard: false,
             devices: false,
+            relocate: false,
         })
     }
 
@@ -5245,6 +5304,7 @@ mod tests {
         computer_launch: false,
         computer_clipboard: false,
         devices: false,
+        relocate: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
@@ -5261,6 +5321,7 @@ mod tests {
         computer_launch: false,
         computer_clipboard: false,
         devices: false,
+        relocate: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -5277,6 +5338,7 @@ mod tests {
         computer_launch: false,
         computer_clipboard: false,
         devices: false,
+        relocate: false,
     };
     const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -5293,6 +5355,7 @@ mod tests {
         computer_launch: false,
         computer_clipboard: false,
         devices: false,
+        relocate: false,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -5336,6 +5399,29 @@ mod tests {
         let rendered = render_devices_result(&json!({"text": "The user's devices (1): …"}));
         assert_eq!(rendered["content"][0]["text"], "The user's devices (1): …");
         assert_eq!(rendered["isError"], false);
+    }
+
+    /// Cowork fork: the relocate tools are their own group, and a refusal
+    /// renders as an error.
+    #[test]
+    fn the_relocate_tools_come_with_their_group_only() {
+        let on = CompanionFeatures::parse(Some("ask,relocate"));
+        assert!(
+            on.relocate
+                && on.allows_tool("continue_in_worktree")
+                && on.allows_tool("adopt_project")
+        );
+        let off = CompanionFeatures::parse(Some("ask,devices"));
+        assert!(
+            !off.relocate
+                && !off.allows_tool("continue_in_worktree")
+                && !off.allows_tool("adopt_project")
+        );
+        let done = render_relocate_result(&json!({"ok": true, "text": "Moved."}));
+        assert_eq!(done["content"][0]["text"], "Moved.");
+        assert_eq!(done["isError"], false);
+        let refused = render_relocate_result(&json!({"ok": false, "text": "No."}));
+        assert_eq!(refused["isError"], true);
     }
 
     #[tokio::test]
@@ -5797,6 +5883,7 @@ mod tests {
         computer_launch: false,
         computer_clipboard: false,
         devices: false,
+        relocate: false,
     };
     const TASKBOARD_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -5813,6 +5900,7 @@ mod tests {
         computer_launch: false,
         computer_clipboard: false,
         devices: false,
+        relocate: false,
     };
 
     /// The two authoring groups gate independently: enabling one must not
@@ -6694,6 +6782,7 @@ mod tests {
         computer_launch: false,
         computer_clipboard: false,
         devices: false,
+        relocate: false,
     };
 
     /// The browser group with `browser_eval` on top, which is the only way
@@ -7619,6 +7708,7 @@ mod tests {
         const WITH_CLIPBOARD: CompanionFeatures = CompanionFeatures {
             computer_clipboard: true,
             devices: false,
+            relocate: false,
             ..COMPUTER_ONLY
         };
         let names = computer_names(&list_tool_names(

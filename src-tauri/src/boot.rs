@@ -305,6 +305,16 @@ pub fn start_delegation_service(
         computer,
         Arc::new(crate::acp::result_tool::ConnectionManagerResultLookup { manager: manager() }),
     );
+    // Cowork fork: `continue_in_worktree` / `adopt_project`, in every host
+    // that runs agents. Before any agent starts: its tools are decided at
+    // launch.
+    let relocate = crate::commands::relocate::RelocateTools::new(
+        daemon.db(),
+        daemon.emitter.clone(),
+        daemon.connection_manager.clone_ref(),
+        Arc::new(ConnectionManagerQuestionLookup { manager: manager() }),
+    );
+    crate::commands::relocate::install(Arc::new(relocate));
     let service = crate::acp::delegation::service::DelegationService::new(
         listener,
         daemon.delegation.socket_path.clone(),

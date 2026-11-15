@@ -1,0 +1,71 @@
+# 公开镜像 Tinghecui/dodoer-releases：自动驾驶的调度台（源仓库 .cowork/autopilot/design.md 第 3 步；文件在源仓库 .github/public/workflows/ 里维护）。
+# 每 20 分钟一轮，不调 Claude：挑能做的 issue 派给执行员（autopilot-fix.yml）、把被打回的执行员 PR 派回去返工、开收件箱条目（源仓库 issue「待你决定」）、
+# 2 级的到点按默认做、重写置顶看板、每天早上发摘要。AUTOPILOT=record 时只读，「本来会做什么」写进看板。
+# 这里只是个壳：取源仓库代码（默认分支），装 node，然后 exec .cowork/autopilot/sealed.sh tick；日志里只有每个阶段一行的进度，
+# 运行结束后 ai-qa-seal.yml 核对（定时触发的运行会触发 workflow_run；手动派的也会）。
+# 凭证在 Environment「ai-qa」里，只有 main 分支用得到；commit status 用仓库级的 SOURCE_STATUS_TOKEN；派 workflow 用这次运行的 github.token（actions: write）。
+# 仓库变量：AUTOPILOT（off / record / on，默认 record）、AUTOPILOT_DAILY_USD（默认 15）、AUTOPILOT_MAX_FIX（同时最多几个执行员，默认 2）、
+# AUTOPILOT_INBOX_BUDGET（收件箱每天最多新开几条，默认 10）。
+name: autopilot-tick
+
+on:
+  schedule:
+    # 不放整点（整点的定时最挤、常晚好几个小时）
+    - cron: "7,27,47 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 一次只跑一轮：上一轮没跑完，这一轮排着（不取消：取消到一半可能条目开了、账本没记）
+concurrency:
+  group: autopilot-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    if: vars.AUTOPILOT != 'off'
+    runs-on: ubuntu-24.04
+    environment: ai-qa
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write # 派 autopilot-fix；读在跑的执行员、日志核对的结果
+    env:
+      SOURCE_REPO: Tinghecui/cowork-codeg
+      AUTOPILOT: ${{ vars.AUTOPILOT || 'record' }}
+      DAILY_USD: ${{ vars.AUTOPILOT_DAILY_USD || '15' }}
+      MAX_FIX: ${{ vars.AUTOPILOT_MAX_FIX || '2' }}
+      INBOX_BUDGET: ${{ vars.AUTOPILOT_INBOX_BUDGET || '10' }}
+      W: /home/runner/autopilot-work
+    steps:
+      - name: 取源码
+        env:
+          PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          # 默认分支上的脚本；令牌只在 git 这个进程的环境里，不进命令行、不进 .git/config
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PRIVATE_TOKEN" | base64 -w0)" \
+            git fetch -q --depth 1 "https://github.com/${SOURCE_REPO}.git" HEAD 2>/dev/null || { echo "fetch failed"; exit 1; }
+          git checkout -q --detach FETCH_HEAD
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: run
+        env:
+          PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+          STATUS_TOKEN: ${{ secrets.SOURCE_STATUS_TOKEN }}
+          PUBLIC_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # 凭证写进只有本用户能读的文件、从环境里拿掉再 exec（同 autopilot-fix.yml）；调度台不调 Claude，不给 Claude 的凭证
+          d="$RUNNER_TEMP/autopilot-secrets"; rm -rf "$d"; mkdir -m 700 "$d"
+          printf '%s' "$PRIVATE_TOKEN" > "$d/gh"; printf '%s' "$STATUS_TOKEN" > "$d/status"; printf '%s' "$PUBLIC_TOKEN" > "$d/public"
+          unset PRIVATE_TOKEN STATUS_TOKEN PUBLIC_TOKEN
+          export AUTOPILOT_SECRETS="$d"
+          exec bash .cowork/autopilot/sealed.sh tick

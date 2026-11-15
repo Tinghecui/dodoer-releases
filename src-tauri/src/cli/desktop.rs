@@ -1,10 +1,10 @@
-//! `desktop proxy`: the `ProxyCommand` of a server's `ssh desktop`
-//! (`docs/host-ssh.md` 5.3).
+//! `desktop proxy --device <id>`: the `ProxyCommand` of a server's
+//! `ssh <device>` (`docs/devices.md` 5.1, `docs/host-ssh.md` 5.3).
 //!
 //! Carries one SSH connection between this process's stdin and stdout and
-//! the computer a dodoer desktop app lends the workspace, through the runtime
-//! this command finds as every other command does (an agent's shell names its
-//! own in `CODEG_CLI_ENDPOINT_FILE`). The runtime asks the desktop app to dial
+//! that one of the person's computers, through the runtime this command
+//! finds as every other command does (an agent's shell names its own in
+//! `CODEG_CLI_ENDPOINT_FILE`). The runtime asks the desktop app on it to dial
 //! back (`web::host_tunnel`); nothing here knows where that computer is.
 //!
 //! stdout is the connection: whatever goes wrong is told on stderr, where
@@ -16,7 +16,7 @@ use crate::host_ssh::tunnel;
 use super::args::GlobalArgs;
 use super::connect::{self, Env};
 
-pub async fn proxy(global: &GlobalArgs, env: &Env) -> i32 {
+pub async fn proxy(global: &GlobalArgs, env: &Env, device: Option<&str>) -> i32 {
     let (conn, _) = match connect::connect(global, env).await {
         Ok(found) => found,
         Err(failure) => {
@@ -35,7 +35,7 @@ pub async fn proxy(global: &GlobalArgs, env: &Env) -> i32 {
         );
         return 1;
     }
-    let socket = match tunnel::dial_cli_end(&conn.url, &conn.token).await {
+    let socket = match tunnel::dial_cli_end(&conn.url, &conn.token, device).await {
         Ok(socket) => socket,
         Err(said) => {
             eprintln!("codeg-cli desktop proxy: {said}");

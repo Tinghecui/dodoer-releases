@@ -1,16 +1,18 @@
 //! Cowork fork: the server's two ends of a tunnel to a lent shell
 //! (`host_ssh::tunnel`, `docs/host-ssh.md` 5.2–5.3).
 //!
-//! `codeg-cli desktop proxy` — the `ProxyCommand` of the `ssh desktop` this
-//! server's agents run — opens the CLI end (`/api/cli_host_tunnel`). The
-//! server asks the desktop app lending its shell for a tunnel
-//! (`HostRegistry::open_tunnel`), the app dials the desktop end
-//! (`/ws/host-tunnel?id=`), and from then on the two sockets are joined,
-//! binary message for binary message, until either closes.
+//! `codeg-cli desktop proxy --device <id>` — the `ProxyCommand` of the
+//! `ssh <device>` this server's agents run — opens the CLI end
+//! (`/api/cli_host_tunnel?device=`). The server asks the app on that device
+//! lending its shell for a tunnel (`HostRegistry::open_tunnel`), never
+//! another device's; the app dials the desktop end (`/ws/host-tunnel?id=`),
+//! and from then on the two sockets are joined, binary message for binary
+//! message, until either closes. When it cannot, the CLI hears why, and the
+//! status says which case it is (`docs/devices.md` 5.3).
 //!
 //! Alongside, the files the server's `ssh` reads (`host_ssh::client`) follow
-//! the shells lent: written when one is, the keys taken away a while after
-//! the last one goes.
+//! the book of devices and the shells lent: an entry per device, the keys
+//! taken away a while after the last shell goes.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -24,7 +26,8 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 
-use super::host_registry::{HostRegistry, TunnelError};
+use super::host_devices::now_ms;
+use super::host_registry::{HostRegistry, ShellTarget, TunnelError};
 use super::shutdown::ShutdownSignal;
 use crate::cli_run::CliRunService;
 use crate::host_ssh::client::ClientFiles;
@@ -70,16 +73,20 @@ impl HostTunnels {
         &self.files
     }
 
-    /// Keep the files to the shells lent, for as long as the server runs.
+    /// Keep the files to the devices and the shells lent, for as long as
+    /// the server runs.
     pub fn spawn_file_sync(self: &Arc<Self>) {
         let tunnels = Arc::clone(self);
-        let mut shells = self.registry.watch_shells();
+        let mut plans = self.registry.watch_ssh();
         tokio::spawn(async move {
             loop {
-                let lent = shells.borrow_and_update().clone();
-                if lent.is_empty() {
+                let plan = plans.borrow_and_update().clone();
+                if let Err(e) = tunnels.files.prepare(&plan).await {
+                    tracing::warn!("[host-tunnel] the ssh files: {e}");
+                }
+                if !plan.lends() {
                     tokio::select! {
-                        changed = shells.changed() => {
+                        changed = plans.changed() => {
                             if changed.is_err() {
                                 return;
                             }
@@ -87,70 +94,147 @@ impl HostTunnels {
                         }
                         _ = tokio::time::sleep(FORGET_AFTER) => tunnels.files.forget().await,
                     }
-                } else if let Err(e) = tunnels.files.prepare(&lent).await {
-                    tracing::warn!("[host-tunnel] the ssh files for `ssh desktop`: {e}");
                 }
-                if shells.changed().await.is_err() {
+                if plans.changed().await.is_err() {
                     return;
                 }
             }
         });
     }
 
-    /// A tunnel for one `ssh`: the files ready, and the socket the desktop
-    /// dialed. `Err` is the status and the words for the CLI to print.
-    pub async fn open(&self) -> Result<WebSocket, (StatusCode, String)> {
-        let lent = self.registry.shells();
-        if lent.is_empty() {
-            return Err((StatusCode::SERVICE_UNAVAILABLE, NO_DESKTOP_NOTE.to_string()));
-        }
+    /// A tunnel for one `ssh` to `device` (none: the old `ssh desktop`): the
+    /// files ready, and the socket that device dialed. `Err` is the status
+    /// and the words for the CLI to print.
+    pub async fn open(&self, device: Option<&str>) -> Result<WebSocket, (StatusCode, String)> {
+        let target = match device {
+            Some(id) => ShellTarget::Device(id),
+            None => ShellTarget::Default,
+        };
+        // Why it cannot be reached is said before anything is written.
+        self.registry.check_shell(target).map_err(refusal)?;
         let failed = |e: String| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("The server could not prepare its side of `ssh desktop`: {e}"),
+                format!("The server could not prepare its side of `ssh`: {e}"),
             )
         };
-        self.files.prepare(&lent).await.map_err(failed)?;
+        self.files
+            .prepare(&self.registry.ssh_plan())
+            .await
+            .map_err(failed)?;
         let key = self.files.public_key().map_err(failed)?;
         self.registry
-            .open_tunnel(&key, DIAL_TIMEOUT)
+            .open_tunnel(&key, target, DIAL_TIMEOUT)
             .await
-            .map_err(|e| match e {
-                TunnelError::NoHost => {
-                    (StatusCode::SERVICE_UNAVAILABLE, NO_DESKTOP_NOTE.to_string())
-                }
-                TunnelError::Busy => (
-                    StatusCode::TOO_MANY_REQUESTS,
-                    format!(
-                        "More than {TUNNELS_PER_MINUTE} connections to the desktop were opened \
-                         in the last minute. `ssh desktop` keeps one open for ten minutes and \
-                         reuses it; wait a moment, or run commands through one connection."
-                    ),
-                ),
-                TunnelError::Refused(why) => (
-                    StatusCode::BAD_GATEWAY,
-                    format!("The desktop app could not open the connection: {why}"),
-                ),
-                TunnelError::Gone => (
-                    StatusCode::BAD_GATEWAY,
-                    "The desktop app went away before the connection was made.".to_string(),
-                ),
-                TunnelError::TimedOut => (
-                    StatusCode::GATEWAY_TIMEOUT,
-                    format!(
-                        "The desktop app did not connect back within {} s. It may have lost its \
-                         network, or the computer is asleep.",
-                        DIAL_TIMEOUT.as_secs()
-                    ),
-                ),
-            })
+            .map_err(refusal)
+    }
+}
+
+/// What the CLI is answered when a tunnel does not open: a status of its
+/// own for each case, and what the agent can do. Never "use another device
+/// instead".
+fn refusal(error: TunnelError) -> (StatusCode, String) {
+    let lend_hint = "lend its command line from the laptop icon at the foot of the sidebar \
+                     in the dodoer desktop app on that computer";
+    match error {
+        TunnelError::NoHost => (StatusCode::SERVICE_UNAVAILABLE, NO_DESKTOP_NOTE.to_string()),
+        TunnelError::UnknownDevice { names } => (
+            StatusCode::NOT_FOUND,
+            format!(
+                "That device is no longer in this server's list of devices (the user removed \
+                 it). {}",
+                devices_line(&names)
+            ),
+        ),
+        TunnelError::Offline { name, last_seen } => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "`{name}` is offline (last online {}). Ask the user to open the dodoer desktop \
+                 app on that computer and to {lend_hint}, then try again. Do not use another \
+                 device instead unless the user says so.",
+                ago(last_seen, now_ms())
+            ),
+        ),
+        TunnelError::NotLent { name } => (
+            StatusCode::FORBIDDEN,
+            format!(
+                "`{name}` is online but does not lend its command line. Ask the user to \
+                 {lend_hint}, then try again. Do not use another device instead unless the user \
+                 says so."
+            ),
+        ),
+        TunnelError::Ambiguous { names } => (
+            StatusCode::CONFLICT,
+            format!(
+                "`ssh desktop` no longer means one computer: the user has several devices ({}). \
+                 Ask the user which one they mean, then run `ssh <name>`.",
+                names.join(", ")
+            ),
+        ),
+        TunnelError::Busy => (
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "More than {TUNNELS_PER_MINUTE} connections to this device were opened in the \
+                 last minute. `ssh` keeps one open for ten minutes and reuses it; wait a moment, \
+                 or run commands through one connection."
+            ),
+        ),
+        TunnelError::Refused(why) => (
+            StatusCode::BAD_GATEWAY,
+            format!("The desktop app could not open the connection: {why}"),
+        ),
+        TunnelError::Gone => (
+            StatusCode::BAD_GATEWAY,
+            "The desktop app went away before the connection was made.".to_string(),
+        ),
+        TunnelError::TimedOut => (
+            StatusCode::GATEWAY_TIMEOUT,
+            format!(
+                "The desktop app did not connect back within {} s. It may have lost its \
+                 network, or the computer is asleep.",
+                DIAL_TIMEOUT.as_secs()
+            ),
+        ),
+    }
+}
+
+/// The devices there are, for an agent to pick the one the user means.
+fn devices_line(names: &[String]) -> String {
+    if names.is_empty() {
+        "No device has connected to this server since.".to_string()
+    } else {
+        format!(
+            "The user's devices: {}. Run `ssh <name>` with the one the user means.",
+            names.join(", ")
+        )
+    }
+}
+
+/// How long ago `then` was, both in milliseconds since 1970, in words.
+fn ago(then: i64, now: i64) -> String {
+    if then <= 0 {
+        return "a long time ago".to_string();
+    }
+    let minutes = (now - then).max(0) / 60_000;
+    match minutes {
+        0 => "just now".to_string(),
+        1 => "a minute ago".to_string(),
+        2..=59 => format!("{minutes} minutes ago"),
+        60..=119 => "an hour ago".to_string(),
+        120..=1439 => format!("{} hours ago", minutes / 60),
+        1440..=2879 => "a day ago".to_string(),
+        _ => format!("{} days ago", minutes / 1440),
     }
 }
 
 /// The CLI end, given the server's tunnels: answered with a refusal the CLI
-/// prints, or upgraded and joined to the desktop's socket.
-pub async fn serve_cli_end(ws: WebSocketUpgrade, tunnels: Arc<HostTunnels>) -> Response {
-    match tunnels.open().await {
+/// prints, or upgraded and joined to the device's socket.
+pub async fn serve_cli_end(
+    ws: WebSocketUpgrade,
+    tunnels: Arc<HostTunnels>,
+    device: Option<String>,
+) -> Response {
+    match tunnels.open(device.as_deref()).await {
         Ok(desktop) => {
             let shutdown = tunnels.shutdown.clone();
             ws.protocols([TUNNEL_PROTOCOL])
@@ -161,13 +245,23 @@ pub async fn serve_cli_end(ws: WebSocketUpgrade, tunnels: Arc<HostTunnels>) -> R
     }
 }
 
-/// `GET /api/cli_host_tunnel`, among the CLI's routes (`cli_run::http`).
+#[derive(Debug, Default, Deserialize)]
+pub struct CliTunnelQuery {
+    /// The device `ssh <name>` means (`desktop proxy --device`); none from
+    /// a configuration that names none.
+    #[serde(default)]
+    device: Option<String>,
+}
+
+/// `GET /api/cli_host_tunnel?device=`, among the CLI's routes
+/// (`cli_run::http`).
 pub async fn cli_end(
     ws: WebSocketUpgrade,
+    Query(query): Query<CliTunnelQuery>,
     Extension(service): Extension<Arc<CliRunService>>,
 ) -> Response {
     match service.host_tunnels() {
-        Some(tunnels) => serve_cli_end(ws, tunnels).await,
+        Some(tunnels) => serve_cli_end(ws, tunnels, query.device).await,
         None => (
             StatusCode::NOT_FOUND,
             "This codeg runtime does not reach any desktop's command line.",
@@ -250,7 +344,9 @@ mod tests {
 
     /// A server with the two ends and nothing else, on a loopback port.
     async fn serve(tunnels: Arc<HostTunnels>, registry: Arc<HostRegistry>) -> String {
-        let cli_end = move |ws: WebSocketUpgrade| serve_cli_end(ws, Arc::clone(&tunnels));
+        let cli_end = move |ws: WebSocketUpgrade, Query(query): Query<CliTunnelQuery>| {
+            serve_cli_end(ws, Arc::clone(&tunnels), query.device)
+        };
         let app = Router::new()
             .route(
                 TUNNEL_PATH,
@@ -289,8 +385,82 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = Arc::new(HostRegistry::new());
         let base = serve(tunnels_in(dir.path(), &registry), Arc::clone(&registry)).await;
-        let refused = tunnel::dial_cli_end(&base, "t").await.unwrap_err();
+        let refused = tunnel::dial_cli_end(&base, "t", None).await.unwrap_err();
         assert_eq!(refused, NO_DESKTOP_NOTE);
+    }
+
+    /// A device the book does not have: the CLI hears so, and which there
+    /// are. Not a device id at all: not even asked.
+    #[tokio::test]
+    async fn a_device_not_in_the_book_is_said_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(HostRegistry::new());
+        let base = serve(tunnels_in(dir.path(), &registry), Arc::clone(&registry)).await;
+        let refused = tunnel::dial_cli_end(&base, "t", Some("0123456789abcdef"))
+            .await
+            .unwrap_err();
+        // The words, unless they missed the read that ended the headers.
+        assert!(
+            refused.contains("no longer in this server's list") || refused.contains("404"),
+            "{refused}"
+        );
+        assert!(tunnel::dial_cli_end(&base, "t", Some("not an id"))
+            .await
+            .is_err());
+    }
+
+    /// Each case its own status, so that the proxy can tell them apart
+    /// without the words; and never "use another device".
+    #[test]
+    fn each_refusal_has_its_own_status() {
+        let cases = [
+            TunnelError::NoHost,
+            TunnelError::UnknownDevice {
+                names: vec!["imac".into()],
+            },
+            TunnelError::NotLent {
+                name: "imac".into(),
+            },
+            TunnelError::Ambiguous {
+                names: vec!["imac".into(), "laptop".into()],
+            },
+            TunnelError::Busy,
+        ];
+        let statuses: Vec<StatusCode> = cases.into_iter().map(|e| refusal(e).0).collect();
+        assert_eq!(
+            statuses,
+            vec![
+                StatusCode::SERVICE_UNAVAILABLE,
+                StatusCode::NOT_FOUND,
+                StatusCode::FORBIDDEN,
+                StatusCode::CONFLICT,
+                StatusCode::TOO_MANY_REQUESTS,
+            ]
+        );
+        let (status, offline) = refusal(TunnelError::Offline {
+            name: "laptop".into(),
+            last_seen: now_ms() - 3 * 3_600_000,
+        });
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(offline.contains("`laptop` is offline (last online 3 hours ago)"), "{offline}");
+        assert!(offline.contains("Do not use another device"));
+        let (_, several) = refusal(TunnelError::Ambiguous {
+            names: vec!["imac".into(), "laptop".into()],
+        });
+        assert!(several.contains("(imac, laptop)"), "{several}");
+    }
+
+    #[test]
+    fn how_long_ago_reads() {
+        let now = 1_000_000_000_000;
+        assert_eq!(ago(now - 10_000, now), "just now");
+        assert_eq!(ago(now - 60_000, now), "a minute ago");
+        assert_eq!(ago(now - 5 * 60_000, now), "5 minutes ago");
+        assert_eq!(ago(now - 90 * 60_000, now), "an hour ago");
+        assert_eq!(ago(now - 5 * 3_600_000, now), "5 hours ago");
+        assert_eq!(ago(now - 30 * 3_600_000, now), "a day ago");
+        assert_eq!(ago(now - 3 * 86_400_000, now), "3 days ago");
+        assert_eq!(ago(0, now), "a long time ago");
     }
 
     /// A made-up id is turned away, and nothing waits on it.
@@ -343,8 +513,20 @@ mod tests {
             user: endpoint.user.clone(),
             platform: Some(std::env::consts::OS.to_string()),
         };
-        let _registration =
-            registry.register(tx, vec![CAPABILITY.to_string()], None, Some(shell.clone()));
+        let device = crate::host_device::HostDevice {
+            id: "0123456789abcdef0123456789abcdef".into(),
+            name: "Study iMac".into(),
+            model: "iMac".into(),
+            kind: Some("desktop".into()),
+        };
+        let _registration = registry.register_on(
+            tx,
+            vec![CAPABILITY.to_string()],
+            None,
+            Some(shell.clone()),
+            Some(device.clone()),
+            None,
+        );
         let desktop_sshd = Arc::clone(&sshd);
         let desktop_base = base.clone();
         let port = endpoint.port;
@@ -382,19 +564,23 @@ mod tests {
 
         // The server's files, before `ssh` reads them (in use, the desktop
         // registering writes them long before an agent runs `ssh desktop`).
-        tunnels.files().prepare(&registry.shells()).await.unwrap();
+        tunnels.files().prepare(&registry.ssh_plan()).await.unwrap();
         let files = tunnels.files().dir().to_path_buf();
 
-        // Standing in for `codeg-cli desktop proxy`: a port whose every
-        // connection opens the CLI end and relays to it.
+        // Standing in for `codeg-cli desktop proxy --device`: a port whose
+        // every connection opens the CLI end and relays to it.
         let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_port = proxy.local_addr().unwrap().port();
         let proxy_base = base.clone();
+        let proxy_device = device.id.clone();
         tokio::spawn(async move {
             while let Ok((stream, _)) = proxy.accept().await {
                 let base = proxy_base.clone();
+                let device = proxy_device.clone();
                 tokio::spawn(async move {
-                    let socket = tunnel::dial_cli_end(&base, "t").await.unwrap();
+                    let socket = tunnel::dial_cli_end(&base, "t", Some(&device))
+                        .await
+                        .unwrap();
                     let (reader, writer) = stream.into_split();
                     let _ = tunnel::relay(socket, reader, writer, std::future::pending()).await;
                 });
@@ -412,7 +598,7 @@ mod tests {
                 "UserKnownHostsFile={}",
                 files.join("known_hosts").display()
             ))
-            .args(["-o", "HostKeyAlias=dodoer-desktop"])
+            .args(["-o", "HostKeyAlias=dodoer-01234567"])
             .args(["-o", "ConnectTimeout=10"])
             .arg("-i")
             .arg(files.join("id_ed25519"))
@@ -435,18 +621,24 @@ mod tests {
         );
 
         // And the configuration the server wrote reads as `ssh` should take
-        // it (`-G` prints it resolved, connecting nowhere).
-        let resolved = std::process::Command::new("/usr/bin/ssh")
-            .arg("-G")
-            .arg("-F")
-            .arg(files.join("config"))
-            .arg("desktop")
-            .output()
-            .unwrap();
-        let resolved = String::from_utf8_lossy(&resolved.stdout).to_lowercase();
-        assert!(resolved.contains(&format!("user {}", endpoint.user.to_lowercase())));
-        assert!(resolved.contains("hostkeyalias dodoer-desktop"));
-        assert!(resolved.contains("proxycommand '/opt/codeg/codeg-cli' desktop proxy"));
+        // it (`-G` prints it resolved, connecting nowhere): under the
+        // device's name, and — the only device — the old name too.
+        for name in ["study-imac", "desktop"] {
+            let resolved = std::process::Command::new("/usr/bin/ssh")
+                .arg("-G")
+                .arg("-F")
+                .arg(files.join("config"))
+                .arg(name)
+                .output()
+                .unwrap();
+            let resolved = String::from_utf8_lossy(&resolved.stdout).to_lowercase();
+            assert!(resolved.contains(&format!("user {}", endpoint.user.to_lowercase())));
+            assert!(resolved.contains("hostkeyalias dodoer-01234567"), "{name}");
+            assert!(resolved.contains(&format!(
+                "proxycommand '/opt/codeg/codeg-cli' desktop proxy --device {}",
+                device.id
+            )));
+        }
 
         sshd.stop().await;
     }

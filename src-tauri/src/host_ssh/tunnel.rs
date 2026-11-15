@@ -46,10 +46,11 @@ pub const NO_DESKTOP_NOTE: &str =
      open this workspace in the dodoer desktop app and to lend the computer from the laptop \
      icon at the foot of the sidebar, then try again.";
 
-/// How many tunnels a server opens in a minute at most. Cowork's nginx lets
-/// 20 new `/ws/` connections a minute through and bans an address over it;
-/// `ssh desktop` keeps one connection for ten minutes (`ControlMaster`), so a
-/// working agent needs a handful.
+/// How many tunnels a server opens to one device in a minute at most.
+/// Cowork's nginx lets 20 new `/ws/` connections a minute through from one
+/// address and bans it over that; each device dials from its own, and `ssh`
+/// keeps one connection for ten minutes (`ControlMaster`), so a working agent
+/// needs a handful.
 pub const TUNNELS_PER_MINUTE: usize = 6;
 
 /// What a desktop app says about the shell it lends, with its `shell`
@@ -160,14 +161,26 @@ pub type DialedTunnel = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
 
-/// Open the CLI's end of a tunnel on the runtime at `base_url`, with its
-/// `token`. `Err` is what the runtime answered instead, in its own words
-/// (it says what the person can do).
-pub async fn dial_cli_end(base_url: &str, token: &str) -> Result<DialedTunnel, String> {
+/// Open the CLI's end of a tunnel to `device` (its id; none for the old
+/// `ssh desktop`) on the runtime at `base_url`, with its `token`. `Err` is
+/// what the runtime answered instead, in its own words (it says what the
+/// person can do).
+pub async fn dial_cli_end(
+    base_url: &str,
+    token: &str,
+    device: Option<&str>,
+) -> Result<DialedTunnel, String> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::http::{header, HeaderValue};
 
-    let url = ws_url(base_url, &format!("/api/{CLI_TUNNEL_ROUTE}"));
+    let path = match device {
+        Some(id) if crate::host_device::is_id(id) => {
+            format!("/api/{CLI_TUNNEL_ROUTE}?device={id}")
+        }
+        Some(_) => return Err("that is not a device id".to_string()),
+        None => format!("/api/{CLI_TUNNEL_ROUTE}"),
+    };
+    let url = ws_url(base_url, &path);
     let mut request = url
         .into_client_request()
         .map_err(|e| format!("not an address to dial: {e}"))?;

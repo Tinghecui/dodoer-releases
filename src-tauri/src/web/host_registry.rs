@@ -20,10 +20,11 @@
 //! Several apps may be registered at once — the same person on two
 //! computers. Each names the computer it is on (`host_device`), and the
 //! registry keeps the book of every computer that ever connected
-//! ([`DeviceBook`], `web::host_devices`, `docs/devices.md`). Which one takes
-//! a call is still decided here: the computer whose Chrome the person lets
+//! ([`DeviceBook`], `web::host_devices`, `docs/devices.md`). `ssh <name>`
+//! names the device it means ([`ShellTarget`]); which one takes a browser
+//! call is still decided here: the computer whose Chrome the person lets
 //! agents use ([`CAPABILITY_CHROME`]), else the one they used last — until
-//! agents name the device they mean (`docs/devices.md` 5).
+//! agents name that device too (`docs/devices.md` 5.2).
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -50,6 +51,7 @@ use crate::browser::console::ConsoleQuery;
 use crate::browser::eval::EvalRequest;
 use crate::host_bridge::{BridgeCall, BrowserCall};
 use crate::host_device::HostDevice;
+use crate::host_ssh::client::{SshDevice, SshPlan, HOST_ALIAS};
 use crate::host_ssh::tunnel::{ShellHost, CAPABILITY as CAPABILITY_SHELL, TUNNELS_PER_MINUTE};
 
 /// The `server_info` feature a desktop app looks for before registering.
@@ -91,12 +93,33 @@ pub enum HostCallError {
     TimedOut,
 }
 
+/// Which computer an `ssh` means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellTarget<'a> {
+    /// `ssh <name>`: the device with this id (`desktop proxy --device`).
+    Device(&'a str),
+    /// A configuration that names no device: the old `ssh desktop` — the
+    /// device called that, else the only one, else an app from before
+    /// devices while the book is empty.
+    Default,
+}
+
 /// Why a tunnel to a lent shell did not open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TunnelError {
-    /// No registered host lends its shell.
+    /// Nothing in the book, and no app from before devices lends its shell.
     NoHost,
-    /// [`TUNNELS_PER_MINUTE`] opened in the last minute already.
+    /// The device asked for is not in the book (any more); the names there
+    /// are.
+    UnknownDevice { names: Vec<String> },
+    /// It is in the book, and no app on it is connected.
+    Offline { name: String, last_seen: i64 },
+    /// An app on it is connected, and lends no shell.
+    NotLent { name: String },
+    /// The old name, with several devices and none called that.
+    Ambiguous { names: Vec<String> },
+    /// [`TUNNELS_PER_MINUTE`] opened to that device in the last minute
+    /// already.
     Busy,
     /// The host answered that it cannot, and why.
     Refused(String),
@@ -160,8 +183,9 @@ struct Inner {
     pending: HashMap<u64, Pending>,
     /// Tunnels asked for and not dialed yet, by their random id.
     tunnels: HashMap<String, PendingTunnel>,
-    /// When the tunnels of the last minute were asked for.
-    tunnel_starts: VecDeque<Instant>,
+    /// When the tunnels of the last minute were asked for, per device (an
+    /// app from before devices under "").
+    tunnel_starts: HashMap<String, VecDeque<Instant>>,
     next_host: u64,
     next_call: u64,
     clock: u64,
@@ -190,7 +214,96 @@ impl Inner {
             })
     }
 
-    /// The shells lent now, the one [`pick`](Self::pick) asks first.
+    /// The host lending its shell that `target` means, or why there is none.
+    fn shell_for(&self, target: ShellTarget<'_>) -> Result<&Host, TunnelError> {
+        let record = match target {
+            ShellTarget::Device(id) => self
+                .book
+                .get(id)
+                .ok_or_else(|| TunnelError::UnknownDevice { names: self.names() })?,
+            ShellTarget::Default => match self.desktop_device()? {
+                Some(record) => record,
+                None => {
+                    return self
+                        .hosts
+                        .iter()
+                        .filter(|h| h.device.is_none() && h.lends(CAPABILITY_SHELL))
+                        .max_by_key(|h| h.active_at)
+                        .ok_or(TunnelError::NoHost)
+                }
+            },
+        };
+        let mut on_it = self.hosts.iter().filter(|h| h.is_on(&record.id)).peekable();
+        if on_it.peek().is_none() {
+            return Err(TunnelError::Offline {
+                name: record.name.clone(),
+                last_seen: record.last_seen,
+            });
+        }
+        on_it
+            .filter(|h| h.lends(CAPABILITY_SHELL))
+            .max_by_key(|h| h.active_at)
+            .ok_or_else(|| TunnelError::NotLent {
+                name: record.name.clone(),
+            })
+    }
+
+    /// The device the old name means: the one called that, else the only
+    /// one; `None` with none in the book.
+    fn desktop_device(&self) -> Result<Option<&DeviceRecord>, TunnelError> {
+        let records = self.book.records();
+        if let Some(called) = records.iter().find(|d| d.name == HOST_ALIAS) {
+            return Ok(Some(called));
+        }
+        match records {
+            [] => Ok(None),
+            [only] => Ok(Some(only)),
+            _ => Err(TunnelError::Ambiguous {
+                names: self.names(),
+            }),
+        }
+    }
+
+    /// The names in the book.
+    fn names(&self) -> Vec<String> {
+        self.book.records().iter().map(|d| d.name.clone()).collect()
+    }
+
+    /// What the server's `ssh` configuration says now: an entry per device
+    /// in the book, as [`shell_for`](Self::shell_for) finds them.
+    fn ssh_plan(&self) -> SshPlan {
+        let records = self.book.records();
+        let devices = records
+            .iter()
+            .map(|record| {
+                let lent = self
+                    .hosts
+                    .iter()
+                    .filter(|h| h.is_on(&record.id) && h.lends(CAPABILITY_SHELL))
+                    .max_by_key(|h| h.active_at)
+                    .and_then(|h| h.shell.as_ref());
+                SshDevice {
+                    id: record.id.clone(),
+                    name: record.name.clone(),
+                    also_desktop: records.len() == 1 && record.name != HOST_ALIAS,
+                    user: lent.map(|s| s.user.clone()).or_else(|| record.user.clone()),
+                    host_key: lent.map(|s| s.host_key.clone()),
+                }
+            })
+            .collect();
+        let legacy = if records.is_empty() {
+            self.hosts
+                .iter()
+                .filter(|h| h.device.is_none() && h.lends(CAPABILITY_SHELL))
+                .max_by_key(|h| h.active_at)
+                .and_then(|h| h.shell.clone())
+        } else {
+            None
+        };
+        SshPlan { devices, legacy }
+    }
+
+    /// The shells lent now, the one used last first.
     fn shells(&self) -> Vec<ShellHost> {
         let mut hosts: Vec<&Host> = self
             .hosts
@@ -247,9 +360,9 @@ impl Inner {
 /// The desktop apps registered on this server's event sockets.
 pub struct HostRegistry {
     inner: Mutex<Inner>,
-    /// The shells lent, as [`Inner::shells`] gives them; for the server's
-    /// `ssh` files (`web::host_tunnel`).
-    shells: watch::Sender<Vec<ShellHost>>,
+    /// What the server's `ssh` files say ([`Inner::ssh_plan`]), for
+    /// `web::host_tunnel` to keep them so.
+    ssh: watch::Sender<SshPlan>,
     /// Moved on whenever the book changes, for `web::host_devices` to write.
     book: watch::Sender<u64>,
 }
@@ -258,7 +371,7 @@ impl Default for HostRegistry {
     fn default() -> Self {
         Self {
             inner: Mutex::new(Inner::default()),
-            shells: watch::channel(Vec::new()).0,
+            ssh: watch::channel(SshPlan::default()).0,
             book: watch::channel(0).0,
         }
     }
@@ -306,14 +419,14 @@ impl HostRegistry {
         self.book.send_modify(|version| *version = version.wrapping_add(1));
     }
 
-    /// Tell whoever watches the shells, when they read differently.
-    fn publish_shells(&self, inner: &Inner) {
-        let now = inner.shells();
-        self.shells.send_if_modified(|shells| {
-            if *shells == now {
+    /// Tell whoever keeps the `ssh` files, when they would read differently.
+    fn publish_ssh(&self, inner: &Inner) {
+        let now = inner.ssh_plan();
+        self.ssh.send_if_modified(|plan| {
+            if *plan == now {
                 false
             } else {
-                *shells = now;
+                *plan = now;
                 true
             }
         });
@@ -369,7 +482,7 @@ impl HostRegistry {
             app_version,
             active_at,
         });
-        self.publish_shells(&inner);
+        self.publish_ssh(&inner);
         drop(inner);
         if in_book {
             self.note_book();
@@ -390,9 +503,19 @@ impl HostRegistry {
         self.lock().shells()
     }
 
-    /// Told whenever the shells lent change.
-    pub fn watch_shells(&self) -> watch::Receiver<Vec<ShellHost>> {
-        self.shells.subscribe()
+    /// What the server's `ssh` files say now.
+    pub fn ssh_plan(&self) -> SshPlan {
+        self.lock().ssh_plan()
+    }
+
+    /// Told whenever what the server's `ssh` files say changes.
+    pub fn watch_ssh(&self) -> watch::Receiver<SshPlan> {
+        self.ssh.subscribe()
+    }
+
+    /// Whether `target` could have a tunnel now; why not if not.
+    pub fn check_shell(&self, target: ShellTarget<'_>) -> Result<(), TunnelError> {
+        self.lock().shell_for(target).map(|_| ())
     }
 
     /// Every computer the server has heard of, and what each lends now.
@@ -412,13 +535,21 @@ impl HostRegistry {
 
     /// The book as it was kept, when the server starts.
     pub fn restore_book(&self, stored: Vec<DeviceRecord>) {
-        self.lock().book.restore(stored);
+        let mut inner = self.lock();
+        inner.book.restore(stored);
+        self.publish_ssh(&inner);
+        drop(inner);
         self.note_book();
     }
 
     /// The names the server's own `~/.ssh/config` gives a `Host` already.
     pub fn set_reserved_names(&self, names: BTreeSet<String>) {
-        let changed = self.lock().book.set_reserved(names);
+        let mut inner = self.lock();
+        let changed = inner.book.set_reserved(names);
+        if changed {
+            self.publish_ssh(&inner);
+        }
+        drop(inner);
         if changed {
             self.note_book();
         }
@@ -426,7 +557,10 @@ impl HostRegistry {
 
     /// Call the computer `id` `name` from now on (`DeviceBook::rename`).
     pub fn rename_device(&self, id: &str, name: &str) -> Result<(), NameError> {
-        self.lock().book.rename(id, name)?;
+        let mut inner = self.lock();
+        inner.book.rename(id, name)?;
+        self.publish_ssh(&inner);
+        drop(inner);
         tracing::info!("[host-registry] computer {} renamed", short(id));
         self.note_book();
         Ok(())
@@ -442,6 +576,7 @@ impl HostRegistry {
         if !inner.book.forget(id) {
             return Err(ForgetError::NoSuchDevice);
         }
+        self.publish_ssh(&inner);
         drop(inner);
         tracing::info!("[host-registry] computer {} forgotten", short(id));
         self.note_book();
@@ -491,7 +626,7 @@ impl HostRegistry {
             host.device = device;
             host.active_at = now;
         }
-        self.publish_shells(&inner);
+        self.publish_ssh(&inner);
         drop(inner);
         if in_book {
             self.note_book();
@@ -504,7 +639,7 @@ impl HostRegistry {
         if let Some(host) = inner.hosts.iter_mut().find(|h| h.id == id) {
             host.active_at = now;
         }
-        self.publish_shells(&inner);
+        self.publish_ssh(&inner);
     }
 
     fn unregister(&self, id: u64) {
@@ -526,7 +661,7 @@ impl HostRegistry {
                 left = inner.book.left(&device, now_ms());
             }
         }
-        self.publish_shells(&inner);
+        self.publish_ssh(&inner);
         drop(inner);
         if left {
             self.note_book();
@@ -534,33 +669,35 @@ impl HostRegistry {
         tracing::info!("[host-registry] host {id} gone");
     }
 
-    /// Ask the host lending its shell that [`Inner::pick`] names for a
-    /// tunnel that lets `client_key` in, and wait up to `timeout` for it to
-    /// dial back ([`claim_tunnel`](Self::claim_tunnel)).
+    /// Ask the host lending its shell that `target` means for a tunnel that
+    /// lets `client_key` in, and wait up to `timeout` for it to dial back
+    /// ([`claim_tunnel`](Self::claim_tunnel)). Never another device's
+    /// instead.
     pub async fn open_tunnel(
         &self,
         client_key: &str,
+        target: ShellTarget<'_>,
         timeout: Duration,
     ) -> Result<WebSocket, TunnelError> {
         let (tunnel_id, tx, rx) = {
             let mut inner = self.lock();
-            let Some(host) = inner.pick(CAPABILITY_SHELL) else {
-                return Err(TunnelError::NoHost);
+            let (host_id, tx, device) = {
+                let host = inner.shell_for(target)?;
+                let device = host.device.as_ref().map(|d| d.id.clone());
+                (host.id, host.tx.clone(), device.unwrap_or_default())
             };
-            let host_id = host.id;
-            let tx = host.tx.clone();
             let now = Instant::now();
-            while inner
-                .tunnel_starts
+            let starts = inner.tunnel_starts.entry(device).or_default();
+            while starts
                 .front()
                 .is_some_and(|at| now.duration_since(*at) >= Duration::from_secs(60))
             {
-                inner.tunnel_starts.pop_front();
+                starts.pop_front();
             }
-            if inner.tunnel_starts.len() >= TUNNELS_PER_MINUTE {
+            if starts.len() >= TUNNELS_PER_MINUTE {
                 return Err(TunnelError::Busy);
             }
-            inner.tunnel_starts.push_back(now);
+            starts.push_back(now);
             let tunnel_id = crate::cli_run::hello::random_hex(16);
             let (reply, rx) = oneshot::channel();
             inner.tunnels.insert(
@@ -1036,7 +1173,7 @@ mod tests {
         assert_eq!(registry.shells(), vec![shell_host("me")]);
         assert_eq!(
             registry
-                .open_tunnel("ssh-ed25519 KEY", Duration::from_millis(1))
+                .open_tunnel("ssh-ed25519 KEY", ShellTarget::Default, Duration::from_millis(1))
                 .await
                 .err(),
             Some(TunnelError::TimedOut),
@@ -1051,7 +1188,7 @@ mod tests {
         let _browser_only = registry.register(tx, browser(), None, None);
         assert_eq!(
             registry
-                .open_tunnel("ssh-ed25519 KEY", Duration::from_secs(5))
+                .open_tunnel("ssh-ed25519 KEY", ShellTarget::Default, Duration::from_secs(5))
                 .await
                 .err(),
             Some(TunnelError::NoHost)
@@ -1070,7 +1207,7 @@ mod tests {
         let other = registry.register(other_tx, browser(), None, None);
         let r = Arc::clone(&registry);
         let opening = tokio::spawn(async move {
-            r.open_tunnel("ssh-ed25519 KEY", Duration::from_secs(5))
+            r.open_tunnel("ssh-ed25519 KEY", ShellTarget::Default, Duration::from_secs(5))
                 .await
                 .err()
         });
@@ -1088,7 +1225,7 @@ mod tests {
         // A dial in time is claimed once.
         let r = Arc::clone(&registry);
         let waiting = tokio::spawn(async move {
-            r.open_tunnel("ssh-ed25519 KEY", Duration::from_secs(5))
+            r.open_tunnel("ssh-ed25519 KEY", ShellTarget::Default, Duration::from_secs(5))
                 .await
                 .err()
         });
@@ -1102,14 +1239,14 @@ mod tests {
     #[tokio::test]
     async fn a_host_that_goes_away_fails_its_tunnels_and_takes_its_shell() {
         let registry = Arc::new(HostRegistry::new());
-        let mut shells = registry.watch_shells();
+        let mut plans = registry.watch_ssh();
         let (tx, mut rx) = mpsc::channel(8);
         let reg = registry.register(tx, lends_shell(), None, Some(shell_host("me")));
-        assert!(shells.has_changed().unwrap());
-        assert_eq!(*shells.borrow_and_update(), vec![shell_host("me")]);
+        assert!(plans.has_changed().unwrap());
+        assert_eq!(plans.borrow_and_update().legacy, Some(shell_host("me")));
         let r = Arc::clone(&registry);
         let opening = tokio::spawn(async move {
-            r.open_tunnel("ssh-ed25519 KEY", Duration::from_secs(600))
+            r.open_tunnel("ssh-ed25519 KEY", ShellTarget::Default, Duration::from_secs(600))
                 .await
                 .err()
         });
@@ -1117,8 +1254,8 @@ mod tests {
         drop(reg);
         assert_eq!(opening.await.unwrap(), Some(TunnelError::Gone));
         assert!(registry.claim_tunnel(&tunnel_id).is_none());
-        assert!(shells.has_changed().unwrap());
-        assert!(shells.borrow_and_update().is_empty());
+        assert!(plans.has_changed().unwrap());
+        assert_eq!(*plans.borrow_and_update(), SshPlan::default());
     }
 
     /// No more than the cap a minute, whatever becomes of them.
@@ -1130,7 +1267,7 @@ mod tests {
         for _ in 0..TUNNELS_PER_MINUTE {
             assert_eq!(
                 registry
-                    .open_tunnel("ssh-ed25519 KEY", Duration::from_millis(1))
+                    .open_tunnel("ssh-ed25519 KEY", ShellTarget::Default, Duration::from_millis(1))
                     .await
                     .err(),
                 Some(TunnelError::TimedOut)
@@ -1138,15 +1275,15 @@ mod tests {
         }
         assert_eq!(
             registry
-                .open_tunnel("ssh-ed25519 KEY", Duration::from_millis(1))
+                .open_tunnel("ssh-ed25519 KEY", ShellTarget::Default, Duration::from_millis(1))
                 .await
                 .err(),
             Some(TunnelError::Busy)
         );
     }
 
-    /// The shell the person used last is asked, and comes first in the list
-    /// the server's ssh files follow.
+    /// Of several apps from before devices, the one the person used last
+    /// is asked, and comes first in the list.
     #[tokio::test]
     async fn the_shell_used_last_is_asked_and_listed_first() {
         let registry = Arc::new(HostRegistry::new());
@@ -1157,10 +1294,11 @@ mod tests {
         assert_eq!(registry.shells(), vec![shell_host("b"), shell_host("a")]);
         a.focus();
         assert_eq!(registry.shells(), vec![shell_host("a"), shell_host("b")]);
+        assert_eq!(registry.ssh_plan().legacy, Some(shell_host("a")));
         let r = Arc::clone(&registry);
         tokio::spawn(async move {
             let _ = r
-                .open_tunnel("ssh-ed25519 KEY", Duration::from_secs(5))
+                .open_tunnel("ssh-ed25519 KEY", ShellTarget::Default, Duration::from_secs(5))
                 .await;
         });
         tunnel_order(&mut a_rx).await;
@@ -1407,5 +1545,201 @@ mod tests {
         let list = registry.device_list();
         assert_eq!(list.devices[0].name, "desktop", "the name kept");
         assert!(list.devices[0].online && list.devices[0].shell);
+    }
+
+    /// A shell lent from a device, as its app registers it.
+    fn lending(
+        registry: &Arc<HostRegistry>,
+        id: &str,
+        name: &str,
+        user: &str,
+    ) -> (HostRegistration, mpsc::Receiver<ServerMsg>) {
+        let (tx, rx) = mpsc::channel(8);
+        let reg = registry.register_on(
+            tx,
+            lends_shell(),
+            None,
+            Some(shell_host(user)),
+            Some(device(id, name)),
+            None,
+        );
+        (reg, rx)
+    }
+
+    async fn tunnel_to(registry: &Arc<HostRegistry>, target: ShellTarget<'_>) -> TunnelError {
+        match registry
+            .open_tunnel("ssh-ed25519 KEY", target, Duration::from_millis(20))
+            .await
+        {
+            Ok(_) => panic!("no one dials back in a test"),
+            Err(e) => e,
+        }
+    }
+
+    /// `ssh <name>` goes to that device, whichever the person used last, and
+    /// never to another one.
+    #[tokio::test]
+    async fn ssh_goes_to_the_device_it_names() {
+        let registry = Arc::new(HostRegistry::new());
+        let (imac, mut imac_rx) = lending(&registry, "imac", "Study iMac", "me");
+        let (_book, mut book_rx) = lending(&registry, "book", "MacBook", "me");
+        imac.focus();
+        let book_id = device("book", "").id;
+        assert_eq!(
+            tunnel_to(&registry, ShellTarget::Device(&book_id)).await,
+            TunnelError::TimedOut
+        );
+        assert!(matches!(book_rx.try_recv(), Ok(ServerMsg::HostTunnel { .. })));
+        assert!(imac_rx.try_recv().is_err());
+    }
+
+    /// A device that cannot take it says why, and nothing is asked of
+    /// another.
+    #[tokio::test]
+    async fn a_device_that_cannot_be_reached_says_why() {
+        let registry = Arc::new(HostRegistry::new());
+        let (_imac, mut imac_rx) = lending(&registry, "imac", "Study iMac", "me");
+        let (book_tx, _book_rx) = mpsc::channel(8);
+        let _book = registry.register_on(
+            book_tx,
+            browser(),
+            None,
+            None,
+            Some(device("book", "MacBook")),
+            None,
+        );
+        let book_id = device("book", "").id;
+        assert_eq!(
+            tunnel_to(&registry, ShellTarget::Device(&book_id)).await,
+            TunnelError::NotLent {
+                name: "macbook".into()
+            }
+        );
+        assert_eq!(
+            tunnel_to(&registry, ShellTarget::Device("nobody-0123456789")).await,
+            TunnelError::UnknownDevice {
+                names: vec!["study-imac".into(), "macbook".into()]
+            }
+        );
+        assert!(imac_rx.try_recv().is_err(), "nothing asked of another");
+
+        let offline = Arc::new(HostRegistry::new());
+        offline.restore_book(vec![DeviceRecord {
+            id: book_id.clone(),
+            name: "laptop".into(),
+            named: true,
+            computer_name: "MacBook".into(),
+            model: String::new(),
+            kind: None,
+            platform: None,
+            app_version: None,
+            user: Some("me".into()),
+            first_seen: 1,
+            last_seen: 2,
+        }]);
+        assert_eq!(
+            offline.check_shell(ShellTarget::Device(&book_id)),
+            Err(TunnelError::Offline {
+                name: "laptop".into(),
+                last_seen: 2
+            })
+        );
+    }
+
+    /// The old name: the device called `desktop`, else the only one; with
+    /// several and none called that, it says which there are.
+    #[tokio::test]
+    async fn the_old_name_means_the_device_called_desktop_or_the_only_one() {
+        let registry = Arc::new(HostRegistry::new());
+        let (_imac, mut imac_rx) = lending(&registry, "imac", "Study iMac", "me");
+        assert_eq!(tunnel_to(&registry, ShellTarget::Default).await, TunnelError::TimedOut);
+        assert!(matches!(imac_rx.try_recv(), Ok(ServerMsg::HostTunnel { .. })));
+        assert!(registry.ssh_plan().devices[0].also_desktop);
+
+        let (_book, mut book_rx) = lending(&registry, "book", "MacBook", "me");
+        assert_eq!(
+            registry.check_shell(ShellTarget::Default),
+            Err(TunnelError::Ambiguous {
+                names: vec!["study-imac".into(), "macbook".into()]
+            })
+        );
+        assert!(registry.ssh_plan().devices.iter().all(|d| !d.also_desktop));
+
+        let book_id = device("book", "").id;
+        registry.rename_device(&book_id, "desktop").unwrap();
+        assert_eq!(tunnel_to(&registry, ShellTarget::Default).await, TunnelError::TimedOut);
+        assert!(matches!(book_rx.try_recv(), Ok(ServerMsg::HostTunnel { .. })));
+        assert!(imac_rx.try_recv().is_err());
+    }
+
+    /// An app from before devices is no longer `desktop` once a device is
+    /// in the book.
+    #[tokio::test]
+    async fn an_app_from_before_devices_gives_way_to_the_book() {
+        let registry = Arc::new(HostRegistry::new());
+        let (old_tx, _old_rx) = mpsc::channel(8);
+        let _old = registry.register(old_tx, lends_shell(), None, Some(shell_host("old")));
+        assert_eq!(registry.ssh_plan().legacy, Some(shell_host("old")));
+        let (_imac, _imac_rx) = lending(&registry, "imac", "Study iMac", "me");
+        let plan = registry.ssh_plan();
+        assert_eq!(plan.legacy, None);
+        assert_eq!(plan.devices.len(), 1);
+    }
+
+    /// What the `ssh` files say: every device in the book, its login name
+    /// kept while it is away, its host key only while it lends.
+    #[tokio::test]
+    async fn the_ssh_plan_follows_the_book() {
+        let registry = Arc::new(HostRegistry::new());
+        let mut plans = registry.watch_ssh();
+        let (imac, _imac_rx) = lending(&registry, "imac", "Study iMac", "me");
+        assert!(plans.has_changed().unwrap());
+        let plan = plans.borrow_and_update().clone();
+        assert_eq!(plan.devices.len(), 1);
+        let only = &plan.devices[0];
+        assert_eq!(only.name, "study-imac");
+        assert_eq!(only.user.as_deref(), Some("me"));
+        assert_eq!(
+            only.host_key.as_deref(),
+            Some(shell_host("me").host_key.as_str())
+        );
+
+        drop(imac);
+        assert!(plans.has_changed().unwrap());
+        let away = plans.borrow_and_update().devices[0].clone();
+        assert_eq!(away.host_key, None, "not lent now");
+        assert_eq!(away.user.as_deref(), Some("me"), "who it logs in as");
+
+        let id = device("imac", "").id;
+        registry.rename_device(&id, "desktop").unwrap();
+        assert!(plans.has_changed().unwrap());
+        assert_eq!(plans.borrow_and_update().devices[0].name, "desktop");
+        registry.forget_device(&id).unwrap();
+        assert!(plans.has_changed().unwrap());
+        assert!(plans.borrow_and_update().devices.is_empty());
+    }
+
+    /// The cap is per device: one device busy, another still opens.
+    #[tokio::test]
+    async fn tunnels_are_capped_per_device() {
+        let registry = Arc::new(HostRegistry::new());
+        let (_imac, _imac_rx) = lending(&registry, "imac", "Study iMac", "me");
+        let (_book, _book_rx) = lending(&registry, "book", "MacBook", "me");
+        let imac_id = device("imac", "").id;
+        let book_id = device("book", "").id;
+        for _ in 0..TUNNELS_PER_MINUTE {
+            assert_eq!(
+                tunnel_to(&registry, ShellTarget::Device(&imac_id)).await,
+                TunnelError::TimedOut
+            );
+        }
+        assert_eq!(
+            tunnel_to(&registry, ShellTarget::Device(&imac_id)).await,
+            TunnelError::Busy
+        );
+        assert_eq!(
+            tunnel_to(&registry, ShellTarget::Device(&book_id)).await,
+            TunnelError::TimedOut
+        );
     }
 }

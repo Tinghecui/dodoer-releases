@@ -224,7 +224,9 @@ async fn dispatch(cli: Cli, env: connect::Env) -> i32 {
         }
         Some(args::Command::Taxonomy(t)) => taxonomy::taxonomy(&cli.global, &t, &env).await,
         Some(args::Command::Desktop(desktop)) => match desktop.action {
-            args::DesktopAction::Proxy => desktop::proxy(&cli.global, &env).await,
+            args::DesktopAction::Proxy { device } => {
+                desktop::proxy(&cli.global, &env, device.as_deref()).await
+            }
         },
     }
 }

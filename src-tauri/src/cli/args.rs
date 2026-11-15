@@ -289,11 +289,16 @@ pub struct DesktopArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum DesktopAction {
-    /// Carry one SSH connection between stdin and stdout and the computer a
-    /// dodoer desktop app lends this workspace: the ProxyCommand of `ssh
-    /// desktop`, which codeg-server writes into the ssh configuration. Not
-    /// for typing.
-    Proxy,
+    /// Carry one SSH connection between stdin and stdout and one of the
+    /// person's computers a dodoer desktop app lends this workspace: the
+    /// ProxyCommand of `ssh <device>`, which codeg-server writes into the
+    /// ssh configuration. Not for typing.
+    Proxy {
+        /// The device's id, as the ssh configuration names it. Without it,
+        /// the one the old name `desktop` means.
+        #[arg(long)]
+        device: Option<String>,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -734,8 +739,14 @@ mod tests {
         assert!(matches!(
             parse(&["desktop", "proxy"]).unwrap().command,
             Some(Command::Desktop(DesktopArgs {
-                action: DesktopAction::Proxy
+                action: DesktopAction::Proxy { device: None }
             }))
+        ));
+        assert!(matches!(
+            parse(&["desktop", "proxy", "--device", "0123456789abcdef"]).unwrap().command,
+            Some(Command::Desktop(DesktopArgs {
+                action: DesktopAction::Proxy { device: Some(ref id) }
+            })) if id == "0123456789abcdef"
         ));
         assert!(parse(&["desktop"]).is_err(), "says which");
     }

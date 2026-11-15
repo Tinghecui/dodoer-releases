@@ -40,6 +40,8 @@ jobs:
       install: ${{ steps.filter.outputs.install }}
       editions: ${{ steps.filter.outputs.editions }}
       workflows: ${{ steps.filter.outputs.workflows }}
+      # main 上和哪个提交比（PR 上是空的）；Rust fmt 只查这之后改了的行
+      base: ${{ steps.base.outputs.base }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -264,6 +266,7 @@ jobs:
         run: test -x /usr/sbin/sshd || (sudo apt-get update && sudo apt-get install -y openssh-server)
 
       - name: cargo test
+        id: test
         if: ${{ !matrix.check_only }}
         working-directory: src-tauri
         env:
@@ -271,6 +274,8 @@ jobs:
         run: cargo test ${{ matrix.cargo_args }}
 
       - name: cargo clippy
+        # 测试没过也照样跑：不然这一轮只报测试，修好了下一轮才报 clippy，多来回一次（#223 就是这样）
+        if: ${{ success() || steps.test.outcome == 'failure' }}
         working-directory: src-tauri
         run: cargo clippy ${{ matrix.clippy_args }} -- -D warnings
 
@@ -294,6 +299,76 @@ jobs:
 
   # 桌面包（只有一种，完整版）的 Tauri 配置叠法：externalBin、updater、identifier，以及去掉的纯客户端版没有留下 feature / 配置。
   # 不编译，几秒。编出来的包在 desktop-macos.yml 核对：tag、每晚的 main、PR 打 macos-build 标签
+  # 格式只有这里查：本机（生产机）不许跑 rustfmt。只查这次加了、改了的行（main 上和上一次通过的提交比；PR 上和它从 main 分出来的地方比，
+  # 不和 main 的最新比：落后的分支会把别人后来合进来的改动反着算成自己的）：
+  # 老代码从来没跑过 rustfmt，全量格式化要改 300 个文件，以后每批搬 upstream 都会冲突（scripts/rustfmt-changed-lines.py）。
+  # 没过就把这些行该改成的样子存成产物 rustfmt-patch，下载下来在仓库根目录 `git apply` 就行（AGENTS.md「CI 上常挂的错误」）
+  rust-fmt:
+    name: Rust fmt
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 要往回找 PR 从 main 分出来的地方（或 main 上一次通过的提交）
+          fetch-depth: 0
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: 这次改了的行格式对不对
+        id: fmt
+        env:
+          MAIN_BASE: ${{ needs.changes.outputs.base }}
+        run: |
+          base=${MAIN_BASE:-pr}
+          (cd src-tauri && cargo fmt --all)
+          if ! python3 -I scripts/rustfmt-changed-lines.py "$base" "$RUNNER_TEMP/rustfmt.patch"; then
+            echo "::error::这次改了的 Rust 行格式不对。下载产物 rustfmt-patch，在仓库根目录 git apply rustfmt.patch：gh run download ${{ github.run_id }} -R ${{ github.repository }} -n rustfmt-patch"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: failure() && steps.fmt.outcome == 'failure'
+        with:
+          name: rustfmt-patch
+          path: ${{ runner.temp }}/rustfmt.patch
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # 只在 macOS 上编的代码（`#[cfg(target_os = "macos")]`，2026-11-15 有 61 个文件、396 处：computer、browser、host_ssh……）
+  # 上面 Linux 的三格都不编。以前只有打了 macos-build 标签的 PR、每晚编 main、合并后发版那一班才编到，错了要合并以后才知道。
+  # 公开仓库的 macOS 机器不收费。macos-15 是 3 核 7G，一次只跑一个 rustc（lib 和测试版 lib 同时查会顶到内存）
+  rust-macos:
+    name: Rust desktop on macOS
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "1"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          shared-key: test-macos-15-desktop
+          cache-on-failure: true
+      - name: Prepare Tauri frontendDist placeholder
+        run: |
+          mkdir -p out
+          printf '<!doctype html><html><body></body></html>\n' > out/index.html
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --features test-utils --lib --tests -- -D warnings
+
   desktop-editions:
     name: Desktop editions
     needs: changes

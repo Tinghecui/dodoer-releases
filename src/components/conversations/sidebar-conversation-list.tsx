@@ -1674,12 +1674,17 @@ export function SidebarConversationList({
   // store directly (`use-switch-to-branch`). Only a branch switched from OUTSIDE
   // the app, on a container that is not active, reads stale — the same bargain
   // the tab-bar branch chips already make, and not worth a second poll loop.
+  //
+  // 工作树子分组也一样读一次：它的表头在没有别名（比如用户清空了别名）时靠
+  // 实时分支显示「分支 [ 目录 ]」，而它不是激活 folder 时没人轮询它。
   useEffect(() => {
-    for (const repoId of containerRepoIds) {
-      const path = folderIndex.get(repoId)?.path
-      if (path) ensureGitHead(repoId, path)
+    for (const [repoId, worktreeIds] of containerChildren) {
+      for (const id of [repoId, ...worktreeIds]) {
+        const path = folderIndex.get(id)?.path
+        if (path) ensureGitHead(id, path)
+      }
     }
-  }, [containerRepoIds, folderIndex, ensureGitHead])
+  }, [containerChildren, folderIndex, ensureGitHead])
 
   // Flat row model for windowing — the pinned section, the folders section, and
   // every conversation live in this ONE array fed to the single Virtualizer (no
@@ -3192,7 +3197,12 @@ export function SidebarConversationList({
         suppressed={opts.suppressed ?? false}
         depth={depth}
         variant={variant}
-        worktreeBranch={folderEntry?.gitBranch ?? null}
+        // 工作树的实时 HEAD 在 alias 之后兜底：别名被清空（alias 存成 NULL）后，
+        // 表头要回到「分支 [ 目录 ]」。folder 行的 `git_branch` 列从来不写，
+        // 只读它就只剩目录名。HEAD 由下面的 ensureGitHead effect 读进来。
+        worktreeBranch={
+          branches.get(folderId) ?? folderEntry?.gitBranch ?? null
+        }
         // The container's live HEAD (the root sub-group shares its repo's id).
         // `gitBranch` is only a fallback for shape's sake — the folder row's
         // `git_branch` column is never written by the folder flow.

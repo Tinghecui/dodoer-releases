@@ -98,6 +98,15 @@ const api = vi.hoisted(() => ({
   deleteConversation: vi.fn(() => Promise.resolve()),
   getGitBranch: vi.fn(() => Promise.resolve("feature-x")),
   gitRemoveWorktree: vi.fn(() => Promise.resolve()),
+  // 侧栏会为没解析过 HEAD 的 folder 读一次（`ensureGitHead`），这里不走真的传输层。
+  getGitHead: vi.fn((path: string) =>
+    Promise.resolve({
+      is_repo: true,
+      branch: path === "/p/2" ? "test/relocate-1" : null,
+      detached: false,
+      short_sha: "abc1234",
+    })
+  ),
 }))
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
@@ -1280,6 +1289,62 @@ describe("SidebarConversationList — worktree grouping (Show worktrees)", () =>
     )
   })
 
+  it("labels a worktree whose alias was cleared with its live branch", () => {
+    // 清空别名后 alias 是 NULL，folder 行的 git_branch 也一直是 NULL；
+    // 分支只在 store 的 branches 里（HEAD 读出来的），表头要用它。
+    const cur = useAppWorkspaceStore.getState()
+    const cleared = cur.allFolders.map((f) =>
+      f.id === 2
+        ? ({ ...f, git_branch: null, alias: null } as unknown as FolderDetail)
+        : f
+    )
+    useAppWorkspaceStore.setState({
+      folders: cleared,
+      allFolders: cleared,
+      branches: new Map([
+        [1, "main"],
+        [2, "test/relocate-1"],
+      ]),
+      gitHeads: new Map([
+        ...cur.gitHeads,
+        [
+          2,
+          {
+            is_repo: true,
+            branch: "test/relocate-1",
+            detached: false,
+            short_sha: "def5678",
+          },
+        ],
+      ]),
+    })
+    render(wtTree(true))
+
+    expect(document.body.textContent ?? "").toContain(
+      "test/relocate-1 [ wt-feature ]"
+    )
+  })
+
+  it("reads a worktree's HEAD itself when nothing has resolved it yet", async () => {
+    // 工作树不是激活的 folder 时没有轮询，侧栏要自己读一次 HEAD，
+    // 否则别名一清空表头就只剩目录名。
+    const cur = useAppWorkspaceStore.getState()
+    const cleared = cur.allFolders.map((f) =>
+      f.id === 2
+        ? ({ ...f, git_branch: null, alias: null } as unknown as FolderDetail)
+        : f
+    )
+    useAppWorkspaceStore.setState({ folders: cleared, allFolders: cleared })
+    api.getGitHead.mockClear()
+    render(wtTree(true))
+    await act(async () => {})
+
+    expect(api.getGitHead).toHaveBeenCalledWith("/p/2")
+    expect(document.body.textContent ?? "").toContain(
+      "test/relocate-1 [ wt-feature ]"
+    )
+  })
+
   it("leaves a worktree with no branch or alias on its bare directory name", () => {
     const cur = useAppWorkspaceStore.getState()
     const bare = cur.allFolders.map((f) =>
@@ -1287,7 +1352,15 @@ describe("SidebarConversationList — worktree grouping (Show worktrees)", () =>
         ? ({ ...f, git_branch: null, alias: null } as unknown as FolderDetail)
         : f
     )
-    useAppWorkspaceStore.setState({ folders: bare, allFolders: bare })
+    // HEAD 已知、但不在任何分支上（detached），不再去读。
+    useAppWorkspaceStore.setState({
+      folders: bare,
+      allFolders: bare,
+      gitHeads: new Map([
+        ...cur.gitHeads,
+        [2, { is_repo: true, branch: null, detached: true, short_sha: "abc" }],
+      ]),
+    })
     render(wtTree(true))
 
     const text = document.body.textContent ?? ""

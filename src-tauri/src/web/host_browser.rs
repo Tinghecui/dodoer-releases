@@ -382,7 +382,11 @@ impl BrowserToolAccess for RemoteHostBrowser {
 
     async fn tab_op(&self, op: BrowserTabOp) -> BrowserTabOutcome {
         match op {
-            BrowserTabOp::Open { url, device } => {
+            BrowserTabOp::Open {
+                url,
+                device,
+                new_tab,
+            } => {
                 let asked = device;
                 let device = match device_for(asked.as_deref()).await {
                     Ok(device) => device,
@@ -397,7 +401,11 @@ impl BrowserToolAccess for RemoteHostBrowser {
                 // The device is the server's business: the window opens it
                 // on itself.
                 let call = BrowserCall::TabOp {
-                    op: BrowserTabOp::Open { url, device: None },
+                    op: BrowserTabOp::Open {
+                        url,
+                        device: None,
+                        new_tab,
+                    },
                 };
                 let answer = match self.ask_host(&host, call, CALL_TIMEOUT).await {
                     Ok(outcome) => self.localize::<BrowserTabOutcome>(&host, outcome),
@@ -621,6 +629,7 @@ mod tests {
             .tab_op(BrowserTabOp::Open {
                 url: "https://example.com/".into(),
                 device: None,
+                new_tab: false,
             })
             .await;
         assert_eq!(unnamed.error.as_deref(), Some(ERROR_UNAVAILABLE));
@@ -631,6 +640,7 @@ mod tests {
             .tab_op(BrowserTabOp::Open {
                 url: "https://example.com/".into(),
                 device: Some("macbook".into()),
+                new_tab: false,
             })
             .await;
         assert_eq!(opened.error, None, "{opened:?}");
@@ -659,6 +669,7 @@ mod tests {
             .tab_op(BrowserTabOp::Open {
                 url: "https://example.com/".into(),
                 device: Some("macbook".into()),
+                new_tab: false,
             })
             .await;
         let why = refused.note.unwrap();

@@ -514,6 +514,14 @@ pub enum BrowserTabOp {
         /// it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<String>,
+        /// Cowork fork: in the person's Chrome, a second tab even though
+        /// the agent has a page there already, which the new one would
+        /// otherwise replace (`docs/agent-chrome.md` section 13.1). The
+        /// built-in browser always opens a new tab and ignores it. Left out
+        /// of the wire when false, so an older desktop hears what it always
+        /// did.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        new_tab: bool,
     },
     /// Point an existing tab at this address.
     Navigate { tab_id: String, url: String },
@@ -939,6 +947,7 @@ mod tests {
             .tab_op(BrowserTabOp::Open {
                 url: "https://example.com/".into(),
                 device: None,
+                new_tab: false,
             })
             .await;
         assert_eq!(unavailable.tab_id, None);

@@ -2657,6 +2657,13 @@ pub fn browser_tab_op(
                 .map(str::trim)
                 .filter(|device| !device.is_empty())
                 .map(str::to_string),
+            // Cowork fork: a second tab in the person's Chrome rather than
+            // the agent's page there replaced (`docs/agent-chrome.md` 13.1).
+            new_tab: match arguments.get("newTab") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(new_tab)) => *new_tab,
+                Some(_) => return Err(format!("{name} takes `newTab` as true or false")),
+            },
         }),
         "browser_navigate" => Ok(BrowserTabOp::Navigate {
             tab_id: text("tabId")?,
@@ -2684,6 +2691,14 @@ pub fn render_browser_tab_op_result(outcome: &Value) -> Value {
             let id = tab.get("tabId").and_then(Value::as_str).unwrap_or("?");
             let level = tab.get("level").and_then(Value::as_str).unwrap_or("none");
             let title = tab.get("title").and_then(Value::as_str);
+            // Cowork fork: what else happened on the way, said after the
+            // rest — that the page replaced the agent's old one in the
+            // person's Chrome (`docs/agent-chrome.md` 13.1).
+            let also = outcome
+                .get("note")
+                .and_then(Value::as_str)
+                .map(|note| format!(" {note}"))
+                .unwrap_or_default();
             // A page that did not load comes first and on its own. It has no
             // origin and so no sharing either, and leading with "this tab is
             // not shared with you" would send the agent to ask the user for
@@ -2694,7 +2709,7 @@ pub fn render_browser_tab_op_result(outcome: &Value) -> Value {
                     "content": [{ "type": "text", "text": format!(
                         "Browser tab {id} is open and the address did not load ({kind}). The tab \
                          is showing an error page. Retry it with browser_navigate once whatever \
-                         serves that address is up, or close it with browser_close_tab."
+                         serves that address is up, or close it with browser_close_tab.{also}"
                     ) }],
                     "structuredContent": outcome,
                     "isError": false,
@@ -2719,6 +2734,7 @@ pub fn render_browser_tab_op_result(outcome: &Value) -> Value {
                      that tab and presses \"Share with agents\" in its toolbar."
                 }
             });
+            out.push_str(&also);
             out
         }
         _ => outcome
@@ -7151,6 +7167,19 @@ mod tests {
             BrowserTabOp::Open {
                 url: "https://example.com/".into(),
                 device: None,
+                new_tab: false,
+            }
+        );
+        assert_eq!(
+            browser_tab_op(
+                "browser_open_tab",
+                &json!({ "url": "https://example.com/", "newTab": true })
+            )
+            .unwrap(),
+            BrowserTabOp::Open {
+                url: "https://example.com/".into(),
+                device: None,
+                new_tab: true,
             }
         );
         assert_eq!(
@@ -7162,6 +7191,7 @@ mod tests {
             BrowserTabOp::Open {
                 url: "https://example.com/".into(),
                 device: Some("laptop".into()),
+                new_tab: false,
             }
         );
         assert_eq!(
@@ -7186,13 +7216,45 @@ mod tests {
             ("browser_open_tab", json!({}), "`url`"),
             ("browser_open_tab", json!({ "url": "  " }), "`url`"),
             ("browser_open_tab", json!({ "url": 7 }), "`url`"),
-            ("browser_navigate", json!({ "url": "https://x.test/" }), "`tabId`"),
+            (
+                "browser_open_tab",
+                json!({ "url": "https://x.test/", "newTab": "yes" }),
+                "`newTab`",
+            ),
+            (
+                "browser_navigate",
+                json!({ "url": "https://x.test/" }),
+                "`tabId`",
+            ),
             ("browser_navigate", json!({ "tabId": "t1" }), "`url`"),
             ("browser_close_tab", json!({}), "`tabId`"),
         ] {
             let err = browser_tab_op(name, &args).unwrap_err();
             assert!(err.contains(wanted), "{name}: {err}");
         }
+    }
+
+    /// A page that replaced the agent's old one in the person's Chrome says
+    /// so after the usual words; a plain open says nothing of the kind.
+    #[test]
+    fn a_replaced_page_says_so() {
+        let tab = json!({ "tabId": "t1", "origin": "https://example.com", "level": "control" });
+        let replaced = render_browser_tab_op_result(&json!({
+            "tabId": "t1", "tab": tab, "note": "This replaced the page you had open."
+        }));
+        let text = replaced["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.starts_with("Browser tab t1 is on https://example.com"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("acting. This replaced the page you had open."),
+            "{text}"
+        );
+
+        let opened = render_browser_tab_op_result(&json!({ "tabId": "t1", "tab": tab }));
+        let text = opened["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("replaced"), "{text}");
     }
 
     /// The tab tools ride the browser group — the user's one decision about

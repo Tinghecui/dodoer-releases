@@ -121,8 +121,43 @@ pub async fn share(
     shared.map(drop)
 }
 
-/// Open `url` for an agent of `scope` in the agents' window of the person's
-/// Chrome, register it, and answer with its id once it has committed a
+/// The page of `scope`'s agents in the person's Chrome that a page they open
+/// now replaces, rather than opening a new tab and bringing Chrome to the
+/// front for it (`docs/agent-chrome.md` section 13.1). None when they asked
+/// for a new tab (`new_tab`), or have no page there they may still drive: one
+/// still registered as theirs — closed, gone to a sensitive site or let go
+/// of with the switch, it is not — and shared with them for acting.
+pub fn page_to_replace(
+    registry: &BrowserRegistry,
+    lending: &ChromeLending,
+    scope: &str,
+    new_tab: bool,
+) -> Option<String> {
+    if new_tab {
+        return None;
+    }
+    let owner = agent_owner(scope);
+    let own: Vec<String> = registry
+        .list()
+        .into_iter()
+        .filter(|state| {
+            state.owner_window == owner
+                && state.surface == SurfaceKind::External
+                && agent::level_of(state.agent_grant.as_ref()).allows(GrantLevel::Control)
+        })
+        .map(|state| state.tab_id)
+        .collect();
+    lending.window().to_replace(scope, new_tab, &own)
+}
+
+/// `tab_id` is the page `scope`'s agents opened or replaced last: the one the
+/// next page they open replaces.
+pub fn remember_page(lending: &ChromeLending, scope: &str, tab_id: &str) {
+    lending.window().remember(scope, tab_id);
+}
+
+/// Open `url` for an agent of `scope` in a new tab of the agents' window of
+/// the person's Chrome, register it, and answer with its id once it has committed a
 /// document (shared with the agent for reading and acting) or has been given
 /// the time to. Whether the switch is on is the caller's to have checked.
 pub async fn open_for_agent(
@@ -141,6 +176,7 @@ pub async fn open_for_agent(
         .await
         .map_err(|err| AppCommandError::network(format!("Chrome did not open the page: {err}")))?;
     let tab_id = tabs::tab_id(&opened.target);
+    remember_page(lending, scope, &tab_id);
     register(
         app,
         &client,

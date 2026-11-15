@@ -124,7 +124,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
   - 窗口里留一个 dodoer 自己的起始标签（写一句「这个窗口是 dodoer 的智能体在用」）。之后每开一个标签，**先把起始标签切到前面（`Target.activateTarget`），再 `Target.createTarget`（不带 `newWindow`）**：不带 `newWindow` 的新标签落在 Chrome 最后用的那个窗口，切过一下，最后用的就是智能体的窗口（第 10 节第四轮实测落对了）。CDP 没有「开到指定窗口」的参数，只能这样。如果用户恰好在这两步之间点了自己的窗口，标签会落到那边，照样归智能体、面板里照样标着；开完对一下两个标签的窗口号，不一样就记一条日志。
   - **不再用 `window.open`**（2026-11-15 前是从起始标签上 `window.open`）：在用户日常的 Chrome 上（154 和 157）它每次都让 Chrome 崩掉，崩在 Chrome 自己对「打开新页面的那个页面」的一条检查上（第 10 节第四轮）；`Target.createTarget` 开的标签是 Chrome 自己开的，后面没有页面，走不到那条检查。
   - 窗口**最小化着也能干活**：点击和截图都正常。但 dodoer 不替用户把它收起来（用户 2026-11-14 定的：人能随时看到智能体在干什么更重要）；用户自己收起来也不影响智能体。
-  - **开这个窗口时 Chrome 会跳到前面，躲不掉**：第三轮试了让窗口一出生就最小化（`windowState: "minimized"`），Chrome 没照做，照样跳了出来。所以窗口一条连接只开一次（智能体第一次在 Chrome 里开网页时），之后一直复用，**开出来就让它留在前面，不收起来**。这一跳正好也是告诉用户「智能体开始在 Chrome 里干活了」。用户 Chrome 全屏用的时候（用户平时就是），新窗口也是全屏的、在单独的一屏里；用户说目前问题不大。之后每开一个标签 Chrome 也会到前面（先切到智能体的窗口才落得对），这一点等用户用了再看能不能接受。
+  - **开这个窗口时 Chrome 会跳到前面，躲不掉**：第三轮试了让窗口一出生就最小化（`windowState: "minimized"`），Chrome 没照做，照样跳了出来。所以窗口一条连接只开一次（智能体第一次在 Chrome 里开网页时），之后一直复用，**开出来就让它留在前面，不收起来**。这一跳正好也是告诉用户「智能体开始在 Chrome 里干活了」。用户 Chrome 全屏用的时候（用户平时就是），新窗口也是全屏的、在单独的一屏里；用户说目前问题不大。之后每**新开**一个标签 Chrome 也会到前面（先切到智能体的窗口才落得对，2026-11-15 在用户 Mac 上实测确认会跳，13.1）；所以从第二轮起，智能体已经有自己的标签时，`browser_open_tab` 不再新开，而是在那个标签上换网页（`Page.navigate`，实测不跳），只有智能体明确要第二个标签（`newTab: true`）才新开、才跳（13.1）。
   - 退路：标签直接开在用户窗口的后台（开了焦点模拟后那里也收得到点击，不跳出来）。代价是智能体的标签和用户的混在一起，Chrome 里又做不了记号。
 - **人来做一步**：碰到登录、验证码、付款确认，智能体照现在的办法在对话里问用户（侧栏「等你回答」）。dodoer 的面板里每个标签有「跳到这个标签」（`Target.activateTarget` + 把 Chrome 提到前面），用户做完回对话里说一声，智能体接着干。
 - **把自己的页面交给智能体**：面板里列出 Chrome 现在开着的标签（标题和域名，只给用户看），点「交给智能体」。
@@ -139,7 +139,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 
 ### 5.8 智能体新开的标签开在哪
 
-`browser_open_tab` 只有一个 `url` 参数，不加参数（加了就要动 codeg-mcp 的工具定义和借浏览器的协议，服务器得跟着升级）。设置里一项「智能体新开的网页开在：内置浏览器 / Chrome」，出厂内置浏览器，用户改成 Chrome。选了 Chrome 而它没连上时，不悄悄退回内置浏览器（那边没有登录状态，智能体会对着登录页白忙），直接回「Chrome 没连上」。
+`browser_open_tab` 第一轮只有一个 `url` 参数（设备登记簿后来加了 `device`，第二轮 13.1 加了 `newTab`：在 Chrome 里要第二个标签时传；不传时换掉智能体已有的网页。老服务器上的 codeg-mcp 不认它，智能体看不到这个参数，照样能用，只是没法要第二个标签）。设置里一项「智能体新开的网页开在：内置浏览器 / Chrome」，出厂内置浏览器，用户改成 Chrome。选了 Chrome 而它没连上时，不悄悄退回内置浏览器（那边没有登录状态，智能体会对着登录页白忙），直接回「Chrome 没连上」。
 
 ### 5.9 界面
 
@@ -309,7 +309,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 - 只有 macOS、只认 Google Chrome，要 144 以上，要用户自己开开关。
 - Chrome 每次重启都要重新点一次「连接 Chrome」和「允许」。
 - 连着的时候 Chrome 顶上一直有「正受到控制」的提示（Chrome 自己加的，dodoer 去不掉）。好处是用户一眼看得出 dodoer 还连着；不想看到它就断开。
-- 智能体第一次在 Chrome 里开网页时，Chrome 会跳到前面（开智能体自己的窗口时躲不掉）。
+- 智能体第一次在 Chrome 里开网页时，Chrome 会跳到前面（开智能体自己的窗口时躲不掉）。不是「只有第一次」：智能体每**新开**一个标签（`browser_open_tab` 带 `newTab: true`，或者它在 Chrome 里没有自己还连着、还能操作的标签时）Chrome 也会跳到前面（2026-11-15 实测，13.1）；在已有的标签上换网页（默认）不跳。
 - macOS 27 起要先在系统设置里给 dodoer 读 Chrome 数据目录的权限；这一步 dodoer 替不了用户。
 - 真点击靠焦点模拟送到后台和最小化的标签上（实测可行）；交给智能体的标签开着它，页面以为自己一直在前台，收回时随 detach 一起去掉。
 - 交出去的标签开了 `Runtime` 域（控制台和隔离 world 要用）。有的风控脚本靠这个认出「有调试器连着」；没交出去的标签不受影响。
@@ -343,11 +343,17 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
   - (d) **每页一个新窗口但不聚焦**（`newWindow: true, background: true`）：第三轮试过 `windowState: "minimized"`，Chrome 不照做；`background` 对新窗口管不管用没测过，大概率一样跳出来。
 - **推荐**：默认 (a)。智能体一次要开着两个网页的时候（很少），先在对话里说一声，再走现在的 activate + createTarget，这一次照样跳一下。
 - **代价**：起始页被换走以后，窗口里没有那句「这个窗口是 dodoer 的智能体在用」。补法：标签标题前不能加记号（dodoer 不往用户的页面里写东西，5.3），所以靠面板里「智能体开的」和 Chrome 顶上「正受到控制」的提示；用户把智能体的标签关光了，下次再开一个带起始页的窗口（现在的逻辑）。
-- **实测（待填，主会话在用户 Mac 上测）**：
-  1. 智能体的窗口开着、用户切到别的 app 或别的桌面，`Page.navigate` 智能体的标签：Chrome 会不会到前面、会不会切桌面。预期不会。
-  2. 同样情况下 `createTarget { background: true }`（不 activate）落在哪个窗口、Chrome 会不会到前面。
-  3. `createTarget { newWindow: true, background: true }` 会不会跳出来。
-  4. 智能体的窗口最小化着时 (a) 还能不能读、点（第三轮测过最小化能点，再确认一次 `Page.navigate` 后的新页面）。
+- **实测（2026-11-15 10:4x UTC，用户的 Mac，Chrome 157，用 osascript 查前台 app）**：
+  1. 第一次 `browser_open_tab`（开出智能体的窗口）：Chrome 跳到前台。和 5.6 说的一样，躲不掉。
+  2. dodoer 在前台时，对智能体已有的标签 `browser_navigate`（`Page.navigate`）：**Chrome 不跳**，dodoer 一直在前台。(a) 成立。
+  3. Chrome 在后台时 `browser_snapshot` 正常。
+  4. 当时的写法再 `browser_open_tab` 第二个网页（`Target.activateTarget` + `createTarget`）：**Chrome 又跳到前台**。所以 5.6 和第 11 节原来「只有第一次会跳」的说法不对，已改。
+  - 没测：Chrome 全屏、智能体的窗口在另一个桌面时，`Page.navigate` 会不会切桌面（预期不会，和第 2 条同理）；`createTarget { background: true }` 不 activate 落在哪、跳不跳（候选 (b)）；`newWindow` + `background`（候选 (d)）；最小化时换网页后再读、点。
+- **实现（PR「chrome-no-focus」）**：
+  - `browser_open_tab` 开到用户 Chrome 时，先看这个范围（`chrome@<范围>`）在注册表里有没有还连着、共享级别是「读取并操作」的智能体标签（`chrome_share::page_to_replace`）。有就复用：优先这个范围上次开或换过的那个（记在 `AgentWindow` 里），它没了就用另一个。复用走 `browser_navigate` 的同一套检查（`drive_tab_to`：共享级别、地址、敏感网站名单），换了网站以后共享照「智能体开的标签跟着走」（`keep_shared`，敏感网站上放手）。回同一个 `tabId`，回答末尾加一句「换掉了你在用户 Chrome 里开着的那个网页（原地址），旧页面没了；要同时开着两个，传 `newTab: true`，Chrome 会跳到前面」。活动记录记一条「换网址」。
+  - 没有这样的标签（第一次、标签被关了、被放手了、用户把它降到只读），或者智能体传了 `newTab: true`，走原来的 activate + createTarget，Chrome 跳一下。
+  - `newTab` 是 `browser_open_tab` 新的可选参数（`tool_schema.json`），`BrowserTabOp::Open` 多一个 `new_tab`，服务器经借浏览器的协议原样转给桌面端（false 时不发，老桌面端收到的和原来一样）。内置浏览器不管它，照旧每次新开。
+  - 推荐里「只有起始页的窗口，第一个网页直接开在起始页上」**没做**：起始页不在注册表里，复用它要先登记；而且第一次反正要开窗口、要跳。窗口里第一个网页照旧是新标签，起始页留着。
 - **文件**：`agent_window.rs`（「这个范围最近用的智能体标签」从注册表里找 `owner_window == chrome@<范围>` 且 target 还活着的那个，记在 `AgentWindow` 里）、`chrome_share.rs` 的 `open_for_agent`（复用时不重新登记，走现有的 `revoke_if_departed` / 重新共享）、`tool_schema.json` 的 `browser_open_tab` 说明。
 - **验收**：用户在别的 app 里打字时，服务器上的智能体连着开三个网页，只有第一个让 Chrome 跳出来；第二、三个在智能体的窗口里换掉前一个，用户那边不被打断；面板里始终只有一个「智能体开的」标签。
 

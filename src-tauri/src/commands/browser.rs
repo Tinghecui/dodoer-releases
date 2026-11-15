@@ -3008,6 +3008,13 @@ pub async fn agent_open_tab_core(
 /// rather than the page quietly opening in the built-in browser, where none
 /// of the person's sign-ins are and the agent would be looking at a sign-in
 /// page for no reason it could see.
+///
+/// Once the scope's agents have a page of their own there, the new page
+/// replaces it instead (`chrome_share::page_to_replace`): a new tab would
+/// bring Chrome to the front of whatever the person is doing, a navigation
+/// does not (`docs/agent-chrome.md` section 13.1). The third element of the
+/// answer then says so, for the agent to know the old page is gone. Only
+/// `new_tab` opens a second tab.
 pub async fn agent_open_chrome_tab_core(
     app: &AppHandle,
     registry: &BrowserRegistry,
@@ -3015,8 +3022,39 @@ pub async fn agent_open_chrome_tab_core(
     lending: &crate::browser::chrome::ChromeLending,
     scope: &str,
     raw_url: &str,
-) -> Result<(agent::AgentTabSummary, Option<String>), AppCommandError> {
+    new_tab: bool,
+) -> Result<(agent::AgentTabSummary, Option<String>, Option<String>), AppCommandError> {
     let url = address_refusal(app, raw_url)?;
+    if let Some(tab_id) =
+        crate::browser::chrome_share::page_to_replace(registry, lending, scope, new_tab)
+    {
+        // The checks `browser_navigate` makes, the grant, the address and
+        // the sensitive sites among them; the share follows the page as it
+        // does any page an agent opened (`chrome_share::keep_shared`).
+        crate::browser::chrome_share::remember_page(lending, scope, &tab_id);
+        let before = registry
+            .read(&tab_id, |tab| tab.state.url.clone())
+            .unwrap_or_default();
+        let (outcome, answer) = match drive_tab_to(app, registry, &tab_id, url.as_str()).await {
+            Ok(settled) => (Some(agent::AgentOutcome::Done), Ok(settled)),
+            Err((outcome, err)) => (outcome, Err(err)),
+        };
+        if let Some(outcome) = outcome {
+            events::emit_agent_activity(
+                app,
+                &tab_id,
+                agent::AgentAction::Navigate,
+                outcome,
+                now_millis(),
+            );
+        }
+        let settled = answer?;
+        return Ok((
+            settled.summary,
+            settled.load_error,
+            Some(replaced_note(&tab_id, &before)),
+        ));
+    }
     let tab_id = crate::browser::chrome_share::open_for_agent(app, link, registry, lending, scope, &url)
         .await
         .map_err(|err| {
@@ -3040,7 +3078,23 @@ pub async fn agent_open_chrome_tab_core(
         agent::AgentOutcome::Done,
         now_millis(),
     );
-    Ok((settled.summary, settled.load_error))
+    Ok((settled.summary, settled.load_error, None))
+}
+
+/// What an agent is told when its new page replaced its old one in the
+/// person's Chrome. `before` is where the tab was.
+fn replaced_note(tab_id: &str, before: &str) -> String {
+    let before = if before.is_empty() {
+        String::new()
+    } else {
+        format!(" ({before})")
+    };
+    format!(
+        "This replaced the page you had open in the user's Chrome{before}: browser tab \
+         {tab_id} now shows the new one, and the old page is gone. To keep a page open next to \
+         another, call browser_open_tab with `newTab: true` — that opens a second tab, and \
+         brings Chrome to the front of the user's screen."
+    )
 }
 
 /// Point an existing tab at another address.
@@ -3778,7 +3832,7 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         }
         let named = op.tab_id().map(str::to_string);
         let answer = match &op {
-            BrowserTabOp::Open { url, .. } => {
+            BrowserTabOp::Open { url, new_tab, .. } => {
                 // The person lets these agents use their Chrome: a web page
                 // goes there, signed in as them (`chrome::lending`).
                 let scope = crate::browser::chrome::lending::scope_key(self.scope.as_deref());
@@ -3790,9 +3844,14 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
                         crate::browser::chrome::lending::opens_in_chrome(lending, scope, url)
                     });
                 if let Some((lending, link)) = chrome {
-                    agent_open_chrome_tab_core(&self.app, &registry, &link, &lending, scope, url)
-                        .await
-                        .map(|(tab, load_error)| BrowserTabOutcome::tab(tab, load_error))
+                    agent_open_chrome_tab_core(
+                        &self.app, &registry, &link, &lending, scope, url, *new_tab,
+                    )
+                    .await
+                    .map(|(tab, load_error, note)| BrowserTabOutcome {
+                        note,
+                        ..BrowserTabOutcome::tab(tab, load_error)
+                    })
                 } else {
                     let Some(requests) = self.app.try_state::<open_request::OpenRequests>() else {
                         return BrowserTabOutcome::refused(None, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);

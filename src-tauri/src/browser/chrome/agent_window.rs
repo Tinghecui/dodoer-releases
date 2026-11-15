@@ -17,10 +17,18 @@
 //! and never reaches that check.
 //!
 //! Opening the window brings Chrome to the front, which cannot be helped
-//! (section 10), and so does every page after it, its window being brought
-//! up first. Chrome is left in front: the person sees agents working in
-//! their Chrome, and can take over at any point.
+//! (section 10), and so does every new tab after it, its window being
+//! brought up first. Chrome is left in front: the person sees agents working
+//! in their Chrome, and can take over at any point.
+//!
+//! So a new tab is the exception (section 13.1): once a scope's agents have
+//! a page of their own here, the next page they open replaces it
+//! ([`AgentWindow::to_replace`]) — `Page.navigate` on that tab, which Chrome
+//! does in the background, measured on the person's Mac (section 13.1). Only
+//! an agent asking for a second tab outright (`newTab`) goes through the
+//! window again, and Chrome comes to the front for it.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::time::Duration;
 
@@ -86,9 +94,32 @@ pub struct AgentWindow {
     /// two windows, and one agent's page does not land in the window another
     /// is bringing up.
     start: Mutex<Option<Start>>,
+    /// Each scope's page its agents opened or replaced last, by tab id: the
+    /// one the next page replaces while it is still theirs.
+    last: std::sync::Mutex<HashMap<String, String>>,
 }
 
 impl AgentWindow {
+    /// The page of `scope`'s agents that a page they open now goes into, in
+    /// place of a new tab: none when they asked for a new tab (`new_tab`) or
+    /// have no page here. `own` is the tabs that are still theirs to drive —
+    /// registered under the scope's owner, and shared with them for acting.
+    pub fn to_replace(&self, scope: &str, new_tab: bool, own: &[String]) -> Option<String> {
+        let last = self.last();
+        pick(last.get(scope).map(String::as_str), new_tab, own)
+    }
+
+    /// `tab_id` is the page `scope`'s agents used last.
+    pub fn remember(&self, scope: &str, tab_id: &str) {
+        self.last().insert(scope.to_string(), tab_id.to_string());
+    }
+
+    fn last(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
+        self.last
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Open `url` in a new tab of the agents' window on `client`, opening the
     /// window first if there is none. The tab is Chrome's to load; this
     /// returns once Chrome has said the tab exists.
@@ -117,6 +148,19 @@ impl AgentWindow {
         let current = start.as_ref().expect("a window was brought up above");
         open_page(client, current, url).await.map_err(|err| err.to_string())
     }
+}
+
+/// [`AgentWindow::to_replace`] without the lock: the page used last while it
+/// is still one of `own`, else the last of `own` (they come sorted by id, so
+/// the answer does not change from call to call).
+fn pick(remembered: Option<&str>, new_tab: bool, own: &[String]) -> Option<String> {
+    if new_tab {
+        return None;
+    }
+    remembered
+        .and_then(|tab_id| own.iter().find(|candidate| *candidate == tab_id))
+        .or_else(|| own.last())
+        .cloned()
 }
 
 async fn open_window(client: &CdpClient) -> Result<Start, CdpError> {
@@ -198,6 +242,7 @@ mod tests {
     use super::*;
 
     const URL: &str = "https://example.com/form";
+    const NEXT: &str = "https://example.org/next";
 
     async fn connected() -> (CdpClient, FakeChrome) {
         let (mut connections, port) = chrome().await;
@@ -250,6 +295,123 @@ mod tests {
             .answer(&call, json!({ "targetInfo": {
                 "targetId": opened, "type": "page", "url": "about:blank", "title": "about:blank" } }))
             .await;
+    }
+
+    fn ids(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| id.to_string()).collect()
+    }
+
+    #[test]
+    fn a_scope_with_a_page_of_its_own_gets_it_replaced() {
+        let window = AgentWindow::default();
+        // Nothing of theirs yet: a new tab, through the window.
+        assert_eq!(window.to_replace("local", false, &[]), None);
+        window.remember("local", "B");
+        assert_eq!(
+            window.to_replace("local", false, &ids(&["A", "B"])),
+            Some("B".into())
+        );
+        // The one used last is gone (closed, or let go of on a sensitive
+        // site): another of theirs.
+        assert_eq!(
+            window.to_replace("local", false, &ids(&["A"])),
+            Some("A".into())
+        );
+        // Asked for a second tab outright: the old way, whatever they have.
+        assert_eq!(window.to_replace("local", true, &ids(&["A", "B"])), None);
+        // Each scope its own.
+        window.remember("remote-workspace-7", "C");
+        assert_eq!(
+            window.to_replace("local", false, &ids(&["B"])),
+            Some("B".into())
+        );
+    }
+
+    /// Answers the calls a page makes while attaching to `target`, in order.
+    async fn serve_attach(chrome: &mut FakeChrome, target: &str) {
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Target.attachToTarget");
+        assert_eq!(call["params"]["targetId"], target);
+        chrome.answer(&call, json!({ "sessionId": "S" })).await;
+        for method in [
+            "Page.enable",
+            "Runtime.enable",
+            "Emulation.setFocusEmulationEnabled",
+        ] {
+            let call = chrome.next_call().await;
+            assert_eq!(call["method"], method);
+            chrome.answer(&call, json!({})).await;
+        }
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Page.getFrameTree");
+        chrome
+            .answer(
+                &call,
+                json!({ "frameTree": { "frame": { "id": "F", "url": URL } } }),
+            )
+            .await;
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Page.getNavigationHistory");
+        chrome
+            .answer(
+                &call,
+                json!({ "currentIndex": 0, "entries": [{ "id": 0, "url": URL }] }),
+            )
+            .await;
+    }
+
+    /// The second page of an agent that has one: no window brought up, no
+    /// tab made — only the page it had told to go somewhere else, which
+    /// Chrome does without coming to the front.
+    #[tokio::test]
+    async fn a_replaced_page_brings_nothing_up() {
+        let (client, mut chrome) = connected().await;
+        let window = Arc::new(AgentWindow::default());
+        let first = opening(&window, &client);
+        serve_window(&mut chrome, "W").await;
+        serve_page(&mut chrome, "W", "N1", 1).await;
+        let opened = first.await.unwrap().unwrap();
+        window.remember("local", "N1");
+
+        let replace = window.to_replace("local", false, &ids(&["N1"]));
+        assert_eq!(replace, Some("N1".into()));
+        let (attach_on, target) = (client.clone(), opened.target.clone());
+        let attaching = tokio::spawn(async move {
+            super::super::ChromePage::attach(&attach_on, &target, URL, "").await
+        });
+        serve_attach(&mut chrome, "N1").await;
+        let (page, _events) = attaching.await.unwrap().unwrap();
+        let navigating = tokio::spawn(async move { page.navigate(NEXT).await });
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Page.navigate", "{call}");
+        assert_eq!(call["sessionId"], "S");
+        assert_eq!(call["params"]["url"], NEXT);
+        chrome.answer(&call, json!({ "frameId": "F" })).await;
+        navigating.await.unwrap().unwrap();
+        // And nothing else reached Chrome: no `Target.activateTarget`, no
+        // `Target.createTarget`.
+        let quiet = tokio::time::timeout(Duration::from_millis(300), chrome.next_call()).await;
+        assert!(quiet.is_err(), "Chrome was asked for more: {quiet:?}");
+    }
+
+    /// Without a page of their own, or asking for a new tab, agents get one
+    /// the way they always did: the window brought up, then a tab made.
+    #[tokio::test]
+    async fn a_new_tab_still_goes_through_the_window() {
+        let (client, mut chrome) = connected().await;
+        let window = Arc::new(AgentWindow::default());
+        assert_eq!(window.to_replace("local", false, &[]), None);
+        let first = opening(&window, &client);
+        serve_window(&mut chrome, "W").await;
+        serve_page(&mut chrome, "W", "N1", 1).await;
+        first.await.unwrap().unwrap();
+        window.remember("local", "N1");
+
+        assert_eq!(window.to_replace("local", true, &ids(&["N1"])), None);
+        let second = opening(&window, &client);
+        serve_bring_up(&mut chrome, "W").await;
+        serve_page(&mut chrome, "W", "N2", 1).await;
+        assert_eq!(second.await.unwrap().unwrap().target, "N2");
     }
 
     #[test]

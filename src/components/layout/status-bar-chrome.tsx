@@ -527,6 +527,8 @@ const ACTION_KEYS = {
   navigate: "activity.action.navigate",
   dialog: "activity.action.dialog",
   close: "activity.action.close",
+  upload: "activity.action.upload",
+  download: "activity.action.download",
 } as const satisfies Record<AgentAction, string>
 
 const ACTION_ON_KEYS = {
@@ -535,6 +537,8 @@ const ACTION_ON_KEYS = {
   type: "activity.actionOn.type",
   press: "activity.actionOn.press",
   select: "activity.actionOn.select",
+  upload: "activity.actionOn.upload",
+  download: "activity.actionOn.download",
 } as const satisfies Partial<Record<AgentAction, string>>
 
 type Translate = ReturnType<typeof useTranslations<"ChromeSettings">>

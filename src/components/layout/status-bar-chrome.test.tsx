@@ -464,6 +464,53 @@ describe("StatusBarChrome", () => {
     expect(screen.queryByText("return document.title")).toBeNull()
   })
 
+  it("names the files agents uploaded to and downloaded", async () => {
+    const now = Date.now()
+    const line = (over: Partial<ChromeActivityEntry>): ChromeActivityEntry => ({
+      at: now - 150_000,
+      action: "upload",
+      outcome: "done",
+      host: "mail.example.com",
+      scope: "local",
+      target: null,
+      ...over,
+    })
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    mocks.chromeTabs.mockResolvedValue(TABS)
+    mocks.grants.set("browser:1", "control")
+    mocks.chromeActivity.mockResolvedValue({
+      "1": [
+        line({ at: now - 330_000, target: { kind: "named", name: "Resume" } }),
+        line({ at: now - 270_000 }),
+        line({
+          at: now - 210_000,
+          action: "download",
+          outcome: "failed",
+          target: { kind: "named", name: "big.iso" },
+        }),
+        line({ action: "download", target: { kind: "named", name: "a.pdf" } }),
+      ],
+    })
+    await mount()
+    await openPanel()
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Last: 2 minutes ago · downloaded “a.pdf”",
+      })
+    )
+    const record = screen.getByRole("list", {
+      name: "What agents did on this tab",
+    })
+    const lines = Array.from(record.querySelectorAll("li")).map(
+      (li) => li.textContent
+    )
+    expect(lines[1]).toMatch(/downloaded “big\.iso”/)
+    expect(lines.slice(2)).toEqual([
+      "4 minutes ago · This computer's agent · uploaded a file",
+      "5 minutes ago · This computer's agent · uploaded a file to “Resume”",
+    ])
+  })
+
   it("asks again when an agent does something, and marks what did not go through", async () => {
     mocks.chromeStatus.mockResolvedValue(CONNECTED)
     mocks.chromeTabs.mockResolvedValue(TABS)

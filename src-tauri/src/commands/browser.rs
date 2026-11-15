@@ -1849,13 +1849,27 @@ pub async fn agent_act_core(
     // Cowork fork: what the action is aimed at, for the line it leaves on a
     // tab of the person's Chrome — asked before acting, while the ref holds.
     let link = app.try_state::<crate::browser::chrome::ChromeLink>();
-    let target = match link {
+    let target = match &link {
         Some(link) => {
-            crate::browser::chrome_share::chrome_target(registry, &link, tab_id, request).await
+            crate::browser::chrome_share::chrome_target(registry, link, tab_id, request).await
         }
         None => None,
     };
-    let (outcome, answer) = match act_on_shared_page(registry, tab_id, request).await {
+    // Cowork fork: a click on a tab of the person's Chrome can start a
+    // download, which the answer then names (`chrome::files`).
+    let download_mark = match (&link, &request.action) {
+        (Some(link), agent::ActionKind::Click { .. }) => {
+            crate::browser::chrome_share::watch_downloads(app, link, registry, tab_id).await
+        }
+        _ => None,
+    };
+    let acted = match &request.action {
+        agent::ActionKind::Upload { paths } => {
+            upload_on_shared_page(registry, tab_id, request, paths).await
+        }
+        _ => act_on_shared_page(registry, tab_id, request).await,
+    };
+    let (outcome, mut answer) = match acted {
         Ok(Settled { outcome, record }) => (
             record.then_some(agent::AgentOutcome::Done),
             Ok(outcome),
@@ -1865,7 +1879,209 @@ pub async fn agent_act_core(
     if let Some(outcome) = outcome {
         events::emit_agent_activity_on(app, tab_id, action, outcome, now_millis(), target);
     }
+    if let (Some(link), Ok(done)) = (&link, &mut answer) {
+        if let Some(mark) = download_mark {
+            link.downloads()
+                .wait_for(tab_id, mark, CLICK_DOWNLOAD_WAIT, DOWNLOAD_FINISH_WAIT)
+                .await;
+        }
+        // Also what earlier clicks started and the agent has not heard of.
+        done.downloads = link.downloads().take_reports(tab_id);
+    }
     answer
+}
+
+/// Cowork fork: how long after a click on a tab of the person's Chrome its
+/// answer waits for a download to begin. Every such click waits this long,
+/// so it is short; a download that begins later is told with the next
+/// action on the tab, and is in the record either way.
+const CLICK_DOWNLOAD_WAIT: Duration = Duration::from_millis(800);
+
+/// Cowork fork: how long a click's answer waits for a download it started
+/// to finish, before saying it is still going.
+const DOWNLOAD_FINISH_WAIT: Duration = Duration::from_secs(20);
+
+/// Cowork fork: how long an upload waits, after clicking an element that is
+/// not itself a file field, for the page to open a file chooser.
+const CHOOSER_WAIT: Duration = Duration::from_secs(5);
+
+/// Cowork fork: `browser_upload` (`docs/agent-chrome.md` section 13.7).
+/// Only a tab of the person's Chrome, shared for acting, and files from the
+/// upload folder of this computer alone (`chrome::files`). The ref is the
+/// file field itself, whose files are set directly, or an element that opens
+/// a file chooser when clicked: the chooser is held back by Chrome for the
+/// length of this one upload, and given the files instead of being shown.
+async fn upload_on_shared_page(
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    request: &agent::ActionRequest,
+    paths: &[String],
+) -> Result<Settled, ReadFailure> {
+    use crate::browser::chrome::page::{Element, FileField, OpenedChooser};
+    let Some((surface, generation)) =
+        registry.read(tab_id, |tab| (tab.surface.clone(), tab.generation))
+    else {
+        return Err((
+            None,
+            AppCommandError::not_found(format!("browser tab {tab_id} not found")),
+        ));
+    };
+    let failed = |err: AppCommandError| (Some(agent::AgentOutcome::Failed), err);
+    let upload_failed = |detail: String| failed(window_err("Failed to upload the files", detail));
+    still_actionable(registry, tab_id, generation, &request.generation)?;
+    let Some(target) = request.target.as_deref() else {
+        return Err(failed(AppCommandError::invalid_input(
+            "browser_upload needs the ref of the file field, or of the button that opens the \
+             file chooser, from a snapshot",
+        )));
+    };
+    let BrowserSurface::External(handle) = &surface else {
+        return Err(failed(action_failed(
+            agent::ActionError::Unsupported,
+            "uploading files is only possible in tabs of the user's own Chrome, not in the \
+             built-in browser",
+        )));
+    };
+    // A tab is let go of as it reaches a sensitive site; asked again here for
+    // the moment in between.
+    if let Ok(url) = handle.url() {
+        crate::browser::chrome_share::sensitive_check(&url)
+            .map_err(|err| (Some(agent::AgentOutcome::Refused), err))?;
+    }
+    let files = upload_files(paths).map_err(failed)?;
+    let page = handle.page().clone();
+    let found = page
+        .element(&agent::element_call(&request.generation, target))
+        .await
+        .map_err(upload_failed)?;
+    let (object, file_input, multiple) = match found {
+        Element::Node {
+            object,
+            file_input,
+            multiple,
+        } => (object, file_input, multiple),
+        Element::Said(said) if said == agent::ENGINE_ABSENT => {
+            return Err(failed(stale_ref(
+                "no snapshot has been taken of this page; take one first",
+            )))
+        }
+        Element::Said(_) | Element::Nothing => {
+            return Err(failed(stale_ref(
+                "that ref no longer names anything on the page",
+            )))
+        }
+    };
+    let one_file = || {
+        failed(action_failed(
+            agent::ActionError::Unsupported,
+            "that file field takes a single file; pass one path",
+        ))
+    };
+    // The files go in now: the grant and the page have to be as they were.
+    still_actionable(registry, tab_id, generation, &request.generation)?;
+    if file_input {
+        if files.len() > 1 && !multiple {
+            return Err(one_file());
+        }
+        page.set_files(&FileField::Object(object), &files)
+            .await
+            .map_err(upload_failed)?;
+    } else {
+        let mut chooser = page.watch_file_chooser().await.map_err(upload_failed)?;
+        let click = agent::ActionRequest {
+            generation: request.generation.clone(),
+            target: Some(target.to_string()),
+            action: agent::ActionKind::Click {
+                button: None,
+                count: None,
+            },
+        };
+        let clicked =
+            deliver_trusted_pointer(registry, tab_id, generation, &surface, target, &click).await;
+        let opened = match clicked {
+            Ok(Some(_)) => chooser.opened(CHOOSER_WAIT).await,
+            Ok(None) => {
+                chooser.end().await;
+                return Err(upload_failed(
+                    "the click could not be delivered".to_string(),
+                ));
+            }
+            Err(err) => {
+                chooser.end().await;
+                return Err(err);
+            }
+        };
+        let given = match opened {
+            None => Err(failed(action_failed(
+                agent::ActionError::Unsupported,
+                "clicking that element opened no file chooser. Pass the ref of the file field \
+                 itself, or of the button that opens the file chooser",
+            ))),
+            Some(OpenedChooser { field: None, .. }) => Err(failed(action_failed(
+                agent::ActionError::Unsupported,
+                "the page opened a file picker of a kind agents cannot fill in; ask the user to \
+                 pick the file",
+            ))),
+            Some(OpenedChooser {
+                multiple: false, ..
+            }) if files.len() > 1 => Err(one_file()),
+            Some(OpenedChooser {
+                field: Some(node), ..
+            }) => page
+                .set_files(&FileField::Backend(node), &files)
+                .await
+                .map_err(upload_failed),
+        };
+        chooser.end().await;
+        given?;
+    }
+    let uploaded = files
+        .iter()
+        .map(|path| {
+            std::path::Path::new(path)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone())
+        })
+        .collect();
+    let outcome = agent::ActionOutcome {
+        fidelity: agent::Fidelity::Trusted,
+        url: page.url(),
+        scrolled: None,
+        uploaded,
+        downloads: Vec::new(),
+    };
+    settle(registry, tab_id, generation, outcome)
+}
+
+/// Cowork fork: the files an upload names, as paths of this computer inside
+/// its upload folder (`chrome::files::check_upload_paths`), or why not in
+/// words that tell the agent where the files have to be.
+fn upload_files(paths: &[String]) -> Result<Vec<String>, AppCommandError> {
+    use crate::browser::chrome::files;
+    let Some(root) = files::upload_dir() else {
+        return Err(AppCommandError::configuration_missing(
+            "this computer has no home folder to upload files from",
+        ));
+    };
+    let home = dirs::home_dir();
+    files::check_upload_paths(&root, home.as_deref(), paths)
+        .map(|found| {
+            found
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect()
+        })
+        .map_err(|err| {
+            AppCommandError::invalid_input(format!(
+                "{err}. Files are uploaded from {folder} on the user's computer (the one this \
+                 Chrome runs on). An agent on a server copies them there first over that \
+                 device's shell — `ssh <device> 'mkdir -p {folder}'`, then scp or `ssh <device> \
+                 'cat > {folder}<name>' < file`, with the device name from list_devices — and \
+                 passes the path or just the file name.",
+                folder = files::upload_dir_display(),
+            ))
+        })
 }
 
 /// An action that happened, and whether the tab it happened on is still the
@@ -2044,6 +2260,8 @@ async fn deliver_trusted_pointer(
             fidelity: agent::Fidelity::Trusted,
             url: answer.url,
             scrolled: None,
+            uploaded: Vec::new(),
+            downloads: Vec::new(),
         })),
         Err(PointerFailure {
             delivered: false,
@@ -2096,6 +2314,8 @@ fn accept(
             fidelity,
             url: answer.url,
             scrolled: answer.scrolled,
+            uploaded: Vec::new(),
+            downloads: Vec::new(),
         });
     }
     let detail = answer

@@ -24,11 +24,16 @@
 //! Chrome panel (`chrome::activity`, held by the link and gone with the
 //! connection): [`record_activity`], from the one place every such attempt
 //! is announced (`events::emit_agent_activity`).
+//!
+//! The downloads an agent's click starts there are followed too
+//! ([`watch_downloads`], `chrome::files`): the click's answer says what was
+//! downloaded, and the record gets a line when each one ends.
 
 use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tauri::{AppHandle, Manager, Url};
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 
 use crate::app_error::AppCommandError;
@@ -39,6 +44,7 @@ use super::agent::{self, AgentAction, AgentOutcome, GrantLevel};
 use super::channel;
 use super::chrome::activity::{ActivityEntry, ActivityTarget};
 use super::chrome::cdp::CdpClient;
+use super::chrome::files;
 use super::chrome::lending::{agent_owner, ChromeLending, AGENT_OWNER_PREFIX, LOCAL_SCOPE, OWNER};
 use super::chrome::{sensitive, tabs, ChromeLink, ChromePage, PageEvent};
 use super::events;
@@ -94,11 +100,7 @@ pub fn record_activity(
     let host = Url::parse(&url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_string));
-    let scope = CALLER
-        .try_with(String::clone)
-        .ok()
-        .or_else(|| owner.strip_prefix(AGENT_OWNER_PREFIX).map(str::to_string))
-        .unwrap_or_else(|| LOCAL_SCOPE.to_string());
+    let scope = caller_scope(&owner);
     let entry = ActivityEntry {
         at,
         action,
@@ -108,6 +110,124 @@ pub fn record_activity(
         target,
     };
     link.record_activity(tab_id, entry);
+}
+
+/// Whose agent is asking: the tool call's scope ([`as_caller`]), else the
+/// scope that opened the tab (`owner`), else this computer's.
+fn caller_scope(owner: &str) -> String {
+    CALLER
+        .try_with(String::clone)
+        .ok()
+        .or_else(|| owner.strip_prefix(AGENT_OWNER_PREFIX).map(str::to_string))
+        .unwrap_or_else(|| LOCAL_SCOPE.to_string())
+}
+
+/// An agent is about to click in `tab_id`: if it is a tab of the person's
+/// Chrome, a download that starts there in the next moments is the agent's
+/// (`files::CLAIM_WINDOW`). The answer is the mark to wait from
+/// (`files::ChromeDownloads::wait_for`); `None` for any other tab.
+///
+/// The first time on a connection this also turns Chrome's download events
+/// on — `files::download_events_params`, Chrome's own download behaviour
+/// left as the person set it — and follows them for as long as the
+/// connection lasts. Chrome turns them off itself when it ends.
+pub async fn watch_downloads(
+    app: &AppHandle,
+    link: &ChromeLink,
+    registry: &BrowserRegistry,
+    tab_id: &str,
+) -> Option<u64> {
+    let (frames, owner) = registry
+        .read(tab_id, |tab| match &tab.surface {
+            BrowserSurface::External(handle) => {
+                Some((handle.page().frames(), tab.state.owner_window.clone()))
+            }
+            _ => None,
+        })
+        .flatten()?;
+    if let Some(client) = link.first_download_watch() {
+        follow_downloads(app, link, client).await;
+    }
+    let scope = caller_scope(&owner);
+    Some(
+        link.downloads()
+            .clicked(tab_id, &scope, frames, Instant::now()),
+    )
+}
+
+/// Turn the connection's download events on and follow them: into the
+/// link's download book, and a line on the tab's record when one of an
+/// agent's downloads ends.
+async fn follow_downloads(app: &AppHandle, link: &ChromeLink, client: CdpClient) {
+    // Listening before asking, so the first download is not missed.
+    let mut incoming = client.events();
+    let asked = client
+        .call(
+            "Browser.setDownloadBehavior",
+            files::download_events_params(true),
+            None,
+        )
+        .await;
+    if let Err(err) = asked {
+        tracing::warn!("[chrome] download events are not available: {err}");
+        return;
+    }
+    let app = app.clone();
+    let link = link.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let event = tokio::select! {
+                _ = client.closed() => return,
+                event = incoming.recv() => event,
+            };
+            let event = match event {
+                Ok(event) => event,
+                Err(RecvError::Lagged(missed)) => {
+                    tracing::warn!("[chrome] the download follower missed {missed} events");
+                    continue;
+                }
+                Err(RecvError::Closed) => return,
+            };
+            if event.session.is_some() {
+                continue;
+            }
+            let Some(ended) =
+                link.downloads()
+                    .take_in(&event.method, &event.params, Instant::now())
+            else {
+                continue;
+            };
+            let outcome = if ended.completed {
+                AgentOutcome::Done
+            } else {
+                AgentOutcome::Failed
+            };
+            let files::FinishedDownload {
+                tab_id,
+                scope,
+                file_name,
+                ..
+            } = ended;
+            let target = Some(ActivityTarget::Named { name: file_name });
+            CALLER.sync_scope(scope, || {
+                events::emit_agent_activity_on(
+                    &app,
+                    &tab_id,
+                    AgentAction::Download,
+                    outcome,
+                    now_millis(),
+                    target,
+                )
+            });
+        }
+    });
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
 }
 
 /// Keep the names a snapshot of the Chrome tab `tab_id` gave its refs, for

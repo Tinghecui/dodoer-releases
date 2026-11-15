@@ -5894,14 +5894,18 @@
         "open": "打开了这个页面",
         "navigate": "换了网页",
         "dialog": "回应了页面弹窗",
-        "close": "关闭标签"
+        "close": "关闭标签",
+        "upload": "上传了文件",
+        "download": "下载了文件"
       },
       "actionOn": {
         "click": "点了{target}",
         "hover": "悬停在{target}上",
         "type": "在{target}里输入了",
         "press": "在{target}里按了键",
-        "select": "在{target}里选了选项"
+        "select": "在{target}里选了选项",
+        "upload": "向{target}上传了文件",
+        "download": "下载了{target}"
       },
       "showCode": "看代码",
       "hideCode": "收起代码"
@@ -8211,6 +8215,16 @@
           "done": "关闭了这个标签页",
           "refused": "已拒绝关闭：此页面不允许操作",
           "failed": "无法关闭这个标签页"
+        },
+        "upload": {
+          "done": "上传了文件",
+          "refused": "拒绝上传：这个页面不允许操作",
+          "failed": "没能上传文件"
+        },
+        "download": {
+          "done": "下载了文件",
+          "refused": "拒绝下载",
+          "failed": "下载没有完成"
         }
       },
       "activityCount": "{count} 次",

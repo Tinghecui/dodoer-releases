@@ -5894,14 +5894,18 @@
         "open": "開啟了這個頁面",
         "navigate": "換了網頁",
         "dialog": "回應了頁面彈窗",
-        "close": "關閉分頁"
+        "close": "關閉分頁",
+        "upload": "上傳了檔案",
+        "download": "下載了檔案"
       },
       "actionOn": {
         "click": "點了{target}",
         "hover": "懸停在{target}上",
         "type": "在{target}裡輸入了",
         "press": "在{target}裡按了鍵",
-        "select": "在{target}裡選了選項"
+        "select": "在{target}裡選了選項",
+        "upload": "向{target}上傳了檔案",
+        "download": "下載了{target}"
       },
       "showCode": "看程式碼",
       "hideCode": "收起程式碼"
@@ -8211,6 +8215,16 @@
           "done": "關閉了這個分頁",
           "refused": "已拒絕關閉：此頁面不允許操作",
           "failed": "無法關閉這個分頁"
+        },
+        "upload": {
+          "done": "上傳了檔案",
+          "refused": "拒絕上傳：這個頁面不允許操作",
+          "failed": "無法上傳檔案"
+        },
+        "download": {
+          "done": "下載了檔案",
+          "refused": "拒絕下載",
+          "failed": "下載沒有完成"
         }
       },
       "activityCount": "{count} 次",

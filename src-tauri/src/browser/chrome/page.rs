@@ -386,6 +386,103 @@ impl ChromePage {
             .map_err(|err| format!("unreadable image: {err}"))
     }
 
+    /// Cowork fork: the ids a download started in this tab can name it by —
+    /// the target's own (which Chrome also gives its main frame) and the main
+    /// frame's as the page reported it (`files`).
+    pub fn frames(&self) -> Vec<String> {
+        let mut frames = vec![self.inner.target.clone()];
+        let main = self.state().main_frame.clone();
+        frames.extend(main.filter(|main| *main != self.inner.target));
+        frames
+    }
+
+    /// Cowork fork: evaluate `expression` in the `codeg` world and keep what
+    /// it gives as an object of the page's (`Runtime.RemoteObject`), for the
+    /// DevTools protocol to act on — the element an upload goes to.
+    pub async fn element(&self, expression: &str) -> Result<Element, String> {
+        let context = self.world().await?;
+        let params =
+            json!({ "expression": expression, "contextId": context, "returnByValue": false });
+        let answer = self
+            .call_unless_dialog("Runtime.evaluate", params)
+            .await
+            .map_err(|err| err.to_string())?;
+        if let Some(details) = answer.get("exceptionDetails") {
+            let text = details["exception"]["description"]
+                .as_str()
+                .or_else(|| details["text"].as_str())
+                .unwrap_or("the script threw");
+            return Err(text.to_string());
+        }
+        let result = &answer["result"];
+        if result["type"] == "string" {
+            return Ok(Element::Said(
+                result["value"].as_str().unwrap_or_default().to_string(),
+            ));
+        }
+        let Some(object) = result["objectId"].as_str() else {
+            return Ok(Element::Nothing);
+        };
+        let described = self
+            .call("DOM.describeNode", json!({ "objectId": object }))
+            .await
+            .map_err(|err| err.to_string())?;
+        let node = &described["node"];
+        let attributes: Vec<&str> = node["attributes"]
+            .as_array()
+            .map(|list| list.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let attribute = |name: &str| {
+            attributes
+                .chunks(2)
+                .find(|pair| {
+                    pair.first()
+                        .is_some_and(|key| key.eq_ignore_ascii_case(name))
+                })
+                .map(|pair| pair.get(1).copied().unwrap_or_default())
+        };
+        let file_input = node["nodeName"]
+            .as_str()
+            .is_some_and(|name| name.eq_ignore_ascii_case("input"))
+            && attribute("type").is_some_and(|kind| kind.eq_ignore_ascii_case("file"));
+        Ok(Element::Node {
+            object: object.to_string(),
+            file_input,
+            multiple: attribute("multiple").is_some(),
+        })
+    }
+
+    /// Cowork fork: give `files` (paths on this computer) to a file field,
+    /// named by its object or by its backend node.
+    pub async fn set_files(&self, field: &FileField, files: &[String]) -> Result<(), String> {
+        let params = match field {
+            FileField::Object(object) => json!({ "files": files, "objectId": object }),
+            FileField::Backend(node) => json!({ "files": files, "backendNodeId": node }),
+        };
+        self.call("DOM.setFileInputFiles", params)
+            .await
+            .map(drop)
+            .map_err(|err| err.to_string())
+    }
+
+    /// Cowork fork: have Chrome hold back the system's file chooser in this
+    /// tab and say when one is opened instead (`Page.fileChooserOpened`),
+    /// until [`FileChooserWatch::end`]. Only for the length of one upload:
+    /// the rest of the time a file chooser the person opens is the system's.
+    pub async fn watch_file_chooser(&self) -> Result<FileChooserWatch, String> {
+        let events = self.inner.client.events();
+        self.call(
+            "Page.setInterceptFileChooserDialog",
+            json!({ "enabled": true }),
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+        Ok(FileChooserWatch {
+            page: self.clone(),
+            events,
+        })
+    }
+
     /// Cowork fork: the dialog the page has open, if any.
     pub fn dialog(&self) -> Option<PageDialog> {
         self.inner.dialog.borrow().clone()
@@ -627,6 +724,85 @@ impl ChromePage {
                     .unwrap_or_default()
             }
             _ => Vec::new(),
+        }
+    }
+}
+
+/// Cowork fork: what [`ChromePage::element`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Element {
+    /// An element, by its object in the page.
+    Node {
+        object: String,
+        /// `<input type=file>`.
+        file_input: bool,
+        /// …that takes more than one file.
+        multiple: bool,
+    },
+    /// The script answered with words rather than an element (the engine
+    /// is not in this document).
+    Said(String),
+    /// No element: `null` or `undefined`.
+    Nothing,
+}
+
+/// Cowork fork: a file field, as `DOM.setFileInputFiles` takes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileField {
+    Object(String),
+    Backend(i64),
+}
+
+/// Cowork fork: a file chooser of the page's, held back by Chrome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenedChooser {
+    /// The `<input type=file>` behind it; `None` for a chooser a page opened
+    /// another way (`showOpenFilePicker`), which cannot be given files here.
+    pub field: Option<i64>,
+    /// Whether it takes more than one file.
+    pub multiple: bool,
+}
+
+/// Cowork fork: the file choosers one tab opens while an upload waits for
+/// one ([`ChromePage::watch_file_chooser`]).
+pub struct FileChooserWatch {
+    page: ChromePage,
+    events: tokio::sync::broadcast::Receiver<CdpEvent>,
+}
+
+impl FileChooserWatch {
+    /// The next chooser the tab opens, within `wait`.
+    pub async fn opened(&mut self, wait: std::time::Duration) -> Option<OpenedChooser> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let event = match tokio::time::timeout_at(deadline, self.events.recv()).await {
+                Err(_) => return None,
+                Ok(Err(RecvError::Lagged(_))) => continue,
+                Ok(Err(RecvError::Closed)) => return None,
+                Ok(Ok(event)) => event,
+            };
+            if event.method == "Page.fileChooserOpened"
+                && event.session.as_deref() == Some(self.page.inner.session.as_str())
+            {
+                return Some(OpenedChooser {
+                    field: event.params["backendNodeId"].as_i64(),
+                    multiple: event.params["mode"] == "selectMultiple",
+                });
+            }
+        }
+    }
+
+    /// Give the system's file chooser back to the tab.
+    pub async fn end(self) {
+        let ended = self
+            .page
+            .call(
+                "Page.setInterceptFileChooserDialog",
+                json!({ "enabled": false }),
+            )
+            .await;
+        if let Err(err) = ended {
+            tracing::warn!("[chrome] the file chooser was not handed back: {err}");
         }
     }
 }

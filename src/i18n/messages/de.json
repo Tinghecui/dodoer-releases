@@ -5894,14 +5894,18 @@
         "open": "diese Seite geöffnet",
         "navigate": "zu einer anderen Seite gewechselt",
         "dialog": "hat auf einen Dialog geantwortet",
-        "close": "Tab geschlossen"
+        "close": "Tab geschlossen",
+        "upload": "hat eine Datei hochgeladen",
+        "download": "hat eine Datei heruntergeladen"
       },
       "actionOn": {
         "click": "{target} geklickt",
         "hover": "auf {target} gezeigt",
         "type": "in {target} getippt",
         "press": "in {target} eine Taste gedrückt",
-        "select": "in {target} eine Option gewählt"
+        "select": "in {target} eine Option gewählt",
+        "upload": "hat eine Datei in {target} hochgeladen",
+        "download": "hat {target} heruntergeladen"
       },
       "showCode": "Code anzeigen",
       "hideCode": "Code ausblenden"
@@ -8211,6 +8215,16 @@
           "done": "Hat diesen Tab geschlossen",
           "refused": "Schließen abgelehnt: Diese Seite erlaubt keine Aktionen",
           "failed": "Tab konnte nicht geschlossen werden"
+        },
+        "upload": {
+          "done": "Datei hochgeladen",
+          "refused": "Hochladen abgelehnt: Auf dieser Seite sind keine Aktionen erlaubt",
+          "failed": "Datei konnte nicht hochgeladen werden"
+        },
+        "download": {
+          "done": "Datei heruntergeladen",
+          "refused": "Download abgelehnt",
+          "failed": "Der Download wurde nicht abgeschlossen"
         }
       },
       "activityCount": "{count}×",

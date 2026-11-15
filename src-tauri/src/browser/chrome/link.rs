@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use super::activity::{ActivityEntry, ChromeActivity};
 use super::cdp::{CdpClient, ConnectError};
 use super::endpoint::{self, Endpoint, EndpointError};
+use super::files::ChromeDownloads;
 use super::tabs::{self, ChromeTab, Listed};
 
 /// How long the person has to answer Chrome's dialog. They were sent there by
@@ -127,6 +128,9 @@ struct Slot {
     generation: u64,
     attempt: Option<CancellationToken>,
     client: Option<CdpClient>,
+    /// The connection (by `generation`) whose download events are already
+    /// on and followed (`files`).
+    downloads_followed: Option<u64>,
 }
 
 struct Shared {
@@ -141,6 +145,8 @@ struct Shared {
     listed: Mutex<HashMap<String, Listed>>,
     /// What agents did to them, for as long as the connection lasts.
     activity: ChromeActivity,
+    /// The downloads agents' clicks started, for as long as it lasts.
+    downloads: ChromeDownloads,
 }
 
 /// Cheap to clone; every clone is the same link.
@@ -175,6 +181,7 @@ impl ChromeLink {
                 tabs,
                 listed: Mutex::new(HashMap::new()),
                 activity: ChromeActivity::default(),
+                downloads: ChromeDownloads::default(),
             }),
         }
     }
@@ -213,6 +220,25 @@ impl ChromeLink {
     /// whenever it is not connected.
     pub fn activity(&self) -> &ChromeActivity {
         &self.shared.activity
+    }
+
+    /// The downloads agents' clicks started in the connected Chrome
+    /// (`files`); empty whenever it is not connected.
+    pub fn downloads(&self) -> &ChromeDownloads {
+        &self.shared.downloads
+    }
+
+    /// The connection, the first time this is asked on it: for whoever then
+    /// turns its download events on and follows them, once per connection.
+    /// `None` when that is done already, or there is no connection.
+    pub fn first_download_watch(&self) -> Option<CdpClient> {
+        let mut slot = self.slot();
+        let client = slot.client.clone().filter(|client| !client.is_closed())?;
+        if slot.downloads_followed == Some(slot.generation) {
+            return None;
+        }
+        slot.downloads_followed = Some(slot.generation);
+        Some(client)
     }
 
     /// Keep `entry` for `tab_id` — while connected: a line that arrives after
@@ -356,6 +382,7 @@ impl ChromeLink {
         if status.state != ChromeState::Connected {
             self.listed_tabs().clear();
             self.shared.activity.clear();
+            self.shared.downloads.clear();
             self.shared.tabs.send_if_modified(|tabs| {
                 let had = !tabs.is_empty();
                 tabs.clear();

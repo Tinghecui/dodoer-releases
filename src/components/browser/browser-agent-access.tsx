@@ -322,6 +322,16 @@ const ACTIVITY_KEYS = {
     refused: "activity.close.refused",
     failed: "activity.close.failed",
   },
+  upload: {
+    done: "activity.upload.done",
+    refused: "activity.upload.refused",
+    failed: "activity.upload.failed",
+  },
+  download: {
+    done: "activity.download.done",
+    refused: "activity.download.refused",
+    failed: "activity.download.failed",
+  },
 } as const satisfies Record<AgentAction, Record<AgentOutcome, string>>
 
 function activityLabel(

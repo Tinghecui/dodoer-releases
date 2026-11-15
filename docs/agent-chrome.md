@@ -24,7 +24,7 @@
 - 替用户打开 Chrome 的远程调试开关，或绕过 Chrome 的允许弹窗。这两步都必须是用户自己做的。
 - 无头模式、dodoer 自带浏览器。
 - Windows、Linux。第一版只做 macOS（现在只发 macOS 的桌面包）。
-- 文件上传、下载的专门工具。内置浏览器现在也没有，以后一起做。
+- ~~文件上传、下载的专门工具。内置浏览器现在也没有，以后一起做。~~ 第二轮 G 给用户的 Chrome 做了（13.7）；内置浏览器还是没有。
 
 ## 3. 一句话方案
 
@@ -316,7 +316,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 - Chrome 里有多个用户（头像菜单里的）时，它们在同一个进程里，dodoer 都看得到；第一版不区分，面板里一起列出来。
 - 标签没法在 Chrome 里做记号：哪些标签交给了智能体，只能在 dodoer 的面板里看。
 - 反爬严的网站（看 CDP 痕迹的那类风控）可能认出来；这个方案不承诺过得了它们。
-- 文件上传、下载、打印对话框、Chrome 自己的权限弹窗（定位、通知）智能体处理不了，要人在 Chrome 里点。
+- 打印对话框、Chrome 自己的权限弹窗（定位、通知）智能体处理不了，要人在 Chrome 里点。文件上传、下载第二轮做了（13.7），但只认上传目录里的文件，Chrome 设成「下载前询问保存位置」时那个保存窗口也要人点。
 - 远程调试开关是 Chrome 的新功能，行为可能随版本变。CDP 的方法尽量用标了稳定的；焦点模拟（`Emulation.setFocusEmulationEnabled`）和窗口那几个（`Browser.getWindowForTarget`、`Browser.setWindowBounds`、`Target.createTarget` 的 `windowState`）是试验性的，Chrome 改了要跟着改。
 
 ## 12. 放弃或推后的方案
@@ -439,6 +439,20 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
   - 打印对话框、Chrome 自己的权限弹窗（定位、通知、摄像头）：那是 Chrome 的界面，不在页面里，CDP 点不到；权限可以 `Browser.grantPermissions` 预先给，但那是替用户给网站权限，不做。
   - Windows、Linux：现在只发 macOS 桌面包。`endpoint.rs` 已经认得三个平台的数据目录，以后发了包再验。
 - **验收**：智能体把 `~/Downloads/dodoer-uploads/a.pdf` 传到一个上传表单，页面收到文件；传这个目录外的文件被拒；智能体点一个下载链接，文件出现在 Chrome 的下载目录、智能体被告知文件名；用户自己在别的标签下载文件照常（位置、询问都不变）。
+- **实现（PR「chrome-files」，2026-11-15，Rust 只在 CI 上编译过，Mac 上没验）**：
+  - **上传**：新工具 `browser_upload`（`tabId`、`generation`、`ref`、`paths`）。和别的动作工具走同一条路：`ActionKind::Upload { paths }`，服务器经借浏览器的协议原样转给桌面端（`BrowserCall::Act`，不用新消息；老桌面端不认这个动作，回报错）。桌面端 `agent_act_core` 里分到 `upload_on_shared_page`：
+    - 只认 Chrome 标签（内置浏览器回 `unsupported`）、要「读取并操作」（`still_actionable`，读前、给文件前各查一次）、当前地址再过一遍敏感网站名单。
+    - 路径：`chrome/files.rs` 的 `check_upload_paths`。`a.pdf` 当作上传目录里的、`~/` 开头按本机 home 展开、绝对路径照用；`canonicalize` 以后必须在 `~/Downloads/dodoer-uploads/` 的 canonical 路径下面、是文件，一次最多 20 个。目录不存在、文件不存在、目录外（含 `../`、指向外面的符号链接）各回一句，后面都附上「服务器上的智能体先 `ssh <设备> 'mkdir -p …'` 再 scp 过去」。上传目录没做成可以在设置里换。
+    - ref 本身是 `<input type=file>`：`Runtime.evaluate`（隔离 world，`elementForRef`，不 returnByValue）拿到元素对象，`DOM.describeNode` 看是不是文件框、带不带 `multiple`，再 `DOM.setFileInputFiles { objectId }`。
+    - 不是文件框（「选择文件」按钮、拖放区）：`Page.setInterceptFileChooserDialog { enabled: true }` → 用真鼠标点它（`deliver_trusted_pointer`，要用户手势才弹得出选文件窗口）→ 等 5 秒 `Page.fileChooserOpened` → `DOM.setFileInputFiles { backendNodeId }` → 不管成没成都 `enabled: false` 关掉拦截。没弹选文件窗口、`showOpenFilePicker` 那种没有 `backendNodeId` 的、单选框给了多个文件，各回一句。
+    - 回答里写给了页面哪几个文件（`ActionOutcome.uploaded`）；活动记录一条 `upload`（字段名照快照里的名字）。
+  - **下载**：
+    - 第一次有智能体在某个 Chrome 标签上点击时（每个连接一次），才发 `Browser.setDownloadBehavior { behavior: "default", eventsEnabled: true }`（`files::download_events_params`，单测查了没有 `downloadPath`、没有 `browserContextId`），之后跟 `Browser.downloadWillBegin` / `downloadProgress`（`chrome_share::follow_downloads`）。不在连上时就开：连上的流程和它的测试都不用动，没人点就一条也不多发。
+    - **断开时不用复位**：查了 Chromium 的 `content/browser/devtools/protocol/browser_handler.cc`，会话结束时 `BrowserHandler::Disable()` 会清掉这个会话设过的下载行为（`download_behavior_overrides_.clear()`）并 `SetDownloadEventsEnabled(false)`；`behavior: "default"` 在 `DevToolsDownloadManagerDelegate` 里也是直接交给 Chrome 自己的下载代理（位置、「每次询问」都照用户的设置）。dodoer 断开、Chrome 断开都是会话结束，所以不另发 `eventsEnabled: false`（`CdpClient::close` 是立刻关 socket，发了也不一定出得去）。只关「让智能体用我的 Chrome」而不断开时事件还开着，但行为是 default，用户感觉不到。
+    - 哪些下载算智能体的：智能体点击某个 Chrome 标签之前，先记下这个标签的 frame id（target id 和主 frame id），10 秒内从这些 frame 开始的下载算这次点击的；别的（用户自己在任何标签里的下载、智能体点了 10 秒以后才开始的）一概不看。子 frame（iframe）里发起的下载认不出来。
+    - 点击的回答：点完最多等 0.8 秒看有没有下载开始，开始了就最多等 20 秒到完成。完成了说文件名和 Chrome 报的 `filePath`（Chromium 现在完成时会带）；没报路径就说「在用户 Chrome 的下载目录，默认 `~/Downloads/<文件名>`，Chrome 没说确切路径」；20 秒还没完就说「还在下，或者 Chrome 在问保存到哪，只有用户能点」，等这个标签上下一次动作的回答再告诉它（`ActionOutcome.downloads`，每个下载每种状态只说一次）。没加新工具，`browser_list_tabs` 也没带「最近的下载」。
+    - 活动记录：智能体的下载结束（完成或取消）时记一条 `download`，名字是文件名，记在点击的那个范围下。
+  - 每次点击 Chrome 标签都多等 0.8 秒，这是为了让同一次回答里就能说出下载；Mac 上用着嫌慢再调短。
 
 ### 13.8 暂停
 

@@ -120,6 +120,12 @@ export type AgentAction =
    *  failure: a strip dies with its tab, so a close that worked has nowhere
    *  to leave a line. */
   | "close"
+  /** Gave files from the person's computer to a file field (their Chrome
+   *  only). */
+  | "upload"
+  /** A download an agent's click started in the person's Chrome ended.
+   *  Recorded by its end, not by a tool call. */
+  | "download"
 
 export type PointerButton = "left" | "right"
 

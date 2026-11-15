@@ -5894,14 +5894,18 @@
         "open": "이 페이지를 엶",
         "navigate": "다른 페이지로 이동함",
         "dialog": "페이지 대화상자에 응답함",
-        "close": "탭을 닫음"
+        "close": "탭을 닫음",
+        "upload": "파일을 업로드함",
+        "download": "파일을 다운로드함"
       },
       "actionOn": {
         "click": "{target} 클릭함",
         "hover": "{target}에 마우스를 올림",
         "type": "{target}에 입력함",
         "press": "{target}에서 키를 누름",
-        "select": "{target}에서 옵션을 선택함"
+        "select": "{target}에서 옵션을 선택함",
+        "upload": "{target}에 파일을 업로드함",
+        "download": "{target} 다운로드함"
       },
       "showCode": "코드 보기",
       "hideCode": "코드 숨기기"
@@ -8211,6 +8215,16 @@
           "done": "이 탭을 닫았습니다",
           "refused": "닫기 거부: 이 페이지는 조작이 허용되지 않습니다",
           "failed": "이 탭을 닫지 못했습니다"
+        },
+        "upload": {
+          "done": "파일을 업로드함",
+          "refused": "업로드 거부됨: 이 페이지에서는 작업이 허용되지 않습니다",
+          "failed": "파일을 업로드하지 못했습니다"
+        },
+        "download": {
+          "done": "파일을 다운로드함",
+          "refused": "다운로드 거부됨",
+          "failed": "다운로드가 완료되지 않았습니다"
         }
       },
       "activityCount": "{count}회",

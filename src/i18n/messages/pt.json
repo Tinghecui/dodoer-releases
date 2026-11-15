@@ -5894,14 +5894,18 @@
         "open": "abriu esta página",
         "navigate": "foi para outra página",
         "dialog": "respondeu a uma caixa de diálogo",
-        "close": "fechou a aba"
+        "close": "fechou a aba",
+        "upload": "enviou um arquivo",
+        "download": "baixou um arquivo"
       },
       "actionOn": {
         "click": "clicou em {target}",
         "hover": "passou o ponteiro sobre {target}",
         "type": "digitou em {target}",
         "press": "pressionou uma tecla em {target}",
-        "select": "escolheu uma opção em {target}"
+        "select": "escolheu uma opção em {target}",
+        "upload": "enviou um arquivo para {target}",
+        "download": "baixou {target}"
       },
       "showCode": "Ver o código",
       "hideCode": "Ocultar o código"
@@ -8211,6 +8215,16 @@
           "done": "Fechou esta aba",
           "refused": "Fechamento recusado: esta página não permite ações",
           "failed": "Não foi possível fechar esta aba"
+        },
+        "upload": {
+          "done": "Enviou um arquivo",
+          "refused": "Envio recusado: esta página não permite ações",
+          "failed": "Não foi possível enviar o arquivo"
+        },
+        "download": {
+          "done": "Baixou um arquivo",
+          "refused": "Download recusado",
+          "failed": "O download não terminou"
         }
       },
       "activityCount": "{count}×",

@@ -5894,14 +5894,18 @@
         "open": "opened this page",
         "navigate": "went to another page",
         "dialog": "answered a dialog",
-        "close": "closed the tab"
+        "close": "closed the tab",
+        "upload": "uploaded a file",
+        "download": "downloaded a file"
       },
       "actionOn": {
         "click": "clicked {target}",
         "hover": "hovered over {target}",
         "type": "typed into {target}",
         "press": "pressed a key in {target}",
-        "select": "chose an option in {target}"
+        "select": "chose an option in {target}",
+        "upload": "uploaded a file to {target}",
+        "download": "downloaded {target}"
       },
       "showCode": "Show the code",
       "hideCode": "Hide the code"
@@ -8211,6 +8215,16 @@
           "done": "Closed this tab",
           "refused": "Refused to close: this page does not allow actions",
           "failed": "Could not close this tab"
+        },
+        "upload": {
+          "done": "Uploaded a file",
+          "refused": "Refused to upload: actions aren't allowed on this page",
+          "failed": "Couldn't upload the file"
+        },
+        "download": {
+          "done": "Downloaded a file",
+          "refused": "Refused a download",
+          "failed": "The download didn't finish"
         }
       },
       "activityCount": "{count}×",

@@ -52,6 +52,13 @@ impl ExternalHandle {
         &self.label
     }
 
+    /// Cowork fork: the attached tab itself, for what only the DevTools
+    /// protocol can do — giving a file field its files, telling which
+    /// downloads started here (`docs/agent-chrome.md` section 13.7).
+    pub fn page(&self) -> &ChromePage {
+        &self.page
+    }
+
     /// Close the tab in Chrome (`ChromePage::close_target`): for a tab an
     /// agent opened, never for one the person handed over.
     pub fn close_tab(&self) {

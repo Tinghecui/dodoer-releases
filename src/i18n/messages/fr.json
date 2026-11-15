@@ -5894,14 +5894,18 @@
         "open": "a ouvert cette page",
         "navigate": "est allé sur une autre page",
         "dialog": "a répondu à une boîte de dialogue",
-        "close": "a fermé l’onglet"
+        "close": "a fermé l’onglet",
+        "upload": "a importé un fichier",
+        "download": "a téléchargé un fichier"
       },
       "actionOn": {
         "click": "a cliqué sur {target}",
         "hover": "a survolé {target}",
         "type": "a saisi dans {target}",
         "press": "a appuyé sur une touche dans {target}",
-        "select": "a choisi une option dans {target}"
+        "select": "a choisi une option dans {target}",
+        "upload": "a importé un fichier dans {target}",
+        "download": "a téléchargé {target}"
       },
       "showCode": "Voir le code",
       "hideCode": "Masquer le code"
@@ -8211,6 +8215,16 @@
           "done": "A fermé cet onglet",
           "refused": "Fermeture refusée : cette page n'autorise pas les actions",
           "failed": "Impossible de fermer cet onglet"
+        },
+        "upload": {
+          "done": "A importé un fichier",
+          "refused": "Importation refusée : les actions ne sont pas autorisées sur cette page",
+          "failed": "Impossible d’importer le fichier"
+        },
+        "download": {
+          "done": "A téléchargé un fichier",
+          "refused": "Téléchargement refusé",
+          "failed": "Le téléchargement n’a pas abouti"
         }
       },
       "activityCount": "{count}×",

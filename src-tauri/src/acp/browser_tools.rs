@@ -927,6 +927,8 @@ mod tests {
                 fidelity: crate::browser::agent::Fidelity::Synthetic,
                 url: "https://example.com/".into(),
                 scrolled: None,
+                uploaded: Vec::new(),
+                downloads: Vec::new(),
             },
         ))
         .unwrap();

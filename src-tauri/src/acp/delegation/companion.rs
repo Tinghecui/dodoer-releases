@@ -312,6 +312,7 @@ impl CompanionFeatures {
             | "browser_type"
             | "browser_press_key"
             | "browser_select_option"
+            | "browser_upload"
             | "browser_open_tab"
             | "browser_navigate"
             | "browser_close_tab"
@@ -1232,10 +1233,21 @@ async fn build_tools_call_spawn(
             // activity strip, so a canceled call cannot read a page invisibly.
             let round_trip =
                 Box::pin(async move { client_browser_snapshot_round_trip(&socket, &req).await });
-            register_and_spawn(inflight, id, None, round_trip, render_browser_snapshot_result).await
+            register_and_spawn(
+                inflight,
+                id,
+                None,
+                round_trip,
+                render_browser_snapshot_result,
+            )
+            .await
         }
-        "browser_click" | "browser_hover" | "browser_type" | "browser_press_key"
-        | "browser_select_option" => {
+        "browser_click"
+        | "browser_hover"
+        | "browser_type"
+        | "browser_press_key"
+        | "browser_select_option"
+        | "browser_upload" => {
             // Five names, one request: they differ only in the action they
             // carry, and the checks (control grant, ref freshness) and the
             // audit line are the same for all of them on the codeg side.
@@ -2470,6 +2482,37 @@ pub fn browser_action_request(
             }
             ActionKind::Select { values }
         }
+        // Cowork fork: files from the user's computer into a file field of a
+        // tab of their Chrome (`docs/agent-chrome.md` section 13.7). Which
+        // files may go is the desktop's to check, where they are.
+        "browser_upload" => {
+            let paths: Vec<String> = match arguments.get("paths") {
+                Some(Value::Array(items)) => {
+                    let mut paths = Vec::with_capacity(items.len());
+                    for item in items {
+                        match item.as_str().map(str::trim).filter(|p| !p.is_empty()) {
+                            Some(path) => paths.push(path.to_string()),
+                            None => {
+                                return Err(format!(
+                                    "{name}: every entry of `paths` must be a non-empty string, \
+                                     not {item}"
+                                ))
+                            }
+                        }
+                    }
+                    paths
+                }
+                Some(Value::String(one)) if !one.trim().is_empty() => vec![one.trim().to_string()],
+                _ => Vec::new(),
+            };
+            if paths.is_empty() {
+                return Err(format!(
+                    "{name} requires `paths`: a non-empty array of files in \
+                     ~/Downloads/dodoer-uploads/ on the user's computer"
+                ));
+            }
+            ActionKind::Upload { paths }
+        }
         _ => return Err(format!("unknown tool: {name}")),
     };
     if target.is_none() && name != "browser_press_key" {
@@ -3010,6 +3053,73 @@ pub fn render_browser_capture_result(outcome: &Value) -> Value {
 /// and a model with no way to see that a key did nothing answers by pressing
 /// it again; thirty times, in the session this was written for. Says how far,
 /// and whether there is anywhere left to go.
+/// Cowork fork: which files an upload gave the page.
+fn upload_note(uploaded: Option<&Value>) -> String {
+    let names: Vec<&str> = uploaded
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if names.is_empty() {
+        return String::new();
+    }
+    format!(
+        " Gave the page {}: {}.",
+        plural(names.len(), "file"),
+        names.join(", ")
+    )
+}
+
+fn plural(count: usize, what: &str) -> String {
+    if count == 1 {
+        format!("1 {what}")
+    } else {
+        format!("{count} {what}s")
+    }
+}
+
+/// Cowork fork: the downloads clicks in the user's Chrome started
+/// (`chrome::files`): where each one is, and how to fetch it from a server.
+fn download_note(downloads: Option<&Value>) -> String {
+    let Some(list) = downloads
+        .and_then(Value::as_array)
+        .filter(|list| !list.is_empty())
+    else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for download in list {
+        let name = download
+            .get("fileName")
+            .and_then(Value::as_str)
+            .unwrap_or("download");
+        let path = download.get("filePath").and_then(Value::as_str);
+        let state = download
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("inProgress");
+        out.push_str(&match (state, path) {
+            ("completed", Some(path)) => {
+                format!(" Downloaded {name} to {path} on the user's computer.")
+            }
+            ("completed", None) => format!(
+                " Downloaded {name} into the user's Chrome download folder (by default \
+                 ~/Downloads/{name}; Chrome did not say the exact path)."
+            ),
+            ("canceled", _) => format!(" The download of {name} was cancelled or failed."),
+            _ => format!(
+                " A download of {name} started and has not finished yet — it may be large, or \
+                 Chrome may be asking the user where to save it, which only they can answer. \
+                 The next action on this tab says when it is done."
+            ),
+        });
+    }
+    out.push_str(
+        " Downloads are on the user's computer: an agent on a server fetches one over that \
+         device's shell (`ssh <device>`, the name from list_devices).",
+    );
+    out
+}
+
 fn scroll_note(scrolled: Option<&Value>) -> String {
     let Some(report) = scrolled.filter(|v| v.is_object()) else {
         return String::new();
@@ -3072,9 +3182,11 @@ pub fn render_browser_act_result(outcome: &Value) -> Value {
                 _ => "as events dispatched by script (synthetic)",
             };
             format!(
-                "Done, {how}.{} The page was at {url}. Take a browser_snapshot to see what came \
-                 of it.",
+                "Done, {how}.{}{} The page was at {url}. Take a browser_snapshot to see what came \
+                 of it.{}",
+                upload_note(action.get("uploaded")),
                 scroll_note(action.get("scrolled")),
+                download_note(action.get("downloads")),
             )
         }
         _ => outcome
@@ -6855,6 +6967,7 @@ mod tests {
                 "browser_type".to_string(),
                 "browser_press_key".to_string(),
                 "browser_select_option".to_string(),
+                "browser_upload".to_string(),
                 // Cowork fork: answering a page's dialog in the user's Chrome.
                 "browser_dialog".to_string(),
             ]
@@ -7274,6 +7387,78 @@ mod tests {
         let err = browser_action_request("browser_click", &json!({ "generation": "g", "ref": "e1" }))
             .unwrap_err();
         assert!(err.contains("`tabId`"));
+
+        // Cowork fork: an upload names its files, and an element by its ref.
+        let (_, req) = browser_action_request(
+            "browser_upload",
+            &with(json!({ "paths": [" a.pdf ", "~/Downloads/dodoer-uploads/b.png"] })),
+        )
+        .unwrap();
+        assert_eq!(
+            req.action,
+            ActionKind::Upload {
+                paths: vec!["a.pdf".into(), "~/Downloads/dodoer-uploads/b.png".into()]
+            }
+        );
+        let (_, req) =
+            browser_action_request("browser_upload", &with(json!({ "paths": "a.pdf" }))).unwrap();
+        assert_eq!(
+            req.action,
+            ActionKind::Upload {
+                paths: vec!["a.pdf".into()]
+            }
+        );
+        for bad in [
+            json!({}),
+            json!({ "paths": [] }),
+            json!({ "paths": ["a", 2] }),
+            json!({ "paths": [""] }),
+        ] {
+            let err = browser_action_request("browser_upload", &with(bad.clone())).unwrap_err();
+            assert!(err.contains("`paths`"), "{bad}: {err}");
+        }
+        let err = browser_action_request(
+            "browser_upload",
+            &json!({ "tabId": "t1", "generation": "g", "paths": ["a.pdf"] }),
+        )
+        .unwrap_err();
+        assert!(err.contains("`ref`"), "{err}");
+    }
+
+    /// Cowork fork: an upload says which files went, and a click that
+    /// downloaded something says where it is.
+    #[test]
+    fn uploads_and_downloads_are_told() {
+        let uploaded = render_browser_act_result(&json!({
+            "tabId": "t1",
+            "action": { "fidelity": "trusted", "url": "https://example.com/", "uploaded": ["a.pdf"] }
+        }));
+        let text = uploaded["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Gave the page 1 file: a.pdf."), "{text}");
+        assert!(!text.contains("Download"), "{text}");
+
+        let downloaded = render_browser_act_result(&json!({
+            "tabId": "t1",
+            "action": { "fidelity": "trusted", "url": "https://example.com/", "downloads": [
+                { "fileName": "a.pdf", "filePath": "/Users/someone/Downloads/a.pdf", "state": "completed" },
+                { "fileName": "b.zip", "state": "completed" },
+                { "fileName": "c.iso", "state": "inProgress" }
+            ] }
+        }));
+        let text = downloaded["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("Downloaded a.pdf to /Users/someone/Downloads/a.pdf"),
+            "{text}"
+        );
+        assert!(
+            text.contains("~/Downloads/b.zip; Chrome did not say the exact path"),
+            "{text}"
+        );
+        assert!(
+            text.contains("c.iso started and has not finished"),
+            "{text}"
+        );
+        assert!(text.contains("ssh <device>"), "{text}");
     }
 
     /// The three tab tools are as strict about their two arguments: an

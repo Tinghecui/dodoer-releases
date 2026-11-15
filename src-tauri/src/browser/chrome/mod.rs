@@ -24,11 +24,13 @@
 //! - `lending`  — whose agents may use it, and which tabs each is told of
 //! - `sensitive` — the sites agents are kept off in that Chrome
 //! - `activity` — what agents did to each tab, for the Chrome panel
+//! - `files`    — uploads from one folder, and the downloads agents start
 
 pub mod activity;
 pub mod agent_window;
 pub mod cdp;
 pub mod endpoint;
+pub mod files;
 pub mod lending;
 pub mod link;
 pub mod page;

@@ -305,6 +305,14 @@ pub enum AgentAction {
     Open,
     /// Pointed this tab at another address.
     Navigate,
+    /// Cowork fork: gave files from the person's computer to a file field of
+    /// the page (`browser_upload`, the person's Chrome only;
+    /// `docs/agent-chrome.md` section 13.7).
+    Upload,
+    /// Cowork fork: a download an agent's click started finished, or was
+    /// cancelled, in the person's Chrome. Only ever recorded there, by the
+    /// download's end rather than by a tool call (`chrome::files`).
+    Download,
     /// Cowork fork: answered a dialog the page put up (`alert`, `confirm`,
     /// `prompt`, "leave this site?") — only ever in the person's Chrome
     /// (`docs/agent-chrome.md` 13.2).
@@ -326,6 +334,7 @@ impl From<&ActionKind> for AgentAction {
             ActionKind::Type { .. } => AgentAction::Type,
             ActionKind::Press { .. } => AgentAction::Press,
             ActionKind::Select { .. } => AgentAction::Select,
+            ActionKind::Upload { .. } => AgentAction::Upload,
         }
     }
 }
@@ -708,6 +717,14 @@ pub enum ActionKind {
     Press { key: String },
     /// Choose options of a `<select>`, by value or by label.
     Select { values: Vec<String> },
+    /// Cowork fork: give these files to the file field the ref names, or to
+    /// the chooser the element opens when clicked (`browser_upload`). Paths
+    /// on the computer the tab is on, and only inside its upload folder
+    /// (`chrome::files`). Never sent to the world: only a tab of the
+    /// person's Chrome takes it, over the DevTools protocol.
+    Upload {
+        paths: Vec<String>,
+    },
 }
 
 impl ActionKind {
@@ -835,6 +852,39 @@ pub struct ActionOutcome {
     /// Only for a key press that scrolled something.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scrolled: Option<ScrollReport>,
+    /// Cowork fork: the names of the files an upload gave the page.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uploaded: Vec<String>,
+    /// Cowork fork: downloads the agent's clicks on this tab of the person's
+    /// Chrome started, that it has not been told of yet in this state
+    /// (`chrome::files`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub downloads: Vec<DownloadReport>,
+}
+
+/// Cowork fork: where one download in the person's Chrome is. Mirrors
+/// `Browser.downloadProgress`'s states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DownloadState {
+    InProgress,
+    Completed,
+    Canceled,
+}
+
+/// Cowork fork: a download an agent's click started in the person's Chrome,
+/// as the agent is told of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadReport {
+    /// The name Chrome means to save it under (`suggestedFilename`).
+    pub file_name: String,
+    /// Where Chrome saved it, when Chrome says (`filePath` of a completed
+    /// download, in newer versions). `None` means the person's default
+    /// download folder, by that name, as far as anyone here can tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    pub state: DownloadState,
 }
 
 /// The host's half of the staleness check: whether `generation` — the token a
@@ -877,6 +927,20 @@ pub fn act_call(request: &ActionRequest) -> String {
         generation = serde_json::Value::from(request.generation.as_str()),
         target = serde_json::to_value(&request.target).unwrap_or(serde_json::Value::Null),
         action = serde_json::to_value(&request.action).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// Cowork fork: the element `target` names itself, not its description —
+/// for the DevTools protocol to hand a file field its files
+/// (`chrome::page::ChromePage::element`). `null` for a ref that no longer
+/// resolves, [`ENGINE_ABSENT`] when no snapshot was ever taken here.
+pub fn element_call(generation: &str, target: &str) -> String {
+    format!(
+        "typeof globalThis.{AGENT_GLOBAL} === 'undefined' ? {absent} : \
+         globalThis.{AGENT_GLOBAL}.elementForRef({generation}, {target})",
+        absent = serde_json::Value::from(ENGINE_ABSENT),
+        generation = serde_json::Value::from(generation),
+        target = serde_json::Value::from(target),
     )
 }
 
@@ -1577,6 +1641,8 @@ mod tests {
             fidelity: Fidelity::Trusted,
             url: "http://x/".into(),
             scrolled: None,
+            uploaded: Vec::new(),
+            downloads: Vec::new(),
         })
         .unwrap();
         // No `scrolled` key at all for an action that did not scroll, rather
@@ -1599,6 +1665,7 @@ mod tests {
             (ActionKind::Hover, AgentAction::Hover),
             (ActionKind::Press { key: "a".into() }, AgentAction::Press),
             (ActionKind::Select { values: vec![] }, AgentAction::Select),
+            (ActionKind::Upload { paths: vec![] }, AgentAction::Upload),
         ] {
             assert_eq!(AgentAction::from(&kind), action);
         }

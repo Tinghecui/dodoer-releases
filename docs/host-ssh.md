@@ -1,6 +1,15 @@
 # 把桌面电脑的命令行借给远端工作区
 
-状态：方向定了，Mac 上的实测做过了（第 4 节）。第 1 步（桌面端：开关、起停 SSH 服务、自检）2026-11-14 在 Mac 上验过。第 2 步（通道、`codeg-cli desktop proxy`、服务器上的 `ssh desktop` 配置）代码写了，CI 上用真的 `sshd` 和 `ssh` 从头到尾测过，还没在真的服务器和 Mac 之间验。智能体还不知道有这条路（第 3 步）。
+状态：方向定了，Mac 上的实测做过了（第 4 节）。第 1 步（桌面端：开关、起停 SSH 服务、自检）2026-11-14 在 Mac 上验过。第 2 步（通道、`codeg-cli desktop proxy`、服务器上的 `ssh desktop` 配置）2026-11-14 在生产服务器和用户的 Mac 之间验过。
+
+2026-11-15 起，一个人有几台电脑时按设备的名字连，设计在 `docs/devices.md`。本文 5.2、5.3 里「选哪台」「配置长什么样」已经按它改过：
+
+- 一台设备一段 `ssh <名字>`。
+- 每个对话第一次用某台设备时，要人确认一次。
+- 可以从别的设备远程停止借出。
+- 借出期间这台电脑不睡眠。
+
+智能体从 codeg-mcp 的 `devices` 工具组（`list_devices` / `use_device`）知道有哪些设备、怎么 `ssh <名字>`。第 3 步原来打算的 `desktop_shell_status` 工具、连接数和命令记录还没做。
 
 ## 1. 问题
 
@@ -118,7 +127,13 @@ agent ── ssh desktop
   桌面端把 `client_key` 记进 `authorized_keys`（这个连接此前没给过的话），然后**主动**连 `GET /ws/host-tunnel?id=<tunnel_id>`（认证和它的 `/ws/events` 一样，子协议 `codeg-host-tunnel`），连上后在这条 WebSocket 和 `127.0.0.1:<端口>` 之间原样搬字节（二进制帧）。连不上本机 SSH 服务、开关已关，就回 `{"action":"host_tunnel_result","tunnel_id":…,"error":"…"}`。借出收回、SSH 服务停了，桌面端立刻关掉这台服务器的所有通道，已经连上的会话随之结束（`Lending::withdrawn`）。
 - 服务器把桌面端拨进来的这条和等着的那一头（5.3）配上对，两边原样搬字节；15 秒没人拨进来就失败。`tunnel_id` 是 128 位随机数，一次有效。
 - 桌面端每个事件 socket 按自己的服务器注册：借出、停止借出、SSH 服务起停、浏览器开关变了，各 socket 都重新算一遍再发 `host_register`（`remote_proxy` 的 `HOST_CHANGES`）。
-- 选哪台电脑：和借浏览器一样，最近注册或最近获得焦点的那个带 `shell` 能力的 host。2026-11-14 加过「固定到某一台」，2026-11-15 去掉了；以后按设备的名字连（`ssh <名字>`，`docs/devices.md` 5.1）。
+- 选哪台电脑：按名字（`docs/devices.md` 5.1）。
+  - `ssh <名字>` 只到那台设备，绝不换到别的设备。
+  - 那台设备上有几个窗口借出了命令行时，用最近用的那个。
+  - `desktop` 指叫这个名字的那台；没有叫 `desktop` 的，只有一台时就是它；有好几台时失败，并列出各台的名字。
+  - 智能体的 `ssh` 还要过一道检查：它的对话要先选过这台设备（`use_device`，`docs/devices.md` 6.5），不然回 428。
+  - 被远程停止的设备回 403（7.2）。
+  - 不再看焦点、最近注册，也不看 Chrome 开关。2026-11-14 加过的「固定到某一台」已经在 2026-11-15 去掉。
 - **一条 SSH 连接一条 WebSocket，靠 SSH 自己的连接复用压住数量**（5.3 的 `ControlMaster`）。Cowork 的 nginx 对 `/ws/` 是每分钟 20 个新连接，超了会被 fail2ban 封 IP；所以 codeg-server 自己再限一道（每分钟最多 6 条新通道），超了直接回「稍后再试」，不让请求走到 nginx 那里去。真不够用再改成一条 WebSocket 里跑多路。
 
 ### 5.3 服务器端：`ssh desktop`
@@ -131,25 +146,52 @@ agent ── ssh desktop
   config            # 下面这段
   ```
 
+  登记簿里每台设备一段（`host_ssh/client.rs`），借出没借出都有：
+
   ```
-  Host desktop
-    HostKeyAlias dodoer-desktop
-    User <桌面端报的登录名>
+  Match originalhost laptop exec "printenv CODEG_CLI_CALLER >/dev/null"
+    ControlPath <目录>/cm-<id 前 8 位>-${CODEG_CLI_CALLER}
+  Host laptop
+    HostName dodoer-<id 前 8 位>
+    HostKeyAlias dodoer-<id 前 8 位>
+    User <这台上次借出时报的登录名>
     IdentityFile <目录>/id_ed25519
     IdentitiesOnly yes
+    IdentityAgent none
     UserKnownHostsFile <目录>/known_hosts
+    GlobalKnownHostsFile /dev/null
     StrictHostKeyChecking yes
-    ProxyCommand <codeg-cli 的绝对路径> desktop proxy
+    UpdateHostKeys no
+    ProxyCommand <codeg-cli 的绝对路径> desktop proxy --device <设备 id>
     ControlMaster auto
-    ControlPath <目录>/cm-<主机密钥摘要的前 8 位>
+    ControlPath <目录>/cm-<id 前 8 位>
     ControlPersist 10m
     ServerAliveInterval 30
+    ServerAliveCountMax 3
   ```
 
+  - 只有一台设备时，`Host` 那一行写成 `Host <名字> desktop`；有设备叫 `desktop` 时，就是它那一段。
+  - 有好几台、又没有一台叫 `desktop` 时，另有一段不带 `--device` 的 `Host desktop`，由服务器回 409，并说出各台的名字。
+  - 前面那段 `Match` 让智能体的 `ssh` 每个对话用自己的共用连接：一个对话不会顺着别的对话开的连接进去，绕过服务器的检查。人自己在终端里敲的 `ssh` 照旧一台一条。
+  - 登记簿空着时（只有不带 `device` 的老 app），照旧只有一段 `Host desktop`，`ControlPath` 按主机密钥的摘要分。
+
 - 第一次借出时在 `~/.ssh/config` 最前面加一行 `Include <目录>/config`（带注释说明是谁加的；文件不存在就建）。这样 `ssh desktop`、`scp`、`rsync`、`git` 都直接能用，不用带参数。
-- 这些文件跟着借出走（`web::host_tunnel` 的 `spawn_file_sync`）：有桌面借出就写，`known_hosts` 里是所有借出的桌面的主机密钥，`User` 用 `ssh desktop` 会去的那台（固定的，否则最近用的）的登录名；最后一个借出的桌面走了 30 秒后删私钥和 `known_hosts`（事件 socket 重连会先注销再注册，不能一断就换钥匙）。`config` 和 `Include` 那行留着。
-- `config` 最后一行是 `Host *`：`Include` 进来的 `Host` 块即使延续到 `~/.ssh/config` 后面的内容，也等于全局，不影响用户原来的配置。`ControlPath` 是 `<目录>/cm-<主机密钥的 sha256 前 8 位>`：一台电脑一个，换了电脑下一条 `ssh desktop` 就新开连接，不顺着旧连接进原来那台；目录路径太长就不开共享连接。`~/.ssh/config` 是符号链接时改它指向的文件。
-- **`codeg-cli desktop proxy`**（新子命令）：按 `codeg-cli` 现有的规则找到本机的 codeg-server（智能体的 shell 里有 `CODEG_CLI_ENDPOINT_FILE`），连它的 `GET /api/cli_host_tunnel`（CLI 的路由，回环端口上用 CLI 自己的令牌；能力名 `host_tunnel`），把自己的标准输入输出接到通道上。服务器先配好对再升级 WebSocket，所以每种失败都是一句话，代理把它打在标准错误上、`ssh` 原样显示：没人借出时是「No dodoer desktop app lends this workspace its command line right now…」，还有每分钟超过 6 条、桌面拒绝、15 秒没拨回来。用户在设置里关了「命令行访问」时，`ssh desktop` 也不通。
+- 这些文件跟着登记簿和借出走（`web::host_tunnel` 的 `spawn_file_sync`）：
+  - 第一次有设备借出时写。之后登记簿一变（新设备、改名、删除）就重写。
+  - `known_hosts` 里是借出中的设备的主机密钥，一台一行，别名 `dodoer-<id 前 8 位>`，一台只认自己的密钥。
+  - 最后一个借出的设备走了 30 秒后，删私钥和 `known_hosts`：事件 socket 重连会先注销再注册，不能一断就换钥匙。
+  - `config` 和 `Include` 那行留着。
+- `config` 最后一行是 `Host *`：`Include` 进来的 `Host` 块即使延续到 `~/.ssh/config` 后面的内容，也等于全局，不影响用户原来的配置。共享连接一台设备一个；目录路径太长就不开（按对话分的那个也不开）。`~/.ssh/config` 是符号链接时改它指向的文件。
+- **`codeg-cli desktop proxy`**（新子命令）：按 `codeg-cli` 现有的规则找到本机的 codeg-server（智能体的 shell 里有 `CODEG_CLI_ENDPOINT_FILE`），连它的 `GET /api/cli_host_tunnel`（CLI 的路由，回环端口上用 CLI 自己的令牌；能力名 `host_tunnel`），把自己的标准输入输出接到通道上。服务器先配好对再升级 WebSocket，所以每种失败都是一句话，代理把它打在标准错误上、`ssh` 原样显示：每种失败一个状态码，见 `docs/devices.md` 5.3：
+
+  - 不在线（带上次在线的时间）、没人借出：503。
+  - 在线但没借出命令行、被远程停止：403。
+  - 登记簿里没有这台：404。
+  - `desktop` 指不明：409。
+  - 对话没选过这台：428。
+  - 这台设备每分钟超过 6 条：429。
+  - 桌面拒绝：502。
+  - 15 秒没拨回来：504。用户在设置里关了「命令行访问」时，`ssh desktop` 也不通。
 - 私钥是服务器上的一个文件，不是只在内存里（`ssh` 客户端要读文件）。它只有这个账号能读，借出结束就删，而且**单有它没用**：到那台电脑的路只有 codeg-server 里的通道这一条，通道只在桌面 app 借出时存在。
 - 服务器上别的账号用不了：入口要这个账号的 codeg-server 的 token。Cowork 里每个员工一个 codeg-server，只够得着自己连上来的那台电脑。
 
@@ -194,7 +236,7 @@ codeg-mcp 多一个工具组（设置里和浏览器、电脑操作并排），�
 | 0 | 实测脚本 | 已完成（第 4 节） |
 | 1 | 桌面端：状态栏里的开关、起停 `sshd`、临时密钥、`PATH`、异常退出清理、「自检」（app 自己连一次、跑一条命令）。**代码写了，待 Mac 上验** | Mac 上打开开关，自检通过、列出 `node` `brew`；关开关、退出 app 后端口没了；强杀 app 后 `sshd` 跟着没了；dodoer 名下的权限是否生效 |
 | 2 | 通道：`host_ssh`、`shell` 能力、`host_tunnel`、`/ws/host-tunnel`、`codeg-cli desktop proxy`、服务器上的密钥和 `ssh` 配置。**代码写了，CI 上测过，待真机验** | 在服务器终端里 `ssh desktop sw_vers` 有结果；关开关后立刻连不上 |
-| 3 | 智能体和界面：MCP 工具组、状态栏标记、一键断开、命令记录 | 智能体自己在 Mac 上完成一次排查；记录里看得到命令 |
+| 3 | 智能体和界面：MCP 工具组、状态栏标记、一键断开、命令记录。**部分被 `docs/devices.md` 取代**：智能体从 `list_devices` / `use_device` 知道怎么连；状态栏的借出图标、面板里的「停止借出」（本机）和设备面板里的远程停止都有了；`desktop_shell_status`、连接数、命令记录还没做 | 智能体自己在 Mac 上完成一次排查；记录里看得到命令 |
 | 4 | 文档（`COWORK.md`）、Cowork 侧 nginx 的核对、发版 | |
 
 ## 8. 验收

@@ -1981,6 +1981,7 @@ mod tests {
                     origin: Some("https://example.com".into()),
                     level: crate::browser::agent::GrantLevel::Read,
                     title: Some("Example".into()),
+                    browser: Some(crate::browser::agent::TabBrowser::Builtin),
                 }],
                 note: None,
             }
@@ -2059,6 +2060,7 @@ mod tests {
                         origin: Some("http://localhost:3000".into()),
                         level: crate::browser::agent::GrantLevel::Control,
                         title: Some("dev".into()),
+                        browser: Some(crate::browser::agent::TabBrowser::Builtin),
                     },
                     None,
                 ),

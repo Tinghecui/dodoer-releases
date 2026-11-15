@@ -20,7 +20,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::types::{BrowserTabState, TabKind};
+use super::types::{BrowserTabState, SurfaceKind, TabKind};
 
 /// How much of a tab an agent may have.
 ///
@@ -177,6 +177,34 @@ pub struct AgentTabSummary {
     /// Present only from [`GrantLevel::Read`] upwards.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Which browser the tab is in. Always set by [`summarize_tab`]; `None`
+    /// only when a desktop older than this field answered a server's listing,
+    /// which is then passed on without the key rather than with a guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<TabBrowser>,
+}
+
+/// The browser a listed tab lives in, as `browser_list_tabs` tells an agent.
+///
+/// The tools are the same for both; what differs is whose browser it is. A
+/// Chrome tab is the person's own, signed in as them, and some things work
+/// only in one of the two (running code is the built-in browser's alone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TabBrowser {
+    /// A tab of the person's own Chrome ([`SurfaceKind::External`]).
+    Chrome,
+    /// A page in codeg's built-in browser panel.
+    Builtin,
+}
+
+impl TabBrowser {
+    pub fn of(surface: SurfaceKind) -> Self {
+        match surface {
+            SurfaceKind::External => Self::Chrome,
+            SurfaceKind::Child | SurfaceKind::Window => Self::Builtin,
+        }
+    }
 }
 
 /// What an agent may know about a tab, or `None` for one it should not be
@@ -199,6 +227,7 @@ pub fn summarize_tab(state: &BrowserTabState) -> Option<AgentTabSummary> {
         title: level
             .allows(GrantLevel::Read)
             .then(|| state.title.clone()),
+        browser: Some(TabBrowser::of(state.surface)),
     })
 }
 
@@ -926,7 +955,7 @@ pub fn viewport_call() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::types::{ChannelKind, SurfaceKind};
+    use crate::browser::types::ChannelKind;
 
     fn tab(origin: Option<&str>, kind: TabKind) -> BrowserTabState {
         BrowserTabState {
@@ -1020,6 +1049,35 @@ mod tests {
             summarize_tab(&tab(Some("https://codeg-doc.localhost"), TabKind::Document)),
             None
         );
+    }
+
+    /// Every listed tab says which browser it is in: the person's Chrome for
+    /// a tab handed over through it, the built-in browser for the rest.
+    #[test]
+    fn a_listed_tab_names_its_browser() {
+        let mut state = tab(Some("https://example.com"), TabKind::Page);
+        let builtin = summarize_tab(&state).expect("a page is listed");
+        assert_eq!(builtin.browser, Some(TabBrowser::Builtin));
+        let wire = serde_json::to_value(&builtin).expect("serialises");
+        assert_eq!(wire["browser"], "builtin");
+
+        state.surface = SurfaceKind::Window;
+        let window = summarize_tab(&state).expect("a page is listed");
+        assert_eq!(window.browser, Some(TabBrowser::Builtin));
+
+        state.surface = SurfaceKind::External;
+        let chrome = summarize_tab(&state).expect("a page is listed");
+        assert_eq!(chrome.browser, Some(TabBrowser::Chrome));
+        let wire = serde_json::to_value(&chrome).expect("serialises");
+        assert_eq!(wire["browser"], "chrome");
+
+        // A desktop from before the field answers without it, and a server
+        // still reads its listing.
+        let older = serde_json::json!({ "tabId": "t1", "origin": null, "level": "none" });
+        let old: AgentTabSummary = serde_json::from_value(older).expect("still parses");
+        assert_eq!(old.browser, None);
+        let wire = serde_json::to_value(&old).expect("serialises");
+        assert!(wire.get("browser").is_none());
     }
 
     #[test]

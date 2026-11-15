@@ -874,12 +874,14 @@ mod tests {
                 origin: Some("http://localhost:3000".into()),
                 level: crate::browser::agent::GrantLevel::Control,
                 title: Some("dev".into()),
+                browser: Some(crate::browser::agent::TabBrowser::Builtin),
             },
             None,
         );
         let wire = serde_json::to_value(&opened).unwrap();
         assert_eq!(wire["tabId"], "t7");
         assert_eq!(wire["tab"]["origin"], "http://localhost:3000");
+        assert_eq!(wire["tab"]["browser"], "builtin");
         assert!(wire.get("error").is_none());
         assert!(wire.get("loadError").is_none());
 
@@ -892,6 +894,7 @@ mod tests {
                 origin: None,
                 level: crate::browser::agent::GrantLevel::None,
                 title: None,
+                browser: Some(crate::browser::agent::TabBrowser::Builtin),
             },
             Some("failed".into()),
         ))

@@ -1,0 +1,100 @@
+# 公开镜像 Tinghecui/dodoer-releases：自动驾驶的执行员（源仓库 .cowork/autopilot/design.md；文件在源仓库 .github/public/workflows/ 里维护）。
+# 领一个源仓库的 issue，先写一个会失败的测试、再修到通过，推 autopilot/<issue>-<短名>、开 PR。
+# 这里只是个壳：取源仓库代码、装工具链，然后 exec .cowork/autopilot/sealed.sh fix。脚本的输出全部进文件、产物传回源仓库
+# Release「autopilot-artifacts」，这份日志里只有每个阶段一行的进度；运行结束后 ai-qa-seal.yml 会核对这一点。
+# 凭证在 Environment「ai-qa」里，只有 main 分支用得到。**手动触发时填的输入会原样出现在公开日志里**，只填数字和模型名。
+# 仓库变量：AUTOPILOT（off / record / on，默认 record）、AUTOPILOT_CLAUDE_AUTH（api / oauth，默认 api）、
+# AUTOPILOT_FIX_MODEL（默认 claude-opus-5-5）、AUTOPILOT_DAILY_USD（默认 15）。
+name: autopilot-fix
+# 整个值要加引号：里面的「 #」不加引号会被 YAML 当成注释截掉
+run-name: "autopilot-fix #${{ inputs.issue }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "源仓库的 issue 号"
+        required: true
+      model:
+        description: "模型（空 = 仓库变量 AUTOPILOT_FIX_MODEL，再没有 claude-opus-5-5）"
+        default: ""
+      max_turns:
+        description: "Claude 最多几轮（空 = 400）"
+        default: ""
+
+permissions:
+  contents: read
+
+# 同一个 issue 一次只跑一个（领取评论还会再挡一次：最早那条算）
+concurrency:
+  group: autopilot-fix-${{ inputs.issue }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    if: vars.AUTOPILOT != 'off'
+    # 和 test.yml 的 Rust 格同一个镜像、同样的 CARGO_* / RUST_* 环境变量：rust-cache 的 key 里有这些，一样才用得上 main 上那份依赖缓存
+    runs-on: ubuntu-22.04
+    environment: ai-qa
+    timeout-minutes: 150
+    env:
+      SOURCE_REPO: Tinghecui/cowork-codeg
+      ISSUE: ${{ inputs.issue }}
+      AUTOPILOT: ${{ vars.AUTOPILOT || 'record' }}
+      CLAUDE_AUTH: ${{ vars.AUTOPILOT_CLAUDE_AUTH || 'api' }}
+      MODEL: ${{ inputs.model || vars.AUTOPILOT_FIX_MODEL || 'claude-opus-5-5' }}
+      MAX_TURNS: ${{ inputs.max_turns || '400' }}
+      DAILY_USD: ${{ vars.AUTOPILOT_DAILY_USD || '15' }}
+      W: /home/runner/autopilot-work
+      RUST_BACKTRACE: short
+      INSTA_UPDATE: "no"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: 取源码
+        env:
+          PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "issue 要是数字"; exit 1; }
+          git init -q .
+          # 令牌只在 git 这个进程的环境里，不进命令行、不进 .git/config；历史要几百个提交（执行员用 git log 查是不是已经修过）
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PRIVATE_TOKEN" | base64 -w0)" \
+            git fetch -q --depth 500 "https://github.com/${SOURCE_REPO}.git" HEAD 2>/dev/null || { echo "fetch failed"; exit 1; }
+          git checkout -q --detach FETCH_HEAD
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      # 只读 test.yml 那份（main 上存的），不存：执行员的改动不该进别人用的缓存
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          shared-key: test-ubuntu-22.04-server
+          save-if: false
+
+      - name: run
+        env:
+          PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+          # 一次只给一种 Claude 凭证（AUTOPILOT_CLAUDE_AUTH）。api = 组织的赠送额度（claude -p 能用），不和用户自己的订阅窗口抢
+          ANTHROPIC_KEY: ${{ vars.AUTOPILOT_CLAUDE_AUTH != 'oauth' && secrets.CODEG_AGENT_ANTHROPIC_KEY || '' }}
+          OAUTH_TOKEN: ${{ vars.AUTOPILOT_CLAUDE_AUTH == 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # 凭证写进只有本用户能读的文件、从环境里拿掉再 exec：exec 之后这个进程的 /proc/<pid>/environ 里就没有它们了，
+          # sealed.sh 读进 shell 变量（不 export）就删掉文件，后面起的 Claude 和它跑的命令都拿不到
+          d="$RUNNER_TEMP/autopilot-secrets"; rm -rf "$d"; mkdir -m 700 "$d"
+          printf '%s' "$PRIVATE_TOKEN" > "$d/gh"; printf '%s' "$ANTHROPIC_KEY" > "$d/anthropic"; printf '%s' "$OAUTH_TOKEN" > "$d/oauth"
+          unset PRIVATE_TOKEN ANTHROPIC_KEY OAUTH_TOKEN
+          export AUTOPILOT_SECRETS="$d"
+          exec bash .cowork/autopilot/sealed.sh fix

@@ -484,6 +484,13 @@ pub struct SessionState {
     ///
     /// Backend-internal — not serialized, not carried on `to_snapshot()`.
     pub trae_pat_sign_in: bool,
+    /// Claude Code only (Cowork fork): the auto-compaction window this launch's
+    /// environment sets (`parsers::claude::claude_auto_compact_window`). The
+    /// context meter's window is capped by it — see `emit_conversation_update`.
+    /// `None` for every other agent, and for a Claude launched without one.
+    ///
+    /// Backend-internal — not serialized, not carried on `to_snapshot()`.
+    pub context_window_cap: Option<u64>,
     /// Pi's native `enabledModels` scope for this launch. The ACP adapter
     /// advertises every authenticated model, so the connection layer applies
     /// this Pi-only preference before publishing the model selector.
@@ -945,6 +952,7 @@ impl SessionState {
             model_switch: None,
             env_pinned_config_option_ids: Vec::new(),
             trae_pat_sign_in: false,
+            context_window_cap: None,
             pi_enabled_model_patterns: None,
             prompt_capabilities: None,
             fork_supported: false,

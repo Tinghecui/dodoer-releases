@@ -2826,6 +2826,9 @@ pub async fn spawn_agent_connection(
     if agent_type == AgentType::ClaudeCode {
         initial_state.claude_settings =
             crate::acp::claude_model_picker::launch_settings(&runtime_env);
+        initial_state.context_window_cap = crate::parsers::claude::claude_auto_compact_window(
+            &crate::parsers::AgentEnv::from_overrides(runtime_env.clone()),
+        );
     }
     // A `codeg-cli` run's root: marked before anything can look, the codeg-mcp
     // injection below included.
@@ -26686,12 +26689,22 @@ async fn emit_conversation_update(
                 }
                 return;
             }
+            // Cowork fork: Claude reports the model's window at the end of each
+            // turn but the auto-compaction window before the first one, so a
+            // Claude launched with `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is shown
+            // the window it actually compacts at (`context_window_cap`).
+            let size = if agent_type == AgentType::ClaudeCode {
+                let cap = state.read().await.context_window_cap;
+                crate::parsers::claude::cap_context_window(update.size, cap)
+            } else {
+                update.size
+            };
             emit_with_state(
                 state,
                 emitter,
                 AcpEvent::UsageUpdate {
                     used: update.used,
-                    size: update.size,
+                    size,
                 },
             )
             .await;
@@ -35782,6 +35795,72 @@ mod tests {
             })
             .collect();
         (held, emitted)
+    }
+
+    /// Run Claude `usage_update`s through the live dispatcher on a connection
+    /// whose launch set `context_window_cap`: the reading it ends on, and every
+    /// `(used, size)` clients were sent.
+    async fn claude_usage_after(
+        cap: Option<u64>,
+        reports: &[(u64, u64)],
+    ) -> (Option<(u64, u64)>, Vec<(u64, u64)>) {
+        let mut initial = SessionState::new(
+            "conn-claude".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "win".to_string(),
+            None,
+        );
+        initial.context_window_cap = cap;
+        let state = Arc::new(RwLock::new(initial));
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        for &(used, size) in reports {
+            let frame = serde_json::json!({
+                "sessionUpdate": "usage_update",
+                "used": used,
+                "size": size
+            });
+            let update: SessionUpdate = serde_json::from_value(frame).expect("wire shape");
+            emit_conversation_update(
+                &state,
+                &EventEmitter::Noop,
+                AgentType::ClaudeCode,
+                update,
+                None,
+                &mut cache,
+                &mut cb,
+            )
+            .await;
+        }
+        let guard = state.read().await;
+        let held = guard.usage.as_ref().map(|u| (u.used, u.size));
+        let emitted = guard
+            .recent_events_after(0)
+            .expect("events recorded")
+            .iter()
+            .filter_map(|e| match &e.payload {
+                AcpEvent::UsageUpdate { used, size } => Some((*used, *size)),
+                _ => None,
+            })
+            .collect();
+        (held, emitted)
+    }
+
+    /// Cowork fork. claude-agent-acp 0.94.0 reports the auto-compaction window
+    /// (`getContextUsage`) until a turn ends and the model's own
+    /// (`result.modelUsage`) from then on; with `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
+    /// set, the meter shows the window the session compacts at either way.
+    #[tokio::test]
+    async fn claude_usage_window_is_capped_at_the_auto_compact_window() {
+        let reports = [(1000, 400_000), (2000, 1_000_000), (3000, 200_000)];
+        let (held, sent) = claude_usage_after(Some(400_000), &reports).await;
+        assert_eq!(sent, vec![(1000, 400_000), (2000, 400_000), (3000, 200_000)]);
+        assert_eq!(held, Some((3000, 200_000)));
+        // Launched without one: what Claude reports, unchanged.
+        let (held, sent) = claude_usage_after(None, &reports).await;
+        assert_eq!(sent, reports.to_vec());
+        assert_eq!(held, Some((3000, 200_000)));
     }
 
     /// Issue #846, live. codex-acp forwards each request's

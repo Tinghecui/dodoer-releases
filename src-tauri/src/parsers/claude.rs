@@ -1136,6 +1136,33 @@ pub(crate) fn api_error_text(value: &serde_json::Value) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// The variable that moves Claude Code's auto-compaction window below the
+/// model's own (CLI 2.1.302: it outranks the `autoCompactWindow` setting, and
+/// the window in force is the smaller of it and the model's).
+pub(crate) const AUTO_COMPACT_WINDOW_VAR: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
+
+/// Cowork fork: the auto-compaction window the Claude launched with `env` runs
+/// under, when its environment sets one (a positive whole number of tokens).
+///
+/// The context meter is capped by it. Claude reports two different windows for
+/// the same session: `getContextUsage` answers with the capped one, every turn's
+/// `result.modelUsage` with the model's own, and claude-agent-acp shows
+/// whichever came last. So with the variable set to 400000 a session read
+/// 400k until its first turn ended and 1M from then on, while it compacted at
+/// ~370k all the time.
+pub(crate) fn claude_auto_compact_window(env: &AgentEnv) -> Option<u64> {
+    env.var(AUTO_COMPACT_WINDOW_VAR)?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|window| *window > 0)
+}
+
+/// `size` no larger than `cap` (see [`claude_auto_compact_window`]).
+pub(crate) fn cap_context_window(size: u64, cap: Option<u64>) -> u64 {
+    cap.map_or(size, |cap| size.min(cap))
+}
+
 /// Context window to display for a *file-parsed* Claude Code session, which
 /// carries no authoritative window of its own (live sessions get one from the
 /// ACP `usage_update.size` and never reach here).
@@ -1250,6 +1277,8 @@ fn merge_claude_context_window_stats(
 
 pub struct ClaudeParser {
     base_dirs: Vec<PathBuf>,
+    /// Cowork fork: [`claude_auto_compact_window`] of the launch environment.
+    context_window_cap: Option<u64>,
 }
 
 impl Default for ClaudeParser {
@@ -1267,6 +1296,7 @@ impl ClaudeParser {
     pub fn for_env(env: &AgentEnv) -> Self {
         Self {
             base_dirs: resolve_claude_projects_dirs_for_env(env),
+            context_window_cap: claude_auto_compact_window(env),
         }
     }
 
@@ -1276,11 +1306,19 @@ impl ClaudeParser {
     pub fn with_base_dir(base_dir: PathBuf) -> Self {
         Self {
             base_dirs: vec![base_dir],
+            context_window_cap: None,
         }
     }
 
     fn decode_folder_path(encoded: &str) -> String {
         encoded.replace('-', "/")
+    }
+
+    /// [`claude_context_window_max_tokens_for_model`], no larger than the
+    /// launch's auto-compaction window.
+    fn context_window_max_tokens(&self, model: Option<&str>) -> Option<u64> {
+        claude_context_window_max_tokens_for_model(model)
+            .map(|max| cap_context_window(max, self.context_window_cap))
     }
 }
 
@@ -2983,8 +3021,7 @@ impl ClaudeParser {
         // gauge measures how full this conversation's own prompt is, and a
         // sub-agent's context is its own, not this one's.
         let context_window_used_tokens = latest_claude_context_window_used_tokens(&turns);
-        let context_window_max_tokens =
-            claude_context_window_max_tokens_for_model(model.as_deref());
+        let context_window_max_tokens = self.context_window_max_tokens(model.as_deref());
         attribute_subagent_usage(path, &mut turns);
         let session_stats = merge_claude_context_window_stats(
             super::compute_session_stats(&turns),
@@ -5820,6 +5857,7 @@ mod tests {
             fs::write(&path, lines.join("\n") + "\n").expect("write transcript");
             let summary = ClaudeParser {
                 base_dirs: Vec::new(),
+                context_window_cap: None,
             }
             .parse_jsonl_summary(&path)
             .expect("parse summary")
@@ -6597,6 +6635,7 @@ mod tests {
 
         let parser = ClaudeParser {
             base_dirs: Vec::new(),
+            context_window_cap: None,
         };
         let detail = parser
             .parse_conversation_detail(&path, "session-test")
@@ -6610,6 +6649,87 @@ mod tests {
             .context_window_usage_percent
             .expect("context window usage percent");
         assert!((percent - 0.17).abs() < 0.01);
+    }
+
+    #[test]
+    fn auto_compact_window_reads_a_positive_token_count() {
+        let window = |value: &str| {
+            let env = AgentEnv::with_overrides(&[(AUTO_COMPACT_WINDOW_VAR, value)]);
+            claude_auto_compact_window(&env)
+        };
+        assert_eq!(window("400000"), Some(400_000));
+        assert_eq!(window(" 400000 "), Some(400_000));
+        // Not a whole number of tokens: no cap.
+        assert_eq!(window("0"), None);
+        assert_eq!(window("400k"), None);
+        assert_eq!(window("-1"), None);
+        // Empty in the settings means unset (see `AgentEnv::var_os`).
+        assert_eq!(window(""), None);
+
+        assert_eq!(cap_context_window(1_000_000, Some(400_000)), 400_000);
+        assert_eq!(cap_context_window(200_000, Some(400_000)), 200_000);
+        assert_eq!(cap_context_window(1_000_000, None), 1_000_000);
+    }
+
+    #[test]
+    fn parse_detail_caps_the_context_window_at_the_auto_compact_window() {
+        let path = std::env::temp_dir().join(format!(
+            "codeg-claude-parser-cap-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let mut file = fs::File::create(&path).expect("create temp jsonl");
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "user",
+                "sessionId": "session-cap",
+                "timestamp": "2026-03-01T10:00:00Z",
+                "uuid": "u1",
+                "cwd": "/tmp/demo",
+                "message": {
+                    "content": [{"type": "text", "text": "hello"}]
+                }
+            })
+        )
+        .expect("write user line");
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "assistant",
+                "sessionId": "session-cap",
+                "timestamp": "2026-03-01T10:00:02Z",
+                "uuid": "a1",
+                "message": {
+                    "model": "claude-opus-4-6",
+                    "content": [{"type": "text", "text": "world"}],
+                    "usage": {
+                        "input_tokens": 1000,
+                        "output_tokens": 200,
+                        "cache_creation_input_tokens": 300,
+                        "cache_read_input_tokens": 400
+                    }
+                }
+            })
+        )
+        .expect("write assistant line");
+
+        let env = AgentEnv::with_overrides(&[(AUTO_COMPACT_WINDOW_VAR, "400000")]);
+        let parser = ClaudeParser::for_env(&env);
+        let detail = parser
+            .parse_conversation_detail(&path, "session-cap")
+            .expect("parse conversation detail");
+        fs::remove_file(&path).expect("cleanup temp jsonl");
+
+        let stats = detail.session_stats.expect("session stats");
+        assert_eq!(stats.context_window_used_tokens, Some(1700));
+        // The 1M guess for a bare `claude-*` id, capped.
+        assert_eq!(stats.context_window_max_tokens, Some(400_000));
+        let percent = stats
+            .context_window_usage_percent
+            .expect("context window usage percent");
+        assert!((percent - 0.425).abs() < 0.001);
     }
 
     #[test]
@@ -6656,6 +6776,7 @@ mod tests {
 
         let parser = ClaudeParser {
             base_dirs: Vec::new(),
+            context_window_cap: None,
         };
         let detail = parser
             .parse_conversation_detail(&path, "ai-title-test")
@@ -6704,6 +6825,7 @@ mod tests {
 
         let parser = ClaudeParser {
             base_dirs: Vec::new(),
+            context_window_cap: None,
         };
         let detail = parser
             .parse_conversation_detail(&path, "ai-title-empty")
@@ -6735,6 +6857,7 @@ mod tests {
 
         let parser = ClaudeParser {
             base_dirs: Vec::new(),
+            context_window_cap: None,
         };
         let detail = parser
             .parse_conversation_detail(&path, tag)
@@ -6891,6 +7014,7 @@ mod tests {
 
         let parser = ClaudeParser {
             base_dirs: Vec::new(),
+            context_window_cap: None,
         };
         let detail = parser
             .parse_conversation_detail(&path, "custom-title-turn")
@@ -6962,6 +7086,7 @@ mod tests {
 
         let parser = ClaudeParser {
             base_dirs: Vec::new(),
+            context_window_cap: None,
         };
         let detail = parser
             .parse_conversation_detail(&path, "session-completed")
@@ -7050,6 +7175,7 @@ mod tests {
                 .into_iter()
                 .map(|dir| dir.join("projects"))
                 .collect(),
+            context_window_cap: None,
         }
     }
 
@@ -7389,6 +7515,7 @@ mod tests {
 
         let parser = ClaudeParser {
             base_dirs: Vec::new(),
+            context_window_cap: None,
         };
         let detail = parser
             .parse_conversation_detail(&path, "synth-test")
@@ -7452,6 +7579,7 @@ mod tests {
         drop(file);
         let parser = ClaudeParser {
             base_dirs: Vec::new(),
+            context_window_cap: None,
         };
         let detail = parser
             .parse_conversation_detail(&path, "dedup-test")
@@ -7981,6 +8109,7 @@ mod tests {
 
         let detail = ClaudeParser {
             base_dirs: Vec::new(),
+            context_window_cap: None,
         }
         .parse_conversation_detail(&path, "dedup-test")
         .expect("parse detail");
@@ -8390,6 +8519,7 @@ mod tests {
 
         let parser = ClaudeParser {
             base_dirs: Vec::new(),
+            context_window_cap: None,
         };
         let detail = parser
             .parse_conversation_detail(&path, "slash-test")
@@ -10547,6 +10677,7 @@ mod tests {
             fs::write(&path, record_lines(records).join("\n") + "\n").expect("write transcript");
             let summary = ClaudeParser {
                 base_dirs: Vec::new(),
+                context_window_cap: None,
             }
             .parse_jsonl_summary(&path)
             .expect("parse summary")

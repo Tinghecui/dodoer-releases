@@ -2,7 +2,8 @@
 # 每个源仓库 PR 同步到这边的 pr/<n>、Test 开始跑时，report-status.yml 派一次（-f pr=<n>）：只读地审「最新 base + 这个 PR」，
 # 结论写回源仓库：commit status「自动审查」、PR 上一条就地更新的评论、级别标签。同一个 PR 头只审一次。
 # 这里只是个壳：取源仓库代码（默认分支上的脚本，不是 PR 里的），装 node，然后 exec .cowork/autopilot/sealed.sh review。
-# 脚本的输出全部进文件、产物传回源仓库 Release「autopilot-artifacts」，这份日志里只有每个阶段一行的进度；运行结束后 ai-qa-seal.yml 会核对这一点。
+# 脚本的输出全部进文件、产物传回源仓库 Release「autopilot-artifacts」，这份日志里只有每个阶段一行的进度；运行结束后 ai-qa-seal.yml 会核对这一点
+# （最后的 seal job 派它：GITHUB_TOKEN 派出来的运行不触发 workflow_run）。
 # 凭证在 Environment「ai-qa」里，只有 main 分支用得到；commit status 用仓库级的 SOURCE_STATUS_TOKEN。
 # **手动触发时填的输入会原样出现在公开日志里**，只填数字和模型名。
 # 仓库变量：AUTOPILOT（off / record / on，默认 record）、AUTOPILOT_CLAUDE_AUTH（api / oauth，默认 api）、
@@ -83,3 +84,18 @@ jobs:
           unset PRIVATE_TOKEN ANTHROPIC_KEY OAUTH_TOKEN STATUS_TOKEN
           export AUTOPILOT_SECRETS="$d"
           exec bash .cowork/autopilot/sealed.sh review
+
+  # report-status 用 GITHUB_TOKEN 派的这次运行，结束时不触发 ai-qa-seal 的 workflow_run：自己派一次日志核对（它等这次运行结束再查）
+  seal:
+    name: 派日志核对
+    needs: review
+    if: always() && vars.AUTOPILOT != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: 派 ai-qa-seal
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ai-qa-seal.yml -R "$GITHUB_REPOSITORY" --ref main -f run="$GITHUB_RUN_ID"

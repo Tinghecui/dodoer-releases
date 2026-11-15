@@ -1,13 +1,22 @@
 # 公开镜像 Tinghecui/dodoer-releases：ai-qa 和自动驾驶（autopilot-*）每次运行结束后核对它的日志（文件在源仓库 .github/public/workflows/ 里维护）。
 # 它们的输出应该全在文件里，日志只有固定格式的进度行。这里把那次运行的日志下载下来交给源仓库的脚本逐行核对，
 # 不合格就删掉那次运行的全部日志，并在源仓库开 issue。workflow_run 用的是 main 上的这个文件。
+# 另一个入口 workflow_dispatch（-f run=<run id>）：GITHUB_TOKEN 派出来的运行（report-status 派的 autopilot-review）结束时
+# 不触发 workflow_run（2026-11-15 run 43772972133 就没核对），所以 autopilot-review.yml 最后一个 job 自己派一次，这里等那次运行结束再查。
+# 人手动派的 autopilot-review 两个入口都会触发，查两遍，不碍事。
 name: ai-qa-seal
+run-name: "ai-qa-seal ${{ inputs.run || github.event.workflow_run.name }}"
 
 on:
   workflow_run:
     # 加了新的封口 workflow 就加在这里（按 name）
     workflows: [ai-qa, autopilot-fix, autopilot-review]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      run:
+        description: "要核对的运行 id（只填数字）"
+        required: true
 
 permissions:
   contents: read
@@ -17,16 +26,23 @@ jobs:
   check:
     runs-on: ubuntu-latest
     environment: ai-qa
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - name: check
         env:
           GH_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
           PUBLIC_TOKEN: ${{ github.token }}
           SOURCE_REPO: Tinghecui/cowork-codeg
-          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run }}
         run: |
           set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "run 要是数字"; exit 1; }
+          # 手动派的：被查的那次多半还没跑完（派它的就是那次的最后一个 job），等它结束，日志才完整、才删得掉
+          for _ in $(seq 1 80); do
+            st=$(GH_TOKEN="$PUBLIC_TOKEN" gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q .status 2>/dev/null || true)
+            [[ "$st" == completed ]] && break
+            sleep 15
+          done
           git init -q .
           git fetch -q --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE_REPO}.git" HEAD 2>/dev/null \
             || { echo "fetch failed"; exit 1; }

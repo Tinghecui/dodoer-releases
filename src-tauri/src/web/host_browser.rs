@@ -33,7 +33,7 @@ use super::working_device;
 use crate::acp::browser_tools::{
     BrowserActOutcome, BrowserCaptureOutcome, BrowserConsoleOutcome, BrowserEvalOutcome,
     BrowserSnapshotOutcome, BrowserTabOp, BrowserTabOutcome, BrowserTabsOutcome, BrowserToolAccess,
-    ERROR_UNAVAILABLE,
+    ERROR_OPEN_FAILED, ERROR_READ_FAILED, ERROR_UNAVAILABLE,
 };
 use crate::browser::agent::ActionRequest;
 use crate::browser::capture::CaptureRequest;
@@ -81,20 +81,34 @@ impl RemoteHostBrowser {
             Some(self.hosts.host_lends_chrome(host.host)),
         )
         .await;
+        let kind = call_kind(&call);
+        let device = device_name(host);
         match self
             .hosts
             .call_host(host.host, BridgeCall::Browser(call), timeout)
             .await
         {
-            Ok(outcome) => Ok(outcome),
-            Err(HostCallError::TimedOut) => Err(format!(
-                "{} did not answer within {} s. It may have lost its network, or the computer \
-                 is asleep.",
-                device_or_app(host),
-                timeout.as_secs()
-            )),
+            Ok(outcome) => {
+                if let Some(error) = fault_in(&outcome) {
+                    log_failure(kind, error, device.as_deref(), None);
+                }
+                Ok(outcome)
+            }
+            Err(HostCallError::TimedOut) => {
+                log_failure(kind, "timed_out", device.as_deref(), Some(timeout));
+                Err(format!(
+                    "{} did not answer within {} s. It may have lost its network, or the \
+                     computer is asleep.",
+                    device_or_app(host),
+                    timeout.as_secs()
+                ))
+            }
             Err(e) => {
-                tracing::warn!("[host-browser] browser call failed: {e:?}");
+                let failure = match e {
+                    HostCallError::NoHost => "window_gone",
+                    _ => "gone",
+                };
+                log_failure(kind, failure, device.as_deref(), None);
                 Err(format!(
                     "{} went away before it answered. Ask the user to open this workspace in \
                      the dodoer desktop app there, then try again.",
@@ -118,13 +132,19 @@ impl RemoteHostBrowser {
 
     /// A call on the tab the agent calls `tab_id`: sent to the window it is
     /// in, under the id that window knows it by.
+    /// `kind` is what [`call_kind`] names the call, for the log when it has
+    /// nowhere to go.
     async fn on_tab<T: DeserializeOwned>(
         &self,
+        kind: &str,
         tab_id: &str,
         call: impl FnOnce(String) -> BrowserCall,
         timeout: Duration,
     ) -> Result<T, String> {
-        let (host, own) = self.hosts.route_tab(tab_id).map_err(|e| route_note(&e))?;
+        let (host, own) = self.hosts.route_tab(tab_id).map_err(|e| {
+            log_route_failure(kind, &e);
+            route_note(&e)
+        })?;
         if let Some(name) = host
             .prefix
             .strip_suffix(':')
@@ -169,6 +189,74 @@ fn device_or_app(host: &BrowserHost) -> String {
         Some(name) if !name.is_empty() => format!("`{name}`"),
         _ => "The desktop app".to_string(),
     }
+}
+
+/// What a call is, for the log: its kind, never its arguments.
+fn call_kind(call: &BrowserCall) -> &'static str {
+    match call {
+        BrowserCall::ListTabs => "list_tabs",
+        BrowserCall::Snapshot { .. } => "snapshot",
+        BrowserCall::Act { .. } => "act",
+        BrowserCall::Console { .. } => "console",
+        BrowserCall::Capture { .. } => "capture",
+        BrowserCall::Eval { .. } => "eval",
+        BrowserCall::TabOp { op } => match op {
+            BrowserTabOp::Open { .. } => "tab_open",
+            BrowserTabOp::Navigate { .. } => "tab_navigate",
+            BrowserTabOp::Close { .. } => "tab_close",
+            BrowserTabOp::Dialog { .. } => "tab_dialog",
+        },
+    }
+}
+
+/// The error of a desktop's answer when it is a fault of the browser rather
+/// than an answer the agent is to act on: a page that would not be read, a
+/// tab that would not open. A tab not shared, a snippet declined, a stale
+/// ref, a blocked site are how things are meant to go, and not logged.
+fn fault_in(outcome: &Value) -> Option<&str> {
+    let error = outcome.get("error")?.as_str()?;
+    [ERROR_READ_FAILED, ERROR_OPEN_FAILED]
+        .contains(&error)
+        .then_some(error)
+}
+
+/// One failed browser call, as a WARN line (and so a Sentry log, its fields
+/// as attributes — `docs/telemetry.md` 5.5): the kind of call, why, the
+/// device, how long it was waited for. Never its address, tab, page or code.
+fn log_failure(kind: &str, failure: &str, device: Option<&str>, timeout: Option<Duration>) {
+    let device = device.unwrap_or("app");
+    match timeout {
+        Some(timeout) => {
+            let timeout_secs = timeout.as_secs();
+            tracing::warn!(
+                kind,
+                failure,
+                device,
+                timeout_secs,
+                "[host-browser] browser {kind} failed: {failure} after {timeout_secs} s"
+            );
+        }
+        None => tracing::warn!(
+            kind,
+            failure,
+            device,
+            "[host-browser] browser {kind} failed: {failure}"
+        ),
+    }
+}
+
+/// [`log_failure`] for a call that had nowhere to go.
+fn log_route_failure(kind: &str, error: &BrowserRouteError) {
+    let (failure, device) = match error {
+        BrowserRouteError::NoHost => ("no_host", None),
+        BrowserRouteError::UnknownDevice { name, .. } => ("unknown_device", Some(name.as_str())),
+        BrowserRouteError::Offline { name, .. } => ("offline", Some(name.as_str())),
+        BrowserRouteError::NotLent { name } => ("not_lent", Some(name.as_str())),
+        BrowserRouteError::Stopped { name } => ("stopped", Some(name.as_str())),
+        BrowserRouteError::ChooseDevice { .. } => ("choose_device", None),
+        BrowserRouteError::UnknownTab => ("unknown_tab", None),
+    };
+    log_failure(kind, failure, device, None);
 }
 
 /// What the agent is told when a call has nowhere to go. Never "another
@@ -346,6 +434,7 @@ impl BrowserToolAccess for RemoteHostBrowser {
 
     async fn snapshot(&self, tab_id: &str, max_chars: Option<usize>) -> BrowserSnapshotOutcome {
         self.on_tab(
+            "snapshot",
             tab_id,
             |tab_id| BrowserCall::Snapshot { tab_id, max_chars },
             CALL_TIMEOUT,
@@ -356,6 +445,7 @@ impl BrowserToolAccess for RemoteHostBrowser {
 
     async fn act(&self, tab_id: &str, request: ActionRequest) -> BrowserActOutcome {
         self.on_tab(
+            "act",
             tab_id,
             |tab_id| BrowserCall::Act { tab_id, request },
             CALL_TIMEOUT,
@@ -366,6 +456,7 @@ impl BrowserToolAccess for RemoteHostBrowser {
 
     async fn console(&self, tab_id: &str, query: ConsoleQuery) -> BrowserConsoleOutcome {
         self.on_tab(
+            "console",
             tab_id,
             |tab_id| BrowserCall::Console { tab_id, query },
             CALL_TIMEOUT,
@@ -376,6 +467,7 @@ impl BrowserToolAccess for RemoteHostBrowser {
 
     async fn capture(&self, tab_id: &str, request: CaptureRequest) -> BrowserCaptureOutcome {
         self.on_tab(
+            "capture",
             tab_id,
             |tab_id| BrowserCall::Capture { tab_id, request },
             CALL_TIMEOUT,
@@ -386,6 +478,7 @@ impl BrowserToolAccess for RemoteHostBrowser {
 
     async fn eval(&self, tab_id: &str, request: EvalRequest) -> BrowserEvalOutcome {
         self.on_tab(
+            "eval",
             tab_id,
             |tab_id| BrowserCall::Eval { tab_id, request },
             EVAL_TIMEOUT,
@@ -409,7 +502,8 @@ impl BrowserToolAccess for RemoteHostBrowser {
                 let host = match self.hosts.route_open(device.as_deref()) {
                     Ok(host) => host,
                     Err(e) => {
-                        return BrowserTabOutcome::refused(None, ERROR_UNAVAILABLE, route_note(&e))
+                        log_route_failure("tab_open", &e);
+                        return BrowserTabOutcome::refused(None, ERROR_UNAVAILABLE, route_note(&e));
                     }
                 };
                 // The device is the server's business: the window opens it
@@ -446,6 +540,7 @@ impl BrowserToolAccess for RemoteHostBrowser {
             }
             BrowserTabOp::Navigate { tab_id, url } => self
                 .on_tab(
+                    "tab_navigate",
                     &tab_id,
                     |own| BrowserCall::TabOp {
                         op: BrowserTabOp::Navigate { tab_id: own, url },
@@ -458,6 +553,7 @@ impl BrowserToolAccess for RemoteHostBrowser {
                 }),
             BrowserTabOp::Close { tab_id } => self
                 .on_tab(
+                    "tab_close",
                     &tab_id,
                     |own| BrowserCall::TabOp {
                         op: BrowserTabOp::Close { tab_id: own },
@@ -476,6 +572,7 @@ impl BrowserToolAccess for RemoteHostBrowser {
                 prompt_text,
             } => self
                 .on_tab(
+                    "tab_dialog",
                     &tab_id,
                     |own| BrowserCall::TabOp {
                         op: BrowserTabOp::Dialog {
@@ -781,5 +878,43 @@ mod tests {
         prefix_tab_ids(&mut old, "", &mut told);
         assert_eq!(old["tabId"], "abcdef-1");
         assert_eq!(told, ["abcdef-1"]);
+    }
+
+    #[test]
+    fn calls_are_named_by_kind_alone() {
+        assert_eq!(call_kind(&BrowserCall::ListTabs), "list_tabs");
+        let console = BrowserCall::Console {
+            tab_id: "t1".into(),
+            query: ConsoleQuery::default(),
+        };
+        assert_eq!(call_kind(&console), "console");
+        let open = BrowserCall::TabOp {
+            op: BrowserTabOp::Open {
+                url: "https://example.com/private".into(),
+                device: None,
+                new_tab: false,
+            },
+        };
+        assert_eq!(call_kind(&open), "tab_open");
+        let close = BrowserCall::TabOp {
+            op: BrowserTabOp::Close {
+                tab_id: "t1".into(),
+            },
+        };
+        assert_eq!(call_kind(&close), "tab_close");
+    }
+
+    #[test]
+    fn only_browser_faults_count_as_failures() {
+        let read = json!({"tabId": "t1", "error": ERROR_READ_FAILED, "note": "no tree"});
+        assert_eq!(fault_in(&read), Some(ERROR_READ_FAILED));
+        let open = json!({"error": ERROR_OPEN_FAILED});
+        assert_eq!(fault_in(&open), Some(ERROR_OPEN_FAILED));
+        let not_shared = json!({"tabId": "t1", "error": "browser_grant_required"});
+        assert_eq!(fault_in(&not_shared), None);
+        let declined = json!({"tabId": "t1", "error": "browser_eval_declined"});
+        assert_eq!(fault_in(&declined), None);
+        assert_eq!(fault_in(&json!({"tabId": "t1", "snapshot": {}})), None);
+        assert_eq!(fault_in(&json!({"error": null})), None);
     }
 }

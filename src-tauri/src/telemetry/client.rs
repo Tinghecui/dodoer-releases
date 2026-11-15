@@ -55,6 +55,11 @@ struct Active {
     envelopes: Budget,
     /// For the envelopes that carry an error, so traces cannot crowd them out.
     error_envelopes: Budget,
+    /// Once a minute each: the WARN that one of the two budgets above
+    /// refused envelopes, and the one that Sentry limited them.
+    envelopes_noted: Budget,
+    error_envelopes_noted: Budget,
+    sentry_limit_noted: Budget,
 }
 
 static ACTIVE: OnceLock<Active> = OnceLock::new();
@@ -192,6 +197,9 @@ pub(in crate::telemetry) fn init(config: TelemetryConfig) -> Option<ClientGuard>
         http,
         envelopes: Budget::new(ENVELOPES_PER_MINUTE),
         error_envelopes: Budget::new(super::ERROR_ENVELOPES_PER_MINUTE),
+        envelopes_noted: Budget::new(1),
+        error_envelopes_noted: Budget::new(1),
+        sentry_limit_noted: Budget::new(1),
     });
     let active = ACTIVE.get();
     tracing::info!(
@@ -610,6 +618,12 @@ fn report_server_error(
     if let Some(error) = error {
         message.push_str(": ");
         message.push_str(&error.message);
+        // The database's own words, scrubbed: in the message, not the
+        // fingerprint — the issue stays one per command and code.
+        if let Some(detail) = super::api_error_detail(error) {
+            message.push_str(" — ");
+            message.push_str(&detail);
+        }
     }
     let mut event = Event {
         level: SentryLevel::Error,
@@ -658,13 +672,17 @@ pub(in crate::telemetry) async fn forward_envelope(params: EnvelopeParams) -> Re
         return err.into_response();
     }
     let carries_error = super::envelope_carries_error(&params.envelope);
-    let budget = if carries_error {
-        &active.error_envelopes
+    let (budget, noted) = if carries_error {
+        (&active.error_envelopes, &active.error_envelopes_noted)
     } else {
-        &active.envelopes
+        (&active.envelopes, &active.envelopes_noted)
     };
     if !budget.take() {
-        return Json(super::over_budget(carries_error, budget.secs_left())).into_response();
+        let secs_left = budget.secs_left();
+        if noted.take() {
+            note_over_budget(carries_error, budget.per_minute, secs_left);
+        }
+        return Json(super::over_budget(carries_error, secs_left)).into_response();
     }
     let sent = active
         .http
@@ -683,12 +701,17 @@ pub(in crate::telemetry) async fn forward_envelope(params: EnvelopeParams) -> Re
                     .and_then(|v| v.to_str().ok())
                     .map(str::to_string)
             };
-            Json(EnvelopeResult {
+            let result = EnvelopeResult {
                 status_code: response.status().as_u16(),
                 rate_limits: header("x-sentry-rate-limits"),
                 retry_after: header("retry-after"),
-            })
-            .into_response()
+            };
+            if (result.status_code == 429 || result.rate_limits.is_some())
+                && active.sentry_limit_noted.take()
+            {
+                note_sentry_limit(&result);
+            }
+            Json(result).into_response()
         }
         Err(e) => {
             tracing::warn!("[telemetry] forwarding an envelope failed: {e}");
@@ -699,6 +722,64 @@ pub(in crate::telemetry) async fn forward_envelope(params: EnvelopeParams) -> Re
                 .into_response()
         }
     }
+}
+
+/// A WARN about forwarding, written here and sent to the server project as
+/// a log. This module's own lines stay local ([`OWN_TARGET`]), as most are
+/// about sending to Sentry; these are about the web UI's envelopes and are
+/// what tells, in Sentry, why the browser SDK held its errors back. No loop:
+/// they go out through the server's own transport, never back through the
+/// forwarder, at most once a minute each, and within [`LOGS_PER_MINUTE`].
+fn note_forwarding(body: String, attributes: Vec<(&str, serde_json::Value)>) {
+    tracing::warn!("{body}");
+    let attributes = attributes
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), LogAttribute(value)))
+        .collect();
+    Hub::current().capture_log(Log {
+        level: LogLevel::Warn,
+        body,
+        trace_id: None,
+        timestamp: SystemTime::now(),
+        severity_number: None,
+        attributes,
+    });
+}
+
+/// One of our own budgets refused a web envelope: the first refusal of
+/// its minute.
+fn note_over_budget(carries_error: bool, per_minute: u32, secs_left: u64) {
+    let budget = if carries_error { "error" } else { "general" };
+    note_forwarding(
+        format!(
+            "[telemetry] web envelopes over the {budget} budget ({per_minute} a minute): \
+             refused for {secs_left} s"
+        ),
+        vec![
+            ("budget", budget.into()),
+            ("per_minute", per_minute.into()),
+            ("secs_left", secs_left.into()),
+        ],
+    );
+}
+
+/// Sentry answered a web envelope with a limit (its header names the
+/// categories, none meaning all): the first of the minute.
+fn note_sentry_limit(result: &EnvelopeResult) {
+    let rate_limits = result.rate_limits.as_deref().unwrap_or("-");
+    let retry_after = result.retry_after.as_deref().unwrap_or("-");
+    note_forwarding(
+        format!(
+            "[telemetry] Sentry limits the web project: {}, rate limits {rate_limits}, \
+             retry after {retry_after}",
+            result.status_code
+        ),
+        vec![
+            ("status", result.status_code.into()),
+            ("rate_limits", rate_limits.into()),
+            ("retry_after", retry_after.into()),
+        ],
+    );
 }
 
 #[cfg(test)]

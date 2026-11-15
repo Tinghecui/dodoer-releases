@@ -11,6 +11,9 @@ use serde_json::Value;
 /// Messages are cut to this many characters.
 pub const MAX_CHARS: usize = 500;
 
+/// A database error's own words are cut to this many characters.
+pub const DB_DETAIL_MAX_CHARS: usize = 200;
+
 /// Fields dropped whole, matched on the last segment of the key
 /// (`code.file.path` → `path`), case-insensitively.
 pub const DROPPED_FIELDS: &[&str] = &[
@@ -56,6 +59,9 @@ static LONG_TOKEN: LazyLock<Regex> = LazyLock::new(|| re(r"[A-Za-z0-9+/=_-]{32,}
 static UUID: LazyLock<Regex> = LazyLock::new(|| {
     re(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 });
+/// Quoted text, up to its closing quote or, in words cut short, the end.
+static QUOTED: LazyLock<Regex> = LazyLock::new(|| re(r#"'[^']*'?|"[^"]*"?|`[^`]*`?"#));
+static DIGITS: LazyLock<Regex> = LazyLock::new(|| re(r"[0-9]+"));
 
 /// A URL keeps its scheme and host; user info, path, query and fragment go.
 fn scrub_url(url: &str) -> String {
@@ -103,10 +109,24 @@ pub fn scrub_text(text: &str) -> String {
 }
 
 fn truncate(text: &str) -> String {
-    match text.char_indices().nth(MAX_CHARS) {
+    truncate_to(text, MAX_CHARS)
+}
+
+fn truncate_to(text: &str, max_chars: usize) -> String {
+    match text.char_indices().nth(max_chars) {
         Some((at, _)) => format!("{}…", &text[..at]),
         None => text.to_string(),
     }
+}
+
+/// A database error's words (`AppCommandError::db` keeps them in `detail`)
+/// for a report: what failed, on which table and column, never the values
+/// — quoted text becomes `?`, numbers `N` — then [`scrub_text`], and cut to
+/// [`DB_DETAIL_MAX_CHARS`].
+pub fn scrub_db_detail(detail: &str) -> String {
+    let s = QUOTED.replace_all(detail, "?");
+    let s = DIGITS.replace_all(&s, "N");
+    truncate_to(&scrub_text(&s), DB_DETAIL_MAX_CHARS)
 }
 
 /// Whether a field named `key` is dropped whole.
@@ -182,6 +202,37 @@ mod tests {
         let wide = "错".repeat(MAX_CHARS + 1);
         assert_eq!(scrub_text(&wide).chars().count(), MAX_CHARS + 1);
         assert_eq!(scrub_text("short"), "short");
+    }
+
+    #[test]
+    fn database_errors_keep_what_failed_and_lose_the_values() {
+        assert_eq!(
+            scrub_db_detail(
+                "database error: Execution Error: error returned from database: (code: 5) \
+                 database is locked"
+            ),
+            "database error: Execution Error: error returned from database: (code: N) \
+             database is locked"
+        );
+        assert_eq!(
+            scrub_db_detail("database error: UNIQUE constraint failed: opened_tabs.tab_id"),
+            "database error: UNIQUE constraint failed: opened_tabs.tab_id"
+        );
+        assert_eq!(
+            scrub_db_detail("no row for value 'secret-ish' in tab_id"),
+            "no row for value ? in tab_id"
+        );
+        assert_eq!(
+            scrub_db_detail(r#"near "DROP": syntax error at `x y`, id 4096"#),
+            "near ?: syntax error at ?, id N"
+        );
+        assert_eq!(scrub_db_detail("value 'cut short"), "value ?");
+        let opened = scrub_db_detail("unable to open database file /home/someone/.app/a.db");
+        assert!(!opened.contains("someone"), "{opened}");
+
+        let long = scrub_db_detail(&"x".repeat(DB_DETAIL_MAX_CHARS + 50));
+        assert_eq!(long.chars().count(), DB_DETAIL_MAX_CHARS + 1);
+        assert!(long.ends_with('…'));
     }
 
     #[test]

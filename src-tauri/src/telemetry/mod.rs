@@ -87,6 +87,10 @@ pub struct ClientTelemetry {
 pub struct ApiError {
     pub code: String,
     pub message: String,
+    /// What the client is not shown in `message`: for a `database_error`,
+    /// the database's own words (`AppCommandError::db`). Reported scrubbed
+    /// ([`api_error_detail`]).
+    pub detail: Option<String>,
 }
 
 impl ApiError {
@@ -98,8 +102,21 @@ impl ApiError {
         Self {
             code,
             message: err.message.clone(),
+            detail: err.detail.clone(),
         }
     }
+}
+
+/// What a 5xx report adds to the error's message: the database's words of a
+/// `database_error`, scrubbed ([`scrub::scrub_db_detail`]) — "Database
+/// operation failed" alone does not say what to fix (CODEG-SERVER-4). Nothing for
+/// other codes, whose detail is not written for a report.
+pub fn api_error_detail(error: &ApiError) -> Option<String> {
+    if error.code != "database_error" {
+        return None;
+    }
+    let detail = error.detail.as_deref()?.trim();
+    (!detail.is_empty()).then(|| scrub::scrub_db_detail(detail))
 }
 
 /// Holds the Sentry client; dropping it sends what is queued (up to 2 s).
@@ -403,6 +420,23 @@ mod tests {
         let api = ApiError::of(&err);
         assert_eq!(api.code, "database_error");
         assert_eq!(api.message, "disk full");
+        assert_eq!(api.detail, None);
+    }
+
+    #[test]
+    fn database_errors_report_the_database_words() {
+        let err = AppCommandError::database_error("Database operation failed")
+            .with_detail("database error: UNIQUE constraint failed: opened_tabs.tab_id");
+        assert_eq!(
+            api_error_detail(&ApiError::of(&err)).as_deref(),
+            Some("database error: UNIQUE constraint failed: opened_tabs.tab_id")
+        );
+
+        // Other codes keep their detail to themselves.
+        let err = AppCommandError::io_error("Write failed").with_detail("/srv/a/b/c: denied");
+        assert_eq!(api_error_detail(&ApiError::of(&err)), None);
+        let bare = AppCommandError::database_error("Database operation failed");
+        assert_eq!(api_error_detail(&ApiError::of(&bare)), None);
     }
 
     #[cfg(not(feature = "telemetry"))]

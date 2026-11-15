@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import {
   gateStatus,
+  parseJq,
   productState,
   sameStatus,
   sourceSha,
@@ -60,4 +61,11 @@ test("一样就不重复打", () => {
   assert.equal(sameStatus({ ...want, id: 1 }, want), true)
   assert.equal(sameStatus({ ...want, state: "failure" }, want), false)
   assert.equal(sameStatus(null, want), false)
+})
+
+test("gh --jq 出 null 时是空行", () => {
+  assert.equal(parseJq("\n"), null)
+  assert.equal(parseJq(""), null)
+  assert.equal(parseJq(undefined), null)
+  assert.deepEqual(parseJq('{"state":"success"}\n'), { state: "success" })
 })

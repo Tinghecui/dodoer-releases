@@ -37,6 +37,12 @@ export function productState(runs) {
   return { green: run.conclusion === "success", sha, url: run.html_url }
 }
 
+/** gh --jq 的输出转回 JSON：jq 出 null 时 gh 打的是空行，不是 `null` */
+export function parseJq(text) {
+  const t = (text ?? "").trim()
+  return t === "" ? null : JSON.parse(t)
+}
+
 /** 要打的 status（描述最多 140 个字符） */
 export function gateStatus(state) {
   const short = state.sha.slice(0, 7)
@@ -114,13 +120,13 @@ function main() {
       console.log(`${ref}：提交说明里没有 source sha，跳过`)
       continue
     }
-    const current = JSON.parse(
+    const current = parseJq(
       gh(srcToken, [
         "api",
         `repos/${src}/commits/${head}/statuses?per_page=100`,
         "--jq",
         `[.[] | select(.context == "${CONTEXT}")][0]`,
-      ]) || "null"
+      ])
     )
     if (sameStatus(current, want)) {
       console.log(`${ref} → ${head.slice(0, 12)}：已经是 ${want.state}`)

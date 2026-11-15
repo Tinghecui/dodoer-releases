@@ -845,6 +845,8 @@ describe("TabProvider cross-client sync", () => {
       latestContext?.switchTab("conv-1-codex-2")
     })
     expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-2")
+    const order = latestContext?.tabs.map((t) => t.id) ?? []
+    const slot = order.indexOf("conv-1-codex-2")
 
     act(() => {
       tabsChangedHandler?.({ version: 2, origin: "x", tabs: [tabItem(1, 1)] })
@@ -854,9 +856,12 @@ describe("TabProvider cross-client sync", () => {
     expect(screen.getByTestId("tabs").textContent).not.toContain(
       "conv-1-codex-2"
     )
-    // The remote snapshot carried no active marker (sender was on a draft), so
-    // focus re-picks the surviving neighbor.
-    expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-1")
+    // Focus re-picks the neighbor the way a local close does: the tab that
+    // slid into the closed one's slot (here the recovery draft after it).
+    const after = order.filter((id) => id !== "conv-1-codex-2")
+    expect(screen.getByTestId("active")).toHaveTextContent(
+      after[Math.min(slot, after.length - 1)]
+    )
   })
 
   it("preserves the device-local draft across a remote apply", async () => {
@@ -944,11 +949,13 @@ describe("TabProvider cross-client sync", () => {
     })
   })
 
-  it("mirrors the focused tab from a remote snapshot", async () => {
+  // Cowork: focus is per device. Another computer focusing a tab must not move
+  // what this one shows.
+  it("keeps this client's focus when a remote snapshot focuses another tab", async () => {
     // Seed real tabs so no recovery draft is synthesized on empty hydration — an
-    // active draft would legitimately hold focus (see "does not steal focus from
-    // an in-progress local draft"), which would mask the focus-mirror behavior
-    // this test isolates.
+    // active draft holds focus for its own reason (see "does not steal focus
+    // from an in-progress local draft"), which would mask what this test
+    // isolates.
     listOpenedTabsMock.mockResolvedValue({
       items: [tabItem(1, 1, true), tabItem(1, 2)],
       version: 0,
@@ -965,8 +972,52 @@ describe("TabProvider cross-client sync", () => {
     })
 
     expect(screen.getByTestId("tabs")).toHaveTextContent("conv-1-codex-2")
-    // Focus is mirrored: the remote's active tab (c2) becomes ours.
-    expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-2")
+    expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-1")
+  })
+
+  it("adds a tab opened on another client without focusing it", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true)],
+      version: 0,
+    })
+    await renderHydrated()
+
+    act(() => {
+      tabsChangedHandler?.({
+        version: 1,
+        origin: "x",
+        tabs: [tabItem(1, 1), tabItem(2, 3, true)],
+      })
+    })
+
+    expect(screen.getByTestId("tabs")).toHaveTextContent("conv-2-codex-3")
+    expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-1")
+  })
+
+  it("re-picks the neighbor, not the remote's focus, when the focused tab is closed elsewhere", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1), tabItem(1, 2), tabItem(2, 3)],
+      version: 0,
+    })
+    await renderHydrated()
+    act(() => {
+      latestContext?.switchTab("conv-1-codex-2")
+    })
+
+    // Another client closed c2 while focused on c1.
+    act(() => {
+      tabsChangedHandler?.({
+        version: 1,
+        origin: "x",
+        tabs: [tabItem(1, 1, true), tabItem(2, 3)],
+      })
+    })
+
+    expect(screen.getByTestId("tabs").textContent).not.toContain(
+      "conv-1-codex-2"
+    )
+    // Same rule as a local close: the tab that took the closed one's slot.
+    expect(screen.getByTestId("active")).toHaveTextContent("conv-2-codex-3")
   })
 
   it("does not steal focus from an in-progress local draft", async () => {
@@ -994,7 +1045,7 @@ describe("TabProvider cross-client sync", () => {
     expect(screen.getByTestId("active")).toHaveTextContent(draftId ?? "")
   })
 
-  it("saves the focused tab so focus syncs across clients", async () => {
+  it("still records the focused tab in is_active (fallback for a fresh device)", async () => {
     listOpenedTabsMock.mockResolvedValue({
       items: [tabItem(1, 1, true), tabItem(1, 2)],
       version: 1,
@@ -1017,7 +1068,7 @@ describe("TabProvider cross-client sync", () => {
     expect(active?.conversation_id).toBe(2)
   })
 
-  it("restores the focused tab from is_active on hydrate", async () => {
+  it("restores the focused tab from is_active on hydrate when this device has none", async () => {
     listOpenedTabsMock.mockResolvedValue({
       items: [tabItem(1, 1), tabItem(1, 2, true)],
       version: 3,
@@ -1025,6 +1076,29 @@ describe("TabProvider cross-client sync", () => {
     await renderHydrated()
 
     expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-2")
+  })
+
+  it("restores this device's own focus over the server's is_active", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1), tabItem(1, 2, true), tabItem(2, 3)],
+      version: 3,
+    })
+    const first = renderTabs()
+    await waitFor(() => expect(useTabStore.getState().tabsHydrated).toBe(true))
+    act(() => {
+      latestContext?.switchTab("conv-2-codex-3")
+    })
+    const blob = JSON.parse(localStorage.getItem("workspace:tab-groups:v1")!)
+    expect(blob.activeConversation).toBe("conv-2-codex-3")
+
+    first.unmount()
+    act(() => {
+      resetTabStore()
+    })
+    // The server still says c2 — another computer's focus.
+    await renderHydrated()
+
+    expect(screen.getByTestId("active")).toHaveTextContent("conv-2-codex-3")
   })
 
   it("cancels a pending local save when a remote snapshot supersedes it", async () => {

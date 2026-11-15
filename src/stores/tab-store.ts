@@ -449,6 +449,9 @@ let groupPersistTimer: ReturnType<typeof setTimeout> | null = null
 // renderable state). Refreshed whenever `initialTabState()` runs.
 let pendingRestoreDrafts: PersistedDraft[] = []
 let pendingRestoreActiveDraft: string | null = null
+// The canonical id of the conversation tab this device last focused (Cowork:
+// focus is per device, see `hydrate`).
+let pendingRestoreActiveConversation: string | null = null
 let orphanDraftPruneRan = false
 // True once a tab snapshot has actually been read from the backend (hydration,
 // a refetch, or a remote change). Until then the open-tab set is UNKNOWN — a
@@ -627,8 +630,11 @@ function sameDerivedTab(a: TabItemInternal, b: TabItemInternal): boolean {
 
 /** Build the persisted (synced) tab payload: conversation-bound tabs only
  *  (drafts are device-local), `position` = display index, and `is_active` set on
- *  the focused tab so focus mirrors across clients. Used by both the save effect
- *  and remote-apply so their JSON is byte-identical for the no-op gate. */
+ *  the focused tab. Cowork: focus is per device and other clients no longer
+ *  follow `is_active`; it is still written so a device with no focus of its own
+ *  yet (a fresh browser) opens where the user last was (see `hydrate`). Used by
+ *  both the save effect and remote-apply so their JSON is byte-identical for
+ *  the no-op gate. */
 function buildPersistItems(
   tabs: TabItemInternal[],
   activeTabId: string | null
@@ -882,6 +888,7 @@ function readPersistedGroupState(): {
 } {
   pendingRestoreDrafts = []
   pendingRestoreActiveDraft = null
+  pendingRestoreActiveConversation = null
   const fallback = () => ({
     groupLayout: singleGroupLayout() as LayoutNode,
     groupOf: {} as Record<string, string>,
@@ -895,10 +902,15 @@ function readPersistedGroupState(): {
     if (raw) {
       const parsed = JSON.parse(raw) as Record<string, unknown>
       if (parsed && isLayoutNode(parsed.layout)) {
-        // Older blobs predate `drafts`/`activeDraft` — both sanitize to empty.
+        // Older blobs predate `drafts`/`activeDraft`/`activeConversation` —
+        // all sanitize to empty.
         pendingRestoreDrafts = sanitizeDrafts(parsed.drafts)
         pendingRestoreActiveDraft =
           typeof parsed.activeDraft === "string" ? parsed.activeDraft : null
+        pendingRestoreActiveConversation =
+          typeof parsed.activeConversation === "string"
+            ? parsed.activeConversation
+            : null
         return {
           groupLayout: parsed.layout,
           groupOf: sanitizeStringRecord(parsed.assignments),
@@ -1005,10 +1017,14 @@ function persistGroupState() {
     selection: canonicalSelection(normal.selection),
     tileByGroup: normal.tileByGroup,
     drafts,
-    // Only a DRAFT focus needs restoring here; conversation focus rides the
-    // synced `opened_tabs.is_active`.
     activeDraft:
       activeTab && activeTab.conversationId == null ? activeTab.id : null,
+    // Cowork: conversation focus is device-local too. `opened_tabs.is_active`
+    // is only the fallback for a device that has none of its own yet.
+    activeConversation:
+      activeTab && activeTab.conversationId != null
+        ? canonicalId(activeTab)
+        : null,
     ...(Object.keys(folderViews).length > 0 ? { views: folderViews } : {}),
   })
   if (blob === lastGroupBlob) return
@@ -1357,6 +1373,50 @@ function applyGroupInvariants() {
     })
   }
   persistGroupState()
+}
+
+/** The tab to focus once the focused `lostId` is gone from a non-empty `next`
+ *  (closed here, or closed on another client): the neighbor within its group;
+ *  when the group emptied, the neighboring group's selected tab. While tabs
+ *  follow the folder only the folder's tabs and groups count: a hidden
+ *  neighbor would be replaced by the folder's first tab. (The layout is the
+ *  folder's own, narrowed to its tabs once the tab set is known — narrowed here
+ *  too for the moments before.) */
+function focusAfterLosing(
+  prevState: TabStoreState,
+  next: TabItemInternal[],
+  lostId: string
+): string {
+  const { groupOf, groupLayout, groupSelection } = prevState
+  const followsFolder = useFolderTabsStore.getState().enabled
+  const lostGroup = groupOfTab(groupOf, groupLayout, lostId)
+  const inGroup = (t: TabItemInternal) =>
+    isTabInScope(t) && groupOfTab(groupOf, groupLayout, t.id) === lostGroup
+  const indexInGroup = prevState.rawTabs
+    .filter(inGroup)
+    .findIndex((t) => t.id === lostId)
+  const groupAfter = next.filter(inGroup)
+  if (groupAfter.length > 0) {
+    return groupAfter[
+      Math.min(Math.max(indexInGroup, 0), groupAfter.length - 1)
+    ].id
+  }
+  const layout = followsFolder
+    ? normalizeTree(
+        groupLayout,
+        new Set(
+          prevState.rawTabs
+            .filter(isTabInScope)
+            .map((t) => groupOfTab(groupOf, groupLayout, t.id))
+        )
+      )
+    : groupLayout
+  const neighbor = neighborGroupId(layout, lostGroup)
+  const neighborSelection = neighbor ? groupSelection[neighbor] : undefined
+  return neighborSelection != null &&
+    next.some((t) => t.id === neighborSelection && isTabInScope(t))
+    ? neighborSelection
+    : (next.find(isTabInScope) ?? next[0]).id
 }
 
 /** Focus a tab and realign the per-group selection with it. The shared path
@@ -1855,48 +1915,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
           }
         }
       } else if (tabId === prevState.activeTabId) {
-        // Pick the neighbor within the closed tab's group; when the group
-        // emptied, fall to the neighboring group's selected tab. While tabs
-        // follow the folder only the folder's tabs and groups count: a hidden
-        // neighbor would be replaced by the folder's first tab. (The layout is
-        // the folder's own, narrowed to its tabs once the tab set is known —
-        // narrowed here too for the moments before.)
-        const { groupOf, groupLayout, groupSelection } = prevState
-        const followsFolder = useFolderTabsStore.getState().enabled
-        const closedGroup = groupOfTab(groupOf, groupLayout, tabId)
-        const inGroup = (t: TabItemInternal) =>
-          isTabInScope(t) &&
-          groupOfTab(groupOf, groupLayout, t.id) === closedGroup
-        const indexInGroup = prevState.rawTabs
-          .filter(inGroup)
-          .findIndex((t) => t.id === tabId)
-        const groupAfter = next.filter(inGroup)
-        let newActiveId: string
-        if (groupAfter.length > 0) {
-          newActiveId =
-            groupAfter[Math.min(indexInGroup, groupAfter.length - 1)].id
-        } else {
-          const layout = followsFolder
-            ? normalizeTree(
-                groupLayout,
-                new Set(
-                  prevState.rawTabs
-                    .filter(isTabInScope)
-                    .map((t) => groupOfTab(groupOf, groupLayout, t.id))
-                )
-              )
-            : groupLayout
-          const neighbor = neighborGroupId(layout, closedGroup)
-          const neighborSelection = neighbor
-            ? groupSelection[neighbor]
-            : undefined
-          newActiveId =
-            neighborSelection != null &&
-            next.some((t) => t.id === neighborSelection && isTabInScope(t))
-              ? neighborSelection
-              : (next.find(isTabInScope) ?? next[0]).id
-        }
-        set({ rawTabs: next, activeTabId: newActiveId })
+        set({
+          rawTabs: next,
+          activeTabId: focusAfterLosing(prevState, next, tabId),
+        })
       } else {
         set({ rawTabs: next })
       }
@@ -2794,11 +2816,15 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         // collapse a draft-only one).
         const { tabs: withDrafts, groupOf: draftGroups } =
           mergeRestoredDrafts(restored)
-        if (
-          pendingRestoreActiveDraft != null &&
-          withDrafts.some((tab) => tab.id === pendingRestoreActiveDraft)
-        ) {
-          restoredActive = pendingRestoreActiveDraft
+        // Cowork: this device's own last focus wins over the server's
+        // `is_active` (which is whatever any client focused last), so opening
+        // the app here never lands on what another computer was looking at.
+        const localActive = [
+          pendingRestoreActiveDraft,
+          pendingRestoreActiveConversation,
+        ].find((id) => id != null && withDrafts.some((tab) => tab.id === id))
+        if (localActive != null) {
+          restoredActive = localActive
         }
         if (!restoredActive && withDrafts.length > 0) {
           restoredActive = withDrafts[0].id
@@ -3664,7 +3690,6 @@ function applyRemoteSnapshot(change: TabsChanged) {
   const diverged =
     unsyncedLocal.length > 0 || convItems.length !== snapshotItems.length
 
-  const remoteActive = convItems.find((it) => it.is_active)
   applyingRemote = !diverged
 
   const prevById = new Map(prev.rawTabs.map((tb) => [tb.id, tb]))
@@ -3744,38 +3769,19 @@ function applyRemoteSnapshot(change: TabsChanged) {
     return
   }
 
-  const remoteActiveId = remoteActive
-    ? (nextTabs.find(
-        (tb) =>
-          tb.conversationId === remoteActive.conversation_id &&
-          tb.folderId === remoteActive.folder_id &&
-          tb.agentType === remoteActive.agent_type
-      )?.id ?? null)
-    : null
-
-  // Focus resolution (focus is mirrored across clients):
-  //   1. Never yank the user off local intent the snapshot predates — an
-  //      in-progress draft, or a conversation tab the server has never seen
-  //      (the just-sent conversation this client is watching stream).
-  //   2. Otherwise mirror the remote's focused tab when present here.
-  //   3. Else keep our focus if it survived, re-picking a neighbor only if it left.
-  const activeTab = prev.activeTabId
-    ? nextTabs.find((tb) => tb.id === prev.activeTabId)
-    : undefined
-  const activeStillExists = activeTab != null
-  const activeKey = activeTab ? tabSyncKey(activeTab) : null
-  const activeIsLocalOnly =
-    activeStillExists &&
-    (activeKey == null ||
-      (!snapshotKeys.has(activeKey) && !ancestorKeys.has(activeKey)))
-
+  // Focus resolution. Cowork: focus is per device — the snapshot's
+  // `is_active` (another client's focus) is never followed, so looking at a
+  // conversation on one computer doesn't switch what another one shows. Keep
+  // our focus if it survived; if it left (closed elsewhere), re-pick its
+  // neighbor the way a local close does.
   let nextActiveId: string | null
-  if (activeIsLocalOnly) {
+  if (
+    prev.activeTabId != null &&
+    nextTabs.some((tb) => tb.id === prev.activeTabId)
+  ) {
     nextActiveId = prev.activeTabId
-  } else if (remoteActiveId) {
-    nextActiveId = remoteActiveId
-  } else if (activeStillExists) {
-    nextActiveId = prev.activeTabId
+  } else if (prev.activeTabId != null) {
+    nextActiveId = focusAfterLosing(prev, nextTabs, prev.activeTabId)
   } else {
     nextActiveId = nextTabs[0].id
   }

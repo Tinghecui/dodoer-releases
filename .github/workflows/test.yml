@@ -104,6 +104,8 @@ jobs:
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
           # 不查 shell 脚本（shellcheck 另说）；choice 里的空字符串 "" 是故意的（「不选」），GitHub 认
           ./actionlint -shellcheck= -pyflakes= -ignore 'string should not be empty' .github/workflows/*.yml
+      - name: 调用方给的权限够被调用的 workflow 用
+        run: python3 scripts/check-workflow-permissions.py .github/workflows
 
   frontend-lint:
     name: Frontend lint

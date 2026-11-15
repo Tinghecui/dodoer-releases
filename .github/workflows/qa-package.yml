@@ -9,11 +9,11 @@ on:
   push:
     branches: ["qa/**"]
 
-# cowork-release.yml 的打包 job 要 contents: write（发 Release 那步用，分支推送不会走到）、actions: read（自动发版查 Test 用，这里也不会走到）；
-# 调用方给的权限不能比它小
+# cowork-release.yml 的打包 job 要 contents: write（发 Release 那步用，分支推送不会走到）、actions: write（自动发版查 Test、没过时重跑，这里也不会走到）；
+# 调用方给的权限不能比它小，小了整个 run 是 startup_failure（scripts/check-workflow-permissions.py 查）
 permissions:
   contents: write
-  actions: read
+  actions: write
 
 jobs:
   build:

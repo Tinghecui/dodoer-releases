@@ -5871,6 +5871,38 @@
     "tabsTitle": "Chrome 里开着的网页：{count}",
     "tabsHidden": "智能体只看得到你交给它的标签，在那些网站上它用的是你的登录状态。",
     "tabsEmpty": "Chrome 里没有开着的网页。",
+    "activity": {
+      "title": "智能体在这个标签上做的事",
+      "latest": "最近一次：{time} {what}",
+      "refused": "{what}（被拒）",
+      "failed": "{what}（失败）",
+      "scopeLocal": "本机的智能体",
+      "scopeThisServer": "这个窗口的服务器",
+      "scopeOtherServer": "别的窗口的服务器",
+      "password": "密码框",
+      "named": "「{name}」",
+      "action": {
+        "read": "读了页面",
+        "click": "点了一下",
+        "hover": "悬停了",
+        "type": "输入了",
+        "press": "按了键",
+        "select": "选了选项",
+        "capture": "截了图",
+        "console": "读了控制台",
+        "eval": "在页面上执行了代码",
+        "open": "打开了这个页面",
+        "navigate": "换了网页",
+        "close": "关闭标签"
+      },
+      "actionOn": {
+        "click": "点了{target}",
+        "hover": "悬停在{target}上",
+        "type": "在{target}里输入了",
+        "press": "在{target}里按了键",
+        "select": "在{target}里选了选项"
+      }
+    },
     "openSettings": "Chrome 设置",
     "panelNeedsSettings": "dodoer 找不到该连到 Chrome 的哪里。点下面的「Chrome 设置」看怎么办。",
     "share": "交给智能体",

@@ -5871,6 +5871,38 @@
     "tabsTitle": "In Chrome geöffnet: {count}",
     "tabsHidden": "Agenten sehen nur die Tabs, die du ihnen übergibst, und nutzen auf diesen Seiten deine Anmeldung.",
     "tabsEmpty": "In Chrome sind keine Webseiten geöffnet.",
+    "activity": {
+      "title": "Was Agenten in diesem Tab getan haben",
+      "latest": "Zuletzt: {time} · {what}",
+      "refused": "{what} (abgelehnt)",
+      "failed": "{what} (fehlgeschlagen)",
+      "scopeLocal": "Agent dieses Computers",
+      "scopeThisServer": "Server dieses Fensters",
+      "scopeOtherServer": "Server eines anderen Fensters",
+      "password": "das Passwortfeld",
+      "named": "„{name}“",
+      "action": {
+        "read": "Seite gelesen",
+        "click": "geklickt",
+        "hover": "darauf gezeigt",
+        "type": "in ein Feld getippt",
+        "press": "eine Taste gedrückt",
+        "select": "eine Option gewählt",
+        "capture": "Screenshot gemacht",
+        "console": "Konsole gelesen",
+        "eval": "Code auf der Seite ausgeführt",
+        "open": "diese Seite geöffnet",
+        "navigate": "zu einer anderen Seite gewechselt",
+        "close": "Tab geschlossen"
+      },
+      "actionOn": {
+        "click": "{target} geklickt",
+        "hover": "auf {target} gezeigt",
+        "type": "in {target} getippt",
+        "press": "in {target} eine Taste gedrückt",
+        "select": "in {target} eine Option gewählt"
+      }
+    },
     "openSettings": "Chrome-Einstellungen",
     "panelNeedsSettings": "dodoer hat nicht gefunden, wo es sich mit Chrome verbinden soll. Öffne unten die Chrome-Einstellungen, um zu sehen, was zu tun ist.",
     "share": "An Agenten übergeben",

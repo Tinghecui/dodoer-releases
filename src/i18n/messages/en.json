@@ -5871,6 +5871,38 @@
     "tabsTitle": "Open in Chrome: {count}",
     "tabsHidden": "Agents see only the tabs you hand to them, and use your sign-in on those sites.",
     "tabsEmpty": "No web pages are open in Chrome.",
+    "activity": {
+      "title": "What agents did on this tab",
+      "latest": "Last: {time} · {what}",
+      "refused": "{what} (refused)",
+      "failed": "{what} (failed)",
+      "scopeLocal": "This computer's agent",
+      "scopeThisServer": "This window's server",
+      "scopeOtherServer": "Another window's server",
+      "password": "the password field",
+      "named": "“{name}”",
+      "action": {
+        "read": "read the page",
+        "click": "clicked",
+        "hover": "hovered",
+        "type": "typed into a field",
+        "press": "pressed a key",
+        "select": "chose an option",
+        "capture": "took a screenshot",
+        "console": "read the console",
+        "eval": "ran code on the page",
+        "open": "opened this page",
+        "navigate": "went to another page",
+        "close": "closed the tab"
+      },
+      "actionOn": {
+        "click": "clicked {target}",
+        "hover": "hovered over {target}",
+        "type": "typed into {target}",
+        "press": "pressed a key in {target}",
+        "select": "chose an option in {target}"
+      }
+    },
     "openSettings": "Chrome settings",
     "panelNeedsSettings": "dodoer could not find where to connect to Chrome. Open Chrome settings below to see what to do.",
     "share": "Hand to agents",

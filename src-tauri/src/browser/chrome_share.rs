@@ -19,6 +19,11 @@
 //! sensitive site (`chrome::sensitive`), where it is let go of. Turning a
 //! switch off lets go of the pages its agents opened; they stay open in
 //! Chrome. `docs/agent-chrome.md` has the design.
+//!
+//! Every attempt an agent makes on one of these tabs is also kept for the
+//! Chrome panel (`chrome::activity`, held by the link and gone with the
+//! connection): [`record_activity`], from the one place every such attempt
+//! is announced (`events::emit_agent_activity`).
 
 use std::time::{Duration, Instant};
 
@@ -30,8 +35,9 @@ use crate::app_error::AppCommandError;
 use crate::commands::browser::{close_core_if, set_agent_grant_core};
 use crate::commands::workspace_windows::REMOTE_WORKSPACE_LABEL_PREFIX;
 
-use super::agent::{self, GrantLevel};
+use super::agent::{self, AgentAction, AgentOutcome, GrantLevel};
 use super::channel;
+use super::chrome::activity::{ActivityEntry, ActivityTarget};
 use super::chrome::cdp::CdpClient;
 use super::chrome::lending::{agent_owner, ChromeLending, AGENT_OWNER_PREFIX, LOCAL_SCOPE, OWNER};
 use super::chrome::{sensitive, tabs, ChromeLink, ChromePage, PageEvent};
@@ -47,6 +53,123 @@ pub const BROWSER_I18N_KEY_SENSITIVE: &str = "browser.chrome.error.sensitive";
 
 /// How long a page an agent opened may take to commit its first document.
 const COMMIT_WAIT: Duration = Duration::from_secs(20);
+
+tokio::task_local! {
+    /// Whose agent the tool call being answered is for (`chrome::lending`'s
+    /// scopes), while it is answered — for the activity it leaves.
+    static CALLER: String;
+}
+
+/// Run `work` as a tool call of `scope`'s agents: the lines it leaves on
+/// Chrome tabs say whose agent it was. A tab the person handed over can be
+/// reached by more than one scope, so its owner cannot say.
+pub async fn as_caller<F: std::future::Future>(scope: &str, work: F) -> F::Output {
+    CALLER.scope(scope.to_string(), work).await
+}
+
+/// Keep what an agent did to `tab_id` for the Chrome panel, if it is a tab
+/// of the person's Chrome. `target` is what the action was aimed at, as
+/// [`chrome_target`] put it — never what was typed.
+pub fn record_activity(
+    app: &AppHandle,
+    tab_id: &str,
+    action: AgentAction,
+    outcome: AgentOutcome,
+    at: i64,
+    target: Option<ActivityTarget>,
+) {
+    let Some(registry) = app.try_state::<BrowserRegistry>() else {
+        return;
+    };
+    let seen = registry.read(tab_id, |tab| {
+        (tab.state.surface == SurfaceKind::External)
+            .then(|| (tab.state.url.clone(), tab.state.owner_window.clone()))
+    });
+    let Some((url, owner)) = seen.flatten() else {
+        return;
+    };
+    let Some(link) = app.try_state::<ChromeLink>() else {
+        return;
+    };
+    let host = Url::parse(&url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string));
+    let scope = CALLER
+        .try_with(String::clone)
+        .ok()
+        .or_else(|| owner.strip_prefix(AGENT_OWNER_PREFIX).map(str::to_string))
+        .unwrap_or_else(|| LOCAL_SCOPE.to_string());
+    let entry = ActivityEntry {
+        at,
+        action,
+        outcome,
+        host,
+        scope,
+        target,
+    };
+    link.record_activity(tab_id, entry);
+}
+
+/// Keep the names a snapshot of the Chrome tab `tab_id` gave its refs, for
+/// the lines of the actions later taken by them.
+pub fn remember_names(app: &AppHandle, tab_id: &str, snapshot: &agent::PageSnapshot) {
+    let Some(link) = app.try_state::<ChromeLink>() else {
+        return;
+    };
+    let Some(registry) = app.try_state::<BrowserRegistry>() else {
+        return;
+    };
+    if registry.read(tab_id, |tab| tab.state.surface) == Some(SurfaceKind::External) {
+        let activity = link.activity();
+        activity.remember_names(tab_id, &snapshot.generation, &snapshot.tree);
+    }
+}
+
+/// What an action on the Chrome tab `tab_id` is aimed at, for its line: the
+/// name the snapshot gave the element, or — for typing or a key into a
+/// password field — only that it was one. `None` for any other tab, an
+/// action with no element, or one whose element went unnamed.
+///
+/// Whether the field is a password field is asked of the page before the
+/// action, while the ref still resolves: a submit can take the page away.
+/// Asked only where the agent may act, and when the page cannot say, the
+/// name is left out rather than risked.
+pub async fn chrome_target(
+    registry: &BrowserRegistry,
+    link: &ChromeLink,
+    tab_id: &str,
+    request: &agent::ActionRequest,
+) -> Option<ActivityTarget> {
+    let target = request.target.as_deref()?;
+    let (surface, level) = registry
+        .read(tab_id, |tab| {
+            (tab.state.surface == SurfaceKind::External).then(|| {
+                (
+                    tab.surface.clone(),
+                    agent::level_of(tab.state.agent_grant.as_ref()),
+                )
+            })
+        })
+        .flatten()?;
+    let name = link.activity().name_of(tab_id, &request.generation, target);
+    let keyed = matches!(
+        request.action,
+        agent::ActionKind::Type { .. } | agent::ActionKind::Press { .. }
+    );
+    if !keyed {
+        return name.map(|name| ActivityTarget::Named { name });
+    }
+    if !level.allows(GrantLevel::Control) {
+        return None;
+    }
+    let script = agent::password_field_call(&request.generation, target);
+    let answer = crate::commands::browser::eval_in_world_string(&surface, &script).await;
+    match answer.as_deref() {
+        Ok("true") => Some(ActivityTarget::Password),
+        Ok("false") => name.map(|name| ActivityTarget::Named { name }),
+        _ => None,
+    }
+}
 
 /// The scope a window's switch stands for: a remote window's own, or the app's
 /// agents' for any local window.

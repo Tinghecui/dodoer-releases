@@ -5871,6 +5871,38 @@
     "tabsTitle": "Chrome 裡開著的網頁：{count}",
     "tabsHidden": "智慧體只看得到你交給它的分頁，在那些網站上它用的是你的登入狀態。",
     "tabsEmpty": "Chrome 裡沒有開著的網頁。",
+    "activity": {
+      "title": "智慧體在這個分頁上做的事",
+      "latest": "最近一次：{time} {what}",
+      "refused": "{what}（被拒）",
+      "failed": "{what}（失敗）",
+      "scopeLocal": "本機的智慧體",
+      "scopeThisServer": "這個視窗的伺服器",
+      "scopeOtherServer": "別的視窗的伺服器",
+      "password": "密碼框",
+      "named": "「{name}」",
+      "action": {
+        "read": "讀了頁面",
+        "click": "點了一下",
+        "hover": "懸停了",
+        "type": "輸入了",
+        "press": "按了鍵",
+        "select": "選了選項",
+        "capture": "截了圖",
+        "console": "讀了主控台",
+        "eval": "在頁面上執行了程式碼",
+        "open": "開啟了這個頁面",
+        "navigate": "換了網頁",
+        "close": "關閉分頁"
+      },
+      "actionOn": {
+        "click": "點了{target}",
+        "hover": "懸停在{target}上",
+        "type": "在{target}裡輸入了",
+        "press": "在{target}裡按了鍵",
+        "select": "在{target}裡選了選項"
+      }
+    },
     "openSettings": "Chrome 設定",
     "panelNeedsSettings": "dodoer 找不到該連到 Chrome 的哪裡。點下面的「Chrome 設定」看怎麼辦。",
     "share": "交給智慧體",

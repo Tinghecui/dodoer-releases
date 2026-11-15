@@ -1647,6 +1647,7 @@ mod tauri_app {
                 browser_chrome_commands::browser_chrome_disconnect,
                 browser_chrome_commands::browser_chrome_open_privacy_settings,
                 browser_chrome_commands::browser_chrome_tabs,
+                browser_chrome_commands::browser_chrome_activity,
                 browser_chrome_commands::browser_chrome_share,
                 browser_chrome_commands::browser_chrome_agents,
                 browser_chrome_commands::browser_chrome_set_agents,

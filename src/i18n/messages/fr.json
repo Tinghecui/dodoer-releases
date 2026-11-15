@@ -5871,6 +5871,38 @@
     "tabsTitle": "Ouvertes dans Chrome : {count}",
     "tabsHidden": "Les agents ne voient que les onglets que vous leur confiez, et y utilisent votre connexion.",
     "tabsEmpty": "Aucune page web n’est ouverte dans Chrome.",
+    "activity": {
+      "title": "Ce que les agents ont fait dans cet onglet",
+      "latest": "Dernier : {time} · {what}",
+      "refused": "{what} (refusé)",
+      "failed": "{what} (échec)",
+      "scopeLocal": "Agent de cet ordinateur",
+      "scopeThisServer": "Serveur de cette fenêtre",
+      "scopeOtherServer": "Serveur d’une autre fenêtre",
+      "password": "le champ de mot de passe",
+      "named": "« {name} »",
+      "action": {
+        "read": "a lu la page",
+        "click": "a cliqué",
+        "hover": "a survolé",
+        "type": "a saisi dans un champ",
+        "press": "a appuyé sur une touche",
+        "select": "a choisi une option",
+        "capture": "a fait une capture",
+        "console": "a lu la console",
+        "eval": "a exécuté du code sur la page",
+        "open": "a ouvert cette page",
+        "navigate": "est allé sur une autre page",
+        "close": "a fermé l’onglet"
+      },
+      "actionOn": {
+        "click": "a cliqué sur {target}",
+        "hover": "a survolé {target}",
+        "type": "a saisi dans {target}",
+        "press": "a appuyé sur une touche dans {target}",
+        "select": "a choisi une option dans {target}"
+      }
+    },
     "openSettings": "Réglages de Chrome",
     "panelNeedsSettings": "dodoer n’a pas trouvé où se connecter à Chrome. Ouvrez les réglages de Chrome ci-dessous pour savoir quoi faire.",
     "share": "Confier aux agents",

@@ -5871,6 +5871,38 @@
     "tabsTitle": "مفتوحة في Chrome: {count}",
     "tabsHidden": "لا يرى الوكلاء إلا الألسنة التي تسلّمها لهم، ويستخدمون تسجيل دخولك في تلك المواقع.",
     "tabsEmpty": "لا توجد صفحات ويب مفتوحة في Chrome.",
+    "activity": {
+      "title": "ما فعله الوكلاء في هذا التبويب",
+      "latest": "آخر مرة: {time} · {what}",
+      "refused": "{what} (مرفوض)",
+      "failed": "{what} (فشل)",
+      "scopeLocal": "وكيل هذا الحاسوب",
+      "scopeThisServer": "خادم هذه النافذة",
+      "scopeOtherServer": "خادم نافذة أخرى",
+      "password": "حقل كلمة المرور",
+      "named": "«{name}»",
+      "action": {
+        "read": "قرأ الصفحة",
+        "click": "نقر",
+        "hover": "مرّر المؤشر",
+        "type": "كتب في حقل",
+        "press": "ضغط مفتاحًا",
+        "select": "اختار خيارًا",
+        "capture": "التقط لقطة شاشة",
+        "console": "قرأ وحدة التحكم",
+        "eval": "شغّل شيفرة في الصفحة",
+        "open": "فتح هذه الصفحة",
+        "navigate": "انتقل إلى صفحة أخرى",
+        "close": "أغلق التبويب"
+      },
+      "actionOn": {
+        "click": "نقر على {target}",
+        "hover": "مرّر المؤشر فوق {target}",
+        "type": "كتب في {target}",
+        "press": "ضغط مفتاحًا في {target}",
+        "select": "اختار خيارًا في {target}"
+      }
+    },
     "openSettings": "إعدادات Chrome",
     "panelNeedsSettings": "لم يجد dodoer مكان الاتصال بـ Chrome. افتح إعدادات Chrome أدناه لمعرفة ما يجب فعله.",
     "share": "تسليم إلى الوكلاء",

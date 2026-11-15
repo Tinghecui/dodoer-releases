@@ -5871,6 +5871,38 @@
     "tabsTitle": "Chrome에 열린 페이지: {count}",
     "tabsHidden": "에이전트는 넘겨준 탭만 볼 수 있으며, 그 사이트에서는 내 로그인 상태를 사용합니다.",
     "tabsEmpty": "Chrome에 열린 웹 페이지가 없습니다.",
+    "activity": {
+      "title": "에이전트가 이 탭에서 한 일",
+      "latest": "마지막: {time} {what}",
+      "refused": "{what} (거부됨)",
+      "failed": "{what} (실패)",
+      "scopeLocal": "이 컴퓨터의 에이전트",
+      "scopeThisServer": "이 창의 서버",
+      "scopeOtherServer": "다른 창의 서버",
+      "password": "비밀번호 칸",
+      "named": "‘{name}’",
+      "action": {
+        "read": "페이지를 읽음",
+        "click": "클릭함",
+        "hover": "마우스를 올림",
+        "type": "입력함",
+        "press": "키를 누름",
+        "select": "옵션을 선택함",
+        "capture": "스크린샷을 찍음",
+        "console": "콘솔을 읽음",
+        "eval": "페이지에서 코드를 실행함",
+        "open": "이 페이지를 엶",
+        "navigate": "다른 페이지로 이동함",
+        "close": "탭을 닫음"
+      },
+      "actionOn": {
+        "click": "{target} 클릭함",
+        "hover": "{target}에 마우스를 올림",
+        "type": "{target}에 입력함",
+        "press": "{target}에서 키를 누름",
+        "select": "{target}에서 옵션을 선택함"
+      }
+    },
     "openSettings": "Chrome 설정",
     "panelNeedsSettings": "dodoer가 Chrome에 연결할 곳을 찾지 못했습니다. 아래의 Chrome 설정에서 방법을 확인하세요.",
     "share": "에이전트에게 넘기기",

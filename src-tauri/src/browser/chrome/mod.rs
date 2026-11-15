@@ -23,7 +23,9 @@
 //! - `agent_window` — the window agents open their pages in
 //! - `lending`  — whose agents may use it, and which tabs each is told of
 //! - `sensitive` — the sites agents are kept off in that Chrome
+//! - `activity` — what agents did to each tab, for the Chrome panel
 
+pub mod activity;
 pub mod agent_window;
 pub mod cdp;
 pub mod endpoint;
@@ -33,6 +35,7 @@ pub mod page;
 pub mod sensitive;
 pub mod tabs;
 
+pub use activity::ChromeActivity;
 pub use agent_window::AgentWindow;
 pub use lending::ChromeLending;
 pub use link::{ChromeLink, ChromeStatus};

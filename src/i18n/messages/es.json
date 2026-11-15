@@ -5871,6 +5871,38 @@
     "tabsTitle": "Abiertas en Chrome: {count}",
     "tabsHidden": "Los agentes solo ven las pestañas que les pasas, y en esos sitios usan tu sesión iniciada.",
     "tabsEmpty": "No hay páginas web abiertas en Chrome.",
+    "activity": {
+      "title": "Lo que hicieron los agentes en esta pestaña",
+      "latest": "Último: {time} · {what}",
+      "refused": "{what} (rechazado)",
+      "failed": "{what} (falló)",
+      "scopeLocal": "Agente de este equipo",
+      "scopeThisServer": "Servidor de esta ventana",
+      "scopeOtherServer": "Servidor de otra ventana",
+      "password": "el campo de contraseña",
+      "named": "«{name}»",
+      "action": {
+        "read": "leyó la página",
+        "click": "hizo clic",
+        "hover": "pasó el puntero",
+        "type": "escribió en un campo",
+        "press": "pulsó una tecla",
+        "select": "eligió una opción",
+        "capture": "hizo una captura",
+        "console": "leyó la consola",
+        "eval": "ejecutó código en la página",
+        "open": "abrió esta página",
+        "navigate": "fue a otra página",
+        "close": "cerró la pestaña"
+      },
+      "actionOn": {
+        "click": "hizo clic en {target}",
+        "hover": "pasó el puntero sobre {target}",
+        "type": "escribió en {target}",
+        "press": "pulsó una tecla en {target}",
+        "select": "eligió una opción en {target}"
+      }
+    },
     "openSettings": "Ajustes de Chrome",
     "panelNeedsSettings": "dodoer no encontró dónde conectarse a Chrome. Abre los ajustes de Chrome de abajo para ver qué hacer.",
     "share": "Pasar a los agentes",

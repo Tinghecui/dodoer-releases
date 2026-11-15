@@ -28,6 +28,13 @@
  * (`lendBrowserSwitch`): the server's agents reach Chrome through the tabs
  * the app lends, and the app lends none while its own switch is off.
  *
+ * Under each tab an agent has been at, the last thing it did there, and the
+ * whole record a click away (`chrome::activity`, `docs/agent-chrome.md`
+ * 13.4): kept by the backend for as long as the connection lasts, asked for
+ * when the panel opens and again on every `browser://agent-activity`. A line
+ * says which field an input went into, never what was typed, and of a
+ * password field only that it was one.
+ *
  * Desktop only (Chrome is on the computer the app runs on), and there from
  * the start: the switch is in this panel, so hiding the glyph until the first
  * connection left a person told to "open the Chrome panel" with nothing to
@@ -36,11 +43,12 @@
  */
 
 import { useEffect, useState } from "react"
-import { useTranslations } from "next-intl"
+import { useLocale, useTranslations } from "next-intl"
 import {
   ArrowUpRight,
   Bot,
   ChevronDown,
+  ChevronRight,
   Chrome,
   Globe,
   Settings2,
@@ -64,6 +72,7 @@ import {
   NEEDS_PASTE,
   PROBLEM_KEYS,
 } from "@/components/settings/chrome-connect-settings"
+import { useMinuteNow } from "@/hooks/use-minute-now"
 import { openSettingsWindow } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
@@ -73,6 +82,7 @@ import {
 import {
   AGENT_OWNER_PREFIX,
   chromeActivate,
+  chromeActivity,
   chromeAgents,
   chromeAgentsScope,
   chromeConnect,
@@ -81,15 +91,18 @@ import {
   chromeShare,
   chromeStatus,
   chromeTabs,
+  subscribeAgentActivity,
   subscribeChromeStatus,
   subscribeChromeTabs,
+  type ChromeActivityEntry,
   type ChromeStatus,
   type ChromeTab,
 } from "@/lib/browser/chrome-api"
-import type { GrantLevel } from "@/lib/browser/types"
+import type { AgentAction, GrantLevel } from "@/lib/browser/types"
 import { getCurrentWindowLabel } from "@/lib/browser/window-label"
 import { lendBrowserSwitch } from "@/lib/cowork/remote-browser"
 import { isDesktop } from "@/lib/platform"
+import { formatTimeAgo } from "@/lib/relative-time"
 import { cn } from "@/lib/utils"
 
 /** The mark the browser uses for "an agent can reach this". */
@@ -138,6 +151,9 @@ function ChromeItem({ className }: { className?: string }) {
   const [tabs, setTabs] = useState<ChromeTab[]>([])
   const [open, setOpen] = useState(false)
   const [agents, setAgents] = useState(false)
+  const [activity, setActivity] = useState<
+    Record<string, ChromeActivityEntry[]>
+  >({})
   const scope = chromeAgentsScope(getCurrentWindowLabel())
 
   // The switch as the backend has it; once per app run, the remembered one
@@ -215,6 +231,33 @@ function ChromeItem({ className }: { className?: string }) {
 
   const state = status?.state ?? "disconnected"
   const problem = status?.problem ?? null
+
+  // What agents did, while the panel is open on a connected Chrome: asked
+  // once, then again whenever an agent reaches for a tab. Answers come back
+  // in the order asked, so the last one standing is the newest.
+  useEffect(() => {
+    if (!open || state !== "connected") return
+    let cancelled = false
+    let off: (() => void) | null = null
+    const refresh = () => {
+      chromeActivity()
+        .then((next) => {
+          if (!cancelled) setActivity(next)
+        })
+        .catch(() => {})
+    }
+    void subscribeAgentActivity(refresh)
+      .then((unsubscribe) => {
+        if (cancelled) unsubscribe()
+        else off = unsubscribe
+      })
+      .catch(() => {})
+    refresh()
+    return () => {
+      cancelled = true
+      off?.()
+    }
+  }, [open, state])
 
   const share = async (tabId: string, level: GrantLevel) => {
     try {
@@ -363,6 +406,8 @@ function ChromeItem({ className }: { className?: string }) {
                   <ChromeTabRow
                     key={tab.id}
                     tab={tab}
+                    activity={activity[tab.id] ?? EMPTY}
+                    ownScope={scope}
                     onShare={(level) => void share(tab.id, level)}
                     onJump={() => void jump(tab.id)}
                   />
@@ -391,14 +436,22 @@ function ChromeItem({ className }: { className?: string }) {
   )
 }
 
+const EMPTY: ChromeActivityEntry[] = []
+
 /** One of Chrome's open pages, with what agents may do there and the way to
- *  change it — or, for a page an agent opened, the mark that says so. */
+ *  change it — or, for a page an agent opened, the mark that says so — and
+ *  what agents have done there. */
 function ChromeTabRow({
   tab,
+  activity,
+  ownScope,
   onShare,
   onJump,
 }: {
   tab: ChromeTab
+  /** Oldest first. */
+  activity: ChromeActivityEntry[]
+  ownScope: string
   onShare: (level: GrantLevel) => void
   onJump: () => void
 }) {
@@ -410,34 +463,165 @@ function ChromeTabRow({
     state?.ownerWindow.startsWith(AGENT_OWNER_PREFIX) ?? false
   const Icon = openedByAgent ? Bot : Globe
   return (
-    <li className="flex items-center gap-2 px-2 py-1.5">
-      <Icon
-        className={cn(
-          "size-3.5 shrink-0",
-          level === "none" && !openedByAgent
-            ? "text-muted-foreground"
-            : AGENT_MARK
-        )}
-      />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-2xs font-medium">{name}</span>
-        <span className="block truncate text-3xs text-muted-foreground">
-          {openedByAgent ? `${t("openedByAgent")} · ${tab.host}` : tab.host}
+    <li className="px-2 py-1.5">
+      <div className="flex items-center gap-2">
+        <Icon
+          className={cn(
+            "size-3.5 shrink-0",
+            level === "none" && !openedByAgent
+              ? "text-muted-foreground"
+              : AGENT_MARK
+          )}
+        />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-2xs font-medium">{name}</span>
+          <span className="block truncate text-3xs text-muted-foreground">
+            {openedByAgent ? `${t("openedByAgent")} · ${tab.host}` : tab.host}
+          </span>
         </span>
-      </span>
-      <Button
-        size="icon-xs"
-        variant="ghost"
-        aria-label={`${t("jumpTo")} · ${name}`}
-        title={t("jumpTo")}
-        onClick={onJump}
-      >
-        <ArrowUpRight className="size-3" />
-      </Button>
-      {openedByAgent ? null : (
-        <ChromeShareMenu level={level} name={name} onShare={onShare} />
-      )}
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          aria-label={`${t("jumpTo")} · ${name}`}
+          title={t("jumpTo")}
+          onClick={onJump}
+        >
+          <ArrowUpRight className="size-3" />
+        </Button>
+        {openedByAgent ? null : (
+          <ChromeShareMenu level={level} name={name} onShare={onShare} />
+        )}
+      </div>
+      {activity.length > 0 ? (
+        <ChromeTabActivity
+          activity={activity}
+          ownScope={ownScope}
+          tabHost={tab.host}
+        />
+      ) : null}
     </li>
+  )
+}
+
+/** The panel's words for each action, and for one aimed at a named field or
+ *  button. */
+const ACTION_KEYS = {
+  read: "activity.action.read",
+  click: "activity.action.click",
+  hover: "activity.action.hover",
+  type: "activity.action.type",
+  press: "activity.action.press",
+  select: "activity.action.select",
+  capture: "activity.action.capture",
+  console: "activity.action.console",
+  eval: "activity.action.eval",
+  open: "activity.action.open",
+  navigate: "activity.action.navigate",
+  close: "activity.action.close",
+} as const satisfies Record<AgentAction, string>
+
+const ACTION_ON_KEYS = {
+  click: "activity.actionOn.click",
+  hover: "activity.actionOn.hover",
+  type: "activity.actionOn.type",
+  press: "activity.actionOn.press",
+  select: "activity.actionOn.select",
+} as const satisfies Partial<Record<AgentAction, string>>
+
+type Translate = ReturnType<typeof useTranslations<"ChromeSettings">>
+
+/** "clicked “Submit”", "typed into the password field", "read the page
+ *  (refused)". */
+function describeActivity(t: Translate, entry: ChromeActivityEntry): string {
+  const onKey =
+    entry.target && entry.action in ACTION_ON_KEYS
+      ? ACTION_ON_KEYS[entry.action as keyof typeof ACTION_ON_KEYS]
+      : null
+  const what =
+    onKey && entry.target
+      ? t(onKey, {
+          target:
+            entry.target.kind === "password"
+              ? t("activity.password")
+              : t("activity.named", { name: entry.target.name }),
+        })
+      : t(ACTION_KEYS[entry.action])
+  if (entry.outcome === "refused") return t("activity.refused", { what })
+  if (entry.outcome === "failed") return t("activity.failed", { what })
+  return what
+}
+
+/** Whose agent: this computer's, the server this window works on, or
+ *  another window's server. */
+function scopeLabel(t: Translate, scope: string, ownScope: string): string {
+  if (scope === "local") return t("activity.scopeLocal")
+  if (scope === ownScope) return t("activity.scopeThisServer")
+  return t("activity.scopeOtherServer")
+}
+
+/** The last thing agents did on a tab, and the whole record behind a
+ *  disclosure, newest first. */
+function ChromeTabActivity({
+  activity,
+  ownScope,
+  tabHost,
+}: {
+  activity: ChromeActivityEntry[]
+  ownScope: string
+  tabHost: string
+}) {
+  const t = useTranslations("ChromeSettings")
+  const locale = useLocale()
+  const [expanded, setExpanded] = useState(false)
+  const now = useMinuteNow()
+  const newestFirst = [...activity].reverse()
+  const latest = newestFirst[0]
+  if (!latest) return null
+  const Chevron = expanded ? ChevronDown : ChevronRight
+  return (
+    <div className="mt-0.5 pl-5.5">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        className="flex w-full min-w-0 items-center gap-1 text-left text-3xs text-muted-foreground hover:text-foreground"
+        onClick={() => setExpanded((was) => !was)}
+      >
+        <Chevron className="size-3 shrink-0" />
+        <span className="min-w-0 truncate">
+          {t("activity.latest", {
+            time: formatTimeAgo(latest.at, now, locale),
+            what: describeActivity(t, latest),
+          })}
+        </span>
+      </button>
+      {expanded ? (
+        <ol
+          aria-label={t("activity.title")}
+          className="mt-1 max-h-40 space-y-0.5 overflow-y-auto"
+        >
+          {newestFirst.map((entry, index) => (
+            <li
+              key={`${entry.at}-${index}`}
+              className={cn(
+                "text-3xs",
+                entry.outcome === "done"
+                  ? "text-muted-foreground"
+                  : "text-amber-600 dark:text-amber-400"
+              )}
+            >
+              <span className="tabular-nums">
+                {formatTimeAgo(entry.at, now, locale)}
+              </span>
+              {" · "}
+              {scopeLabel(t, entry.scope, ownScope)}
+              {" · "}
+              {describeActivity(t, entry)}
+              {entry.host && entry.host !== tabHost ? ` · ${entry.host}` : null}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </div>
   )
 }
 

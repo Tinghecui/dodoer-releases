@@ -32,6 +32,7 @@ export const SHELL_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   "browser_answer_open_request",
   "browser_capabilities",
   "browser_chrome_activate",
+  "browser_chrome_activity",
   "browser_chrome_agents",
   "browser_chrome_connect",
   "browser_chrome_disconnect",

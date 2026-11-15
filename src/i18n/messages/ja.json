@@ -5871,6 +5871,38 @@
     "tabsTitle": "Chrome で開いているページ：{count}",
     "tabsHidden": "エージェントに見えるのは渡したタブだけで、そのサイトではあなたのログイン状態を使います。",
     "tabsEmpty": "Chrome で開いているウェブページはありません。",
+    "activity": {
+      "title": "このタブでエージェントがしたこと",
+      "latest": "最後：{time} {what}",
+      "refused": "{what}（拒否）",
+      "failed": "{what}（失敗）",
+      "scopeLocal": "このコンピューターのエージェント",
+      "scopeThisServer": "このウィンドウのサーバー",
+      "scopeOtherServer": "別のウィンドウのサーバー",
+      "password": "パスワード欄",
+      "named": "「{name}」",
+      "action": {
+        "read": "ページを読み取った",
+        "click": "クリックした",
+        "hover": "ホバーした",
+        "type": "入力した",
+        "press": "キーを押した",
+        "select": "選択肢を選んだ",
+        "capture": "スクリーンショットを撮った",
+        "console": "コンソールを読んだ",
+        "eval": "ページでコードを実行した",
+        "open": "このページを開いた",
+        "navigate": "別のページに移動した",
+        "close": "タブを閉じた"
+      },
+      "actionOn": {
+        "click": "{target}をクリックした",
+        "hover": "{target}にホバーした",
+        "type": "{target}に入力した",
+        "press": "{target}でキーを押した",
+        "select": "{target}で選択肢を選んだ"
+      }
+    },
     "openSettings": "Chrome の設定",
     "panelNeedsSettings": "dodoer は Chrome の接続先を見つけられませんでした。下の「Chrome の設定」で対処方法を確認してください。",
     "share": "エージェントに渡す",

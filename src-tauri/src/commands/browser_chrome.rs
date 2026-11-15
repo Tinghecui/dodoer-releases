@@ -3,6 +3,7 @@
 //! the computer the app runs on, whichever server a window's workspace lives
 //! on.
 
+use std::collections::HashMap;
 use std::sync::Once;
 
 use serde::Serialize;
@@ -10,6 +11,7 @@ use tauri::{AppHandle, State};
 
 use crate::app_error::AppCommandError;
 use crate::browser::agent::GrantLevel;
+use crate::browser::chrome::activity::ActivityEntry;
 use crate::browser::chrome::sensitive::{self, SiteEdits, DEFAULT_SITES};
 use crate::browser::chrome::{ChromeLending, ChromeLink, ChromeStatus, ChromeTab, STATUS_EVENT, TABS_EVENT};
 use crate::browser::{chrome_share, BrowserRegistry};
@@ -66,6 +68,19 @@ pub async fn browser_chrome_tabs(
 ) -> Result<Vec<ChromeTab>, AppCommandError> {
     announce(&app, &link);
     Ok(link.tabs())
+}
+
+/// What agents did to each of the connected Chrome's tabs, oldest first, by
+/// tab id (`chrome::activity`); empty when not connected. For the panel, which
+/// asks once when it opens and again on each `browser://agent-activity`.
+/// Never handed to agents: it is a record kept for the person.
+#[tauri::command]
+pub async fn browser_chrome_activity(
+    app: AppHandle,
+    link: State<'_, ChromeLink>,
+) -> Result<HashMap<String, Vec<ActivityEntry>>, AppCommandError> {
+    announce(&app, &link);
+    Ok(link.activity().all())
 }
 
 /// Hand the Chrome tab `tab_id` (an id from the tab list) to agents at

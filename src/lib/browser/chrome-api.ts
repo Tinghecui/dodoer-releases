@@ -6,7 +6,13 @@
 // reason: Chrome runs on this computer, whichever server the window's
 // workspace lives on.
 
-import type { GrantLevel } from "@/lib/browser/types"
+import {
+  BROWSER_AGENT_ACTIVITY_EVENT,
+  type AgentAction,
+  type AgentActivityPayload,
+  type AgentOutcome,
+  type GrantLevel,
+} from "@/lib/browser/types"
 import { getShellTransport } from "@/lib/transport"
 import type { UnsubscribeFn } from "@/lib/transport/types"
 
@@ -46,6 +52,27 @@ export interface ChromeTab {
   host: string
 }
 
+/** What an action was aimed at. Mirrors `ActivityTarget` in
+ *  `src-tauri/src/browser/chrome/activity.rs`: the element's name from the
+ *  agent's snapshot, or only "a password field". Never what was typed. */
+export type ChromeActivityTarget =
+  | { kind: "named"; name: string }
+  | { kind: "password" }
+
+/** One agent's one attempt on one Chrome tab. Mirrors `ActivityEntry` in
+ *  `src-tauri/src/browser/chrome/activity.rs`. */
+export interface ChromeActivityEntry {
+  /** Unix milliseconds. */
+  at: number
+  action: AgentAction
+  outcome: AgentOutcome
+  /** The site the tab was on at the time. */
+  host: string | null
+  /** Whose agent: `local`, or a remote window's label. */
+  scope: string
+  target: ChromeActivityTarget | null
+}
+
 export const CHROME_STATUS_EVENT = "browser://chrome"
 
 export const CHROME_TABS_EVENT = "browser://chrome-tabs"
@@ -73,6 +100,31 @@ export function chromeConnect(endpoint?: string): Promise<ChromeStatus> {
 /** The connected Chrome's web pages, oldest first; empty when not connected. */
 export function chromeTabs(): Promise<ChromeTab[]> {
   return getShellTransport().call<ChromeTab[]>("browser_chrome_tabs")
+}
+
+/**
+ * What agents did to each of the connected Chrome's tabs, oldest first, by
+ * tab id: the last 50 per tab and 500 in all, kept in memory and emptied
+ * when the connection ends. The app's own record for the person; no agent
+ * can read it.
+ */
+export function chromeActivity(): Promise<
+  Record<string, ChromeActivityEntry[]>
+> {
+  return getShellTransport().call<Record<string, ChromeActivityEntry[]>>(
+    "browser_chrome_activity"
+  )
+}
+
+/** Every attempt an agent makes on any tab (`browser://agent-activity`),
+ *  for asking `chromeActivity` again. */
+export function subscribeAgentActivity(
+  handler: (activity: AgentActivityPayload) => void
+): Promise<UnsubscribeFn> {
+  return getShellTransport().subscribe<AgentActivityPayload>(
+    BROWSER_AGENT_ACTIVITY_EVENT,
+    handler
+  )
 }
 
 /**

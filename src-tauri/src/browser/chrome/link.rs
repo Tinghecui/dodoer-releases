@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use super::activity::{ActivityEntry, ChromeActivity};
 use super::cdp::{CdpClient, ConnectError};
 use super::endpoint::{self, Endpoint, EndpointError};
 use super::tabs::{self, ChromeTab, Listed};
@@ -138,6 +139,8 @@ struct Shared {
     tabs: watch::Sender<Vec<ChromeTab>>,
     /// The same tabs by id, with what attaching to one takes.
     listed: Mutex<HashMap<String, Listed>>,
+    /// What agents did to them, for as long as the connection lasts.
+    activity: ChromeActivity,
 }
 
 /// Cheap to clone; every clone is the same link.
@@ -171,6 +174,7 @@ impl ChromeLink {
                 status,
                 tabs,
                 listed: Mutex::new(HashMap::new()),
+                activity: ChromeActivity::default(),
             }),
         }
     }
@@ -203,6 +207,22 @@ impl ChromeLink {
 
     fn listed_tabs(&self) -> MutexGuard<'_, HashMap<String, Listed>> {
         self.shared.listed.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// What agents did to the connected Chrome's tabs (`activity`); empty
+    /// whenever it is not connected.
+    pub fn activity(&self) -> &ChromeActivity {
+        &self.shared.activity
+    }
+
+    /// Keep `entry` for `tab_id` — while connected: a line that arrives after
+    /// the connection ended is for a Chrome nobody is looking at any more.
+    pub fn record_activity(&self, tab_id: &str, entry: ActivityEntry) {
+        // Under the slot, which is held wherever the connection ends.
+        let slot = self.slot();
+        if slot.client.is_some() {
+            self.shared.activity.record(tab_id, entry);
+        }
     }
 
     /// The connection, while there is one.
@@ -335,6 +355,7 @@ impl ChromeLink {
         // hears "not connected" finds no tabs.
         if status.state != ChromeState::Connected {
             self.listed_tabs().clear();
+            self.shared.activity.clear();
             self.shared.tabs.send_if_modified(|tabs| {
                 let had = !tabs.is_empty();
                 tabs.clear();
@@ -357,6 +378,10 @@ impl ChromeLink {
             .into_iter()
             .map(|listed| (listed.tab.id.clone(), listed))
             .collect();
+        // The lines of a tab that is gone have no row left to be shown on.
+        self.shared
+            .activity
+            .retain_tabs(|tab_id| list.iter().any(|tab| tab.id == tab_id));
         self.shared.tabs.send_if_modified(|tabs| {
             let changed = *tabs != list;
             *tabs = list;
@@ -688,6 +713,76 @@ mod tests {
         drop(chrome);
         state(&mut changes, ChromeState::Disconnected).await;
         assert!(link.tabs().is_empty());
+    }
+
+    fn a_line() -> ActivityEntry {
+        ActivityEntry {
+            at: 1,
+            action: crate::browser::agent::AgentAction::Read,
+            outcome: crate::browser::agent::AgentOutcome::Done,
+            host: Some("example.com".to_string()),
+            scope: "local".to_string(),
+            target: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_lasts_as_long_as_the_connection() {
+        let (mut connections, port) = chrome().await;
+        let dir = tempfile::tempdir().unwrap();
+        write_port_file(&dir, port);
+        let link = link(&dir);
+        // Not connected: nothing is kept.
+        link.record_activity("T", a_line());
+        assert!(link.activity().all().is_empty());
+
+        let _chrome = connected_with_a_tab(&link, &mut connections).await;
+        let tab = link.tabs()[0].id.clone();
+        link.record_activity(&tab, a_line());
+        assert_eq!(link.activity().all()[&tab].len(), 1);
+
+        link.disconnect();
+        assert!(link.activity().all().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_lost_connection_takes_its_activity_with_it() {
+        let (mut connections, port) = chrome().await;
+        let dir = tempfile::tempdir().unwrap();
+        write_port_file(&dir, port);
+        let link = link(&dir);
+        let mut changes = link.changes();
+
+        let chrome = connected_with_a_tab(&link, &mut connections).await;
+        let tab = link.tabs()[0].id.clone();
+        link.record_activity(&tab, a_line());
+        drop(chrome);
+        state(&mut changes, ChromeState::Disconnected).await;
+        assert!(link.activity().all().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_closed_tab_takes_its_activity_with_it() {
+        let (mut connections, port) = chrome().await;
+        let dir = tempfile::tempdir().unwrap();
+        write_port_file(&dir, port);
+        let link = link(&dir);
+        let mut tab_changes = link.tab_changes();
+
+        let mut chrome = connected_with_a_tab(&link, &mut connections).await;
+        let tab = link.tabs()[0].id.clone();
+        link.record_activity(&tab, a_line());
+        chrome
+            .say(json!({ "method": "Target.targetDestroyed", "params": { "targetId": "T" } }))
+            .await;
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            tab_changes.wait_for(|tabs| tabs.is_empty()),
+        )
+        .await
+        .expect("the tab was never unlisted")
+        .unwrap();
+        assert!(link.activity().all().is_empty());
     }
 
     #[test]

@@ -108,6 +108,9 @@ pub fn emit_agent_grant(
 /// An agent reached for a tab, and what came of it. Emitted from the one
 /// place that decides — so a tool surface added later cannot read a page
 /// without the person watching it seeing that it did.
+///
+/// Cowork fork: a line on a tab of the person's own Chrome is also kept for
+/// the Chrome panel (`chrome_share::record_activity`).
 pub fn emit_agent_activity(
     app: &AppHandle,
     tab_id: &str,
@@ -115,6 +118,20 @@ pub fn emit_agent_activity(
     outcome: AgentOutcome,
     at: i64,
 ) {
+    emit_agent_activity_on(app, tab_id, action, outcome, at, None);
+}
+
+/// [`emit_agent_activity`] for an action aimed at an element: what it was
+/// aimed at goes into the Chrome panel's line (never what was typed).
+pub fn emit_agent_activity_on(
+    app: &AppHandle,
+    tab_id: &str,
+    action: AgentAction,
+    outcome: AgentOutcome,
+    at: i64,
+    target: Option<crate::browser::chrome::activity::ActivityTarget>,
+) {
+    crate::browser::chrome_share::record_activity(app, tab_id, action, outcome, at, target);
     emit_event(
         &EventEmitter::Tauri(app.clone()),
         AGENT_ACTIVITY_EVENT,

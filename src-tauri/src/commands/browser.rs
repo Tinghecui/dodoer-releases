@@ -1752,7 +1752,12 @@ pub async fn agent_snapshot_core(
     // before the read below looks for one.
     revoke_if_listener_replaced(app, registry, tab_id).await;
     let (outcome, answer) = match read_shared_page(registry, tab_id, request).await {
-        Ok(snapshot) => (Some(agent::AgentOutcome::Done), Ok(snapshot)),
+        Ok(snapshot) => {
+            // Cowork fork: the names of the refs, for the Chrome panel's
+            // lines of the actions taken by them.
+            crate::browser::chrome_share::remember_names(app, tab_id, &snapshot);
+            (Some(agent::AgentOutcome::Done), Ok(snapshot))
+        }
         Err((outcome, err)) => (outcome, Err(err)),
     };
     if let Some(outcome) = outcome {
@@ -1841,6 +1846,15 @@ pub async fn agent_act_core(
 ) -> Result<agent::ActionOutcome, AppCommandError> {
     revoke_if_listener_replaced(app, registry, tab_id).await;
     let action = agent::AgentAction::from(&request.action);
+    // Cowork fork: what the action is aimed at, for the line it leaves on a
+    // tab of the person's Chrome — asked before acting, while the ref holds.
+    let link = app.try_state::<crate::browser::chrome::ChromeLink>();
+    let target = match link {
+        Some(link) => {
+            crate::browser::chrome_share::chrome_target(registry, &link, tab_id, request).await
+        }
+        None => None,
+    };
     let (outcome, answer) = match act_on_shared_page(registry, tab_id, request).await {
         Ok(Settled { outcome, record }) => (
             record.then_some(agent::AgentOutcome::Done),
@@ -1849,7 +1863,7 @@ pub async fn agent_act_core(
         Err((outcome, err)) => (outcome, Err(err)),
     };
     if let Some(outcome) = outcome {
-        events::emit_agent_activity(app, tab_id, action, outcome, now_millis());
+        events::emit_agent_activity_on(app, tab_id, action, outcome, now_millis(), target);
     }
     answer
 }
@@ -3548,6 +3562,14 @@ impl McpBrowserTools {
             .unwrap_or(false)
     }
 
+    /// Cowork fork: answer `work` as these agents' call, so the lines it
+    /// leaves on the person's Chrome tabs say whose agent it was
+    /// (`chrome_share::as_caller`).
+    async fn as_caller<F: std::future::Future>(&self, work: F) -> F::Output {
+        let scope = crate::browser::chrome::lending::scope_key(self.scope.as_deref());
+        crate::browser::chrome_share::as_caller(scope, work).await
+    }
+
     /// The registry, or `None` when this build has no browser to speak of.
     async fn registry(&self) -> Option<State<'_, BrowserRegistry>> {
         if !self.config.is_enabled().await {
@@ -3602,7 +3624,8 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         // Straight through `agent_snapshot_core`: the grant check and the line
         // it leaves on the tab's activity strip both live in there, so this
         // surface cannot read a page more quietly than the app's own does.
-        match agent_snapshot_core(&self.app, &registry, tab_id, &request).await {
+        let call = agent_snapshot_core(&self.app, &registry, tab_id, &request);
+        match self.as_caller(call).await {
             Ok(snapshot) => BrowserSnapshotOutcome::page(tab_id, snapshot),
             // The refusal is recognized by the key the error was tagged with,
             // not by its code: `PermissionDenied` is a wide category, and only
@@ -3647,7 +3670,8 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
                 scope_refusal_note(tab_id),
             );
         }
-        match agent_act_core(&self.app, &registry, tab_id, &request).await {
+        let call = agent_act_core(&self.app, &registry, tab_id, &request);
+        match self.as_caller(call).await {
             Ok(outcome) => BrowserActOutcome::done(tab_id, outcome),
             Err(err) => match err.i18n_key.as_deref() {
                 Some(BROWSER_I18N_KEY_GRANT_REQUIRED) => BrowserActOutcome::grant_required(tab_id),
@@ -3689,7 +3713,8 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
                 scope_refusal_note(tab_id),
             );
         }
-        match agent_console_core(&self.app, &registry, tab_id, &query).await {
+        let call = agent_console_core(&self.app, &registry, tab_id, &query);
+        match self.as_caller(call).await {
             Ok(readout) => BrowserConsoleOutcome::lines(tab_id, readout),
             Err(err) if err.i18n_key.as_deref() == Some(BROWSER_I18N_KEY_GRANT_REQUIRED) => {
                 BrowserConsoleOutcome::grant_required(tab_id)
@@ -3727,7 +3752,8 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
                 scope_refusal_note(tab_id),
             );
         }
-        match agent_capture_core(&self.app, &registry, tab_id, &request).await {
+        let call = agent_capture_core(&self.app, &registry, tab_id, &request);
+        match self.as_caller(call).await {
             Ok(capture) => BrowserCaptureOutcome::image(tab_id, capture),
             Err(err) => match err.i18n_key.as_deref() {
                 Some(BROWSER_I18N_KEY_GRANT_REQUIRED) => {
@@ -3786,7 +3812,8 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         let Some(consent) = self.app.try_state::<EvalConsent>() else {
             return BrowserEvalOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
         };
-        match agent_eval_core(&self.app, &registry, &consent, tab_id, &request).await {
+        let call = agent_eval_core(&self.app, &registry, &consent, tab_id, &request);
+        match self.as_caller(call).await {
             Ok(result) => BrowserEvalOutcome::ran(tab_id, result),
             Err(err) => match err.i18n_key.as_deref() {
                 Some(BROWSER_I18N_KEY_GRANT_REQUIRED) => BrowserEvalOutcome::grant_required(tab_id),
@@ -3861,12 +3888,12 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
                         .map(|(tab, load_error)| BrowserTabOutcome::tab(tab, load_error))
                 }
             }
-            BrowserTabOp::Navigate { tab_id, url } => {
-                agent_navigate_core(&self.app, &registry, tab_id, url)
-                    .await
-                    .map(|(tab, load_error)| BrowserTabOutcome::tab(tab, load_error))
-            }
-            BrowserTabOp::Close { tab_id } => agent_close_tab_core(&self.app, &registry, tab_id)
+            BrowserTabOp::Navigate { tab_id, url } => self
+                .as_caller(agent_navigate_core(&self.app, &registry, tab_id, url))
+                .await
+                .map(|(tab, load_error)| BrowserTabOutcome::tab(tab, load_error)),
+            BrowserTabOp::Close { tab_id } => self
+                .as_caller(agent_close_tab_core(&self.app, &registry, tab_id))
                 .await
                 .map(|()| BrowserTabOutcome::closed(tab_id)),
         };
@@ -3932,7 +3959,10 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
 /// Evaluate an expression in a tab's isolated world and unwrap the shim's
 /// `{ok, value}` envelope. The value is always a string here: every caller in
 /// this module asks for `JSON.stringify(…)` or for a literal.
-async fn eval_in_world_string(surface: &BrowserSurface, js: &str) -> Result<String, AppCommandError> {
+pub(crate) async fn eval_in_world_string(
+    surface: &BrowserSurface,
+    js: &str,
+) -> Result<String, AppCommandError> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
     let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
     surface

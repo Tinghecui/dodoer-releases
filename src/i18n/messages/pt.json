@@ -5871,6 +5871,38 @@
     "tabsTitle": "Abertas no Chrome: {count}",
     "tabsHidden": "Os agentes só veem as abas que você passa a eles, e nesses sites usam a sua sessão.",
     "tabsEmpty": "Não há páginas abertas no Chrome.",
+    "activity": {
+      "title": "O que os agentes fizeram nesta aba",
+      "latest": "Último: {time} · {what}",
+      "refused": "{what} (recusado)",
+      "failed": "{what} (falhou)",
+      "scopeLocal": "Agente deste computador",
+      "scopeThisServer": "Servidor desta janela",
+      "scopeOtherServer": "Servidor de outra janela",
+      "password": "o campo de senha",
+      "named": "“{name}”",
+      "action": {
+        "read": "leu a página",
+        "click": "clicou",
+        "hover": "passou o ponteiro",
+        "type": "digitou num campo",
+        "press": "pressionou uma tecla",
+        "select": "escolheu uma opção",
+        "capture": "tirou uma captura",
+        "console": "leu o console",
+        "eval": "executou código na página",
+        "open": "abriu esta página",
+        "navigate": "foi para outra página",
+        "close": "fechou a aba"
+      },
+      "actionOn": {
+        "click": "clicou em {target}",
+        "hover": "passou o ponteiro sobre {target}",
+        "type": "digitou em {target}",
+        "press": "pressionou uma tecla em {target}",
+        "select": "escolheu uma opção em {target}"
+      }
+    },
     "openSettings": "Configurações do Chrome",
     "panelNeedsSettings": "O dodoer não encontrou onde se conectar ao Chrome. Abra as configurações do Chrome abaixo para ver o que fazer.",
     "share": "Passar aos agentes",

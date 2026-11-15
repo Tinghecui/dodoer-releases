@@ -3,7 +3,11 @@ import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { ChromeStatus, ChromeTab } from "@/lib/browser/chrome-api"
+import type {
+  ChromeActivityEntry,
+  ChromeStatus,
+  ChromeTab,
+} from "@/lib/browser/chrome-api"
 
 const mocks = vi.hoisted(() => ({
   desktop: true,
@@ -15,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   chromeAgents: vi.fn(),
   chromeSetAgents: vi.fn(),
   chromeActivate: vi.fn(),
+  chromeActivity: vi.fn(),
+  heardActivity: null as (() => void) | null,
   lendBrowserSwitch: vi.fn<(key: string) => Promise<void>>(async () => {}),
   windowLabel: "main",
   /** The backend's switch for the window's scope. */
@@ -42,6 +48,11 @@ vi.mock("@/lib/browser/chrome-api", () => ({
   chromeAgents: mocks.chromeAgents,
   chromeSetAgents: mocks.chromeSetAgents,
   chromeActivate: mocks.chromeActivate,
+  chromeActivity: mocks.chromeActivity,
+  subscribeAgentActivity: (handler: () => void) => {
+    mocks.heardActivity = handler
+    return Promise.resolve(() => {})
+  },
   subscribeChromeStatus: (handler: (status: unknown) => void) => {
     mocks.heardStatus = handler
     return Promise.resolve(() => {})
@@ -139,6 +150,8 @@ beforeEach(() => {
     return on
   })
   mocks.chromeActivate.mockReset().mockResolvedValue(undefined)
+  mocks.chromeActivity.mockReset().mockResolvedValue({})
+  mocks.heardActivity = null
   mocks.lendBrowserSwitch.mockClear()
   mocks.windowLabel = "main"
   mocks.grants.clear()
@@ -356,6 +369,92 @@ describe("StatusBarChrome", () => {
 
     await press("Chrome settings")
     expect(mocks.openSettingsWindow).toHaveBeenCalledWith("browser")
+  })
+
+  it("shows what agents did on a tab, newest first, never what was typed", async () => {
+    const now = Date.now()
+    const line = (over: Partial<ChromeActivityEntry>): ChromeActivityEntry => ({
+      at: now - 150_000,
+      action: "read",
+      outcome: "done",
+      host: "mail.example.com",
+      scope: "local",
+      target: null,
+      ...over,
+    })
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    mocks.chromeTabs.mockResolvedValue(TABS)
+    mocks.grants.set("browser:1", "control")
+    mocks.chromeActivity.mockResolvedValue({
+      "1": [
+        line({ at: now - 330_000 }),
+        line({
+          at: now - 270_000,
+          action: "type",
+          target: { kind: "named", name: "Email" },
+        }),
+        line({
+          at: now - 210_000,
+          action: "type",
+          target: { kind: "password" },
+          scope: "remote-workspace-7",
+        }),
+        line({ action: "click", target: { kind: "named", name: "Submit" } }),
+      ],
+    })
+    await mount()
+    await openPanel()
+    expect(mocks.chromeActivity).toHaveBeenCalledTimes(1)
+    const latest = screen.getByRole("button", {
+      name: "Last: 2 minutes ago · clicked “Submit”",
+    })
+    expect(latest).toHaveAttribute("aria-expanded", "false")
+    // A tab nobody touched has no record line.
+    expect(screen.queryAllByRole("button", { name: /^Last:/ })).toHaveLength(1)
+
+    await userEvent.click(latest)
+    const record = screen.getByRole("list", {
+      name: "What agents did on this tab",
+    })
+    const lines = Array.from(record.querySelectorAll("li")).map(
+      (li) => li.textContent
+    )
+    expect(lines).toEqual([
+      "2 minutes ago · This computer's agent · clicked “Submit”",
+      "3 minutes ago · Another window's server · typed into the password field",
+      "4 minutes ago · This computer's agent · typed into “Email”",
+      "5 minutes ago · This computer's agent · read the page",
+    ])
+  })
+
+  it("asks again when an agent does something, and marks what did not go through", async () => {
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    mocks.chromeTabs.mockResolvedValue(TABS)
+    await mount()
+    await openPanel()
+    expect(screen.queryByRole("button", { name: /^Last:/ })).toBeNull()
+
+    mocks.chromeActivity.mockResolvedValue({
+      "2": [
+        {
+          at: Date.now(),
+          action: "navigate",
+          outcome: "refused",
+          host: "localhost",
+          scope: "local",
+          target: null,
+        },
+      ],
+    })
+    await act(async () => {
+      mocks.heardActivity?.()
+    })
+    expect(mocks.chromeActivity).toHaveBeenCalledTimes(2)
+    expect(
+      screen.getByRole("button", {
+        name: "Last: now · went to another page (refused)",
+      })
+    ).toBeInTheDocument()
   })
 
   it("reports a command that failed outright", async () => {

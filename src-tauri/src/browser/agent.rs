@@ -888,6 +888,23 @@ pub fn locate_call(generation: &str, target: &str) -> String {
     )
 }
 
+/// `"true"` when the element `target` names is a password field, `"false"`
+/// when it is something else, [`ENGINE_ABSENT`] when no snapshot was ever
+/// taken here — and `"false"` for a ref that no longer resolves, which the
+/// action itself then refuses. Asked for the activity record of the person's
+/// Chrome (`chrome::activity`), which leaves even the name of a password
+/// field out. Reads the element's `type` and nothing else: never its value.
+pub fn password_field_call(generation: &str, target: &str) -> String {
+    format!(
+        "typeof globalThis.{AGENT_GLOBAL} === 'undefined' ? {absent} : \
+         (function(){{const el = globalThis.{AGENT_GLOBAL}.elementForRef({generation}, {target}); \
+         return JSON.stringify(!!el && el.localName === 'input' && el.type === 'password');}})()",
+        absent = serde_json::Value::from(ENGINE_ABSENT),
+        generation = serde_json::Value::from(generation),
+        target = serde_json::Value::from(target),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Capturing
 // ---------------------------------------------------------------------------
@@ -1488,6 +1505,15 @@ mod tests {
         let locate = locate_call("g", "e1");
         assert!(locate.contains(".locate(\"g\", \"e1\"))"));
         assert!(locate.starts_with("typeof globalThis.__codegAgent === 'undefined'"));
+    }
+
+    #[test]
+    fn the_password_check_reads_the_type_and_never_the_value() {
+        let call = password_field_call("g\"1", "e2");
+        assert!(call.starts_with("typeof globalThis.__codegAgent === 'undefined'"));
+        assert!(call.contains(".elementForRef(\"g\\\"1\", \"e2\")"));
+        assert!(call.contains("el.type === 'password'"));
+        assert!(!call.contains(".value"));
     }
 
     /// The wire shapes both sides agree on: kebab-case kinds and errors, the

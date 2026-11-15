@@ -44,6 +44,14 @@ pub const MAX_ENVELOPE_BYTES: usize = 256 * 1024;
 
 /// Envelopes forwarded per minute, per server process.
 pub const ENVELOPES_PER_MINUTE: u32 = 60;
+/// Envelopes that carry an error, forwarded per minute on top of those: a
+/// budget of their own, so a burst of traces and logs (an offline queue
+/// emptying when a machine wakes up) cannot crowd the errors out.
+pub const ERROR_ENVELOPES_PER_MINUTE: u32 = 30;
+
+/// What our own limit pauses when the envelope over it carries no error:
+/// what the web UI sends besides errors (`internal` is its client reports).
+const PAUSED_WITHOUT_ERRORS: &str = "transaction;span;log_item;log_byte;session;internal";
 
 static TAKEN: OnceLock<config::TelemetryConfig> = OnceLock::new();
 
@@ -244,6 +252,47 @@ pub fn check_envelope(envelope: &str, web_dsn: &str) -> Result<(), AppCommandErr
     }
 }
 
+/// Whether an envelope carries an error event (an item of type `event`).
+/// Reads item header by item header; a payload is skipped by its `length`
+/// when the header gives one, else up to the end of its line.
+pub fn envelope_carries_error(envelope: &str) -> bool {
+    let mut rest = envelope.split_once('\n').map_or("", |(_, items)| items);
+    while !rest.is_empty() {
+        let (line, after) = rest.split_once('\n').unwrap_or((rest, ""));
+        let Ok(header) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        if header.get("type").and_then(|t| t.as_str()) == Some("event") {
+            return true;
+        }
+        let skip = match header.get("length").and_then(|l| l.as_u64()) {
+            Some(len) => usize::try_from(len).unwrap_or(usize::MAX),
+            None => after.find('\n').unwrap_or(after.len()),
+        };
+        let next = after.get(skip..).unwrap_or("");
+        rest = next.strip_prefix('\n').unwrap_or(next);
+    }
+    false
+}
+
+/// Our own 429 for an envelope over its budget. It names the categories it
+/// pauses, so the SDK holds back only those: a bare 429 makes the browser SDK
+/// hold back everything for the minute, errors included (four web errors
+/// were lost that way on 2026-11-15, while a desktop window that had been in
+/// the background sent what it had queued).
+pub fn over_budget(carries_error: bool, retry_after_secs: u64) -> EnvelopeResult {
+    let categories = if carries_error {
+        "error"
+    } else {
+        PAUSED_WITHOUT_ERRORS
+    };
+    EnvelopeResult {
+        status_code: 429,
+        rate_limits: Some(format!("{retry_after_secs}:{categories}:key")),
+        retry_after: None,
+    }
+}
+
 /// The first segment of an API path (`/workspace_download/<ticket>` →
 /// `workspace_download`), so a transaction is named by its command and never
 /// carries a ticket or a port.
@@ -282,6 +331,56 @@ mod tests {
         big.push_str(&"x".repeat(MAX_ENVELOPE_BYTES));
         let err = check_envelope(&big, DSN).unwrap_err();
         assert!(err.message.contains("bytes"));
+    }
+
+    /// An envelope of the configured project with these items (header and
+    /// payload of each), serialized the way the browser SDK does it.
+    fn with_items(items: &[(&str, &str)]) -> String {
+        let mut out = format!("{{\"dsn\":\"{DSN}\"}}");
+        for (header, payload) in items {
+            out.push('\n');
+            out.push_str(header);
+            out.push('\n');
+            out.push_str(payload);
+        }
+        out
+    }
+
+    #[test]
+    fn envelopes_with_an_error_event_are_told_apart() {
+        let event = ("{\"type\":\"event\"}", "{\"message\":\"boom\"}");
+        let trace = ("{\"type\":\"transaction\"}", "{\"type\":\"event\"}");
+        let logs = ("{\"type\":\"log\",\"item_count\":2}", "{\"items\":[]}");
+        assert!(envelope_carries_error(&envelope(DSN)));
+        assert!(envelope_carries_error(&with_items(&[event])));
+        assert!(envelope_carries_error(&with_items(&[trace, logs, event])));
+        assert!(!envelope_carries_error(&with_items(&[trace, logs])));
+        assert!(!envelope_carries_error(&with_items(&[])));
+        assert!(!envelope_carries_error("not json"));
+
+        // A payload with a length is skipped by it, newlines and all.
+        let bytes = "{\"type\":\"event\"}\n{\"type\":\"event\"}";
+        let header = format!("{{\"type\":\"attachment\",\"length\":{}}}", bytes.len());
+        let attachment = (header.as_str(), bytes);
+        assert!(!envelope_carries_error(&with_items(&[attachment])));
+        assert!(envelope_carries_error(&with_items(&[attachment, event])));
+    }
+
+    #[test]
+    fn our_own_limit_pauses_only_what_ran_over() {
+        let traces = over_budget(false, 42);
+        assert_eq!(traces.status_code, 429);
+        assert_eq!(traces.retry_after, None);
+        let limits = traces.rate_limits.unwrap();
+        let fields: Vec<&str> = limits.split(':').collect();
+        assert_eq!(fields[0], "42");
+        let categories: Vec<&str> = fields[1].split(';').collect();
+        assert!(categories.contains(&"transaction"));
+        assert!(categories.contains(&"log_item"));
+        assert!(!categories.contains(&"error"));
+
+        let errors = over_budget(true, 5);
+        assert_eq!(errors.rate_limits.as_deref(), Some("5:error:key"));
     }
 
     #[test]

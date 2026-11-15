@@ -53,6 +53,8 @@ struct Active {
     web: Option<Target>,
     http: reqwest::Client,
     envelopes: Budget,
+    /// For the envelopes that carry an error, so traces cannot crowd them out.
+    error_envelopes: Budget,
 }
 
 static ACTIVE: OnceLock<Active> = OnceLock::new();
@@ -110,6 +112,12 @@ impl Budget {
         }
         window.1 += 1;
         true
+    }
+
+    /// Seconds until the minute is over and the budget fills up again.
+    fn secs_left(&self) -> u64 {
+        let window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+        60u64.saturating_sub(window.0.elapsed().as_secs()).max(1)
     }
 }
 
@@ -183,6 +191,7 @@ pub(in crate::telemetry) fn init(config: TelemetryConfig) -> Option<ClientGuard>
         web,
         http,
         envelopes: Budget::new(ENVELOPES_PER_MINUTE),
+        error_envelopes: Budget::new(super::ERROR_ENVELOPES_PER_MINUTE),
     });
     let active = ACTIVE.get();
     tracing::info!(
@@ -648,13 +657,14 @@ pub(in crate::telemetry) async fn forward_envelope(params: EnvelopeParams) -> Re
     if let Err(err) = super::check_envelope(&params.envelope, &web.dsn) {
         return err.into_response();
     }
-    if !active.envelopes.take() {
-        return Json(EnvelopeResult {
-            status_code: 429,
-            rate_limits: None,
-            retry_after: Some("60".to_string()),
-        })
-        .into_response();
+    let carries_error = super::envelope_carries_error(&params.envelope);
+    let budget = if carries_error {
+        &active.error_envelopes
+    } else {
+        &active.envelopes
+    };
+    if !budget.take() {
+        return Json(super::over_budget(carries_error, budget.secs_left())).into_response();
     }
     let sent = active
         .http
@@ -759,6 +769,7 @@ mod tests {
         assert!(budget.take());
         assert!(budget.take());
         assert!(!budget.take());
+        assert!((1..=60).contains(&budget.secs_left()));
     }
 
     #[test]

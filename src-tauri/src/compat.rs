@@ -60,6 +60,9 @@ pub const FEATURES: &[&str] = &[
     // `/api/forget_host_device`: the book of the person's devices
     // (`web::host_devices`, `docs/devices.md`).
     "host_devices",
+    // `/api/get_conversation_device`: the device a conversation works on,
+    // for the mark beside its composer (`web::working_device`).
+    "conversation_device",
 ];
 
 /// The contract as one value: the `server_info` frame carries it as is
@@ -111,7 +114,8 @@ mod tests {
                 "host_bridge_ws",
                 "system_resources",
                 "host_ssh",
-                "host_devices"
+                "host_devices",
+                "conversation_device"
             ])
         );
     }
@@ -126,6 +130,7 @@ mod tests {
     fn the_shell_feature_is_the_one_desktops_look_for() {
         assert!(FEATURES.contains(&crate::host_ssh::tunnel::FEATURE));
         assert!(FEATURES.contains(&crate::web::host_devices::FEATURE));
+        assert!(FEATURES.contains(&crate::web::working_device::FEATURE));
     }
 
     #[test]

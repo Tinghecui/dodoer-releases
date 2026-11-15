@@ -35,15 +35,14 @@ pub async fn proxy(global: &GlobalArgs, env: &Env, device: Option<&str>) -> i32 
         );
         return 1;
     }
-    let socket = match tunnel::dial_cli_end(&conn.url, &conn.token, device, env.caller.as_deref())
-        .await
-    {
-        Ok(socket) => socket,
-        Err(said) => {
-            eprintln!("codeg-cli desktop proxy: {said}");
-            return 1;
-        }
-    };
+    let socket =
+        match tunnel::dial_cli_end(&conn.url, &conn.token, device, env.caller.as_deref()).await {
+            Ok(socket) => socket,
+            Err(said) => {
+                eprintln!("codeg-cli desktop proxy: {said}");
+                return 1;
+            }
+        };
     match tunnel::relay(
         socket,
         tokio::io::stdin(),

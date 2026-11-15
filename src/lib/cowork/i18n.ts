@@ -194,6 +194,13 @@ const en = {
     "You and the agents will call this computer by this name. You can change it later from the devices icon at the foot of the sidebar.",
   devicesNameConfirm: "Use this name",
   devicesNameSkip: "Skip",
+  // The mark beside a conversation's composer (`conversation-device-badge.tsx`).
+  conversationDeviceWorksOn:
+    "The agent of this conversation works on {name}. To switch, tell it which device to use.",
+  conversationDeviceOffline:
+    "{name} is offline (last online {when}). Open this workspace in dodoer on it for the agent to go on.",
+  conversationDeviceLendsNothing:
+    "{name} lends neither its command line nor its browser now. Turn lending on there for the agent to go on.",
   // A model switch (`model-switch.ts`): the composer's picker while it is
   // under way, then a line in the conversation and, if it failed, a toast.
   modelSwitchPending: "Switching to {to}…",
@@ -369,6 +376,12 @@ const zhCN: Record<CoworkTextKey, string> = {
     "你和智能体会用这个名字称呼这台电脑。以后可以在侧栏底部的设备图标里改。",
   devicesNameConfirm: "就用这个",
   devicesNameSkip: "跳过",
+  conversationDeviceWorksOn:
+    "这个对话的智能体在 {name} 上操作。要换，跟它说用哪台。",
+  conversationDeviceOffline:
+    "{name} 不在线（上次在线：{when}）。在那台电脑的 dodoer 里打开这个工作区，智能体才能接着用。",
+  conversationDeviceLendsNothing:
+    "{name} 现在命令行和浏览器都没借出。在那台电脑上打开借出，智能体才能接着用。",
   modelSwitchPending: "正在切换到 {to}…",
   modelSwitchAfterTurn: "本轮 {from} · 下一条 {to}",
   modelSwitchAfterTurnHint: "这轮回复继续用 {from}，下一条消息起用 {to}",
@@ -541,6 +554,12 @@ const zhTW: Record<CoworkTextKey, string> = {
     "你和智慧體會用這個名字稱呼這台電腦。之後可以在側欄底部的裝置圖示裡改。",
   devicesNameConfirm: "就用這個",
   devicesNameSkip: "跳過",
+  conversationDeviceWorksOn:
+    "這個對話的智慧體在 {name} 上操作。要換，跟它說用哪台。",
+  conversationDeviceOffline:
+    "{name} 不在線（上次在線：{when}）。在那台電腦的 dodoer 裡開啟這個工作區，智慧體才能接著用。",
+  conversationDeviceLendsNothing:
+    "{name} 現在命令列和瀏覽器都沒借出。在那台電腦上開啟借出，智慧體才能接著用。",
   modelSwitchPending: "正在切換到 {to}…",
   modelSwitchAfterTurn: "本輪 {from} · 下一則 {to}",
   modelSwitchAfterTurnHint: "這輪回覆繼續用 {from}，下一則訊息起用 {to}",

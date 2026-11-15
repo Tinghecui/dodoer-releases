@@ -395,7 +395,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = Arc::new(HostRegistry::new());
         let base = serve(tunnels_in(dir.path(), &registry), Arc::clone(&registry)).await;
-        let refused = tunnel::dial_cli_end(&base, "t", None, None).await.unwrap_err();
+        let refused = tunnel::dial_cli_end(&base, "t", None, None)
+            .await
+            .unwrap_err();
         assert_eq!(refused, NO_DESKTOP_NOTE);
     }
 

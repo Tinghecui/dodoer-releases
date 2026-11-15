@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::http::HeaderMap;
+use axum::{Extension, Json};
 use sea_orm::{DatabaseConnection, EntityTrait};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -41,6 +42,10 @@ pub const HEADER: &str = "x-codeg-device";
 
 /// The codeg-mcp feature token for `list_devices` and `use_device`.
 pub const COMPANION_FEATURE: &str = "devices";
+
+/// The `server_info` feature of a server that answers
+/// `/api/get_conversation_device`.
+pub const FEATURE: &str = "conversation_device";
 
 const KEY: &str = "host_devices.conversations";
 
@@ -275,6 +280,45 @@ pub async fn note_prompt(state: &AppState, headers: &HeaderMap, conversation_id:
     let device = device_in(headers).filter(|id| state.host_registry.knows_device(id));
     let root = root_of(&state.db.conn, conversation).await;
     state.host_registry.working().note_from(root, device);
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetConversationDeviceParams {
+    conversation_id: i32,
+}
+
+/// `POST /api/get_conversation_device`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationDeviceAnswer {
+    /// The device the conversation works on, as it is now; none until one
+    /// is chosen (and always where no device tools are served).
+    pub device: Option<DeviceView>,
+}
+
+/// `POST /api/get_conversation_device` (`cowork::api_routes`): what the mark
+/// beside a conversation's composer shows (`docs/devices.md` 8). A
+/// delegated child shows the device of the conversation it was started from.
+pub async fn get_conversation_device(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<GetConversationDeviceParams>,
+) -> Json<ConversationDeviceAnswer> {
+    let root = root_of(&state.db.conn, params.conversation_id).await;
+    Json(ConversationDeviceAnswer {
+        device: working_view(&state.host_registry, root),
+    })
+}
+
+/// The working device of the top-level `conversation`, as clients are shown
+/// it: online or not, and what it lends now.
+pub fn working_view(registry: &HostRegistry, conversation: i32) -> Option<DeviceView> {
+    let id = registry.working().get(conversation)?.working?;
+    registry
+        .device_list()
+        .devices
+        .into_iter()
+        .find(|device| device.id == id)
 }
 
 tokio::task_local! {
@@ -564,7 +608,13 @@ impl DeviceTools {
             }
         }
         let picked = self
-            .ask(connection_id, conversation, &devices, target.as_ref(), &state)
+            .ask(
+                connection_id,
+                conversation,
+                &devices,
+                target.as_ref(),
+                &state,
+            )
             .await?;
         self.hosts.working().work_on(conversation, &picked.id);
         Ok(Some(picked.name))
@@ -1164,18 +1214,36 @@ mod tests {
         let tools = tools(&registry, &person);
 
         // No working device and none named: the person picks.
-        assert_eq!(tools.resolve("conn-7", None).await, Ok(Some("macbook".into())));
+        assert_eq!(
+            tools.resolve("conn-7", None).await,
+            Ok(Some("macbook".into()))
+        );
         assert_eq!(person.asked().len(), 1);
         // Their pick is the working device now, and given.
-        assert_eq!(tools.resolve("conn-7", None).await, Ok(Some("macbook".into())));
-        assert_eq!(tools.resolve("conn-7", Some(" MacBook ")).await, Ok(Some("macbook".into())));
+        assert_eq!(
+            tools.resolve("conn-7", None).await,
+            Ok(Some("macbook".into()))
+        );
+        assert_eq!(
+            tools.resolve("conn-7", Some(" MacBook ")).await,
+            Ok(Some("macbook".into()))
+        );
         assert_eq!(person.asked().len(), 1);
         // A name that is none of them goes on, for the call to say so.
-        assert_eq!(tools.resolve("conn-7", Some("laptop")).await, Ok(Some("laptop".into())));
-        assert_eq!(tools.confirmed_names("conn-7").await, Some(vec!["macbook".to_string()]));
+        assert_eq!(
+            tools.resolve("conn-7", Some("laptop")).await,
+            Ok(Some("laptop".into()))
+        );
+        assert_eq!(
+            tools.confirmed_names("conn-7").await,
+            Some(vec!["macbook".to_string()])
+        );
 
         assert_eq!(tools.check_ssh("conn-7", "book-0123456789").await, Ok(()));
-        let refused = tools.check_ssh("conn-7", "imac-0123456789").await.unwrap_err();
+        let refused = tools
+            .check_ssh("conn-7", "imac-0123456789")
+            .await
+            .unwrap_err();
         assert!(refused.contains("not been given `study-imac`"), "{refused}");
         assert_eq!(person.asked().len(), 1, "ssh never waits on a card");
 
@@ -1205,13 +1273,39 @@ mod tests {
         let _imac = connect(&registry, "imac", "Study iMac");
         let person = Person::picking(None);
         let tools = tools(&registry, &person);
-        assert_eq!(tools.resolve("conn-7", None).await, Ok(Some("study-imac".into())));
+        assert_eq!(
+            tools.resolve("conn-7", None).await,
+            Ok(Some("study-imac".into()))
+        );
         assert_eq!(tools.check_ssh("conn-7", "imac-0123456789").await, Ok(()));
         assert_eq!(
             tools.confirmed_names("conn-7").await,
             Some(vec!["study-imac".to_string()])
         );
         assert!(person.asked().is_empty());
+    }
+
+    /// The mark shows the working device as it is now; nothing before one
+    /// is chosen, or once it has left the book.
+    #[tokio::test]
+    async fn the_mark_shows_the_working_device_as_it_is() {
+        let registry = Arc::new(HostRegistry::new());
+        let imac = connect(&registry, "imac", "Study iMac");
+        let _book = connect(&registry, "book", "MacBook");
+        assert_eq!(working_view(&registry, 7), None);
+
+        registry.working().work_on(7, "imac-0123456789");
+        let shown = working_view(&registry, 7).unwrap();
+        assert_eq!(shown.name, "study-imac");
+        assert!(shown.online && shown.browser && !shown.shell);
+        assert_eq!(working_view(&registry, 8), None);
+
+        drop(imac);
+        let shown = working_view(&registry, 7).unwrap();
+        assert!(!shown.online && !shown.browser);
+
+        registry.forget_device("imac-0123456789").unwrap();
+        assert_eq!(working_view(&registry, 7), None);
     }
 
     #[tokio::test]

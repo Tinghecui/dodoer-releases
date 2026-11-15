@@ -116,11 +116,12 @@ impl RemoteHostBrowser {
         call: impl FnOnce(String) -> BrowserCall,
         timeout: Duration,
     ) -> Result<T, String> {
-        let (host, own) = self
-            .hosts
-            .route_tab(tab_id)
-            .map_err(|e| route_note(&e))?;
-        if let Some(name) = host.prefix.strip_suffix(':').filter(|name| !name.is_empty()) {
+        let (host, own) = self.hosts.route_tab(tab_id).map_err(|e| route_note(&e))?;
+        if let Some(name) = host
+            .prefix
+            .strip_suffix(':')
+            .filter(|name| !name.is_empty())
+        {
             if let Some(chosen) = device_for(Some(name)).await? {
                 if chosen != name {
                     return Err(format!(
@@ -273,7 +274,8 @@ impl BrowserToolAccess for RemoteHostBrowser {
         if hosts.is_empty() {
             return BrowserTabsOutcome::unavailable(NO_DESKTOP_NOTE);
         }
-        if let (Some(caller), Some(tools)) = (working_device::caller(), working_device::installed()) {
+        if let (Some(caller), Some(tools)) = (working_device::caller(), working_device::installed())
+        {
             if let Some(names) = tools.confirmed_names(&caller).await {
                 hosts.retain(|host| match host.prefix.strip_suffix(':') {
                     Some(name) => names.iter().any(|n| n == name),
@@ -383,9 +385,7 @@ impl BrowserToolAccess for RemoteHostBrowser {
                 let asked = device;
                 let device = match device_for(asked.as_deref()).await {
                     Ok(device) => device,
-                    Err(note) => {
-                        return BrowserTabOutcome::refused(None, ERROR_UNAVAILABLE, note)
-                    }
+                    Err(note) => return BrowserTabOutcome::refused(None, ERROR_UNAVAILABLE, note),
                 };
                 let host = match self.hosts.route_open(device.as_deref()) {
                     Ok(host) => host,
@@ -402,8 +402,9 @@ impl BrowserToolAccess for RemoteHostBrowser {
                     Ok(outcome) => self.localize::<BrowserTabOutcome>(&host, outcome),
                     Err(note) => Err(note),
                 };
-                let mut answer = answer
-                    .unwrap_or_else(|note| BrowserTabOutcome::refused(None, ERROR_UNAVAILABLE, note));
+                let mut answer = answer.unwrap_or_else(|note| {
+                    BrowserTabOutcome::refused(None, ERROR_UNAVAILABLE, note)
+                });
                 // The person picked another device than the agent named.
                 if let (Some(asked), Some(used)) = (asked.as_deref(), device.as_deref()) {
                     if !asked.trim().eq_ignore_ascii_case(used) {

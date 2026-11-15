@@ -941,6 +941,10 @@ pub fn api_routes() -> Router {
             "/forget_host_device",
             post(crate::web::host_devices::forget_host_device),
         )
+        .route(
+            "/get_conversation_device",
+            post(crate::web::working_device::get_conversation_device),
+        )
         // Dropped by the 0.43 base; desktop apps up to 1.4.0 still call it.
         .route(
             "/acp_fetch_kimi_models",

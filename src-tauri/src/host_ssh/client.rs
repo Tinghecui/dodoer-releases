@@ -522,7 +522,8 @@ mod tests {
             legacy: None,
         };
         let text = written(&plan);
-        let own = "Match originalhost imac,desktop exec \"printenv CODEG_CLI_CALLER >/dev/null\"\n  \
+        let own =
+            "Match originalhost imac,desktop exec \"printenv CODEG_CLI_CALLER >/dev/null\"\n  \
                    ControlPath \"/srv/data/host-ssh/cm-aaaa1111-${CODEG_CLI_CALLER}\"\n";
         let at = text.find(own).unwrap_or_else(|| panic!("{text}"));
         assert!(at < text.find("Host imac desktop\n").unwrap());

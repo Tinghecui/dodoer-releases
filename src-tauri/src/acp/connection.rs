@@ -35855,7 +35855,10 @@ mod tests {
     async fn claude_usage_window_is_capped_at_the_auto_compact_window() {
         let reports = [(1000, 400_000), (2000, 1_000_000), (3000, 200_000)];
         let (held, sent) = claude_usage_after(Some(400_000), &reports).await;
-        assert_eq!(sent, vec![(1000, 400_000), (2000, 400_000), (3000, 200_000)]);
+        assert_eq!(
+            sent,
+            vec![(1000, 400_000), (2000, 400_000), (3000, 200_000)]
+        );
         assert_eq!(held, Some((3000, 200_000)));
         // Launched without one: what Claude reports, unchanged.
         let (held, sent) = claude_usage_after(None, &reports).await;

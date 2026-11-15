@@ -956,11 +956,8 @@ impl DelegationListener {
         };
         // Cowork fork: whose call it is, for `web::host_browser` to check
         // against that conversation's devices.
-        crate::web::working_device::as_caller(
-            entry.parent_connection_id,
-            self.browser.list_tabs(),
-        )
-        .await
+        crate::web::working_device::as_caller(entry.parent_connection_id, self.browser.list_tabs())
+            .await
     }
 
     /// Validate the token and read one shared page.

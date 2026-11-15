@@ -667,6 +667,24 @@ impl HostRegistry {
         self.lock().browser_hosts()
     }
 
+    /// Whether window `host` lets agents use the person's Chrome with the
+    /// tabs it lends (`web::session_usage` says "Chrome" then).
+    pub fn host_lends_chrome(&self, host: u64) -> bool {
+        self.lock()
+            .hosts
+            .iter()
+            .any(|h| h.id == host && h.lends_chrome())
+    }
+
+    /// The name device `id` goes by in the book.
+    pub fn device_name(&self, id: &str) -> Option<String> {
+        self.device_list()
+            .devices
+            .into_iter()
+            .find(|device| device.id == id)
+            .map(|device| device.name)
+    }
+
     /// Where a new tab opens (`Inner::route_open`).
     pub fn route_open(&self, device: Option<&str>) -> Result<BrowserHost, BrowserRouteError> {
         self.lock().route_open(device)
@@ -1517,6 +1535,24 @@ mod tests {
         let list = registry.device_list();
         assert!(list.devices[0].online);
         assert!(!list.devices[0].chrome && !list.devices[0].browser);
+    }
+
+    /// What the mark on a conversation says of a call (`web::session_usage`):
+    /// Chrome only where the window lends it with its tabs, and the device
+    /// by the name in the book.
+    #[tokio::test]
+    async fn a_window_says_whether_its_tabs_are_chrome_and_a_device_its_name() {
+        let registry = Arc::new(HostRegistry::new());
+        let book = browser_on(&registry, lends_chrome(), "book", "MacBook");
+        let imac = browser_on(&registry, browser(), "imac", "Study iMac");
+        assert!(registry.host_lends_chrome(book.id()));
+        assert!(!registry.host_lends_chrome(imac.id()));
+        assert!(!registry.host_lends_chrome(book.id() + imac.id() + 1));
+        assert_eq!(
+            registry.device_name("book-0123456789").as_deref(),
+            Some("macbook")
+        );
+        assert_eq!(registry.device_name("nothing-0123456789"), None);
     }
 
     /// A tab id with its device's name goes to that device — to the window

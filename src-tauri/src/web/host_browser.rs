@@ -73,6 +73,13 @@ impl RemoteHostBrowser {
         call: BrowserCall,
         timeout: Duration,
     ) -> Result<Value, String> {
+        // The conversation shows it uses this device's browser while the
+        // call is out (`web::session_usage`).
+        let _usage = super::session_usage::track_browser(
+            device_name(host),
+            Some(self.hosts.host_lends_chrome(host.host)),
+        )
+        .await;
         match self
             .hosts
             .call_host(host.host, BridgeCall::Browser(call), timeout)
@@ -145,6 +152,14 @@ async fn device_for(name: Option<&str>) -> Result<Option<String>, String> {
         (Some(caller), Some(tools)) => tools.resolve(&caller, name).await,
         _ => Ok(name.map(str::to_string)),
     }
+}
+
+/// The name of the device `host` is on; none for an app from before devices.
+fn device_name(host: &BrowserHost) -> Option<String> {
+    host.prefix
+        .strip_suffix(':')
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
 }
 
 /// "`laptop`", or what an app from before devices is.

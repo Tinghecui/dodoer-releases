@@ -320,6 +320,9 @@ impl HostBridgeClient {
         &self,
         call: BrowserCall,
     ) -> Result<T, String> {
+        // This computer's browser, while the call is out
+        // (`web::session_usage`). Which of its browsers is the app's to say.
+        let _usage = crate::web::session_usage::track_browser(None, None).await;
         let result = self.call(BridgeCall::Browser(call)).await;
         if let Err(e) = &result {
             tracing::warn!("[host-bridge] browser call failed: {e}");

@@ -949,6 +949,12 @@ pub fn api_routes() -> Router {
             "/get_conversation_device",
             post(crate::web::working_device::get_conversation_device),
         )
+        // Which conversations use one of the person's computers now, for
+        // the mark on their row and tab (`web::session_usage`).
+        .route(
+            "/list_session_usage",
+            post(crate::web::session_usage::list_session_usage),
+        )
         // Dropped by the 0.43 base; desktop apps up to 1.4.0 still call it.
         .route(
             "/acp_fetch_kimi_models",

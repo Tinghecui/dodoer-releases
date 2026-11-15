@@ -480,6 +480,16 @@ async fn async_main(
             }),
         )));
     }
+    // Cowork fork: which conversations use one of the person's computers
+    // now — a device's browser or shell here, the app's browser in its own
+    // daemon — for the mark on their row and tab (`web::session_usage`).
+    codeg_lib::web::session_usage::install(codeg_lib::web::session_usage::SessionUsage::new(
+        state.emitter.clone(),
+        Arc::new(codeg_lib::web::session_usage::LiveCallerConversations {
+            manager: state.connection_manager.clone_ref(),
+            db: state.db.conn.clone(),
+        }),
+    ));
     codeg_lib::boot::start_delegation_service(
         &daemon,
         match &host_bridge {

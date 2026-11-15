@@ -242,12 +242,19 @@ pub async fn serve_cli_end(
                 Some(id) => ShellTarget::Device(id),
                 None => ShellTarget::Default,
             };
-            let stop = tunnels
-                .registry
-                .shell_device(target)
-                .map(|device| (Arc::clone(&tunnels.registry), device));
+            let device = tunnels.registry.shell_device(target);
+            // The conversation shows it uses this device's shell for as
+            // long as the tunnel is open (`web::session_usage`).
+            let name = device
+                .as_deref()
+                .and_then(|id| tunnels.registry.device_name(id));
+            let usage = crate::web::session_usage::track_shell(caller, name).await;
+            let stop = device.map(|device| (Arc::clone(&tunnels.registry), device));
             ws.protocols([TUNNEL_PROTOCOL])
-                .on_upgrade(move |cli| join(cli, desktop, shutdown, stop))
+                .on_upgrade(move |cli| async move {
+                    join(cli, desktop, shutdown, stop).await;
+                    drop(usage);
+                })
                 .into_response()
         }
         Err((status, message)) => (status, message).into_response(),

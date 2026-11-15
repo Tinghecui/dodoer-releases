@@ -11,6 +11,7 @@ pub mod host_tunnel;
 pub mod port_probe;
 pub mod proxy_auth;
 pub mod router;
+pub mod session_usage;
 pub mod shutdown;
 pub mod socket_inherit;
 pub mod working_device;

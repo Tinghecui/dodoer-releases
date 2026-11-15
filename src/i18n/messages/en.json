@@ -2028,6 +2028,13 @@
     "restartFailed": "Failed to restart: {message}",
     "loadFailed": "Load failed: {message}"
   },
+  "CrashReportSettings": {
+    "title": "Send desktop crash and hang reports",
+    "description": "When dodoer crashes, hangs or is force quit, it reports that the next time it starts, through the Cowork server it is connected to, which passes it on to Sentry. Off unless you turn it on; turning it off deletes what is kept on this computer.",
+    "whatIsSent": "Sent: what happened (a crash, a hang, or an exit that was not a normal quit), the scrubbed error message and code location, how long it hung, whether an update or a quit was under way, the app version and the operating system.",
+    "whatIsNotSent": "Not sent: conversation content, file paths, web addresses.",
+    "saveFailed": "Failed to save the setting: {message}"
+  },
   "MentionPanelSettings": {
     "title": "Mention panel",
     "description": "Choose which tabs the @ panel in the composer shows, and drag them into the order you want. The panel opens on the first tab with matches. The Files tab is always shown.",

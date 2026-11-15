@@ -2028,6 +2028,13 @@
     "restartFailed": "다시 시작 실패: {message}",
     "loadFailed": "불러오기 실패: {message}"
   },
+  "CrashReportSettings": {
+    "title": "데스크톱 앱 충돌 및 멈춤 보고서 보내기",
+    "description": "dodoer가 충돌하거나 멈추거나 강제 종료되면, 다음 실행 시 연결된 Cowork 서버를 거쳐 Sentry로 보냅니다. 기본값은 꺼짐이며, 끄면 이 컴퓨터에 쌓인 기록이 삭제됩니다.",
+    "whatIsSent": "보내는 내용: 발생한 일(충돌, 멈춤, 정상 종료되지 않음), 민감 정보를 제거한 오류 메시지와 코드 위치, 멈춘 시간, 업데이트나 종료 중이었는지 여부, 앱 버전과 운영체제.",
+    "whatIsNotSent": "보내지 않는 내용: 대화 내용, 파일 경로, 웹 주소.",
+    "saveFailed": "설정을 저장하지 못했습니다: {message}"
+  },
   "MentionPanelSettings": {
     "title": "멘션 패널",
     "description": "입력창의 @ 멘션 패널에 표시할 탭을 고르고, 드래그해서 원하는 순서로 정렬합니다. 패널을 열면 일치하는 결과가 있는 첫 번째 탭이 선택됩니다. “파일” 탭은 항상 표시됩니다.",

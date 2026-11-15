@@ -2028,6 +2028,13 @@
     "restartFailed": "重新啟動失敗：{message}",
     "loadFailed": "載入失敗：{message}"
   },
+  "CrashReportSettings": {
+    "title": "傳送桌面端當機和卡住報告",
+    "description": "dodoer 當機、卡住或被強制結束後，下次啟動時經由它連線的 Cowork 伺服器轉送給 Sentry。預設關閉；關閉時會刪除這台電腦上累積的紀錄。",
+    "whatIsSent": "會傳送：發生了什麼（當機、卡住、未正常結束）、去識別化後的錯誤訊息和程式碼位置、卡住多久、當時是否正在更新或結束、應用程式版本和作業系統。",
+    "whatIsNotSent": "不會傳送：對話內容、檔案路徑、網址。",
+    "saveFailed": "儲存設定失敗：{message}"
+  },
   "MentionPanelSettings": {
     "title": "提及面板",
     "description": "選擇輸入框中 @ 提及面板顯示哪些分頁，並拖曳調整它們的順序。面板開啟時會定位到第一個有符合結果的分頁。「檔案」分頁一律顯示。",

@@ -579,7 +579,19 @@ pub async fn remote_http_call(
         .ok_or_else(|| {
             AppCommandError::not_found(format!("Remote connection {connection_id} not found"))
         })?;
+    call_api(&proxy, &conn, &command, args, timeout_ms).await
+}
 
+/// One API call to `conn`'s server, with its token and custom headers: what
+/// [`remote_http_call`] does once it has the connection. Cowork fork: also how
+/// the app sends its own crash reports (`crate::crash_report`).
+pub(crate) async fn call_api(
+    proxy: &RemoteProxyState,
+    conn: &RemoteWorkspaceConnectionInfo,
+    command: &str,
+    args: Option<Value>,
+    timeout_ms: Option<u64>,
+) -> Result<Value, AppCommandError> {
     let url = format!(
         "{}/api/{}",
         conn.base_url.trim_end_matches('/'),

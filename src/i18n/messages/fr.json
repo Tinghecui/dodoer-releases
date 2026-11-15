@@ -2028,6 +2028,13 @@
     "restartFailed": "Échec du redémarrage : {message}",
     "loadFailed": "Échec du chargement : {message}"
   },
+  "CrashReportSettings": {
+    "title": "Envoyer les rapports de plantage et de blocage de l'app de bureau",
+    "description": "Quand dodoer plante, se bloque ou est forcé à quitter, il le signale au démarrage suivant, via le serveur Cowork auquel il est connecté, qui le transmet à Sentry. Désactivé sauf si vous l'activez ; le désactiver supprime ce qui est conservé sur cet ordinateur.",
+    "whatIsSent": "Envoyé : ce qui s'est passé (un plantage, un blocage ou une fermeture anormale), le message d'erreur et l'emplacement dans le code expurgés, la durée du blocage, si une mise à jour ou une fermeture était en cours, la version de l'app et le système d'exploitation.",
+    "whatIsNotSent": "Non envoyé : le contenu des conversations, les chemins de fichiers, les adresses web.",
+    "saveFailed": "Impossible d'enregistrer le réglage : {message}"
+  },
   "MentionPanelSettings": {
     "title": "Panneau de mentions",
     "description": "Choisissez les onglets qu'affiche le panneau @ de la zone de saisie et faites-les glisser dans l'ordre voulu. Le panneau s'ouvre sur le premier onglet qui contient des résultats. L'onglet Fichiers est toujours affiché.",

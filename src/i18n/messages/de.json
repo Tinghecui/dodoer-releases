@@ -2028,6 +2028,13 @@
     "restartFailed": "Neustart fehlgeschlagen: {message}",
     "loadFailed": "Laden fehlgeschlagen: {message}"
   },
+  "CrashReportSettings": {
+    "title": "Absturz- und Hängeberichte der Desktop-App senden",
+    "description": "Wenn dodoer abstürzt, hängt oder sofort beendet wird, meldet es das beim nächsten Start über den verbundenen Cowork-Server, der es an Sentry weiterleitet. Standardmäßig aus; beim Ausschalten wird gelöscht, was auf diesem Computer gespeichert ist.",
+    "whatIsSent": "Gesendet wird: was passiert ist (ein Absturz, ein Hänger oder ein Ende ohne normales Beenden), die bereinigte Fehlermeldung und Codestelle, wie lange es hing, ob gerade ein Update oder das Beenden lief, die App-Version und das Betriebssystem.",
+    "whatIsNotSent": "Nicht gesendet werden: Gesprächsinhalte, Dateipfade, Webadressen.",
+    "saveFailed": "Einstellung konnte nicht gespeichert werden: {message}"
+  },
   "MentionPanelSettings": {
     "title": "Erwähnungspanel",
     "description": "Lege fest, welche Tabs das @-Panel im Eingabefeld anzeigt, und ziehe sie in die gewünschte Reihenfolge. Das Panel öffnet sich auf dem ersten Tab mit Treffern. Der Tab „Dateien“ wird immer angezeigt.",

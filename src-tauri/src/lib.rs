@@ -48,6 +48,9 @@ pub mod computer;
 pub mod cowork;
 // Cowork fork: the portal's `codeg://cowork/connect` link (desktop side).
 pub mod cowork_connect;
+// Cowork fork: the desktop app's own crashes and hangs (docs/telemetry.md §5.11).
+#[cfg(feature = "tauri-runtime")]
+pub mod crash_report;
 pub mod db;
 pub mod deep_link;
 pub mod folder_links;
@@ -188,6 +191,7 @@ mod tauri_app {
         if APP_QUITTING.swap(true, Ordering::Relaxed) {
             return;
         }
+        crate::crash_report::note_quitting();
         // First, while every window is still standing: remember which
         // workspace windows are open, and stop recording before the shutdown
         // tears them down.
@@ -222,6 +226,8 @@ mod tauri_app {
         // The child daemon (`local_daemon`): SIGTERM, so it cancels running
         // turns and closes as `codeg-server` does, then kill.
         crate::commands::local_daemon::stop_on_exit(app);
+        // Last: a hang or a crash before here is still reported.
+        crate::crash_report::note_clean_exit();
     }
 
     /// `--open` on the desktop: the conversation opens in THIS process, by the
@@ -1006,6 +1012,9 @@ mod tauri_app {
                 ))
                 .map_err(|e| e.to_string())?;
                 app.manage(database);
+                // Cowork fork: crash and hang reports, when switched on
+                // (`crash_report`).
+                crate::crash_report::start(app.handle());
 
                 // The `codeg-cli` startup put first on PATH (`cli_run::shim`),
                 // written off the way of the window.
@@ -2313,6 +2322,8 @@ mod tauri_app {
                 web::get_web_service_config,
                 web::update_web_service_config,
                 web::probe_web_service_port,
+                crate::crash_report::get_crash_report_settings,
+                crate::crash_report::update_crash_report_settings,
             ])
             .build(context)
             .expect("error while building tauri application")

@@ -2028,6 +2028,13 @@
     "restartFailed": "No se pudo reiniciar: {message}",
     "loadFailed": "Error al cargar: {message}"
   },
+  "CrashReportSettings": {
+    "title": "Enviar informes de bloqueos y cuelgues de la app de escritorio",
+    "description": "Cuando dodoer se bloquea, se cuelga o se fuerza su cierre, lo informa la próxima vez que se inicia, a través del servidor Cowork al que está conectado, que lo reenvía a Sentry. Desactivado salvo que lo actives; al desactivarlo se borra lo guardado en este equipo.",
+    "whatIsSent": "Se envía: qué ocurrió (un bloqueo, un cuelgue o un cierre que no fue normal), el mensaje de error y la ubicación en el código ya depurados, cuánto tiempo estuvo colgado, si había una actualización o un cierre en curso, la versión de la app y el sistema operativo.",
+    "whatIsNotSent": "No se envía: el contenido de las conversaciones, rutas de archivos, direcciones web.",
+    "saveFailed": "No se pudo guardar el ajuste: {message}"
+  },
   "MentionPanelSettings": {
     "title": "Panel de menciones",
     "description": "Elige qué pestañas muestra el panel @ del cuadro de entrada y arrástralas en el orden que quieras. El panel se abre en la primera pestaña con coincidencias. La pestaña Archivos siempre se muestra.",

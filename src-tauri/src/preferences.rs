@@ -18,6 +18,10 @@ const CODEG_DIR_NAME: &str = ".codeg";
 #[serde(default)]
 pub struct AppPreferences {
     pub disable_hardware_acceleration: bool,
+    /// Cowork fork: "Send desktop crash and hang reports" (`crash_report`),
+    /// off unless the person turns it on. Read here because the panic hook
+    /// and the watchdog need it as the app starts.
+    pub crash_reports: bool,
 }
 
 pub fn preferences_file_path() -> Option<PathBuf> {

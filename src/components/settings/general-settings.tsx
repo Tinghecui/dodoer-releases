@@ -43,6 +43,7 @@ import { usePlatform } from "@/hooks/use-platform"
 import { relaunchApp } from "@/lib/updater"
 import { toErrorMessage } from "@/lib/app-error"
 import { CloseBehaviorSettingsSection } from "@/components/settings/close-behavior-settings"
+import { CrashReportSettingsSection } from "@/components/settings/crash-report-settings"
 import { DesktopNotificationSettingsSection } from "@/components/settings/desktop-notification-settings"
 import { MentionPanelSettingsSection } from "@/components/settings/mention-panel-settings"
 import { SettingScopeBadge } from "@/components/settings/settings-scope"
@@ -530,6 +531,8 @@ export function GeneralSettings() {
         <WindowAttentionSettingsSection />
 
         <NotificationSoundSettingsSection />
+
+        <CrashReportSettingsSection />
       </div>
     </ScrollArea>
   )

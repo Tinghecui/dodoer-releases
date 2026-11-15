@@ -2028,6 +2028,13 @@
     "restartFailed": "重启失败：{message}",
     "loadFailed": "加载失败：{message}"
   },
+  "CrashReportSettings": {
+    "title": "发送桌面端崩溃和卡死报告",
+    "description": "dodoer 崩溃、卡死或被强制退出后，下次启动时经它连着的 Cowork 服务器转给 Sentry。默认关闭；关掉时会删除这台电脑上攒着的记录。",
+    "whatIsSent": "会发送：出了什么事（崩溃、卡死、没有正常退出）、脱敏后的报错和代码位置、卡了多久、当时是否在升级或退出、应用版本和操作系统。",
+    "whatIsNotSent": "不会发送：对话内容、文件路径、网址。",
+    "saveFailed": "保存设置失败：{message}"
+  },
   "MentionPanelSettings": {
     "title": "提及面板",
     "description": "选择输入框中 @ 提及面板显示哪些标签页，并拖动调整它们的顺序。面板打开时会定位到第一个有匹配结果的标签页。「文件」标签页始终显示。",

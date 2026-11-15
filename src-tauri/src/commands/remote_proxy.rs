@@ -2483,7 +2483,8 @@ impl WsHost for DesktopWsHost {
         // The person lets this window's agents use their own Chrome: said
         // beside `browser`, through which Chrome is reached, so that a server
         // with several computers to choose from sends its calls to this one
-        // (`docs/host-choice.md`).
+        // (`web::host_registry`, until agents name the device they mean:
+        // `docs/devices.md` 5).
         let lends_chrome = !capabilities.is_empty()
             && self
                 .app

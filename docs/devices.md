@@ -1,10 +1,10 @@
 # 设备：服务器上的智能体操作哪台电脑
 
-状态：2026-11-15 设计稿。方向和四个决定项用户确认过（第 2 节），代码还没动。做完后取代 `docs/host-choice.md`（自动 + 固定，#245）。
+状态：2026-11-15 设计稿，方向和四个决定项用户确认过（第 2 节）。第 1 步（登记簿、设备面板、起名，去掉「固定」）在做；之后各步还没动。取代原来的 `docs/host-choice.md`（自动 + 固定，#245），那份文档已删，要看去 git 历史。
 
 ## 1. 问题
 
-`docs/host-choice.md` 的做法是：整台服务器对「浏览器调用去哪台」「`ssh desktop` 去哪台」各只有一个答案。没固定时靠猜（开了 Chrome 开关的优先，其余看谁最近活跃），固定了就所有对话都用那一台。
+原来 `docs/host-choice.md`（#245）的做法是：整台服务器对「浏览器调用去哪台」「`ssh desktop` 去哪台」各只有一个答案。没固定时靠猜（开了 Chrome 开关的优先，其余看谁最近活跃），固定了就所有对话都用那一台。
 
 2026-11-15 评审代码、和用户讨论之后，结论是这个模型本身不对：
 
@@ -55,8 +55,8 @@
 | 编号 | 32 位十六进制 | 桌面 app 第一次用到时随机生成，存在 `~/.codeg/device-id`（已有，`host_device.rs`） |
 | 名字 | `desktop` | 用户起的，或电脑名称转成的（4.3） |
 | 电脑名称 | `书房的 iMac` | 系统的「电脑名称」（已有） |
-| 主机名 | `iMac` | 新增：`scutil --get LocalHostName`，电脑名称转不成名字时用 |
-| 类型 | `desktop`、`laptop`；留着 `phone`、`tablet` | 新增：有内置电池的算笔记本。只用来显示图标 |
+| 机型 | `iMac`、`MacBook Air` | 新增：「关于本机」里的机型名（`system_profiler SPHardwareDataType` 的 `machine_name`），英文。电脑名称转不成名字时用它 |
+| 类型 | `desktop`、`laptop`；留着 `phone`、`tablet` | 新增：机型以 `MacBook` 开头的算笔记本，其余 Mac 算台式机。只用来显示图标 |
 | 系统 | `macos` | 已有（`ShellHost.platform`），改成跟设备走 |
 | app 版本 | `1.6.8` | 事件 socket 的 `hello` 里已经有 |
 | 登录名 | | 借出命令行时报的（已有），记最后一次的 |
@@ -77,7 +77,7 @@
 
 - 规则：小写字母、数字、短横线，字母或数字开头，最多 32 个字符，一台服务器上不重复。
 - **第一次连接时问**：这台设备的 app 在远端窗口里弹一次「给这台电脑起个名字」，输入框里先填好默认名字，「确定」或「跳过」。跳过就用默认名字。问之前设备已经用默认名字登记了，不耽误用。
-- **默认名字**：电脑名称里的字母和数字留下并转成小写，其余换成短横线（`书房的 iMac` → `imac`）。剩下不到两个字符（比如全中文的名称）就对主机名做同样的事，再不行就叫 `device`。重名时加 `-2`、`-3`。
+- **默认名字**：先去掉电脑名称里「谁的」那一截（`James's MacBook Air`、`张三的MacBook Air` 都只看 `MacBook Air`），剩下的字母和数字留下并转成小写，其余换成短横线（→ `macbook-air`）。剩下不到两个字符（比如全中文的名称 `书房电脑`）就用机型的英文名做同样的事（`iMac` → `imac`），没有机型就用类型（`desktop`、`laptop`），再不行叫 `device`。重名时加 `-2`、`-3`。
 - 服务器的 `~/.ssh/config` 里已经有同名的 `Host` 时不让用这个名字：我们的配置排在最前面，会盖住用户自己的。
 - 任何设备上都能在面板里改名。改了以后 `ssh` 配置立刻重写，旧名字不再通；带着旧名字的标签编号（5.2）失效，重新列一次标签即可。工作设备按编号记，不受影响。
 - 名字可能带人名（电脑名称转来的），和电脑名称一样不写进服务器日志，日志里只写编号的前 8 位（已有的规矩）。
@@ -101,7 +101,7 @@
 - `POST /api/stop_host_device`，`{"id"}`：远程停止借出（7.2）。
 - `POST /api/get_conversation_device`，`{"conversationId"}`：这个对话的工作设备和它现在的状态，给对话里的标记用（第 8 节）。
 
-`/api/get_host_devices`、`/api/set_host_choice` 和 feature `host_choice` 删掉。老的桌面 app 看不到 `host_choice` 就不显示它的选择面板。
+`/api/get_host_devices`、`/api/set_host_choice` 和 feature `host_choice` 删掉（第 1 步）。老的桌面 app 看不到 `host_choice` 就不显示它的选择面板。
 
 ## 5. 按名字操作
 
@@ -267,7 +267,7 @@ codeg-mcp 多一个工具组「设备」（设置里和浏览器、电脑操作�
 
 ## 8. 界面
 
-- **设备面板**：侧栏底部现在那个「两块屏幕」的图标（`status-bar-host-choice.tsx`），点开从两个「固定」下拉框换成设备列表。一台一行：名字、电脑名称、「这台」、在线或「上次在线 …」、命令行和浏览器的状态、正在用它的对话。可以改名、停止借出、删除（不在线的）。网页和桌面 app 的远端窗口里都有。
+- **设备面板**：侧栏底部那个「两块屏幕」的图标（`status-bar-devices.tsx`，原来的 `status-bar-host-choice.tsx`），点开从两个「固定」下拉框换成设备列表。一台一行：名字、电脑名称、「这台」、在线或「上次在线 …」、命令行和浏览器的状态、正在用它的对话。可以改名、停止借出、删除（不在线的）。网页和桌面 app 的远端窗口里都有。
 - **对话里的标记**：输入框旁边一个小标记「desktop」，这个对话有工作设备时才出现。那台设备用不了时变琥珀色，悬停说明原因。只显示。
 - **确认卡片**：6.2。
 - **起名**：4.3，在设备自己的远端窗口里弹一次。
@@ -280,7 +280,7 @@ codeg-mcp 多一个工具组「设备」（设置里和浏览器、电脑操作�
 
 | 文件 | 留什么 | 改什么 |
 |---|---|---|
-| `src-tauri/src/host_device.rs` | 编号、电脑名称 | `device` 多带主机名、类型 |
+| `src-tauri/src/host_device.rs` | 编号、电脑名称 | `device` 多带机型、类型 |
 | `src-tauri/src/web/host_registry.rs` | 注册、调用、通道、同一台设备的窗口合并 | 删 `HostChoices`、`Inner::pick` 里跨设备的规则、`PinnedAway`；调用和通道改成指定设备编号；`active_at` 只用来在同一台设备的几个窗口之间选；`RemoteHostBrowser` 按设备和标签找 socket |
 | `src-tauri/src/web/host_choice.rs` | | 换成 `host_devices.rs`：登记簿、对话的工作设备、4.5 的接口 |
 | `src-tauri/src/host_ssh/client.rs` | 密钥、`Include`、原子写 | `prepare` 按登记簿写每台设备一段；`known_hosts` 一台一个名字 |
@@ -288,7 +288,7 @@ codeg-mcp 多一个工具组「设备」（设置里和浏览器、电脑操作�
 | `src-tauri/src/commands/remote_proxy.rs` | 注册、重新注册 | 转发时带 `X-Codeg-Device`；收 `host_stop`；重新借出的标记 |
 | `src-tauri/src/commands/host_ssh.rs`、`host_ssh/mod.rs` | 借出的记法、自检、权限 | `caffeinate`；被远程停止的状态 |
 | `src-tauri/src/acp/delegation/companion.rs`、`listener.rs`（上游文件） | | `browser_open_tab` 的 `device`；工具组「设备」；分发时传连接编号 |
-| `src/components/cowork/status-bar-host-choice.tsx`、`src/lib/cowork/host-choice.ts` | 图标的位置、轮询 | 内容换成设备列表 |
+| `src/components/cowork/status-bar-devices.tsx`、`src/lib/cowork/host-devices.ts`（原来的 `status-bar-host-choice.tsx`、`host-choice.ts`） | 图标的位置、轮询 | 内容换成设备列表 |
 
 ## 10. 兼容
 
@@ -312,12 +312,14 @@ codeg-mcp 多一个工具组「设备」（设置里和浏览器、电脑操作�
 
 | 步 | 做什么 | 做完能验什么 |
 |---|---|---|
-| 1 | 登记簿、`device` 多带的字段、4.5 的接口、设备面板（只读）、起名、改名、删除 | 两台 Mac 都出现在面板里，名字对，在线和上次在线对，重启服务器后还在 |
-| 2 | SSH 按名字：一台设备一段配置、`desktop proxy --device`、5.3 的说明、每台设备各自限速；去掉命令行的自动和固定 | 服务器终端里 `ssh desktop hostname`、`ssh laptop hostname` 各到各的；一台退出后另一台不受影响，说明写得对 |
-| 3 | 浏览器按名字：`browser_open_tab` 的 `device`、标签编号带设备名；去掉浏览器的自动和固定、`host_choice` 的接口和界面 | 智能体分别在两台上开网页；在另一台上点窗口、切 Chrome 开关都不影响 |
+| 1 | 登记簿、`device` 多带的字段、4.5 的接口、设备面板、起名、改名、删除；去掉「固定」和它的接口、界面 | 两台 Mac 都出现在面板里，名字对，在线和上次在线对，重启服务器后还在 |
+| 2 | SSH 按名字：一台设备一段配置、`desktop proxy --device`、5.3 的说明、每台设备各自限速；去掉命令行的自动 | 服务器终端里 `ssh desktop hostname`、`ssh laptop hostname` 各到各的；一台退出后另一台不受影响，说明写得对 |
+| 3 | 浏览器按名字：`browser_open_tab` 的 `device`、标签编号带设备名；去掉浏览器的自动 | 智能体分别在两台上开网页；在另一台上点窗口、切 Chrome 开关都不影响 |
 | 4 | 工作设备：`list_devices`、`use_device`、确认卡片、当前设备、对话里的标记、SSH 按对话分连接和检查 | 第 13 节的 4～8 |
 | 5 | 远程停止借出、借出期间不睡眠、「正在使用」 | 第 13 节的 9、10 |
-| 6 | 更新 `COWORK.md`、`docs/host-ssh.md`、`docs/remote-browser.md`，删 `docs/host-choice.md`；两台 Mac 完整验收 | |
+| 6 | 更新 `COWORK.md`、`docs/host-ssh.md`、`docs/remote-browser.md`；两台 Mac 完整验收 | |
+
+「固定」放在第 1 步就去掉：它是用户否决的做法；生产服务器 2026-11-15 已经是带着它的 v0.6.7，但库里没有任何固定记录（`host_choice.choices`），去掉不丢东西。旧 app 看服务器不再报 `host_choice` 就不显示固定的界面。第 1 步之后、第 2、3 步之前，浏览器和命令行仍按原来的自动规则选电脑（开了 Chrome 开关的优先，其余看最近活跃）。
 
 第 2、3 步合并之后、第 4 步之前，智能体可以直接按名字连，没有确认卡片。这段时间服务器上只有用户自己在用。
 

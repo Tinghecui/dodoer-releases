@@ -58,7 +58,7 @@ pub mod git_repo;
 /// child daemon (`local_daemon`).
 pub mod host_bridge;
 /// Cowork fork: the computer this app is on, as it names it to servers
-/// (`docs/host-choice.md`).
+/// (`docs/devices.md`).
 pub mod host_device;
 /// Cowork fork: lending this computer's shell to a remote workspace
 /// (`docs/host-ssh.md`).
@@ -1135,6 +1135,9 @@ mod tauri_app {
                 // is lent to (`docs/host-ssh.md`). Before any window, so the
                 // first remote one finds it.
                 crate::commands::host_ssh::start(app.handle(), &db.conn, &effective_data_dir);
+                // Cowork fork: the computer remote windows name to their
+                // servers (`docs/devices.md`), found before they ask.
+                crate::host_device::warm_up();
 
                 // Computer use: the helper, the window table, and the two
                 // background duties (end every grant when the group is

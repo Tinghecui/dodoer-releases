@@ -116,6 +116,9 @@ async fn handle_ws_connection(
     // Cowork fork: set once this socket's desktop app registers as a host
     // (`host_register`); dropped — unregistering it — when the socket ends.
     let mut host: Option<HostRegistration> = None;
+    // Cowork fork: the version its `hello` said, for the book of devices
+    // (`web::host_devices`).
+    let mut app_version: Option<String> = None;
 
     // Server→client ready handshake (legacy `__ready__` frame). Phase 1
     // keeps this so unmigrated transports still gate `acp_connect` on the
@@ -247,6 +250,7 @@ async fn handle_ws_connection(
                                     &mut subscriptions,
                                     &mut next_epoch,
                                     &mut host,
+                                    &mut app_version,
                                 ).await;
                             }
                             Err(e) => {
@@ -286,6 +290,7 @@ async fn handle_client_msg(
     subscriptions: &mut HashMap<String, ActiveSubscription>,
     next_epoch: &mut u64,
     host: &mut Option<HostRegistration>,
+    app_version: &mut Option<String>,
 ) {
     match msg {
         ClientMsg::Attach {
@@ -382,6 +387,11 @@ async fn handle_client_msg(
                 version.as_deref().unwrap_or("?"),
                 api_version.map_or_else(|| "?".to_string(), |v| v.to_string())
             );
+            *app_version = version.filter(|v| {
+                v.len() <= 32
+                    && v.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+            });
             let _ = outbound_tx
                 .send(ServerMsg::ServerInfo(crate::compat::server_info()))
                 .await;
@@ -400,6 +410,7 @@ async fn handle_client_msg(
                     window,
                     shell,
                     device,
+                    app_version.clone(),
                 ))
             }
         },

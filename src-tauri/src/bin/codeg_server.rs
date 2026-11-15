@@ -516,9 +516,9 @@ async fn async_main(
         ));
     }
 
-    // Cowork fork: the computers the person fixed the browser and
-    // `ssh desktop` to (`web::host_choice`), before any app registers.
-    codeg_lib::web::host_choice::restore(&state).await;
+    // Cowork fork: the book of the person's devices (`web::host_devices`,
+    // `docs/devices.md`), read back before any app registers.
+    codeg_lib::web::host_devices::start(&state).await;
 
     // Cowork fork: `ssh desktop` from this server's agents to the computer
     // a desktop app lends them (`web::host_tunnel`, `docs/host-ssh.md`). Not

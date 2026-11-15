@@ -13,7 +13,7 @@ import { QuickActionsDropdown } from "@/components/layout/quick-actions-dropdown
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
 import { CoworkAccountMenu } from "@/components/cowork/account-menu"
-import { StatusBarHostChoice } from "@/components/cowork/status-bar-host-choice"
+import { StatusBarDevices } from "@/components/cowork/status-bar-devices"
 import { StatusBarHostSsh } from "@/components/cowork/status-bar-host-ssh"
 import { ResourceMeter } from "@/components/cowork/resource-meter"
 
@@ -40,7 +40,7 @@ export function StatusBar() {
           <StatusBarWebService />
           <StatusBarHostSsh />
           <StatusBarChrome />
-          <StatusBarHostChoice />
+          <StatusBarDevices />
           <StatusBarMcp />
           <StatusBarAlerts />
           <ResourceMeter />
@@ -76,9 +76,8 @@ export function StatusBar() {
  * The person's own Chrome follows it, for the same reason: its glyph's
  * colour is the connection's state, which is no use behind a button.
  *
- * Then which computer the agents use (Cowork, `docs/host-choice.md`): there
- * only while some computer is connected, and amber while one the person
- * fixed is away — which has to show without opening anything.
+ * Then the person's devices (Cowork, `docs/devices.md`): there once some
+ * computer has connected to this workspace.
  */
 export function StatusBarLeft({ className }: { className?: string }) {
   return (
@@ -94,7 +93,7 @@ export function StatusBarLeft({ className }: { className?: string }) {
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
         <StatusBarHostSsh className="h-6 rounded-full px-1.5 hover:bg-[var(--g-hover)]" />
         <StatusBarChrome className="h-6 rounded-full px-1.5 hover:bg-[var(--g-hover)]" />
-        <StatusBarHostChoice className="h-6 rounded-full px-1.5 hover:bg-[var(--g-hover)]" />
+        <StatusBarDevices className="h-6 rounded-full px-1.5 hover:bg-[var(--g-hover)]" />
         <ResourceMeter />
         <CoworkAccountMenu
           className="shrink-0 rounded-full hover:bg-[var(--g-hover)]"

@@ -146,9 +146,8 @@ fn config_path(path: &Path) -> Option<String> {
 
 /// The shared connection's socket for the computer with this host key. One
 /// per computer: `ssh desktop` keeps a connection for ten minutes, and when
-/// the computer it reaches changes — the person used another one, or fixed
-/// it to one (`docs/host-choice.md`) — the next `ssh desktop` must not ride
-/// the connection still open to the last.
+/// the computer it reaches changes — the person used another one — the
+/// next `ssh desktop` must not ride the connection still open to the last.
 fn control_name(host_key: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(host_key.trim().as_bytes());

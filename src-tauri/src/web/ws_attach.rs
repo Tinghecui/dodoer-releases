@@ -88,9 +88,9 @@ pub enum ClientMsg {
         /// server whose `server_info` names `host_ssh`.
         #[serde(default)]
         shell: Option<crate::host_ssh::tunnel::ShellHost>,
-        /// The computer the app is on (`host_device`), for a person with
-        /// the app open on several to say which one their agents use
-        /// (`docs/host-choice.md`). An app from before this names none.
+        /// The computer the app is on (`host_device`), for the server's
+        /// book of the person's devices (`web::host_devices`,
+        /// `docs/devices.md`). An app from before this names none.
         #[serde(default)]
         device: Option<crate::host_device::HostDevice>,
     },

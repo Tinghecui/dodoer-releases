@@ -24,7 +24,7 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 
-use super::host_registry::{named, HostRegistry, TunnelError};
+use super::host_registry::{HostRegistry, TunnelError};
 use super::shutdown::ShutdownSignal;
 use crate::cli_run::CliRunService;
 use crate::host_ssh::client::ClientFiles;
@@ -36,19 +36,6 @@ const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long the keys outlast the last shell lent: an app between two event
 /// sockets registers again at once, and should find the same key let in.
 const FORGET_AFTER: Duration = Duration::from_secs(30);
-
-/// What `ssh desktop` prints when the person fixed it to a computer that
-/// lends no shell right now. Never another computer's instead
-/// (`docs/host-choice.md`).
-fn shell_away_note(name: &str) -> String {
-    format!(
-        "The user fixed `ssh desktop` to {}, and it lends this workspace no command line right \
-         now. Ask the user to open this workspace in the dodoer desktop app on that computer and \
-         to lend it from the laptop icon at the foot of the sidebar, or to choose another \
-         computer from the computers icon next to it, then try again.",
-        named(name)
-    )
-}
 
 /// A server's tunnels to lent shells, and the files its `ssh` needs for them.
 pub struct HostTunnels {
@@ -131,9 +118,6 @@ impl HostTunnels {
             .map_err(|e| match e {
                 TunnelError::NoHost => {
                     (StatusCode::SERVICE_UNAVAILABLE, NO_DESKTOP_NOTE.to_string())
-                }
-                TunnelError::PinnedAway(name) => {
-                    (StatusCode::SERVICE_UNAVAILABLE, shell_away_note(&name))
                 }
                 TunnelError::Busy => (
                     StatusCode::TOO_MANY_REQUESTS,

@@ -1,13 +1,11 @@
 //! Cowork fork: the computer a desktop app runs on, as the app names it to
-//! the servers it lends things to (`web::host_registry`,
-//! `docs/host-choice.md`).
+//! the servers it connects to (`web::host_devices`, `docs/devices.md`).
 //!
-//! A person may have the app open on two computers at once, both lending the
-//! same server their tabs or their command line. The server has to tell them
-//! apart for longer than a socket lasts — "always use the Mac mini's
-//! browser" must still mean the Mac mini after both apps restart — so each
-//! app sends an id it made once and keeps, and the name the person knows the
-//! computer by.
+//! A person may have the app open on several computers, all connected to the
+//! same server. The server keeps a book of them for longer than a socket
+//! lasts — `ssh laptop` must still mean the laptop after both apps restart —
+//! so each app sends an id it made once and keeps, the name the person knows
+//! the computer by, and what kind of machine it is.
 //!
 //! The id says nothing about the computer: random, kept in `~/.codeg`, and
 //! sent only to servers the person connected the app to.
@@ -23,6 +21,10 @@ const ID_FILE: &str = "device-id";
 /// How much of a name a server keeps.
 const NAME_MAX_CHARS: usize = 80;
 
+/// What a computer may say it is, for the icon a list shows it with. Phones
+/// and tablets are for the apps that will run there.
+const KINDS: &[&str] = &["desktop", "laptop", "phone", "tablet"];
+
 /// A computer, as its app names it in `host_register`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostDevice {
@@ -31,6 +33,14 @@ pub struct HostDevice {
     /// The name people know it by ("James's Mac mini"); may be empty.
     #[serde(default)]
     pub name: String,
+    /// The kind of machine, in English ("MacBook Air", "iMac"): what a
+    /// server names it by when `name` gives it nothing to go on (a name all
+    /// in Chinese). Empty from an app from before this.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    /// One of [`KINDS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 impl HostDevice {
@@ -40,24 +50,33 @@ impl HostDevice {
         if !is_id(&self.id) {
             return None;
         }
-        let one_line: String = self
-            .name
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
-        let name = one_line
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(NAME_MAX_CHARS)
-            .collect();
-        Some(Self { id: self.id, name })
+        let kind = self.kind.filter(|kind| KINDS.contains(&kind.as_str()));
+        Some(Self {
+            id: self.id,
+            name: one_line(&self.name),
+            model: one_line(&self.model),
+            kind,
+        })
     }
 }
 
+/// `text` on one line, its runs of spaces one space, cut to a length.
+fn one_line(text: &str) -> String {
+    let plain: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    plain
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(NAME_MAX_CHARS)
+        .collect()
+}
+
 /// Whether `id` could be one of ours: plain characters, a sensible length.
-fn is_id(id: &str) -> bool {
+pub fn is_id(id: &str) -> bool {
     (8..=64).contains(&id.len())
         && id
             .chars()
@@ -81,17 +100,76 @@ pub fn device_id(dir: &Path) -> Option<String> {
     Some(id)
 }
 
-/// The computer this app runs on. Asked once: finding the name runs a
-/// program on macOS.
+/// The computer this app runs on. Asked once: finding the name and the
+/// model runs programs on macOS, so the app asks at launch, off the async
+/// threads ([`warm_up`]).
 pub fn this_device() -> Option<HostDevice> {
     static DEVICE: OnceLock<Option<HostDevice>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
             let id = device_id(&crate::paths::codeg_home_dir())?;
             let name = crate::cowork_connect::this_device_name().unwrap_or_default();
-            Some(HostDevice { id, name })
+            let model = machine_model().unwrap_or_default();
+            let kind = kind_of(&model).map(str::to_string);
+            Some(HostDevice {
+                id,
+                name,
+                model,
+                kind,
+            })
         })
         .clone()
+}
+
+/// Find [`this_device`] on a thread of its own, so that the first socket to
+/// register does not wait on `system_profiler` on an async thread.
+pub fn warm_up() {
+    let _ = std::thread::Builder::new()
+        .name("host-device".into())
+        .spawn(|| {
+            let _ = this_device();
+        });
+}
+
+/// The model's name, as "About This Mac" gives it ("MacBook Air").
+fn machine_model() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("/usr/sbin/system_profiler")
+            .args(["SPHardwareDataType", "-json"])
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .and_then(|out| model_from_profile(&out.stdout))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// `machine_name` from `system_profiler SPHardwareDataType -json`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn model_from_profile(json: &[u8]) -> Option<String> {
+    let profile: serde_json::Value = serde_json::from_slice(json).ok()?;
+    let name = profile
+        .get("SPHardwareDataType")?
+        .get(0)?
+        .get("machine_name")?
+        .as_str()?
+        .trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// What kind of machine a model is: every Mac laptop is a MacBook.
+fn kind_of(model: &str) -> Option<&'static str> {
+    if model.is_empty() {
+        None
+    } else if model.starts_with("MacBook") {
+        Some("laptop")
+    } else {
+        Some("desktop")
+    }
 }
 
 #[cfg(test)]
@@ -121,6 +199,8 @@ mod tests {
         let device = |id: &str, name: &str| HostDevice {
             id: id.to_string(),
             name: name.to_string(),
+            model: String::new(),
+            kind: None,
         };
         assert_eq!(device("short", "Mac").sound(), None);
         assert_eq!(device("has a space in it", "Mac").sound(), None);
@@ -144,5 +224,52 @@ mod tests {
     fn a_device_from_before_names_reads() {
         let device: HostDevice = serde_json::from_str(r#"{"id":"0123456789abcdef"}"#).unwrap();
         assert_eq!(device.name, "");
+        assert_eq!(device.model, "");
+        assert_eq!(device.kind, None);
+    }
+
+    #[test]
+    fn the_model_and_its_kind_are_kept_plain_and_known() {
+        let sent = HostDevice {
+            id: "0123456789abcdef".into(),
+            name: "Study".into(),
+            model: " MacBook\tAir ".into(),
+            kind: Some("laptop".into()),
+        };
+        let kept = sent.sound().unwrap();
+        assert_eq!(kept.model, "MacBook Air");
+        assert_eq!(kept.kind.as_deref(), Some("laptop"));
+        let odd = HostDevice {
+            id: "0123456789abcdef".into(),
+            name: String::new(),
+            model: String::new(),
+            kind: Some("toaster".into()),
+        };
+        assert_eq!(odd.sound().unwrap().kind, None);
+        // Nothing to say is said as nothing.
+        let bare = serde_json::to_value(HostDevice {
+            id: "0123456789abcdef".into(),
+            name: "Study".into(),
+            model: String::new(),
+            kind: None,
+        })
+        .unwrap();
+        assert_eq!(
+            bare,
+            serde_json::json!({"id": "0123456789abcdef", "name": "Study"})
+        );
+    }
+
+    #[test]
+    fn the_model_is_read_from_the_hardware_profile() {
+        let profile = br#"{"SPHardwareDataType": [{"_name": "hardware_overview",
+            "machine_model": "Mac15,12", "machine_name": "MacBook Air"}]}"#;
+        assert_eq!(model_from_profile(profile).as_deref(), Some("MacBook Air"));
+        assert_eq!(model_from_profile(br#"{"SPHardwareDataType": []}"#), None);
+        assert_eq!(model_from_profile(b"not json"), None);
+        assert_eq!(kind_of("MacBook Pro"), Some("laptop"));
+        assert_eq!(kind_of("iMac"), Some("desktop"));
+        assert_eq!(kind_of("Mac Studio"), Some("desktop"));
+        assert_eq!(kind_of(""), None);
     }
 }

@@ -539,8 +539,8 @@ pub mod ws_host {
         async fn shell(&self) -> Option<ShellHost> {
             None
         }
-        /// The computer this app is on, for a server to tell two of the
-        /// person's computers apart (`docs/host-choice.md`).
+        /// The computer this app is on, for the server's book of the
+        /// person's devices (`docs/devices.md`).
         fn device(&self) -> Option<HostDevice> {
             None
         }
@@ -763,6 +763,8 @@ mod tests {
         let device = crate::host_device::HostDevice {
             id: "0123456789abcdef".into(),
             name: "James's Mac mini".into(),
+            model: "Mac mini".into(),
+            kind: Some("desktop".into()),
         };
         let lending = ws_host::register_frame(
             &["browser".to_string(), "shell".to_string()],

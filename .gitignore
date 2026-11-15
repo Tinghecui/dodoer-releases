@@ -85,6 +85,7 @@ src-tauri/binaries/
 /docs/*
 !/docs/CLIENT-PRIVACY.md
 !/docs/agent-chrome.md
+!/docs/agent-relocate.md
 !/docs/agents/
 !/docs/chat-channels/
 !/docs/cli.md

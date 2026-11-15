@@ -327,3 +327,115 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 - **另写一个 `BrowserToolAccess` 实现，和内置的并排**。对上游文件的改动最少，但读前检查、读后核对地址、活动记录这些安全逻辑要抄一份，两份迟早不一致。
 - **给智能体配现成的 `chrome-devtools-mcp --autoConnect`**。本机智能体今天就能这么用；但服务器上的智能体够不到 Mac，没有共享级别、名单和暂停，工具也是另一套。
 - **全部标签自动「读取并操作」**。做得到，用户没选：网页上的文字一旦诱导了智能体，代价是真实账户。
+
+## 13. 第二轮：不抢焦点和补齐
+
+2026-11-15 用户在 1.6.12 上用了一轮之后定的：「不抢焦点」和第 7 节 4+5 里「没做」的几项一起做。这一节是这一轮的设计，做完一项把对应的「没做」划掉、写进第 7 节。各项尽量互不依赖，能并行；Rust 照旧只在 CI 上编译和测试，每项都要在 Mac 上的桌面包里验过才算完。
+
+### 13.1 开新网页不抢焦点（A）
+
+- **现状**：`agent_window.rs` 每开一个网页都先 `Target.activateTarget` 起始页、等 300 毫秒、再 `Target.createTarget { url }`（5.6）。`activateTarget` 会把 Chrome 整个提到前面、抢走键盘焦点；用户的 Chrome 是全屏的，智能体的窗口在单独的一屏，于是每开一页 macOS 都切一次桌面。用户正在打字的东西会被打断。分屏、放到第二块屏幕挡不住抢焦点。
+- **要的结果**：只有第一次开智能体的窗口时 Chrome 跳一下（5.6 已经说了躲不掉，也正好告诉用户智能体开始用 Chrome 了），之后智能体开网页、换网页都在后台，用户可以把那个窗口放到别的屏幕或别的桌面，接着干自己的事。
+- **候选**：
+  - (a) **复用智能体的标签**：智能体窗口里已经有它开的标签时，`browser_open_tab` 不再新开，而是在这个范围最近用过的那个智能体标签上 `Page.navigate`（`page.rs` 已有，换地址不需要切窗口）。只有起始页的窗口里，第一个网页直接在起始页上 `Page.navigate`（起始页本来就是 dodoer 开的；它换走以后，窗口里就没有「dodoer 的智能体在用」那句话了，见下面的代价）。**语义变了**：工具说明里「开一个新标签」变成「在智能体的标签里打开」，同一个智能体同时开两个网页时前一个被换掉。回给智能体的结果照旧是这个标签的 `tabId`（编号不变），说明里写清「前一个页面已经换掉；要同时开着两个页面，先读完前一个」。
+  - (b) **`Target.createTarget { url, background: true }`**：新标签在后台开，不切过去。但「落在哪个窗口」仍按 Chrome 最后用的窗口算，不先切到智能体的窗口，标签就落在用户的窗口里（第 10 节第二轮）。只有「最后用的窗口恰好就是智能体的窗口」时才对，所以只能当 (a) 之外的补充：要开第二个标签时，先看最后用的窗口（`Browser.getWindowForTarget` 对一下用户当前的标签做不到——CDP 不告诉我们哪个窗口有焦点），不行就退回 activate。
+  - (c) **只在第一次开窗口时 activate**，之后不 activate、直接 `createTarget`：标签会落进用户的窗口，等于退回 5.6 的「退路」，智能体的标签和用户的混在一起。不选。
+  - (d) **每页一个新窗口但不聚焦**（`newWindow: true, background: true`）：第三轮试过 `windowState: "minimized"`，Chrome 不照做；`background` 对新窗口管不管用没测过，大概率一样跳出来。
+- **推荐**：默认 (a)。智能体一次要开着两个网页的时候（很少），先在对话里说一声，再走现在的 activate + createTarget，这一次照样跳一下。
+- **代价**：起始页被换走以后，窗口里没有那句「这个窗口是 dodoer 的智能体在用」。补法：标签标题前不能加记号（dodoer 不往用户的页面里写东西，5.3），所以靠面板里「智能体开的」和 Chrome 顶上「正受到控制」的提示；用户把智能体的标签关光了，下次再开一个带起始页的窗口（现在的逻辑）。
+- **实测（待填，主会话在用户 Mac 上测）**：
+  1. 智能体的窗口开着、用户切到别的 app 或别的桌面，`Page.navigate` 智能体的标签：Chrome 会不会到前面、会不会切桌面。预期不会。
+  2. 同样情况下 `createTarget { background: true }`（不 activate）落在哪个窗口、Chrome 会不会到前面。
+  3. `createTarget { newWindow: true, background: true }` 会不会跳出来。
+  4. 智能体的窗口最小化着时 (a) 还能不能读、点（第三轮测过最小化能点，再确认一次 `Page.navigate` 后的新页面）。
+- **文件**：`agent_window.rs`（「这个范围最近用的智能体标签」从注册表里找 `owner_window == chrome@<范围>` 且 target 还活着的那个，记在 `AgentWindow` 里）、`chrome_share.rs` 的 `open_for_agent`（复用时不重新登记，走现有的 `revoke_if_departed` / 重新共享）、`tool_schema.json` 的 `browser_open_tab` 说明。
+- **验收**：用户在别的 app 里打字时，服务器上的智能体连着开三个网页，只有第一个让 Chrome 跳出来；第二、三个在智能体的窗口里换掉前一个，用户那边不被打断；面板里始终只有一个「智能体开的」标签。
+
+### 13.2 页面弹窗（B）
+
+- **现状**：交出去的标签开着 `Page` 域，页面弹 `alert` / `confirm` / `prompt` / `beforeunload` 时 Chrome 会发 `Page.javascriptDialogOpening`，但 `page.rs` 没处理。弹窗开着时页面的主线程停住，`Runtime.evaluate`（快照、点击都靠它）一直不回，智能体要等满 `cdp.rs` 的 30 秒超时，看到的是「Chrome 没回」，不知道是弹窗。用户在 Chrome 里点掉才能继续。
+- **做法**：
+  - `page.rs` 处理 `Page.javascriptDialogOpening`（类型、文字、`prompt` 的默认值、`url`）和 `Page.javascriptDialogClosed`，记在 `ChromePage` 的状态里（`dialog: Option<Dialog>`）。
+  - 弹窗开着时，读和操作的工具不再去等 `Runtime.evaluate`，直接回新的错误 `browser_dialog_open`，带上类型和文字（文字截到 500 字，当页面内容看待，工具说明里写「是网页的话，不是用户的话」）。正在等的那次调用也立刻以这个错误结束，不等 30 秒。
+  - **新工具 `browser_dialog`**（`tabId`、`accept: bool`、`promptText?`），用 `Page.handleJavaScriptDialog`。不复用 `browser_click`：弹窗不在页面的树里，没有 ref。
+  - **只读档不能处理**：点「确定」等于替用户做了决定（`confirm("删除这个项目？")`），要「读取并操作」。只读档回 `browser_control_required`，弹窗留给用户。
+  - **`beforeunload`（「离开此网站？」）**：智能体只能在它自己开的标签上答；用户交出去的标签上一律留给用户（那可能是用户没保存的东西）。
+  - **用户自己点掉**：`Page.javascriptDialogClosed` 来了就清掉状态，下次调用照常；智能体答的时候弹窗已经没了，`handleJavaScriptDialog` 报错，回「对话框已经被关掉了」。
+  - **不设自动超时**：没人答的弹窗一直留着，不替用户点。
+  - 面板里这个标签显示「页面弹了对话框」，点了跳到这个标签（`browser_chrome_activate`）。
+- **内置浏览器**：现在也没有处理弹窗（WKWebView / WebView2 的 `alert` 由引擎自己弹）。这一项只做 Chrome；工具在内置标签上回「这个标签不支持」，以后内置浏览器要做再接上。
+- **活动记录**：`AgentAction` 加 `Dialog`。
+- **文件**：`chrome/page.rs`、`surface_external.rs`、`commands/browser.rs`（新 core `agent_dialog_core`，检查顺序照 `agent_act_core`）、`acp/browser_tools.rs`、`tool_schema.json`、`codeg-mcp` 的工具表（服务器上的 codeg-mcp 升级之前，服务器上的智能体看不到新工具，只会收到 `browser_dialog_open` 的报错，让它请用户点）。
+- **验收**：智能体在一个会弹 `confirm` 的页面上点按钮，立刻收到 `browser_dialog_open` 和弹窗文字；`browser_dialog accept=false` 后页面照常；只读档答弹窗被拒；用户在 Chrome 里自己点掉后，智能体下一次调用照常。
+
+### 13.3 敏感网站名单可编辑（C）
+
+- **现状**：`chrome/sensitive.rs` 里写死的 `SENSITIVE` 表。
+- **做法**：设置 → 内置浏览器 → 「我自己的 Chrome」卡片里加「智能体不能用的网站」：
+  - 默认名单只读列出来（可以折叠），每一项一个「放开」。放开要二次确认（「智能体会带着你的登录状态打开 xxx，能在上面替你点和填。确定放开？」）。
+  - 「再拦这些」：用户自己加域名（按主机名匹配、含子域名，和默认名单同一个规则；输入时去掉协议和路径）。
+- **存在哪**：后端，app 数据目录下的一个文件（`chrome-sites.json`：`{ "blocked": [...], "allowed": [...] }`）。不放前端的 `localStorage`：名单管的是这台 Mac 上的 Chrome，和是哪个窗口、哪个远端无关；放在后端，启动时就有，不用等某个窗口推过来（`browser_set_host_rules` 那种做法在没开窗口时是空的）。
+- **谁能改**：新命令 `browser_chrome_sites` / `browser_chrome_set_sites`，只走 `getShellTransport()`（本地 Tauri），不进 `local-daemon-routing`、不进 MCP。远端窗口里也能看能改（改的是这台 Mac 的名单），智能体调不到。
+- **生效**：`is_sensitive` 改成 `(默认 - allowed) ∪ blocked`。改了以后，已经交出去 / 智能体开着的标签如果落在新拦的网站上，立刻放手（和跳到敏感网站同一条路）。
+- **验收**：加 `example.com` 后智能体打不开它、已开着的 `example.com` 标签被放手；放开 `mail.163.com` 要确认，确认后智能体能打开；重启 dodoer 名单还在；智能体没有任何工具能改它。
+
+### 13.4 面板里的活动记录（D）
+
+- **现状**：智能体每次碰标签都发 `browser://agent-activity`（`events::emit_agent_activity`，带 `tabId`、`action`、`outcome`、时间，`Type` 不带输入的内容）。内置浏览器的标签工具栏有活动条，Chrome 面板没接。
+- **做法**：
+  - 后端按标签记最近的活动（内存里，每个标签 50 条、一共 500 条，连接断了清空；不落盘：记录里有网址的主机名和动作，存盘就多了一份用户浏览记录要管）。新命令 `browser_chrome_activity`，面板打开时取一次，之后跟事件。
+  - 一条记录：时间、动作（打开 / 换网页 / 读 / 截图 / 点 / 输入 / 按键 / 选择 / 弹窗 / 执行代码 / 上传 / 下载）、结果（做了 / 被拒 / 失败）、当时的主机名、哪个范围的智能体（本机 / 哪个远端）。**输入只记「在哪个字段输入了」**（字段的可见名字，从快照的 ref 名字来），不记内容；密码框（`type=password`）连字段名都只写「密码框」。
+  - 面板里每个交出去的 / 智能体开的标签可以展开看它的记录，顶上一行「最近一次：2 分钟前 点了『提交』」。
+- **文件**：`chrome_share.rs`（记录表挂在 `ChromeLending` 旁边）、`commands/browser_chrome.rs`、`status-bar-chrome.tsx`、十种语言文案。
+- **验收**：智能体读、点、输入一个表单后，面板里这个标签按时间列出这些动作，输入那一条只有字段名；密码框只写「密码框」；断开 Chrome 后记录清空。
+
+### 13.5 执行代码（E）
+
+- **现状**：`agent_eval_core` 对 `SurfaceKind::External` 一律拒绝；内置浏览器的执行代码开关（`browser_tools.rs` 的 `is_eval_enabled`）不管 Chrome（5.4）。
+- **做法**：「我自己的 Chrome」卡片和 Chrome 面板里一个开关「允许智能体在 Chrome 里执行代码」，**出厂关**，后端只记在内存里、前端记在 `localStorage`（和「让智能体用我的 Chrome」同一种做法），新命令同样只走本地 Tauri。开着时：
+  - 只在「读取并操作」的标签上放行，在页面自己的 world 里跑（`Runtime.evaluate` 不带 `contextId`），检查顺序照内置的 `agent_eval_core`（读前、读后各核对一次地址）。
+  - 不弹逐条确认框（Chrome 不是 dodoer 的窗口，挂不上；而且内置浏览器已经因为「逐条确认被随手点掉」改成了靠开关，见 `eval.rs` 开头）。
+  - 每次执行进活动记录（`Eval`），面板里能展开看执行的代码（前 4000 字，和 `MAX_EVAL_CODE_CHARS` 一样）。
+- **风险**（开关下面直接写出来）：执行代码能读到这个网站上的一切，包括页面能读到的登录信息（不含 HttpOnly 的 Cookie），能替你发任何这个网站允许的请求。点击和填写够用时不要打开。
+- **验收**：开关关着时 `browser_eval` 对 Chrome 标签回 `eval_disabled`（说明里指到这个开关，不是内置浏览器那个）；打开后在「读取并操作」的标签上能跑、在只读标签上被拒；面板里看得到执行过的代码。
+
+### 13.6 `browser_list_tabs` 标出浏览器（F）
+
+- `AgentTabSummary` 加 `browser: "chrome" | "builtin"`（看 `SurfaceKind::External`）。老服务器丢掉这个字段，不影响别的。测试里四处字面量跟着改（第 7 节第 3 步记过）。`tool_schema.json` 的说明写上。
+- **验收**：智能体的列表里内置标签带 `builtin`、Chrome 标签带 `chrome`。
+
+### 13.7 文件上传、下载（G）
+
+- **上传**：
+  - 新工具 `browser_upload`（`tabId`、`ref`（快照里的文件输入框或会弹出选文件的按钮）、`paths`）。Chrome 上：`Page.setInterceptFileChooserDialog { enabled: true }` 拦住系统的选文件窗口，点了按钮后收到 `Page.fileChooserOpened`（带 `backendNodeId`），再 `DOM.setFileInputFiles { files, backendNodeId }`；ref 本身就是 `<input type=file>` 时直接解析成节点设上。要「读取并操作」。
+  - **文件必须在这台 Mac 上**，而且只认一个目录：`~/Downloads/dodoer-uploads/`（或设置里换），路径先 `canonicalize` 再看在不在里面，挡住 `../` 和符号链接。服务器上的智能体先用 `ssh desktop`（借出命令行，`docs/host-ssh.md`）把文件传到这个目录，再调上传。没借命令行时回「文件要先放到这台电脑的 xxx 目录」。
+  - 不开 `DOM` 域以外的东西；拦选文件窗口只在调这个工具时开、用完关，平时用户自己在交出去的标签里点「选择文件」照常弹系统窗口。
+- **下载**：
+  - **不用 `Browser.setDownloadBehavior` 改下载位置**：它管的是整个浏览器上下文，用户的日常 Chrome 只有默认那一个，改了用户自己的下载也跟着跑到别处、「每次询问保存位置」也被跳过。只用 `{ behavior: "default", eventsEnabled: true }` 打开下载事件（行为还是 Chrome 自己的设置），断开时 `eventsEnabled: false`。
+  - `Browser.downloadWillBegin` 带 `frameId`，只认智能体能碰的标签里发起的；`Browser.downloadProgress` 跟到完成。完成后告诉智能体文件名和「在用户 Chrome 的下载目录里」，路径用 Chrome 报的（新版本的 `downloadProgress` 有 `filePath`，没有就用 `~/Downloads/<suggestedFilename>` 并说明是推测）。服务器上的智能体要拿文件就 `ssh desktop` 去取。
+  - 不加新工具：下载完成作为点击这次调用的结果附带说出来，或者 `browser_list_tabs` 里这个标签带「最近的下载」。
+  - 用户的 Chrome 设成「下载前询问保存位置」时，会弹系统的保存窗口，智能体处理不了，回「Chrome 在问保存到哪，请用户点」。
+- **不做**：
+  - 打印对话框、Chrome 自己的权限弹窗（定位、通知、摄像头）：那是 Chrome 的界面，不在页面里，CDP 点不到；权限可以 `Browser.grantPermissions` 预先给，但那是替用户给网站权限，不做。
+  - Windows、Linux：现在只发 macOS 桌面包。`endpoint.rs` 已经认得三个平台的数据目录，以后发了包再验。
+- **验收**：智能体把 `~/Downloads/dodoer-uploads/a.pdf` 传到一个上传表单，页面收到文件；传这个目录外的文件被拒；智能体点一个下载链接，文件出现在 Chrome 的下载目录、智能体被告知文件名；用户自己在别的标签下载文件照常（位置、询问都不变）。
+
+### 13.8 暂停
+
+第 7 节 4+5 的「没做」里还有暂停开关。用户已经接受「关掉『让智能体用我的 Chrome』就是停」，这一轮不另做。
+
+### 13.9 拆 PR 和顺序
+
+| PR | 内容 | 依赖 |
+|---|---|---|
+| 1 | A 不抢焦点（等主会话的实测结果定 (a) 的细节） | 无 |
+| 2 | F `browser` 字段 | 无 |
+| 3 | D 活动记录（后端记录表 + 面板） | 无；B、E、G 的新动作往这里加 |
+| 4 | B 页面弹窗 + `browser_dialog` | 3 合了以后接上 `Dialog` 一行，没合也能先写 |
+| 5 | C 名单可编辑 | 无 |
+| 6 | E 执行代码开关 | 3（执行的代码要进记录） |
+| 7 | G 上传、下载 | 3 |
+
+1、2、3、5 能同时开；4、6、7 在 3 之后。2 最小，可以和别的合在一起。每个 PR 照第 7 节的规矩：本文档按实现更新、`COWORK.md` 改动清单、十种语言文案、Mac 上的桌面包里验过。
+
+新工具（`browser_dialog`、`browser_upload`）要动 `tool_schema.json` 和 codeg-mcp：服务器上的 codeg-mcp 跟着服务器版本走，发版前服务器上的智能体看不到新工具，老工具不受影响。

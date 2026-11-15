@@ -58,6 +58,10 @@ import {
   useConversationRuntimeStore,
 } from "@/stores/conversation-runtime-store"
 import { resetConversationGoalSnapshotStore } from "@/stores/conversation-goal-snapshot-store"
+import {
+  useSessionUsageStore,
+  type SessionUse,
+} from "@/lib/cowork/session-usage"
 
 // The goal lookup of never-opened rows goes through the API; every other test
 // here leaves it answering "no goal".
@@ -1857,5 +1861,52 @@ describe("SidebarConversationCard goal badge on never-opened rows", () => {
       await new Promise((r) => setTimeout(r, 10))
     })
     expect(goalMarkers).not.toHaveBeenCalled()
+  })
+})
+
+// Cowork fork: the row says while its agent uses the person's Chrome or a
+// lent command line (`session-usage-mark.tsx`).
+describe("SidebarConversationCard using the person's computer", () => {
+  beforeEach(() => {
+    useSessionUsageStore.setState({ byConversation: new Map() })
+  })
+
+  function renderCard(c: DbConversationSummary) {
+    return renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={false}
+        timeLabel="5m"
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+      />
+    )
+  }
+
+  const usage = (container: HTMLElement) =>
+    container.querySelector<HTMLElement>("[data-session-usage]")
+
+  it("marks the row while its agent uses Chrome on a device, beside the time", () => {
+    useSessionUsageStore.setState({
+      byConversation: new Map<number, SessionUse[]>([
+        [51, [{ kind: "browser", device: "laptop", chrome: true, since: 1 }]],
+      ]),
+    })
+    const { container, getByText } = renderCard(conv(51))
+    expect(usage(container)?.title).toBe("Using Chrome on laptop")
+    expect(getByText("5m")).toBeTruthy()
+  })
+
+  it("has no mark for a row whose agent uses nothing", () => {
+    useSessionUsageStore.setState({
+      byConversation: new Map<number, SessionUse[]>([
+        [52, [{ kind: "shell", device: "laptop", since: 1 }]],
+      ]),
+    })
+    const { container } = renderCard(conv(51))
+    expect(usage(container)).toBeNull()
   })
 })

@@ -215,6 +215,16 @@ const en = {
     "{name} is offline (last online {when}). Open this workspace in dodoer on it for the agent to go on.",
   conversationDeviceLendsNothing:
     "{name} lends neither its command line nor its browser now. Turn lending on there for the agent to go on.",
+  // The mark on a conversation's row and tab while its agent uses one of
+  // the person's computers (`session-usage-mark.tsx`).
+  usageChromeOn: "Using Chrome on {name}",
+  usageChromeHere: "Using the Chrome on your computer",
+  usageBrowserOn: "Using the browser on {name}",
+  usageBrowserHere: "Using the browser on your computer",
+  usageShellOn:
+    "Using the command line of {name} (an idle connection stays open up to 10 minutes)",
+  usageShellHere:
+    "Using the command line of your computer (an idle connection stays open up to 10 minutes)",
   // A model switch (`model-switch.ts`): the composer's picker while it is
   // under way, then a line in the conversation and, if it failed, a toast.
   modelSwitchPending: "Switching to {to}…",
@@ -410,6 +420,12 @@ const zhCN: Record<CoworkTextKey, string> = {
     "{name} 不在线（上次在线：{when}）。在那台电脑的 dodoer 里打开这个工作区，智能体才能接着用。",
   conversationDeviceLendsNothing:
     "{name} 现在命令行和浏览器都没借出。在那台电脑上打开借出，智能体才能接着用。",
+  usageChromeOn: "正在用 {name} 上的 Chrome",
+  usageChromeHere: "正在用你电脑上的 Chrome",
+  usageBrowserOn: "正在用 {name} 上的浏览器",
+  usageBrowserHere: "正在用你电脑上的浏览器",
+  usageShellOn: "正在用 {name} 的命令行（空闲的连接最多留 10 分钟）",
+  usageShellHere: "正在用你电脑的命令行（空闲的连接最多留 10 分钟）",
   modelSwitchPending: "正在切换到 {to}…",
   modelSwitchAfterTurn: "本轮 {from} · 下一条 {to}",
   modelSwitchAfterTurnHint: "这轮回复继续用 {from}，下一条消息起用 {to}",
@@ -602,6 +618,12 @@ const zhTW: Record<CoworkTextKey, string> = {
     "{name} 不在線（上次在線：{when}）。在那台電腦的 dodoer 裡開啟這個工作區，智慧體才能接著用。",
   conversationDeviceLendsNothing:
     "{name} 現在命令列和瀏覽器都沒借出。在那台電腦上開啟借出，智慧體才能接著用。",
+  usageChromeOn: "正在用 {name} 上的 Chrome",
+  usageChromeHere: "正在用你電腦上的 Chrome",
+  usageBrowserOn: "正在用 {name} 上的瀏覽器",
+  usageBrowserHere: "正在用你電腦上的瀏覽器",
+  usageShellOn: "正在用 {name} 的命令列（閒置的連線最多留 10 分鐘）",
+  usageShellHere: "正在用你電腦的命令列（閒置的連線最多留 10 分鐘）",
   modelSwitchPending: "正在切換到 {to}…",
   modelSwitchAfterTurn: "本輪 {from} · 下一則 {to}",
   modelSwitchAfterTurnHint: "這輪回覆繼續用 {from}，下一則訊息起用 {to}",

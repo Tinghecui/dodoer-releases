@@ -32,6 +32,7 @@ import { withoutUnreadChange } from "@/stores/conversation-seen-store"
 import type { ConversationStatus } from "@/lib/types"
 import { MANUAL_STATUS_ORDER } from "@/lib/types"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
+import { SessionUsageMark } from "@/components/cowork/session-usage-mark"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -406,6 +407,12 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
         >
           {displayTitle}
         </span>
+        {/* Cowork fork: its agent is using the person's Chrome / browser or
+            a lent command line right now. */}
+        <SessionUsageMark
+          conversationId={conversationId}
+          iconClassName="h-3.5 w-3.5"
+        />
         {/* Capped at half the row so a long tag list squeezes its own chips
             (they truncate) before it squeezes the title. */}
         {taggable && conversationId != null ? (

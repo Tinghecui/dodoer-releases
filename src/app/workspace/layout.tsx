@@ -31,6 +31,7 @@ import {
 } from "@/contexts/app-workspace-context"
 import { AssistantsSync } from "@/stores/assistants-store"
 import { BackgroundPendingSync } from "@/stores/background-pending-store"
+import { SessionUsageSync } from "@/lib/cowork/session-usage"
 import { ConversationTagsSync } from "@/stores/conversation-tags-store"
 import { ConversationTagsManagerHost } from "@/components/conversations/conversation-tags-manager"
 import { useActiveFolder } from "@/contexts/active-folder-context"
@@ -1586,6 +1587,7 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                 {/* Cowork fork: the server's reading of background work,
                     for sidebar rows with no connection in this window. */}
                 <BackgroundPendingSync />
+                <SessionUsageSync />
                 {/* The tag manager, opened from tag pickers, folder menus and
                     the sidebar's tag filter — all popovers or menus that
                     unmount as they close, so none can host it. */}

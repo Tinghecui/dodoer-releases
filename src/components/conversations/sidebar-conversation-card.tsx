@@ -92,6 +92,7 @@ import { useIsCanceledTaskConversation } from "@/stores/canceled-task-store"
 import { SessionDetailsDialog } from "./session-details-dialog"
 import { SidebarConversationHoverDetails } from "./sidebar-conversation-hover-details"
 import { SidebarPrIndicator } from "./sidebar-pr-status"
+import { SessionUsageMark } from "@/components/cowork/session-usage-mark"
 import { ConversationTagChips } from "./conversation-tag-chip"
 import {
   ConversationTagContextSubmenu,
@@ -708,6 +709,12 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                           <SidebarGoalBadge goal={goal} />
                         </span>
                       )}
+                      {/* Cowork fork: its agent is using the person's
+                      Chrome / browser or a lent command line right now. */}
+                      <SessionUsageMark
+                        conversationId={conversation.id}
+                        className="mr-1.5"
+                      />
                       {/* The worktree branch's pull request — nothing for a
                       folder that is not a worktree. Its own store, so a row
                       re-renders only when its folder's status changes. Like

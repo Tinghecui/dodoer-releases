@@ -5893,6 +5893,7 @@
         "eval": "Code auf der Seite ausgeführt",
         "open": "diese Seite geöffnet",
         "navigate": "zu einer anderen Seite gewechselt",
+        "dialog": "hat auf einen Dialog geantwortet",
         "close": "Tab geschlossen"
       },
       "actionOn": {
@@ -8195,6 +8196,11 @@
           "done": "Ist zu einer anderen Adresse gegangen",
           "refused": "Abgelehnt: Diese Seite erlaubt keine Aktionen",
           "failed": "Adresse konnte nicht gewechselt werden"
+        },
+        "dialog": {
+          "done": "Auf einen Dialog der Seite geantwortet",
+          "refused": "Abgelehnt: Diesen Dialog beantwortest du selbst",
+          "failed": "Der Dialog konnte nicht beantwortet werden"
         },
         "close": {
           "done": "Hat diesen Tab geschlossen",

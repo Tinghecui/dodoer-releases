@@ -5893,6 +5893,7 @@
         "eval": "executou código na página",
         "open": "abriu esta página",
         "navigate": "foi para outra página",
+        "dialog": "respondeu a uma caixa de diálogo",
         "close": "fechou a aba"
       },
       "actionOn": {
@@ -8195,6 +8196,11 @@
           "done": "Foi para outro endereço",
           "refused": "Recusado: esta página não permite ações",
           "failed": "Não foi possível mudar o endereço"
+        },
+        "dialog": {
+          "done": "Respondeu a uma caixa de diálogo da página",
+          "refused": "Recusado: responder a esta caixa de diálogo cabe a você",
+          "failed": "Não foi possível responder à caixa de diálogo"
         },
         "close": {
           "done": "Fechou esta aba",

@@ -469,6 +469,28 @@ impl BrowserToolAccess for RemoteHostBrowser {
                 .unwrap_or_else(|note| {
                     BrowserTabOutcome::refused(Some(tab_id.as_str()), ERROR_UNAVAILABLE, note)
                 }),
+            // Cowork fork: the answer to a page's dialog, to the device whose
+            // Chrome has it open (`docs/agent-chrome.md` 13.2).
+            BrowserTabOp::Dialog {
+                tab_id,
+                accept,
+                prompt_text,
+            } => self
+                .on_tab(
+                    &tab_id,
+                    |own| BrowserCall::TabOp {
+                        op: BrowserTabOp::Dialog {
+                            tab_id: own,
+                            accept,
+                            prompt_text,
+                        },
+                    },
+                    CALL_TIMEOUT,
+                )
+                .await
+                .unwrap_or_else(|note| {
+                    BrowserTabOutcome::refused(Some(tab_id.as_str()), ERROR_UNAVAILABLE, note)
+                }),
         }
     }
 }
@@ -661,6 +683,48 @@ mod tests {
         assert_eq!(opened.error, None, "{opened:?}");
         assert_eq!(opened.tab_id.as_deref(), Some("macbook:opened-tab"));
         assert_eq!(opened.tab.unwrap().tab_id, "macbook:opened-tab");
+    }
+
+    /// The answer to a page's dialog goes to the device the tab is on, under
+    /// the window's own id, and comes back named as the agent named it.
+    #[tokio::test]
+    async fn a_dialog_answer_goes_to_the_tabs_device() {
+        let registry = Arc::new(HostRegistry::new());
+        answering(
+            &registry,
+            Some(device("book", "MacBook")),
+            |call| match call {
+                BridgeCall::Browser(BrowserCall::ListTabs) => json!({
+                    "tabs": [{"tabId": "book-tab-1", "origin": null, "level": "control"}]
+                }),
+                BridgeCall::Browser(BrowserCall::TabOp { op }) => {
+                    assert_eq!(
+                        serde_json::to_value(op).unwrap(),
+                        json!({"op": "dialog", "tab_id": "book-tab-1", "accept": true, "prompt_text": "Robin"})
+                    );
+                    json!({
+                        "tabId": "book-tab-1",
+                        "note": "Answered the prompt dialog on browser tab book-tab-1: OK.",
+                    })
+                }
+                other => panic!("not asked: {other:?}"),
+            },
+        );
+        let tools = RemoteHostBrowser::new(Arc::clone(&registry));
+        tools.list_tabs().await;
+        let answered = tools
+            .tab_op(BrowserTabOp::Dialog {
+                tab_id: "macbook:book-tab-1".into(),
+                accept: true,
+                prompt_text: Some("Robin".into()),
+            })
+            .await;
+        assert_eq!(answered.error, None, "{answered:?}");
+        assert_eq!(answered.tab_id.as_deref(), Some("macbook:book-tab-1"));
+        assert_eq!(
+            answered.note.as_deref(),
+            Some("Answered the prompt dialog on browser tab macbook:book-tab-1: OK.")
+        );
     }
 
     /// A device the book has, with no app connected: when it was last

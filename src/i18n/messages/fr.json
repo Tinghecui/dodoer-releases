@@ -5893,6 +5893,7 @@
         "eval": "a exécuté du code sur la page",
         "open": "a ouvert cette page",
         "navigate": "est allé sur une autre page",
+        "dialog": "a répondu à une boîte de dialogue",
         "close": "a fermé l’onglet"
       },
       "actionOn": {
@@ -8195,6 +8196,11 @@
           "done": "Est allé à une autre adresse",
           "refused": "Refusé : cette page n'autorise pas les actions",
           "failed": "Impossible de changer d'adresse"
+        },
+        "dialog": {
+          "done": "A répondu à une boîte de dialogue de la page",
+          "refused": "Refusé : c'est à vous de répondre à cette boîte de dialogue",
+          "failed": "Impossible de répondre à la boîte de dialogue"
         },
         "close": {
           "done": "A fermé cet onglet",

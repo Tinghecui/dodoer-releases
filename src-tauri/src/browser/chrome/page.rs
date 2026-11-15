@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use base64::Engine as _;
 use serde_json::{json, Value};
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::cdp::{CdpClient, CdpError, CdpEvent};
@@ -45,6 +45,47 @@ pub enum PageEvent {
     /// The tab closed, the person detached it in DevTools, or the connection
     /// ended. Nothing more will come.
     Gone,
+}
+
+/// Cowork fork: a dialog the page put up — `alert`, `confirm`, `prompt`, or
+/// the "leave this site?" of `beforeunload` (`docs/agent-chrome.md` 13.2).
+/// While one is open the page's main thread is stopped: no script answers,
+/// in any world, until someone answers the dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageDialog {
+    /// `alert`, `confirm`, `prompt` or `beforeunload`, as Chrome names it.
+    pub kind: String,
+    /// What the page wrote in it. The page's words, not the person's.
+    pub message: String,
+    /// What a `prompt` is filled in with to begin with; empty otherwise.
+    pub default_prompt: String,
+    /// The address of the frame that put it up.
+    pub url: String,
+}
+
+impl PageDialog {
+    pub const BEFORE_UNLOAD: &'static str = "beforeunload";
+
+    /// The "leave this site?" dialog: on a tab of the person's own, possibly
+    /// work they have not saved.
+    pub fn is_before_unload(&self) -> bool {
+        self.kind == Self::BEFORE_UNLOAD
+    }
+
+    pub fn is_prompt(&self) -> bool {
+        self.kind == "prompt"
+    }
+
+    /// What `Page.javascriptDialogOpening` says.
+    fn from_cdp(params: &Value) -> Self {
+        let text = |key: &str| params[key].as_str().unwrap_or_default().to_string();
+        Self {
+            kind: params["type"].as_str().unwrap_or("alert").to_string(),
+            message: text("message"),
+            default_prompt: text("defaultPrompt"),
+            url: text("url"),
+        }
+    }
 }
 
 /// Where a mouse gesture stopped. `step` is the index of the event that
@@ -76,6 +117,10 @@ struct Inner {
     target: String,
     session: String,
     state: Mutex<PageState>,
+    /// Cowork fork: the dialog the page has open, if any. A watch rather than
+    /// a field of [`PageState`] so a call waiting on the page can end the
+    /// moment one opens, instead of when the connection's timeout runs out.
+    dialog: watch::Sender<Option<PageDialog>>,
     /// Ends the follow task: this page detached itself.
     detached: CancellationToken,
 }
@@ -116,6 +161,7 @@ impl ChromePage {
                     title: title.to_string(),
                     ..PageState::default()
                 }),
+                dialog: watch::channel(None).0,
                 detached: CancellationToken::new(),
             }),
         };
@@ -239,7 +285,7 @@ impl ChromePage {
         for _ in 0..2 {
             let context = self.world().await?;
             let params = json!({ "expression": wrapped, "contextId": context, "returnByValue": true });
-            match self.call("Runtime.evaluate", params).await {
+            match self.call_unless_dialog("Runtime.evaluate", params).await {
                 Ok(answer) => return envelope_of(&answer),
                 Err(CdpError::Refused { message, .. }) => {
                     let mut state = self.state();
@@ -263,7 +309,7 @@ impl ChromePage {
             state.main_frame.clone().ok_or("the page has no document yet")?
         };
         let made = self
-            .call(
+            .call_unless_dialog(
                 "Page.createIsolatedWorld",
                 json!({ "frameId": frame, "worldName": WORLD_NAME }),
             )
@@ -283,7 +329,10 @@ impl ChromePage {
     /// once the one before it has been taken.
     pub async fn mouse(&self, steps: &[Value]) -> Result<(), MouseFailure> {
         for (step, params) in steps.iter().enumerate() {
-            if let Err(err) = self.call("Input.dispatchMouseEvent", params.clone()).await {
+            if let Err(err) = self
+                .call_unless_dialog("Input.dispatchMouseEvent", params.clone())
+                .await
+            {
                 return Err(MouseFailure {
                     step,
                     error: err.to_string(),
@@ -296,13 +345,65 @@ impl ChromePage {
     /// The viewport as PNG bytes.
     pub async fn screenshot_png(&self) -> Result<Vec<u8>, String> {
         let shot = self
-            .call("Page.captureScreenshot", json!({ "format": "png" }))
+            .call_unless_dialog("Page.captureScreenshot", json!({ "format": "png" }))
             .await
             .map_err(|err| err.to_string())?;
         let data = shot["data"].as_str().ok_or("Chrome sent no image")?;
         base64::engine::general_purpose::STANDARD
             .decode(data)
             .map_err(|err| format!("unreadable image: {err}"))
+    }
+
+    /// Cowork fork: the dialog the page has open, if any.
+    pub fn dialog(&self) -> Option<PageDialog> {
+        self.inner.dialog.borrow().clone()
+    }
+
+    /// Cowork fork: answer the page's dialog — OK (`accept`) or Cancel, and
+    /// for a `prompt` the text to answer with. Refused when there is no
+    /// dialog open any more (the person answered it in Chrome), and then the
+    /// page is known to have none.
+    pub async fn answer_dialog(
+        &self,
+        accept: bool,
+        prompt_text: Option<&str>,
+    ) -> Result<(), CdpError> {
+        let mut params = json!({ "accept": accept });
+        if let Some(text) = prompt_text {
+            params["promptText"] = json!(text);
+        }
+        let answer = self.call("Page.handleJavaScriptDialog", params).await;
+        if matches!(answer, Ok(_) | Err(CdpError::Refused { .. })) {
+            // Answered, or there was nothing to answer: either way no dialog
+            // is open, whether or not Chrome's word of it has arrived yet.
+            self.inner.dialog.send_replace(None);
+        }
+        answer.map(drop)
+    }
+
+    /// [`Self::call`] for a call the page itself has to answer, which a
+    /// dialog stops: refused straight away while one is open, and ended the
+    /// moment one opens rather than when [`super::cdp`]'s timeout runs out.
+    async fn call_unless_dialog(&self, method: &str, params: Value) -> Result<Value, CdpError> {
+        let mut dialogs = self.inner.dialog.subscribe();
+        if dialogs.borrow_and_update().is_some() {
+            return Err(CdpError::DialogOpen);
+        }
+        let opened = async move {
+            loop {
+                if dialogs.changed().await.is_err() {
+                    // The page is gone; the call ends on its own.
+                    std::future::pending::<()>().await;
+                }
+                if dialogs.borrow_and_update().is_some() {
+                    return;
+                }
+            }
+        };
+        tokio::select! {
+            answer = self.call(method, params) => answer,
+            () = opened => Err(CdpError::DialogOpen),
+        }
     }
 
     async fn call(&self, method: &str, params: Value) -> Result<Value, CdpError> {
@@ -434,6 +535,18 @@ impl ChromePage {
                 }]
             }
             "Inspector.detached" => vec![PageEvent::Gone],
+            // Cowork fork: kept for the agent tools (`docs/agent-chrome.md`
+            // 13.2). Closed covers the person answering it in Chrome too.
+            "Page.javascriptDialogOpening" => {
+                self.inner
+                    .dialog
+                    .send_replace(Some(PageDialog::from_cdp(params)));
+                Vec::new()
+            }
+            "Page.javascriptDialogClosed" => {
+                self.inner.dialog.send_replace(None);
+                Vec::new()
+            }
             "Runtime.executionContextCreated" => {
                 let context = &params["context"];
                 let (Some(id), Some(frame)) = (context["id"].as_i64(), context["auxData"]["frameId"].as_str())
@@ -732,6 +845,140 @@ mod tests {
         assert_eq!(call["params"], json!({ "format": "png" }));
         chrome.answer(&call, json!({ "data": "iVBORw==" })).await;
         assert_eq!(shooting.await.unwrap().unwrap(), vec![0x89, b'P', b'N', b'G']);
+    }
+
+    /// Polls until `ready` holds for the page, as a page's state follows
+    /// Chrome's events on a task of its own.
+    async fn until(page: &ChromePage, ready: impl Fn(&ChromePage) -> bool) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !ready(page) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the page never got there");
+    }
+
+    async fn open_confirm(chrome: &mut FakeChrome, session: &str) {
+        chrome
+            .say(
+                json!({ "method": "Page.javascriptDialogOpening", "sessionId": session, "params": {
+                "url": URL, "message": "Delete this project?", "type": "confirm",
+                "hasBrowserHandler": true, "defaultPrompt": "" } }),
+            )
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_dialog_is_kept_until_chrome_says_it_closed() {
+        let (page, _events, mut chrome) = attached().await;
+        assert_eq!(page.dialog(), None);
+        // Another tab's dialog is not this one's.
+        open_confirm(&mut chrome, "OTHER").await;
+        open_confirm(&mut chrome, "S").await;
+        until(&page, |page| page.dialog().is_some()).await;
+        assert_eq!(
+            page.dialog(),
+            Some(PageDialog {
+                kind: "confirm".to_string(),
+                message: "Delete this project?".to_string(),
+                default_prompt: String::new(),
+                url: URL.to_string(),
+            })
+        );
+        assert!(!page.dialog().unwrap().is_before_unload());
+        // The person answered it in Chrome.
+        chrome
+            .say(
+                json!({ "method": "Page.javascriptDialogClosed", "sessionId": "S", "params": {
+                "result": false, "userInput": "" } }),
+            )
+            .await;
+        until(&page, |page| page.dialog().is_none()).await;
+    }
+
+    #[tokio::test]
+    async fn a_dialog_ends_the_script_waiting_on_the_page() {
+        let (page, _events, mut chrome) = attached().await;
+        let running = {
+            let page = page.clone();
+            tokio::spawn(async move { page.eval_in_world("clickThatConfirms()").await })
+        };
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Page.createIsolatedWorld");
+        chrome
+            .answer(&call, json!({ "executionContextId": 7 }))
+            .await;
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Runtime.evaluate");
+        // Not answered: the page is stopped on the dialog it just put up.
+        open_confirm(&mut chrome, "S").await;
+        let ended = tokio::time::timeout(Duration::from_secs(10), running)
+            .await
+            .expect("the script waited for the connection's timeout")
+            .unwrap();
+        assert_eq!(ended, Err(CdpError::DialogOpen.to_string()));
+
+        // While it is open, nothing that needs the page is even asked.
+        assert_eq!(
+            page.eval_in_world("1").await,
+            Err(CdpError::DialogOpen.to_string())
+        );
+        assert_eq!(
+            page.screenshot_png().await,
+            Err(CdpError::DialogOpen.to_string())
+        );
+        let clicked = page
+            .mouse(&[json!({ "type": "mouseMoved", "x": 1, "y": 2 })])
+            .await;
+        assert_eq!(clicked.unwrap_err().step, 0);
+    }
+
+    #[tokio::test]
+    async fn answering_a_dialog_says_ok_or_cancel_and_the_prompt_text() {
+        let (page, _events, mut chrome) = attached().await;
+        chrome
+            .say(json!({ "method": "Page.javascriptDialogOpening", "sessionId": "S", "params": {
+                "url": URL, "message": "Your name?", "type": "prompt", "defaultPrompt": "guest" } }))
+            .await;
+        until(&page, |page| page.dialog().is_some()).await;
+        let dialog = page.dialog().unwrap();
+        assert!(dialog.is_prompt());
+        assert_eq!(dialog.default_prompt, "guest");
+
+        let answering = {
+            let page = page.clone();
+            tokio::spawn(async move { page.answer_dialog(true, Some("Robin")).await })
+        };
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Page.handleJavaScriptDialog");
+        assert_eq!(call["sessionId"], "S");
+        assert_eq!(
+            call["params"],
+            json!({ "accept": true, "promptText": "Robin" })
+        );
+        chrome.answer(&call, json!({})).await;
+        assert_eq!(answering.await.unwrap(), Ok(()));
+        // Known closed at once, before Chrome's word of it arrives.
+        assert_eq!(page.dialog(), None);
+
+        // Gone already — the person was quicker: refused, and none is open.
+        open_confirm(&mut chrome, "S").await;
+        until(&page, |page| page.dialog().is_some()).await;
+        let answering = {
+            let page = page.clone();
+            tokio::spawn(async move { page.answer_dialog(false, None).await })
+        };
+        let call = chrome.next_call().await;
+        assert_eq!(call["params"], json!({ "accept": false }));
+        chrome
+            .say(json!({ "id": call["id"], "error": { "code": -32602, "message": "No dialog is showing" } }))
+            .await;
+        assert!(matches!(
+            answering.await.unwrap(),
+            Err(CdpError::Refused { .. })
+        ));
+        assert_eq!(page.dialog(), None);
     }
 
     #[tokio::test]

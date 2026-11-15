@@ -199,7 +199,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 - **跳到这个标签**：面板里每个标签一个按钮，`Target.activateTarget`（新命令 `browser_chrome_activate`）。
 - **面板**：智能体开的网页带「智能体开的」记号（看 `ownerWindow` 前缀），没有「交给智能体」菜单。
 - **工具说明**（`tool_schema.json`）：`browser_list_tabs` / `browser_open_tab` / `browser_close_tab` 写上 Chrome 的情况。服务器上的 codeg-mcp 升级以前，服务器上的智能体看到的还是旧说明，不影响用。
-- 没做：暂停开关（关掉「让智能体用我的 Chrome」就是停）、Chrome 的执行代码开关、名单可编辑、页面弹的 `alert` / `confirm`、`browser_list_tabs` 里的 `browser: "chrome"` 字段、面板里的活动记录。
+- 没做：暂停开关（关掉「让智能体用我的 Chrome」就是停）、Chrome 的执行代码开关、名单可编辑、~~页面弹的 `alert` / `confirm`~~（13.2 做了）、`browser_list_tabs` 里的 `browser: "chrome"` 字段、面板里的活动记录。
 - 验收：远端窗口里打开开关，服务器上的智能体 `browser_open_tab` 一个要登录的网站，Chrome 弹出一个单独的窗口、页面是登录后的，智能体读得到、点得动；`browser_open_tab` 一个 `localhost` 地址仍开在内置浏览器；开 `mail.google.com` 被拒绝；面板里这个网页带「智能体开的」，点跳转能切过去；关掉开关后智能体看不到它，标签还在 Chrome 里。
 
 ## 8. 验收
@@ -373,6 +373,12 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 - **活动记录**：`AgentAction` 加 `Dialog`。
 - **文件**：`chrome/page.rs`、`surface_external.rs`、`commands/browser.rs`（新 core `agent_dialog_core`，检查顺序照 `agent_act_core`）、`acp/browser_tools.rs`、`tool_schema.json`、`codeg-mcp` 的工具表（服务器上的 codeg-mcp 升级之前，服务器上的智能体看不到新工具，只会收到 `browser_dialog_open` 的报错，让它请用户点）。
 - **验收**：智能体在一个会弹 `confirm` 的页面上点按钮，立刻收到 `browser_dialog_open` 和弹窗文字；`browser_dialog accept=false` 后页面照常；只读档答弹窗被拒；用户在 Chrome 里自己点掉后，智能体下一次调用照常。
+- **实现（PR「chrome-dialogs」）**：
+  - `page.rs` 的 `PageDialog`（类型、文字、`prompt` 的默认值、`url`）放在一个 `watch` 里，`javascriptDialogOpening` 填上、`javascriptDialogClosed` 清掉（用户在 Chrome 里点掉也走这条）。要页面自己回答的调用（`Runtime.evaluate`、`Page.createIsolatedWorld`、`Input.dispatchMouseEvent`、`Page.captureScreenshot`）走 `call_unless_dialog`：弹窗开着就不发，正在等的那次在弹窗出现的那一刻以 `CdpError::DialogOpen` 结束。
+  - `McpBrowserTools` 在快照、截图、五个操作工具、`browser_navigate` 调 core 之前看一眼这个标签有没有弹窗，调完失败了再看一眼（点「删除」弹出 `confirm` 就是这种：操作到了页面，回答里说「你的操作到了页面，页面弹了对话框」），有就回 `browser_dialog_open`，文字由 `browser_tools::dialog_open_note` 写（截到 500 字、JSON 引号括起来、写明是网页的话）。智能体连读都不能读的标签不说文字，照常回 `browser_grant_required`。`browser_console_messages` 不受影响（读的是已经记下的行，不碰页面）。`browser_eval` 在 Chrome 上本来就拒绝，没加。
+  - `browser_dialog` 不是单独的一条通道，是 `BrowserTabOp::Dialog { tab_id, accept, prompt_text }`：和开、换、关标签走同一条路，服务器经借浏览器的协议原样转给桌面端，不用改 host bridge。老桌面端不认这个 op，回错误。`accept` 必须给（OK 和 Cancel 都是决定，不替智能体选默认）；`prompt` 不给 `promptText` 时用它原来的默认值。
+  - 检查顺序（`may_answer_dialog`）：共享级别（没共享回 `browser_grant_required`，只读回 `browser_control_required`）→ 是不是 Chrome 标签（内置的回 `browser_action_failed`，说只支持用户的 Chrome）→ 有没有弹窗（没有回 `browser_no_dialog`）→ 用户交出的标签上的 `beforeunload` 回 `browser_dialog_for_user`。`handleJavaScriptDialog` 被 Chrome 拒绝（已经没有弹窗）也回 `browser_no_dialog`。每一次都进活动记录（`AgentAction::Dialog`，面板里是「回应了页面弹窗」）。
+  - **没做**：面板里标签上的「页面弹了对话框」记号和跳转——弹窗状态只在后端，面板的标签列表（`ChromeTab`）还不带它。
 
 ### 13.3 敏感网站名单可编辑（C）
 

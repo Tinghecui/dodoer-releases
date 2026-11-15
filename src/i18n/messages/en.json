@@ -5893,6 +5893,7 @@
         "eval": "ran code on the page",
         "open": "opened this page",
         "navigate": "went to another page",
+        "dialog": "answered a dialog",
         "close": "closed the tab"
       },
       "actionOn": {
@@ -8195,6 +8196,11 @@
           "done": "Went to another address",
           "refused": "Refused: this page does not allow actions",
           "failed": "Could not change the address"
+        },
+        "dialog": {
+          "done": "Answered a dialog on the page",
+          "refused": "Refused: answering this dialog is up to you",
+          "failed": "Couldn't answer the dialog"
         },
         "close": {
           "done": "Closed this tab",

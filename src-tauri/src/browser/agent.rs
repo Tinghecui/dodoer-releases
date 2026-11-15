@@ -305,6 +305,10 @@ pub enum AgentAction {
     Open,
     /// Pointed this tab at another address.
     Navigate,
+    /// Cowork fork: answered a dialog the page put up (`alert`, `confirm`,
+    /// `prompt`, "leave this site?") — only ever in the person's Chrome
+    /// (`docs/agent-chrome.md` 13.2).
+    Dialog,
     /// Asked for this tab to be closed.
     ///
     /// Only ever recorded as a refusal or a failure. A strip is a display

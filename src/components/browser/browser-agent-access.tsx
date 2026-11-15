@@ -312,6 +312,11 @@ const ACTIVITY_KEYS = {
     refused: "activity.navigate.refused",
     failed: "activity.navigate.failed",
   },
+  dialog: {
+    done: "activity.dialog.done",
+    refused: "activity.dialog.refused",
+    failed: "activity.dialog.failed",
+  },
   close: {
     done: "activity.close.done",
     refused: "activity.close.refused",

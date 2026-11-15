@@ -114,6 +114,8 @@ export type AgentAction =
   | "open"
   /** Pointed this tab at another address. */
   | "navigate"
+  /** Answered a dialog the page put up. Only in the person's own Chrome. */
+  | "dialog"
   /** Asked for this tab to be closed. Only ever seen as a refusal or a
    *  failure: a strip dies with its tab, so a close that worked has nowhere
    *  to leave a line. */

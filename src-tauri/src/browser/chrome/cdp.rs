@@ -45,6 +45,10 @@ pub enum CdpError {
         code: i64,
         message: String,
     },
+    /// Cowork fork: the page put up a dialog (`alert`, `confirm`, …) and
+    /// will not answer until someone answers it (`page::PageDialog`).
+    #[error("the page has a dialog open and is waiting for an answer to it")]
+    DialogOpen,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

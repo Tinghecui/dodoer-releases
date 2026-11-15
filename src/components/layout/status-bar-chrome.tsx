@@ -517,6 +517,7 @@ const ACTION_KEYS = {
   eval: "activity.action.eval",
   open: "activity.action.open",
   navigate: "activity.action.navigate",
+  dialog: "activity.action.dialog",
   close: "activity.action.close",
 } as const satisfies Record<AgentAction, string>
 

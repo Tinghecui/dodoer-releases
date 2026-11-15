@@ -303,10 +303,19 @@ impl CompanionFeatures {
             "submit_result" => self.result,
             "create_automation" => self.automations,
             "create_work_task" => self.taskboard,
-            "browser_list_tabs" | "browser_snapshot" | "browser_console_messages"
-            | "browser_screenshot" | "browser_click" | "browser_hover" | "browser_type"
-            | "browser_press_key" | "browser_select_option" | "browser_open_tab"
-            | "browser_navigate" | "browser_close_tab" => self.browser,
+            "browser_list_tabs"
+            | "browser_snapshot"
+            | "browser_console_messages"
+            | "browser_screenshot"
+            | "browser_click"
+            | "browser_hover"
+            | "browser_type"
+            | "browser_press_key"
+            | "browser_select_option"
+            | "browser_open_tab"
+            | "browser_navigate"
+            | "browser_close_tab"
+            | "browser_dialog" => self.browser,
             // Both, so a `--features browser_eval` with no `browser` — a
             // parent bug, or someone editing the agent's MCP config by hand —
             // cannot leave the strongest tool as the only one present.
@@ -1296,7 +1305,9 @@ async fn build_tools_call_spawn(
                 Box::pin(async move { client_browser_eval_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_browser_eval_result).await
         }
-        "browser_open_tab" | "browser_navigate" | "browser_close_tab" => {
+        // Cowork fork: `browser_dialog` rides the tab ops, to the desktop
+        // too (`BrowserTabOp::Dialog`).
+        "browser_open_tab" | "browser_navigate" | "browser_close_tab" | "browser_dialog" => {
             let op = match browser_tab_op(name.as_str(), &arguments) {
                 Ok(parsed) => parsed,
                 Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
@@ -2713,6 +2724,26 @@ pub fn browser_tab_op(
         }),
         "browser_close_tab" => Ok(BrowserTabOp::Close {
             tab_id: text("tabId")?,
+        }),
+        // Cowork fork: the answer to a page's dialog in the person's Chrome
+        // (`docs/agent-chrome.md` 13.2). `accept` has no default: OK and
+        // Cancel are both decisions, and neither is the agent's to make by
+        // leaving a field out.
+        "browser_dialog" => Ok(BrowserTabOp::Dialog {
+            tab_id: text("tabId")?,
+            accept: match arguments.get("accept") {
+                Some(Value::Bool(accept)) => *accept,
+                _ => {
+                    return Err(format!(
+                        "{name} requires `accept`: true for OK, false for Cancel"
+                    ))
+                }
+            },
+            prompt_text: match arguments.get("promptText") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(text)) => Some(text.clone()),
+                Some(_) => return Err(format!("{name} takes `promptText` as a string")),
+            },
         }),
         other => Err(format!("unknown browser tab tool {other}")),
     }
@@ -6824,6 +6855,8 @@ mod tests {
                 "browser_type".to_string(),
                 "browser_press_key".to_string(),
                 "browser_select_option".to_string(),
+                // Cowork fork: answering a page's dialog in the user's Chrome.
+                "browser_dialog".to_string(),
             ]
         );
         // The strongest tool in the group is not in the group: sharing the
@@ -7321,6 +7354,63 @@ mod tests {
             let err = browser_tab_op(name, &args).unwrap_err();
             assert!(err.contains(wanted), "{name}: {err}");
         }
+    }
+
+    /// `browser_dialog` names the tab and says OK or Cancel, always; the
+    /// prompt text only when given, and as text.
+    #[test]
+    fn dialog_arguments_are_checked_before_anything_is_sent() {
+        use crate::acp::browser_tools::BrowserTabOp;
+        assert_eq!(
+            browser_tab_op(
+                "browser_dialog",
+                &json!({ "tabId": " t1 ", "accept": false })
+            )
+            .unwrap(),
+            BrowserTabOp::Dialog {
+                tab_id: "t1".into(),
+                accept: false,
+                prompt_text: None,
+            }
+        );
+        assert_eq!(
+            browser_tab_op(
+                "browser_dialog",
+                &json!({ "tabId": "t1", "accept": true, "promptText": " two words " })
+            )
+            .unwrap(),
+            BrowserTabOp::Dialog {
+                tab_id: "t1".into(),
+                accept: true,
+                // Not trimmed: what is typed into the page is the agent's.
+                prompt_text: Some(" two words ".into()),
+            }
+        );
+        for (arguments, names) in [
+            (json!({ "accept": true }), "`tabId`"),
+            (json!({ "tabId": "t1" }), "`accept`"),
+            (json!({ "tabId": "t1", "accept": "yes" }), "`accept`"),
+            (
+                json!({ "tabId": "t1", "accept": true, "promptText": 7 }),
+                "`promptText`",
+            ),
+        ] {
+            let err = browser_tab_op("browser_dialog", &arguments).unwrap_err();
+            assert!(err.contains(names), "{arguments}: {err}");
+        }
+    }
+
+    /// The answer to a dialog has no tab to describe: its note is the text.
+    #[test]
+    fn a_dialog_answer_reads_as_its_note() {
+        let answered = render_browser_tab_op_result(&json!({
+            "tabId": "t1", "note": "Answered the confirm dialog on browser tab t1: Cancel."
+        }));
+        assert_eq!(
+            answered["content"][0]["text"],
+            "Answered the confirm dialog on browser tab t1: Cancel."
+        );
+        assert_eq!(answered["isError"], false);
     }
 
     /// A page that replaced the agent's old one in the person's Chrome says

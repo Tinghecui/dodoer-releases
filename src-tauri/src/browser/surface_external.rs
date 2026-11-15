@@ -20,6 +20,7 @@ use tauri::Url;
 
 use super::agent::PointerButton;
 use super::chrome::cdp::CdpError;
+use super::chrome::page::PageDialog;
 use super::chrome::ChromePage;
 use super::surface::{PointerFailure, PointerGesture, SurfaceError};
 
@@ -99,6 +100,21 @@ impl ExternalHandle {
     /// means handing this one back, never closing the person's page.
     pub fn close(&self) {
         self.page.detach();
+    }
+
+    /// Cowork fork: the dialog the page has open, if any
+    /// (`docs/agent-chrome.md` 13.2).
+    pub fn dialog(&self) -> Option<PageDialog> {
+        self.page.dialog()
+    }
+
+    /// Cowork fork: answer the page's dialog (`ChromePage::answer_dialog`).
+    pub async fn answer_dialog(
+        &self,
+        accept: bool,
+        prompt_text: Option<&str>,
+    ) -> Result<(), CdpError> {
+        self.page.answer_dialog(accept, prompt_text).await
     }
 
     pub fn eval_in_world(

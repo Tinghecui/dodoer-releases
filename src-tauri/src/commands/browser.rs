@@ -3224,6 +3224,209 @@ pub async fn agent_close_tab_core(
     close_core(app, registry, tab_id, None)
 }
 
+/// Cowork fork: tags `browser_dialog` on a tab with no dialog open.
+pub const BROWSER_I18N_KEY_NO_DIALOG: &str = "browser.chrome.error.noDialog";
+
+/// Cowork fork: tags a dialog only the person may answer.
+pub const BROWSER_I18N_KEY_DIALOG_FOR_USER: &str = "browser.chrome.error.dialogForUser";
+
+/// Cowork fork: answer the dialog a page of the person's Chrome put up —
+/// OK or Cancel, and for a `prompt` the text to answer with
+/// (`docs/agent-chrome.md` 13.2).
+///
+/// Checked in the order `agent_act_core` checks, because answering is
+/// acting: OK on `confirm("Delete this project?")` is a decision made for the
+/// person. So the tab has to be shared for acting, and "leave this site?" on a
+/// tab the person handed over is left to them — it may stand for work they
+/// have not saved; on a page an agent opened it is the agent's own. A dialog
+/// the person answered in Chrome first is gone, and the agent is told so.
+/// Every attempt leaves a line in the Chrome panel's record.
+pub async fn agent_dialog_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    accept: bool,
+    prompt_text: Option<&str>,
+) -> Result<String, AppCommandError> {
+    let (outcome, answer) = match answer_page_dialog(registry, tab_id, accept, prompt_text).await {
+        Ok(said) => (Some(agent::AgentOutcome::Done), Ok(said)),
+        Err((outcome, err)) => (outcome, Err(err)),
+    };
+    if let Some(outcome) = outcome {
+        events::emit_agent_activity(
+            app,
+            tab_id,
+            agent::AgentAction::Dialog,
+            outcome,
+            now_millis(),
+        );
+    }
+    answer
+}
+
+async fn answer_page_dialog(
+    registry: &BrowserRegistry,
+    tab_id: &str,
+    accept: bool,
+    prompt_text: Option<&str>,
+) -> Result<String, ReadFailure> {
+    let Some((handle, level, users_own, kind)) = registry.read(tab_id, |tab| {
+        (
+            match &tab.surface {
+                BrowserSurface::External(handle) => Some(handle.clone()),
+                _ => None,
+            },
+            agent::level_of(tab.state.agent_grant.as_ref()),
+            !tab.state
+                .owner_window
+                .starts_with(crate::browser::chrome::lending::AGENT_OWNER_PREFIX),
+            tab.state.kind,
+        )
+    }) else {
+        return Err((
+            None,
+            AppCommandError::not_found(format!("browser tab {tab_id} not found")),
+        ));
+    };
+    if kind == TabKind::Document {
+        return Err((
+            None,
+            AppCommandError::not_found(format!("browser tab {tab_id} not found")),
+        ));
+    }
+    let dialog = handle.as_ref().and_then(|handle| handle.dialog());
+    may_answer_dialog(tab_id, level, users_own, handle.is_some(), dialog.as_ref())?;
+    let (Some(handle), Some(dialog)) = (handle, dialog) else {
+        // `may_answer_dialog` refused both.
+        return Err((None, no_dialog(tab_id)));
+    };
+    // Only a prompt has a field to type into; Chrome ignores the text on the
+    // others, and so does this. A prompt answered with no text of the agent's
+    // keeps the text it started with, as OK does for a person.
+    let typed = dialog
+        .is_prompt()
+        .then_some(prompt_text.unwrap_or(dialog.default_prompt.as_str()));
+    match handle.answer_dialog(accept, typed).await {
+        Ok(()) => Ok(dialog_answered_note(tab_id, &dialog, accept)),
+        // No dialog showing: the person answered it in Chrome first.
+        Err(crate::browser::chrome::cdp::CdpError::Refused { .. }) => {
+            Err((Some(agent::AgentOutcome::Failed), no_dialog(tab_id)))
+        }
+        Err(err) => Err((
+            Some(agent::AgentOutcome::Failed),
+            AppCommandError::network(format!("could not answer the dialog: {err}")),
+        )),
+    }
+}
+
+/// Whether an agent may answer a dialog on this tab: the grant first, as for
+/// any action, then that there is a dialog to answer and that it is not one
+/// only the person may answer. `in_chrome` is whether the tab is one of the
+/// person's Chrome — the built-in browser's engines show their own dialogs,
+/// which the app cannot reach.
+fn may_answer_dialog(
+    tab_id: &str,
+    level: GrantLevel,
+    users_own: bool,
+    in_chrome: bool,
+    dialog: Option<&crate::browser::chrome::page::PageDialog>,
+) -> Result<(), ReadFailure> {
+    if !level.allows(GrantLevel::Read) {
+        return Err((Some(agent::AgentOutcome::Refused), grant_required(tab_id)));
+    }
+    if !level.allows(GrantLevel::Control) {
+        return Err((Some(agent::AgentOutcome::Refused), control_required(tab_id)));
+    }
+    if !in_chrome {
+        return Err((
+            Some(agent::AgentOutcome::Failed),
+            AppCommandError::invalid_input(format!(
+                "browser tab {tab_id} is a tab of the built-in browser, where a page's dialogs \
+                 are shown by the browser itself and cannot be answered by an agent; \
+                 browser_dialog only answers dialogs in the user's own Chrome"
+            )),
+        ));
+    }
+    let Some(dialog) = dialog else {
+        return Err((Some(agent::AgentOutcome::Failed), no_dialog(tab_id)));
+    };
+    if dialog.is_before_unload() && users_own {
+        return Err((
+            Some(agent::AgentOutcome::Refused),
+            AppCommandError::permission_denied(format!(
+                "the page on browser tab {tab_id} asks whether to leave it, and the tab is the \
+                 user's own: leaving may throw away work they have not saved, so only they \
+                 answer that. Ask them to, in Chrome"
+            ))
+            .with_i18n(
+                BROWSER_I18N_KEY_DIALOG_FOR_USER,
+                std::collections::BTreeMap::new(),
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn no_dialog(tab_id: &str) -> AppCommandError {
+    AppCommandError::invalid_input(format!(
+        "browser tab {tab_id} has no dialog open: the user may have answered it in Chrome \
+         already. Carry on with browser_snapshot"
+    ))
+    .with_i18n(
+        BROWSER_I18N_KEY_NO_DIALOG,
+        std::collections::BTreeMap::new(),
+    )
+}
+
+/// What an agent is told once a dialog is answered.
+fn dialog_answered_note(
+    tab_id: &str,
+    dialog: &crate::browser::chrome::page::PageDialog,
+    accept: bool,
+) -> String {
+    let answer = match (accept, dialog.kind.as_str()) {
+        (true, "beforeunload") => "Leave",
+        (false, "beforeunload") => "Stay",
+        (true, _) => "OK",
+        (false, _) => "Cancel",
+    };
+    format!(
+        "Answered the {kind} dialog on browser tab {tab_id}: {answer}. The page carries on; take \
+         a new browser_snapshot to see what came of it.",
+        kind = dialog.kind,
+    )
+}
+
+/// Cowork fork: what an agent is told instead of reading or acting on a tab of
+/// the person's Chrome whose page has a dialog open — `None` when it has none,
+/// and when the agent may not even read the tab: what the dialog says is the
+/// page's, and an unshared page's words are not the agent's to hear
+/// (`docs/agent-chrome.md` 13.2).
+fn chrome_dialog_note(registry: &BrowserRegistry, tab_id: &str) -> Option<String> {
+    let (dialog, level, users_own) = registry
+        .read(tab_id, |tab| match &tab.surface {
+            BrowserSurface::External(handle) => handle.dialog().map(|dialog| {
+                (
+                    dialog,
+                    agent::level_of(tab.state.agent_grant.as_ref()),
+                    !tab.state
+                        .owner_window
+                        .starts_with(crate::browser::chrome::lending::AGENT_OWNER_PREFIX),
+                )
+            }),
+            _ => None,
+        })
+        .flatten()?;
+    level.allows(GrantLevel::Read).then(|| {
+        crate::acp::browser_tools::dialog_open_note(
+            tab_id,
+            &dialog,
+            level.allows(GrantLevel::Control),
+            users_own,
+        )
+    })
+}
+
 // ---- page → conversation -------------------------------------------------
 //
 // The other direction from the `agent_*` reads above, and the reason none of
@@ -3603,8 +3806,8 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         max_chars: Option<usize>,
     ) -> crate::acp::browser_tools::BrowserSnapshotOutcome {
         use crate::acp::browser_tools::{
-            BrowserSnapshotOutcome, DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_NO_SUCH_TAB,
-            ERROR_READ_FAILED, ERROR_UNAVAILABLE, NO_BROWSER_NOTE,
+            BrowserSnapshotOutcome, DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_DIALOG_OPEN,
+            ERROR_NO_SUCH_TAB, ERROR_READ_FAILED, ERROR_UNAVAILABLE, NO_BROWSER_NOTE,
         };
         let Some(registry) = self.registry().await else {
             return BrowserSnapshotOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
@@ -3624,8 +3827,22 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         // Straight through `agent_snapshot_core`: the grant check and the line
         // it leaves on the tab's activity strip both live in there, so this
         // surface cannot read a page more quietly than the app's own does.
+        // Cowork fork: a page of the person's Chrome stopped on a dialog
+        // answers nothing; said straight away, and in place of whatever a
+        // read cut short by one ended in (`docs/agent-chrome.md` 13.2).
+        if let Some(note) = chrome_dialog_note(&registry, tab_id) {
+            return BrowserSnapshotOutcome::refused(tab_id, ERROR_DIALOG_OPEN, note);
+        }
         let call = agent_snapshot_core(&self.app, &registry, tab_id, &request);
-        match self.as_caller(call).await {
+        let answer = self.as_caller(call).await;
+        if let Some(note) = answer
+            .as_ref()
+            .err()
+            .and_then(|_| chrome_dialog_note(&registry, tab_id))
+        {
+            return BrowserSnapshotOutcome::refused(tab_id, ERROR_DIALOG_OPEN, note);
+        }
+        match answer {
             Ok(snapshot) => BrowserSnapshotOutcome::page(tab_id, snapshot),
             // The refusal is recognized by the key the error was tagged with,
             // not by its code: `PermissionDenied` is a wide category, and only
@@ -3657,8 +3874,8 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         request: agent::ActionRequest,
     ) -> crate::acp::browser_tools::BrowserActOutcome {
         use crate::acp::browser_tools::{
-            BrowserActOutcome, ERROR_ACTION_FAILED, ERROR_NO_SUCH_TAB, ERROR_UNAVAILABLE,
-            NO_BROWSER_NOTE,
+            BrowserActOutcome, ERROR_ACTION_FAILED, ERROR_DIALOG_OPEN, ERROR_NO_SUCH_TAB,
+            ERROR_UNAVAILABLE, NO_BROWSER_NOTE,
         };
         let Some(registry) = self.registry().await else {
             return BrowserActOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
@@ -3670,8 +3887,26 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
                 scope_refusal_note(tab_id),
             );
         }
+        // Cowork fork: as for a read. An action the page answered with a
+        // dialog — a click on "Delete" that asks `confirm(…)` — reached the
+        // page, and the dialog is what came of it.
+        if let Some(note) = chrome_dialog_note(&registry, tab_id) {
+            return BrowserActOutcome::refused(tab_id, ERROR_DIALOG_OPEN, note);
+        }
         let call = agent_act_core(&self.app, &registry, tab_id, &request);
-        match self.as_caller(call).await {
+        let answer = self.as_caller(call).await;
+        if let Some(note) = answer
+            .as_ref()
+            .err()
+            .and_then(|_| chrome_dialog_note(&registry, tab_id))
+        {
+            return BrowserActOutcome::refused(
+                tab_id,
+                ERROR_DIALOG_OPEN,
+                format!("Your action reached the page, and the page put up a dialog. {note}"),
+            );
+        }
+        match answer {
             Ok(outcome) => BrowserActOutcome::done(tab_id, outcome),
             Err(err) => match err.i18n_key.as_deref() {
                 Some(BROWSER_I18N_KEY_GRANT_REQUIRED) => BrowserActOutcome::grant_required(tab_id),
@@ -3739,8 +3974,8 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         request: CaptureRequest,
     ) -> crate::acp::browser_tools::BrowserCaptureOutcome {
         use crate::acp::browser_tools::{
-            BrowserCaptureOutcome, ERROR_NO_SUCH_TAB, ERROR_READ_FAILED, ERROR_UNAVAILABLE,
-            NO_BROWSER_NOTE,
+            BrowserCaptureOutcome, ERROR_DIALOG_OPEN, ERROR_NO_SUCH_TAB, ERROR_READ_FAILED,
+            ERROR_UNAVAILABLE, NO_BROWSER_NOTE,
         };
         let Some(registry) = self.registry().await else {
             return BrowserCaptureOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
@@ -3752,8 +3987,20 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
                 scope_refusal_note(tab_id),
             );
         }
+        // Cowork fork: as for a read.
+        if let Some(note) = chrome_dialog_note(&registry, tab_id) {
+            return BrowserCaptureOutcome::refused(tab_id, ERROR_DIALOG_OPEN, note);
+        }
         let call = agent_capture_core(&self.app, &registry, tab_id, &request);
-        match self.as_caller(call).await {
+        let answer = self.as_caller(call).await;
+        if let Some(note) = answer
+            .as_ref()
+            .err()
+            .and_then(|_| chrome_dialog_note(&registry, tab_id))
+        {
+            return BrowserCaptureOutcome::refused(tab_id, ERROR_DIALOG_OPEN, note);
+        }
+        match answer {
             Ok(capture) => BrowserCaptureOutcome::image(tab_id, capture),
             Err(err) => match err.i18n_key.as_deref() {
                 Some(BROWSER_I18N_KEY_GRANT_REQUIRED) => {
@@ -3844,7 +4091,8 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         op: crate::acp::browser_tools::BrowserTabOp,
     ) -> crate::acp::browser_tools::BrowserTabOutcome {
         use crate::acp::browser_tools::{
-            BrowserTabOp, BrowserTabOutcome, ERROR_BAD_ADDRESS, ERROR_BLOCKED, ERROR_NO_SUCH_TAB,
+            BrowserTabOp, BrowserTabOutcome, ERROR_ACTION_FAILED, ERROR_BAD_ADDRESS, ERROR_BLOCKED,
+            ERROR_DIALOG_FOR_USER, ERROR_DIALOG_OPEN, ERROR_NO_DIALOG, ERROR_NO_SUCH_TAB,
             ERROR_OPEN_FAILED, ERROR_UNAVAILABLE, NO_BROWSER_NOTE,
         };
         let Some(registry) = self.registry().await else {
@@ -3856,6 +4104,13 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
                 ERROR_NO_SUCH_TAB,
                 scope_refusal_note(tab_id),
             );
+        }
+        // Cowork fork: a page stopped on a dialog does not go anywhere until
+        // it is answered (`docs/agent-chrome.md` 13.2).
+        if let BrowserTabOp::Navigate { tab_id, .. } = &op {
+            if let Some(note) = chrome_dialog_note(&registry, tab_id) {
+                return BrowserTabOutcome::refused(Some(tab_id.as_str()), ERROR_DIALOG_OPEN, note);
+            }
         }
         let named = op.tab_id().map(str::to_string);
         let answer = match &op {
@@ -3896,6 +4151,27 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
                 .as_caller(agent_close_tab_core(&self.app, &registry, tab_id))
                 .await
                 .map(|()| BrowserTabOutcome::closed(tab_id)),
+            // Cowork fork: `browser_dialog`.
+            BrowserTabOp::Dialog {
+                tab_id,
+                accept,
+                prompt_text,
+            } => self
+                .as_caller(agent_dialog_core(
+                    &self.app,
+                    &registry,
+                    tab_id,
+                    *accept,
+                    prompt_text.as_deref(),
+                ))
+                .await
+                .map(|note| BrowserTabOutcome {
+                    tab_id: Some(tab_id.clone()),
+                    tab: None,
+                    load_error: None,
+                    error: None,
+                    note: Some(note),
+                }),
         };
         let named = named.as_deref();
         match answer {
@@ -3938,6 +4214,23 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
                 }
                 Some(BROWSER_I18N_KEY_OPEN_FAILED) => {
                     BrowserTabOutcome::refused(named, ERROR_OPEN_FAILED, err.message)
+                }
+                Some(BROWSER_I18N_KEY_NO_DIALOG) => {
+                    BrowserTabOutcome::refused(named, ERROR_NO_DIALOG, format!("{}.", err.message))
+                }
+                Some(BROWSER_I18N_KEY_DIALOG_FOR_USER) => BrowserTabOutcome::refused(
+                    named,
+                    ERROR_DIALOG_FOR_USER,
+                    format!("{}.", err.message),
+                ),
+                _ if matches!(op, BrowserTabOp::Dialog { .. })
+                    && !matches!(err.code, crate::app_error::AppErrorCode::NotFound) =>
+                {
+                    BrowserTabOutcome::refused(
+                        named,
+                        ERROR_ACTION_FAILED,
+                        format!("{}.", err.message),
+                    )
                 }
                 _ if matches!(err.code, crate::app_error::AppErrorCode::NotFound) => {
                     BrowserTabOutcome::refused(
@@ -4979,5 +5272,99 @@ mod tests {
         assert!(!caps.doc_guest);
         assert!(!caps.policy.enabled);
         assert!(caps.reasons.iter().any(|r| r.contains("policy")));
+    }
+
+    fn page_dialog(kind: &str) -> crate::browser::chrome::page::PageDialog {
+        crate::browser::chrome::page::PageDialog {
+            kind: kind.to_string(),
+            message: "Delete this project?".to_string(),
+            default_prompt: String::new(),
+            url: "https://example.com/".to_string(),
+        }
+    }
+
+    /// Answering a dialog is acting: the grant is checked first, as for a
+    /// click, and then that there is a dialog this agent may answer.
+    #[test]
+    fn a_dialog_is_answered_only_by_an_agent_that_may_act() {
+        let confirm = page_dialog("confirm");
+        let key = |result: Result<(), ReadFailure>| {
+            let (outcome, err) = result.unwrap_err();
+            (outcome, err.i18n_key)
+        };
+        assert_eq!(
+            key(may_answer_dialog(
+                "t1",
+                GrantLevel::None,
+                true,
+                true,
+                Some(&confirm)
+            )),
+            (
+                Some(agent::AgentOutcome::Refused),
+                Some(BROWSER_I18N_KEY_GRANT_REQUIRED.to_string())
+            )
+        );
+        // Read-only: the dialog stays the user's.
+        assert_eq!(
+            key(may_answer_dialog(
+                "t1",
+                GrantLevel::Read,
+                true,
+                true,
+                Some(&confirm)
+            )),
+            (
+                Some(agent::AgentOutcome::Refused),
+                Some(BROWSER_I18N_KEY_CONTROL_REQUIRED.to_string())
+            )
+        );
+        assert!(may_answer_dialog("t1", GrantLevel::Control, true, true, Some(&confirm)).is_ok());
+
+        // Answered in Chrome already.
+        assert_eq!(
+            key(may_answer_dialog(
+                "t1",
+                GrantLevel::Control,
+                true,
+                true,
+                None
+            )),
+            (
+                Some(agent::AgentOutcome::Failed),
+                Some(BROWSER_I18N_KEY_NO_DIALOG.to_string())
+            )
+        );
+        // A tab of the built-in browser has no dialogs an agent can reach.
+        let (outcome, err) =
+            may_answer_dialog("t1", GrantLevel::Control, false, false, None).unwrap_err();
+        assert_eq!(outcome, Some(agent::AgentOutcome::Failed));
+        assert!(err.message.contains("user's own Chrome"), "{}", err.message);
+    }
+
+    /// "Leave this site?" on a tab the user handed over is theirs to answer;
+    /// on a page an agent opened, the agent's.
+    #[test]
+    fn leaving_the_users_own_page_is_left_to_them() {
+        let leave = page_dialog("beforeunload");
+        assert_eq!(
+            may_answer_dialog("t1", GrantLevel::Control, true, true, Some(&leave))
+                .unwrap_err()
+                .1
+                .i18n_key,
+            Some(BROWSER_I18N_KEY_DIALOG_FOR_USER.to_string())
+        );
+        assert!(may_answer_dialog("t1", GrantLevel::Control, false, true, Some(&leave)).is_ok());
+    }
+
+    #[test]
+    fn the_answer_to_a_dialog_says_which_button() {
+        let note = dialog_answered_note("t1", &page_dialog("confirm"), false);
+        assert!(
+            note.starts_with("Answered the confirm dialog on browser tab t1: Cancel."),
+            "{note}"
+        );
+        let note = dialog_answered_note("t1", &page_dialog("beforeunload"), true);
+        assert!(note.contains(": Leave."), "{note}");
     }
 }

@@ -277,6 +277,24 @@ pub async fn note_prompt(state: &AppState, headers: &HeaderMap, conversation_id:
     state.host_registry.working().note_from(root, device);
 }
 
+tokio::task_local! {
+    /// The connection whose agent made the browser call being run
+    /// ([`as_caller`]).
+    static CALLER: String;
+}
+
+/// Run `call`, a browser call of the agent on `connection_id`: what
+/// `web::host_browser` checks against that conversation's devices. Set by
+/// the delegation listener, around each browser call it serves.
+pub async fn as_caller<F: std::future::Future>(connection_id: String, call: F) -> F::Output {
+    CALLER.scope(connection_id, call).await
+}
+
+/// The connection whose browser call is running, if one is.
+pub fn caller() -> Option<String> {
+    CALLER.try_with(Clone::clone).ok()
+}
+
 /// Which conversation a connection is, and the other way round.
 #[async_trait]
 pub trait Conversations: Send + Sync {
@@ -505,6 +523,95 @@ impl DeviceTools {
         text.push(' ');
         text.push_str(&how_to_use(&chosen));
         answer(text, devices, &state)
+    }
+
+    /// Which device a browser call of the conversation on `connection_id`
+    /// goes to: `name`, else the working device; one this conversation has
+    /// confirmed, asking the person if it has not. `Ok(None)`: nothing to go
+    /// by (no conversation, no device), so the call goes as it did before
+    /// devices. A name that is none of the devices is handed back as it is,
+    /// for the call to say so.
+    pub async fn resolve(
+        &self,
+        connection_id: &str,
+        name: Option<&str>,
+    ) -> Result<Option<String>, String> {
+        let wanted = name
+            .map(|name| name.trim().to_ascii_lowercase())
+            .filter(|name| !name.is_empty());
+        let devices = self.hosts.device_list().devices;
+        let Some(conversation) = self.conversations.conversation_of(connection_id).await else {
+            return Ok(wanted);
+        };
+        if devices.len() <= 1 {
+            return Ok(wanted.or_else(|| devices.first().map(|d| d.name.clone())));
+        }
+        let state = self.hosts.working().get(conversation).unwrap_or_default();
+        let target = match &wanted {
+            Some(wanted) => match devices.iter().find(|d| &d.name == wanted) {
+                Some(device) => Some(device.clone()),
+                None => return Ok(Some(wanted.clone())),
+            },
+            None => state
+                .working
+                .as_deref()
+                .and_then(|id| devices.iter().find(|d| d.id == id))
+                .cloned(),
+        };
+        if let Some(device) = &target {
+            if state.confirmed.contains(&device.id) {
+                return Ok(Some(device.name.clone()));
+            }
+        }
+        let picked = self
+            .ask(connection_id, conversation, &devices, target.as_ref(), &state)
+            .await?;
+        self.hosts.working().work_on(conversation, &picked.id);
+        Ok(Some(picked.name))
+    }
+
+    /// The names of the devices the conversation on `connection_id` may
+    /// use: the ones it has confirmed, or the only one there is. `None`:
+    /// nothing to go by.
+    pub async fn confirmed_names(&self, connection_id: &str) -> Option<Vec<String>> {
+        let conversation = self.conversations.conversation_of(connection_id).await?;
+        let devices = self.hosts.device_list().devices;
+        if devices.len() <= 1 {
+            return Some(devices.into_iter().map(|d| d.name).collect());
+        }
+        let state = self.hosts.working().get(conversation).unwrap_or_default();
+        Some(
+            devices
+                .into_iter()
+                .filter(|d| state.confirmed.contains(&d.id))
+                .map(|d| d.name)
+                .collect(),
+        )
+    }
+
+    /// Whether the conversation on `connection_id` may `ssh` to the device
+    /// with this id. Never waits on the person: `ssh` would hang.
+    pub async fn check_ssh(&self, connection_id: &str, device_id: &str) -> Result<(), String> {
+        let Some(conversation) = self.conversations.conversation_of(connection_id).await else {
+            // Not an agent's conversation (a shell the person opened): theirs.
+            return Ok(());
+        };
+        let devices = self.hosts.device_list().devices;
+        if devices.len() <= 1 {
+            return Ok(());
+        }
+        let state = self.hosts.working().get(conversation).unwrap_or_default();
+        if state.confirmed.iter().any(|d| d == device_id) {
+            return Ok(());
+        }
+        let name = devices
+            .iter()
+            .find(|d| d.id == device_id)
+            .map_or("that device", |d| d.name.as_str());
+        Err(format!(
+            "This conversation has not been given `{name}` by the user. Call the use_device \
+             tool (with the name `{name}` if the user asked for it), then run ssh again."
+        ))
     }
 
     /// The card: which device this conversation is to work on.
@@ -1043,6 +1150,75 @@ mod tests {
         let imac = after.devices.iter().find(|d| d.device.name == "study-imac").unwrap();
         assert!(imac.working && imac.confirmed && !imac.current);
         assert!(imac.device.online && imac.device.browser && !imac.device.shell);
+    }
+
+    /// A browser call goes to a device the conversation has been given:
+    /// the one named, or its working device; one it has not been given is
+    /// asked for. `ssh` is refused rather than asked.
+    #[tokio::test]
+    async fn calls_go_only_to_devices_the_conversation_has() {
+        let registry = Arc::new(HostRegistry::new());
+        let _imac = connect(&registry, "imac", "Study iMac");
+        let _book = connect(&registry, "book", "MacBook");
+        let person = Person::picking(Some("macbook"));
+        let tools = tools(&registry, &person);
+
+        // No working device and none named: the person picks.
+        assert_eq!(tools.resolve("conn-7", None).await, Ok(Some("macbook".into())));
+        assert_eq!(person.asked().len(), 1);
+        // Their pick is the working device now, and given.
+        assert_eq!(tools.resolve("conn-7", None).await, Ok(Some("macbook".into())));
+        assert_eq!(tools.resolve("conn-7", Some(" MacBook ")).await, Ok(Some("macbook".into())));
+        assert_eq!(person.asked().len(), 1);
+        // A name that is none of them goes on, for the call to say so.
+        assert_eq!(tools.resolve("conn-7", Some("laptop")).await, Ok(Some("laptop".into())));
+        assert_eq!(tools.confirmed_names("conn-7").await, Some(vec!["macbook".to_string()]));
+
+        assert_eq!(tools.check_ssh("conn-7", "book-0123456789").await, Ok(()));
+        let refused = tools.check_ssh("conn-7", "imac-0123456789").await.unwrap_err();
+        assert!(refused.contains("not been given `study-imac`"), "{refused}");
+        assert_eq!(person.asked().len(), 1, "ssh never waits on a card");
+
+        // Not an agent's conversation: as before devices.
+        assert_eq!(
+            tools.resolve("conn-9", Some("study-imac")).await,
+            Ok(Some("study-imac".into()))
+        );
+        assert_eq!(tools.confirmed_names("conn-9").await, None);
+        assert_eq!(tools.check_ssh("conn-9", "imac-0123456789").await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn a_closed_card_gives_no_device() {
+        let registry = Arc::new(HostRegistry::new());
+        let _imac = connect(&registry, "imac", "Study iMac");
+        let _book = connect(&registry, "book", "MacBook");
+        let declined = tools(&registry, &Person::picking(None))
+            .resolve("conn-7", None)
+            .await;
+        assert!(declined.unwrap_err().contains("did not choose"));
+    }
+
+    #[tokio::test]
+    async fn with_one_device_nothing_is_asked_or_refused() {
+        let registry = Arc::new(HostRegistry::new());
+        let _imac = connect(&registry, "imac", "Study iMac");
+        let person = Person::picking(None);
+        let tools = tools(&registry, &person);
+        assert_eq!(tools.resolve("conn-7", None).await, Ok(Some("study-imac".into())));
+        assert_eq!(tools.check_ssh("conn-7", "imac-0123456789").await, Ok(()));
+        assert_eq!(
+            tools.confirmed_names("conn-7").await,
+            Some(vec!["study-imac".to_string()])
+        );
+        assert!(person.asked().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_caller_is_known_inside_its_call_only() {
+        assert_eq!(caller(), None);
+        let inside = as_caller("conn-7".to_string(), async { caller() }).await;
+        assert_eq!(inside.as_deref(), Some("conn-7"));
     }
 
     #[test]

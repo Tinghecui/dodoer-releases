@@ -951,10 +951,16 @@ impl DelegationListener {
     /// out on [`BrokerBrowserTabsRequest`]: tabs belong to the user, and what
     /// an agent may read of one is the per-tab grant.
     async fn process_browser_tabs(&self, req: BrokerBrowserTabsRequest) -> BrowserTabsOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             return BrowserTabsOutcome::default();
-        }
-        self.browser.list_tabs().await
+        };
+        // Cowork fork: whose call it is, for `web::host_browser` to check
+        // against that conversation's devices.
+        crate::web::working_device::as_caller(
+            entry.parent_connection_id,
+            self.browser.list_tabs(),
+        )
+        .await
     }
 
     /// Validate the token and read one shared page.
@@ -966,28 +972,40 @@ impl DelegationListener {
         &self,
         req: BrokerBrowserSnapshotRequest,
     ) -> BrowserSnapshotOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             return BrowserSnapshotOutcome::refused(
                 &req.tab_id,
                 ERROR_NO_SUCH_TAB,
                 format!("No browser tab {} is open.", req.tab_id),
             );
-        }
-        self.browser.snapshot(&req.tab_id, req.max_chars).await
+        };
+        // Cowork fork: whose call it is, for `web::host_browser` to check
+        // against that conversation's devices.
+        crate::web::working_device::as_caller(
+            entry.parent_connection_id,
+            self.browser.snapshot(&req.tab_id, req.max_chars),
+        )
+        .await
     }
 
     /// Validate the token and act on one shared page. An invalid token gets
     /// the same "no such tab" a wrong id gets, for the reason given on
     /// [`Self::process_browser_snapshot`].
     async fn process_browser_act(&self, req: BrokerBrowserActRequest) -> BrowserActOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             return BrowserActOutcome::refused(
                 &req.tab_id,
                 ERROR_NO_SUCH_TAB,
                 format!("No browser tab {} is open.", req.tab_id),
             );
-        }
-        self.browser.act(&req.tab_id, req.request).await
+        };
+        // Cowork fork: whose call it is, for `web::host_browser` to check
+        // against that conversation's devices.
+        crate::web::working_device::as_caller(
+            entry.parent_connection_id,
+            self.browser.act(&req.tab_id, req.request),
+        )
+        .await
     }
 
     /// Validate the token and read one shared page's console; an invalid
@@ -996,14 +1014,20 @@ impl DelegationListener {
         &self,
         req: BrokerBrowserConsoleRequest,
     ) -> BrowserConsoleOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             return BrowserConsoleOutcome::refused(
                 &req.tab_id,
                 ERROR_NO_SUCH_TAB,
                 format!("No browser tab {} is open.", req.tab_id),
             );
-        }
-        self.browser.console(&req.tab_id, req.query).await
+        };
+        // Cowork fork: whose call it is, for `web::host_browser` to check
+        // against that conversation's devices.
+        crate::web::working_device::as_caller(
+            entry.parent_connection_id,
+            self.browser.console(&req.tab_id, req.query),
+        )
+        .await
     }
 
     /// Validate the token and capture one shared page; an invalid token gets
@@ -1012,14 +1036,20 @@ impl DelegationListener {
         &self,
         req: BrokerBrowserCaptureRequest,
     ) -> BrowserCaptureOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             return BrowserCaptureOutcome::refused(
                 &req.tab_id,
                 ERROR_NO_SUCH_TAB,
                 format!("No browser tab {} is open.", req.tab_id),
             );
-        }
-        self.browser.capture(&req.tab_id, req.request).await
+        };
+        // Cowork fork: whose call it is, for `web::host_browser` to check
+        // against that conversation's devices.
+        crate::web::working_device::as_caller(
+            entry.parent_connection_id,
+            self.browser.capture(&req.tab_id, req.request),
+        )
+        .await
     }
 
     /// Validate the token and run one snippet on one shared page; an invalid
@@ -1030,14 +1060,20 @@ impl DelegationListener {
     /// a caller with no standing must not be able to put a question in front
     /// of the user at all.
     async fn process_browser_eval(&self, req: BrokerBrowserEvalRequest) -> BrowserEvalOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             return BrowserEvalOutcome::refused(
                 &req.tab_id,
                 ERROR_NO_SUCH_TAB,
                 format!("No browser tab {} is open.", req.tab_id),
             );
-        }
-        self.browser.eval(&req.tab_id, req.request).await
+        };
+        // Cowork fork: whose call it is, for `web::host_browser` to check
+        // against that conversation's devices.
+        crate::web::working_device::as_caller(
+            entry.parent_connection_id,
+            self.browser.eval(&req.tab_id, req.request),
+        )
+        .await
     }
 
     /// Validate the token and open / navigate / close one tab.
@@ -1049,7 +1085,7 @@ impl DelegationListener {
     /// which reveals nothing either, being what a session with the browser
     /// switched off also hears.
     async fn process_browser_tab_op(&self, req: BrokerBrowserTabOpRequest) -> BrowserTabOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             let tab_id = req.op.tab_id();
             return BrowserTabOutcome::refused(
                 tab_id,
@@ -1059,8 +1095,14 @@ impl DelegationListener {
                     None => crate::acp::browser_tools::NO_BROWSER_NOTE.to_string(),
                 },
             );
-        }
-        self.browser.tab_op(req.op).await
+        };
+        // Cowork fork: whose call it is, for `web::host_browser` to check
+        // against that conversation's devices.
+        crate::web::working_device::as_caller(
+            entry.parent_connection_id,
+            self.browser.tab_op(req.op),
+        )
+        .await
     }
 
     /// Validate the token and list the running applications. An invalid token

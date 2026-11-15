@@ -11,6 +11,13 @@
 //! the device's name in front, in every `tabId` of an answer and in its
 //! notes, and the server remembers which window told of each tab, so that a
 //! call on it goes back there.
+//!
+//! A call goes only to a device its conversation has been given
+//! (`web::working_device`, `docs/devices.md` 6.5): a new tab without a
+//! `device` opens on the conversation's working device, a device it has not
+//! been given is asked for on the person's card first, and the list shows
+//! the tabs of the devices it has. Where the call's conversation is not known
+//! — no caller, or no device tools here — it goes as it did before.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +28,7 @@ use serde_json::Value;
 
 use super::host_devices::{ago, now_ms};
 use super::host_registry::{BrowserHost, BrowserRouteError, HostCallError, HostRegistry, NO_DESKTOP_NOTE};
+use super::working_device;
 use crate::acp::browser_tools::{
     BrowserActOutcome, BrowserCaptureOutcome, BrowserConsoleOutcome, BrowserEvalOutcome,
     BrowserSnapshotOutcome, BrowserTabOp, BrowserTabOutcome, BrowserTabsOutcome, BrowserToolAccess,
@@ -112,8 +120,29 @@ impl RemoteHostBrowser {
             .hosts
             .route_tab(tab_id)
             .map_err(|e| route_note(&e))?;
+        if let Some(name) = host.prefix.strip_suffix(':').filter(|name| !name.is_empty()) {
+            if let Some(chosen) = device_for(Some(name)).await? {
+                if chosen != name {
+                    return Err(format!(
+                        "Tab {tab_id} is on `{name}`, and the user chose `{chosen}` for this \
+                         conversation instead. Use a tab on `{chosen}`, or ask the user before \
+                         using `{name}`."
+                    ));
+                }
+            }
+        }
         let outcome = self.ask_host(&host, call(own), timeout).await?;
         self.localize(&host, outcome)
+    }
+}
+
+/// The device a call of the running agent goes to, for its conversation:
+/// `name`, else its working device, one it has been given — asking the
+/// person if need be. As given where nothing is to be checked.
+async fn device_for(name: Option<&str>) -> Result<Option<String>, String> {
+    match (working_device::caller(), working_device::installed()) {
+        (Some(caller), Some(tools)) => tools.resolve(&caller, name).await,
+        _ => Ok(name.map(str::to_string)),
     }
 }
 
@@ -240,9 +269,31 @@ impl BrowserToolAccess for RemoteHostBrowser {
     /// Every tab of every window lending its tabs, each with its device's
     /// name; what a window could not say, in the note.
     async fn list_tabs(&self) -> BrowserTabsOutcome {
-        let hosts = self.hosts.browser_hosts();
+        let mut hosts = self.hosts.browser_hosts();
         if hosts.is_empty() {
             return BrowserTabsOutcome::unavailable(NO_DESKTOP_NOTE);
+        }
+        if let (Some(caller), Some(tools)) = (working_device::caller(), working_device::installed()) {
+            if let Some(names) = tools.confirmed_names(&caller).await {
+                hosts.retain(|host| match host.prefix.strip_suffix(':') {
+                    Some(name) => names.iter().any(|n| n == name),
+                    None => true,
+                });
+                if hosts.is_empty() {
+                    return BrowserTabsOutcome::unavailable(&if names.is_empty() {
+                        "This conversation has not been given any of the user's devices yet: \
+                         call use_device first, then list the tabs again."
+                            .to_string()
+                    } else {
+                        format!(
+                            "None of the devices this conversation uses ({}) lends its browser \
+                             now. Ask the user to let agents use the browser in the dodoer \
+                             desktop app there; do not use another device instead.",
+                            names.join(", ")
+                        )
+                    });
+                }
+            }
         }
         let answers = futures_util::future::join_all(
             hosts
@@ -329,6 +380,13 @@ impl BrowserToolAccess for RemoteHostBrowser {
     async fn tab_op(&self, op: BrowserTabOp) -> BrowserTabOutcome {
         match op {
             BrowserTabOp::Open { url, device } => {
+                let asked = device;
+                let device = match device_for(asked.as_deref()).await {
+                    Ok(device) => device,
+                    Err(note) => {
+                        return BrowserTabOutcome::refused(None, ERROR_UNAVAILABLE, note)
+                    }
+                };
                 let host = match self.hosts.route_open(device.as_deref()) {
                     Ok(host) => host,
                     Err(e) => {
@@ -341,10 +399,26 @@ impl BrowserToolAccess for RemoteHostBrowser {
                     op: BrowserTabOp::Open { url, device: None },
                 };
                 let answer = match self.ask_host(&host, call, CALL_TIMEOUT).await {
-                    Ok(outcome) => self.localize(&host, outcome),
+                    Ok(outcome) => self.localize::<BrowserTabOutcome>(&host, outcome),
                     Err(note) => Err(note),
                 };
-                answer.unwrap_or_else(|note| BrowserTabOutcome::refused(None, ERROR_UNAVAILABLE, note))
+                let mut answer = answer
+                    .unwrap_or_else(|note| BrowserTabOutcome::refused(None, ERROR_UNAVAILABLE, note));
+                // The person picked another device than the agent named.
+                if let (Some(asked), Some(used)) = (asked.as_deref(), device.as_deref()) {
+                    if !asked.trim().eq_ignore_ascii_case(used) {
+                        let chosen = format!(
+                            "Opened on `{used}`: the user chose it for this conversation, not \
+                             `{}`.",
+                            asked.trim()
+                        );
+                        answer.note = Some(match answer.note.take() {
+                            Some(note) => format!("{chosen} {note}"),
+                            None => chosen,
+                        });
+                    }
+                }
+                answer
             }
             BrowserTabOp::Navigate { tab_id, url } => self
                 .on_tab(

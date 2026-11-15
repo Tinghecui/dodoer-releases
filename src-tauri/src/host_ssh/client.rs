@@ -251,6 +251,7 @@ fn config_text(dir: &Path, plan: &SshPlan, program: &Path) -> Result<String, Str
         } else {
             device.name.clone()
         };
+        text.push_str(&per_conversation(dir, &names, &device.id)?);
         text.push_str(&entry(
             dir,
             &proxy,
@@ -301,6 +302,29 @@ fn plain_user(user: &str) -> bool {
         && user
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// How long a connection id is (a UUID), as `CODEG_CLI_CALLER` carries it.
+const CALLER_LEN: usize = 36;
+
+/// Each conversation's own shared connection to a device, for an `ssh` in
+/// an agent's shell (`CODEG_CLI_CALLER`): without it, one conversation's
+/// `ssh` would ride in on another's connection, past the server's check
+/// (`docs/devices.md` 5.1, 6.5). Read before the device's own entry, so its
+/// `ControlPath` is the one `ssh` takes. Nothing when the socket's path would
+/// be too long: then the device's one is shared.
+fn per_conversation(dir: &Path, names: &str, id: &str) -> Result<String, String> {
+    let caller = crate::cli_run::CLI_CALLER_ENV;
+    let socket = format!("{CONTROL}-{}-", short_id(id));
+    if dir.join(&socket).as_os_str().len() + CALLER_LEN > SOCKET_PATH_MAX {
+        return Ok(String::new());
+    }
+    let path = config_path(&dir.join(format!("{socket}${{{caller}}}")))
+        .ok_or_else(|| format!("{} cannot go into an ssh configuration", dir.display()))?;
+    Ok(format!(
+        "Match originalhost {} exec \"printenv {caller} >/dev/null\"\n  ControlPath {path}\n",
+        names.replace(' ', ",")
+    ))
 }
 
 fn entry(dir: &Path, proxy: &str, entry: Entry<'_>) -> Result<String, String> {
@@ -484,6 +508,29 @@ mod tests {
         let rest = &text[start + 1..];
         let end = rest.find("\nHost ").map_or(rest.len(), |at| at + 1);
         &text[start..start + 1 + end]
+    }
+
+    /// An agent's `ssh` gets its conversation's own shared connection, read
+    /// before the device's; from a short enough directory only.
+    #[test]
+    fn each_conversation_has_its_own_shared_connection() {
+        let plan = SshPlan {
+            devices: vec![SshDevice {
+                also_desktop: true,
+                ..device(ID_A, "imac", Some("me"), Some(KEY_A))
+            }],
+            legacy: None,
+        };
+        let text = written(&plan);
+        let own = "Match originalhost imac,desktop exec \"printenv CODEG_CLI_CALLER >/dev/null\"\n  \
+                   ControlPath \"/srv/data/host-ssh/cm-aaaa1111-${CODEG_CLI_CALLER}\"\n";
+        let at = text.find(own).unwrap_or_else(|| panic!("{text}"));
+        assert!(at < text.find("Host imac desktop\n").unwrap());
+
+        let deep = Path::new("/a/very/long/data/directory/that/goes/on/and/on/host-ssh");
+        let text = config_text(deep, &plan, Path::new("/opt/codeg/codeg-cli")).unwrap();
+        assert!(!text.contains("Match originalhost"), "{text}");
+        assert!(text.contains("Host imac desktop\n"));
     }
 
     #[test]

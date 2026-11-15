@@ -105,13 +105,27 @@ impl HostTunnels {
     /// A tunnel for one `ssh` to `device` (none: the old `ssh desktop`): the
     /// files ready, and the socket that device dialed. `Err` is the status
     /// and the words for the CLI to print.
-    pub async fn open(&self, device: Option<&str>) -> Result<WebSocket, (StatusCode, String)> {
+    pub async fn open(
+        &self,
+        device: Option<&str>,
+        caller: Option<&str>,
+    ) -> Result<WebSocket, (StatusCode, String)> {
         let target = match device {
             Some(id) => ShellTarget::Device(id),
             None => ShellTarget::Default,
         };
         // Why it cannot be reached is said before anything is written.
         self.registry.check_shell(target).map_err(refusal)?;
+        // An agent's `ssh` goes only to a device its conversation has been
+        // given (`web::working_device`); the person's own, anywhere.
+        if let (Some(caller), Some(tools)) = (caller, crate::web::working_device::installed()) {
+            if let Some(device) = self.registry.shell_device(target) {
+                tools
+                    .check_ssh(caller, &device)
+                    .await
+                    .map_err(|note| (StatusCode::PRECONDITION_REQUIRED, note))?;
+            }
+        }
         let failed = |e: String| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -215,9 +229,10 @@ fn devices_line(names: &[String]) -> String {
 pub async fn serve_cli_end(
     ws: WebSocketUpgrade,
     tunnels: Arc<HostTunnels>,
-    device: Option<String>,
+    query: CliTunnelQuery,
 ) -> Response {
-    match tunnels.open(device.as_deref()).await {
+    let caller = query.caller.as_deref().filter(|caller| is_caller(caller));
+    match tunnels.open(query.device.as_deref(), caller).await {
         Ok(desktop) => {
             let shutdown = tunnels.shutdown.clone();
             ws.protocols([TUNNEL_PROTOCOL])
@@ -234,6 +249,18 @@ pub struct CliTunnelQuery {
     /// a configuration that names none.
     #[serde(default)]
     device: Option<String>,
+    /// The agent's connection the `ssh` runs under (`CODEG_CLI_CALLER`);
+    /// none from a shell the person opened.
+    #[serde(default)]
+    caller: Option<String>,
+}
+
+/// What a connection id looks like, as `CODEG_CLI_CALLER` carries one.
+fn is_caller(caller: &str) -> bool {
+    (1..=64).contains(&caller.len())
+        && caller
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
 /// `GET /api/cli_host_tunnel?device=`, among the CLI's routes
@@ -244,7 +271,7 @@ pub async fn cli_end(
     Extension(service): Extension<Arc<CliRunService>>,
 ) -> Response {
     match service.host_tunnels() {
-        Some(tunnels) => serve_cli_end(ws, tunnels, query.device).await,
+        Some(tunnels) => serve_cli_end(ws, tunnels, query).await,
         None => (
             StatusCode::NOT_FOUND,
             "This codeg runtime does not reach any desktop's command line.",
@@ -328,7 +355,7 @@ mod tests {
     /// A server with the two ends and nothing else, on a loopback port.
     async fn serve(tunnels: Arc<HostTunnels>, registry: Arc<HostRegistry>) -> String {
         let cli_end = move |ws: WebSocketUpgrade, Query(query): Query<CliTunnelQuery>| {
-            serve_cli_end(ws, Arc::clone(&tunnels), query.device)
+            serve_cli_end(ws, Arc::clone(&tunnels), query)
         };
         let app = Router::new()
             .route(
@@ -368,7 +395,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = Arc::new(HostRegistry::new());
         let base = serve(tunnels_in(dir.path(), &registry), Arc::clone(&registry)).await;
-        let refused = tunnel::dial_cli_end(&base, "t", None).await.unwrap_err();
+        let refused = tunnel::dial_cli_end(&base, "t", None, None).await.unwrap_err();
         assert_eq!(refused, NO_DESKTOP_NOTE);
     }
 
@@ -379,7 +406,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = Arc::new(HostRegistry::new());
         let base = serve(tunnels_in(dir.path(), &registry), Arc::clone(&registry)).await;
-        let refused = tunnel::dial_cli_end(&base, "t", Some("0123456789abcdef"))
+        let refused = tunnel::dial_cli_end(&base, "t", Some("0123456789abcdef"), None)
             .await
             .unwrap_err();
         // The words, unless they missed the read that ended the headers.
@@ -387,7 +414,7 @@ mod tests {
             refused.contains("no longer in this server's list") || refused.contains("404"),
             "{refused}"
         );
-        assert!(tunnel::dial_cli_end(&base, "t", Some("not an id"))
+        assert!(tunnel::dial_cli_end(&base, "t", Some("not an id"), None)
             .await
             .is_err());
     }
@@ -548,7 +575,7 @@ mod tests {
                 let base = proxy_base.clone();
                 let device = proxy_device.clone();
                 tokio::spawn(async move {
-                    let socket = tunnel::dial_cli_end(&base, "t", Some(&device))
+                    let socket = tunnel::dial_cli_end(&base, "t", Some(&device), None)
                         .await
                         .unwrap();
                     let (reader, writer) = stream.into_split();
@@ -608,6 +635,21 @@ mod tests {
                 "proxycommand '/opt/codeg/codeg-cli' desktop proxy --device {}",
                 device.id
             )));
+        }
+        // In an agent's shell, its conversation's own shared connection
+        // (unless the folder is too deep for one).
+        let written = std::fs::read_to_string(files.join("config")).unwrap();
+        if written.contains("Match originalhost") {
+            let resolved = std::process::Command::new("/usr/bin/ssh")
+                .arg("-G")
+                .arg("-F")
+                .arg(files.join("config"))
+                .arg("study-imac")
+                .env(crate::cli_run::CLI_CALLER_ENV, "conn-1234")
+                .output()
+                .unwrap();
+            let resolved = String::from_utf8_lossy(&resolved.stdout).to_lowercase();
+            assert!(resolved.contains("cm-01234567-conn-1234"), "{resolved}");
         }
 
         sshd.stop().await;

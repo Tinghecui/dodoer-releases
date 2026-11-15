@@ -161,6 +161,32 @@ pub type DialedTunnel = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
 
+/// The CLI end's path: the device `ssh <name>` means, and — from an
+/// agent's shell (`CODEG_CLI_CALLER`) — the connection it runs under, for
+/// the server to check against that conversation's devices.
+fn cli_end_path(device: Option<&str>, caller: Option<&str>) -> Result<String, String> {
+    let mut query = Vec::new();
+    match device {
+        Some(id) if crate::host_device::is_id(id) => query.push(format!("device={id}")),
+        Some(_) => return Err("that is not a device id".to_string()),
+        None => {}
+    }
+    // An id in the shape the server takes, or none: the person's own shell.
+    if let Some(caller) = caller.map(str::trim).filter(|caller| {
+        (1..=64).contains(&caller.len())
+            && caller
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    }) {
+        query.push(format!("caller={caller}"));
+    }
+    Ok(if query.is_empty() {
+        format!("/api/{CLI_TUNNEL_ROUTE}")
+    } else {
+        format!("/api/{CLI_TUNNEL_ROUTE}?{}", query.join("&"))
+    })
+}
+
 /// Open the CLI's end of a tunnel to `device` (its id; none for the old
 /// `ssh desktop`) on the runtime at `base_url`, with its `token`. `Err` is
 /// what the runtime answered instead, in its own words (it says what the
@@ -169,17 +195,12 @@ pub async fn dial_cli_end(
     base_url: &str,
     token: &str,
     device: Option<&str>,
+    caller: Option<&str>,
 ) -> Result<DialedTunnel, String> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::http::{header, HeaderValue};
 
-    let path = match device {
-        Some(id) if crate::host_device::is_id(id) => {
-            format!("/api/{CLI_TUNNEL_ROUTE}?device={id}")
-        }
-        Some(_) => return Err("that is not a device id".to_string()),
-        None => format!("/api/{CLI_TUNNEL_ROUTE}"),
-    };
+    let path = cli_end_path(device, caller)?;
     let url = ws_url(base_url, &path);
     let mut request = url
         .into_client_request()
@@ -242,6 +263,23 @@ mod tests {
             user: user.to_string(),
             platform: Some("macos".into()),
         }
+    }
+
+    /// The device and, from an agent's shell, the connection it runs under.
+    #[test]
+    fn the_cli_end_names_the_device_and_the_caller() {
+        let id = "0123456789abcdef";
+        assert_eq!(cli_end_path(None, None).unwrap(), "/api/cli_host_tunnel");
+        assert_eq!(
+            cli_end_path(Some(id), Some(" 4f1c-a2b3 ")).unwrap(),
+            "/api/cli_host_tunnel?device=0123456789abcdef&caller=4f1c-a2b3"
+        );
+        assert_eq!(
+            cli_end_path(None, Some("not one; rm")).unwrap(),
+            "/api/cli_host_tunnel",
+            "what is not an id is left out"
+        );
+        assert!(cli_end_path(Some("not an id"), None).is_err());
     }
 
     #[test]

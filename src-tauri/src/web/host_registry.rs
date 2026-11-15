@@ -673,6 +673,14 @@ impl HostRegistry {
         self.lock().shell_for(target).map(|_| ())
     }
 
+    /// The id of the device `target` reaches now; none for an app from
+    /// before devices, or when there is none.
+    pub fn shell_device(&self, target: ShellTarget<'_>) -> Option<String> {
+        let inner = self.lock();
+        let host = inner.shell_for(target).ok()?;
+        host.device.as_ref().map(|d| d.id.clone())
+    }
+
     /// Every computer the server has heard of, and what each lends now.
     pub fn device_list(&self) -> DeviceList {
         self.lock().device_list()

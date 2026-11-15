@@ -215,6 +215,21 @@ const en = {
     "{name} is offline (last online {when}). Open this workspace in dodoer on it for the agent to go on.",
   conversationDeviceLendsNothing:
     "{name} lends neither its command line nor its browser now. Turn lending on there for the agent to go on.",
+  // The button's menu: the person picks the conversation's computer
+  // (`docs/devices.md` 6.7).
+  conversationDeviceWorksOnPick:
+    "The agent of this conversation works on {name}. Click to pick another computer.",
+  conversationDevicePick: "Pick a computer",
+  conversationDevicePickHint:
+    "Pick which of your computers the agent of this conversation uses.",
+  conversationDeviceNeedsPick:
+    "The agent is waiting for you to pick a computer for this conversation.",
+  conversationDevicePickTitle: "Computer for this conversation",
+  conversationDevicePickIntro:
+    "The agent runs commands and opens pages on the one you pick, and only there, until you pick another here or ask it to switch.",
+  conversationDevicePickNone: "Use no computer",
+  conversationDevicePickLoading: "Loading…",
+  conversationDevicePickFailed: "Could not pick it: {message}",
   // The mark on a conversation's row and tab while its agent uses one of
   // the person's computers (`session-usage-mark.tsx`).
   usageChromeOn: "Using Chrome on {name}",
@@ -420,6 +435,17 @@ const zhCN: Record<CoworkTextKey, string> = {
     "{name} 不在线（上次在线：{when}）。在那台电脑的 dodoer 里打开这个工作区，智能体才能接着用。",
   conversationDeviceLendsNothing:
     "{name} 现在命令行和浏览器都没借出。在那台电脑上打开借出，智能体才能接着用。",
+  conversationDeviceWorksOnPick:
+    "这个对话的智能体在 {name} 上操作。点一下换一台电脑。",
+  conversationDevicePick: "选电脑",
+  conversationDevicePickHint: "选这个对话的智能体用你的哪台电脑。",
+  conversationDeviceNeedsPick: "智能体在等你给这个对话选一台电脑。",
+  conversationDevicePickTitle: "这个对话用的电脑",
+  conversationDevicePickIntro:
+    "智能体只在你选的这台上跑命令、开网页，直到你在这里换一台，或者在对话里让它换。",
+  conversationDevicePickNone: "不用电脑",
+  conversationDevicePickLoading: "正在读取…",
+  conversationDevicePickFailed: "没选上：{message}",
   usageChromeOn: "正在用 {name} 上的 Chrome",
   usageChromeHere: "正在用你电脑上的 Chrome",
   usageBrowserOn: "正在用 {name} 上的浏览器",
@@ -618,6 +644,17 @@ const zhTW: Record<CoworkTextKey, string> = {
     "{name} 不在線（上次在線：{when}）。在那台電腦的 dodoer 裡開啟這個工作區，智慧體才能接著用。",
   conversationDeviceLendsNothing:
     "{name} 現在命令列和瀏覽器都沒借出。在那台電腦上開啟借出，智慧體才能接著用。",
+  conversationDeviceWorksOnPick:
+    "這個對話的智慧體在 {name} 上操作。點一下換一台電腦。",
+  conversationDevicePick: "選電腦",
+  conversationDevicePickHint: "選這個對話的智慧體用你的哪台電腦。",
+  conversationDeviceNeedsPick: "智慧體在等你給這個對話選一台電腦。",
+  conversationDevicePickTitle: "這個對話用的電腦",
+  conversationDevicePickIntro:
+    "智慧體只在你選的這台上跑命令、開網頁，直到你在這裡換一台，或者在對話裡讓它換。",
+  conversationDevicePickNone: "不用電腦",
+  conversationDevicePickLoading: "正在讀取…",
+  conversationDevicePickFailed: "沒選上：{message}",
   usageChromeOn: "正在用 {name} 上的 Chrome",
   usageChromeHere: "正在用你電腦上的 Chrome",
   usageBrowserOn: "正在用 {name} 上的瀏覽器",

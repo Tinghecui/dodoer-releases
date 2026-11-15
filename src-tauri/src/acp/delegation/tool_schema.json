@@ -372,7 +372,7 @@
         },
         "device": {
           "type": "string",
-          "description": "Only on a server that the user's computers are connected to: the name of the device to open it on, as list_devices gives it (the tab ids from browser_list_tabs start with it, like `laptop:`). Leave it out to open it on this conversation's working device (use_device), and when you are working on the user's own computer."
+          "description": "Only on a server that the user's computers are connected to: the name of the device to open it on, as list_devices gives it (the tab ids from browser_list_tabs start with it, like `laptop:`). Leave it out to open it on this conversation's working device, which the user picks in the app, and when you are working on the user's own computer."
         },
         "newTab": {
           "type": "boolean",
@@ -1457,7 +1457,7 @@
   },
   {
     "name": "list_devices",
-    "description": "The user's computers connected to this server through the dodoer desktop app, each with its name, whether it is online (or when it last was), and whether it lends its shell (`ssh <name>`) and its browser (browser_open_tab with `device`). Also this conversation's working device, and which device the user's latest message came from (what they mean by \"this computer\" or \"my computer\"). Call it before operating one of the user's computers when you do not know which one.",
+    "description": "The user's computers connected to this server through the dodoer desktop app, each with its name, whether it is online (or when it last was), and whether it lends its shell (`ssh <name>`) and its browser (browser_open_tab with `device`). Also this conversation's working device, and which device the user's latest message came from (what they mean by \"this computer\" or \"my computer\"). The user picks the working device in the app, with the device button below the message box; when none is picked yet, tell them to pick one there rather than asking with ask_user_question. Call it before operating one of the user's computers when you do not know which one.",
     "inputSchema": {
       "type": "object",
       "properties": {}
@@ -1465,13 +1465,13 @@
   },
   {
     "name": "use_device",
-    "description": "Make one of the user's computers this conversation's working device; call it before you run anything on one of their computers (`ssh <name>`, browser tabs with `device`). Pass `name` when the user said which (\"on the laptop\"); leave it out to let the user pick. The first time this conversation uses a device the user is shown a card and picks one, which may not be the one you named: use the device this tool returns. A device chosen before is switched to at once. Keep to the working device even when the user's messages come from another device; switch only when the user says so. If the device cannot be used, tell the user; do not use another one instead. Ask before deleting, overwriting or changing system settings on it.",
+    "description": "Switch this conversation's working device to the one the user named in their message (\"use the laptop\"). The user normally picks the working device in the app, with the device button below the message box; do not call this to choose one yourself. A device the user has not given this conversation yet is shown to them on a card first, and they may pick another: use the device this tool returns. Without `name` it says which device this conversation works on; if the user has picked none, tell them to pick one with that button (do not ask with ask_user_question). Keep to the working device even when the user's messages come from another device. If it cannot be used, tell the user; do not use another one instead. Ask before deleting, overwriting or changing system settings on it.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "name": {
           "type": "string",
-          "description": "The device's name, as list_devices gives it (like `laptop`). Leave it out to let the user pick."
+          "description": "The device's name the user gave, as list_devices gives it (like `laptop`). Leave it out to learn which device the user picked."
         }
       }
     }

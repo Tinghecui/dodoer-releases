@@ -67,6 +67,10 @@ pub const FEATURES: &[&str] = &[
     // and `host_stop` to its apps (`web::host_registry`, `docs/devices.md`
     // 7.2).
     "stop_host_device",
+    // `/api/set_conversation_device`: the person picks a conversation's
+    // device on the button beside its composer (`web::working_device`,
+    // `docs/devices.md` 6.7).
+    "conversation_device_pick",
 ];
 
 /// The contract as one value: the `server_info` frame carries it as is
@@ -120,7 +124,8 @@ mod tests {
                 "host_ssh",
                 "host_devices",
                 "conversation_device",
-                "stop_host_device"
+                "stop_host_device",
+                "conversation_device_pick"
             ])
         );
     }
@@ -136,6 +141,7 @@ mod tests {
         assert!(FEATURES.contains(&crate::host_ssh::tunnel::FEATURE));
         assert!(FEATURES.contains(&crate::web::host_devices::FEATURE));
         assert!(FEATURES.contains(&crate::web::working_device::FEATURE));
+        assert!(FEATURES.contains(&crate::web::working_device::PICK_FEATURE));
         assert!(FEATURES.contains(&crate::web::host_devices::STOP_FEATURE));
     }
 

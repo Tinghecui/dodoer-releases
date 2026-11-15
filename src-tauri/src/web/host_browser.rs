@@ -13,10 +13,11 @@
 //! call on it goes back there.
 //!
 //! A call goes only to a device its conversation has been given
-//! (`web::working_device`, `docs/devices.md` 6.5): a new tab without a
-//! `device` opens on the conversation's working device, a device it has not
-//! been given is asked for on the person's card first, and the list shows
-//! the tabs of the devices it has. Where the call's conversation is not known
+//! (`web::working_device`, `docs/devices.md` 6.5 and 6.7): a new tab without
+//! a `device` opens on the conversation's working device, a call to a device
+//! it has not been given is refused with what to do (the person picks in the
+//! app, or the agent asks with `use_device`), and the list shows the tabs of
+//! the devices it has. Where the call's conversation is not known
 //! — no caller, or no device tools here — it goes as it did before.
 
 use std::sync::Arc;
@@ -145,8 +146,8 @@ impl RemoteHostBrowser {
 }
 
 /// The device a call of the running agent goes to, for its conversation:
-/// `name`, else its working device, one it has been given — asking the
-/// person if need be. As given where nothing is to be checked.
+/// `name`, else its working device, one it has been given; why not, if it
+/// has not. As given where nothing is to be checked.
 async fn device_for(name: Option<&str>) -> Result<Option<String>, String> {
     match (working_device::caller(), working_device::installed()) {
         (Some(caller), Some(tools)) => tools.resolve(&caller, name).await,
@@ -299,9 +300,7 @@ impl BrowserToolAccess for RemoteHostBrowser {
                 });
                 if hosts.is_empty() {
                     return BrowserTabsOutcome::unavailable(&if names.is_empty() {
-                        "This conversation has not been given any of the user's devices yet: \
-                         call use_device first, then list the tabs again."
-                            .to_string()
+                        working_device::not_picked()
                     } else {
                         format!(
                             "None of the devices this conversation uses ({}) lends its browser \

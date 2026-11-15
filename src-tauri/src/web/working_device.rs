@@ -2,9 +2,14 @@
 //!
 //! A conversation's agent operates one of the person's computers at a time,
 //! its *working device*, and only ones the person has confirmed for that
-//! conversation. The first time it needs one, the person picks it on a card
-//! (the `ask_user_question` card); a device confirmed once is switched back
-//! to without asking again. Where the person typed their latest message
+//! conversation. The person picks it in the app, on the device button below
+//! the composer (`set_conversation_device`, `docs/devices.md` 6.7); that pick
+//! replaces whatever was confirmed before. Until they do, an agent that needs
+//! a device is told to have them pick one, and the button turns amber; it is
+//! not asked on a card. Only when the person names a device in the chat does
+//! the agent switch itself (`use_device` with the name), and a device not
+//! confirmed yet is asked for on a card (the `ask_user_question` card) once.
+//! Where the person typed their latest message
 //! (`X-Codeg-Device` on `/api/acp_prompt`) only ever suggests: that device
 //! goes first on the card, and the agent is told which one "my computer" is.
 //! Nothing here moves the working device by itself.
@@ -33,6 +38,7 @@ use super::host_registry::HostRegistry;
 use crate::acp::delegation::transport::DevicesOp;
 use crate::acp::manager::ConnectionManager;
 use crate::acp::question::{QuestionOption, QuestionSpec, SessionQuestionAccess, MAX_OPTIONS};
+use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::db::service::app_metadata_service;
 
@@ -46,6 +52,10 @@ pub const COMPANION_FEATURE: &str = "devices";
 /// The `server_info` feature of a server that answers
 /// `/api/get_conversation_device`.
 pub const FEATURE: &str = "conversation_device";
+
+/// The `server_info` feature of a server that takes
+/// `/api/set_conversation_device`: the person picks the device in the app.
+pub const PICK_FEATURE: &str = "conversation_device_pick";
 
 const KEY: &str = "host_devices.conversations";
 
@@ -76,9 +86,18 @@ pub struct ConversationDevice {
     /// or a phone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_from: Option<String>,
+    /// When an agent of it last needed a device the person had not picked
+    /// (milliseconds since 1970; 0: it has not since one was picked). The
+    /// device button is amber while it is set.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub wanted: i64,
     /// When it last changed, in milliseconds since 1970.
     #[serde(default)]
     pub touched: i64,
+}
+
+fn is_zero(value: &i64) -> bool {
+    *value == 0
 }
 
 #[derive(Serialize, Deserialize)]
@@ -119,7 +138,32 @@ impl WorkingDevices {
             if !c.confirmed.iter().any(|d| d == device) {
                 c.confirmed.push(device.to_string());
             }
+            c.wanted = 0;
         });
+    }
+
+    /// The person picked `device` for the conversation in the app, or none:
+    /// it works on that one, and that is the only device it has. What was
+    /// confirmed before goes, so that the agent cannot move off the pick
+    /// without the person (`docs/devices.md` 6.7).
+    pub fn pick(&self, conversation_id: i32, device: Option<&str>) {
+        self.change(conversation_id, |c| {
+            c.working = device.map(str::to_string);
+            c.confirmed = device.map(str::to_string).into_iter().collect();
+            c.wanted = 0;
+        });
+    }
+
+    /// An agent of the conversation needed a device, and the person has
+    /// picked none: the device button asks them to.
+    pub fn want(&self, conversation_id: i32) {
+        if self
+            .get(conversation_id)
+            .is_some_and(|c| c.working.is_some() || c.wanted != 0)
+        {
+            return;
+        }
+        self.change(conversation_id, |c| c.wanted = now_ms());
     }
 
     /// The person's latest message to the conversation came from `device`.
@@ -295,6 +339,25 @@ pub struct ConversationDeviceAnswer {
     /// The device the conversation works on, as it is now; none until one
     /// is chosen (and always where no device tools are served).
     pub device: Option<DeviceView>,
+    /// An agent of it is waiting for the person to pick a device.
+    pub needs_pick: bool,
+    /// How many devices the book has: the button is offered from two on.
+    pub device_count: usize,
+}
+
+/// What the device button of the top-level `conversation` shows.
+pub fn answer_for(registry: &HostRegistry, conversation: i32) -> ConversationDeviceAnswer {
+    let device = working_view(registry, conversation);
+    let needs_pick = device.is_none()
+        && registry
+            .working()
+            .get(conversation)
+            .is_some_and(|c| c.wanted != 0);
+    ConversationDeviceAnswer {
+        device,
+        needs_pick,
+        device_count: registry.device_list().devices.len(),
+    }
 }
 
 /// `POST /api/get_conversation_device` (`cowork::api_routes`): what the mark
@@ -305,9 +368,38 @@ pub async fn get_conversation_device(
     Json(params): Json<GetConversationDeviceParams>,
 ) -> Json<ConversationDeviceAnswer> {
     let root = root_of(&state.db.conn, params.conversation_id).await;
-    Json(ConversationDeviceAnswer {
-        device: working_view(&state.host_registry, root),
-    })
+    Json(answer_for(&state.host_registry, root))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetConversationDeviceParams {
+    conversation_id: i32,
+    /// None: the conversation is to use no device.
+    #[serde(default)]
+    device_id: Option<String>,
+}
+
+/// `POST /api/set_conversation_device` (`cowork::api_routes`): the person
+/// picks the device a conversation works on, from its device button
+/// (`docs/devices.md` 6.7). What the button shows afterwards.
+pub async fn set_conversation_device(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<SetConversationDeviceParams>,
+) -> Result<Json<ConversationDeviceAnswer>, AppCommandError> {
+    let device = params
+        .device_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    if let Some(id) = device {
+        if !state.host_registry.knows_device(id) {
+            return Err(AppCommandError::not_found("No such device"));
+        }
+    }
+    let root = root_of(&state.db.conn, params.conversation_id).await;
+    state.host_registry.working().pick(root, device);
+    Ok(Json(answer_for(&state.host_registry, root)))
 }
 
 /// How many conversations a device lists as working on it.
@@ -543,9 +635,11 @@ impl DeviceTools {
                      device does not change it. Switch only when the user says so, with \
                      use_device."
                 ),
-                None => "\nThis conversation has no working device yet: call use_device before \
-                         operating any of these (with the name, when the user said which)."
-                    .to_string(),
+                None if devices.len() == 1 => format!(
+                    "\n`{}` is the user's only device: you may use it.",
+                    devices[0].name
+                ),
+                None => format!("\n{}", not_picked()),
             });
             text.push('\n');
             text.push_str(&latest_from(&devices, &state));
@@ -592,9 +686,27 @@ impl DeviceTools {
         let chosen = match named {
             Some(device) if devices.len() == 1 || state.confirmed.contains(&device.id) => device,
             None if devices.len() == 1 => devices[0].clone(),
-            named => {
+            // Not named: the person picks in the app, not on a card.
+            None => {
+                let working = state
+                    .working
+                    .as_deref()
+                    .and_then(|id| devices.iter().find(|d| d.id == id));
+                let Some(working) = working else {
+                    self.hosts.working().want(conversation);
+                    return answer(not_picked(), devices, &state);
+                };
+                let text = format!(
+                    "This conversation works on `{}`, which the user picked. {}",
+                    working.name,
+                    how_to_use(working)
+                );
+                return answer(text, devices, &state);
+            }
+            // Named by the person in the chat, not given yet: asked once.
+            Some(device) => {
                 let card = self
-                    .ask(connection_id, conversation, &devices, named.as_ref(), &state)
+                    .ask(connection_id, conversation, &devices, Some(&device), &state)
                     .await;
                 match card {
                     Ok(device) => device,
@@ -617,11 +729,12 @@ impl DeviceTools {
     }
 
     /// Which device a browser call of the conversation on `connection_id`
-    /// goes to: `name`, else the working device; one this conversation has
-    /// confirmed, asking the person if it has not. `Ok(None)`: nothing to go
-    /// by (no conversation, no device), so the call goes as it did before
-    /// devices. A name that is none of the devices is handed back as it is,
-    /// for the call to say so.
+    /// goes to: `name`, else the working device; only one this conversation
+    /// has confirmed. Never asks: with none picked the person is to pick one
+    /// in the app, and a device not given is for `use_device` to ask for.
+    /// `Ok(None)`: nothing to go by (no conversation, no device), so the call
+    /// goes as it did before devices. A name that is none of the devices is
+    /// handed back as it is, for the call to say so.
     pub async fn resolve(
         &self,
         connection_id: &str,
@@ -649,27 +762,20 @@ impl DeviceTools {
                 .and_then(|id| devices.iter().find(|d| d.id == id))
                 .cloned(),
         };
-        if let Some(device) = &target {
-            if state.confirmed.contains(&device.id) {
-                return Ok(Some(device.name.clone()));
-            }
+        let Some(device) = target else {
+            self.hosts.working().want(conversation);
+            return Err(not_picked());
+        };
+        if state.confirmed.contains(&device.id) {
+            return Ok(Some(device.name));
         }
-        let picked = self
-            .ask(
-                connection_id,
-                conversation,
-                &devices,
-                target.as_ref(),
-                &state,
-            )
-            .await?;
-        self.hosts.working().work_on(conversation, &picked.id);
-        Ok(Some(picked.name))
+        Err(not_given(&device.name, working_name(&devices, &state)))
     }
 
     /// The names of the devices the conversation on `connection_id` may
     /// use: the ones it has confirmed, or the only one there is. `None`:
-    /// nothing to go by.
+    /// nothing to go by. None confirmed: the person is asked, on the device
+    /// button, to pick one.
     pub async fn confirmed_names(&self, connection_id: &str) -> Option<Vec<String>> {
         let conversation = self.conversations.conversation_of(connection_id).await?;
         let devices = self.hosts.device_list().devices;
@@ -677,6 +783,9 @@ impl DeviceTools {
             return Some(devices.into_iter().map(|d| d.name).collect());
         }
         let state = self.hosts.working().get(conversation).unwrap_or_default();
+        if state.confirmed.is_empty() {
+            self.hosts.working().want(conversation);
+        }
         Some(
             devices
                 .into_iter()
@@ -701,14 +810,15 @@ impl DeviceTools {
         if state.confirmed.iter().any(|d| d == device_id) {
             return Ok(());
         }
+        let Some(working) = working_name(&devices, &state) else {
+            self.hosts.working().want(conversation);
+            return Err(not_picked());
+        };
         let name = devices
             .iter()
             .find(|d| d.id == device_id)
             .map_or("that device", |d| d.name.as_str());
-        Err(format!(
-            "This conversation has not been given `{name}` by the user. Call the use_device \
-             tool (with the name `{name}` if the user asked for it), then run ssh again."
-        ))
+        Err(not_given(name, Some(working)))
     }
 
     /// The card: which device this conversation is to work on.
@@ -829,6 +939,32 @@ fn names(devices: &[DeviceView]) -> String {
         .map(|d| d.name.as_str())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// What an agent is told while the person has picked no device for its
+/// conversation (`docs/devices.md` 6.7).
+pub fn not_picked() -> String {
+    "The user has not picked a computer for this conversation yet. Tell them to pick one with \
+     the device button below the message box in dodoer, then try again; do not ask them with \
+     ask_user_question. If their message named one (\"on the laptop\"), call use_device with \
+     that name instead."
+        .to_string()
+}
+
+/// What an agent is told when it goes for `name`, which its conversation has
+/// not been given.
+fn not_given(name: &str, working: Option<String>) -> String {
+    let mut text = format!("This conversation has not been given `{name}` by the user.");
+    if let Some(working) = working {
+        text.push_str(&format!(
+            " It works on `{working}`, which the user picked: use that."
+        ));
+    }
+    text.push_str(&format!(
+        " Only if the user asked for `{name}`, call use_device with the name `{name}` and try \
+         again."
+    ));
+    text
 }
 
 fn no_devices() -> String {
@@ -1134,8 +1270,9 @@ mod tests {
         assert!(used.text.contains("now works on `study-imac`"), "{}", used.text);
     }
 
-    /// Two devices: the first use of each asks once, the device the person
-    /// is at first; switching back to one chosen before does not ask.
+    /// Two devices: the first use of each one named asks once, it first and
+    /// then the device the person is at; switching back to one chosen
+    /// before does not ask.
     #[tokio::test]
     async fn each_device_is_confirmed_once_per_conversation() {
         let registry = Arc::new(HostRegistry::new());
@@ -1147,15 +1284,16 @@ mod tests {
         let person = Person::picking(Some("study-imac"));
         let tools = tools(&registry, &person);
 
-        let used = tools.use_device("conn-7", None).await;
+        let used = tools.use_device("conn-7", Some("study-imac")).await;
         assert_eq!(used.working.as_deref(), Some("study-imac"));
         let asked = person.asked();
         assert_eq!(asked.len(), 1);
         let (on, card) = &asked[0];
         assert_eq!(on, "conn-7");
         assert_eq!(card.header, CARD_HEADER);
-        assert_eq!(card.options[0].label, "macbook", "where the person is, first");
-        assert!(card.options[0].description.contains("你现在用的这台"));
+        assert_eq!(card.options[0].label, "study-imac", "the one named, first");
+        assert_eq!(card.options[1].label, "macbook", "then where the person is");
+        assert!(card.options[1].description.contains("你现在用的这台"));
         assert!(!card.allow_other);
 
         // Chosen before: no card.
@@ -1212,7 +1350,7 @@ mod tests {
         let _imac = connect(&registry, "imac", "Study iMac");
         let _book = connect(&registry, "book", "MacBook");
         let declined = tools(&registry, &Person::picking(None))
-            .use_device("conn-7", None)
+            .use_device("conn-7", Some("macbook"))
             .await;
         assert_eq!(declined.working, None);
         assert!(declined.text.contains("did not choose"), "{}", declined.text);
@@ -1239,8 +1377,15 @@ mod tests {
         let tools = tools(&registry, &person);
 
         let before = tools.list("conn-7").await;
-        assert!(before.text.contains("no working device yet"), "{}", before.text);
-        assert!(before.text.contains("`macbook` (MacBook): offline, last online just now"));
+        assert!(
+            before.text.contains("has not picked a computer"),
+            "{}",
+            before.text
+        );
+        assert!(before.text.contains("device button below the message box"));
+        assert!(before
+            .text
+            .contains("`macbook` (MacBook): offline, last online just now"));
         assert!(before.text.contains("did not come from one of these"));
 
         registry.working().work_on(7, "imac-0123456789");
@@ -1254,9 +1399,50 @@ mod tests {
         assert!(imac.device.online && imac.device.browser && !imac.device.shell);
     }
 
+    /// Not named and none picked: no card. The agent is told to have the
+    /// person pick in the app, and the button asks them to.
+    #[tokio::test]
+    async fn without_a_pick_the_person_is_sent_to_the_button() {
+        let registry = Arc::new(HostRegistry::new());
+        let _imac = connect(&registry, "imac", "Study iMac");
+        let _book = connect(&registry, "book", "MacBook");
+        let person = Person::picking(Some("macbook"));
+        let tools = tools(&registry, &person);
+        assert!(!answer_for(&registry, 7).needs_pick);
+
+        let used = tools.use_device("conn-7", None).await;
+        assert_eq!(used.working, None);
+        assert!(
+            used.text.contains("has not picked a computer"),
+            "{}",
+            used.text
+        );
+        assert!(used.text.contains("do not ask them with ask_user_question"));
+        assert!(person.asked().is_empty(), "no card");
+        let shown = answer_for(&registry, 7);
+        assert!(shown.needs_pick && shown.device.is_none());
+        assert_eq!(shown.device_count, 2);
+
+        // The person picks: the agent goes on with it, and is told so.
+        registry.working().pick(7, Some("book-0123456789"));
+        let shown = answer_for(&registry, 7);
+        assert!(!shown.needs_pick);
+        assert_eq!(shown.device.map(|d| d.name).as_deref(), Some("macbook"));
+        let used = tools.use_device("conn-7", None).await;
+        assert_eq!(used.working.as_deref(), Some("macbook"));
+        assert!(
+            used.text
+                .contains("works on `macbook`, which the user picked"),
+            "{}",
+            used.text
+        );
+        assert!(person.asked().is_empty());
+    }
+
     /// A browser call goes to a device the conversation has been given:
-    /// the one named, or its working device; one it has not been given is
-    /// asked for. `ssh` is refused rather than asked.
+    /// the one named, or its working device. Nothing is asked on a card:
+    /// with none picked the person is sent to the button, a device not
+    /// given is refused, and so is `ssh`.
     #[tokio::test]
     async fn calls_go_only_to_devices_the_conversation_has() {
         let registry = Arc::new(HostRegistry::new());
@@ -1265,13 +1451,19 @@ mod tests {
         let person = Person::picking(Some("macbook"));
         let tools = tools(&registry, &person);
 
-        // No working device and none named: the person picks.
-        assert_eq!(
-            tools.resolve("conn-7", None).await,
-            Ok(Some("macbook".into()))
-        );
-        assert_eq!(person.asked().len(), 1);
-        // Their pick is the working device now, and given.
+        // No working device and none named.
+        let refused = tools.resolve("conn-7", None).await.unwrap_err();
+        assert!(refused.contains("has not picked a computer"), "{refused}");
+        assert!(answer_for(&registry, 7).needs_pick);
+        let refused = tools
+            .check_ssh("conn-7", "imac-0123456789")
+            .await
+            .unwrap_err();
+        assert!(refused.contains("has not picked a computer"), "{refused}");
+        assert_eq!(tools.confirmed_names("conn-7").await, Some(Vec::new()));
+
+        // Picked in the app.
+        registry.working().pick(7, Some("book-0123456789"));
         assert_eq!(
             tools.resolve("conn-7", None).await,
             Ok(Some("macbook".into()))
@@ -1280,12 +1472,18 @@ mod tests {
             tools.resolve("conn-7", Some(" MacBook ")).await,
             Ok(Some("macbook".into()))
         );
-        assert_eq!(person.asked().len(), 1);
         // A name that is none of them goes on, for the call to say so.
         assert_eq!(
             tools.resolve("conn-7", Some("laptop")).await,
             Ok(Some("laptop".into()))
         );
+        // One it has not been given: refused, with the one it has.
+        let refused = tools
+            .resolve("conn-7", Some("study-imac"))
+            .await
+            .unwrap_err();
+        assert!(refused.contains("not been given `study-imac`"), "{refused}");
+        assert!(refused.contains("works on `macbook`"), "{refused}");
         assert_eq!(
             tools.confirmed_names("conn-7").await,
             Some(vec!["macbook".to_string()])
@@ -1297,7 +1495,11 @@ mod tests {
             .await
             .unwrap_err();
         assert!(refused.contains("not been given `study-imac`"), "{refused}");
-        assert_eq!(person.asked().len(), 1, "ssh never waits on a card");
+        assert!(
+            refused.contains("use_device with the name `study-imac`"),
+            "{refused}"
+        );
+        assert!(person.asked().is_empty(), "no call waits on a card");
 
         // Not an agent's conversation: as before devices.
         assert_eq!(
@@ -1308,15 +1510,65 @@ mod tests {
         assert_eq!(tools.check_ssh("conn-9", "imac-0123456789").await, Ok(()));
     }
 
+    /// A pick in the app replaces what cards confirmed: the agent cannot go
+    /// back to another device without the person.
     #[tokio::test]
-    async fn a_closed_card_gives_no_device() {
+    async fn a_pick_in_the_app_wins_over_what_was_confirmed() {
         let registry = Arc::new(HostRegistry::new());
         let _imac = connect(&registry, "imac", "Study iMac");
         let _book = connect(&registry, "book", "MacBook");
-        let declined = tools(&registry, &Person::picking(None))
-            .resolve("conn-7", None)
+        registry.working().work_on(7, "imac-0123456789");
+        registry.working().work_on(7, "book-0123456789");
+
+        registry.working().pick(7, Some("imac-0123456789"));
+        let kept = registry.working().get(7).unwrap();
+        assert_eq!(kept.working.as_deref(), Some("imac-0123456789"));
+        assert_eq!(kept.confirmed, ["imac-0123456789"]);
+
+        // The agent names the other one: the person is asked, and says no.
+        let person = Person::picking(None);
+        let used = tools(&registry, &person)
+            .use_device("conn-7", Some("macbook"))
             .await;
-        assert!(declined.unwrap_err().contains("did not choose"));
+        assert_eq!(person.asked().len(), 1);
+        assert_eq!(used.working.as_deref(), Some("study-imac"));
+
+        // No device at all.
+        registry.working().pick(7, None);
+        let kept = registry.working().get(7).unwrap();
+        assert_eq!(kept.working, None);
+        assert!(kept.confirmed.is_empty());
+        assert!(!answer_for(&registry, 7).needs_pick);
+    }
+
+    /// What was stored before `wanted` reads back, and an unset one is not
+    /// written.
+    #[test]
+    fn wanted_is_kept_only_when_set() {
+        let old: ConversationDevice =
+            serde_json::from_str(r#"{"conversationId":7,"working":"imac-0123456789"}"#).unwrap();
+        assert_eq!(old.wanted, 0);
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(!text.contains("wanted"), "{text}");
+
+        let working = WorkingDevices::default();
+        working.want(7);
+        let wanted = working.get(7).unwrap().wanted;
+        assert!(wanted > 0);
+        working.want(7);
+        assert_eq!(
+            working.get(7).unwrap().wanted,
+            wanted,
+            "the first time stays"
+        );
+        working.work_on(7, "imac-0123456789");
+        assert_eq!(working.get(7).unwrap().wanted, 0);
+        working.want(7);
+        assert_eq!(
+            working.get(7).unwrap().wanted,
+            0,
+            "not with a working device"
+        );
     }
 
     #[tokio::test]

@@ -949,6 +949,10 @@ pub fn api_routes() -> Router {
             "/get_conversation_device",
             post(crate::web::working_device::get_conversation_device),
         )
+        .route(
+            "/set_conversation_device",
+            post(crate::web::working_device::set_conversation_device),
+        )
         // Which conversations use one of the person's computers now, for
         // the mark on their row and tab (`web::session_usage`).
         .route(

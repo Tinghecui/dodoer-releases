@@ -24,9 +24,12 @@ vi.mock("@/lib/transport", () => ({
 
 import {
   CONVERSATION_DEVICE_FEATURE,
+  CONVERSATION_DEVICE_PICK_FEATURE,
   CONVERSATION_DEVICE_POLL_MS,
   deviceTrouble,
+  offersPick,
   useConversationDevice,
+  useConversationDeviceState,
 } from "./conversation-device"
 import type { HostDevice } from "./host-devices"
 
@@ -161,5 +164,74 @@ describe("useConversationDevice", () => {
       await vi.advanceTimersByTimeAsync(CONVERSATION_DEVICE_POLL_MS)
     })
     expect(result.current?.name).toBe("desktop")
+  })
+})
+
+describe("offersPick", () => {
+  it("offers the button with a device, a waiting agent, or two to pick from", () => {
+    expect(offersPick({ device: null })).toBe(false)
+    expect(offersPick({ device: null, deviceCount: 1 })).toBe(false)
+    expect(offersPick({ device: null, deviceCount: 2 })).toBe(true)
+    expect(offersPick({ device: null, needsPick: true })).toBe(true)
+    expect(offersPick({ device: DESKTOP, deviceCount: 1 })).toBe(true)
+  })
+})
+
+describe("useConversationDeviceState", () => {
+  it("picks only where the server takes it, and shows its answer at once", async () => {
+    env.call.mockResolvedValue({
+      device: null,
+      needsPick: true,
+      deviceCount: 2,
+    })
+    const { result } = renderHook(() => useConversationDeviceState(7))
+    act(() => env.serverInfo?.({ features: [CONVERSATION_DEVICE_FEATURE] }))
+    await settle()
+    expect(result.current?.canPick).toBe(false)
+    expect(result.current?.answer.needsPick).toBe(true)
+
+    act(() =>
+      env.serverInfo?.({
+        features: [
+          CONVERSATION_DEVICE_FEATURE,
+          CONVERSATION_DEVICE_PICK_FEATURE,
+        ],
+      })
+    )
+    await settle()
+    expect(result.current?.canPick).toBe(true)
+
+    env.call.mockResolvedValue({
+      device: DESKTOP,
+      needsPick: false,
+      deviceCount: 2,
+    })
+    await act(async () => {
+      await result.current?.pick("imac-0123456789")
+    })
+    expect(env.call).toHaveBeenLastCalledWith("set_conversation_device", {
+      conversationId: 7,
+      deviceId: "imac-0123456789",
+    })
+    expect(result.current?.answer.device?.name).toBe("desktop")
+    expect(result.current?.answer.needsPick).toBe(false)
+  })
+
+  it("passes on what went wrong with a pick", async () => {
+    const { result } = renderHook(() => useConversationDeviceState(7))
+    act(() =>
+      env.serverInfo?.({
+        features: [
+          CONVERSATION_DEVICE_FEATURE,
+          CONVERSATION_DEVICE_PICK_FEATURE,
+        ],
+      })
+    )
+    await settle()
+    env.call.mockRejectedValue(new Error("No such device"))
+    await expect(result.current!.pick("gone-0123456789")).rejects.toThrow(
+      "No such device"
+    )
+    expect(result.current?.answer.device?.name).toBe("desktop")
   })
 })

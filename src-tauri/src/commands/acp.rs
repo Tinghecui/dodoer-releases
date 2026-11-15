@@ -12397,6 +12397,17 @@ pub async fn acp_connect(
     // can prompt the user to install it from Agent Settings.
     verify_agent_installed(agent_type).await?;
 
+    // Cowork fork: the server decides which selector values this connect
+    // applies — a resumed conversation's own, else the default (`session_prefs`).
+    let prefs = crate::acp::session_prefs::resolve_connect_prefs(
+        &db.conn,
+        agent_type,
+        session_id.as_deref(),
+        preferred_mode_id,
+        preferred_config_values.unwrap_or_default(),
+    )
+    .await;
+
     let emitter = EventEmitter::Tauri(app_handle);
     manager
         .spawn_agent(
@@ -12406,8 +12417,8 @@ pub async fn acp_connect(
             runtime_env,
             window.label().to_string(),
             emitter,
-            preferred_mode_id,
-            preferred_config_values.unwrap_or_default(),
+            prefs.mode_id,
+            prefs.config_values,
         )
         .await
 }
@@ -12443,8 +12454,9 @@ pub async fn acp_set_mode(
     connection_id: String,
     mode_id: String,
     manager: State<'_, ConnectionManager>,
+    db: State<'_, AppDatabase>,
 ) -> Result<(), AcpError> {
-    manager.set_mode(&connection_id, mode_id).await
+    crate::acp::session_prefs::set_mode(&manager, &db.conn, &connection_id, mode_id).await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -12454,10 +12466,16 @@ pub async fn acp_set_config_option(
     config_id: String,
     value_id: String,
     manager: State<'_, ConnectionManager>,
+    db: State<'_, AppDatabase>,
 ) -> Result<(), AcpError> {
-    manager
-        .set_config_option(&connection_id, config_id, value_id)
-        .await
+    crate::acp::session_prefs::set_config_option(
+        &manager,
+        &db.conn,
+        &connection_id,
+        config_id,
+        value_id,
+    )
+    .await
 }
 
 #[cfg(feature = "tauri-runtime")]

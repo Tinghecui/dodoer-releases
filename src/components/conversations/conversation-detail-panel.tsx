@@ -11,7 +11,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type CSSProperties,
 } from "react"
 import {
@@ -35,7 +34,6 @@ import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import {
   extractPermissionToolCallId,
-  getCachedSelectors,
   useAcpActions,
   useAcpEvent,
 } from "@/contexts/acp-connections-context"
@@ -188,18 +186,7 @@ import {
 import { userPromptHistory } from "@/lib/composer-history"
 import { contentBlocksFromUserMessage } from "@/lib/user-message-blocks"
 import { getAgentLabel } from "@/lib/custom-agents"
-import {
-  getSavedModeId,
-  getSavedPrefsForConnect,
-  saveConfigPreference,
-  saveModePreference,
-} from "@/lib/selector-prefs-storage"
-import {
-  getSelectorsCacheVersion,
-  setCachedConfigValue,
-  subscribeSelectorsCache,
-} from "@/lib/selectors-cache"
-import { diffConfigPreferences } from "@/lib/selector-reconcile"
+import { saveModePreference } from "@/lib/selector-prefs-storage"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import {
   adoptLegacyNewConversationDraft,
@@ -334,7 +321,6 @@ const ConversationTabView = memo(function ConversationTabView({
   // (same keys the composer's own mid-turn send reports).
   const tCmp = useTranslations("Folder.chat.messageInput")
   const tWelcome = useTranslations("Folder.chat.welcomeInputPanel")
-  const tJenny = useTranslations("JennyFork")
   const tQueue = useTranslations("Folder.chat.messageQueue")
   const tAgentSelector = useTranslations("Folder.chat.agentSelector")
   const coworkT = useCoworkText()
@@ -418,19 +404,16 @@ const ConversationTabView = memo(function ConversationTabView({
   const dbConversationId = conversationId ?? createdConversationId
   const [draftAgentType, setDraftAgentType] = useState<AgentType>(agentType)
   const selectedAgent = conversationId != null ? agentType : draftAgentType
-  // Seed from localStorage so the React state reflects the user's saved
-  // mode for this agent immediately on mount. Without this seed, a reuse-
-  // path connect (idle window after a refresh, before the agent is GC'd)
-  // would silently fall back to whatever `current_mode_id` the backend
-  // happens to be on: `handleModeChange` updates only React state and
-  // localStorage, not the agent — the agent gets synced inside
-  // `handleSend` by diffing `modeId` against `modes.current_mode_id`.
-  // A null seed here means that diff is "agent default vs null", which
-  // resolves the displayed mode through `conn.modes.current_mode_id`
-  // and never triggers the catch-up `setMode`.
-  const [modeId, setModeId] = useState<string | null>(() =>
-    getSavedModeId(agentType)
-  )
+  // The mode picked in this tab, applied to the agent on the next send:
+  // `handleModeChange` updates only React state and localStorage, not the
+  // agent — the agent gets synced inside `handleSend` by diffing `modeId`
+  // against `modes.current_mode_id`. `null` (no pick) resolves the displayed
+  // mode through `conn.modes.current_mode_id` and never triggers a `setMode`.
+  // Cowork fork: it starts as `null`. Upstream seeded it with this browser's
+  // last mode for the agent type, which showed — and on the next send applied —
+  // another conversation's mode; the backend now applies the conversation's
+  // own (or, for a new one, the default) on connect (`session_prefs`).
+  const [modeId, setModeId] = useState<string | null>(null)
   const [sendSignal, setSendSignal] = useState(0)
   const [agentsLoaded, setAgentsLoaded] = useState(false)
   const [usableAgentCount, setUsableAgentCount] = useState(0)
@@ -574,7 +557,7 @@ const ConversationTabView = memo(function ConversationTabView({
     if (conversationId != null) return
     if (agentType === selectedAgentRef.current) return
     setDraftAgentType(agentType)
-    setModeId(getSavedModeId(agentType))
+    setModeId(null)
     setAgentConnectError(null)
   }, [agentType, conversationId])
 
@@ -827,21 +810,14 @@ const ConversationTabView = memo(function ConversationTabView({
   // selectors (empty until it connects).
   const connIsForOtherAgent =
     conn.agentType != null && conn.agentType !== selectedAgent
-  // jenny fork: with no live connection for the selected agent yet (switch in
-  // flight, or the very first connect after an app start), show its persisted
-  // selector lists. Subscribing re-renders when that cache changes.
-  useSyncExternalStore(
-    subscribeSelectorsCache,
-    getSelectorsCacheVersion,
-    getSelectorsCacheVersion
-  )
-  const showCachedSelectors = connIsForOtherAgent || conn.agentType == null
-  const effectiveModes = showCachedSelectors
-    ? (getCachedSelectors(selectedAgent)?.modes ?? null)
-    : conn.modes
-  const effectiveConfigOptions = showCachedSelectors
-    ? (getCachedSelectors(selectedAgent)?.configOptions ?? null)
-    : conn.configOptions
+  // Cowork fork: with no live connection for the selected agent yet (switch in
+  // flight, or the very first connect after an app start) there is nothing
+  // this session's agent has reported, so the composer shows its loading
+  // placeholder. The per-agent-type cache upstream showed here holds another
+  // conversation's values: switching A to Fable made B read Fable.
+  const showNoSelectors = connIsForOtherAgent || conn.agentType == null
+  const effectiveModes = showNoSelectors ? null : conn.modes
+  const effectiveConfigOptions = showNoSelectors ? null : conn.configOptions
   // The live connection is ready for THIS tab only when it's connected AND its
   // cwd matches the tab's intended working dir. A just-retargeted chat draft (or
   // any mid-reconnect) can briefly read a stale "connected" for the PREVIOUS cwd;
@@ -876,17 +852,14 @@ const ConversationTabView = memo(function ConversationTabView({
     : connStatus === "connected" && !connectionReady
       ? "connecting"
       : connStatus
-  // jenny fork: a pick made before the selected agent has a live connection
-  // is saved (the next connect ships it to the agent) and shown at once. It
-  // must never reach a connection that still belongs to the previous agent.
+  // A pick must never reach a connection that still belongs to the previous
+  // agent. (Cowork fork: none can be made before the selected agent has a live
+  // connection — the composer shows no selectors until then.)
   const handleSetConfigOption = useCallback(
     (configId: string, valueId: string) => {
       if (conn.agentType === selectedAgent) {
         lifecycleSetConfigOption(configId, valueId)
-        return
       }
-      saveConfigPreference(selectedAgent, configId, valueId)
-      setCachedConfigValue(selectedAgent, configId, valueId)
     },
     [conn.agentType, selectedAgent, lifecycleSetConfigOption]
   )
@@ -1143,67 +1116,11 @@ const ConversationTabView = memo(function ConversationTabView({
   const queueHeadFailed = msgQueue[0]?.failed === true
   const queueHeadEditing =
     mqEditingItemId != null && msgQueue[0]?.id === mqEditingItemId
-  // jenny fork: once per agent session, before the first queued message leaves,
-  // make sure the user's picks (model, effort, …) reached the agent. See
-  // `diffConfigPreferences`.
-  const prefCheckRef = useRef<{
-    session: string | null
-    done: boolean
-    tried: Set<string>
-    notified: Set<string>
-  }>({ session: null, done: false, tried: new Set(), notified: new Set() })
-  // Compare the saved picks with what the agent has now. With `apply`, picks
-  // the agent offers are set (returns true while that is under way); a pick it
-  // no longer offers, or that did not take, gets one notice per session — the
-  // message goes out with the agent's current value instead. A direct send
-  // passes `apply: false`: it only needs the notice, since it leaves at once.
-  const reconcileSessionPrefs = useCallback(
-    (apply: boolean): boolean => {
-      const sessionKey = `${selectedAgent}:${connSessionId ?? ""}`
-      if (prefCheckRef.current.session !== sessionKey) {
-        prefCheckRef.current = {
-          session: sessionKey,
-          done: false,
-          tried: new Set(),
-          notified: new Set(),
-        }
-      }
-      const state = prefCheckRef.current
-      if (state.done) return false
-      let applying = false
-      for (const m of diffConfigPreferences(
-        getSavedPrefsForConnect(selectedAgent).configValues,
-        connectionConfigOptions
-      )) {
-        const key = `${m.configId}=${m.wanted}`
-        if (m.available && !state.tried.has(key)) {
-          if (!apply) continue
-          state.tried.add(key)
-          handleSetConfigOption(m.configId, m.wanted)
-          applying = true
-        } else if (!applying && !state.notified.has(key)) {
-          state.notified.add(key)
-          toast.info(
-            tJenny("selectionUnavailable", {
-              name: m.name,
-              current: m.currentName,
-            })
-          )
-        }
-      }
-      // Applying changes the options, which re-runs the flush; the next pass
-      // sends.
-      if (apply && !applying) state.done = true
-      return applying
-    },
-    [
-      selectedAgent,
-      connSessionId,
-      connectionConfigOptions,
-      handleSetConfigOption,
-      tJenny,
-    ]
-  )
+  // Cowork fork: upstream re-applied this browser's per-agent picks here
+  // before a queued message left, switching an existing conversation to
+  // whatever another conversation last chose. The server now applies a
+  // conversation's own values on connect (`session_prefs` in the backend), so
+  // there is nothing left to reconcile.
 
   // Flush queued messages whenever the agent is idle. This is the queue's send
   // engine, covering BOTH:
@@ -1241,7 +1158,6 @@ const ConversationTabView = memo(function ConversationTabView({
     // jenny fork: the composer now accepts messages while the agent connects,
     // so the queue must also wait for the session to finish initializing.
     if (selectorsLoading) return
-    if (reconcileSessionPrefs(true)) return
     // setTimeout (not microtask) so a COMPLETE_TURN commit settles first AND so
     // a just-bounced retry waits out the backoff window before re-sending.
     const wait = flushRetryDelayMs(Date.now(), lastFlushBounceAtRef.current)
@@ -1275,7 +1191,6 @@ const ConversationTabView = memo(function ConversationTabView({
     queueHeadEditing,
     queueSteerInFlight,
     selectorsLoading,
-    reconcileSessionPrefs,
   ])
 
   // Cowork fork: with no usable agent (see `agentUnavailable`) the flush above
@@ -1595,10 +1510,6 @@ const ConversationTabView = memo(function ConversationTabView({
         mqEnqueue(draft, selectedModeIdArg ?? null)
         return
       }
-      // jenny fork: a saved pick the agent no longer offers is told about on
-      // a direct send too, not only when the queue sends (SQ4).
-      if (!fromQueueFlush) reconcileSessionPrefs(false)
-
       // Single-flight the unbound new-tab create. A second direct submit fired
       // before the first create resolves (a double Enter / double click) would
       // otherwise append an optimistic turn it can never deliver: the
@@ -1853,7 +1764,6 @@ const ConversationTabView = memo(function ConversationTabView({
       hasPersistedConversation,
       lifecycleSend,
       pinTab,
-      reconcileSessionPrefs,
       refreshConversations,
       selectedAgent,
       setDbConversationId,
@@ -2039,7 +1949,7 @@ const ConversationTabView = memo(function ConversationTabView({
       if (dbConvIdRef.current) return
 
       setDraftAgentType(nextAgentType)
-      setModeId(getSavedModeId(nextAgentType))
+      setModeId(null)
       setAgentConnectError(null)
       // Real user click — clear the provisional flag so TabProvider's
       // correction effect leaves this tab alone.
@@ -2060,7 +1970,7 @@ const ConversationTabView = memo(function ConversationTabView({
       if (dbConvIdRef.current) return
 
       setDraftAgentType(nextAgentType)
-      setModeId(getSavedModeId(nextAgentType))
+      setModeId(null)
       setAgentConnectError(null)
       setDraftAgentFromFallback(tabId, nextAgentType)
     },

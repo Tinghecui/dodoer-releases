@@ -4,7 +4,6 @@ import { useCallback, useMemo, useRef, useSyncExternalStore } from "react"
 import {
   useAcpActions,
   useConnectionStore,
-  getCachedSelectors,
   type ClaudeApiRetryState,
   type ConnectErrorInfo,
   type ConnectionState,
@@ -295,14 +294,14 @@ export function useConnection(contextKey: string): UseConnectionReturn {
   const supportsFork = connection?.supportsFork ?? false
   const selectorsReady = connection?.selectorsReady ?? false
   const sessionId = connection?.sessionId ?? null
-  const cached = connection?.agentType
-    ? getCachedSelectors(connection.agentType)
-    : null
-  const hasCachedSelectors = cached !== null
+  // Cowork fork: the selectors show only what THIS session's agent reported.
+  // The per-agent-type cache holds whatever another conversation last showed
+  // (switching A to Fable made B read Fable), so it never stands in for them:
+  // until the agent reports, the composer shows its loading placeholder.
+  const hasCachedSelectors = false
   const connectedWorkingDir = connection?.workingDir ?? null
-  const modes = connection?.modes ?? cached?.modes ?? null
-  const configOptions =
-    connection?.configOptions ?? cached?.configOptions ?? null
+  const modes = connection?.modes ?? null
+  const configOptions = connection?.configOptions ?? null
   const availableCommands = connection?.availableCommands ?? null
   const promptSuggestion = connection?.promptSuggestion ?? null
   const remoteControl = connection?.remoteControl ?? null

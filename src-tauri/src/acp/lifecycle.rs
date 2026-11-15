@@ -74,6 +74,12 @@ fn is_lifecycle_relevant(event: &AcpEvent) -> bool {
             // Cowork fork: a turn the agent ran on its own starting / ending.
             // Two per such turn at most.
             | AcpEvent::BackgroundTurn { .. }
+            // Cowork fork: the selector values the agent reports, kept as the
+            // conversation's own (`session_prefs`). A few per connect, one per
+            // pick.
+            | AcpEvent::SessionConfigOptions { .. }
+            | AcpEvent::SessionModes { .. }
+            | AcpEvent::ModeChanged { .. }
             | AcpEvent::StatusChanged {
                 status: ConnectionStatus::Disconnected
             }
@@ -630,6 +636,19 @@ async fn handle_event(
                 prompt_in_flight,
             )
             .await
+        }
+        // Cowork fork: whatever the agent reports — a pick, a connect's replay,
+        // a change of its own — is what the conversation resumes on next time
+        // (`session_prefs`). The bind is when a new conversation gets its first
+        // record: its connect reported before any row owned the session.
+        AcpEvent::SessionConfigOptions { .. }
+        | AcpEvent::SessionModes { .. }
+        | AcpEvent::ModeChanged { .. }
+        | AcpEvent::ConversationLinked { .. } => {
+            let Some(state_arc) = manager.get_state(&envelope.connection_id).await else {
+                return Ok(());
+            };
+            crate::acp::session_prefs::record_current(db_conn, &state_arc).await
         }
         // Other events don't need cross-connection DB persistence today; extend
         // this dispatcher with new arms as the lifecycle scope grows.
@@ -3393,6 +3412,16 @@ async fn connection_worker_loop(
                 conversation_id, ..
             } => {
                 try_cache_link(&mut cache, &manager, &connection_id, *conversation_id).await;
+                // Cowork fork: the bind is also when a new conversation's
+                // selector values are first recorded (`session_prefs`).
+                handle_event_with_retry(
+                    &db,
+                    &manager,
+                    envelope,
+                    broker.as_ref(),
+                    cache.get(&connection_id),
+                )
+                .await;
             }
             AcpEvent::StatusChanged {
                 status: ConnectionStatus::Disconnected,
@@ -4888,6 +4917,41 @@ mod tests {
         );
     }
 
+    /// Cowork fork: a mode the agent reports for a bound connection becomes
+    /// the conversation's own, for its next resume (`session_prefs`).
+    #[tokio::test]
+    async fn handle_event_records_the_conversations_own_selector_values() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/test-session-prefs").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection_with_state("c1", Some(conv.id));
+        conn.state.write().await.current_mode = Some("plan".into());
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert("c1".to_string(), conn);
+        }
+        let env = EventEnvelope {
+            seq: 1,
+            connection_id: "c1".to_string(),
+            payload: AcpEvent::ModeChanged {
+                mode_id: "plan".into(),
+            },
+        };
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
+        let key = format!("cowork.session_prefs.conversation.{}", conv.id);
+        let saved = crate::db::service::app_metadata_service::get_value(&db.conn, &key)
+            .await
+            .unwrap();
+        let want = r#"{"mode_id":"plan","config_values":{}}"#;
+        assert_eq!(saved.as_deref(), Some(want));
+    }
+
     // ── Dispatcher-level regression coverage ─────────────────────────────
     //
     // These exercise the full `lifecycle_subscriber_task` (bus → filter →
@@ -4932,6 +4996,12 @@ mod tests {
             code: None,
             details: None,
             terminal: true,
+        }));
+        assert!(is_lifecycle_relevant(&AcpEvent::SessionConfigOptions {
+            config_options: Vec::new(),
+        }));
+        assert!(is_lifecycle_relevant(&AcpEvent::ModeChanged {
+            mode_id: "plan".into(),
         }));
 
         // Rejected (worker no-ops on these — must not enter the queue):

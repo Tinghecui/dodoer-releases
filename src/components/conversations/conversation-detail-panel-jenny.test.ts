@@ -40,20 +40,16 @@ describe("jenny fork: send before the agent is ready", () => {
     const end = source.indexOf("clearTimeout(timer)", start)
     const flush = source.slice(start, end)
     expect(flush).toContain("if (selectorsLoading) return")
-    expect(flush).toContain("reconcileSessionPrefs(true)")
   })
 
-  // SQ4: a saved pick the agent no longer offers is told about on a direct
-  // send as well, not only when the queue sends.
-  it("checks the saved picks on a direct send too", () => {
-    const start = source.indexOf("const reconcileSessionPrefs = useCallback(")
-    expect(source.slice(start, start + 1500)).toContain(
-      "diffConfigPreferences("
-    )
-    const send = source.indexOf("const handleSend = useCallback(")
-    expect(source.slice(send, send + 8000)).toContain(
-      "if (!fromQueueFlush) reconcileSessionPrefs(false)"
-    )
+  // Cowork fork: SQ4's saved-pick check is gone. It re-applied this browser's
+  // per-agent picks to whatever conversation was sending, switching it to
+  // another conversation's model; the server applies a conversation's own
+  // values on connect instead.
+  it("never re-applies the per-agent picks to a conversation", () => {
+    expect(source).not.toContain("reconcileSessionPrefs")
+    expect(source).not.toContain("diffConfigPreferences(")
+    expect(source).not.toContain("getSavedPrefsForConnect")
   })
 
   // SQ5: a turn that fails after the message left puts the message back at

@@ -99,6 +99,17 @@ pub async fn acp_connect(
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
 
+    // Cowork fork: the server decides which selector values this connect
+    // applies — a resumed conversation's own, else the default (`session_prefs`).
+    let prefs = crate::acp::session_prefs::resolve_connect_prefs(
+        &db.conn,
+        params.agent_type,
+        params.session_id.as_deref(),
+        params.preferred_mode_id,
+        params.preferred_config_values.unwrap_or_default(),
+    )
+    .await;
+
     let emitter = state.emitter.clone();
     let connection_id = manager
         .spawn_agent(
@@ -108,8 +119,8 @@ pub async fn acp_connect(
             runtime_env,
             "web".to_string(),
             emitter,
-            params.preferred_mode_id,
-            params.preferred_config_values.unwrap_or_default(),
+            prefs.mode_id,
+            prefs.config_values,
         )
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
@@ -386,8 +397,8 @@ pub async fn acp_set_mode(
     Json(params): Json<AcpSetModeParams>,
 ) -> Result<Json<()>, AppCommandError> {
     let manager = &state.connection_manager;
-    manager
-        .set_mode(&params.connection_id, params.mode_id)
+    let db = &state.db.conn;
+    crate::acp::session_prefs::set_mode(manager, db, &params.connection_id, params.mode_id)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(()))
@@ -406,10 +417,16 @@ pub async fn acp_set_config_option(
     Json(params): Json<AcpSetConfigOptionParams>,
 ) -> Result<Json<()>, AppCommandError> {
     let manager = &state.connection_manager;
-    manager
-        .set_config_option(&params.connection_id, params.config_id, params.value_id)
-        .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    let db = &state.db.conn;
+    crate::acp::session_prefs::set_config_option(
+        manager,
+        db,
+        &params.connection_id,
+        params.config_id,
+        params.value_id,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(()))
 }
 

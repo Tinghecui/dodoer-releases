@@ -17,10 +17,7 @@ import {
   MessageListView,
   type LiveRunsSource,
 } from "@/components/message/message-list-view"
-import {
-  getCachedSelectors,
-  useAcpActions,
-} from "@/contexts/acp-connections-context"
+import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { useConversationDetail } from "@/hooks/use-conversation-detail"
@@ -38,10 +35,7 @@ import {
   getPromptDraftDisplayText,
   promptDraftTitleSeed,
 } from "@/lib/prompt-draft"
-import {
-  getSavedModeId,
-  saveModePreference,
-} from "@/lib/selector-prefs-storage"
+import { saveModePreference } from "@/lib/selector-prefs-storage"
 import type {
   AgentType,
   ContentBlock,
@@ -272,9 +266,11 @@ export function CanvasConversationSurface({
     )
   }, [contextKey, conversationId, effectiveConversationId, migrateConversation])
 
-  const [modeId, setModeId] = useState<string | null>(() =>
-    getSavedModeId(agentType)
-  )
+  // Cowork fork: no pick until one is made in this card. Upstream seeded this
+  // browser's last mode for the agent type — another conversation's — which
+  // the next send then applied; the backend applies the conversation's own on
+  // connect (`session_prefs`).
+  const [modeId, setModeId] = useState<string | null>(null)
   // Sends handed back to the composer, which cleared itself as each went out
   // (see the bounce handler in `handleSend`). Oldest first, offered one at a
   // time: a second can bounce before the composer has taken the first.
@@ -437,12 +433,11 @@ export function CanvasConversationSurface({
       ? "disconnected"
       : "connecting"
     : connStatus
-  const effectiveModes = connIsForOtherAgent
-    ? (getCachedSelectors(agentType)?.modes ?? null)
-    : conn.modes
-  const effectiveConfigOptions = connIsForOtherAgent
-    ? (getCachedSelectors(agentType)?.configOptions ?? null)
-    : conn.configOptions
+  // Cowork fork: never another conversation's selector values from the
+  // per-agent-type cache — the placeholder until this session's agent reports
+  // (see `useConnection`).
+  const effectiveModes = connIsForOtherAgent ? null : conn.modes
+  const effectiveConfigOptions = connIsForOtherAgent ? null : conn.configOptions
   const connectionCommands = connIsForOtherAgent ? null : conn.availableCommands
 
   /**

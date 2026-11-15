@@ -233,8 +233,10 @@ describe("a draft card whose connection still belongs to the previous agent", ()
     expect(shell.props?.modes).toEqual(CODEX_MODES.available_modes)
   })
 
-  it("presents the switch as still connecting, with the picked agent's chips", () => {
+  it("presents the switch as still connecting, with no chips until the picked agent reports", () => {
     // Codex is installed, so its connect is on its way and will replace this.
+    // Cowork fork: what the cache remembers for Codex is another
+    // conversation's values, so it never stands in for this session's.
     cachedSelectors.set("codex", {
       modes: CODEX_MODES,
       configOptions: CODEX_CONFIG,
@@ -243,14 +245,13 @@ describe("a draft card whose connection still belongs to the previous agent", ()
     renderDraftCard()
 
     expect(shell.props?.status).toBe("connecting")
-    expect(shell.props?.modes).toEqual(CODEX_MODES.available_modes)
-    // Codex's own list, not Claude's. An edit to it is kept off Claude's
-    // connection by the lifecycle hook (use-connection-lifecycle.agent-switch).
-    expect(shell.props?.configOptions).toEqual(CODEX_CONFIG)
+    // Not Claude's either: the connection still belongs to it.
+    expect(shell.props?.modes).toEqual([])
+    expect(shell.props?.configOptions).toEqual([])
     expect(shell.props?.onConfigOptionChange).toBe(
       lifecycle.handleSetConfigOption
     )
-    expect(shell.props?.selectedModeId).toBe("auto")
+    expect(shell.props?.selectedModeId).toBeNull()
     expect(shell.props?.availableCommands).toEqual([])
   })
 

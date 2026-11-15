@@ -3099,10 +3099,9 @@ function connectionsReducer(
     case "CONFIG_OPTION_CHANGED": {
       const conn = state.get(action.contextKey)
       if (!conn) return state
-      const options =
-        conn.configOptions ??
-        selectorsCache.get(conn.agentType)?.configOptions ??
-        null
+      // Cowork fork: only this connection's own options — never the
+      // per-agent-type cache, which holds another conversation's values.
+      const options = conn.configOptions
       if (!options) return state
       const idx = options.findIndex((o) => o.id === action.configId)
       if (idx === -1) return state

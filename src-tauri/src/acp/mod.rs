@@ -56,6 +56,7 @@ pub mod result_tool;
 pub mod scratch_dir;
 pub mod service_error;
 pub mod session_info;
+pub mod session_prefs;
 pub mod session_title;
 pub mod session_state;
 pub mod stderr_tail;

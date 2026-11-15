@@ -32,6 +32,10 @@ vi.mock("@/lib/utils", async (original) => ({
   copyTextToClipboard: mocks.copy,
 }))
 vi.mock("sonner", () => ({ toast: mocks.toast }))
+// Its own test: `chrome-sites-settings.test.tsx`.
+vi.mock("./chrome-sites-settings", () => ({
+  ChromeSitesSettings: () => null,
+}))
 
 import { ChromeConnectSettings } from "./chrome-connect-settings"
 import enMessages from "@/i18n/messages/en.json"

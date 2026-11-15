@@ -239,6 +239,23 @@ pub fn codeg_text_generation_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(TEXT_GENERATION_DIR_NAME))
 }
 
+/// The person's edits to the sites agents are kept off in their own Chrome
+/// (`browser::chrome::sensitive`): `chrome-sites.json` in the data directory.
+///
+/// Resolution order matches `codeg_pets_root()`.
+pub fn codeg_chrome_sites_path() -> PathBuf {
+    const FILE: &str = crate::browser::chrome::sensitive::SITES_FILE;
+    if let Some(custom) = std::env::var_os("CODEG_HOME").filter(|s| !s.is_empty()) {
+        return PathBuf::from(custom).join(FILE);
+    }
+    if let Some(data) = std::env::var_os("CODEG_DATA_DIR").filter(|s| !s.is_empty()) {
+        return PathBuf::from(data).join(FILE);
+    }
+    dirs::home_dir()
+        .map(|h| h.join(CODEG_DIR_NAME).join(FILE))
+        .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(FILE))
+}
+
 /// The data directory the desktop app exports as `CODEG_DATA_DIR` at the top
 /// of `run()`, before the logging init or anything else reads it: a preset
 /// `CODEG_DATA_DIR` (the operator's, or inherited from the codeg that launched

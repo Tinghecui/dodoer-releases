@@ -353,6 +353,29 @@ fn release(app: &AppHandle, registry: &BrowserRegistry, tab_id: &str, generation
     });
 }
 
+/// Put the person's edits to the sensitive sites in force (and in the data
+/// directory), then let go of every Chrome tab agents have — handed over or
+/// their own — that is on a site now kept off: the way a tab that goes to
+/// such a site is let go of. The tabs stay open in Chrome. Answers with the
+/// edits as kept.
+pub fn set_sites(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    edits: &sensitive::SiteEdits,
+) -> Result<sensitive::SiteEdits, AppCommandError> {
+    let kept = sensitive::set_current(edits).map_err(AppCommandError::io)?;
+    for state in registry.list() {
+        if state.surface != SurfaceKind::External {
+            continue;
+        }
+        let url = Url::parse(&state.url).ok();
+        if url.as_ref().is_some_and(|url| kept.blocks_url(url)) {
+            release(app, registry, &state.tab_id, None);
+        }
+    }
+    Ok(kept)
+}
+
 /// Whether `url` is one agents may not open in the person's Chrome; the
 /// refusal when it is.
 pub fn sensitive_check(url: &Url) -> Result<(), AppCommandError> {

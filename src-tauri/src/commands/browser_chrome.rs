@@ -5,10 +5,12 @@
 
 use std::sync::Once;
 
+use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::app_error::AppCommandError;
 use crate::browser::agent::GrantLevel;
+use crate::browser::chrome::sensitive::{self, SiteEdits, DEFAULT_SITES};
 use crate::browser::chrome::{ChromeLending, ChromeLink, ChromeStatus, ChromeTab, STATUS_EVENT, TABS_EVENT};
 use crate::browser::{chrome_share, BrowserRegistry};
 use crate::web::event_bridge::{emit_event, EventEmitter};
@@ -109,6 +111,51 @@ pub async fn browser_chrome_set_agents(
     // (`CAPABILITY_CHROME`): tell the ones this app is registered with.
     crate::commands::remote_proxy::refresh_host_registrations(&app);
     Ok(on)
+}
+
+/// The sites agents are kept off in the person's Chrome, for the settings
+/// page: the default list, and the person's edits to it
+/// (`chrome::sensitive`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChromeSites {
+    pub defaults: Vec<String>,
+    pub blocked: Vec<String>,
+    pub allowed: Vec<String>,
+}
+
+impl From<SiteEdits> for ChromeSites {
+    fn from(edits: SiteEdits) -> Self {
+        ChromeSites {
+            defaults: DEFAULT_SITES.iter().map(|site| site.to_string()).collect(),
+            blocked: edits.blocked,
+            allowed: edits.allowed,
+        }
+    }
+}
+
+/// The sensitive sites and the person's edits to them. The list is this
+/// computer's, whichever window asks; only the app's own shell answers it,
+/// and no agent tool reaches it.
+#[tauri::command]
+pub async fn browser_chrome_sites() -> Result<ChromeSites, AppCommandError> {
+    Ok(sensitive::current().into())
+}
+
+/// The person's edits: sites added (`blocked`) and default entries let go of
+/// (`allowed`). Kept in the data directory and in force at once; a Chrome tab
+/// agents have on a site now kept off is let go of. The settings page asks
+/// the person before it lets go of a default entry; an agent cannot reach
+/// this.
+#[tauri::command]
+pub async fn browser_chrome_set_sites(
+    app: AppHandle,
+    registry: State<'_, BrowserRegistry>,
+    blocked: Vec<String>,
+    allowed: Vec<String>,
+) -> Result<ChromeSites, AppCommandError> {
+    let edits = SiteEdits { blocked, allowed };
+    Ok(chrome_share::set_sites(&app, &registry, &edits)?.into())
 }
 
 /// Bring the Chrome tab `tab_id` (an id from the tab list) to the front.

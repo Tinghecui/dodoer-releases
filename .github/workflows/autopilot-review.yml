@@ -1,0 +1,85 @@
+# 公开镜像 Tinghecui/dodoer-releases：自动驾驶的审查员（源仓库 .cowork/autopilot/design.md 第 2 步；文件在源仓库 .github/public/workflows/ 里维护）。
+# 每个源仓库 PR 同步到这边的 pr/<n>、Test 开始跑时，report-status.yml 派一次（-f pr=<n>）：只读地审「最新 base + 这个 PR」，
+# 结论写回源仓库：commit status「自动审查」、PR 上一条就地更新的评论、级别标签。同一个 PR 头只审一次。
+# 这里只是个壳：取源仓库代码（默认分支上的脚本，不是 PR 里的），装 node，然后 exec .cowork/autopilot/sealed.sh review。
+# 脚本的输出全部进文件、产物传回源仓库 Release「autopilot-artifacts」，这份日志里只有每个阶段一行的进度；运行结束后 ai-qa-seal.yml 会核对这一点。
+# 凭证在 Environment「ai-qa」里，只有 main 分支用得到；commit status 用仓库级的 SOURCE_STATUS_TOKEN。
+# **手动触发时填的输入会原样出现在公开日志里**，只填数字和模型名。
+# 仓库变量：AUTOPILOT（off / record / on，默认 record）、AUTOPILOT_CLAUDE_AUTH（api / oauth，默认 api）、
+# AUTOPILOT_REVIEW_MODEL（默认 claude-fable-5-2，要和执行员的模型不一样）、AUTOPILOT_DAILY_USD（默认 15，和执行员共用）。
+name: autopilot-review
+# 整个值要加引号：里面的「 #」不加引号会被 YAML 当成注释截掉
+run-name: "autopilot-review #${{ inputs.pr }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "源仓库的 PR 号"
+        required: true
+      force:
+        description: "这个 PR 头审过了也再审（调提示词时用）"
+        type: boolean
+        default: false
+      model:
+        description: "模型（空 = 仓库变量 AUTOPILOT_REVIEW_MODEL，再没有 claude-fable-5-2）"
+        default: ""
+
+permissions:
+  contents: read
+
+# 同一个 PR 只留最新的一次：PR 又推了，旧的那次审的是旧代码
+concurrency:
+  group: autopilot-review-${{ inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: vars.AUTOPILOT != 'off'
+    runs-on: ubuntu-24.04
+    environment: ai-qa
+    timeout-minutes: 40
+    env:
+      SOURCE_REPO: Tinghecui/cowork-codeg
+      PR: ${{ inputs.pr }}
+      FORCE: ${{ inputs.force && '1' || '' }}
+      AUTOPILOT: ${{ vars.AUTOPILOT || 'record' }}
+      CLAUDE_AUTH: ${{ vars.AUTOPILOT_CLAUDE_AUTH || 'api' }}
+      MODEL: ${{ inputs.model || vars.AUTOPILOT_REVIEW_MODEL || 'claude-fable-5-2' }}
+      DAILY_USD: ${{ vars.AUTOPILOT_DAILY_USD || '15' }}
+      W: /home/runner/autopilot-work
+    steps:
+      - name: 取源码
+        env:
+          PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$PR" =~ ^[0-9]+$ ]] || { echo "pr 要是数字"; exit 1; }
+          git init -q .
+          # 默认分支上的脚本（PR 里改过的脚本不能决定怎么审它自己）；令牌只在 git 这个进程的环境里，不进命令行、不进 .git/config。
+          # 历史要几百个提交：审查员用 git log、git blame 看来龙去脉
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PRIVATE_TOKEN" | base64 -w0)" \
+            git fetch -q --depth 500 "https://github.com/${SOURCE_REPO}.git" HEAD 2>/dev/null || { echo "fetch failed"; exit 1; }
+          git checkout -q --detach FETCH_HEAD
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: run
+        env:
+          PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+          STATUS_TOKEN: ${{ secrets.SOURCE_STATUS_TOKEN }}
+          # 一次只给一种 Claude 凭证（AUTOPILOT_CLAUDE_AUTH），同 autopilot-fix.yml
+          ANTHROPIC_KEY: ${{ vars.AUTOPILOT_CLAUDE_AUTH != 'oauth' && secrets.CODEG_AGENT_ANTHROPIC_KEY || '' }}
+          OAUTH_TOKEN: ${{ vars.AUTOPILOT_CLAUDE_AUTH == 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: |
+          set -euo pipefail
+          # 凭证写进只有本用户能读的文件、从环境里拿掉再 exec（同 autopilot-fix.yml）
+          d="$RUNNER_TEMP/autopilot-secrets"; rm -rf "$d"; mkdir -m 700 "$d"
+          printf '%s' "$PRIVATE_TOKEN" > "$d/gh"; printf '%s' "$ANTHROPIC_KEY" > "$d/anthropic"; printf '%s' "$OAUTH_TOKEN" > "$d/oauth"
+          printf '%s' "$STATUS_TOKEN" > "$d/status"
+          unset PRIVATE_TOKEN ANTHROPIC_KEY OAUTH_TOKEN STATUS_TOKEN
+          export AUTOPILOT_SECRETS="$d"
+          exec bash .cowork/autopilot/sealed.sh review

@@ -6,6 +6,8 @@
 #   这次报 pending 不报 failure（scripts/ci/ci-retry.mjs）；
 # - 合并闸：每次 Test 开始、结束都按公开 main 上最近一次跑完的 Test，给所有 pr/<n> 对应的私有 PR 头提交打「合并闸」
 #   （scripts/ci/merge-gate.mjs）；product 红着时是 failure，auto-merge 就停着。
+# - 自动审查（2026-11-15，源仓库 .cowork/autopilot/design.md 第 2 步）：pr/<n> 上的 Test 第一次开始跑时，派一次 autopilot-review.yml -f pr=<n>；
+#   仓库变量 AUTOPILOT=off 时不派。审查员自己会跳过审过的 PR 头。
 # 要 Secret SOURCE_STATUS_TOKEN：只对 Tinghecui/cowork-codeg 有 Commit statuses 读写权限的 fine-grained token；没配就跳过。
 # workflow_run 用的是 main 上的这个文件，带 secrets。不 checkout、不执行触发它的 run 里的任何东西（pr/<n> 分支上的代码来自 PR）：
 # 两个脚本从公开 main 取（workflow_run 默认 checkout 的就是默认分支 main，= 私有 product 合进去的代码），提交说明只按正则取 sha。
@@ -78,6 +80,29 @@ jobs:
             '{state:$s,target_url:$u,description:$d,context:$c}' \
             | gh api -X POST "repos/Tinghecui/cowork-codeg/statuses/$sha" --input - >/dev/null
           echo "cowork-codeg@${sha:0:12}：公开 CI / $NAME → $state（$desc）"
+
+  # PR 一同步过来就开审，和 Test 同时跑（审查员只读代码，不等 Test 的结果）
+  review:
+    name: 派自动审查
+    if: >-
+      github.event.workflow_run.name == 'Test' && github.event.action == 'requested' &&
+      github.event.workflow_run.run_attempt == 1 && startsWith(github.event.workflow_run.head_branch, 'pr/') &&
+      vars.AUTOPILOT != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write # 派 workflow_dispatch
+    steps:
+      - name: 派 autopilot-review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          n="${BRANCH#pr/}"
+          [[ "$n" =~ ^[0-9]+$ ]] || { echo "分支 $BRANCH 不是 pr/<数字>，不派"; exit 0; }
+          gh workflow run autopilot-review.yml -R "$GITHUB_REPOSITORY" --ref main -f pr="$n"
+          echo "派了 autopilot-review #$n"
 
   # 在 report 之后：重跑了的那次已经回到排队，不算「跑完」，合并闸看的是它前面那次
   gate:

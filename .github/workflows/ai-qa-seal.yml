@@ -6,7 +6,7 @@ name: ai-qa-seal
 on:
   workflow_run:
     # 加了新的封口 workflow 就加在这里（按 name）
-    workflows: [ai-qa, autopilot-fix]
+    workflows: [ai-qa, autopilot-fix, autopilot-review]
     types: [completed]
 
 permissions:

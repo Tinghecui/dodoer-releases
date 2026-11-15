@@ -8,6 +8,7 @@
 #   用法：scripts/public-sync.sh export <ref> <目录>                  只导出、扫描，不碰公开仓库（本地自查用）
 #        scripts/public-sync.sh push <ref> main                       推到公开仓库的 main（树没变就不推）
 #        scripts/public-sync.sh push <ref> pr/<n>                     以公开 main 为父做一个提交，强推到 pr/<n>
+#                                                                     （PR 同步的是 GitHub 合出来的「product + PR」，SOURCE_REF 指 PR 头，见下）
 #        scripts/public-sync.sh push <ref> macos/pr/<n>               同上，推到 macos/pr/<n>（PR 打了 macos-build 标签，那边的 desktop-macos 编它）
 #        scripts/public-sync.sh push <ref> qa/<run>                   同上，推到 qa/<run>（AI QA 要测没发版的代码，那边的 qa-package 编包；.cowork/ai-qa/build-package.sh）
 #        scripts/public-sync.sh tag <tag>                             同步 tag（树和公开 main 一样就打在 main 上）
@@ -15,6 +16,8 @@
 #   环境：PUBLIC_REPO（默认 git@github.com:Tinghecui/dodoer-releases.git）、PUBLIC_DIR（公开仓库的 clone 放哪，默认临时目录）；
 #        push / tag / delete 要能 ssh 推公开仓库（GIT_SSH_COMMAND 指定 deploy key，见 .github/workflows/public-sync.yml）。
 #        GITHUB_OUTPUT 有就写 commit=<公开仓库的提交>。
+#        SOURCE_REF（只给 pr/<n>、macos/pr/<n>）：<ref> 是要测的代码（PR 和 product 的合并提交），CI 结果报给 SOURCE_REF
+#        （PR 的头提交，必需检查认的是它）：提交说明的主题行和 `source:` 取它，另加一行 `merged-with: cowork-codeg@<product 的提交>`。
 set -euo pipefail
 
 cmd="${1:?用法见文件头}"
@@ -128,9 +131,19 @@ case "$cmd" in
     ;;
   push)
     ref="${2:?ref}"; branch="${3:?main、pr/<n>、macos/pr/<n> 或 qa/<run>}"
-    sha=$(git rev-parse "$ref")
+    tree_sha=$(git rev-parse "$ref^{commit}")
+    sha=$tree_sha merged=""
+    if [[ -n "${SOURCE_REF:-}" ]]; then
+      [[ "$branch" == pr/* || "$branch" == macos/pr/* ]] || fail "SOURCE_REF 只给 pr/<n>、macos/pr/<n> 用：$branch"
+      sha=$(git rev-parse "$SOURCE_REF^{commit}")
+      if [[ "$sha" != "$tree_sha" ]]; then
+        # 合并提交的第二个父提交必须是 PR 头，第一个是当时的 product
+        [[ "$(git rev-parse -q --verify "$tree_sha^2" || true)" == "$sha" ]] || fail "$tree_sha 不是 $sha 和 product 的合并提交"
+        merged=$(git rev-parse "$tree_sha^1")
+      fi
+    fi
     subject=$(git log -1 --format=%s "$sha")
-    export_tree "$sha" "$tmp/export"
+    export_tree "$tree_sha" "$tmp/export"
     scan "$tmp/export" "$subject"
     # qa/<run> 推上去就是为了让公开仓库编包，标题里的 [skip ci] 之类要拿掉，不然 GitHub 不触发 qa-package：
     # AI QA 提交测试记忆的标题带 [skip ci]，紧接着再跑一轮时它正好是分支最新的提交（2026-11-12 run 43252995910，等了十分钟没有 run）
@@ -143,7 +156,8 @@ case "$cmd" in
     tree=$(write_tree "$tmp/export")
     msg="$subject
 
-source: cowork-codeg@${sha}"
+${merged:+merged-with: cowork-codeg@$merged
+}source: cowork-codeg@${sha}"
     if [[ "$branch" == main ]]; then
       if [[ "$tree" == "$(git -C "$PUBLIC_DIR" rev-parse "$base^{tree}")" ]]; then
         echo "公开 main 已经是这棵树（${base}），不用推"; commit=$base

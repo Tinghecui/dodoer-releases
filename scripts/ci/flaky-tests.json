@@ -1,0 +1,10 @@
+{
+  "说明": "公开 CI 的 Test 第一次挂在这些测试上时自动重跑一次（scripts/ci/ci-retry.mjs，只重跑、不跳过：重跑还挂就是红的）。每条都要写 test（cargo 的完整模块路径，或 vitest 的「文件 > 用例」，和日志里一字不差）、reason（确认过的原因、哪个 issue）、expires（YYYY-MM-DD，UTC，含当天；过期就不认，到期前修掉或续期）。",
+  "tests": [
+    {
+      "test": "host_ssh::sshd::tests::the_service_starts_answers_and_leaves_nothing_behind",
+      "reason": "#231：2026-11-14 product 上偶发挂过一次，前后提交都过、重跑就过；原因看不到（#233 修了 panic 被吞），下次挂了先看原因",
+      "expires": "2026-12-15"
+    }
+  ]
+}

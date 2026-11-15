@@ -1,8 +1,14 @@
 # 公开镜像 Tinghecui/dodoer-releases 的 CI 结果报回私有仓库 cowork-codeg（文件在私有仓库 .github/public/workflows/ 里维护）。
 # 同步过来的提交说明最后一行是 `source: cowork-codeg@<40 位 sha>`；Test / cowork-release / desktop-macos / release-train 开始时给那个私有提交
 # 打 pending，结束时打 success / failure（context「公开 CI / <workflow 名>」），私有 PR 上就能直接看到公开这边的结果。
+# 2026-11-15 起另外两件事（只对 Test，思路照 jenny 的 dev-flow，规则见 COWORK.md「合并：auto-merge 和 product 的 ruleset」）：
+# - 第一次跑挂了、没过的全是偶发（网络、托管机器出问题、scripts/ci/flaky-tests.json 里的测试），自动重跑没过的 job 一次，
+#   这次报 pending 不报 failure（scripts/ci/ci-retry.mjs）；
+# - 合并闸：每次 Test 开始、结束都按公开 main 上最近一次跑完的 Test，给所有 pr/<n> 对应的私有 PR 头提交打「合并闸」
+#   （scripts/ci/merge-gate.mjs）；product 红着时是 failure，auto-merge 就停着。
 # 要 Secret SOURCE_STATUS_TOKEN：只对 Tinghecui/cowork-codeg 有 Commit statuses 读写权限的 fine-grained token；没配就跳过。
-# workflow_run 用的是 main 上的这个文件，带 secrets；这里不 checkout、不执行触发它的 run 里的任何东西，提交说明只按正则取 sha。
+# workflow_run 用的是 main 上的这个文件，带 secrets。不 checkout、不执行触发它的 run 里的任何东西（pr/<n> 分支上的代码来自 PR）：
+# 两个脚本从公开 main 取（workflow_run 默认 checkout 的就是默认分支 main，= 私有 product 合进去的代码），提交说明只按正则取 sha。
 name: report-status
 
 on:
@@ -15,8 +21,30 @@ permissions: {}
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write # 重跑没过的 job
+    env:
+      # Test 第一次跑完、没过：看要不要自动重跑
+      RETRY: ${{ github.event.workflow_run.name == 'Test' && github.event.workflow_run.status == 'completed' && github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt == 1 }}
     steps:
+      - uses: actions/checkout@v4
+        if: env.RETRY == 'true'
+        with:
+          ref: main
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      - name: 偶发失败自动重跑一次
+        id: retry
+        if: env.RETRY == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        # 判断或重跑本身出错就当没重跑，照常报 failure
+        run: node scripts/ci/ci-retry.mjs "${{ github.repository }}" "$RUN_ID" || echo "::warning::自动重跑没做成，照常报 failure"
+
       - name: 报给私有仓库
         env:
           GH_TOKEN: ${{ secrets.SOURCE_STATUS_TOKEN }}
@@ -26,21 +54,55 @@ jobs:
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           URL: ${{ github.event.workflow_run.html_url }}
           BRANCH: ${{ github.event.workflow_run.head_branch }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RETRIED: ${{ steps.retry.outputs.retried }}
+          RETRY_REASON: ${{ steps.retry.outputs.reason }}
         run: |
           set -euo pipefail
           [[ -n "$GH_TOKEN" ]] || { echo "::warning::没配 SOURCE_STATUS_TOKEN，不报"; exit 0; }
           sha=$(printf '%s\n' "$MESSAGE" | sed -nE 's/^source: cowork-codeg@([0-9a-f]{40})$/\1/p' | tail -1)
           [[ -n "$sha" ]] || { echo "提交说明里没有 40 位的 source sha，不报"; exit 0; }
-          if [[ "$STATUS" != completed ]]; then state=pending; desc="在跑（$BRANCH）"
+          again=""; [[ "$ATTEMPT" -gt 1 ]] && again="，第 $ATTEMPT 次"
+          if [[ "$RETRIED" == true ]]; then state=pending; desc="偶发失败，自动重跑一次（$BRANCH）：$RETRY_REASON"
+          elif [[ "$STATUS" != completed ]]; then state=pending; desc="在跑（$BRANCH$again）"
           else
             case "$CONCLUSION" in
               success|skipped|neutral) state=success ;;
               cancelled) state=error ;;
               *) state=failure ;;
             esac
-            desc="$CONCLUSION（$BRANCH）"
+            desc="$CONCLUSION（$BRANCH$again）"
           fi
+          desc="${desc:0:140}"
           jq -n --arg s "$state" --arg u "$URL" --arg d "$desc" --arg c "公开 CI / $NAME" \
             '{state:$s,target_url:$u,description:$d,context:$c}' \
             | gh api -X POST "repos/Tinghecui/cowork-codeg/statuses/$sha" --input - >/dev/null
-          echo "cowork-codeg@${sha:0:12}：公开 CI / $NAME → $state"
+          echo "cowork-codeg@${sha:0:12}：公开 CI / $NAME → $state（$desc）"
+
+  # 在 report 之后：重跑了的那次已经回到排队，不算「跑完」，合并闸看的是它前面那次
+  gate:
+    name: 合并闸
+    needs: report
+    # report 出错（比如私有仓库的 API 抽风）也照样算闸
+    if: always() && github.event.workflow_run.name == 'Test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # 后来的一次会把所有 PR 重新算一遍，前面没跑完的直接取消
+    concurrency:
+      group: merge-gate
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+      - name: 按 product 的状态给 PR 打「合并闸」
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_TOKEN: ${{ secrets.SOURCE_STATUS_TOKEN }}
+          PUBLIC_REPO: ${{ github.repository }}
+        run: node scripts/ci/merge-gate.mjs

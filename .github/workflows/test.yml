@@ -67,6 +67,7 @@ jobs:
           filters: |
             workflows:
               - ".github/workflows/**"
+              - "scripts/ci/**"
             frontend:
               - "src/**"
               - "browser-agent/**"
@@ -108,6 +109,12 @@ jobs:
           ./actionlint -shellcheck= -pyflakes= -ignore 'string should not be empty' .github/workflows/*.yml
       - name: 调用方给的权限够被调用的 workflow 用
         run: python3 scripts/check-workflow-permissions.py .github/workflows
+      # report-status.yml 调的两个脚本：自动重跑偶发失败、合并闸（它们只在合并后的 main 上跑，PR 上只能靠这里的测试）
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: CI 脚本的测试
+        run: node --test scripts/ci/*.test.mjs
 
   frontend-lint:
     name: Frontend lint

@@ -3,12 +3,17 @@
 # 只有一种包：完整版，自带 codeg-server 子进程做本机 daemon；主窗口是开始页，本机工作区和服务器上的工作区都从那里开
 # （COWORK.md「桌面端：一种包、开始页」）。2026-11-09 以前还有一种纯客户端版，已经去掉。
 #
-#   用法：scripts/cowork-desktop-build.sh [full]（参数可省，只认 full）
+#   用法：scripts/cowork-desktop-build.sh [full]（参数可省）
+#        scripts/cowork-desktop-build.sh smoke：只做冒烟（不编），对象是 dist/ 里已经打好的 dodoer-$VERSION-*-macos-arm64.zip。
+#          黑苹果（Intel）上交叉编的 arm64 包在那台机器上跑不起来，desktop-macos.yml 把它交给 GitHub 的 macos-15 用这个模式冒烟
 #   环境：VERSION（桌面版本号 1.Y.Z）、TAURI_SIGNING_PRIVATE_KEY（+ _PASSWORD）；
 #        DODOER_SIGNING_IDENTITY：签 app 的证书（钥匙串里的 SHA-1，desktop-macos.yml 从 Secret DODOER_CODESIGN_P12 导入）。
 #        不给就 ad-hoc 签名，只在自己的 Mac 上试编时这样：ad-hoc 的包每一版签名都不同，macOS 的屏幕录制、辅助功能等授权
 #        装了新版就失效，所以 CI 里（CI 非空）不给就报错；
 #        GITHUB_OUTPUT 有就写 full_name / full_updater
+#        DODOER_TARGET：交叉编译的目标（只认 aarch64-apple-darwin），不给就编本机架构。给了就 tauri build --target，
+#        sidecar 也按它编（TAURI_TARGET_TRIPLE），产物在 src-tauri/target/<目标>/release/bundle
+#        DODOER_SKIP_SMOKE=1：不运行包里的程序（交叉编出来的跑不了），只做静态检查；冒烟另用 smoke 模式在 arm64 机器上补
 #
 # 经 beforeBuildCommand 编前端（out/）和 sidecar（src-tauri/binaries/）。清空 dist/，产物都在 dist/：
 #   dodoer-<ver>-<sha8>-macos-arm64.zip(.sha256)             安装包
@@ -19,20 +24,65 @@
 # 查更新（endpoint 编在它自己的包里），这样它就更新成完整版。
 set -euo pipefail
 
-edition="${1:-full}"
+mode="${1:-full}"
+edition=full
 : "${VERSION:?VERSION=1.Y.Z}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
 fail() { echo "::error::$*" >&2; exit 1; }
 
-bundle="$root/src-tauri/target/release/bundle/macos"
-app="$bundle/dodoer.app"
 releases=https://github.com/Tinghecui/dodoer-releases/releases/latest/download
 configs=(--config src-tauri/tauri.jenny.conf.json --config src-tauri/tauri.cowork-desktop.conf.json)
-[[ "$edition" == full ]] || fail "不认识的版本 ${edition}：只有 full（纯客户端版 2026-11-09 已经去掉）"
+[[ "$mode" == full || "$mode" == smoke ]] || fail "不认识的参数 ${mode}：只有 full 和 smoke（纯客户端版 2026-11-09 已经去掉）"
 prefix=dodoer
 expect_endpoint="$releases/latest.json"
+target="${DODOER_TARGET:-}"
+[[ -z "$target" || "$target" == aarch64-apple-darwin ]] || fail "DODOER_TARGET 只认 aarch64-apple-darwin，现在是 $target"
+if [[ -n "$target" ]]; then
+  bundle="$root/src-tauri/target/$target/release/bundle/macos"
+else
+  bundle="$root/src-tauri/target/release/bundle/macos"
+fi
+app="$bundle/dodoer.app"
+
+# 运行包里的程序：自报的版本和更新地址、自带的 codeg-server 子进程。full 模式编完就跑（DODOER_SKIP_SMOKE=1 时跳过），
+# smoke 模式对 dist/ 里打好的 zip 跑
+smoke_app() {
+  local app="$1" exe report server
+  exe=$(defaults read "$app/Contents/Info.plist" CFBundleExecutable)
+  # 包自己说它是哪一版、从哪更新（codeg --desktop-edition）：更新地址来自 Tauri 配置，叠错了就会从别处更新，所以核对。
+  # 用 node 解析（不依赖 jq）
+  report=$("$app/Contents/MacOS/$exe" --desktop-edition)
+  echo "$report"
+  REPORT="$report" EDITION="$edition" ENDPOINT="$expect_endpoint" node -e '
+    const r = JSON.parse(process.env.REPORT);
+    const fail = (m) => { console.error("::error::" + m); process.exit(1); };
+    if (r.edition !== process.env.EDITION) fail(`包说自己是 ${r.edition}，要的是 ${process.env.EDITION}`);
+    const ep = r.updaterEndpoints;
+    if (!Array.isArray(ep) || ep.length !== 1 || ep[0] !== process.env.ENDPOINT)
+      fail(`updater endpoints 是 ${JSON.stringify(ep)}，要的是 ${process.env.ENDPOINT}`);
+    if (r.version !== process.env.VERSION) fail(`包里的版本 ${r.version} 不是 ${process.env.VERSION}`);
+  '
+  # daemon 是 app 里自带的 codeg-server 子进程（src-tauri/src/local_daemon.rs）。用打好的 .app 自己跑一遍：
+  # 起子进程（临时数据目录）、/api/health 带 token 200、错 token 401、kill -9 之后自动重启、停掉后进程不在。
+  # 不开窗口，不碰这台机器上真的 dodoer 数据
+  "$app/Contents/MacOS/$exe" --local-daemon-smoke
+}
+
+if [[ "$mode" == smoke ]]; then
+  zip=$(cd dist && ls "$prefix-$VERSION"-*-macos-arm64.zip 2>/dev/null) || true
+  [[ $(printf '%s\n' "$zip" | grep -c .) == 1 ]] || { ls -la dist >&2 || true; fail "dist/ 里 $prefix-$VERSION-*-macos-arm64.zip 要正好一个，现在：${zip:-没有}"; }
+  tmp=$(mktemp -d)
+  ditto -x -k "dist/$zip" "$tmp"
+  test -d "$tmp/dodoer.app" || fail "$zip 里没有 dodoer.app"
+  echo "==> [$edition] 冒烟 ${zip}（$(uname -m)）"
+  codesign --verify --deep --strict --verbose=2 "$tmp/dodoer.app"
+  smoke_app "$tmp/dodoer.app"
+  rm -rf "$tmp"
+  echo "==> [$edition] 冒烟通过：dist/$zip"
+  exit 0
+fi
 identity="${DODOER_SIGNING_IDENTITY:--}"
 if [[ "$identity" == - && -n "${CI:-}" ]]; then
   fail "CI 里没给 DODOER_SIGNING_IDENTITY：不能发 ad-hoc 签名的包（装上以后 macOS 授权会失效）"
@@ -43,9 +93,20 @@ rm -f "$bundle"/dodoer.app.tar.gz*
 rm -rf "$app"
 # tauri.cowork-desktop.conf.json 打开自动更新（我们的公钥和 dodoer-releases 的 latest.json），
 # createUpdaterArtifacts 让 bundle 里多出 dodoer.app.tar.gz + .sig
-pnpm tauri build --bundles app "${configs[@]}" \
+target_args=()
+if [[ -n "$target" ]]; then
+  target_args=(--target "$target")
+  # beforeBuildCommand 里的 prepare-sidecars 按它编 sidecar，不然编成本机架构
+  export TAURI_TARGET_TRIPLE="$target"
+fi
+pnpm tauri build --bundles app ${target_args[@]+"${target_args[@]}"} "${configs[@]}" \
   --config "{\"version\":\"$VERSION\",\"bundle\":{\"macOS\":{\"signingIdentity\":\"$identity\"}}}"
 test -d "$app" || fail "没编出 $app"
+# 包里每个程序都得是 arm64（交叉编译时 sidecar 编错架构就在这里拦下）
+for bin in "$app"/Contents/MacOS/*; do
+  archs=$(lipo -archs "$bin")
+  [[ "$archs" == arm64 ]] || fail "$(basename "$bin") 的架构是 ${archs}，要的是 arm64"
+done
 
 echo "==> [$edition] 签名"
 codesign --verify --deep --strict --verbose=2 "$app"
@@ -63,37 +124,25 @@ if [[ "$identity" != - ]]; then
   done
 fi
 
-echo "==> [$edition] 冒烟"
-exe=$(defaults read "$app/Contents/Info.plist" CFBundleExecutable)
+echo "==> [$edition] 静态检查"
 ver=$(defaults read "$app/Contents/Info.plist" CFBundleShortVersionString)
 [[ "$ver" == "$VERSION" ]] || fail "编出来的版本 $ver 不是 $VERSION"
 # 「本地网络」权限的说明由 src-tauri/Info.plist 合并进来：没有它，借出的命令行访问局域网会被系统直接拒绝、不弹框
 # （docs/host-ssh.md 5.6），所以核对它真的进了包
 defaults read "$app/Contents/Info.plist" NSLocalNetworkUsageDescription >/dev/null \
   || fail "包的 Info.plist 里没有 NSLocalNetworkUsageDescription：src-tauri/Info.plist 没合并进来"
-# 包自己说它是哪一版、从哪更新（codeg --desktop-edition）：更新地址来自 Tauri 配置，叠错了就会从别处更新，所以核对。
-# 用 node 解析（不依赖 jq）
-report=$("$app/Contents/MacOS/$exe" --desktop-edition)
-echo "$report"
-REPORT="$report" EDITION="$edition" ENDPOINT="$expect_endpoint" node -e '
-  const r = JSON.parse(process.env.REPORT);
-  const fail = (m) => { console.error("::error::" + m); process.exit(1); };
-  if (r.edition !== process.env.EDITION) fail(`包说自己是 ${r.edition}，要的是 ${process.env.EDITION}`);
-  const ep = r.updaterEndpoints;
-  if (!Array.isArray(ep) || ep.length !== 1 || ep[0] !== process.env.ENDPOINT)
-    fail(`updater endpoints 是 ${JSON.stringify(ep)}，要的是 ${process.env.ENDPOINT}`);
-  if (r.version !== process.env.VERSION) fail(`包里的版本 ${r.version} 不是 ${process.env.VERSION}`);
-'
-# daemon 是 app 里自带的 codeg-server 子进程（src-tauri/src/local_daemon.rs）。用打好的 .app 自己跑一遍：
-# 起子进程（临时数据目录）、/api/health 带 token 200、错 token 401、kill -9 之后自动重启、停掉后进程不在。
-# 不开窗口，不碰这台机器上真的 dodoer 数据
 server="$app/Contents/MacOS/codeg-server"
 test -x "$server" || { ls -la "$app/Contents/MacOS"; fail "$server 不在 bundle 里"; }
 [[ $(stat -f %z "$server") -gt 1000000 ]] || fail "$server 是占位文件，prepare-sidecars 没编它"
 for other in codeg-mcp codeg-cli; do
   test -x "$app/Contents/MacOS/$other" || fail "$other 不在 bundle 里"
 done
-"$app/Contents/MacOS/$exe" --local-daemon-smoke
+if [[ "${DODOER_SKIP_SMOKE:-}" == 1 ]]; then
+  echo "==> [$edition] 冒烟跳过（DODOER_SKIP_SMOKE=1，交叉编译的包在别的机器上用 smoke 模式补）"
+else
+  echo "==> [$edition] 冒烟"
+  smoke_app "$app"
+fi
 
 echo "==> [$edition] 打成 zip，自动更新包重签（绑定版本号）"
 name="$prefix-$ver-$(git rev-parse --short=8 HEAD)-macos-arm64"

@@ -21,6 +21,13 @@
 # 每更新一次就悄悄失效一次（开关还亮着）。证书备份在生产机 /root/dodoer-codesign/（只有 root 能读）；丢了可以换一张，代价是
 # 换证书的那一版装上以后，大家要重新授权一次。
 # 公开仓库的日志和 artifact 谁都能看：步骤里别打印代码之外的东西（密钥都走 secrets，会被打码）。
+#
+# 黑苹果（2026-11-16 起）：用户家里的黑苹果（Intel i7-12700KF 20 线程 / 64GB）挂成自托管 runner（标签 hackintosh），在线就在它上面
+# 交叉编 arm64（build-hack，target 目录留在机器上，增量编），再交给 GitHub 的 macos-15 只做冒烟（smoke，几分钟）；实测编译
+# 从托管机器上的 ~56 分钟降到十几分钟。在不在线看 hackintosh-heartbeat.yml 最近一次成功的时间（30 分钟内算在线）；
+# 仓库变量 HACKINTOSH_BUILD=off 强制不用它，=force 不看心跳直接用（试流程用）。兜底：黑苹果不在线 → 跟以前一样全在 macos-15 上编（build）；黑苹果编挂了
+# 或冒烟没过 → build 接着在 macos-15 上重编；判定在线之后它又掉线、活一直排着 → watchdog 15 分钟后取消这次 run
+# （自动发版的号由 release-train 的 untag 退回，下一班心跳过期就走 macos-15）。
 name: desktop-macos
 
 on:
@@ -99,6 +106,7 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       publish: ${{ steps.meta.outputs.publish }}
       build: ${{ steps.gate.outputs.build }}
+      hack: ${{ steps.hack.outputs.hack }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -158,12 +166,185 @@ jobs:
           fi
           echo "build=$build" >> "$GITHUB_OUTPUT"
 
+      # 黑苹果在不在线：hackintosh-heartbeat.yml 每 10 分钟在它上面跑一次，最近一次成功在 30 分钟内就算在线
+      - id: hack
+        name: 黑苹果在不在线
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HACK_SWITCH: ${{ vars.HACKINTOSH_BUILD }}
+        run: |
+          set -euo pipefail
+          hack=false
+          if [[ "${HACK_SWITCH:-on}" == off ]]; then
+            echo "仓库变量 HACKINTOSH_BUILD=off：不用黑苹果"
+          elif [[ "$HACK_SWITCH" == force ]]; then
+            hack=true
+            echo "仓库变量 HACKINTOSH_BUILD=force：不看心跳，直接用黑苹果（试新流程用，用完删掉变量）"
+          else
+            last=$(gh run list -R "$GITHUB_REPOSITORY" -w hackintosh-heartbeat.yml -s success -L 1 \
+              --json updatedAt -q '.[0].updatedAt // empty' 2>/dev/null || true)
+            if [[ -n "$last" ]] && (( $(date +%s) - $(date -d "$last" +%s) < 1800 )); then
+              hack=true
+            fi
+            echo "黑苹果最近一次心跳：${last:-没有}；hack=$hack"
+          fi
+          echo "hack=$hack" >> "$GITHUB_OUTPUT"
+
+  # 黑苹果上交叉编 arm64：不跑包里的程序（Intel 上跑不了），冒烟交给下面的 smoke
+  build-hack:
+    name: dodoer.app (macOS arm64，黑苹果交叉编译)
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true' && needs.prepare.outputs.hack == 'true'
+    runs-on: [self-hosted, hackintosh]
+    timeout-minutes: 60
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+      NEXT_PUBLIC_PRODUCT_NAME: ${{ inputs.product_name || 'dodoer' }}
+      NODE_OPTIONS: --max-old-space-size=8192
+      DODOER_TARGET: aarch64-apple-darwin
+      DODOER_SKIP_SMOKE: "1"
+    steps:
+      # clean: false：留着 src-tauri/target 和 node_modules 做增量（自托管不用 rust-cache，见 COWORK.md）
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || (github.ref_type == 'branch' && github.sha) || github.ref }}
+          clean: false
+      - name: 工具链（机器上装好的 rustup / node / pnpm）
+        run: |
+          rustup target add aarch64-apple-darwin
+          node --version; pnpm --version; rustc --version
+      - run: pnpm install --frozen-lockfile
+      - name: 签名证书（临时钥匙串）
+        env:
+          P12: ${{ secrets.DODOER_CODESIGN_P12 }}
+          P12_PASSWORD: ${{ secrets.DODOER_CODESIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$P12" || -z "$P12_PASSWORD" ]]; then
+            echo "::error::缺 Secret DODOER_CODESIGN_P12 / DODOER_CODESIGN_PASSWORD：不签名的包装上以后屏幕录制等授权会失效"
+            exit 1
+          fi
+          kc="$RUNNER_TEMP/dodoer-codesign.keychain-db"
+          kc_pw=$(openssl rand -hex 16)
+          echo "::add-mask::$kc_pw"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/codesign.p12"
+          security create-keychain -p "$kc_pw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kc_pw" "$kc"
+          security import "$RUNNER_TEMP/codesign.p12" -k "$kc" -f pkcs12 -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/codesign.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pw" "$kc" >/dev/null
+          echo "DODOER_KEYCHAIN_PASSWORD=$kc_pw" >> "$GITHUB_ENV"
+          sha1=$(security find-certificate -c "dodoer code signing" -Z "$kc" | awk '/SHA-1 hash:/ {print $3}')
+          if [[ ! "$sha1" =~ ^[0-9A-F]{40}$ ]]; then
+            echo "::error::临时钥匙串里没有 dodoer code signing 证书"
+            exit 1
+          fi
+          echo "DODOER_SIGNING_IDENTITY=$sha1" >> "$GITHUB_ENV"
+          echo "DODOER_SIGNING_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+      # runner 是 LaunchDaemon，plist 里必须有 SessionCreate=true：不然进程在系统的安全会话里，实际的搜索列表
+      # 只有 System.keychain，user 域的列表设了也不管用，codesign 报 no identity found（2026-11-16 踩过）。
+      # 编译前再解锁一次、把搜索列表重设成「临时钥匙串 + 还在的其他钥匙串」（每个 job 都会留一条旧路径），
+      # 再按全局搜索确认找得到这个身份，找不到就在这里失败（几十秒），不用等编完 15 分钟才在签名时失败
+      - name: 钥匙串再检查一次
+        run: |
+          set -euo pipefail
+          security unlock-keychain -p "$DODOER_KEYCHAIN_PASSWORD" "$DODOER_SIGNING_KEYCHAIN"
+          keep=()
+          while IFS= read -r k; do
+            k=$(echo "$k" | tr -d '" ')
+            [[ -f "$k" && "$k" != */dodoer-codesign.keychain-db ]] && keep+=("$k")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$DODOER_SIGNING_KEYCHAIN" ${keep[@]+"${keep[@]}"}
+          security list-keychains -d user
+          security show-keychain-info "$DODOER_SIGNING_KEYCHAIN"
+          security find-identity -p codesigning "$DODOER_SIGNING_KEYCHAIN"
+          security find-identity -p codesigning | grep -q "$DODOER_SIGNING_IDENTITY" || {
+            echo "::error::搜索列表里找不到签名身份 $DODOER_SIGNING_IDENTITY"
+            exit 1
+          }
+      - id: build
+        name: tauri build（交叉编译）、打包
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: scripts/cowork-desktop-build.sh full
+      # 自托管机器上钥匙串不会随机器销毁，搜索列表也要还原
+      - name: 删掉临时钥匙串
+        if: always()
+        run: |
+          if [[ -n "${DODOER_SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$DODOER_SIGNING_KEYCHAIN" || true
+          fi
+          rm -f "$RUNNER_TEMP/codesign.p12"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dodoer-hack-dist
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  # 黑苹果编的包在 arm64 机器上冒烟（同一个脚本的 smoke 模式）
+  smoke:
+    name: 冒烟（macos-15，黑苹果编的包）
+    needs: [prepare, build-hack]
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || (github.ref_type == 'branch' && github.sha) || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: dodoer-hack-dist
+          path: dist
+      - name: 冒烟
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: scripts/cowork-desktop-build.sh smoke
+
+  # 判定黑苹果在线之后它又掉线：build-hack 一直排着，build 和 publish 都在等它。15 分钟还没开始就取消这次 run
+  watchdog:
+    name: 黑苹果接没接活
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true' && needs.prepare.outputs.hack == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            st=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+              -q '[.jobs[] | select(.name | contains("黑苹果交叉编译")) | .status] | first // "missing"')
+            if [[ "$st" != queued && "$st" != waiting && "$st" != pending ]]; then
+              echo "黑苹果的活：$st"; exit 0
+            fi
+            sleep 30
+          done
+          echo "::error::黑苹果 15 分钟没接活（判定在线以后掉线了），取消这次 run；下一次心跳过期以后就走 macos-15" | tee -a "$GITHUB_STEP_SUMMARY"
+          gh run cancel "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY"
+          exit 1
+
+  # 托管机器上编：黑苹果不在线时直接编；黑苹果编挂了或冒烟没过时兜底重编
   build:
     name: dodoer.app (macOS arm64)
-    needs: prepare
-    if: needs.prepare.outputs.build == 'true'
+    needs: [prepare, build-hack, smoke]
+    if: >-
+      !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.build == 'true' &&
+      (needs.prepare.outputs.hack != 'true' || needs.build-hack.result != 'success' || needs.smoke.result != 'success')
     runs-on: macos-15
     timeout-minutes: 120
+    outputs:
+      artifact: ${{ steps.build.outputs.full_name }}
     env:
       CI: "true"
       NEXT_TELEMETRY_DISABLED: "1"
@@ -265,8 +446,11 @@ jobs:
   # 编过、冒烟过才发
   publish:
     name: 发 Release
-    needs: [prepare, build]
-    if: needs.prepare.outputs.publish == 'true'
+    needs: [prepare, build, build-hack, smoke]
+    # 托管机器编的（build 成功），或者黑苹果编的、冒烟过了（build 没跑）
+    if: >-
+      !cancelled() && needs.prepare.outputs.publish == 'true' &&
+      (needs.build.result == 'success' || (needs.build.result == 'skipped' && needs.smoke.result == 'success'))
     runs-on: ubuntu-latest
     # 自动发版要在这里等 Test（一般早就跑完了，最多等 60 分钟）
     timeout-minutes: 75
@@ -284,11 +468,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/cowork-wait-test.sh "$GITHUB_SHA"
+      # 只取一份：build 成功了取它的，不然取黑苹果的（两份同名文件混在一起，.sig 会对不上）
       - uses: actions/download-artifact@v4
         if: ${{ !inputs.train || steps.gate.outputs.ok == 'true' }}
         with:
+          name: ${{ needs.build.result == 'success' && needs.build.outputs.artifact || 'dodoer-hack-dist' }}
           path: dist
-          merge-multiple: true
       - name: 发 Release
         if: ${{ !inputs.train || steps.gate.outputs.ok == 'true' }}
         env:

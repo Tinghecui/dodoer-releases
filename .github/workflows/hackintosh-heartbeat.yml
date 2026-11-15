@@ -1,0 +1,26 @@
+# 黑苹果自托管 runner（标签 hackintosh）的心跳：每 10 分钟在它上面跑一次空任务。desktop-macos.yml 看最近一次成功的时间
+# 判断它在不在线（30 分钟内算在线），不在线就全在 GitHub 托管机器上编。
+# 黑苹果离线时这里的 run 会排着；同一组新排的会把旧的顶掉，最多积一个。GitHub 的定时任务常晚到，所以阈值放宽到 30 分钟。
+name: hackintosh-heartbeat
+
+on:
+  schedule:
+    # 不放整点（整点的定时任务最挤）
+    - cron: "3,13,23,33,43,53 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: hackintosh-heartbeat
+  cancel-in-progress: true
+
+jobs:
+  beat:
+    name: 心跳
+    runs-on: [self-hosted, hackintosh]
+    timeout-minutes: 5
+    steps:
+      - run: |
+          echo "黑苹果在线：$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          df -h / | tail -1

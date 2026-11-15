@@ -3538,6 +3538,46 @@
     return (el.textContent ?? "").trim().replace(/\s+/g, " ");
   }
 
+  // browser-agent/src/redact.ts
+  var HIDDEN_VALUE = "[hidden]";
+  var SECRET_AUTOFILL = /* @__PURE__ */ new Set([
+    "current-password",
+    "new-password",
+    "one-time-code"
+  ]);
+  function isSecretField(el) {
+    const isInput = el instanceof HTMLInputElement;
+    if (!isInput && !(el instanceof HTMLTextAreaElement)) return false;
+    if (isInput && el.type === "password") return true;
+    const tokens = (el.getAttribute("autocomplete") ?? "").toLowerCase().split(/\s+/);
+    return tokens.some((t) => SECRET_AUTOFILL.has(t) || t.startsWith("cc-"));
+  }
+  function withSecretsHidden(read) {
+    const undo = [];
+    try {
+      for (const proto of [
+        HTMLInputElement.prototype,
+        HTMLTextAreaElement.prototype
+      ]) {
+        const own = Object.getOwnPropertyDescriptor(proto, "value");
+        const get = own?.get;
+        if (!own || !get || !own.configurable)
+          throw new Error("cannot hide secret fields in this engine");
+        Object.defineProperty(proto, "value", {
+          ...own,
+          get() {
+            const value = get.call(this);
+            return value && isSecretField(this) ? HIDDEN_VALUE : value;
+          }
+        });
+        undo.push(() => Object.defineProperty(proto, "value", own));
+      }
+      return read();
+    } finally {
+      for (const restore of undo) restore();
+    }
+  }
+
   // browser-agent/src/index.ts
   var GENERATION = generationToken();
   function generationToken() {
@@ -3571,7 +3611,7 @@
     let rendered = "";
     const lineToNode = /* @__PURE__ */ new Map();
     if (root) {
-      const aria = generateAriaTree(root, { mode: "ai" });
+      const aria = withSecretsHidden(() => generateAriaTree(root, { mode: "ai" }));
       for (const [ref, info] of aria.info) next.set(ref, info.element);
       const { json } = renderAriaTreeAsJSON(aria, { mode: "ai" });
       rendered = renderAriaSnapshotAsYaml(json, { lineToNode });

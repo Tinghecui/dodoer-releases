@@ -40,6 +40,7 @@ import {
   type ActionRequest,
   type ScrollReport,
 } from "./act"
+import { withSecretsHidden } from "./redact"
 
 /**
  * Identifies the world this script is running in, and with it the document.
@@ -255,7 +256,9 @@ export function snapshot(options: SnapshotOptions = {}): SnapshotResult {
   const lineToNode: NonNullable<AriaSnapshotYamlOptions["lineToNode"]> =
     new Map()
   if (root) {
-    const aria = generateAriaTree(root, { mode: "ai" })
+    // Password, one-time-code and card fields read as `[hidden]` while the
+    // tree is built: their values never reach an agent (`redact.ts`).
+    const aria = withSecretsHidden(() => generateAriaTree(root, { mode: "ai" }))
     for (const [ref, info] of aria.info) next.set(ref, info.element)
     const { json } = renderAriaTreeAsJSON(aria, { mode: "ai" })
     rendered = renderAriaSnapshotAsYaml(json, { lineToNode })

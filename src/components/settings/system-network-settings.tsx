@@ -90,6 +90,12 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+// Cowork: a patch release ships after every merge (the release train), several
+// a day, so the provider's 6-hourly answer is often out of date by the time
+// someone opens this page to update. Looking again here costs one small
+// manifest fetch; within a few minutes of the last one it would only repeat it.
+const PAGE_RECHECK_AFTER_MS = 5 * 60 * 1000
+
 const PROXY_EXAMPLE = "http://127.0.0.1:7890"
 // Written exactly as the backend stores the list — comma-separated, no spaces —
 // so the example, the placeholder and the saved value all read the same.
@@ -315,9 +321,11 @@ export function SystemNetworkSettings() {
     // last attempt failed, in which case opening this page is a natural retry.
     // Cowork: skipped where updates are managed, which the server says
     // (`cowork_info`, cached after the first answer; this never rejects).
+    // Cowork: also when the last answer is older than PAGE_RECHECK_AFTER_MS.
     void loadCoworkInfo().then((info) => {
       if (updatesAreManaged(info)) return
-      if (!readLastCheck() || checkError) {
+      const last = readLastCheck()
+      if (!last || checkError || Date.now() - last.at > PAGE_RECHECK_AFTER_MS) {
         checkNow({ silent: true }).catch((err) => {
           console.error("[Settings] auto check update failed:", err)
         })
@@ -545,27 +553,42 @@ export function SystemNetworkSettings() {
                   {t("updating")}
                 </Button>
               ) : availableUpdate ? (
-                // In-place upgrade only when this client can actually drive it:
-                // desktop (Tauri plugin) or a server speaking the live-progress
-                // protocol. An older remote server falls back to "view release".
-                canInstallInPlace ? (
-                  <Button size="sm" onClick={() => void startUpdate()}>
-                    <ArrowUpCircle className="h-3.5 w-3.5" />
-                    {t("upgradeTo", { version: availableUpdate.version })}
-                  </Button>
-                ) : (
+                // Cowork: the offer can be out of date (see
+                // PAGE_RECHECK_AFTER_MS), so checking again stays possible
+                // beside it rather than only once nothing is on offer.
+                <div className="flex items-center gap-1">
                   <Button
-                    size="sm"
-                    onClick={() =>
-                      openUrl(
-                        "https://github.com/spacering-net/codeg/releases/latest"
-                      )
-                    }
+                    size="icon-sm"
+                    variant="ghost"
+                    onClick={checkForUpdates}
+                    aria-label={t("checkUpdate")}
+                    title={t("checkUpdate")}
                   >
-                    <ArrowUpCircle className="h-3.5 w-3.5" />
-                    {t("viewRelease", { version: availableUpdate.version })}
+                    <RefreshCw className="h-3.5 w-3.5" />
                   </Button>
-                )
+                  {/* In-place upgrade only when this client can actually
+                      drive it: desktop (Tauri plugin) or a server speaking the
+                      live-progress protocol. An older remote server falls back
+                      to "view release". */}
+                  {canInstallInPlace ? (
+                    <Button size="sm" onClick={() => void startUpdate()}>
+                      <ArrowUpCircle className="h-3.5 w-3.5" />
+                      {t("upgradeTo", { version: availableUpdate.version })}
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        openUrl(
+                          "https://github.com/spacering-net/codeg/releases/latest"
+                        )
+                      }
+                    >
+                      <ArrowUpCircle className="h-3.5 w-3.5" />
+                      {t("viewRelease", { version: availableUpdate.version })}
+                    </Button>
+                  )}
+                </div>
               ) : (
                 <Button
                   key="check-update"
@@ -580,7 +603,8 @@ export function SystemNetworkSettings() {
               )}
             </div>
 
-            {!availableUpdate && formattedLastCheckedAt && (
+            {/* Cowork: shown beside an offer too, to say how fresh it is. */}
+            {formattedLastCheckedAt && (
               <p className="text-muted-foreground">
                 {t("lastChecked", { time: formattedLastCheckedAt })}
               </p>

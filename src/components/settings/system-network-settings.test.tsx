@@ -122,6 +122,8 @@ import {
   updateSystemAutostartSettings,
   updateSystemProxySettings,
 } from "@/lib/api"
+import { loadCoworkInfo } from "@/lib/cowork/info"
+import { writeLastCheck } from "@/lib/update-check-storage"
 
 const mockGetProxy = vi.mocked(getSystemProxySettings)
 const mockSetProxy = vi.mocked(updateSystemProxySettings)
@@ -560,6 +562,78 @@ describe("SystemNetworkSettings — update source outage", () => {
     expect(
       await screen.findByRole("button", { name: "Roll back" })
     ).toBeInTheDocument()
+  })
+})
+
+// Cowork: releases ship several times a day, so a release on offer can be an
+// old answer by the time the page is open.
+describe("SystemNetworkSettings — an offer that may be out of date", () => {
+  const offer = (version: string) => ({ version, body: "", date: null })
+  const checks = () =>
+    call.mock.calls.filter(([endpoint]) => endpoint === "check_app_update")
+
+  it("checks again beside the release on offer", async () => {
+    mockGetProxy.mockResolvedValue({ enabled: false, proxy_url: null })
+    let newest = "0.17.0"
+    call.mockImplementation(async (endpoint: string) =>
+      liveServerCalls(
+        { seq: 1, status: "idle" },
+        { update: offer(newest) }
+      )(endpoint)
+    )
+
+    renderWithIntl()
+
+    expect(
+      await screen.findByRole("button", { name: "Upgrade to v0.17.0" })
+    ).toBeVisible()
+    newest = "0.17.1"
+    fireEvent.click(screen.getByRole("button", { name: "Check for updates" }))
+    expect(
+      await screen.findByRole("button", { name: "Upgrade to v0.17.1" })
+    ).toBeVisible()
+  })
+
+  it("looks again on opening when the answer it holds is old", async () => {
+    mockGetProxy.mockResolvedValue({ enabled: false, proxy_url: null })
+    writeLastCheck({
+      at: Date.now() - 10 * 60 * 1000,
+      currentVersion: "0.16.0",
+      info: offer("0.17.0"),
+    })
+    call.mockImplementation(
+      liveServerCalls({ seq: 1, status: "idle" }, { update: offer("0.17.1") })
+    )
+
+    renderWithIntl()
+
+    expect(
+      await screen.findByRole("button", { name: "Upgrade to v0.17.1" })
+    ).toBeVisible()
+    expect(screen.getByText(/^Last checked: /)).toBeVisible()
+  })
+
+  it("does not look again for an answer a minute old", async () => {
+    mockGetProxy.mockResolvedValue({ enabled: false, proxy_url: null })
+    writeLastCheck({
+      at: Date.now() - 60 * 1000,
+      currentVersion: "0.16.0",
+      info: offer("0.17.0"),
+    })
+    call.mockImplementation(
+      liveServerCalls({ seq: 1, status: "idle" }, { update: offer("0.17.1") })
+    )
+
+    renderWithIntl()
+
+    expect(
+      await screen.findByRole("button", { name: "Upgrade to v0.17.0" })
+    ).toBeVisible()
+    // The page decides once `cowork_info` has answered; wait that out.
+    await act(async () => {
+      await loadCoworkInfo()
+    })
+    expect(checks()).toHaveLength(0)
   })
 })
 

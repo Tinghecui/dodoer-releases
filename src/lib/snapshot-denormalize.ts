@@ -9,6 +9,7 @@ import type {
   LiveContentBlock as WireLiveContentBlock,
   LiveMessage as WireLiveMessage,
   LiveSessionSnapshot,
+  ModelSwitchInfo,
   PendingPlanApprovalState,
   PendingQuestionState,
   PromptCapabilitiesInfo,
@@ -62,6 +63,10 @@ export interface SnapshotPatch {
   /** Claude Code's Remote Control while it is on, or `null`. Current state,
    *  like `usage`: applied on the fresh hydrate branch only. */
   remoteControl: RemoteControlInfo | null
+  /** Cowork fork: the model switch under way, or `null`. Current state, like
+   *  `usage`: applied on the fresh hydrate branch only. Optional for patches
+   *  built without it. */
+  modelSwitch?: ModelSwitchInfo | null
   liveMessage: LocalLiveMessage | null
   pendingPermission: PendingPermission | null
   /** Awaiting-answer multiple-choice `ask_user_question` carried by the
@@ -151,6 +156,7 @@ export function denormalizeSnapshot(wire: LiveSessionSnapshot): SnapshotPatch {
     availableCommands: wire.available_commands ?? null,
     usage: wire.usage,
     promptSuggestion: wire.prompt_suggestion ?? null,
+    modelSwitch: wire.model_switch ?? null,
     remoteControl: wire.remote_control
       ? { session_url: wire.remote_control.session_url ?? null }
       : null,

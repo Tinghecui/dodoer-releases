@@ -186,6 +186,22 @@ pub async fn get_conversation_goal_markers(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetConversationModelSwitchesParams {
+    pub conversation_id: i32,
+}
+
+/// Cowork fork: see `conv_commands::get_conversation_model_switches_core`.
+pub async fn get_conversation_model_switches(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<GetConversationModelSwitchesParams>,
+) -> Result<Json<Vec<crate::acp::types::ModelSwitchInfo>>, AppCommandError> {
+    let (conn, id) = (&state.db.conn, params.conversation_id);
+    let switches = conv_commands::get_conversation_model_switches_core(conn, id).await?;
+    Ok(Json(switches))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchConversationMessagesParams {
     pub folder_ids: Option<Vec<i32>>,
     pub agent_type: Option<AgentType>,

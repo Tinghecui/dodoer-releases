@@ -80,6 +80,10 @@ fn is_lifecycle_relevant(event: &AcpEvent) -> bool {
             | AcpEvent::SessionConfigOptions { .. }
             | AcpEvent::SessionModes { .. }
             | AcpEvent::ModeChanged { .. }
+            // Cowork fork: a model switch, kept for the conversation's timeline
+            // once settled (`session_prefs::record_model_switch`). Two or three
+            // per pick.
+            | AcpEvent::ModelSwitch { .. }
             | AcpEvent::StatusChanged {
                 status: ConnectionStatus::Disconnected
             }
@@ -649,6 +653,14 @@ async fn handle_event(
                 return Ok(());
             };
             crate::acp::session_prefs::record_current(db_conn, &state_arc).await
+        }
+        // Cowork fork: a settled model switch joins the conversation's
+        // timeline, and an applied one is the agent type's new default.
+        AcpEvent::ModelSwitch { switch } => {
+            let Some(state_arc) = manager.get_state(&envelope.connection_id).await else {
+                return Ok(());
+            };
+            crate::acp::session_prefs::record_model_switch(db_conn, &state_arc, switch).await
         }
         // Other events don't need cross-connection DB persistence today; extend
         // this dispatcher with new arms as the lifecycle scope grows.
@@ -5002,6 +5014,22 @@ mod tests {
         }));
         assert!(is_lifecycle_relevant(&AcpEvent::ModeChanged {
             mode_id: "plan".into(),
+        }));
+        assert!(is_lifecycle_relevant(&AcpEvent::ModelSwitch {
+            switch: crate::acp::types::ModelSwitchInfo {
+                id: "s".into(),
+                config_id: "model".into(),
+                phase: crate::acp::types::ModelSwitchPhase::Applied,
+                from_value: "opus".into(),
+                from_name: "Opus".into(),
+                to_value: "fable".into(),
+                to_name: "Fable".into(),
+                failure: None,
+                detail: None,
+                after_turn: false,
+                at: chrono::Utc::now(),
+                conversation_id: None,
+            },
         }));
 
         // Rejected (worker no-ops on these — must not enter the queue):

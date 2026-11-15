@@ -87,6 +87,7 @@ import type {
   ConversationOutline,
   ConversationTurnsPage,
   ConversationGoalMarkers,
+  ModelSwitchInfo,
   ConversationSearchResponse,
   DbConversationDetail,
   FolderInfo,
@@ -2740,6 +2741,18 @@ export async function getFolderConversation(
  * dropped server-side. Lets the sidebar run `findLatestGoalStatus` for rows
  * this client never opened. Rows the backend cannot read are left out.
  */
+/**
+ * Cowork fork: the settled model switches of a conversation, oldest first —
+ * the lines its timeline shows (`model-switch.ts`).
+ */
+export async function getConversationModelSwitches(
+  conversationId: number
+): Promise<ModelSwitchInfo[]> {
+  return getTransport().call("get_conversation_model_switches", {
+    conversationId,
+  })
+}
+
 export async function getConversationGoalMarkers(
   conversationIds: number[]
 ): Promise<ConversationGoalMarkers[]> {

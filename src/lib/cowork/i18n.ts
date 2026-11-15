@@ -192,6 +192,17 @@ const en = {
     "You and the agents will call this computer by this name. You can change it later from the devices icon at the foot of the sidebar.",
   devicesNameConfirm: "Use this name",
   devicesNameSkip: "Skip",
+  // A model switch (`model-switch.ts`): the composer's picker while it is
+  // under way, then a line in the conversation and, if it failed, a toast.
+  modelSwitchPending: "Switching to {to}…",
+  modelSwitchAfterTurn: "This reply {from} · next {to}",
+  modelSwitchAfterTurnHint:
+    "This reply keeps using {from}; {to} takes over from your next message.",
+  modelSwitchApplied: "Model switched: {from} → {to} (from the next message)",
+  modelSwitchFailed: "Couldn't switch to {to}: {reason}. Still using {current}",
+  modelSwitchNoAnswer: "the agent didn't answer within 10 seconds",
+  modelSwitchAgentError: "the agent reported an error ({detail})",
+  modelSwitchNotAdopted: "the agent didn't take it",
 }
 
 export type CoworkTextKey = keyof typeof en
@@ -355,6 +366,14 @@ const zhCN: Record<CoworkTextKey, string> = {
     "你和智能体会用这个名字称呼这台电脑。以后可以在侧栏底部的设备图标里改。",
   devicesNameConfirm: "就用这个",
   devicesNameSkip: "跳过",
+  modelSwitchPending: "正在切换到 {to}…",
+  modelSwitchAfterTurn: "本轮 {from} · 下一条 {to}",
+  modelSwitchAfterTurnHint: "这轮回复继续用 {from}，下一条消息起用 {to}",
+  modelSwitchApplied: "已切换模型：{from} → {to}（从下一条消息起）",
+  modelSwitchFailed: "切换到 {to} 失败：{reason}，仍在用 {current}",
+  modelSwitchNoAnswer: "agent 10 秒内没有回应",
+  modelSwitchAgentError: "agent 报错（{detail}）",
+  modelSwitchNotAdopted: "agent 没有采用",
 }
 
 const zhTW: Record<CoworkTextKey, string> = {
@@ -518,6 +537,14 @@ const zhTW: Record<CoworkTextKey, string> = {
     "你和智慧體會用這個名字稱呼這台電腦。之後可以在側欄底部的裝置圖示裡改。",
   devicesNameConfirm: "就用這個",
   devicesNameSkip: "跳過",
+  modelSwitchPending: "正在切換到 {to}…",
+  modelSwitchAfterTurn: "本輪 {from} · 下一則 {to}",
+  modelSwitchAfterTurnHint: "這輪回覆繼續用 {from}，下一則訊息起用 {to}",
+  modelSwitchApplied: "已切換模型：{from} → {to}（從下一則訊息起）",
+  modelSwitchFailed: "切換到 {to} 失敗：{reason}，仍在用 {current}",
+  modelSwitchNoAnswer: "agent 10 秒內沒有回應",
+  modelSwitchAgentError: "agent 報錯（{detail}）",
+  modelSwitchNotAdopted: "agent 沒有採用",
 }
 
 const CATALOGS: Record<string, Record<CoworkTextKey, string>> = {

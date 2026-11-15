@@ -252,6 +252,10 @@ pub fn build_router_with_proxy_auth(
             post(handlers::conversations::get_conversation_goal_markers),
         )
         .route(
+            "/get_conversation_model_switches",
+            post(handlers::conversations::get_conversation_model_switches),
+        )
+        .route(
             "/search_conversation_messages",
             post(handlers::conversations::search_conversation_messages),
         )

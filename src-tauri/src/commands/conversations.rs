@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 #[cfg(feature = "tauri-runtime")]
 use tauri::Manager;
 
-use crate::acp::types::ToolApprovalInfo;
+use crate::acp::types::{ModelSwitchInfo, ToolApprovalInfo};
 use crate::app_error::AppCommandError;
 use crate::db::entities::conversation;
 use crate::db::entities::folder::FolderKind;
@@ -2272,6 +2272,26 @@ pub async fn get_conversation_goal_markers(
     conversation_ids: Vec<i32>,
 ) -> Result<Vec<ConversationGoalMarkers>, AppCommandError> {
     get_conversation_goal_markers_core(&db.conn, conversation_ids).await
+}
+
+/// Cowork fork: the settled model switches of a conversation, oldest first,
+/// for its timeline (see `acp::session_prefs::record_model_switch`).
+pub async fn get_conversation_model_switches_core(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+) -> Result<Vec<ModelSwitchInfo>, AppCommandError> {
+    crate::acp::session_prefs::list_model_switches(conn, conversation_id)
+        .await
+        .map_err(AppCommandError::from)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_conversation_model_switches(
+    db: tauri::State<'_, AppDatabase>,
+    conversation_id: i32,
+) -> Result<Vec<ModelSwitchInfo>, AppCommandError> {
+    get_conversation_model_switches_core(&db.conn, conversation_id).await
 }
 
 // --- Conversation search ------------------------------------------------------

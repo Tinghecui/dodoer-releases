@@ -2,12 +2,13 @@
 
 import {
   Fragment,
+  useContext,
   useId,
   useState,
   type FocusEvent,
   type KeyboardEvent,
 } from "react"
-import { Check, ChevronDown, Cog } from "lucide-react"
+import { Check, ChevronDown, Cog, Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { AgentIcon } from "@/components/agent-icon"
 import { Badge } from "@/components/ui/badge"
@@ -24,6 +25,8 @@ import { ModelOptionList } from "@/components/chat/model-option-list"
 import { SelectorTooltip } from "@/components/chat/selector-tooltip"
 import { useScrollbarSafeDismiss } from "@/hooks/use-scrollbar-safe-dismiss"
 import { flattenModelGroups } from "@/lib/model-config-groups"
+import { useCoworkText } from "@/lib/cowork/i18n"
+import { ModelSwitchContext, modelSwitchChip } from "@/lib/cowork/model-switch"
 import type {
   SessionChoiceSetting,
   SessionSetting,
@@ -68,7 +71,12 @@ export function SessionSettingsPicker({
   onChange,
 }: SessionSettingsPickerProps) {
   const t = useTranslations("Folder.chat.messageInput")
+  const coworkT = useCoworkText()
   const [open, setOpen] = useState(false)
+  // Cowork fork: a model switch under way reads in place of the model — the
+  // value shown stays the one the agent reports (see `model-switch.ts`).
+  const modelSwitch = useContext(ModelSwitchContext)
+  const switchChip = modelSwitchChip(coworkT, modelSwitch)
   // Keep the popover open while one of its scrollbars is dragged — see
   // `useScrollbarSafeDismiss`.
   const { contentRef, onPointerDownOutside, onFocusOutside } =
@@ -100,17 +108,24 @@ export function SessionSettingsPicker({
     })
     .join(", ")}`
   const parts = settings.filter((setting) => setting.summary)
+  const switching = (setting: SessionSetting) =>
+    switchChip !== null &&
+    setting.target.type === "config" &&
+    setting.target.configId === modelSwitch?.config_id
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       {/* Suppressed while the popover is open — it is non-modal, so the chip
           keeps taking hover underneath it (see SelectorTooltip). */}
-      <SelectorTooltip label={t("agentSettings")} suppressed={open}>
+      <SelectorTooltip
+        label={switchChip?.hint ?? t("agentSettings")}
+        suppressed={open}
+      >
         <PopoverTrigger asChild>
           <Button
             variant="ghost"
             size="xs"
-            aria-label={label}
+            aria-label={switchChip ? `${label}. ${switchChip.hint}` : label}
             // A pill tinted with the theme color chosen in Appearance
             // settings (`--primary`), translucent so it also sits over a
             // workspace background image. Hover and the open popover deepen
@@ -129,27 +144,40 @@ export function SessionSettingsPicker({
               data-slot="settings-summary"
               className="flex min-w-0 items-center overflow-hidden @max-[16rem]:hidden"
             >
-              {parts.map((setting, index) => (
-                <Fragment key={setting.key}>
-                  {index > 0 ? (
+              {parts.map((setting, index) => {
+                const summary =
+                  switchChip && switching(setting)
+                    ? switchChip.label
+                    : setting.summary
+                return (
+                  <Fragment key={setting.key}>
+                    {index > 0 ? (
+                      <span
+                        aria-hidden
+                        className="shrink-0 px-1 text-muted-foreground/50"
+                      >
+                        /
+                      </span>
+                    ) : null}
+                    {modelSwitch?.phase === "pending" && switching(setting) ? (
+                      <Loader2
+                        aria-hidden
+                        data-slot="model-switch-spinner"
+                        className="mr-1 size-3 shrink-0 animate-spin"
+                      />
+                    ) : null}
                     <span
-                      aria-hidden
-                      className="shrink-0 px-1 text-muted-foreground/50"
+                      className={cn(
+                        [...(summary ?? "")].length <= 8
+                          ? "shrink-0"
+                          : "min-w-12 shrink truncate"
+                      )}
                     >
-                      /
+                      {summary}
                     </span>
-                  ) : null}
-                  <span
-                    className={cn(
-                      [...(setting.summary ?? "")].length <= 8
-                        ? "shrink-0"
-                        : "min-w-12 shrink truncate"
-                    )}
-                  >
-                    {setting.summary}
-                  </span>
-                </Fragment>
-              ))}
+                  </Fragment>
+                )
+              })}
             </span>
             <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
           </Button>

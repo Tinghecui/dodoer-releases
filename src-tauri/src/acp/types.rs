@@ -569,6 +569,11 @@ pub enum AcpEvent {
         requested_value: String,
         actual_value: String,
     },
+    /// Cowork fork: where a model switch the user asked for stands — what the
+    /// composer's picker and the conversation's timeline say about it (see
+    /// `acp::model_switch`). One per phase; the one still under way rides the
+    /// snapshot.
+    ModelSwitch { switch: ModelSwitchInfo },
     /// Initial selector payloads (modes/config options) have been emitted
     SelectorsReady,
     /// Prompt capabilities for this connection
@@ -1621,6 +1626,62 @@ pub struct SessionConfigBooleanInfo {
 pub enum SessionConfigKindInfo {
     Select(SessionConfigSelectInfo),
     Boolean(SessionConfigBooleanInfo),
+}
+
+/// Cowork fork: one model switch, as [`AcpEvent::ModelSwitch`] reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelSwitchInfo {
+    /// The same across the phases of one switch.
+    pub id: String,
+    pub config_id: String,
+    pub phase: ModelSwitchPhase,
+    /// The model in effect when the switch was asked for, and the one asked
+    /// for: raw values and the selector's display names.
+    pub from_value: String,
+    pub from_name: String,
+    pub to_value: String,
+    pub to_name: String,
+    /// `Failed` only: `no_answer` (nothing within the timeout), `agent_error`
+    /// (the agent's words are in `detail`), `refused` (likewise, a refusal the
+    /// connection already reported as its own error) or `not_adopted` (the
+    /// agent still reports another model; its display name is in `detail`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Whether the switch waited for a running reply to end first.
+    #[serde(default)]
+    pub after_turn: bool,
+    /// When this phase was reached.
+    pub at: chrono::DateTime<chrono::Utc>,
+    /// The conversation the connection was bound to, when it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<i32>,
+}
+
+/// Cowork fork: the phases of a [`ModelSwitchInfo`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelSwitchPhase {
+    /// Sent to the agent; no answer yet.
+    Pending,
+    /// Asked for while a reply runs: sent once the reply has ended, so the
+    /// reply finishes on the model it started with.
+    AfterTurn,
+    /// The agent reports the new model.
+    Applied,
+    /// The agent refused or failed, did not answer in time, or still reports
+    /// another model.
+    Failed,
+    /// Replaced by a newer pick while it was still waiting for the reply.
+    Cancelled,
+}
+
+impl ModelSwitchPhase {
+    /// Whether nothing more will happen to the switch.
+    pub fn is_settled(self) -> bool {
+        matches!(self, Self::Applied | Self::Failed | Self::Cancelled)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

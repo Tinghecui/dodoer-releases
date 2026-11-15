@@ -21,8 +21,8 @@ use crate::acp::question::PendingQuestionState;
 use crate::acp::types::{
     AcpEvent, AsyncTaskRecord, AvailableCommandInfo, BackgroundOutstandingTask, ConfigStaleKind,
     ConnectionStatus, EventEnvelope, GrokModelCatalog, GrokModelSpec, PromptCapabilitiesInfo,
-    RemoteControlInfo, SessionConfigOptionInfo, SessionFailureRecord, SessionModeStateInfo,
-    ToolApprovalInfo, ToolCallImageInfo,
+    ModelSwitchInfo, RemoteControlInfo, SessionConfigOptionInfo, SessionFailureRecord,
+    SessionModeStateInfo, ToolApprovalInfo, ToolCallImageInfo,
 };
 use crate::models::agent::AgentType;
 use crate::models::message::MessageRole;
@@ -455,6 +455,10 @@ pub struct SessionState {
     ///
     /// Backend-internal — not serialized, not carried on `to_snapshot()`.
     pub agent_chosen_config_values: BTreeMap<String, String>,
+    /// Cowork fork: the model switch still under way (`Pending` / `AfterTurn`),
+    /// from `AcpEvent::ModelSwitch`. Carried on `to_snapshot()` so a client
+    /// that attaches meanwhile shows it too.
+    pub model_switch: Option<ModelSwitchInfo>,
     /// Config-option ids this launch pinned through the environment, which the
     /// agent will therefore refuse to change for as long as the process lives.
     ///
@@ -938,6 +942,7 @@ impl SessionState {
             pi_startup_banner: None,
             asserted_config_values: BTreeMap::new(),
             agent_chosen_config_values: BTreeMap::new(),
+            model_switch: None,
             env_pinned_config_option_ids: Vec::new(),
             trae_pat_sign_in: false,
             pi_enabled_model_patterns: None,
@@ -1284,6 +1289,16 @@ impl SessionState {
             }
             AcpEvent::SessionConfigOptions { config_options } => {
                 self.config_options = Some(config_options.clone());
+            }
+            AcpEvent::ModelSwitch { switch } => {
+                // A settled phase only ends the switch it belongs to: a newer
+                // pick may already be under way.
+                let ends_it = self.model_switch.as_ref().map(|s| &s.id) == Some(&switch.id);
+                if !switch.phase.is_settled() {
+                    self.model_switch = Some(switch.clone());
+                } else if ends_it {
+                    self.model_switch = None;
+                }
             }
             AcpEvent::SessionConfigStale { stale, kind } => {
                 self.config_stale = *stale;
@@ -2681,6 +2696,7 @@ impl SessionState {
             modes: self.modes.clone(),
             current_mode: self.current_mode.clone(),
             config_options: self.config_options.clone(),
+            model_switch: self.model_switch.clone(),
             prompt_capabilities: self.prompt_capabilities.clone(),
             usage: self.usage.clone(),
             prompt_suggestion: self.prompt_suggestion.clone(),
@@ -2829,6 +2845,10 @@ pub struct LiveSessionSnapshot {
     pub modes: Option<SessionModeStateInfo>,
     pub current_mode: Option<String>,
     pub config_options: Option<Vec<SessionConfigOptionInfo>>,
+    /// Cowork fork: see `SessionState.model_switch`. Omitted when none is
+    /// under way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_switch: Option<ModelSwitchInfo>,
     pub prompt_capabilities: Option<PromptCapabilitiesInfo>,
     pub usage: Option<UsageInfo>,
     /// The follow-up prompt the agent last predicted (see

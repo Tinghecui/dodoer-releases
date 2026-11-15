@@ -52,7 +52,9 @@ import {
   type AgentVocabularyTranslator,
 } from "@/lib/agent-label-vocabulary"
 import { buildSessionSettings } from "@/lib/session-settings"
+import { ModelSwitchContext } from "@/lib/cowork/model-switch"
 import type {
+  ModelSwitchInfo,
   SessionConfigOptionInfo,
   SessionConfigSelectOptionInfo,
   SessionModeInfo,
@@ -135,26 +137,30 @@ function renderPicker({
   modes = [],
   currentModeId = null,
   loadingLabel = null,
+  modelSwitch = null,
 }: {
   configOptions?: SessionConfigOptionInfo[]
   modes?: SessionModeInfo[]
   currentModeId?: string | null
   loadingLabel?: string | null
+  modelSwitch?: ModelSwitchInfo | null
 } = {}) {
   const onChange = vi.fn()
   const tree = (options: SessionConfigOptionInfo[]) => (
     <NextIntlClientProvider locale="en" messages={enMessages}>
-      <SessionSettingsPicker
-        agentType="claude_code"
-        settings={buildSessionSettings({
-          configOptions: options,
-          modes,
-          currentModeId,
-          modeTitle: MSGS.modeLabel,
-        })}
-        loadingLabel={loadingLabel}
-        onChange={onChange}
-      />
+      <ModelSwitchContext.Provider value={modelSwitch}>
+        <SessionSettingsPicker
+          agentType="claude_code"
+          settings={buildSessionSettings({
+            configOptions: options,
+            modes,
+            currentModeId,
+            modeTitle: MSGS.modeLabel,
+          })}
+          loadingLabel={loadingLabel}
+          onChange={onChange}
+        />
+      </ModelSwitchContext.Provider>
     </NextIntlClientProvider>
   )
   const view = render(tree(configOptions))
@@ -236,6 +242,46 @@ describe("SessionSettingsPicker — the chip", () => {
     expect(tooltip).not.toHaveTextContent("Opus")
     // No native title alongside it — that would be a second hint.
     expect(trigger()).not.toHaveAttribute("title")
+  })
+})
+
+// Cowork fork: a model switch under way (`model-switch.ts`).
+describe("SessionSettingsPicker — a model switch", () => {
+  const SWITCH: ModelSwitchInfo = {
+    id: "s1",
+    config_id: "model",
+    phase: "pending",
+    from_value: "opus",
+    from_name: "Opus 5.5",
+    to_value: "sonnet",
+    to_name: "Sonnet 5.5",
+    at: "2026-11-15T06:30:00Z",
+  }
+
+  it("reads as switching, with a spinner, while the agent is asked", () => {
+    renderPicker({ modelSwitch: SWITCH })
+    expect(summary()).toBe("Switching to Sonnet 5.5…/High")
+    expect(
+      trigger().querySelector('[data-slot="model-switch-spinner"]')
+    ).not.toBeNull()
+  })
+
+  it("names both models while the switch waits for the reply to end", async () => {
+    const user = userEvent.setup()
+    renderPicker({ modelSwitch: { ...SWITCH, phase: "after_turn" } })
+    expect(summary()).toBe("This reply Opus 5.5 · next Sonnet 5.5/High")
+    expect(
+      trigger().querySelector('[data-slot="model-switch-spinner"]')
+    ).toBeNull()
+    await user.hover(trigger())
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "This reply keeps using Opus 5.5; Sonnet 5.5 takes over from your next message."
+    )
+  })
+
+  it("shows the agent's own model again once the switch has settled", () => {
+    renderPicker({ modelSwitch: { ...SWITCH, phase: "failed" } })
+    expect(summary()).toBe("Opus 5.5/High")
   })
 })
 

@@ -71,6 +71,8 @@ import {
   type SettledNoticeCandidate,
 } from "@/lib/delegation-settled"
 import { DelegationSettledNotice } from "./delegation-settled-notice"
+import { ModelSwitchLines } from "./model-switch-lines"
+import { placeModelSwitches, useModelSwitches } from "@/lib/cowork/model-switch"
 import {
   collectDelegationStatusTasks,
   createDelegationStatusIndexer,
@@ -105,6 +107,7 @@ import type {
   BackgroundOutstandingTask,
   ConnectionStatus,
   MessageTurn,
+  ModelSwitchInfo,
   PlanEntryInfo,
 } from "@/lib/types"
 import {
@@ -345,6 +348,15 @@ export type ThreadRenderItem =
       key: string
       kind: "delegation-settled"
       candidates: readonly SettledNoticeCandidate[]
+    }
+  | {
+      // Cowork fork: the model switches made after the last message, under
+      // everything (`model-switch.ts`). Appended for the virtualizer only, like
+      // the notice above; a switch made before a message draws above that
+      // message instead, so no row index moves.
+      key: string
+      kind: "model-switch"
+      switches: readonly ModelSwitchInfo[]
     }
 
 /**
@@ -1854,6 +1866,22 @@ export function MessageListView({
   ])
   const { threadItems, nonStreamingAdapted, lastAssistantRunning } = threadState
 
+  // Cowork fork: the conversation's model switches, each above the first
+  // message sent after it, or under everything (`model-switch.ts`). Keyed by
+  // the DB row, which a draft does not have yet.
+  const modelSwitches = useModelSwitches(
+    session?.dbConversationId ?? (conversationId > 0 ? conversationId : null)
+  )
+  const modelSwitchPlacement = useMemo(() => {
+    const userTurns: { id: string; timestamp: string }[] = []
+    for (const item of threadItems) {
+      if (item.kind !== "turn" || item.group.role !== "user") continue
+      const timestamp = item.sourceTurns[0]?.timestamp ?? ""
+      userTurns.push({ id: item.group.id, timestamp })
+    }
+    return placeModelSwitches(modelSwitches, userTurns, hasOlderTurns)
+  }, [modelSwitches, threadItems, hasOlderTurns])
+
   // See `ReplyFoldState`. Derived during render rather than in an effect so a
   // send and the fold it causes land in the same commit — an effect would paint
   // one frame of the previous reply still expanded under the new message.
@@ -1901,8 +1929,15 @@ export function MessageListView({
             item.group.role === "user" && userTurnHeader
               ? userTurnHeader(item.group)
               : null
+          const switchesAbove =
+            item.group.role === "user"
+              ? modelSwitchPlacement.before.get(item.group.id)
+              : undefined
           return (
             <div style={pt > 0 ? { paddingTop: pt } : undefined}>
+              {switchesAbove ? (
+                <ModelSwitchLines switches={switchesAbove} />
+              ) : null}
               {phaseLabel ? (
                 <div className="flex items-center gap-2 px-1 pb-3 pt-1">
                   <span aria-hidden="true" className="h-px flex-1 bg-border" />
@@ -1952,11 +1987,14 @@ export function MessageListView({
         case "delegation-settled":
           // Nothing at all while none of its tasks has ended: no padding here.
           return <DelegationSettledNotice candidates={item.candidates} />
+        case "model-switch":
+          return <ModelSwitchLines switches={item.switches} />
         default:
           return null
       }
     },
     [
+      modelSwitchPlacement,
       userTurnHeader,
       fold.armed,
       fold.roundOpen,
@@ -2033,10 +2071,20 @@ export function MessageListView({
   // What the virtualizer draws: the thread, and under a reply that has ended,
   // the "sub-task finished after this reply" notice (cowork-codeg#173).
   const replyEnded = !lastAssistantRunning && connStatus !== "prompting"
-  const renderedThreadItems = useMemo(
-    () => withDelegationSettledNotice(threadItems, replyEnded),
-    [threadItems, replyEnded]
-  )
+  const renderedThreadItems = useMemo((): ThreadRenderItem[] => {
+    const items = withDelegationSettledNotice(threadItems, replyEnded)
+    const tail = modelSwitchPlacement.tail
+    if (tail.length === 0) return items
+    const last = tail[tail.length - 1]
+    return [
+      ...items,
+      {
+        key: `model-switch-${last.id}`,
+        kind: "model-switch" as const,
+        switches: tail,
+      },
+    ]
+  }, [threadItems, replyEnded, modelSwitchPlacement])
 
   // --- Message navigator ------------------------------------------------------
   // Lifted scroll handle so the navigator — in the Session Details side panel,

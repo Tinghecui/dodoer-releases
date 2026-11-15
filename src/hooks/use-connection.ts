@@ -16,6 +16,7 @@ import type {
   AvailableCommandInfo,
   ConfigStaleKind,
   ConnectionStatus,
+  ModelSwitchInfo,
   PendingPlanApprovalState,
   PendingQuestionState,
   PromptCapabilitiesInfo,
@@ -89,6 +90,9 @@ export interface UseConnectionReturn {
   /** Claude Code's Remote Control while it is on, or `null`. See
    *  `ConnectionState.remoteControl`. */
   remoteControl: RemoteControlInfo | null
+  /** Cowork fork: the model switch under way, or `null`. See
+   *  `ConnectionState.modelSwitch`. */
+  modelSwitch: ModelSwitchInfo | null
   pendingPermission: PendingPermission | null
   pendingUserMessage: PendingUserMessage | null
   /** Feedback-note ids this turn's live message adopted as mid-turn user turns
@@ -305,6 +309,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
   const availableCommands = connection?.availableCommands ?? null
   const promptSuggestion = connection?.promptSuggestion ?? null
   const remoteControl = connection?.remoteControl ?? null
+  const modelSwitch = connection?.modelSwitch ?? null
   const pendingPermission = connection?.pendingPermission ?? null
   const pendingUserMessage = connection?.pendingUserMessage ?? null
   const steeredMessageIds =
@@ -420,6 +425,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       availableCommands,
       promptSuggestion,
       remoteControl,
+      modelSwitch,
       pendingPermission,
       pendingUserMessage,
       steeredMessageIds,
@@ -468,6 +474,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       availableCommands,
       promptSuggestion,
       remoteControl,
+      modelSwitch,
       pendingPermission,
       pendingUserMessage,
       steeredMessageIds,

@@ -28,6 +28,10 @@ import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { parsePermissionToolCall } from "@/lib/permission-request"
 import { subscribe } from "@/lib/platform"
 import { resetCoworkInfoForTests } from "@/lib/cowork/info"
+import {
+  getModelSwitches,
+  resetModelSwitchesForTest,
+} from "@/lib/cowork/model-switch"
 import { saveConfigPreference } from "@/lib/selector-prefs-storage"
 import { inferLiveToolName } from "@/lib/tool-call-normalization"
 import type { AttachHandlers } from "@/lib/transport/types"
@@ -41,6 +45,7 @@ import type {
   EventEnvelope,
   FolderDetail,
   LiveSessionSnapshot,
+  ModelSwitchInfo,
   SessionConfigOptionInfo,
   ToolApprovalInfo,
   UserMessageBlock,
@@ -214,6 +219,7 @@ const TAB = "conv-1-claude_code-42"
 beforeEach(() => {
   h.attach.mockClear()
   h.store = null
+  resetModelSwitchesForTest()
   h.eventStreamValue = h.stream
   h.buildDelegationSeedEnvelopes.mockClear()
   h.acpGetAgentStatus.mockReset()
@@ -4908,7 +4914,7 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
     )
   })
 
-  it("reverts the optimistic pick, toasts the localized verdict, and keeps the attempted preference", async () => {
+  it("keeps the model the agent reports, toasts the localized verdict, and keeps the attempted preference", async () => {
     const handlers = await connectGrokOwner()
 
     // Composer selector arrives with grok-4.5 active.
@@ -4922,15 +4928,17 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
       h.store!.getConnection(TAB)!.configOptions?.[0]?.kind.current_value
     ).toBe("grok-4.5")
 
-    // User optimistically switches to the cross-agent-type Composer model.
+    // User switches to the cross-agent-type Composer model.
     vi.mocked(saveConfigPreference).mockClear()
     await act(async () => {
       await h.actions!.setConfigOption(TAB, "model", "grok-composer-2.5-fast")
     })
-    // Optimistic: the selector shows the pick and the preference is persisted.
+    // Cowork fork: no optimism for the model — the selector keeps what the
+    // agent reports until it reports the pick (the switch shows itself as a
+    // `model_switch` meanwhile). The preference is still persisted.
     expect(
       h.store!.getConnection(TAB)!.configOptions?.[0]?.kind.current_value
-    ).toBe("grok-composer-2.5-fast")
+    ).toBe("grok-4.5")
     expect(saveConfigPreference).toHaveBeenCalledTimes(1)
     expect(saveConfigPreference).toHaveBeenCalledWith(
       "grok",
@@ -5028,18 +5036,26 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
     // The backend owns the request↔answer correlation (`ConfigOptionRejected`):
     // `acpSetConfigOption` resolves once the command is merely QUEUED, and the
     // resulting option list is broadcast as an ordinary update — so this side
-    // must never try to infer a verdict from an option snapshot.
+    // must never try to infer a verdict from an option snapshot. (An effort
+    // pick: a rejected MODEL is the model switch's own failure, below.)
+    const effortOptions = (current: string) =>
+      grokModelOptions(current).map((o) => ({
+        ...o,
+        id: "effort",
+        name: "Effort",
+        category: "thought_level",
+      }))
     const handlers = await connectGrokOwner()
     emitAcpEvent(handlers, {
       seq: 1,
       connection_id: "spawned-conn",
       type: "session_config_options",
-      config_options: grokModelOptions("grok-4.5"),
+      config_options: effortOptions("grok-4.5"),
     })
 
     h.toastWarning.mockClear()
     await act(async () => {
-      await h.actions!.setConfigOption(TAB, "model", "grok-composer-2.5-fast")
+      await h.actions!.setConfigOption(TAB, "effort", "grok-composer-2.5-fast")
     })
     // The pick alone reports nothing — the agent may still honour it.
     expect(h.toastWarning).not.toHaveBeenCalled()
@@ -5048,8 +5064,8 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
       seq: 2,
       connection_id: "spawned-conn",
       type: "config_option_rejected",
-      config_id: "model",
-      option_name: "Model",
+      config_id: "effort",
+      option_name: "Effort",
       requested: "Composer 2.5",
       actual: "Grok 4.5",
       requested_value: "composer-2.5",
@@ -5059,20 +5075,103 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
       seq: 3,
       connection_id: "spawned-conn",
       type: "session_config_options",
-      config_options: grokModelOptions("grok-4.5"),
+      config_options: effortOptions("grok-4.5"),
     })
 
     expect(h.toastWarning).toHaveBeenCalledTimes(1)
     // The useTranslations mock echoes the key, so the message itself is the key.
     expect(h.toastWarning).toHaveBeenCalledWith("configOptionAdjusted", {
-      id: "acp-config-adjusted:spawned-conn:model",
+      id: "acp-config-adjusted:spawned-conn:effort",
     })
     expect(h.recordAlert).toHaveBeenCalledWith(
       expect.objectContaining({
-        key: "acp-config-adjusted:spawned-conn:model",
+        key: "acp-config-adjusted:spawned-conn:effort",
         level: "warning",
       })
     )
+  })
+
+  // Cowork fork: a model switch reports itself (`model-switch.ts`).
+  describe("a model switch", () => {
+    const SWITCH: ModelSwitchInfo = {
+      id: "s1",
+      config_id: "model",
+      phase: "pending",
+      from_value: "grok-4.5",
+      from_name: "Grok 4.5",
+      to_value: "grok-composer-2.5-fast",
+      to_name: "Composer 2.5",
+      at: "2026-11-15T06:30:00Z",
+      conversation_id: 7,
+    }
+
+    it("is under way from its first phase until the one settling it", async () => {
+      const handlers = await connectGrokOwner()
+      emitAcpEvent(handlers, {
+        seq: 1,
+        connection_id: "spawned-conn",
+        type: "model_switch",
+        switch: SWITCH,
+      })
+      expect(h.store!.getConnection(TAB)!.modelSwitch).toEqual(SWITCH)
+      // Another switch settling leaves this one standing.
+      emitAcpEvent(handlers, {
+        seq: 2,
+        connection_id: "spawned-conn",
+        type: "model_switch",
+        switch: { ...SWITCH, id: "s0", phase: "cancelled" },
+      })
+      expect(h.store!.getConnection(TAB)!.modelSwitch?.id).toBe("s1")
+      emitAcpEvent(handlers, {
+        seq: 3,
+        connection_id: "spawned-conn",
+        type: "model_switch",
+        switch: { ...SWITCH, phase: "applied" },
+      })
+      expect(h.store!.getConnection(TAB)!.modelSwitch).toBeNull()
+      expect(getModelSwitches(7).map((s) => s.phase)).toEqual(["applied"])
+      expect(h.toastError).not.toHaveBeenCalled()
+    })
+
+    it("toasts a failure once, with the model still in use, and no adjusted-pick notice", async () => {
+      const handlers = await connectGrokOwner()
+      emitAcpEvent(handlers, {
+        seq: 1,
+        connection_id: "spawned-conn",
+        type: "session_config_options",
+        config_options: grokModelOptions("grok-4.5"),
+      })
+      h.toastWarning.mockClear()
+      h.toastError.mockClear()
+      emitAcpEvent(handlers, {
+        seq: 2,
+        connection_id: "spawned-conn",
+        type: "config_option_rejected",
+        config_id: "model",
+        option_name: "Model",
+        requested: "Composer 2.5",
+        actual: "Grok 4.5",
+      })
+      emitAcpEvent(handlers, {
+        seq: 3,
+        connection_id: "spawned-conn",
+        type: "model_switch",
+        switch: {
+          ...SWITCH,
+          id: "s2",
+          phase: "failed",
+          failure: "not_adopted",
+          detail: "Grok 4.5",
+        },
+      })
+      expect(h.toastWarning).not.toHaveBeenCalled()
+      expect(h.toastError).toHaveBeenCalledTimes(1)
+      expect(h.toastError).toHaveBeenCalledWith(
+        "Couldn't switch to Composer 2.5: the agent didn't take it. Still using Grok 4.5",
+        expect.objectContaining({ id: "acp-model-switch:spawned-conn" })
+      )
+      expect(getModelSwitches(7).some((s) => s.id === "s2")).toBe(true)
+    })
   })
 
   it("raises a notice as a notification kept in the alert list, and stores nothing", async () => {

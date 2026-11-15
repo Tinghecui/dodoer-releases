@@ -52,6 +52,7 @@ use crate::acp::file_system_runtime::{
     FileSystemRuntime, FileSystemRuntimeError, FsAccessPolicy, FS_POLICY_ENV,
 };
 use crate::acp::host_tools_policy::{HostToolsPolicy, HOST_TOOLS_ENV};
+use crate::acp::model_switch::{self, HeldModelSwitch};
 use crate::acp::registry::{self, AgentDistribution};
 use crate::acp::session_state::SessionState;
 use crate::acp::stderr_tail::{summarize_parser_error, StderrTail, TailScope};
@@ -4677,7 +4678,7 @@ const GROK_INCOMPATIBLE_AGENT_ERROR_CODE: &str = "grok_model_switch_incompatible
 /// doesn't know the code, and it is what the chat channels forward.
 const SESSION_LOAD_FALLBACK_ERROR_CODE: &str = "session_load_fallback";
 const SET_MODE_FAILED_ERROR_CODE: &str = "set_mode_failed";
-const SET_CONFIG_OPTION_FAILED_ERROR_CODE: &str = "set_config_option_failed";
+pub(crate) const SET_CONFIG_OPTION_FAILED_ERROR_CODE: &str = "set_config_option_failed";
 const GOAL_CONTROL_FAILED_ERROR_CODE: &str = "goal_control_failed";
 const IMAGE_DROPPED_ERROR_CODE: &str = "image_dropped";
 /// Accompanies a grok FAILED compaction card (see `compaction_failure_error`).
@@ -5821,7 +5822,7 @@ async fn rebuild_kiro_reasoning_selectors(
 /// takes it. The ONE dispatcher both the in-turn and the idle loop call —
 /// they used to carry a copy each, and an agent routed in one and not the
 /// other silently ignored every pick made between turns.
-async fn set_config_option_for_agent(
+pub(crate) async fn set_config_option_for_agent(
     agent_type: AgentType,
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
@@ -14882,6 +14883,9 @@ async fn run_conversation_loop(
     // drained immediately after the select, still inside the idle loop (the
     // OUTER loop only advances on a command, which may never come).
     let mut config_drift_to_reassert: Vec<(String, String)> = Vec::new();
+    // Cowork fork: model picks made during a reply, sent once it has ended
+    // (see `model_switch::hold`).
+    let mut held_model_switches: Vec<HeldModelSwitch> = Vec::new();
     // For the `TurnComplete` of a turn Grok starts on its own, which the idle
     // loop ends while `read_update` holds `session`. A fork restarts this loop
     // with the new session, so it cannot go stale in here.
@@ -14901,6 +14905,13 @@ async fn run_conversation_loop(
     let mut codebuddy_cancel: Option<CodeBuddyCancel> = None;
     let mut held_prompt: Option<HeldPrompt> = None;
     loop {
+        // Cowork fork: a reply has just ended (or none ran); before anything
+        // else, the model switches picked during it.
+        if !held_model_switches.is_empty() {
+            let held = std::mem::take(&mut held_model_switches);
+            let (cx, sid) = (session.connection(), session.session_id().clone());
+            model_switch::apply_held(agent_type, &cx, &sid, state, emitter, held).await;
+        }
         // Wait for either a user command or a session update (e.g. available_commands_update)
         let cmd = loop {
             tokio::select! {
@@ -15844,36 +15855,45 @@ async fn run_conversation_loop(
                                     value_id,
                                     reply,
                                 }) => {
-                                    let set_result = set_config_option_for_agent(
-                                        agent_type, &cx, &sid, state, emitter, config_id,
-                                        value_id,
-                                    )
-                                    .await;
-                                    let outcome = match set_result {
-                                        Ok(outcome) => Ok(outcome),
-                                        Err(e) => {
-                                            emit_with_state(
-                                                state,
-                                                emitter,
-                                                AcpEvent::Error {
-                                                    message: format!(
-                                                        "Failed to set config option: {e}"
-                                                    ),
-                                                    agent_type: agent_type.to_string(),
-                                                    code: Some(
-                                                        SET_CONFIG_OPTION_FAILED_ERROR_CODE
-                                                            .to_string(),
-                                                    ),
-                                                    details: None,
-                                                    // Recoverable: just a failed config-option toggle.
-                                                    terminal: false,
-                                                },
-                                            )
+                                    // Cowork fork: this reply finishes on the
+                                    // model it started with; a model picked now
+                                    // is sent once it has ended.
+                                    if model_switch::is_model_option(state, &config_id).await {
+                                        let held = &mut held_model_switches;
+                                        model_switch::hold(state, emitter, held, config_id, value_id, reply)
                                             .await;
-                                            Err(e.to_string())
-                                        }
-                                    };
-                                    send_setter_reply(reply, outcome);
+                                    } else {
+                                        let set_result = set_config_option_for_agent(
+                                            agent_type, &cx, &sid, state, emitter, config_id,
+                                            value_id,
+                                        )
+                                        .await;
+                                        let outcome = match set_result {
+                                            Ok(outcome) => Ok(outcome),
+                                            Err(e) => {
+                                                emit_with_state(
+                                                    state,
+                                                    emitter,
+                                                    AcpEvent::Error {
+                                                        message: format!(
+                                                            "Failed to set config option: {e}"
+                                                        ),
+                                                        agent_type: agent_type.to_string(),
+                                                        code: Some(
+                                                            SET_CONFIG_OPTION_FAILED_ERROR_CODE
+                                                                .to_string(),
+                                                        ),
+                                                        details: None,
+                                                        // Recoverable: just a failed config-option toggle.
+                                                        terminal: false,
+                                                    },
+                                                )
+                                                .await;
+                                                Err(e.to_string())
+                                            }
+                                        };
+                                        send_setter_reply(reply, outcome);
+                                    }
                                 }
                                 Some(ConnectionCommand::GoalControl { action, reply }) => {
                                     let method = state.read().await.goal_control_method.clone();
@@ -16223,30 +16243,13 @@ async fn run_conversation_loop(
             }) => {
                 let cx = session.connection();
                 let sid = session.session_id().clone();
-                let set_result = set_config_option_for_agent(
+                // Cowork fork: a model switch is reported as it goes, its
+                // failure included; any other failure as before (see
+                // `model_switch::set_config_option`).
+                let outcome = model_switch::set_config_option(
                     agent_type, &cx, &sid, state, emitter, config_id, value_id,
                 )
                 .await;
-                let outcome = match set_result {
-                    Ok(outcome) => Ok(outcome),
-                    Err(e) => {
-                        emit_with_state(
-                            state,
-                            emitter,
-                            AcpEvent::Error {
-                                message: format!("Failed to set config option: {e}"),
-                                agent_type: agent_type.to_string(),
-                                code: Some(SET_CONFIG_OPTION_FAILED_ERROR_CODE.to_string()),
-                                details: None,
-                                // Recoverable: idle SetConfigOption failure leaves
-                                // the connection alive.
-                                terminal: false,
-                            },
-                        )
-                        .await;
-                        Err(e.to_string())
-                    }
-                };
                 send_setter_reply(reply, outcome);
             }
             Some(ConnectionCommand::GoalControl { action, reply }) => {

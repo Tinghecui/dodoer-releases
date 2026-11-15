@@ -89,6 +89,7 @@ import type {
   SessionUsageUpdateInfo,
   PromptCapabilitiesInfo,
   PromptInputBlock,
+  ModelSwitchInfo,
   RemoteControlInfo,
   ToolApprovalInfo,
   ToolCallImageWire,
@@ -172,6 +173,11 @@ import { rememberAdvertisedCommands } from "@/lib/advertised-commands-store"
 import { rememberModelLabels } from "@/lib/model-label-store"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useCoworkText } from "@/lib/cowork/i18n"
+import {
+  appendModelSwitch,
+  isTimelineSwitch,
+  modelSwitchSentence,
+} from "@/lib/cowork/model-switch"
 import { openAgentSignIn, signInViaPortal } from "@/lib/cowork/sign-in"
 
 /**
@@ -369,6 +375,14 @@ export interface ConnectionState {
    * alone. The backend keeps the same value for the snapshot.
    */
   remoteControl: RemoteControlInfo | null
+  /**
+   * Cowork fork: the model switch under way — being sent (`pending`) or
+   * waiting for the running reply to end (`after_turn`) — which the composer's
+   * picker shows instead of the model (see `model-switch.ts`). Set by a
+   * `model_switch` event, cleared by the one settling it, and carried on the
+   * snapshot. Optional: absent reads as none.
+   */
+  modelSwitch?: ModelSwitchInfo | null
   liveMessage: LiveMessage | null
   pendingPermission: PendingPermission | null
   /** In-flight user prompt for the current turn — set from a `user_message`
@@ -909,6 +923,11 @@ type Action =
       type: "REMOTE_CONTROL"
       contextKey: string
       remoteControl: RemoteControlInfo | null
+    }
+  | {
+      type: "MODEL_SWITCH"
+      contextKey: string
+      switch: ModelSwitchInfo
     }
   | {
       type: "EVENT_APPLIED"
@@ -2259,6 +2278,7 @@ function connectionsReducer(
         // it cannot bring back a prediction a later prompt already spent.
         promptSuggestion: action.patch.promptSuggestion,
         remoteControl: action.patch.remoteControl,
+        modelSwitch: action.patch.modelSwitch ?? null,
         liveMessage: hydratedLiveMessage,
         // A snapshot with a turn in flight carries a prompt newer than any the
         // user stopped, which ends that turn's window as the status event of
@@ -2358,6 +2378,8 @@ function connectionsReducer(
         // Remote Control ran in the agent CLI, which is gone.
         updated.remoteControl = null
       }
+      // A switch still under way went with the connection.
+      if (action.status === "disconnected") updated.modelSwitch = null
       if (action.status === "prompting") {
         updated.hasPrompted = true
         updated.liveMessage = {
@@ -2974,6 +2996,8 @@ function connectionsReducer(
         // And Remote Control: codeg closes the session a fork leaves, and its
         // CLI with it.
         remoteControl: forked ? null : conn.remoteControl,
+        // And a model switch waiting for a reply of the session left behind.
+        modelSwitch: forked ? null : conn.modelSwitch,
       })
       return next
     }
@@ -3093,6 +3117,25 @@ function connectionsReducer(
           current_mode_id: action.modeId,
         },
       })
+      return next
+    }
+
+    case "MODEL_SWITCH": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      const s = action.switch
+      const settled =
+        s.phase === "applied" || s.phase === "failed" || s.phase === "cancelled"
+      // Like the backend: a settled phase only ends the switch it belongs to,
+      // a newer pick may already be under way.
+      const modelSwitch = !settled
+        ? s
+        : conn.modelSwitch?.id === s.id
+          ? null
+          : (conn.modelSwitch ?? null)
+      if (modelSwitch === (conn.modelSwitch ?? null)) return state
+      const next = new Map(state)
+      next.set(action.contextKey, { ...conn, modelSwitch })
       return next
     }
 
@@ -5856,12 +5899,46 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           }
           break
         }
+        case "model_switch": {
+          flushStreamingQueue(contextKey)
+          dispatch({ type: "MODEL_SWITCH", contextKey, switch: e.switch })
+          if (!isTimelineSwitch(e.switch)) break
+          // The conversation's timeline line. A connection not bound to its
+          // conversation yet (a resumed session before its first prompt)
+          // finds it by session id; a new draft with no row has no timeline.
+          const switchConn = storeRef.current.connections.get(contextKey)
+          const runtimeId = switchConn?.sessionId
+            ? getConversationIdByExternalIdFromStore(switchConn.sessionId)
+            : null
+          const conversationId =
+            e.switch.conversation_id ??
+            (runtimeId != null && runtimeId > 0 ? runtimeId : null)
+          if (conversationId != null) {
+            appendModelSwitch(conversationId, e.switch)
+          }
+          // A refusal already came as the connection's own error.
+          const failed =
+            e.switch.phase === "failed" && e.switch.failure !== "refused"
+          if (failed && !quiet) {
+            notify({
+              level: "error",
+              key: `acp-model-switch:${switchConn?.connectionId ?? contextKey}`,
+              title: modelSwitchSentence(coworkT, e.switch),
+            })
+          }
+          break
+        }
         case "config_option_rejected": {
           // Arrives immediately before the `session_config_options` carrying the
           // value the agent actually adopted, so the notice and the selector
           // settle together.
-          if (!quiet) {
-            const rejectedConn = storeRef.current.connections.get(contextKey)
+          const rejectedConn = storeRef.current.connections.get(contextKey)
+          // Cowork fork: a model the agent did not take is reported by the
+          // switch's own failure (`model_switch`), with what is still in use.
+          const rejectedModel = rejectedConn?.configOptions?.some(
+            (o) => o.id === e.config_id && o.category === "model"
+          )
+          if (!quiet && !rejectedModel) {
             reportConfigOptionVerdict(
               rejectedConn?.connectionId ?? contextKey,
               rejectedConn?.agentType,
@@ -6493,6 +6570,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       }
     },
     [
+      coworkT,
       dispatch,
       enqueueStreamingAction,
       flushPendingToolCallUpdates,
@@ -8366,12 +8444,19 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     async (contextKey: string, configId: string, valueId: string) => {
       const conn = storeRef.current.connections.get(contextKey)
       if (!conn) return
-      dispatch({
-        type: "CONFIG_OPTION_CHANGED",
-        contextKey,
-        configId,
-        valueId,
-      })
+      // Cowork fork: the model is not shown as picked before the agent has
+      // it — the switch reports itself (`model_switch`) until it settles.
+      const isModel = conn.configOptions?.some(
+        (o) => o.id === configId && o.category === "model"
+      )
+      if (!isModel) {
+        dispatch({
+          type: "CONFIG_OPTION_CHANGED",
+          contextKey,
+          configId,
+          valueId,
+        })
+      }
       // Persist user selection to localStorage so the next `acp_connect`
       // can ship it back to the backend as a preferred config value.
       saveConfigPreference(conn.agentType, configId, valueId)

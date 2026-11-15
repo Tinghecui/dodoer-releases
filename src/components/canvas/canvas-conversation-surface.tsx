@@ -30,6 +30,7 @@ import {
 import { toErrorMessage } from "@/lib/app-error"
 import { notify } from "@/lib/notify"
 import { getAgentLabel } from "@/lib/custom-agents"
+import { ModelSwitchContext } from "@/lib/cowork/model-switch"
 import {
   extractUserImagesFromDraft,
   getPromptDraftDisplayText,
@@ -850,7 +851,10 @@ export function CanvasConversationSurface({
 
   const isDraft = dbConversationId == null
 
-  return (
+  // Cowork fork: as in the tab view, the picker shows a model switch under
+  // way (`model-switch.ts`).
+  const modelSwitch = connIsForOtherAgent ? null : conn.modelSwitch
+  const surface = (
     <div className={cn("flex h-full min-h-0 w-full flex-col", className)}>
       {/* `nowheel` keeps the transcript's own scroll from being eaten by the
           canvas zoom. Dragging is already confined to the card's title bar by
@@ -939,5 +943,10 @@ export function CanvasConversationSurface({
         </ConversationShell>
       </div>
     </div>
+  )
+  return (
+    <ModelSwitchContext.Provider value={modelSwitch}>
+      {surface}
+    </ModelSwitchContext.Provider>
   )
 }

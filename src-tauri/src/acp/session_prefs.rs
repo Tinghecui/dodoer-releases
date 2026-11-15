@@ -16,7 +16,8 @@
 //!   with what the client sent filling the ids the server has no default for.
 //!
 //! Both live in `app_metadata` (key → JSON): no migration, and nothing added to
-//! the upstream `conversation` table to conflict with.
+//! the upstream `conversation` table to conflict with. So do the model switches
+//! a conversation's timeline shows ([`record_model_switch`]).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -30,7 +31,9 @@ use crate::acp::connection::SetterOutcome;
 use crate::acp::error::AcpError;
 use crate::acp::manager::ConnectionManager;
 use crate::acp::session_state::SessionState;
-use crate::acp::types::{SessionConfigKindInfo, SessionConfigOptionInfo};
+use crate::acp::types::{
+    ModelSwitchInfo, ModelSwitchPhase, SessionConfigKindInfo, SessionConfigOptionInfo,
+};
 use crate::db::entities::conversation;
 use crate::db::error::DbError;
 use crate::db::service::app_metadata_service;
@@ -54,6 +57,10 @@ impl SessionPrefs {
 
 const CONVERSATION_KEY_PREFIX: &str = "cowork.session_prefs.conversation.";
 const DEFAULT_KEY_PREFIX: &str = "cowork.session_prefs.default.";
+const SWITCHES_KEY_PREFIX: &str = "cowork.model_switches.conversation.";
+
+/// How many settled model switches a conversation keeps for its timeline.
+const SWITCHES_KEPT: usize = 100;
 
 /// How long a user's pick waits for the agent's answer. Past it the request is
 /// left to finish on its own; only a confirmed answer makes it the default.
@@ -61,6 +68,10 @@ const SETTER_WAIT: Duration = Duration::from_secs(15);
 
 fn conversation_key(conversation_id: i32) -> String {
     format!("{CONVERSATION_KEY_PREFIX}{conversation_id}")
+}
+
+fn switches_key(conversation_id: i32) -> String {
+    format!("{SWITCHES_KEY_PREFIX}{conversation_id}")
 }
 
 fn default_key(agent_type: AgentType) -> String {
@@ -195,39 +206,99 @@ fn reported_prefs(
 
 /// Record what `state`'s agent reports right now as its conversation's own
 /// values. Runs on every selector report and when a connection is bound to its
-/// conversation. A connection not bound yet — a resumed session before its
-/// first prompt — finds its conversation through the session id; a session no
-/// conversation owns yet (a new one before its first prompt) records nothing,
-/// and the bind at that first prompt does.
+/// conversation.
 pub async fn record_current(
     db: &DatabaseConnection,
     state: &Arc<RwLock<SessionState>>,
 ) -> Result<(), DbError> {
-    let (conversation_id, external_id, agent_type, prefs) = {
+    let prefs = {
         let s = state.read().await;
-        (
-            s.conversation_id,
-            s.external_id.clone(),
-            s.agent_type,
-            reported_prefs(s.current_mode.as_deref(), s.config_options.as_deref()),
-        )
+        reported_prefs(s.current_mode.as_deref(), s.config_options.as_deref())
     };
     if prefs.is_empty() {
         return Ok(());
     }
-    let conversation_id = match (conversation_id, external_id) {
-        (Some(cid), _) => cid,
-        (None, Some(sid)) => match conversation_for_session(db, agent_type, &sid).await? {
-            Some(cid) => cid,
-            None => return Ok(()),
-        },
-        (None, None) => return Ok(()),
+    let Some(conversation_id) = conversation_of(db, state).await? else {
+        return Ok(());
     };
     let key = conversation_key(conversation_id);
     if load(db, &key).await?.as_ref() == Some(&prefs) {
         return Ok(());
     }
     store(db, &key, &prefs).await
+}
+
+/// The conversation `state`'s connection belongs to. A connection not bound
+/// yet — a resumed session before its first prompt — finds it through the
+/// session id; a session no conversation owns yet (a new one before its first
+/// prompt) has none, and the bind at that first prompt records it.
+async fn conversation_of(
+    db: &DatabaseConnection,
+    state: &Arc<RwLock<SessionState>>,
+) -> Result<Option<i32>, DbError> {
+    let (conversation_id, external_id, agent_type) = {
+        let s = state.read().await;
+        (s.conversation_id, s.external_id.clone(), s.agent_type)
+    };
+    match (conversation_id, external_id) {
+        (Some(cid), _) => Ok(Some(cid)),
+        (None, Some(sid)) => conversation_for_session(db, agent_type, &sid).await,
+        (None, None) => Ok(None),
+    }
+}
+
+/// Keep a settled model switch for its conversation's timeline, and make an
+/// applied one the default for new conversations of the agent type — also
+/// when it waited for a reply to end, past the setter's own wait. Each switch
+/// is kept once, however often its event is handled.
+pub async fn record_model_switch(
+    db: &DatabaseConnection,
+    state: &Arc<RwLock<SessionState>>,
+    switch: &ModelSwitchInfo,
+) -> Result<(), DbError> {
+    // A cancelled one was never sent; one under way is not settled yet.
+    let kept = [ModelSwitchPhase::Applied, ModelSwitchPhase::Failed];
+    if !kept.contains(&switch.phase) {
+        return Ok(());
+    }
+    if switch.phase == ModelSwitchPhase::Applied {
+        let agent_type = state.read().await.agent_type;
+        let (id, value) = (switch.config_id.clone(), switch.to_value.clone());
+        remember_default(db, agent_type, |d| {
+            d.config_values.insert(id, value);
+        })
+        .await;
+    }
+    let conversation_id = match switch.conversation_id {
+        Some(cid) => cid,
+        None => match conversation_of(db, state).await? {
+            Some(cid) => cid,
+            None => return Ok(()),
+        },
+    };
+    let mut switches = list_model_switches(db, conversation_id).await?;
+    if switches.iter().any(|s| s.id == switch.id) {
+        return Ok(());
+    }
+    switches.push(switch.clone());
+    let excess = switches.len().saturating_sub(SWITCHES_KEPT);
+    let switches = switches.split_off(excess);
+    let raw = serde_json::to_string(&switches)
+        .map_err(|e| DbError::Migration(format!("model switches: {e}")))?;
+    app_metadata_service::upsert_value(db, &switches_key(conversation_id), &raw).await
+}
+
+/// The settled model switches of a conversation, oldest first. What this build
+/// cannot read counts as none.
+pub async fn list_model_switches(
+    db: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<Vec<ModelSwitchInfo>, DbError> {
+    let key = switches_key(conversation_id);
+    let Some(raw) = app_metadata_service::get_value(db, &key).await? else {
+        return Ok(Vec::new());
+    };
+    Ok(serde_json::from_str(&raw).unwrap_or_default())
 }
 
 /// `acp_set_config_option`: forward the user's pick and, once the agent
@@ -483,5 +554,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(other, None);
+    }
+
+    fn switch(id: &str, phase: ModelSwitchPhase) -> ModelSwitchInfo {
+        ModelSwitchInfo {
+            id: id.to_string(),
+            config_id: "model".to_string(),
+            phase,
+            from_value: "opus".to_string(),
+            from_name: "Opus".to_string(),
+            to_value: "fable".to_string(),
+            to_name: "Fable".to_string(),
+            failure: None,
+            detail: None,
+            after_turn: false,
+            at: chrono::Utc::now(),
+            conversation_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn settled_switches_join_the_timeline_once_and_an_applied_one_is_the_default() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let conn = &db.conn;
+        let cid = conversation_with_session(&db, "sess-c").await;
+        let state = state_reporting(Some(cid), None, Vec::new());
+        let applied = switch("s1", ModelSwitchPhase::Applied);
+        record_model_switch(conn, &state, &applied).await.unwrap();
+        // The same event handled again (a retry) is kept once.
+        record_model_switch(conn, &state, &applied).await.unwrap();
+        for phase in [ModelSwitchPhase::Pending, ModelSwitchPhase::Cancelled] {
+            let unsettled = switch("s2", phase);
+            record_model_switch(conn, &state, &unsettled).await.unwrap();
+        }
+        let failed = switch("s3", ModelSwitchPhase::Failed);
+        record_model_switch(conn, &state, &failed).await.unwrap();
+
+        let kept = list_model_switches(conn, cid).await.unwrap();
+        let ids: Vec<&str> = kept.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["s1", "s3"]);
+        let default = load(conn, &default_key(AgentType::ClaudeCode)).await;
+        assert_eq!(default.unwrap(), Some(prefs(None, &[("model", "fable")])));
+        let none = list_model_switches(conn, cid + 1).await.unwrap();
+        assert!(none.is_empty());
     }
 }

@@ -145,6 +145,7 @@ import { deliverQueuedSteer } from "@/lib/queued-steer"
 import { toErrorMessage } from "@/lib/app-error"
 import { commandErrorReason } from "@/lib/cowork/worktree-start"
 import { useCoworkText } from "@/lib/cowork/i18n"
+import { ModelSwitchContext } from "@/lib/cowork/model-switch"
 import { useCachedCoworkInfo } from "@/lib/cowork/info"
 import { openAgentSignIn, signInViaPortal } from "@/lib/cowork/sign-in"
 import { blockingPrompts } from "@/lib/blocking-prompts"
@@ -2804,7 +2805,10 @@ const ConversationTabView = memo(function ConversationTabView({
     ]
   )
 
-  return (
+  // Cowork fork: the composer's settings picker shows a model switch under
+  // way (`model-switch.ts`).
+  const modelSwitch = connIsForOtherAgent ? null : conn.modelSwitch
+  const shell = (
     <ConversationShell
       resizableWidth
       hasMessages={hasMessages || hasSentMessage}
@@ -3096,6 +3100,11 @@ const ConversationTabView = memo(function ConversationTabView({
         agentType={selectedAgent}
       />
     </ConversationShell>
+  )
+  return (
+    <ModelSwitchContext.Provider value={modelSwitch}>
+      {shell}
+    </ModelSwitchContext.Provider>
   )
 })
 

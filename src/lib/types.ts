@@ -3618,6 +3618,12 @@ export type AcpEvent =
       actual_value?: string
     }
   | {
+      // Cowork fork: where a model switch the user asked for stands (see the
+      // Rust `acp::model_switch`). One per phase.
+      type: "model_switch"
+      switch: ModelSwitchInfo
+    }
+  | {
       type: "selectors_ready"
     }
   | {
@@ -4299,6 +4305,36 @@ export interface AsyncTaskDelta {
   current_agent?: string | null
 }
 
+/** Cowork fork: one model switch (the Rust `ModelSwitchInfo`). */
+export interface ModelSwitchInfo {
+  /** The same across the phases of one switch. */
+  id: string
+  config_id: string
+  phase: ModelSwitchPhase
+  /** The model in effect when it was asked for, and the one asked for. */
+  from_value: string
+  from_name: string
+  to_value: string
+  to_name: string
+  /** `failed` only. `agent_error` and `refused` carry the agent's words in
+   *  `detail` (a refusal was already reported as its own error), `not_adopted`
+   *  the name of the model the agent still reports. */
+  failure?: "no_answer" | "agent_error" | "refused" | "not_adopted"
+  detail?: string
+  /** Whether it waited for a running reply to end first. */
+  after_turn?: boolean
+  /** When this phase was reached (RFC 3339). */
+  at: string
+  conversation_id?: number
+}
+
+export type ModelSwitchPhase =
+  | "pending"
+  | "after_turn"
+  | "applied"
+  | "failed"
+  | "cancelled"
+
 export interface LiveSessionSnapshot {
   connection_id: string
   conversation_id: number | null
@@ -4350,6 +4386,8 @@ export interface LiveSessionSnapshot {
   modes: SessionModeStateInfo | null
   current_mode: string | null
   config_options: SessionConfigOptionInfo[] | null
+  /** Cowork fork: the model switch under way, if any. Absent when none is. */
+  model_switch?: ModelSwitchInfo | null
   prompt_capabilities: PromptCapabilitiesInfo | null
   usage: SessionUsageUpdateInfo | null
   /** The follow-up prompt the agent last predicted (see the

@@ -176,6 +176,7 @@ codeg-mcp 多一个工具组（设置里和浏览器、电脑操作并排），�
 - **借出面板里的「macOS 权限」**（`host_ssh/permissions.rs`，命令 `host_ssh_permissions`、`host_ssh_repair_permission`）：借出时列出屏幕录制、辅助功能两项，「已授权」或「未授权或已失效」（`CGPreflightScreenCaptureAccess`、`AXIsProcessTrusted`，只查不问，分不出没给过和失效了）。没生效的给「修复」：`/usr/bin/tccutil reset <ScreenCapture|Accessibility> <bundle id>`（bundle id 取 app 配置里的 `identifier`，正式包是 `app.codeg`），再用 `CGRequestScreenCaptureAccess` / `AXIsProcessTrustedWithOptions(prompt)` 让系统弹框。面板打开时、窗口回到前台时（多半是从系统设置回来）重新查。macOS 在一个进程第一次答「没有」之后，整个进程生命期都记着，所以允许之后要重开 dodoer 才显示「已授权」（屏幕录制系统会主动要求重开）。
 - 这是有意破例：电脑操作那边规定只有 helper 能以自己的名义申请权限，dodoer 本身拿着权限算泄露（电脑操作设置里那条黄字提醒）。借出命令行时 dodoer 拿着权限正是目的，但代价一样——**本机工作区的智能体也跟着拿到**，面板的说明文字里写了。申请只在用户点「修复」时发生。
 - dodoer 是从终端里启动的（开发时），查到的是终端的权限，`tccutil` 改 dodoer 的授权也没用：这时不给「修复」，只说明原因（`responsibility_get_pid_responsible_for_pid` 判断）。
+- **本地网络**（2026-11-15 真机上碰到）：借出的命令行里，非系统自带的程序（如 `python3`、node）访问局域网地址报 `No route to host`，系统的 `curl`、`ping` 正常。这些访问算在 dodoer 名下，而 dodoer 的 Info.plist 没有 `NSLocalNetworkUsageDescription`，系统就直接拒绝、不弹框。现在 `src-tauri/Info.plist` 里加了这条（打包脚本核对它进了包），第一次访问局域网时系统弹框问。没加 `NSBonjourServices`（dodoer 不用 Bonjour）。更新后授权还在不在，待 Mac 上验证。
 
 ## 6. 安全
 

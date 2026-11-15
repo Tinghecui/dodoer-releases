@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Tauri merges this file into the bundle's Info.plist. Why this key: docs/host-ssh.md 5.6 -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>把这台电脑借给智能体后，它们运行的命令要用这项权限访问你局域网里的设备（如路由器、NAS）。When you lend this Mac to agents, the commands they run use this to reach devices on your local network, such as a router or NAS.</string>
+</dict>
+</plist>

@@ -67,6 +67,10 @@ echo "==> [$edition] 冒烟"
 exe=$(defaults read "$app/Contents/Info.plist" CFBundleExecutable)
 ver=$(defaults read "$app/Contents/Info.plist" CFBundleShortVersionString)
 [[ "$ver" == "$VERSION" ]] || fail "编出来的版本 $ver 不是 $VERSION"
+# 「本地网络」权限的说明由 src-tauri/Info.plist 合并进来：没有它，借出的命令行访问局域网会被系统直接拒绝、不弹框
+# （docs/host-ssh.md 5.6），所以核对它真的进了包
+defaults read "$app/Contents/Info.plist" NSLocalNetworkUsageDescription >/dev/null \
+  || fail "包的 Info.plist 里没有 NSLocalNetworkUsageDescription：src-tauri/Info.plist 没合并进来"
 # 包自己说它是哪一版、从哪更新（codeg --desktop-edition）：更新地址来自 Tauri 配置，叠错了就会从别处更新，所以核对。
 # 用 node 解析（不依赖 jq）
 report=$("$app/Contents/MacOS/$exe" --desktop-edition)

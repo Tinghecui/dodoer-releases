@@ -507,7 +507,14 @@ impl BrowserTabOutcome {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum BrowserTabOp {
     /// Open a new tab on this address, in the foreground.
-    Open { url: String },
+    Open {
+        url: String,
+        /// Cowork fork: on a server, the device to open it on, by name
+        /// (`web::host_browser`). A desktop opens it on itself and ignores
+        /// it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+    },
     /// Point an existing tab at this address.
     Navigate { tab_id: String, url: String },
     /// Close an existing tab.
@@ -928,6 +935,7 @@ mod tests {
         let unavailable = NoBrowserTabs
             .tab_op(BrowserTabOp::Open {
                 url: "https://example.com/".into(),
+                device: None,
             })
             .await;
         assert_eq!(unavailable.tab_id, None);

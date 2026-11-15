@@ -369,6 +369,10 @@
         "url": {
           "type": "string",
           "description": "The address to open. http:// or https:// — a browser tab does not take file paths, and a local file is something you read from disk."
+        },
+        "device": {
+          "type": "string",
+          "description": "Only on a server that several of the user's computers are connected to: the name of the device to open it on, as the user calls it (the tab ids from browser_list_tabs start with it, like `laptop:`). Leave it out when only one device lends its browser, and when you are working on the user's own computer."
         }
       }
     }

@@ -474,7 +474,7 @@ async fn async_main(
             // connected to it, when one lends them (Cowork fork). What a web
             // user sees in a "browser tab" is an iframe their own browser
             // renders, which nothing here can reach.
-            None => Arc::new(codeg_lib::web::host_registry::RemoteHostBrowser::new(
+            None => Arc::new(codeg_lib::web::host_browser::RemoteHostBrowser::new(
                 Arc::clone(&state.host_registry),
             )) as Arc<dyn codeg_lib::acp::browser_tools::BrowserToolAccess>,
         },

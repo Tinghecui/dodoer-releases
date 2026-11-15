@@ -26,7 +26,7 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 
-use super::host_devices::now_ms;
+use super::host_devices::{ago, now_ms};
 use super::host_registry::{HostRegistry, ShellTarget, TunnelError};
 use super::shutdown::ShutdownSignal;
 use crate::cli_run::CliRunService;
@@ -207,23 +207,6 @@ fn devices_line(names: &[String]) -> String {
             "The user's devices: {}. Run `ssh <name>` with the one the user means.",
             names.join(", ")
         )
-    }
-}
-
-/// How long ago `then` was, both in milliseconds since 1970, in words.
-fn ago(then: i64, now: i64) -> String {
-    if then <= 0 {
-        return "a long time ago".to_string();
-    }
-    let minutes = (now - then).max(0) / 60_000;
-    match minutes {
-        0 => "just now".to_string(),
-        1 => "a minute ago".to_string(),
-        2..=59 => format!("{minutes} minutes ago"),
-        60..=119 => "an hour ago".to_string(),
-        120..=1439 => format!("{} hours ago", minutes / 60),
-        1440..=2879 => "a day ago".to_string(),
-        _ => format!("{} days ago", minutes / 1440),
     }
 }
 
@@ -448,19 +431,6 @@ mod tests {
             names: vec!["imac".into(), "laptop".into()],
         });
         assert!(several.contains("(imac, laptop)"), "{several}");
-    }
-
-    #[test]
-    fn how_long_ago_reads() {
-        let now = 1_000_000_000_000;
-        assert_eq!(ago(now - 10_000, now), "just now");
-        assert_eq!(ago(now - 60_000, now), "a minute ago");
-        assert_eq!(ago(now - 5 * 60_000, now), "5 minutes ago");
-        assert_eq!(ago(now - 90 * 60_000, now), "an hour ago");
-        assert_eq!(ago(now - 5 * 3_600_000, now), "5 hours ago");
-        assert_eq!(ago(now - 30 * 3_600_000, now), "a day ago");
-        assert_eq!(ago(now - 3 * 86_400_000, now), "3 days ago");
-        assert_eq!(ago(0, now), "a long time ago");
     }
 
     /// A made-up id is turned away, and nothing waits on it.

@@ -20,19 +20,17 @@
 //! Several apps may be registered at once — the same person on two
 //! computers. Each names the computer it is on (`host_device`), and the
 //! registry keeps the book of every computer that ever connected
-//! ([`DeviceBook`], `web::host_devices`, `docs/devices.md`). `ssh <name>`
-//! names the device it means ([`ShellTarget`]); which one takes a browser
-//! call is still decided here: the computer whose Chrome the person lets
-//! agents use ([`CAPABILITY_CHROME`]), else the one they used last — until
-//! agents name that device too (`docs/devices.md` 5.2).
+//! ([`DeviceBook`], `web::host_devices`, `docs/devices.md`). A call names
+//! the device it means: `ssh <name>` ([`ShellTarget`]), a browser tab by the
+//! device in its id or the `device` a new one is opened on
+//! (`web::host_browser`, [`HostRegistry::route_tab`]). Nothing here picks
+//! a device by who was active last.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use axum::extract::ws::WebSocket;
-use serde::de::DeserializeOwned;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use super::host_devices::{
@@ -40,16 +38,7 @@ use super::host_devices::{
     Seen,
 };
 use super::ws_attach::ServerMsg;
-use crate::acp::browser_tools::{
-    BrowserActOutcome, BrowserCaptureOutcome, BrowserConsoleOutcome, BrowserEvalOutcome,
-    BrowserSnapshotOutcome, BrowserTabOp, BrowserTabOutcome, BrowserTabsOutcome, BrowserToolAccess,
-    ERROR_UNAVAILABLE,
-};
-use crate::browser::agent::ActionRequest;
-use crate::browser::capture::CaptureRequest;
-use crate::browser::console::ConsoleQuery;
-use crate::browser::eval::EvalRequest;
-use crate::host_bridge::{BridgeCall, BrowserCall};
+use crate::host_bridge::BridgeCall;
 use crate::host_device::HostDevice;
 use crate::host_ssh::client::{SshDevice, SshPlan, HOST_ALIAS};
 use crate::host_ssh::tunnel::{ShellHost, CAPABILITY as CAPABILITY_SHELL, TUNNELS_PER_MINUTE};
@@ -62,17 +51,9 @@ pub const CAPABILITY_BROWSER: &str = "browser";
 
 /// The capability a host names beside `browser` while the person lets this
 /// server's agents use their own Chrome there (`browser::chrome::lending`).
-/// Nothing is asked by it: with several computers lending their tabs, it
-/// says which one the person means.
+/// Nothing is asked by it, and it chooses no device: the list of devices
+/// shows it.
 pub const CAPABILITY_CHROME: &str = "chrome";
-
-/// How long a call may take. `tab_op` waits on a page load.
-const CALL_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// `browser_eval` waits on the person: the app's own prompt gives up after
-/// 120 s (`browser::confirm`), so this outlasts it and the app's answer —
-/// "declined" — is what the agent gets.
-const EVAL_TIMEOUT: Duration = Duration::from_secs(150);
 
 /// What an agent is told when no desktop app can take the call. No product
 /// name: the server runs under either brand (dodoer, or Cowork's overlay, which
@@ -85,7 +66,7 @@ pub const NO_DESKTOP_NOTE: &str =
 /// Why a call got no answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostCallError {
-    /// No registered host has the capability.
+    /// The host asked is not registered (any more).
     NoHost,
     /// The host's socket closed before it answered.
     Gone,
@@ -127,6 +108,32 @@ pub enum TunnelError {
     Gone,
     /// The host did not dial back in time.
     TimedOut,
+}
+
+/// Where a browser call goes: one registered window, and the prefix its tab
+/// ids carry for the agent (`<name>:`; none for an app from before
+/// devices).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserHost {
+    pub host: u64,
+    pub prefix: String,
+}
+
+/// Why a browser call has nowhere to go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrowserRouteError {
+    /// Nothing lends its tabs.
+    NoHost,
+    /// No device by that name; the names there are.
+    UnknownDevice { name: String, names: Vec<String> },
+    /// In the book, and no app on it is connected.
+    Offline { name: String, last_seen: i64 },
+    /// An app on it is connected, and lends no tabs.
+    NotLent { name: String },
+    /// Several devices lend their tabs, and the call names none of them.
+    ChooseDevice { names: Vec<String> },
+    /// A tab id that names no device, and no device listed it.
+    UnknownTab,
 }
 
 /// What a tunnel's waiting end gets: the socket the host dialed, or the
@@ -181,6 +188,9 @@ struct PendingTunnel {
 struct Inner {
     hosts: Vec<Host>,
     pending: HashMap<u64, Pending>,
+    /// Which window each tab an agent was told of came from, by the tab's
+    /// own id: a device with several windows has a set of tabs in each.
+    tabs: HashMap<String, u64>,
     /// Tunnels asked for and not dialed yet, by their random id.
     tunnels: HashMap<String, PendingTunnel>,
     /// When the tunnels of the last minute were asked for, per device (an
@@ -199,19 +209,134 @@ impl Inner {
         self.clock
     }
 
-    /// The host that takes a call for `capability`: a browser call goes to
-    /// a computer whose Chrome agents may use before one that lends only the
-    /// built-in browser, and among equals to the one the person used last.
-    fn pick(&self, capability: &str) -> Option<&Host> {
-        self.hosts
+    /// The windows lending their tabs: each device's in the book, or — with
+    /// none in it — the apps from before devices.
+    fn browser_lenders(&self) -> impl Iterator<Item = &Host> {
+        let book_empty = self.book.records().is_empty();
+        self.hosts.iter().filter(move |h| {
+            h.lends(CAPABILITY_BROWSER) && (h.device.is_some() || book_empty)
+        })
+    }
+
+    /// The prefix a host's tab ids carry: its device's name.
+    fn prefix_of(&self, host: &Host) -> String {
+        host.device
+            .as_ref()
+            .and_then(|d| self.book.get(&d.id))
+            .map(|record| format!("{}:", record.name))
+            .unwrap_or_default()
+    }
+
+    fn browser_host(&self, host: &Host) -> BrowserHost {
+        BrowserHost {
+            host: host.id,
+            prefix: self.prefix_of(host),
+        }
+    }
+
+    /// The device called `name`.
+    fn named(&self, name: &str) -> Result<&DeviceRecord, BrowserRouteError> {
+        let name = name.trim().to_ascii_lowercase();
+        self.book
+            .records()
             .iter()
-            .filter(|h| h.lends(capability))
-            .max_by_key(|h| {
-                (
-                    capability == CAPABILITY_BROWSER && h.lends_chrome(),
-                    h.active_at,
-                )
+            .find(|d| d.name == name)
+            .ok_or_else(|| BrowserRouteError::UnknownDevice {
+                name,
+                names: self.names(),
             })
+    }
+
+    /// The window of `record` lending its tabs, the one used last.
+    fn browser_on(&self, record: &DeviceRecord) -> Result<&Host, BrowserRouteError> {
+        let mut on_it = self.hosts.iter().filter(|h| h.is_on(&record.id)).peekable();
+        if on_it.peek().is_none() {
+            return Err(BrowserRouteError::Offline {
+                name: record.name.clone(),
+                last_seen: record.last_seen,
+            });
+        }
+        on_it
+            .filter(|h| h.lends(CAPABILITY_BROWSER))
+            .max_by_key(|h| h.active_at)
+            .ok_or_else(|| BrowserRouteError::NotLent {
+                name: record.name.clone(),
+            })
+    }
+
+    /// Where a call that names no device goes: the one device lending its
+    /// tabs; with none in the book, the app from before devices used last.
+    fn only_browser(&self) -> Result<&Host, BrowserRouteError> {
+        if self.book.records().is_empty() {
+            return self
+                .browser_lenders()
+                .max_by_key(|h| h.active_at)
+                .ok_or(BrowserRouteError::NoHost);
+        }
+        let mut devices: Vec<&str> = self
+            .browser_lenders()
+            .filter_map(|h| h.device.as_ref().map(|d| d.id.as_str()))
+            .collect();
+        devices.sort_unstable();
+        devices.dedup();
+        match devices.as_slice() {
+            [] => Err(BrowserRouteError::NoHost),
+            [only] => self
+                .browser_lenders()
+                .filter(|h| h.is_on(only))
+                .max_by_key(|h| h.active_at)
+                .ok_or(BrowserRouteError::NoHost),
+            several => Err(BrowserRouteError::ChooseDevice {
+                names: several
+                    .iter()
+                    .filter_map(|id| self.book.get(id).map(|d| d.name.clone()))
+                    .collect(),
+            }),
+        }
+    }
+
+    fn browser_hosts(&self) -> Vec<BrowserHost> {
+        self.browser_lenders()
+            .map(|h| self.browser_host(h))
+            .collect()
+    }
+
+    /// Where a new tab opens: on the device called `device`, else on the
+    /// only one lending its tabs.
+    fn route_open(&self, device: Option<&str>) -> Result<BrowserHost, BrowserRouteError> {
+        let host = match device {
+            Some(name) => self.browser_on(self.named(name)?)?,
+            None => self.only_browser()?,
+        };
+        Ok(self.browser_host(host))
+    }
+
+    /// Where a call on the tab the agent calls `tab_id` goes, and the id the
+    /// window knows it by. `<name>:<id>` is that device's; a bare id is
+    /// whichever window listed it.
+    fn route_tab(&self, tab_id: &str) -> Result<(BrowserHost, String), BrowserRouteError> {
+        let listed = |raw: &str| {
+            self.tabs
+                .get(raw)
+                .and_then(|id| self.hosts.iter().find(|h| h.id == *id))
+                .filter(|h| h.lends(CAPABILITY_BROWSER))
+        };
+        if let Some((name, raw)) = tab_id.split_once(':') {
+            let record = self.named(name)?;
+            let host = match listed(raw).filter(|h| h.is_on(&record.id)) {
+                Some(host) => host,
+                None => self.browser_on(record)?,
+            };
+            return Ok((self.browser_host(host), raw.to_string()));
+        }
+        let host = match listed(tab_id) {
+            Some(host) => host,
+            None => self.only_browser().map_err(|e| match e {
+                BrowserRouteError::ChooseDevice { .. } => BrowserRouteError::UnknownTab,
+                other => other,
+            })?,
+        };
+        Ok((self.browser_host(host), tab_id.to_string()))
     }
 
     /// The host lending its shell that `target` means, or why there is none.
@@ -503,6 +628,32 @@ impl HostRegistry {
         self.lock().shells()
     }
 
+    /// The windows lending their tabs now, for a list of every tab.
+    pub fn browser_hosts(&self) -> Vec<BrowserHost> {
+        self.lock().browser_hosts()
+    }
+
+    /// Where a new tab opens (`Inner::route_open`).
+    pub fn route_open(&self, device: Option<&str>) -> Result<BrowserHost, BrowserRouteError> {
+        self.lock().route_open(device)
+    }
+
+    /// Where a call on a tab goes, and the id its window knows it by.
+    pub fn route_tab(&self, tab_id: &str) -> Result<(BrowserHost, String), BrowserRouteError> {
+        self.lock().route_tab(tab_id)
+    }
+
+    /// The window `host` told of these tabs: calls on them go back to it.
+    pub fn remember_tabs(&self, host: u64, tab_ids: Vec<String>) {
+        let mut inner = self.lock();
+        if !inner.hosts.iter().any(|h| h.id == host) {
+            return;
+        }
+        for tab_id in tab_ids {
+            inner.tabs.insert(tab_id, host);
+        }
+    }
+
     /// What the server's `ssh` files say now.
     pub fn ssh_plan(&self) -> SshPlan {
         self.lock().ssh_plan()
@@ -654,6 +805,7 @@ impl HostRegistry {
         // at once, instead of at their timeout.
         inner.pending.retain(|_, p| p.host != id);
         inner.tunnels.retain(|_, t| t.host != id);
+        inner.tabs.retain(|_, host| *host != id);
         // Its computer's last app gone: it was last online now.
         let mut left = false;
         if let Some(device) = device {
@@ -764,34 +916,31 @@ impl HostRegistry {
         pending.reply.send(outcome).is_ok()
     }
 
-    /// Send `call` to the host [`Inner::pick`] names for `capability` and
-    /// wait for its outcome.
-    pub async fn call(
+    /// Send `call` to the registered window `host` and wait for its
+    /// outcome.
+    pub async fn call_host(
         &self,
-        capability: &str,
+        host: u64,
         call: BridgeCall,
         timeout: Duration,
     ) -> Result<serde_json::Value, HostCallError> {
         let (call_id, tx, rx) = {
             let mut inner = self.lock();
-            let host = inner.pick(capability).ok_or(HostCallError::NoHost)?;
-            let host_id = host.id;
-            let tx = host.tx.clone();
-            let window = host.window.clone();
+            let target = inner
+                .hosts
+                .iter()
+                .find(|h| h.id == host)
+                .ok_or(HostCallError::NoHost)?;
+            let tx = target.tx.clone();
+            let window = target.window.clone();
             inner.next_call += 1;
             let call_id = inner.next_call;
             tracing::debug!(
-                "[host-registry] call {call_id} to host {host_id} ({})",
+                "[host-registry] call {call_id} to host {host} ({})",
                 window.as_deref().unwrap_or("?")
             );
             let (reply, rx) = oneshot::channel();
-            inner.pending.insert(
-                call_id,
-                Pending {
-                    host: host_id,
-                    reply,
-                },
-            );
+            inner.pending.insert(call_id, Pending { host, reply });
             (call_id, tx, rx)
         };
         if tx
@@ -871,183 +1020,41 @@ impl Drop for HostRegistration {
     }
 }
 
-/// The browser tools of a codeg-server with no desktop app of its own: each
-/// call goes to the registered desktop app [`Inner::pick`] names.
-pub struct RemoteHostBrowser {
-    hosts: Arc<HostRegistry>,
-}
-
-impl RemoteHostBrowser {
-    pub fn new(hosts: Arc<HostRegistry>) -> Self {
-        Self { hosts }
-    }
-
-    /// The host's outcome; or, when there is none to give, the note the
-    /// caller answers with as a runtime without a browser would.
-    async fn ask<T: DeserializeOwned>(
-        &self,
-        call: BrowserCall,
-        timeout: Duration,
-    ) -> Result<T, String> {
-        match self
-            .hosts
-            .call(CAPABILITY_BROWSER, BridgeCall::Browser(call), timeout)
-            .await
-        {
-            Ok(outcome) => serde_json::from_value(outcome).map_err(|e| {
-                tracing::warn!("[host-registry] a host answered something unreadable: {e}");
-                NO_DESKTOP_NOTE.to_string()
-            }),
-            Err(HostCallError::NoHost) => Err(NO_DESKTOP_NOTE.to_string()),
-            Err(e) => {
-                tracing::warn!("[host-registry] browser call failed: {e:?}");
-                Err(NO_DESKTOP_NOTE.to_string())
-            }
-        }
-    }
-}
-
-#[async_trait]
-impl BrowserToolAccess for RemoteHostBrowser {
-    async fn list_tabs(&self) -> BrowserTabsOutcome {
-        self.ask(BrowserCall::ListTabs, CALL_TIMEOUT)
-            .await
-            .unwrap_or_else(|note| BrowserTabsOutcome::unavailable(&note))
-    }
-
-    async fn snapshot(&self, tab_id: &str, max_chars: Option<usize>) -> BrowserSnapshotOutcome {
-        let call = BrowserCall::Snapshot {
-            tab_id: tab_id.to_string(),
-            max_chars,
-        };
-        self.ask(call, CALL_TIMEOUT).await.unwrap_or_else(|note| {
-            BrowserSnapshotOutcome::refused(tab_id, ERROR_UNAVAILABLE, note)
-        })
-    }
-
-    async fn act(&self, tab_id: &str, request: ActionRequest) -> BrowserActOutcome {
-        let call = BrowserCall::Act {
-            tab_id: tab_id.to_string(),
-            request,
-        };
-        self.ask(call, CALL_TIMEOUT).await.unwrap_or_else(|note| {
-            BrowserActOutcome::refused(tab_id, ERROR_UNAVAILABLE, note)
-        })
-    }
-
-    async fn console(&self, tab_id: &str, query: ConsoleQuery) -> BrowserConsoleOutcome {
-        let call = BrowserCall::Console {
-            tab_id: tab_id.to_string(),
-            query,
-        };
-        self.ask(call, CALL_TIMEOUT).await.unwrap_or_else(|note| {
-            BrowserConsoleOutcome::refused(tab_id, ERROR_UNAVAILABLE, note)
-        })
-    }
-
-    async fn capture(&self, tab_id: &str, request: CaptureRequest) -> BrowserCaptureOutcome {
-        let call = BrowserCall::Capture {
-            tab_id: tab_id.to_string(),
-            request,
-        };
-        self.ask(call, CALL_TIMEOUT).await.unwrap_or_else(|note| {
-            BrowserCaptureOutcome::refused(tab_id, ERROR_UNAVAILABLE, note)
-        })
-    }
-
-    async fn eval(&self, tab_id: &str, request: EvalRequest) -> BrowserEvalOutcome {
-        let call = BrowserCall::Eval {
-            tab_id: tab_id.to_string(),
-            request,
-        };
-        self.ask(call, EVAL_TIMEOUT).await.unwrap_or_else(|note| {
-            BrowserEvalOutcome::refused(tab_id, ERROR_UNAVAILABLE, note)
-        })
-    }
-
-    async fn tab_op(&self, op: BrowserTabOp) -> BrowserTabOutcome {
-        let named = op.tab_id().map(str::to_string);
-        self.ask(BrowserCall::TabOp { op }, CALL_TIMEOUT)
-            .await
-            .unwrap_or_else(|note| {
-                BrowserTabOutcome::refused(named.as_deref(), ERROR_UNAVAILABLE, note)
-            })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acp::browser_tools::NoBrowserTabs;
 
     fn browser() -> Vec<String> {
         vec![CAPABILITY_BROWSER.to_string()]
     }
 
-    /// A host that answers every call with `answer(call)`, on its own task.
-    fn answering_host(
-        registry: &Arc<HostRegistry>,
-        answer: impl Fn(&BridgeCall) -> serde_json::Value + Send + 'static,
-    ) {
-        let (tx, mut rx) = mpsc::channel(8);
-        let reg = registry.register(tx, browser(), Some("remote-workspace-1".into()), None);
-        tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                if let ServerMsg::HostCall { call_id, call } = msg {
-                    reg.answer(call_id, answer(&call));
-                }
-            }
-        });
+    /// A call to one window, sent as is: the list asked of the host.
+    fn list_call() -> BridgeCall {
+        BridgeCall::Browser(crate::host_bridge::BrowserCall::ListTabs)
     }
 
+    /// Of apps from before devices, with the book empty, a new tab goes to
+    /// the one used last; a call goes to the window it is sent to, and only
+    /// that window can answer it.
     #[tokio::test]
-    async fn with_no_host_the_tools_answer_as_no_browser_and_say_what_to_do() {
-        let tools = RemoteHostBrowser::new(Arc::new(HostRegistry::new()));
-        let tabs = tools.list_tabs().await;
-        assert!(tabs.tabs.is_empty());
-        assert_eq!(tabs.note.as_deref(), Some(NO_DESKTOP_NOTE));
-        let refused = tools.snapshot("t1", None).await;
-        let no_browser = NoBrowserTabs.snapshot("t1", None).await;
-        assert_eq!(
-            refused.error, no_browser.error,
-            "the same slug as no browser"
-        );
-        assert_eq!(refused.note.as_deref(), Some(NO_DESKTOP_NOTE));
-    }
-
-    #[tokio::test]
-    async fn a_call_reaches_the_host_and_its_outcome_comes_back() {
-        let registry = Arc::new(HostRegistry::new());
-        answering_host(&registry, |call| {
-            assert_eq!(
-                serde_json::to_value(call).unwrap(),
-                serde_json::json!({"tool": "browser", "call": {"method": "list_tabs"}})
-            );
-            serde_json::to_value(BrowserTabsOutcome::unavailable("from the host")).unwrap()
-        });
-        let tools = RemoteHostBrowser::new(Arc::clone(&registry));
-        assert_eq!(
-            tools.list_tabs().await.note.as_deref(),
-            Some("from the host")
-        );
-    }
-
-    #[tokio::test]
-    async fn the_host_used_last_takes_the_call() {
+    async fn the_host_used_last_takes_a_new_tab_and_only_it_answers() {
         let registry = Arc::new(HostRegistry::new());
         let (first_tx, mut first_rx) = mpsc::channel(8);
         let first = registry.register(first_tx, browser(), None, None);
         let (second_tx, mut second_rx) = mpsc::channel(8);
         let second = registry.register(second_tx, browser(), None, None);
         // Registered last: the second takes it.
+        let to = registry.route_open(None).unwrap();
+        assert_eq!(
+            to,
+            BrowserHost {
+                host: second.id(),
+                prefix: String::new()
+            }
+        );
         let r = Arc::clone(&registry);
         let call = tokio::spawn(async move {
-            r.call(
-                CAPABILITY_BROWSER,
-                BridgeCall::Browser(BrowserCall::ListTabs),
-                Duration::from_secs(5),
-            )
-            .await
+            r.call_host(to.host, list_call(), Duration::from_secs(5)).await
         });
         let Some(ServerMsg::HostCall { call_id, .. }) = second_rx.recv().await else {
             panic!("the second host is asked");
@@ -1060,20 +1067,8 @@ mod tests {
 
         // Focus moves it back to the first.
         first.focus();
-        let r = Arc::clone(&registry);
-        tokio::spawn(async move {
-            let _ = r
-                .call(
-                    CAPABILITY_BROWSER,
-                    BridgeCall::Browser(BrowserCall::ListTabs),
-                    Duration::from_secs(5),
-                )
-                .await;
-        });
-        assert!(matches!(
-            first_rx.recv().await,
-            Some(ServerMsg::HostCall { .. })
-        ));
+        assert_eq!(registry.route_open(None).unwrap().host, first.id());
+        assert_eq!(registry.browser_hosts().len(), 2, "both are listed");
     }
 
     #[tokio::test]
@@ -1082,17 +1077,12 @@ mod tests {
         let (tx, _rx) = mpsc::channel(8);
         let reg = registry.register(tx, Vec::new(), None, None);
         assert!(!registry.has_host(CAPABILITY_BROWSER));
-        let err = registry
-            .call(
-                CAPABILITY_BROWSER,
-                BridgeCall::Browser(BrowserCall::ListTabs),
-                Duration::from_secs(5),
-            )
-            .await;
-        assert_eq!(err, Err(HostCallError::NoHost));
+        assert_eq!(registry.route_open(None), Err(BrowserRouteError::NoHost));
+        assert!(registry.browser_hosts().is_empty());
         // The app's switch turned on: the same socket says so again.
         reg.update(browser(), None, None);
         assert!(registry.has_host(CAPABILITY_BROWSER));
+        assert_eq!(registry.route_open(None).unwrap().host, reg.id());
     }
 
     #[tokio::test]
@@ -1100,19 +1090,22 @@ mod tests {
         let registry = Arc::new(HostRegistry::new());
         let (tx, mut rx) = mpsc::channel(8);
         let reg = registry.register(tx, browser(), None, None);
+        let host = reg.id();
         let r = Arc::clone(&registry);
         let call = tokio::spawn(async move {
-            r.call(
-                CAPABILITY_BROWSER,
-                BridgeCall::Browser(BrowserCall::ListTabs),
-                Duration::from_secs(600),
-            )
-            .await
+            r.call_host(host, list_call(), Duration::from_secs(600)).await
         });
         assert!(matches!(rx.recv().await, Some(ServerMsg::HostCall { .. })));
         drop(reg);
         assert_eq!(call.await.unwrap(), Err(HostCallError::Gone));
         assert!(!registry.has_host(CAPABILITY_BROWSER));
+        assert_eq!(
+            registry
+                .call_host(host, list_call(), Duration::from_secs(5))
+                .await,
+            Err(HostCallError::NoHost),
+            "gone: nothing to send to"
+        );
     }
 
     #[tokio::test]
@@ -1121,11 +1114,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let reg = registry.register(tx, browser(), None, None);
         let err = registry
-            .call(
-                CAPABILITY_BROWSER,
-                BridgeCall::Browser(BrowserCall::ListTabs),
-                Duration::from_millis(20),
-            )
+            .call_host(reg.id(), list_call(), Duration::from_millis(20))
             .await;
         assert_eq!(err, Err(HostCallError::TimedOut));
         let Some(ServerMsg::HostCall { call_id, .. }) = rx.recv().await else {
@@ -1321,48 +1310,47 @@ mod tests {
         ]
     }
 
-    /// Who a browser call is sent to: the receiver that gets a `host_call`.
-    async fn asked(registry: &Arc<HostRegistry>) -> Result<(), HostCallError> {
-        registry
-            .call(
-                CAPABILITY_BROWSER,
-                BridgeCall::Browser(BrowserCall::ListTabs),
-                Duration::from_millis(20),
-            )
-            .await
-            .map(|_| ())
+    fn browser_on(
+        registry: &Arc<HostRegistry>,
+        capabilities: Vec<String>,
+        id: &str,
+        name: &str,
+    ) -> HostRegistration {
+        let (tx, rx) = mpsc::channel(8);
+        // Nothing reads it: a dropped receiver only fails a send.
+        std::mem::forget(rx);
+        registry.register_on(tx, capabilities, None, None, Some(device(id, name)), None)
     }
 
-    /// With several computers lending their tabs, the one whose Chrome
-    /// agents may use takes the call, whichever was used last.
+    /// With several devices lending their tabs, a new tab names its device;
+    /// Chrome being lent from one of them chooses nothing.
     #[tokio::test]
-    async fn a_computer_lending_its_chrome_goes_before_the_one_used_last() {
+    async fn several_devices_lending_tabs_make_a_new_tab_name_one() {
         let registry = Arc::new(HostRegistry::new());
-        let (imac_tx, mut imac_rx) = mpsc::channel(8);
-        let imac = registry.register_on(
-            imac_tx,
-            browser(),
-            None,
-            None,
-            Some(device("imac", "Study iMac")),
-            None,
-        );
-        let (book_tx, mut book_rx) = mpsc::channel(8);
-        let book = registry.register_on(
-            book_tx,
-            lends_chrome(),
-            None,
-            None,
-            Some(device("book", "MacBook")),
-            None,
-        );
+        let imac = browser_on(&registry, browser(), "imac", "Study iMac");
+        let book = browser_on(&registry, lends_chrome(), "book", "MacBook");
         imac.focus();
-        assert_eq!(asked(&registry).await, Err(HostCallError::TimedOut));
-        assert!(matches!(
-            book_rx.try_recv(),
-            Ok(ServerMsg::HostCall { .. })
-        ));
-        assert!(imac_rx.try_recv().is_err());
+        assert_eq!(
+            registry.route_open(None),
+            Err(BrowserRouteError::ChooseDevice {
+                names: vec!["macbook".into(), "study-imac".into()]
+            })
+        );
+        assert_eq!(
+            registry.route_open(Some(" MacBook ")).unwrap(),
+            BrowserHost {
+                host: book.id(),
+                prefix: "macbook:".into()
+            }
+        );
+        assert_eq!(registry.route_open(Some("study-imac")).unwrap().host, imac.id());
+        assert_eq!(
+            registry.route_open(Some("laptop")),
+            Err(BrowserRouteError::UnknownDevice {
+                name: "laptop".into(),
+                names: vec!["study-imac".into(), "macbook".into()]
+            })
+        );
         let list = registry.device_list();
         let lends = |name: &str| {
             list.devices
@@ -1373,34 +1361,80 @@ mod tests {
         assert_eq!(lends("MacBook"), Some((true, true)));
         assert_eq!(lends("Study iMac"), Some((true, false)));
 
-        // The switch off again: back to the one used last.
-        book.update_on(browser(), None, None, Some(device("book", "MacBook")));
-        imac.focus();
-        assert_eq!(asked(&registry).await, Err(HostCallError::TimedOut));
-        assert!(matches!(
-            imac_rx.try_recv(),
-            Ok(ServerMsg::HostCall { .. })
-        ));
+        // One of them stops lending: the other is the only one.
+        book.update_on(Vec::new(), None, None, Some(device("book", "MacBook")));
+        assert_eq!(registry.route_open(None).unwrap().host, imac.id());
+        assert_eq!(
+            registry.route_open(Some("macbook")),
+            Err(BrowserRouteError::NotLent {
+                name: "macbook".into()
+            })
+        );
     }
 
     /// `chrome` without `browser` is a switch on a computer that lends no
-    /// tabs: nothing to prefer.
+    /// tabs: nothing to send a tab to.
     #[tokio::test]
     async fn chrome_counts_only_with_the_tabs_it_is_reached_through() {
         let registry = Arc::new(HostRegistry::new());
-        let (tx, _rx) = mpsc::channel(8);
-        let _only_chrome = registry.register_on(
-            tx,
+        let _only_chrome = browser_on(
+            &registry,
             vec![CAPABILITY_CHROME.to_string()],
-            None,
-            None,
-            Some(device("book", "MacBook")),
-            None,
+            "book",
+            "MacBook",
         );
-        assert_eq!(asked(&registry).await, Err(HostCallError::NoHost));
+        assert_eq!(registry.route_open(None), Err(BrowserRouteError::NoHost));
         let list = registry.device_list();
         assert!(list.devices[0].online);
         assert!(!list.devices[0].chrome && !list.devices[0].browser);
+    }
+
+    /// A tab id with its device's name goes to that device — to the window
+    /// that told of it, else the one used last there; a bare id goes to the
+    /// window that told of it, or to the only device lending its tabs.
+    #[tokio::test]
+    async fn a_tab_goes_to_the_device_and_window_it_came_from() {
+        let registry = Arc::new(HostRegistry::new());
+        let first = browser_on(&registry, browser(), "imac", "Study iMac");
+        let second = browser_on(&registry, browser(), "imac", "Study iMac");
+        let book = browser_on(&registry, browser(), "book", "MacBook");
+        registry.remember_tabs(first.id(), vec!["tab-one".into()]);
+        let (to, own) = registry.route_tab("study-imac:tab-one").unwrap();
+        assert_eq!((to.host, own.as_str()), (first.id(), "tab-one"));
+        assert_eq!(to.prefix, "study-imac:");
+        // A tab nobody told of: the device's window used last.
+        let (to, own) = registry.route_tab("study-imac:other").unwrap();
+        assert_eq!((to.host, own.as_str()), (second.id(), "other"));
+        // Told of by one device, named with another: the one named.
+        let (to, _) = registry.route_tab("macbook:tab-one").unwrap();
+        assert_eq!(to.host, book.id());
+        // A bare id: the window that told of it.
+        assert_eq!(registry.route_tab("tab-one").unwrap().0.host, first.id());
+        assert_eq!(
+            registry.route_tab("never-listed"),
+            Err(BrowserRouteError::UnknownTab)
+        );
+        assert!(matches!(
+            registry.route_tab("laptop:tab-one"),
+            Err(BrowserRouteError::UnknownDevice { .. })
+        ));
+
+        // The window gone: its tabs with it; the device's other window
+        // takes what is named with the device.
+        drop(first);
+        assert_eq!(
+            registry.route_tab("study-imac:tab-one").unwrap().0.host,
+            second.id()
+        );
+        assert_eq!(
+            registry.route_tab("tab-one"),
+            Err(BrowserRouteError::UnknownTab)
+        );
+        // A window that is gone is told of nothing.
+        let gone = book.id();
+        drop(book);
+        registry.remember_tabs(gone, vec!["late".into()]);
+        assert_eq!(registry.route_tab("late").unwrap().0.host, second.id(), "the only device");
     }
 
     /// Two sockets of one computer — a window for the tabs, a reconnect —

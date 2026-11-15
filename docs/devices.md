@@ -1,6 +1,6 @@
 # 设备：服务器上的智能体操作哪台电脑
 
-状态：2026-11-15 设计稿，方向和四个决定项用户确认过（第 2 节）。第 1 步（登记簿、设备面板、起名，去掉「固定」）是 #251；第 2 步（`ssh <名字>`）在做，共用连接先按设备分，按对话分（5.1 的 `Match` 两行）放在第 4 步；之后各步还没动。取代原来的 `docs/host-choice.md`（自动 + 固定，#245），那份文档已删，要看去 git 历史。
+状态：2026-11-15 设计稿，方向和四个决定项用户确认过（第 2 节）。第 1 步（登记簿、设备面板、起名，去掉「固定」）是 #251；第 2 步（`ssh <名字>`）是 #252，共用连接先按设备分，按对话分（5.1 的 `Match` 两行）放在第 4 步；第 3 步（浏览器按名字）在做，没有工作设备之前，不带 `device` 时只有一台借出浏览器才开在它上面，`browser_list_tabs` 列所有借出的设备；之后各步还没动。取代原来的 `docs/host-choice.md`（自动 + 固定，#245），那份文档已删，要看去 git 历史。
 
 ## 1. 问题
 
@@ -157,7 +157,7 @@ Host *
 - `browser_list_tabs` 列出这个对话确认过的设备（第 6 节）上的标签，每个带设备名；可选 `device` 只看一台。一台都没确认过时返回空列表，说明让智能体先调 `use_device`。
 - 网页在那台设备上开在 Chrome 还是内置浏览器，仍然由那台 app 自己定（「让智能体用我的 Chrome」开关）。`chrome` 这个能力只用来在设备列表里显示，不再参与选设备。
 - 同一台设备开着几个远端窗口时，服务器记住每个标签是哪个窗口报上来的（内存里），找不到就问这台设备最近用的那个窗口。
-- 改动的位置：加前缀、去前缀、按设备找 socket 都在 `RemoteHostBrowser`（`web/host_registry.rs`）里；工具定义（`acp/delegation/companion.rs`，上游文件）只加一个可选参数。`BrowserTabOp::Open` 多一个可选的 `device`，发给桌面端之前去掉。
+- 改动的位置：加前缀、去前缀在 `RemoteHostBrowser`（`web/host_browser.rs`，第 3 步从 `web/host_registry.rs` 挪出来），按设备找 socket 在 `HostRegistry::route_tab`、`route_open` 里；工具定义（`acp/delegation/companion.rs`，上游文件）只加一个可选参数。`BrowserTabOp::Open` 多一个可选的 `device`，发给桌面端之前去掉。
 - 要知道「是哪个对话在调」：`BrowserToolAccess` 的方法现在不带调用者，需要在分发的地方（`acp/delegation/listener.rs`，上游文件）多传一个连接编号。这是整套设计里对上游文件最大的一处改动。
 
 ### 5.3 用不了时说什么

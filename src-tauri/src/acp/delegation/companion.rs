@@ -2614,7 +2614,16 @@ pub fn browser_tab_op(
         }
     };
     match name {
-        "browser_open_tab" => Ok(BrowserTabOp::Open { url: text("url")? }),
+        "browser_open_tab" => Ok(BrowserTabOp::Open {
+            url: text("url")?,
+            // Cowork fork: which of the person's devices, on a server.
+            device: arguments
+                .get("device")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|device| !device.is_empty())
+                .map(str::to_string),
+        }),
         "browser_navigate" => Ok(BrowserTabOp::Navigate {
             tab_id: text("tabId")?,
             url: text("url")?,
@@ -7072,7 +7081,19 @@ mod tests {
         assert_eq!(
             browser_tab_op("browser_open_tab", &json!({ "url": " https://example.com/ " })).unwrap(),
             BrowserTabOp::Open {
-                url: "https://example.com/".into()
+                url: "https://example.com/".into(),
+                device: None,
+            }
+        );
+        assert_eq!(
+            browser_tab_op(
+                "browser_open_tab",
+                &json!({ "url": "https://example.com/", "device": " laptop " })
+            )
+            .unwrap(),
+            BrowserTabOp::Open {
+                url: "https://example.com/".into(),
+                device: Some("laptop".into()),
             }
         );
         assert_eq!(

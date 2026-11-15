@@ -3778,7 +3778,7 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         }
         let named = op.tab_id().map(str::to_string);
         let answer = match &op {
-            BrowserTabOp::Open { url } => {
+            BrowserTabOp::Open { url, .. } => {
                 // The person lets these agents use their Chrome: a web page
                 // goes there, signed in as them (`chrome::lending`).
                 let scope = crate::browser::chrome::lending::scope_key(self.scope.as_deref());

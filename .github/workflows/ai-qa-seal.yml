@@ -38,6 +38,7 @@ jobs:
           set -euo pipefail
           [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "run 要是数字"; exit 1; }
           # 手动派的：被查的那次多半还没跑完（派它的就是那次的最后一个 job），等它结束，日志才完整、才删得掉
+          # 等满了还没结束，seal-check.sh 会以「没核对」失败（不当成 ok）
           for _ in $(seq 1 80); do
             st=$(GH_TOKEN="$PUBLIC_TOKEN" gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q .status 2>/dev/null || true)
             [[ "$st" == completed ]] && break

@@ -1,5 +1,6 @@
 # 公开镜像 Tinghecui/dodoer-releases：自动驾驶的执行员（源仓库 .cowork/autopilot/design.md；文件在源仓库 .github/public/workflows/ 里维护）。
 # 领一个源仓库的 issue，先写一个会失败的测试、再修到通过，推 autopilot/<issue>-<短名>、开 PR。
+# 给了 pr = 返工：调度台（autopilot-tick.yml）把被审查员打回、或者 CI 没过的执行员 PR 派回来，在那个分支上接着改。
 # 这里只是个壳：取源仓库代码、装工具链，然后 exec .cowork/autopilot/sealed.sh fix。脚本的输出全部进文件、产物传回源仓库
 # Release「autopilot-artifacts」，这份日志里只有每个阶段一行的进度；运行结束后 ai-qa-seal.yml 会核对这一点。
 # 凭证在 Environment「ai-qa」里，只有 main 分支用得到。**手动触发时填的输入会原样出现在公开日志里**，只填数字和模型名。
@@ -7,7 +8,7 @@
 # AUTOPILOT_FIX_MODEL（默认 claude-opus-5-5）、AUTOPILOT_DAILY_USD（默认 15）。
 name: autopilot-fix
 # 整个值要加引号：里面的「 #」不加引号会被 YAML 当成注释截掉
-run-name: "autopilot-fix #${{ inputs.issue }}"
+run-name: "autopilot-fix #${{ inputs.issue }}${{ inputs.pr && format(' rework {0}', inputs.pr) || '' }}"
 
 on:
   workflow_dispatch:
@@ -20,6 +21,9 @@ on:
         default: ""
       max_turns:
         description: "Claude 最多几轮（空 = 400）"
+        default: ""
+      pr:
+        description: "返工：执行员给这个 issue 开的 PR 号（空 = 新修）"
         default: ""
 
 permissions:
@@ -37,9 +41,13 @@ jobs:
     runs-on: ubuntu-22.04
     environment: ai-qa
     timeout-minutes: 150
+    permissions:
+      contents: read
+      actions: read # 返工时读这边 Test 失败的 job 和日志
     env:
       SOURCE_REPO: Tinghecui/cowork-codeg
       ISSUE: ${{ inputs.issue }}
+      PR: ${{ inputs.pr }}
       AUTOPILOT: ${{ vars.AUTOPILOT || 'record' }}
       CLAUDE_AUTH: ${{ vars.AUTOPILOT_CLAUDE_AUTH || 'api' }}
       MODEL: ${{ inputs.model || vars.AUTOPILOT_FIX_MODEL || 'claude-opus-5-5' }}
@@ -58,6 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$ISSUE" =~ ^[0-9]+$ ]] || { echo "issue 要是数字"; exit 1; }
+          [[ -z "$PR" || "$PR" =~ ^[0-9]+$ ]] || { echo "pr 要是数字"; exit 1; }
           git init -q .
           # 令牌只在 git 这个进程的环境里，不进命令行、不进 .git/config；历史要几百个提交（执行员用 git log 查是不是已经修过）
           GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
@@ -89,12 +98,29 @@ jobs:
           ANTHROPIC_KEY: ${{ vars.AUTOPILOT_CLAUDE_AUTH != 'oauth' && secrets.CODEG_AGENT_ANTHROPIC_KEY || '' }}
           OAUTH_TOKEN: ${{ vars.AUTOPILOT_CLAUDE_AUTH == 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PUBLIC_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # 凭证写进只有本用户能读的文件、从环境里拿掉再 exec：exec 之后这个进程的 /proc/<pid>/environ 里就没有它们了，
           # sealed.sh 读进 shell 变量（不 export）就删掉文件，后面起的 Claude 和它跑的命令都拿不到
           d="$RUNNER_TEMP/autopilot-secrets"; rm -rf "$d"; mkdir -m 700 "$d"
           printf '%s' "$PRIVATE_TOKEN" > "$d/gh"; printf '%s' "$ANTHROPIC_KEY" > "$d/anthropic"; printf '%s' "$OAUTH_TOKEN" > "$d/oauth"
-          unset PRIVATE_TOKEN ANTHROPIC_KEY OAUTH_TOKEN
+          printf '%s' "$PUBLIC_TOKEN" > "$d/public"
+          unset PRIVATE_TOKEN ANTHROPIC_KEY OAUTH_TOKEN PUBLIC_TOKEN
           export AUTOPILOT_SECRETS="$d"
           exec bash .cowork/autopilot/sealed.sh fix
+
+  # 调度台用 GITHUB_TOKEN 派的这次运行，结束时不触发 ai-qa-seal 的 workflow_run（同 autopilot-review.yml）：自己派一次日志核对
+  seal:
+    name: 派日志核对
+    needs: fix
+    if: always() && vars.AUTOPILOT != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: 派 ai-qa-seal
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ai-qa-seal.yml -R "$GITHUB_REPOSITORY" --ref main -f run="$GITHUB_RUN_ID"

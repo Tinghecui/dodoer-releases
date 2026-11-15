@@ -8368,6 +8368,9 @@ where
     // and looking for a binary we would never use would also emit the "binary
     // not found" warning below for a connection that asked for nothing.
     let features_arg = companion_features_arg(flags)?;
+    // Cowork fork: the person's devices, where this server serves them
+    // (`web::working_device`).
+    let features_arg = crate::web::working_device::with_companion_feature(features_arg);
     let Some(binary_path) = locate_binary() else {
         tracing::warn!(
             "[delegation][WARN] codeg-mcp companion binary not found (checked CODEG_MCP_BIN, \

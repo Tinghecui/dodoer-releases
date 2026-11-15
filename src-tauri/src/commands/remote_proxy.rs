@@ -480,6 +480,13 @@ pub async fn remote_http_call(
         .bearer_auth(conn.token.trim())
         .headers(conn.headers.to_header_map())
         .json(&body);
+    // Cowork fork: a message says which computer the person is at, for the
+    // server's device card (`web::working_device`). Nothing else does.
+    if command.trim_start_matches('/') == "acp_prompt" {
+        if let Some(device) = crate::host_device::this_device() {
+            request = request.header(crate::web::working_device::HEADER, device.id);
+        }
+    }
     // Per-request override beats the client-wide 30s default. Used by the
     // ACP probe path (`describeAgentOptions`) whose backend deadline is
     // longer than 30s — without this override, reqwest would abort here

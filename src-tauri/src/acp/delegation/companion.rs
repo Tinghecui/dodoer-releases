@@ -53,6 +53,7 @@ use crate::acp::delegation::transport::{
     client_browser_console_round_trip, client_browser_eval_round_trip,
     client_browser_snapshot_round_trip, client_browser_tab_op_round_trip,
     client_browser_tabs_round_trip, client_cancel, client_cancel_task_round_trip,
+    client_devices_round_trip,
     client_commit_feedback, client_computer_act_round_trip, client_computer_apps_round_trip,
     client_computer_capture_round_trip, client_computer_clipboard_round_trip,
     client_computer_launch_round_trip, client_computer_snapshot_round_trip,
@@ -73,6 +74,7 @@ use crate::acp::delegation::transport::{
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest, BrokerSubmitResultRequest,
     BrokerTaskCompleteRequest, BrokerTaskProgressRequest, ThreadReply,
 };
+use crate::acp::delegation::transport::{BrokerDevicesRequest, DevicesOp};
 use crate::acp::delegation::assistants::{roster_for_schema, AssistantRosterEntry};
 use crate::acp::question::parse_questions;
 use crate::acp::session_info::MAX_SESSION_MESSAGES;
@@ -214,6 +216,10 @@ pub struct CompanionFeatures {
     /// `computer_clipboard_read` / `computer_clipboard_write`, on the
     /// person's own switch on top of `computer`, as `computer_launch` is.
     pub computer_clipboard: bool,
+    /// Cowork fork: `list_devices` / `use_device`, the person's computers
+    /// connected to this server (`web::working_device`). Only from a server
+    /// that serves them.
+    pub devices: bool,
 }
 
 impl CompanionFeatures {
@@ -239,6 +245,7 @@ impl CompanionFeatures {
                 computer: false,
                 computer_launch: false,
                 computer_clipboard: false,
+                devices: false,
             };
         };
         let mut f = Self {
@@ -255,6 +262,7 @@ impl CompanionFeatures {
             computer: false,
             computer_launch: false,
             computer_clipboard: false,
+            devices: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
@@ -271,6 +279,7 @@ impl CompanionFeatures {
                 "computer" => f.computer = true,
                 "computer_launch" => f.computer_launch = true,
                 "computer_clipboard" => f.computer_clipboard = true,
+                "devices" => f.devices = true,
                 _ => {}
             }
         }
@@ -315,6 +324,7 @@ impl CompanionFeatures {
             "computer_clipboard_read" | "computer_clipboard_write" => {
                 self.computer && self.computer_clipboard
             }
+            "list_devices" | "use_device" => self.devices,
             "delegate_to_agent"
             | "get_delegation_status"
             | "cancel_delegation"
@@ -1111,6 +1121,30 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_session_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_session_result).await
+        }
+        // Cowork fork: the person's devices (`web::working_device`).
+        "list_devices" | "use_device" => {
+            let op = if name == "list_devices" {
+                DevicesOp::List
+            } else {
+                DevicesOp::Use {
+                    name: arguments
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string),
+                }
+            };
+            let req = BrokerDevicesRequest {
+                token: ctx.token.clone(),
+                op,
+            };
+            // `use_device` may wait on the person's card; a cancelled call
+            // drops the round-trip, which withdraws it.
+            let round_trip =
+                Box::pin(async move { client_devices_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_devices_result).await
         }
         "browser_list_tabs" => {
             let req = BrokerBrowserTabsRequest {
@@ -2974,6 +3008,20 @@ pub fn render_browser_act_result(outcome: &Value) -> Value {
 /// One line per tab, and the unshared ones say what to do about it — an agent
 /// that reads this should tell the user which button to press rather than
 /// retrying a read it cannot be granted by asking again.
+/// Map a `list_devices` / `use_device` outcome (a serialized
+/// `web::working_device::DevicesAnswer`) into an MCP `tools/call` result.
+pub fn render_devices_result(outcome: &Value) -> Value {
+    let text = outcome
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("The user's devices cannot be reached from here.");
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false,
+        "structuredContent": outcome.clone(),
+    })
+}
+
 pub fn render_browser_tabs_result(outcome: &Value) -> Value {
     let tabs = outcome.get("tabs").and_then(|v| v.as_array());
     let note = outcome.get("note").and_then(|v| v.as_str());
@@ -4548,6 +4596,7 @@ mod tests {
             computer: false,
             computer_launch: false,
             computer_clipboard: false,
+            devices: false,
         })
     }
 
@@ -5179,6 +5228,7 @@ mod tests {
         computer: false,
         computer_launch: false,
         computer_clipboard: false,
+        devices: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
@@ -5194,6 +5244,7 @@ mod tests {
         computer: false,
         computer_launch: false,
         computer_clipboard: false,
+        devices: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -5209,6 +5260,7 @@ mod tests {
         computer: false,
         computer_launch: false,
         computer_clipboard: false,
+        devices: false,
     };
     const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -5224,6 +5276,7 @@ mod tests {
         computer: false,
         computer_launch: false,
         computer_clipboard: false,
+        devices: false,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -5255,6 +5308,18 @@ mod tests {
         // Empty string → nothing enabled.
         let none = CompanionFeatures::parse(Some(""));
         assert!(!none.delegation && !none.feedback && !none.ask && !none.sessions);
+    }
+
+    /// Cowork fork: the device tools are their own group.
+    #[test]
+    fn the_device_tools_come_with_their_group_only() {
+        let on = CompanionFeatures::parse(Some("ask,devices"));
+        assert!(on.devices && on.allows_tool("list_devices") && on.allows_tool("use_device"));
+        let off = CompanionFeatures::parse(Some("ask,browser"));
+        assert!(!off.devices && !off.allows_tool("list_devices") && !off.allows_tool("use_device"));
+        let rendered = render_devices_result(&json!({"text": "The user's devices (1): …"}));
+        assert_eq!(rendered["content"][0]["text"], "The user's devices (1): …");
+        assert_eq!(rendered["isError"], false);
     }
 
     #[tokio::test]
@@ -5715,6 +5780,7 @@ mod tests {
         computer: false,
         computer_launch: false,
         computer_clipboard: false,
+        devices: false,
     };
     const TASKBOARD_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -5730,6 +5796,7 @@ mod tests {
         computer: false,
         computer_launch: false,
         computer_clipboard: false,
+        devices: false,
     };
 
     /// The two authoring groups gate independently: enabling one must not
@@ -6610,6 +6677,7 @@ mod tests {
         computer: false,
         computer_launch: false,
         computer_clipboard: false,
+        devices: false,
     };
 
     /// The browser group with `browser_eval` on top, which is the only way
@@ -7488,6 +7556,7 @@ mod tests {
         // The clipboard's two, the same way.
         const WITH_CLIPBOARD: CompanionFeatures = CompanionFeatures {
             computer_clipboard: true,
+            devices: false,
             ..COMPUTER_ONLY
         };
         let names = computer_names(&list_tool_names(

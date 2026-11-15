@@ -171,9 +171,11 @@ pub struct AcpPromptParams {
 
 pub async fn acp_prompt(
     Extension(state): Extension<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(params): Json<AcpPromptParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    state
+    let named = params.conversation_id;
+    let linked = state
         .connection_manager
         .send_prompt_linked_with_message_id(
             &state.db,
@@ -202,6 +204,9 @@ pub async fn acp_prompt(
                 _ => AppCommandError::task_execution_failed(message),
             }
         })?;
+    // Cowork fork: which of the person's computers it came from
+    // (`web::working_device`).
+    crate::web::working_device::note_prompt(&state, &headers, named.or(linked)).await;
     Ok(Json(()))
 }
 

@@ -37,6 +37,7 @@ use super::host_devices::{
     now_ms, DeviceBook, DeviceList, DeviceRecord, DeviceView, ForgetError, NameError, Presence,
     Seen,
 };
+use super::working_device::WorkingDevices;
 use super::ws_attach::ServerMsg;
 use crate::host_bridge::BridgeCall;
 use crate::host_device::HostDevice;
@@ -490,6 +491,8 @@ pub struct HostRegistry {
     ssh: watch::Sender<SshPlan>,
     /// Moved on whenever the book changes, for `web::host_devices` to write.
     book: watch::Sender<u64>,
+    /// Each conversation's working device (`web::working_device`).
+    working: WorkingDevices,
 }
 
 impl Default for HostRegistry {
@@ -498,6 +501,7 @@ impl Default for HostRegistry {
             inner: Mutex::new(Inner::default()),
             ssh: watch::channel(SshPlan::default()).0,
             book: watch::channel(0).0,
+            working: WorkingDevices::default(),
         }
     }
 }
@@ -731,7 +735,18 @@ impl HostRegistry {
         drop(inner);
         tracing::info!("[host-registry] computer {} forgotten", short(id));
         self.note_book();
+        self.working.forget_device(id);
         Ok(())
+    }
+
+    /// Each conversation's working device.
+    pub fn working(&self) -> &WorkingDevices {
+        &self.working
+    }
+
+    /// Whether the book has the device with this id.
+    pub fn knows_device(&self, id: &str) -> bool {
+        self.lock().book.get(id).is_some()
     }
 
     /// The computers online now were last seen now.

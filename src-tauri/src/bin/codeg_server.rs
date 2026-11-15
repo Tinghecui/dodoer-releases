@@ -464,6 +464,22 @@ async fn async_main(
     // connected to it (`host_register` on `/ws/events`). With none connected
     // the tools answer that the person should open the workspace there.
     state.browser_tools_config.mark_served();
+    // Cowork fork: the person's devices, where this server reaches them
+    // through the desktop apps connected to it (`web::working_device`).
+    // Before any agent starts: its tools are decided at launch.
+    if host_bridge.is_none() {
+        use codeg_lib::web::working_device::{install, DeviceTools, LiveConversations};
+        install(Arc::new(DeviceTools::new(
+            Arc::clone(&state.host_registry),
+            Arc::new(LiveConversations {
+                manager: state.connection_manager.clone_ref(),
+                db: state.db.conn.clone(),
+            }),
+            Arc::new(codeg_lib::acp::manager::ConnectionManagerQuestionLookup {
+                manager: Arc::new(state.connection_manager.clone_ref()),
+            }),
+        )));
+    }
     codeg_lib::boot::start_delegation_service(
         &daemon,
         match &host_bridge {

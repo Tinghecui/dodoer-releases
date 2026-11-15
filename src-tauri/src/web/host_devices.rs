@@ -540,6 +540,7 @@ pub async fn start(state: &AppState) {
     registry.set_reserved_names(read_reserved().await);
     spawn_saver(Arc::clone(&registry), state.db.conn.clone());
     spawn_ticker(registry);
+    super::working_device::start(state).await;
 }
 
 fn spawn_saver(registry: Arc<HostRegistry>, conn: DatabaseConnection) {

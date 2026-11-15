@@ -1425,5 +1425,26 @@
         }
       }
     }
+  },
+  {
+    "name": "list_devices",
+    "description": "The user's computers connected to this server through the dodoer desktop app, each with its name, whether it is online (or when it last was), and whether it lends its shell (`ssh <name>`) and its browser (browser_open_tab with `device`). Also this conversation's working device, and which device the user's latest message came from (what they mean by \"this computer\" or \"my computer\"). Call it before operating one of the user's computers when you do not know which one.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "use_device",
+    "description": "Make one of the user's computers this conversation's working device; call it before you run anything on one of their computers (`ssh <name>`, browser tabs with `device`). Pass `name` when the user said which (\"on the laptop\"); leave it out to let the user pick. The first time this conversation uses a device the user is shown a card and picks one, which may not be the one you named: use the device this tool returns. A device chosen before is switched to at once. Keep to the working device even when the user's messages come from another device; switch only when the user says so. If the device cannot be used, tell the user; do not use another one instead. Ask before deleting, overwriting or changing system settings on it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The device's name, as list_devices gives it (like `laptop`). Leave it out to let the user pick."
+        }
+      }
+    }
   }
 ]

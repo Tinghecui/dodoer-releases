@@ -479,6 +479,10 @@ pub enum BrokerMessage {
     ComputerAct(BrokerComputerActRequest),
     ComputerLaunch(BrokerComputerLaunchRequest),
     ComputerClipboard(BrokerComputerClipboardRequest),
+    /// Cowork fork: the person's devices, `list_devices` / `use_device`
+    /// (`web::working_device`). Answered with a serialized
+    /// `web::working_device::DevicesAnswer`.
+    Devices(BrokerDevicesRequest),
     /// Who may be delegated to as an assistant right now, for the
     /// companion's `tools/list` schema roster. Answered
     /// `{"assistants": [AssistantRosterEntry, ...]}` — always answered, an
@@ -506,6 +510,26 @@ pub enum BrokerMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerListAssistantsRequest {
     pub token: String,
+}
+
+/// See [`BrokerMessage::Devices`]. Scoped to the caller's conversation: the
+/// working device is that conversation's.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerDevicesRequest {
+    pub token: String,
+    pub op: DevicesOp,
+}
+
+/// Which of the two device tools.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum DevicesOp {
+    List,
+    /// The device by name, or — with none — the one the person picks.
+    Use {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
 }
 
 /// The wrapped outcome the main process returns over the same socket.
@@ -858,6 +882,16 @@ pub async fn client_browser_tab_op_round_trip(
     req: &BrokerBrowserTabOpRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::BrowserTabOp(req.clone())).await
+}
+
+/// Dispatch a `list_devices` / `use_device` request and read back the
+/// serialized `web::working_device::DevicesAnswer`. `use_device` may wait on
+/// the person's card.
+pub async fn client_devices_round_trip(
+    socket_path: &str,
+    req: &BrokerDevicesRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::Devices(req.clone())).await
 }
 
 /// Dispatch a `computer_list_apps` request and read back the serialized

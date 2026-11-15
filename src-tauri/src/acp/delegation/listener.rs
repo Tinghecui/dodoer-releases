@@ -693,6 +693,27 @@ impl DelegationListener {
                 // To its end: a write cannot be recalled.
                 computer_response(&self.process_computer_clipboard(req).await)?
             }
+            BrokerMessage::Devices(req) => {
+                // Cowork fork (`web::working_device`). `use_device` may wait
+                // on the person's card, so it races peer-close as `Ask` does;
+                // dropping the wait withdraws the card. An invalid token, or
+                // a process that does not serve the tools, is told they are
+                // not here.
+                let tools = crate::web::working_device::installed();
+                let entry = self.tokens.lookup(&req.token).await;
+                let answer = match (entry, tools) {
+                    (Some(entry), Some(tools)) => {
+                        let mut probe = [0u8; 1];
+                        tokio::select! {
+                            biased;
+                            answer = tools.answer(&entry.parent_connection_id, req.op) => answer,
+                            _ = conn.read(&mut probe) => return Ok(()),
+                        }
+                    }
+                    _ => crate::web::working_device::DevicesAnswer::unavailable(),
+                };
+                devices_response(&answer)?
+            }
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -1405,6 +1426,17 @@ fn session_response(info: SessionInfo) -> std::io::Result<BrokerResponse> {
 /// Serialize a [`BrowserTabsOutcome`] into a [`BrokerResponse`] for the
 /// `BrowserTabs` arm — the companion renders it into the `browser_list_tabs`
 /// tool result.
+/// Serialize a `web::working_device::DevicesAnswer` into a [`BrokerResponse`].
+fn devices_response(
+    answer: &crate::web::working_device::DevicesAnswer,
+) -> std::io::Result<BrokerResponse> {
+    Ok(BrokerResponse {
+        outcome: serde_json::to_value(answer).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+        })?,
+    })
+}
+
 fn browser_tabs_response(outcome: BrowserTabsOutcome) -> std::io::Result<BrokerResponse> {
     Ok(BrokerResponse {
         outcome: serde_json::to_value(&outcome).map_err(|e| {

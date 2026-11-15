@@ -13,6 +13,7 @@ pub mod proxy_auth;
 pub mod router;
 pub mod shutdown;
 pub mod socket_inherit;
+pub mod working_device;
 pub mod ws;
 pub mod ws_attach;
 

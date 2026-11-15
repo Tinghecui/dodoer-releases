@@ -293,7 +293,7 @@ async fn run_download(
 
 /// Relaunch into the freshly-installed bytes. Flips the shared snapshot to
 /// `Restarting` first so the UI (and any other window) reflects it, then
-/// restarts after a short flush delay. `restart()` never returns.
+/// asks for the restart after a short flush delay and returns.
 ///
 /// On Windows the install happens here instead ([`INSTALL_AT_RESTART`]); see
 /// [`install_and_quit`].
@@ -316,7 +316,7 @@ pub async fn restart_app(
     if INSTALL_AT_RESTART {
         return install_and_quit(app, handle, emitter).await;
     }
-    // Off the main thread on purpose: from here `restart()` goes through
+    // Off the main thread on purpose: from here the restart goes through
     // `RunEvent::ExitRequested` and `RunEvent::Exit`. At `Exit` the
     // single-instance plugin removes its socket, and on macOS
     // `crate::relaunch` takes the restart over. On the main thread tauri
@@ -337,10 +337,18 @@ pub async fn restart_app(
     // launches it through LaunchServices (`open -n`), which makes it a job of
     // its own, from a relauncher in a process group of its own, and only once
     // this process is gone — earlier, the Dock gives it a second icon.
+    //
+    // `request_restart`, not `restart`: off the main thread `restart()` asks
+    // for the exit and then sleeps forever, and here that is a tokio worker.
+    // When that is the worker driving the runtime's timers and I/O, nothing
+    // drives them any more, and `lib::shut_down` on the main thread blocks
+    // on futures that need them (the 3 s timeout around stopping the lent
+    // sshd never fires): the app hung after "[host-ssh] stopping sshd" on
+    // both updates of 2026-11-15 and had to be force quit.
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         tracing::info!("[update] relaunching into the installed update");
-        app.restart();
+        app.request_restart();
     });
     Ok(())
 }
@@ -379,7 +387,10 @@ async fn install_and_quit(
         // for it: its agents, terminals and web service are gone. Come back up
         // as the version still installed rather than carry on half torn down.
         tracing::error!("[update] the installer did not start: {message}; relaunching");
-        app.restart();
+        // Not `restart()`, which would park this tokio worker for good (see
+        // `restart_app`).
+        app.request_restart();
+        return Ok(());
     }
     tracing::error!("[update] the update could not be installed: {message}");
     update_state::set_error(&handle, &emitter, message.clone());

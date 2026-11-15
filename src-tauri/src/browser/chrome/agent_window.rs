@@ -2,27 +2,37 @@
 //! (`docs/agent-chrome.md` section 5.6).
 //!
 //! Chrome cannot be told to open a tab in a given window: a new target goes
-//! wherever Chrome likes, often among the person's own tabs. A tab that a page
-//! opens, though, lands in that page's window (measured, section 10). So the
-//! window is opened once per connection, around a start page of the app's
-//! own, and every page after that is opened from the start page with
-//! `window.open`. The start page stays; the agents' pages go wherever they go.
+//! to the window of Chrome used last, often among the person's own tabs. So
+//! the window is opened once per connection, around a start page of the
+//! app's own, and before each page the start page is brought to the front:
+//! its window is then the one used last, and the new tab lands there
+//! (measured, section 10, fourth round). Should the person click into
+//! another window of Chrome in between, the page lands there instead; it is
+//! the agents' all the same, marked so in the panel.
+//!
+//! Pages used to be opened from the start page with `window.open`, which on
+//! the person's own Chrome crashed Chrome every time, in a check of Chrome's
+//! own about the page that opened the new one (section 10, fourth round). A
+//! tab DevTools asks for is opened by Chrome itself, with no page behind it,
+//! and never reaches that check.
 //!
 //! Opening the window brings Chrome to the front, which cannot be helped
-//! (section 10). It is left in front: the person sees agents start working
-//! in their Chrome, and can take over at any point.
+//! (section 10), and so does every page after it, its window being brought
+//! up first. Chrome is left in front: the person sees agents working in
+//! their Chrome, and can take over at any point.
 
 use std::fmt::Write as _;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::Mutex;
 
 use super::cdp::{CdpClient, CdpError};
 
-/// How long Chrome may take to say it opened the tab asked for.
-const OPEN_WAIT: Duration = Duration::from_secs(10);
+/// How long Chrome is given, once it says it brought the agents' window up,
+/// to count that window as the one used last. What the fourth round waited
+/// (section 10); shorter was not tried.
+const SETTLE: Duration = Duration::from_millis(300);
 
 /// The start page, which says whose window this is.
 const START_HTML: &str = concat!(
@@ -66,17 +76,6 @@ pub struct Opened {
 struct Start {
     client: CdpClient,
     target: String,
-    session: String,
-}
-
-/// Why a page was not opened.
-enum Failure {
-    /// The start page would not run the script: it is no longer there to
-    /// open anything from.
-    Script(String),
-    /// Anything after the script ran. Never retried: the tab may well be
-    /// open already.
-    Other(String),
 }
 
 /// The agents' window, opened on first use. One per app: the connection it
@@ -84,7 +83,8 @@ enum Failure {
 #[derive(Default)]
 pub struct AgentWindow {
     /// Held across a whole open, so that two agents' first pages do not open
-    /// two windows.
+    /// two windows, and one agent's page does not land in the window another
+    /// is bringing up.
     start: Mutex<Option<Start>>,
 }
 
@@ -94,49 +94,28 @@ impl AgentWindow {
     /// returns once Chrome has said the tab exists.
     pub async fn open(&self, client: &CdpClient, url: &str) -> Result<Opened, String> {
         let mut start = self.start.lock().await;
-        // Another connection's window, or a start page the person closed.
-        let gone = match start.as_ref() {
-            Some(current) => {
-                !current.client.same(client)
-                    || client
-                        .call("Target.getTargetInfo", json!({ "targetId": current.target }), None)
-                        .await
-                        .is_err()
-            }
-            None => false,
-        };
-        if gone {
+        if start.as_ref().is_some_and(|current| !current.client.same(client)) {
             *start = None;
         }
-        let reused = start.is_some();
-        let current = match start.take() {
-            Some(current) => current,
-            None => open_window(client).await.map_err(|err| format!("could not open a window for agents: {err}"))?,
+        // Bringing the window up is also how a start page the person closed
+        // is found out: there is no window to bring up any more.
+        let up = match start.as_ref() {
+            Some(current) => bring_up(client, &current.target).await.is_ok(),
+            None => false,
         };
-        let first = open_from(client, start.insert(current), url).await;
-        match first {
-            Ok(opened) => Ok(opened),
-            // The session to the start page ended while the page stayed:
-            // the person detached it in DevTools, say. A window of its own
-            // again, once.
-            Err(Failure::Script(_)) if reused => {
-                let fresh = open_window(client)
-                    .await
-                    .map_err(|err| format!("could not open a window for agents: {err}"))?;
-                open_from(client, start.insert(fresh), url)
-                    .await
-                    .map_err(Failure::into_message)
-            }
-            Err(failure) => Err(failure.into_message()),
+        if !up {
+            *start = None;
+            let fresh = open_window(client)
+                .await
+                .map_err(|err| format!("could not open a window for agents: {err}"))?;
+            bring_up(client, &fresh.target)
+                .await
+                .map_err(|err| format!("could not bring the agents' window up: {err}"))?;
+            *start = Some(fresh);
         }
-    }
-}
-
-impl Failure {
-    fn into_message(self) -> String {
-        match self {
-            Failure::Script(message) | Failure::Other(message) => message,
-        }
+        tokio::time::sleep(SETTLE).await;
+        let current = start.as_ref().expect("a window was brought up above");
+        open_page(client, current, url).await.map_err(|err| err.to_string())
     }
 }
 
@@ -148,16 +127,56 @@ async fn open_window(client: &CdpClient) -> Result<Start, CdpError> {
             None,
         )
         .await?;
-    let target = answered(&made, "targetId", "Target.createTarget")?;
-    let attached = client
-        .call("Target.attachToTarget", json!({ "targetId": target, "flatten": true }), None)
-        .await?;
-    let session = answered(&attached, "sessionId", "Target.attachToTarget")?;
     Ok(Start {
         client: client.clone(),
-        target,
-        session,
+        target: answered(&made, "targetId", "Target.createTarget")?,
     })
+}
+
+async fn bring_up(client: &CdpClient, start: &str) -> Result<(), CdpError> {
+    client
+        .call("Target.activateTarget", json!({ "targetId": start }), None)
+        .await
+        .map(drop)
+}
+
+async fn open_page(client: &CdpClient, start: &Start, url: &str) -> Result<Opened, CdpError> {
+    let made = client
+        .call("Target.createTarget", json!({ "url": url }), None)
+        .await?;
+    let target = answered(&made, "targetId", "Target.createTarget")?;
+    if let (Some(ours), Some(its)) = (window_of(client, &start.target).await, window_of(client, &target).await) {
+        if ours != its {
+            // Nothing to be done about it — Chrome does not move tabs — but
+            // it is how to find out how often it happens.
+            tracing::warn!("[chrome] an agent's page opened outside the agents' window");
+        }
+    }
+    // Where it is as Chrome opened it: often still nothing, the page asked
+    // for having not committed yet.
+    let info = client
+        .call("Target.getTargetInfo", json!({ "targetId": target }), None)
+        .await
+        .ok();
+    let text = |field: &str| {
+        info.as_ref()
+            .and_then(|info| info["targetInfo"][field].as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    Ok(Opened {
+        url: text("url"),
+        title: text("title"),
+        target,
+    })
+}
+
+async fn window_of(client: &CdpClient, target: &str) -> Option<i64> {
+    client
+        .call("Browser.getWindowForTarget", json!({ "targetId": target }), None)
+        .await
+        .ok()?["windowId"]
+        .as_i64()
 }
 
 fn answered(answer: &Value, field: &str, method: &str) -> Result<String, CdpError> {
@@ -169,64 +188,6 @@ fn answered(answer: &Value, field: &str, method: &str) -> Result<String, CdpErro
             code: 0,
             message: format!("no {field} in the answer"),
         })
-}
-
-async fn open_from(client: &CdpClient, start: &Start, url: &str) -> Result<Opened, Failure> {
-    // Subscribed before asking, so that the new tab cannot be announced
-    // before anybody listens.
-    let mut events = client.events();
-    // The new page is cut off from the start page at once: it is the
-    // agent's, and has no business with the window it was opened from.
-    // `noopener` would do the same and may leave Chrome unable to say which
-    // page opened the tab, which is how it is recognized below.
-    let expression = format!(
-        "(() => {{ const opened = window.open({}, \"_blank\"); \
-         if (opened) {{ try {{ opened.opener = null }} catch (_) {{}} }} \
-         return opened ? 1 : 0 }})()",
-        serde_json::to_string(url).unwrap_or_else(|_| "\"about:blank\"".to_string())
-    );
-    let ran = client
-        .call(
-            "Runtime.evaluate",
-            // As if the person had clicked: a script with no gesture behind
-            // it gets its window blocked as a popup.
-            json!({ "expression": expression, "userGesture": true, "returnByValue": true }),
-            Some(&start.session),
-        )
-        .await
-        .map_err(|err| Failure::Script(err.to_string()))?;
-    if ran["result"]["value"].as_i64() != Some(1) {
-        return Err(Failure::Other("Chrome blocked the new tab".to_string()));
-    }
-    let announced = tokio::time::timeout(OPEN_WAIT, async {
-        loop {
-            match events.recv().await {
-                Ok(event) if event.session.is_none() && event.method == "Target.targetCreated" => {
-                    let info = &event.params["targetInfo"];
-                    if info["type"].as_str() == Some("page")
-                        && info["openerId"].as_str() == Some(start.target.as_str())
-                    {
-                        let text = |field: &str| info[field].as_str().unwrap_or_default().to_string();
-                        if let Some(target) = info["targetId"].as_str() {
-                            return Some(Opened {
-                                target: target.to_string(),
-                                url: text("url"),
-                                title: text("title"),
-                            });
-                        }
-                    }
-                }
-                Ok(_) | Err(RecvError::Lagged(_)) => {}
-                Err(RecvError::Closed) => return None,
-            }
-        }
-    })
-    .await;
-    match announced {
-        Ok(Some(opened)) => Ok(opened),
-        Ok(None) => Err(Failure::Other("the connection to Chrome ended".to_string())),
-        Err(_) => Err(Failure::Other("Chrome did not say it opened the tab".to_string())),
-    }
 }
 
 #[cfg(test)]
@@ -247,35 +208,47 @@ mod tests {
         (client, chrome)
     }
 
-    async fn serve_window(chrome: &mut FakeChrome, target: &str, session: &str) {
-        let call = chrome.next_call().await;
-        assert_eq!(call["method"], "Target.createTarget");
-        assert_eq!(call["params"]["newWindow"], true);
-        assert_eq!(call["params"]["url"], start_page());
-        chrome.answer(&call, json!({ "targetId": target })).await;
-        let call = chrome.next_call().await;
-        assert_eq!(call["method"], "Target.attachToTarget");
-        assert_eq!(call["params"], json!({ "targetId": target, "flatten": true }));
-        chrome.answer(&call, json!({ "sessionId": session })).await;
+    fn opening(window: &Arc<AgentWindow>, client: &CdpClient) -> tokio::task::JoinHandle<Result<Opened, String>> {
+        let (window, client) = (window.clone(), client.clone());
+        tokio::spawn(async move { window.open(&client, URL).await })
     }
 
-    /// Answers the script on `session`, then announces a tab opened from
-    /// `opener` — after another one opened by somebody else.
-    async fn serve_open(chrome: &mut FakeChrome, session: &str, opener: &str, opened: &str) {
+    async fn serve_window(chrome: &mut FakeChrome, start: &str) {
         let call = chrome.next_call().await;
-        assert_eq!(call["method"], "Runtime.evaluate");
-        assert_eq!(call["sessionId"], session);
-        assert_eq!(call["params"]["userGesture"], true);
-        let expression = call["params"]["expression"].as_str().unwrap();
-        assert!(expression.contains("window.open(\"https://example.com/form\""));
-        chrome.answer(&call, json!({ "result": { "type": "number", "value": 1 } })).await;
+        assert_eq!(call["method"], "Target.createTarget");
+        assert_eq!(call["params"], json!({ "url": start_page(), "newWindow": true }));
+        chrome.answer(&call, json!({ "targetId": start })).await;
+        serve_bring_up(chrome, start).await;
+    }
+
+    async fn serve_bring_up(chrome: &mut FakeChrome, start: &str) {
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Target.activateTarget");
+        assert_eq!(call["params"]["targetId"], start);
+        chrome.answer(&call, json!({})).await;
+    }
+
+    /// Opens the page as `opened`, in window `landed_in`; the start page is
+    /// in window 1.
+    async fn serve_page(chrome: &mut FakeChrome, start: &str, opened: &str, landed_in: i64) {
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Target.createTarget");
+        // Not a new window, and nothing that would keep it out of the one
+        // used last.
+        assert_eq!(call["params"], json!({ "url": URL }));
+        chrome.answer(&call, json!({ "targetId": opened })).await;
+        for (target, window) in [(start, 1), (opened, landed_in)] {
+            let call = chrome.next_call().await;
+            assert_eq!(call["method"], "Browser.getWindowForTarget");
+            assert_eq!(call["params"]["targetId"], target);
+            chrome.answer(&call, json!({ "windowId": window })).await;
+        }
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Target.getTargetInfo");
+        assert_eq!(call["params"]["targetId"], opened);
         chrome
-            .say(json!({ "method": "Target.targetCreated", "params": { "targetInfo": {
-                "targetId": "PERSONS", "type": "page", "url": "https://other.example/", "title": "" } } }))
-            .await;
-        chrome
-            .say(json!({ "method": "Target.targetCreated", "params": { "targetInfo": {
-                "targetId": opened, "type": "page", "openerId": opener, "url": "", "title": "" } } }))
+            .answer(&call, json!({ "targetInfo": {
+                "targetId": opened, "type": "page", "url": "about:blank", "title": "about:blank" } }))
             .await;
     }
 
@@ -290,67 +263,91 @@ mod tests {
     async fn the_first_page_opens_the_window_and_the_next_ones_go_into_it() {
         let (client, mut chrome) = connected().await;
         let window = Arc::new(AgentWindow::default());
-        let opening = {
-            let (window, client) = (window.clone(), client.clone());
-            tokio::spawn(async move { window.open(&client, URL).await })
-        };
-        serve_window(&mut chrome, "W", "WS").await;
-        serve_open(&mut chrome, "WS", "W", "N1").await;
-        let opened = opening.await.unwrap().unwrap();
+        let first = opening(&window, &client);
+        serve_window(&mut chrome, "W").await;
+        serve_page(&mut chrome, "W", "N1", 1).await;
+        let opened = first.await.unwrap().unwrap();
         assert_eq!(opened.target, "N1");
+        assert_eq!(opened.url, "about:blank");
 
-        let opening = {
-            let (window, client) = (window.clone(), client.clone());
-            tokio::spawn(async move { window.open(&client, URL).await })
-        };
-        // The window is still there: no second one.
-        let call = chrome.next_call().await;
-        assert_eq!(call["method"], "Target.getTargetInfo");
-        assert_eq!(call["params"]["targetId"], "W");
-        chrome.answer(&call, json!({ "targetInfo": { "targetId": "W" } })).await;
-        serve_open(&mut chrome, "WS", "W", "N2").await;
-        assert_eq!(opening.await.unwrap().unwrap().target, "N2");
+        // The window is still there: brought up, and no second one.
+        let second = opening(&window, &client);
+        serve_bring_up(&mut chrome, "W").await;
+        serve_page(&mut chrome, "W", "N2", 1).await;
+        assert_eq!(second.await.unwrap().unwrap().target, "N2");
     }
 
     #[tokio::test]
     async fn a_window_the_person_closed_is_opened_again() {
         let (client, mut chrome) = connected().await;
         let window = Arc::new(AgentWindow::default());
-        let opening = {
-            let (window, client) = (window.clone(), client.clone());
-            tokio::spawn(async move { window.open(&client, URL).await })
-        };
-        serve_window(&mut chrome, "W", "WS").await;
-        serve_open(&mut chrome, "WS", "W", "N1").await;
-        opening.await.unwrap().unwrap();
+        let first = opening(&window, &client);
+        serve_window(&mut chrome, "W").await;
+        serve_page(&mut chrome, "W", "N1", 1).await;
+        first.await.unwrap().unwrap();
 
-        let opening = {
-            let (window, client) = (window.clone(), client.clone());
-            tokio::spawn(async move { window.open(&client, URL).await })
-        };
+        let second = opening(&window, &client);
         let call = chrome.next_call().await;
-        assert_eq!(call["method"], "Target.getTargetInfo");
+        assert_eq!(call["method"], "Target.activateTarget");
         chrome
             .say(json!({ "id": call["id"], "error": { "code": -32602, "message": "No target with given id found" } }))
             .await;
-        serve_window(&mut chrome, "W2", "WS2").await;
-        serve_open(&mut chrome, "WS2", "W2", "N2").await;
-        assert_eq!(opening.await.unwrap().unwrap().target, "N2");
+        serve_window(&mut chrome, "W2").await;
+        serve_page(&mut chrome, "W2", "N2", 1).await;
+        assert_eq!(second.await.unwrap().unwrap().target, "N2");
     }
 
     #[tokio::test]
-    async fn a_blocked_tab_is_said_to_be() {
+    async fn a_page_that_landed_in_another_window_is_still_the_agents() {
         let (client, mut chrome) = connected().await;
         let window = Arc::new(AgentWindow::default());
-        let opening = {
-            let (window, client) = (window.clone(), client.clone());
-            tokio::spawn(async move { window.open(&client, URL).await })
-        };
-        serve_window(&mut chrome, "W", "WS").await;
+        let first = opening(&window, &client);
+        serve_window(&mut chrome, "W").await;
+        serve_page(&mut chrome, "W", "N1", 2).await;
+        assert_eq!(first.await.unwrap().unwrap().target, "N1");
+    }
+
+    #[tokio::test]
+    async fn a_page_chrome_would_not_open_is_said_to_be() {
+        let (client, mut chrome) = connected().await;
+        let window = Arc::new(AgentWindow::default());
+        let first = opening(&window, &client);
+        serve_window(&mut chrome, "W").await;
         let call = chrome.next_call().await;
-        assert_eq!(call["method"], "Runtime.evaluate");
-        chrome.answer(&call, json!({ "result": { "type": "number", "value": 0 } })).await;
-        let failed = opening.await.unwrap().unwrap_err();
-        assert!(failed.contains("blocked"), "{failed}");
+        assert_eq!(call["method"], "Target.createTarget");
+        chrome
+            .say(json!({ "id": call["id"], "error": { "code": -32000, "message": "Failed to open a new tab" } }))
+            .await;
+        let failed = first.await.unwrap().unwrap_err();
+        assert!(failed.contains("Failed to open a new tab"), "{failed}");
+    }
+
+    /// The crash this replaces: no page of the agents' window is ever asked
+    /// to run a script, `window.open` least of all.
+    #[tokio::test]
+    async fn nothing_is_run_in_a_page() {
+        let (client, mut chrome) = connected().await;
+        let window = Arc::new(AgentWindow::default());
+        let first = opening(&window, &client);
+        let mut seen = Vec::new();
+        loop {
+            let call = chrome.next_call().await;
+            assert!(call.get("sessionId").is_none(), "asked of a page: {call}");
+            seen.push(call["method"].as_str().unwrap().to_string());
+            let answer = match call["method"].as_str().unwrap() {
+                "Target.createTarget" if call["params"]["newWindow"] == true => json!({ "targetId": "W" }),
+                "Target.createTarget" => json!({ "targetId": "N1" }),
+                "Browser.getWindowForTarget" => json!({ "windowId": 1 }),
+                "Target.getTargetInfo" => json!({ "targetInfo": { "targetId": "N1", "url": "", "title": "" } }),
+                _ => json!({}),
+            };
+            let last = call["method"] == "Target.getTargetInfo";
+            chrome.answer(&call, answer).await;
+            if last {
+                break;
+            }
+        }
+        first.await.unwrap().unwrap();
+        assert!(!seen.iter().any(|method| method.starts_with("Runtime.")), "{seen:?}");
     }
 }

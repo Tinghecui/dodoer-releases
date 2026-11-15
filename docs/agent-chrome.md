@@ -121,9 +121,10 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 
 - **看得见**：智能体开的标签放在 **单独的 Chrome 窗口** 里，不往用户正在用的窗口里塞标签、不抢用户的当前标签。用户想看就切到那个窗口。实测（第 10 节第二轮）定下来的做法：
   - 第一个标签用 `Target.createTarget` 带 `newWindow` 开，得到智能体的窗口。
-  - 之后的标签**从这个窗口里已有的标签上 `window.open`**（带 `noopener`），它们开在同一个窗口里。`Target.createTarget` 不带 `newWindow` 时落在用户的窗口，CDP 没有「开到指定窗口」的参数，所以不用它开第二个。为此窗口里留一个 dodoer 自己的起始标签（空白页，写一句「这个窗口是 dodoer 的智能体在用」），新标签都从它上面开；智能体的页面跳到哪里都不影响。
+  - 窗口里留一个 dodoer 自己的起始标签（写一句「这个窗口是 dodoer 的智能体在用」）。之后每开一个标签，**先把起始标签切到前面（`Target.activateTarget`），再 `Target.createTarget`（不带 `newWindow`）**：不带 `newWindow` 的新标签落在 Chrome 最后用的那个窗口，切过一下，最后用的就是智能体的窗口（第 10 节第四轮实测落对了）。CDP 没有「开到指定窗口」的参数，只能这样。如果用户恰好在这两步之间点了自己的窗口，标签会落到那边，照样归智能体、面板里照样标着；开完对一下两个标签的窗口号，不一样就记一条日志。
+  - **不再用 `window.open`**（2026-11-15 前是从起始标签上 `window.open`）：在用户日常的 Chrome 上（154 和 157）它每次都让 Chrome 崩掉，崩在 Chrome 自己对「打开新页面的那个页面」的一条检查上（第 10 节第四轮）；`Target.createTarget` 开的标签是 Chrome 自己开的，后面没有页面，走不到那条检查。
   - 窗口**最小化着也能干活**：点击和截图都正常。但 dodoer 不替用户把它收起来（用户 2026-11-14 定的：人能随时看到智能体在干什么更重要）；用户自己收起来也不影响智能体。
-  - **开这个窗口时 Chrome 会跳到前面，躲不掉**：第三轮试了让窗口一出生就最小化（`windowState: "minimized"`），Chrome 没照做，照样跳了出来。所以窗口一条连接只开一次（智能体第一次在 Chrome 里开网页时），之后一直复用，**开出来就让它留在前面，不收起来**。这一跳正好也是告诉用户「智能体开始在 Chrome 里干活了」。用户 Chrome 全屏用的时候（用户平时就是），新窗口也是全屏的、在单独的一屏里；用户说目前问题不大。第 4 步再看：之后从这个窗口里 `window.open` 会不会又跳一次。
+  - **开这个窗口时 Chrome 会跳到前面，躲不掉**：第三轮试了让窗口一出生就最小化（`windowState: "minimized"`），Chrome 没照做，照样跳了出来。所以窗口一条连接只开一次（智能体第一次在 Chrome 里开网页时），之后一直复用，**开出来就让它留在前面，不收起来**。这一跳正好也是告诉用户「智能体开始在 Chrome 里干活了」。用户 Chrome 全屏用的时候（用户平时就是），新窗口也是全屏的、在单独的一屏里；用户说目前问题不大。之后每开一个标签 Chrome 也会到前面（先切到智能体的窗口才落得对），这一点等用户用了再看能不能接受。
   - 退路：标签直接开在用户窗口的后台（开了焦点模拟后那里也收得到点击，不跳出来）。代价是智能体的标签和用户的混在一起，Chrome 里又做不了记号。
 - **人来做一步**：碰到登录、验证码、付款确认，智能体照现在的办法在对话里问用户（侧栏「等你回答」）。dodoer 的面板里每个标签有「跳到这个标签」（`Target.activateTarget` + 把 Chrome 提到前面），用户做完回对话里说一声，智能体接着干。
 - **把自己的页面交给智能体**：面板里列出 Chrome 现在开着的标签（标题和域名，只给用户看），点「交给智能体」。
@@ -190,7 +191,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 
 - **开关**：Chrome 面板顶上「让智能体用我的 Chrome」，每个范围一个——本机窗口共用一个（app 自己的智能体），每个远端窗口一个（那台服务器的智能体）。出厂关。后端只记在内存里（`ChromeLending`，`browser/chrome/lending.rs`），前端按范围记在 `localStorage`（`chrome:agents:<范围>`），窗口打开时交回给后端。新命令 `browser_chrome_agents` / `browser_chrome_set_agents`，按调用的窗口算范围，一个窗口只能改自己的。
 - **开着时智能体开网页**（`browser_open_tab`，工具定义不改，老服务器照样能用）：网址是公网的就开到 Chrome，回环和内网地址（`localhost`、`*.localhost`、`127.x`、`10.x`、`192.168.x`、`100.64/10`、单段主机名、`.local` 等）照旧开在内置浏览器——远端窗口的智能体说的是服务器自己的开发服务。Chrome 没连上时直接回「Chrome 没连上，请用户在 dodoer 左下角连上」，不悄悄退回内置浏览器（5.8）。
-- **单独的窗口**（`browser/chrome/agent_window.rs`，5.6 的做法）：第一次开网页时 `Target.createTarget { newWindow: true }` 开一个起始页（`data:` 页面，写着「这个窗口是 dodoer 的智能体在用」），attach 上；之后每个网页都在起始页里 `window.open`（`userGesture: true`，不然被当弹窗拦掉），新页面马上 `opener = null`；`Target.targetCreated` 里 `openerId` 是起始页的那个就是它。起始页被关了、换了连接就重开一个窗口。一次只开一个（锁住），两个智能体同时第一次开网页不会开出两个窗口。
+- **单独的窗口**（`browser/chrome/agent_window.rs`，5.6 的做法）：第一次开网页时 `Target.createTarget { newWindow: true }` 开一个起始页（`data:` 页面，写着「这个窗口是 dodoer 的智能体在用」）；每个网页先 `Target.activateTarget` 起始页、等 300 毫秒，再 `Target.createTarget { url }`，`Browser.getWindowForTarget` 对一下落在哪个窗口（不对只记日志）。起始页被关了（切不过去）、换了连接就重开一个窗口。一次只开一个（锁住），两个智能体同时开网页不会开出两个窗口，也不会一个刚切好窗口另一个的标签插进来。2026-11-15 前这里是在起始页里 `window.open`，会让用户的 Chrome 崩掉，见第 10 节第四轮。
 - **登记**：标签编号由 target id 推出来（`tabs::tab_id`，sha256 取前 16 字节当 uuid），面板的列表和开标签的这边不用互相问就对得上，也推不回 target id。`owner_window` 是 `chrome@<范围>`。登记后按「读取并操作」共享；页面跳到别的网站（点链接、登录跳转）时重新共享，**跳到敏感网站就放手**（detach，标签留在 Chrome 里）。没有照浏览器设置里的「默认共享级别」，固定是读取并操作。
 - **谁看得到**（`lending::reaches`，`McpBrowserTools` 的列表和每个工具的范围检查都走它）：本机的智能体看得到内置浏览器的全部标签、用户交出去的 Chrome 标签、本机智能体开的 Chrome 网页；远端窗口的智能体看得到这个窗口自己的标签、这个窗口的智能体开的 Chrome 网页，开关开着时再加上用户交出去的 Chrome 标签。别的范围的智能体开的网页谁也看不到。开关关掉：这个范围的智能体开的网页全部放手。
 - **敏感网站名单**（`browser/chrome/sensitive.rs`）：邮箱、支付、密码管理、能重置账户的账户页、常见银行和交易所，按主机名匹配（含子域名）。智能体在 Chrome 里打不开、`browser_navigate` 过不去（`browser_blocked`，并说「请用户自己做这一步」）；用户也交不出去这些网站的标签。只管 Chrome，不管内置浏览器（那里没有用户的登录）。名单现在写死，以后让用户改。
@@ -284,6 +285,18 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 | 「正受到控制」的提示 | 连着时有，断开后没了 |
 
 由此定的：开窗口时跳出来躲不掉，窗口一条连接只开一次、开了就复用（5.6）；dodoer 一直连着，所以这条提示会一直在，连接没断用户就看得见（第 11 节）。
+
+第四轮（2026-11-15，同一台机器；dodoer 1.6.7 第一次真在用户的 Chrome 里开网页）：
+
+| 问题 | 结果 |
+|---|---|
+| dodoer 的做法：`newWindow` 开起始页，attach，马上在起始页里 `window.open` | **Chrome 崩了**，两次都是：12:55 在 154.0.8037.98 上（开了 40 天、157 的更新已下好），13:12 在刚启动的 157.0.8103.51 上。崩溃报告（`~/Library/Logs/DiagnosticReports/Google Chrome-2026-11-15-*.ips`）都是 `CrBrowserMain` 上的 `EXC_BREAKPOINT` |
+| 崩在哪 | Google 不公开 Mac 版 Chrome 的符号，在 Mac 上用 lldb 反汇编各层、拿里面的字符串对 Chromium 154 的源码：`FrameHost::CreateNewWindow` → `WebContentsImpl::CreateNewWindow` / `CreateWithOpener` → `FrameTree::Init` → `RenderFrameHostImpl::SetOriginDependentStateOfNewFrame` 里的 `CHECK(rfs_document_data_from_creator)`：打开新页面的那个页面（起始页）身上没有 `RuntimeFeatureStateDocumentData`。157 上同一处、同样的调用顺序 |
+| 同样的步骤在干净的 Chrome 157 上 | 不崩：临时配置目录，无界面和有界面都试了，dodoer 一模一样的起始页、马上开和抢着导航时开，7 次都没崩。所以要再加上用户那个 Chrome 本身的什么（扩展、设置，或 chrome://inspect 授权的连接方式），没再缩小 |
+| 用户的 Chrome 上只用 `Target.createTarget`：`newWindow` 开第一个网页 | 开在新窗口，不崩，登录状态是用户的（用户看过） |
+| 先 `Target.activateTarget` 这个窗口里的标签、等 300 毫秒，再 `Target.createTarget`（不带 `newWindow`） | 落在同一个窗口（`Browser.getWindowForTarget` 对过），不崩 |
+
+由此改的：智能体的标签不再用 `window.open` 开，改成先切到智能体的窗口再 `Target.createTarget`（5.6）。前两轮「不带 `newWindow` 落在用户的 / 别的窗口」是没先切窗口时的结果，和这一轮不矛盾。
 
 
 还没测的（要等桌面包在用户的 Mac 上试，不挡开工）：

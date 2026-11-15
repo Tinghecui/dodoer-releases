@@ -8,7 +8,8 @@
  * in Chrome, and Chrome asks them about each connection — so the card is
  * mostly instructions: what to do in Chrome, and, for each way a connection
  * can fail, what that failure is asking them to do next. Under them, the
- * sites agents are kept off (`ChromeSitesSettings`). The backend never
+ * switch for running agents' own code in Chrome (`ChromeEvalSetting`) and
+ * the sites agents are kept off (`ChromeSitesSettings`). The backend never
  * connects on its own, so a state that names a problem stays until the
  * button is pressed again.
  *
@@ -37,6 +38,7 @@ import {
 } from "@/lib/browser/chrome-api"
 import { copyTextToClipboard } from "@/lib/utils"
 
+import { ChromeEvalSetting } from "./chrome-eval-switch"
 import { ChromeSitesSettings } from "./chrome-sites-settings"
 
 // Literal message keys per problem — next-intl only resolves literal keys.
@@ -253,6 +255,9 @@ export function ChromeConnectSettings() {
           </div>
         </SettingRow>
       ) : null}
+      {/* Whether connected or not: like the list below, the switch is the
+          app's, and best decided before the first connection. */}
+      <ChromeEvalSetting />
       {/* Whether connected or not: the list is the app's, in force from the
           moment it starts, and best looked over before the first connection. */}
       <ChromeSitesSettings />

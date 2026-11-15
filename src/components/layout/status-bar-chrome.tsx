@@ -24,6 +24,10 @@
  * one for every local window, one per remote window — and told to the
  * backend again when the app starts, which keeps it only in memory.
  *
+ * Under it, the switch for running agents' own code in the tabs they may act
+ * on (`ChromeEvalPanelSwitch`, `docs/agent-chrome.md` 13.5), with its risk
+ * spelled out; the same switch is on the settings page.
+ *
  * In a remote window the switch also turns this computer's browser tools on
  * (`lendBrowserSwitch`): the server's agents reach Chrome through the tabs
  * the app lends, and the app lends none while its own switch is off.
@@ -33,7 +37,8 @@
  * 13.4): kept by the backend for as long as the connection lasts, asked for
  * when the panel opens and again on every `browser://agent-activity`. A line
  * says which field an input went into, never what was typed, and of a
- * password field only that it was one.
+ * password field only that it was one. A line of running code has the code
+ * behind a disclosure of its own.
  *
  * Desktop only (Chrome is on the computer the app runs on), and there from
  * the start: the switch is in this panel, so hiding the glyph until the first
@@ -72,6 +77,7 @@ import {
   NEEDS_PASTE,
   PROBLEM_KEYS,
 } from "@/components/settings/chrome-connect-settings"
+import { ChromeEvalPanelSwitch } from "@/components/settings/chrome-eval-switch"
 import { useMinuteNow } from "@/hooks/use-minute-now"
 import { openSettingsWindow } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
@@ -386,6 +392,8 @@ function ChromeItem({ className }: { className?: string }) {
           </p>
         </div>
 
+        <ChromeEvalPanelSwitch open={open} />
+
         {state === "connected" ? (
           <div className="overflow-hidden rounded-lg border">
             <div className="px-2 py-1.5">
@@ -538,13 +546,14 @@ function describeActivity(t: Translate, entry: ChromeActivityEntry): string {
     entry.target && entry.action in ACTION_ON_KEYS
       ? ACTION_ON_KEYS[entry.action as keyof typeof ACTION_ON_KEYS]
       : null
+  const target = entry.target
   const what =
-    onKey && entry.target
+    onKey && target && target.kind !== "code"
       ? t(onKey, {
           target:
-            entry.target.kind === "password"
+            target.kind === "password"
               ? t("activity.password")
-              : t("activity.named", { name: entry.target.name }),
+              : t("activity.named", { name: target.name }),
         })
       : t(ACTION_KEYS[entry.action])
   if (entry.outcome === "refused") return t("activity.refused", { what })
@@ -618,11 +627,39 @@ function ChromeTabActivity({
               {" · "}
               {describeActivity(t, entry)}
               {entry.host && entry.host !== tabHost ? ` · ${entry.host}` : null}
+              {entry.target?.kind === "code" ? (
+                <ActivityCode code={entry.target.code} />
+              ) : null}
             </li>
           ))}
         </ol>
       ) : null}
     </div>
+  )
+}
+
+/** The code an agent ran, behind its own disclosure: up to 4000
+ *  characters, too much to show on every line. */
+function ActivityCode({ code }: { code: string }) {
+  const t = useTranslations("ChromeSettings")
+  const [shown, setShown] = useState(false)
+  return (
+    <>
+      {" · "}
+      <button
+        type="button"
+        aria-expanded={shown}
+        className="underline-offset-2 hover:text-foreground hover:underline"
+        onClick={() => setShown((was) => !was)}
+      >
+        {shown ? t("activity.hideCode") : t("activity.showCode")}
+      </button>
+      {shown ? (
+        <pre className="mt-0.5 max-h-32 overflow-auto rounded border bg-muted/50 p-1 font-mono text-3xs whitespace-pre-wrap break-all text-foreground">
+          {code}
+        </pre>
+      ) : null}
+    </>
   )
 }
 

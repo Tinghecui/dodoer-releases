@@ -199,7 +199,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 - **跳到这个标签**：面板里每个标签一个按钮，`Target.activateTarget`（新命令 `browser_chrome_activate`）。
 - **面板**：智能体开的网页带「智能体开的」记号（看 `ownerWindow` 前缀），没有「交给智能体」菜单。
 - **工具说明**（`tool_schema.json`）：`browser_list_tabs` / `browser_open_tab` / `browser_close_tab` 写上 Chrome 的情况。服务器上的 codeg-mcp 升级以前，服务器上的智能体看到的还是旧说明，不影响用。
-- 没做：暂停开关（关掉「让智能体用我的 Chrome」就是停）、Chrome 的执行代码开关、名单可编辑、~~页面弹的 `alert` / `confirm`~~（13.2 做了）、`browser_list_tabs` 里的 `browser: "chrome"` 字段、面板里的活动记录。
+- 没做：暂停开关（关掉「让智能体用我的 Chrome」就是停）、~~Chrome 的执行代码开关~~（13.5 做了）、名单可编辑、~~页面弹的 `alert` / `confirm`~~（13.2 做了）、`browser_list_tabs` 里的 `browser: "chrome"` 字段、面板里的活动记录。
 - 验收：远端窗口里打开开关，服务器上的智能体 `browser_open_tab` 一个要登录的网站，Chrome 弹出一个单独的窗口、页面是登录后的，智能体读得到、点得动；`browser_open_tab` 一个 `localhost` 地址仍开在内置浏览器；开 `mail.google.com` 被拒绝；面板里这个网页带「智能体开的」，点跳转能切过去；关掉开关后智能体看不到它，标签还在 Chrome 里。
 
 ## 8. 验收
@@ -410,6 +410,14 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
   - 每次执行进活动记录（`Eval`），面板里能展开看执行的代码（前 4000 字，和 `MAX_EVAL_CODE_CHARS` 一样）。
 - **风险**（开关下面直接写出来）：执行代码能读到这个网站上的一切，包括页面能读到的登录信息（不含 HttpOnly 的 Cookie），能替你发任何这个网站允许的请求。点击和填写够用时不要打开。
 - **验收**：开关关着时 `browser_eval` 对 Chrome 标签回 `eval_disabled`（说明里指到这个开关，不是内置浏览器那个）；打开后在「读取并操作」的标签上能跑、在只读标签上被拒；面板里看得到执行过的代码。
+- **实现（PR「chrome-eval-switch」）**：
+  - 开关整台电脑一个，不按窗口分范围：它管的是这台电脑上的 Chrome，设置页（独立窗口）和各个窗口的面板看到的是同一个。文案「允许智能体在交给它可操作的标签里执行代码」，下面写风险（能读到这个网站上的一切，包括页面能看到的登录信息，能以你的身份在这个网站上做任何事；只对「读取并操作」的标签，敏感网站不行；点击和填写用不着）。面板里开着时风险那行变黄。
+  - 后端 `ChromeLending::eval_allowed` / `set_eval`，命令 `browser_chrome_eval` / `browser_chrome_set_eval`（`SHELL_ONLY_COMMANDS`），前端 `localStorage` 的 `chrome:eval`，启动时交回后端。
+  - `agent_eval_core` → `eval_on_shared_page`：共享和级别照旧先查（没交出 → `browser_grant_required`，只读 → `browser_control_required`），Chrome 标签再走 `eval_in_chrome`：开关 → 在 app 的 world 里核对地址（`control`）+ 敏感网站名单 → 页面 world 里 `Runtime.evaluate`（`ChromePage::eval_in_page`，不带 `contextId`；`surface.eval_with_callback` 对 Chrome 照旧拒绝，只有这一条路）→ 再核对一次地址（`read`）才交出结果。代码解析不了时回 Chrome 自己的报错。
+  - 关着时智能体收到 `browser_eval_disabled`，说明是「Running your own code in the user's own Chrome is switched off … Only the user can turn it on, in the app: the Chrome panel at the foot of the sidebar, or Settings → Built-in browser → Your own Chrome …」。
+  - **`browser_eval` 的出现条件改了**：原来要内置浏览器的执行代码开关开着，工具才进智能体的工具表。Chrome 的开关在桌面 app 的内存里，而决定工具表的是 app 的子进程 daemon 或远端服务器，它们看不到这个开关；照原样做，用户只开 Chrome 的开关时智能体根本看不到这个工具。所以现在浏览器工具组开着就提供 `browser_eval`，内置标签在调用时照旧按内置开关拒绝（`McpBrowserTools::eval`），Chrome 标签按 Chrome 的开关拒绝。代价：浏览器组开着的智能体都多一个工具的说明。
+  - 活动记录：`ActivityTarget::Code { code }`（前 4000 字，和 `MAX_EVAL_CODE_CHARS` 一样），执行、被拒、失败都记；面板里这一行后面「看代码」。
+  - 没做：开关改了以后已经在跑的会话不用重启（调用时读开关），但工具表是会话开始时定的，老会话如果开始时浏览器组是关的，照样看不到这个工具。
 
 ### 13.6 `browser_list_tabs` 标出浏览器（F）
 

@@ -5902,7 +5902,9 @@
         "type": "in {target} getippt",
         "press": "in {target} eine Taste gedrückt",
         "select": "in {target} eine Option gewählt"
-      }
+      },
+      "showCode": "Code anzeigen",
+      "hideCode": "Code ausblenden"
     },
     "openSettings": "Chrome-Einstellungen",
     "panelNeedsSettings": "dodoer hat nicht gefunden, wo es sich mit Chrome verbinden soll. Öffne unten die Chrome-Einstellungen, um zu sehen, was zu tun ist.",
@@ -5917,6 +5919,9 @@
     "agentsHint": "Eingeschaltet öffnen sich die Seiten, die Agenten hier öffnen, in einem eigenen Fenster deines Chrome, mit deiner Anmeldung. Tabs, die du selbst geöffnet hast, brauchen weiterhin „An Agenten übergeben“; Mail-, Zahlungs- und Bankseiten bleiben tabu.",
     "agentsOffline": "Eingeschaltet, aber Chrome ist nicht verbunden: Agenten können keine Seiten öffnen, bis du es verbindest oder dies ausschaltest.",
     "agentsFailed": "Der Schalter ließ sich nicht umlegen: {message}",
+    "evalSwitch": "Agenten in Tabs, die sie bedienen dürfen, Code ausführen lassen",
+    "evalRisk": "Nur in Tabs, die Agenten zum Lesen und Bedienen übergeben wurden – nie in nur lesbaren oder nicht geteilten, nie auf sensiblen Websites. Code, den ein Agent dort ausführt, kann alles auf dieser Website lesen, auch Anmeldedaten, die die Seite sieht, und kann dort alles in deinem Namen tun. Klicken und Tippen brauchen das nicht; lass es aus, solange du es nicht brauchst.",
+    "evalFailed": "Der Schalter ließ sich nicht umlegen: {message}",
     "openedByAgent": "Von einem Agenten geöffnet",
     "jumpTo": "Diesen Tab zeigen",
     "jumpFailed": "Konnte nicht zum Tab wechseln: {message}",

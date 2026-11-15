@@ -5902,7 +5902,9 @@
         "type": "digitou em {target}",
         "press": "pressionou uma tecla em {target}",
         "select": "escolheu uma opção em {target}"
-      }
+      },
+      "showCode": "Ver o código",
+      "hideCode": "Ocultar o código"
     },
     "openSettings": "Configurações do Chrome",
     "panelNeedsSettings": "O dodoer não encontrou onde se conectar ao Chrome. Abra as configurações do Chrome abaixo para ver o que fazer.",
@@ -5917,6 +5919,9 @@
     "agentsHint": "Ligado, as páginas que os agentes que trabalham aqui abrirem vão para uma janela separada do seu Chrome, com a sua sessão. As abas que você mesmo abriu continuam precisando de “Passar aos agentes”; sites de e-mail, pagamento e banco ficam fora do alcance deles.",
     "agentsOffline": "Ligado, mas o Chrome não está conectado: os agentes não conseguirão abrir páginas até você conectá-lo ou desligar isto.",
     "agentsFailed": "Não foi possível mudar o interruptor: {message}",
+    "evalSwitch": "Deixar os agentes executarem código nos separadores onde podem agir",
+    "evalRisk": "Só nos separadores entregues aos agentes para ler e agir — nunca nos só de leitura ou não partilhados, nunca em sites sensíveis. O código que um agente executa aí pode ler tudo nesse site, incluindo os dados de início de sessão que a página vê, e pode fazer qualquer coisa aí em seu nome. Clicar e escrever não precisam disto; deixe desligado a menos que precise.",
+    "evalFailed": "Não foi possível mudar o interruptor: {message}",
     "openedByAgent": "Aberta por um agente",
     "jumpTo": "Mostrar esta aba",
     "jumpFailed": "Não foi possível mudar para a aba: {message}",

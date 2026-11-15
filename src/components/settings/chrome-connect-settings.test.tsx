@@ -36,6 +36,10 @@ vi.mock("sonner", () => ({ toast: mocks.toast }))
 vi.mock("./chrome-sites-settings", () => ({
   ChromeSitesSettings: () => null,
 }))
+// Its own test: `chrome-eval-switch.test.tsx`.
+vi.mock("./chrome-eval-switch", () => ({
+  ChromeEvalSetting: () => null,
+}))
 
 import { ChromeConnectSettings } from "./chrome-connect-settings"
 import enMessages from "@/i18n/messages/en.json"

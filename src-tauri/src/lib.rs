@@ -1651,6 +1651,8 @@ mod tauri_app {
                 browser_chrome_commands::browser_chrome_share,
                 browser_chrome_commands::browser_chrome_agents,
                 browser_chrome_commands::browser_chrome_set_agents,
+                browser_chrome_commands::browser_chrome_eval,
+                browser_chrome_commands::browser_chrome_set_eval,
                 browser_chrome_commands::browser_chrome_activate,
                 browser_chrome_commands::browser_chrome_sites,
                 browser_chrome_commands::browser_chrome_set_sites,

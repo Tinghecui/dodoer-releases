@@ -128,6 +128,28 @@ pub async fn browser_chrome_set_agents(
     Ok(on)
 }
 
+/// Whether agents may run their own code (`browser_eval`) in the Chrome tabs
+/// they may act on (`docs/agent-chrome.md` 13.5). One switch for this
+/// computer's Chrome, whichever window asks.
+#[tauri::command]
+pub async fn browser_chrome_eval(
+    lending: State<'_, ChromeLending>,
+) -> Result<bool, AppCommandError> {
+    Ok(lending.eval_allowed())
+}
+
+/// The person's switch for running code in their Chrome. Kept in memory
+/// only; the windows remember it and hand it back when the app starts. The
+/// app's own shell is the only way here: no server route, no agent tool.
+#[tauri::command]
+pub async fn browser_chrome_set_eval(
+    lending: State<'_, ChromeLending>,
+    on: bool,
+) -> Result<bool, AppCommandError> {
+    lending.set_eval(on);
+    Ok(on)
+}
+
 /// The sites agents are kept off in the person's Chrome, for the settings
 /// page: the default list, and the person's edits to it
 /// (`chrome::sensitive`).

@@ -2424,6 +2424,18 @@ pub const BROWSER_I18N_KEY_EVAL_DECLINED: &str = "browser.agent.error.evalDeclin
 /// period a refusal buys.
 pub const BROWSER_I18N_KEY_EVAL_BUSY: &str = "browser.agent.error.evalBusy";
 
+/// Cowork fork: the person's switch for running code in their own Chrome is
+/// off (`ChromeLending::eval_allowed`, `docs/agent-chrome.md` 13.5).
+pub const BROWSER_I18N_KEY_CHROME_EVAL_DISABLED: &str = "browser.chrome.error.evalDisabled";
+
+/// What an agent is told when that switch is off: where the person turns it
+/// on, and that only they can.
+pub const CHROME_EVAL_DISABLED_NOTE: &str = "Running your own code in the user's own Chrome is \
+     switched off, which is its default. Only the user can turn it on, in the app: the Chrome \
+     panel at the foot of the sidebar, or Settings → Built-in browser → Your own Chrome, \
+     \"Let agents run code in tabs they may act on\". Ask them in the conversation if you need it, \
+     and say why. Reading, clicking and typing work without it.";
+
 /// How long the engine gets to run a snippet and hand back its render.
 ///
 /// A snippet that loops forever has hung the page's main thread, and no
@@ -2472,7 +2484,17 @@ pub async fn agent_eval_core(
         Err((outcome, err)) => (outcome, Err(err)),
     };
     if let Some(outcome) = outcome {
-        events::emit_agent_activity(app, tab_id, agent::AgentAction::Eval, outcome, now_millis());
+        // Cowork fork: on a tab of the person's Chrome the panel's line keeps
+        // the code itself (`chrome::activity`, 13.5); other tabs ignore it.
+        let code = crate::browser::chrome::activity::ActivityTarget::code(&request.code);
+        events::emit_agent_activity_on(
+            app,
+            tab_id,
+            agent::AgentAction::Eval,
+            outcome,
+            now_millis(),
+            Some(code),
+        );
     }
     answer
 }
@@ -2608,15 +2630,10 @@ async fn eval_on_shared_page(
     if !level.allows(GrantLevel::Control) {
         return Err((Some(agent::AgentOutcome::Refused), control_required(tab_id)));
     }
-    // A tab of the person's own Chrome: the dialog that asks them about the
-    // code would be shown by a window that does not exist (its owner is no
-    // window), and Chrome has a switch of its own for this, still to come
-    // (`docs/agent-chrome.md` 5.4). Reading and acting need none of it.
-    if surface.kind() == SurfaceKind::External {
-        return Err((
-            Some(agent::AgentOutcome::Refused),
-            AppCommandError::permission_denied(crate::browser::surface_external::NO_PAGE_SCRIPT),
-        ));
+    // Cowork fork: a tab of the person's own Chrome goes by the switch for
+    // their Chrome, not by a dialog (`docs/agent-chrome.md` 13.5).
+    if let BrowserSurface::External(handle) = &surface {
+        return eval_in_chrome(app, registry, handle, tab_id, generation, request).await;
     }
 
     // Where the page is now, from codeg's world, held against the grant — and
@@ -2700,6 +2717,119 @@ async fn eval_on_shared_page(
         outcome: EvalOutcome::from_answer(&answer, url),
         record,
     })
+}
+
+fn chrome_eval_disabled(tab_id: &str) -> AppCommandError {
+    AppCommandError::permission_denied(format!(
+        "running code is switched off for the person's Chrome (browser tab {tab_id})"
+    ))
+    .with_i18n(
+        BROWSER_I18N_KEY_CHROME_EVAL_DISABLED,
+        std::collections::BTreeMap::new(),
+    )
+}
+
+/// Cowork fork: [`eval_on_shared_page`] for a tab of the person's own Chrome,
+/// once the share and the `control` level have been checked.
+///
+/// No dialog: Chrome is not a window of the app's to hang one on, and the
+/// built-in browser already put the weight on a switch rather than on a
+/// question answered by reflex (`browser::eval`). So the gates are:
+///
+/// 1. the person's switch for their Chrome, read now — off by default, only
+///    the app's shell can turn it on (`browser_chrome_set_eval`), and the
+///    built-in browser's `browser_eval` switch has no say here;
+/// 2. where the page is, from the app's own world, held against the grant at
+///    `control`, and the sensitive-site list — the last thing before the
+///    code, with nothing awaited between;
+/// 3. the code, in the page's own world;
+/// 4. where the page is now, at `read`, before what the code produced is
+///    handed over.
+async fn eval_in_chrome(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    handle: &crate::browser::surface_external::ExternalHandle,
+    tab_id: &str,
+    generation: u64,
+    request: &EvalRequest,
+) -> Result<Evaluated, ReadFailure> {
+    let refused = |err: AppCommandError| (Some(agent::AgentOutcome::Refused), err);
+    let failed = |err: AppCommandError| (Some(agent::AgentOutcome::Failed), err);
+    let allowed = app
+        .try_state::<crate::browser::chrome::ChromeLending>()
+        .is_some_and(|lending| lending.eval_allowed());
+    if !allowed {
+        return Err(refused(chrome_eval_disabled(tab_id)));
+    }
+    let surface = BrowserSurface::External(handle.clone());
+    let (url, _) =
+        eval_page_address(registry, &surface, tab_id, generation, GrantLevel::Control).await?;
+    // A shared tab that reaches a sensitive site is let go of as it gets
+    // there; this is for the moment in between.
+    if let Ok(parsed) = Url::parse(&url) {
+        crate::browser::chrome_share::sensitive_check(&parsed).map_err(refused)?;
+    }
+
+    let raw = run_in_chrome_page(handle, &eval::eval_call(&request.code))
+        .await
+        .map_err(failed)?;
+    let answer = read_eval_answer(&raw).map_err(failed)?;
+
+    let url =
+        match eval_page_address(registry, &surface, tab_id, generation, GrantLevel::Read).await {
+            Ok((url, _)) => url,
+            Err((outcome, err)) => {
+                tracing::warn!(
+                    "[browser] Chrome tab {tab_id}: a snippet ran and its result was withheld: {}",
+                    err.message
+                );
+                return Err((outcome, err));
+            }
+        };
+    let record = registry
+        .read(tab_id, |tab| tab.generation == generation)
+        .unwrap_or(false);
+    Ok(Evaluated {
+        outcome: EvalOutcome::from_answer(&answer, url),
+        record,
+    })
+}
+
+/// [`run_in_page`] for a Chrome tab: the wrapper's answer, encoded once more
+/// the way the app's own engines hand it over, so [`read_eval_answer`] reads
+/// both alike.
+async fn run_in_chrome_page(
+    handle: &crate::browser::surface_external::ExternalHandle,
+    js: &str,
+) -> Result<String, AppCommandError> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+    handle.run_agent_code(js, move |result| {
+        let _ = tx.send(result);
+    });
+    match tokio::time::timeout(EVAL_TIMEOUT, rx).await {
+        Ok(Ok(Ok(value))) => Ok(chrome_answer_as_engine_answer(&value)),
+        Ok(Ok(Err(err))) => Err(window_err(
+            "Failed to run the code",
+            format!(
+                "Chrome did not run it: {err}. The snippet is used as the body of a function; \
+                 check that it parses."
+            ),
+        )),
+        Ok(Err(_)) => Err(window_err(
+            "Failed to run the code",
+            "the request was dropped",
+        )),
+        Err(_) => Err(window_err(
+            "Failed to run the code",
+            "the page did not answer in time. It may still be running: code that loops holds the \
+             page's own main thread, which nothing here can take back.",
+        )),
+    }
+}
+
+/// The wrapper's string as the app's engines report it: JSON-encoded.
+fn chrome_answer_as_engine_answer(value: &str) -> String {
+    serde_json::Value::String(value.to_string()).to_string()
 }
 
 /// Parse what the page handed back through `eval_with_callback`.
@@ -4044,10 +4174,15 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
             );
         }
         // Its own switch, re-read here rather than trusted from injection
-        // time. `tools/list` hides the tool when it is off, so an agent only
-        // reaches this line if the user turned it off mid-session — which is
-        // exactly the case the re-read is for.
-        if !self.config.is_eval_enabled().await {
+        // time. Cowork fork: `tools/list` offers the tool whenever the
+        // browser tools are, because a tab of the person's Chrome goes by a
+        // switch of its own instead (in the core, `eval_in_chrome`), which the
+        // agent's server cannot see — so this is the line a built-in tab is
+        // refused at while the switch is off.
+        let chrome_tab = registry
+            .read(tab_id, |tab| tab.state.surface == SurfaceKind::External)
+            .unwrap_or(false);
+        if !chrome_tab && !self.config.is_eval_enabled().await {
             return BrowserEvalOutcome::refused(
                 tab_id,
                 ERROR_EVAL_DISABLED,
@@ -4059,8 +4194,29 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
         let Some(consent) = self.app.try_state::<EvalConsent>() else {
             return BrowserEvalOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE);
         };
+        // Cowork fork: a page of the person's Chrome stopped on a dialog runs
+        // nothing; said straight away, as the other tools do (13.2).
+        if let Some(note) = chrome_dialog_note(&registry, tab_id) {
+            return BrowserEvalOutcome::refused(
+                tab_id,
+                crate::acp::browser_tools::ERROR_DIALOG_OPEN,
+                note,
+            );
+        }
         let call = agent_eval_core(&self.app, &registry, &consent, tab_id, &request);
-        match self.as_caller(call).await {
+        let answer = self.as_caller(call).await;
+        if let Some(note) = answer
+            .as_ref()
+            .err()
+            .and_then(|_| chrome_dialog_note(&registry, tab_id))
+        {
+            return BrowserEvalOutcome::refused(
+                tab_id,
+                crate::acp::browser_tools::ERROR_DIALOG_OPEN,
+                note,
+            );
+        }
+        match answer {
             Ok(result) => BrowserEvalOutcome::ran(tab_id, result),
             Err(err) => match err.i18n_key.as_deref() {
                 Some(BROWSER_I18N_KEY_GRANT_REQUIRED) => BrowserEvalOutcome::grant_required(tab_id),
@@ -4070,6 +4226,21 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
                 Some(BROWSER_I18N_KEY_EVAL_DECLINED) => BrowserEvalOutcome::declined(tab_id),
                 Some(BROWSER_I18N_KEY_EVAL_BUSY) => {
                     BrowserEvalOutcome::refused(tab_id, ERROR_EVAL_BUSY, err.message)
+                }
+                Some(BROWSER_I18N_KEY_CHROME_EVAL_DISABLED) => BrowserEvalOutcome::refused(
+                    tab_id,
+                    ERROR_EVAL_DISABLED,
+                    CHROME_EVAL_DISABLED_NOTE,
+                ),
+                Some(crate::browser::chrome_share::BROWSER_I18N_KEY_SENSITIVE) => {
+                    BrowserEvalOutcome::refused(
+                        tab_id,
+                        crate::acp::browser_tools::ERROR_BLOCKED,
+                        format!(
+                            "{}. Ask the person to do this part themselves, in their Chrome.",
+                            err.message.trim_end_matches('.')
+                        ),
+                    )
                 }
                 _ if matches!(err.code, crate::app_error::AppErrorCode::NotFound) => {
                     BrowserEvalOutcome::refused(
@@ -4872,6 +5043,33 @@ pub async fn browser_clear_downloads(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Chrome hands back the wrapper's string itself; the app's engines hand
+    /// it JSON-encoded. Encoded once more, a Chrome answer reads like theirs.
+    #[test]
+    fn a_chrome_answer_reads_like_an_engine_s() {
+        let wrapper = r#"{"ok":true,"kind":"string","value":"\"Inbox\""}"#;
+        let answer = read_eval_answer(&chrome_answer_as_engine_answer(wrapper)).unwrap();
+        assert!(answer.ok);
+        assert_eq!(answer.kind.as_deref(), Some("string"));
+        assert_eq!(answer.value.as_deref(), Some("\"Inbox\""));
+        // A wrapper the snippet broke out of is the caller's own doing.
+        assert!(read_eval_answer(&chrome_answer_as_engine_answer("not json")).is_err());
+    }
+
+    /// The refusal for the Chrome switch is its own, so the tool can tell the
+    /// agent where that switch is — not the built-in browser's.
+    #[test]
+    fn the_chrome_switch_has_its_own_refusal() {
+        let err = chrome_eval_disabled("tab-1");
+        assert_eq!(
+            err.i18n_key.as_deref(),
+            Some(BROWSER_I18N_KEY_CHROME_EVAL_DISABLED)
+        );
+        assert!(err.message.contains("tab-1"));
+        assert!(CHROME_EVAL_DISABLED_NOTE.contains("Your own Chrome"));
+        assert!(CHROME_EVAL_DISABLED_NOTE.contains("Only the user can turn it on"));
+    }
 
     #[test]
     fn tab_ids_are_label_safe() {

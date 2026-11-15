@@ -5902,7 +5902,9 @@
         "type": "typed into {target}",
         "press": "pressed a key in {target}",
         "select": "chose an option in {target}"
-      }
+      },
+      "showCode": "Show the code",
+      "hideCode": "Hide the code"
     },
     "openSettings": "Chrome settings",
     "panelNeedsSettings": "dodoer could not find where to connect to Chrome. Open Chrome settings below to see what to do.",
@@ -5917,6 +5919,9 @@
     "agentsHint": "When on, the pages agents working here open go to a separate window of your Chrome, signed in as you. Tabs you opened yourself still need “Hand to agents”; mail, payment and bank sites stay off limits.",
     "agentsOffline": "On, but Chrome is not connected: agents opening a page will fail until you connect it or turn this off.",
     "agentsFailed": "Could not change the switch: {message}",
+    "evalSwitch": "Let agents run code in tabs they may act on",
+    "evalRisk": "Only in tabs handed to agents to read and act on — never read-only or unshared ones, never sensitive sites. Code an agent runs there can read everything on that site, including sign-in details the page can see, and can do anything there as you. Clicking and typing don't need it; leave it off unless you need it.",
+    "evalFailed": "Could not change the switch: {message}",
     "openedByAgent": "Opened by an agent",
     "jumpTo": "Show this tab",
     "jumpFailed": "Could not switch to the tab: {message}",

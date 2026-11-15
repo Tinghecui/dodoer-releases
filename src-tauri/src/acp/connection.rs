@@ -8356,7 +8356,14 @@ where
         // promise a capability that cannot exist, and the agent would find
         // out by being told "no tabs" forever.
         browser: injection.browser.is_served() && injection.browser.is_enabled().await,
-        browser_eval: injection.browser.is_served() && injection.browser.is_eval_enabled().await,
+        // Cowork fork: offered with the group, not only with its own switch.
+        // On a tab of the person's own Chrome the tool goes by the switch for
+        // their Chrome (`docs/agent-chrome.md` 13.5), which lives in the
+        // desktop app and which this process — the app's daemon, or a server
+        // the app lends its tabs to — cannot see. The built-in browser's own
+        // switch is still read at call time (`McpBrowserTools::eval`), where a
+        // built-in tab is refused with `browser_eval_disabled` while it is off.
+        browser_eval: injection.browser.is_served() && injection.browser.is_enabled().await,
         // Only where this process serves computer use: the desktop app, and
         // codeg-server where the person who runs it has let it share the
         // screen it runs on (`CODEG_COMPUTER_USE`). Elsewhere there are no

@@ -10,8 +10,11 @@
 //!
 //! What the app does to how a tab of its own is shown (bounds, zoom, find,
 //! inspector, freeze frames) does nothing here: the tab is in Chrome, and
-//! Chrome's. Nothing paints into it and nothing runs in the page's own world
-//! — the person's page is not the app's to write to.
+//! Chrome's. Nothing paints into it and nothing of the app's runs in the
+//! page's own world — the person's page is not the app's to write to. The
+//! one thing that does run there is an agent's own code
+//! ([`ExternalHandle::run_agent_code`]), and only once the person has turned
+//! that on for their Chrome (`docs/agent-chrome.md` 13.5).
 
 use std::future::Future;
 
@@ -129,6 +132,24 @@ impl ExternalHandle {
             // of the callback across the await, and it need not be `Sync`.
             let result = page.eval_in_world(&expression).await;
             callback(result);
+        });
+    }
+
+    /// Run an agent's own code (`browser::eval::eval_call`) in the page's own
+    /// world, and hand `done` what its wrapper answered. Only for
+    /// `agent_eval_core`, which has checked the person's switch, the level
+    /// and the address first; the generic `eval_with_callback` stays refused
+    /// here, so nothing else reaches the page this way.
+    pub fn run_agent_code(
+        &self,
+        expression: &str,
+        done: impl FnOnce(Result<String, String>) + Send + 'static,
+    ) {
+        let page = self.page.clone();
+        let expression = expression.to_string();
+        tauri::async_runtime::spawn(async move {
+            let result = page.eval_in_page(&expression).await;
+            done(result);
         });
     }
 

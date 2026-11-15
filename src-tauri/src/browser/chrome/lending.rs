@@ -13,6 +13,7 @@
 //! desktop app is their only user (`browser::chrome_share`).
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use url::Url;
@@ -42,10 +43,16 @@ pub fn agent_owner(scope: &str) -> String {
 /// Which scopes' agents the person lets use their Chrome, and the window
 /// those agents open pages in. One for the app; the switches live as long as
 /// the app does, and each window tells it its own when it opens.
+///
+/// Also the switch "let agents run code in tabs they may act on"
+/// (`docs/agent-chrome.md` 13.5): one for this computer's Chrome, whichever
+/// scope's agent asks, off until the person turns it on. Like the others it
+/// is only in memory; the windows remember it and hand it back.
 #[derive(Default)]
 pub struct ChromeLending {
     lent: Mutex<HashSet<String>>,
     window: AgentWindow,
+    eval: AtomicBool,
 }
 
 impl ChromeLending {
@@ -65,6 +72,19 @@ impl ChromeLending {
 
     pub fn window(&self) -> &AgentWindow {
         &self.window
+    }
+
+    /// Whether agents may run their own code (`browser_eval`) in the Chrome
+    /// tabs they may act on.
+    pub fn eval_allowed(&self) -> bool {
+        self.eval.load(Ordering::Acquire)
+    }
+
+    /// The person's switch for [`eval_allowed`](Self::eval_allowed). Only the
+    /// app's own shell reaches it (`browser_chrome_set_eval`); no agent tool
+    /// does.
+    pub fn set_eval(&self, on: bool) {
+        self.eval.store(on, Ordering::Release);
     }
 
     fn lent(&self) -> MutexGuard<'_, HashSet<String>> {
@@ -182,6 +202,23 @@ mod tests {
         let switched_off = lending(&[REMOTE]);
         switched_off.set(REMOTE, false);
         assert!(!reaches(Some(&switched_off), &remote_page, Some(REMOTE)));
+    }
+
+    #[test]
+    fn running_code_is_off_until_the_person_turns_it_on() {
+        let lending = lending(&[LOCAL_SCOPE, REMOTE]);
+        assert!(
+            !lending.eval_allowed(),
+            "letting agents use Chrome is not letting them run code"
+        );
+        lending.set_eval(true);
+        assert!(lending.eval_allowed());
+        // The two switches are apart: turning one scope off leaves it.
+        lending.set(REMOTE, false);
+        assert!(lending.eval_allowed());
+        lending.set_eval(false);
+        assert!(!lending.eval_allowed());
+        assert!(lending.is_lent(LOCAL_SCOPE));
     }
 
     #[test]

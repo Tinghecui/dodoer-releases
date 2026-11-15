@@ -82,6 +82,10 @@ vi.mock("@/lib/cowork/remote-browser", () => ({
   lendBrowserSwitch: mocks.lendBrowserSwitch,
 }))
 vi.mock("@/lib/platform", () => ({ isDesktop: () => mocks.desktop }))
+// Its own test: `chrome-eval-switch.test.tsx`.
+vi.mock("@/components/settings/chrome-eval-switch", () => ({
+  ChromeEvalPanelSwitch: () => null,
+}))
 vi.mock("@/lib/api", () => ({ openSettingsWindow: mocks.openSettingsWindow }))
 vi.mock("sonner", () => ({ toast: mocks.toast }))
 
@@ -425,6 +429,39 @@ describe("StatusBarChrome", () => {
       "4 minutes ago · This computer's agent · typed into “Email”",
       "5 minutes ago · This computer's agent · read the page",
     ])
+  })
+
+  it("shows the code an agent ran, a click away", async () => {
+    const now = Date.now()
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    mocks.chromeTabs.mockResolvedValue(TABS)
+    mocks.grants.set("browser:1", "control")
+    mocks.chromeActivity.mockResolvedValue({
+      "1": [
+        {
+          at: now - 150_000,
+          action: "eval",
+          outcome: "refused",
+          host: "mail.example.com",
+          scope: "local",
+          target: { kind: "code", code: "return document.title" },
+        },
+      ],
+    })
+    await mount()
+    await openPanel()
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Last: 2 minutes ago · ran code on the page (refused)",
+      })
+    )
+    expect(screen.queryByText("return document.title")).toBeNull()
+    const show = screen.getByRole("button", { name: "Show the code" })
+    expect(show).toHaveAttribute("aria-expanded", "false")
+    await userEvent.click(show)
+    expect(screen.getByText("return document.title").tagName).toBe("PRE")
+    await userEvent.click(screen.getByRole("button", { name: "Hide the code" }))
+    expect(screen.queryByText("return document.title")).toBeNull()
   })
 
   it("asks again when an agent does something, and marks what did not go through", async () => {

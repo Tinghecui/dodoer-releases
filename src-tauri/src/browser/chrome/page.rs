@@ -273,6 +273,38 @@ impl ChromePage {
         Ok(())
     }
 
+    /// Evaluate an agent's own code (`browser::eval::eval_call`) in the
+    /// page's own world: `Runtime.evaluate` with no `contextId`, which is the
+    /// main frame's page world. The string the code's wrapper answered with,
+    /// or why there is none — a snippet that does not parse is Chrome's
+    /// `exceptionDetails`, since the wrapper catches everything that throws
+    /// once it runs.
+    ///
+    /// Only `agent_eval_core` calls this, behind the person's switch for
+    /// Chrome (`ChromeLending::eval_allowed`), the `control` level and the
+    /// address checks. Nothing else of the app runs in the person's page.
+    pub async fn eval_in_page(&self, expression: &str) -> Result<String, String> {
+        let params = json!({ "expression": expression, "returnByValue": true });
+        let answer = self
+            .call_unless_dialog("Runtime.evaluate", params)
+            .await
+            .map_err(|err| err.to_string())?;
+        if let Some(details) = answer["exceptionDetails"].as_object() {
+            let described = details
+                .get("exception")
+                .and_then(|exception| exception["description"].as_str());
+            let text = details.get("text").and_then(Value::as_str);
+            return Err(described
+                .or(text)
+                .unwrap_or("evaluation failed")
+                .to_string());
+        }
+        answer["result"]["value"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "non-string result".to_string())
+    }
+
     /// Evaluate `expression` in the `codeg` world of the main frame; the
     /// JSON envelope the agent cores read, or why there is none.
     pub async fn eval_in_world(&self, expression: &str) -> Result<String, String> {
@@ -713,6 +745,51 @@ mod tests {
         assert!(page.can_go_back());
         assert!(!page.can_go_forward());
         assert!(!page.is_loading());
+    }
+
+    #[tokio::test]
+    async fn agent_code_runs_in_the_page_s_own_world() {
+        let (page, _events, mut chrome) = attached().await;
+        let running = {
+            let page = page.clone();
+            tokio::spawn(async move { page.eval_in_page("(function(){return 'x'})()").await })
+        };
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Runtime.evaluate");
+        assert_eq!(call["sessionId"], "S");
+        // No world of the app's: the page's own.
+        assert!(call["params"].get("contextId").is_none());
+        assert_eq!(call["params"]["expression"], "(function(){return 'x'})()");
+        chrome
+            .answer(
+                &call,
+                json!({ "result": { "type": "string", "value": "{\"ok\":true}" } }),
+            )
+            .await;
+        assert_eq!(running.await.unwrap(), Ok("{\"ok\":true}".to_string()));
+
+        // Code that does not parse: Chrome's own words for it.
+        let running = {
+            let page = page.clone();
+            tokio::spawn(async move { page.eval_in_page("(function(){").await })
+        };
+        let call = chrome.next_call().await;
+        chrome
+            .answer(
+                &call,
+                json!({
+                    "result": { "type": "object" },
+                    "exceptionDetails": {
+                        "text": "Uncaught",
+                        "exception": { "description": "SyntaxError: Unexpected end of input" }
+                    }
+                }),
+            )
+            .await;
+        assert_eq!(
+            running.await.unwrap(),
+            Err("SyntaxError: Unexpected end of input".to_string())
+        );
     }
 
     #[tokio::test]

@@ -14,6 +14,10 @@
 //! went into, by the name the agent's last snapshot gave that field, and a
 //! password field not even that.
 //!
+//! What a line of `browser_eval` does hold is the code the agent sent, up to
+//! [`CODE_CHARS`] of it (13.5): the code is what the agent did, and it is
+//! the agent's, not the person's.
+//!
 //! Pure bookkeeping, compiled in both runtimes for the sake of its tests; the
 //! desktop app is its only user (`browser::chrome_share`).
 
@@ -37,6 +41,11 @@ const NAME_CHARS: usize = 80;
 /// Names remembered from one snapshot of one tab.
 const NAMES_PER_TAB: usize = 2000;
 
+/// The most of an agent's code a line keeps: as much as `browser_eval`
+/// accepts at all (`eval::MAX_EVAL_CODE_CHARS`), so a line shows all of what
+/// ran.
+pub const CODE_CHARS: usize = crate::browser::eval::MAX_EVAL_CODE_CHARS;
+
 /// What an action was aimed at, as the person is told of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -45,6 +54,24 @@ pub enum ActivityTarget {
     Named { name: String },
     /// A password field: not even its name.
     Password,
+    /// The code an agent sent to run in the page (`browser_eval`), up to
+    /// [`CODE_CHARS`].
+    Code { code: String },
+}
+
+impl ActivityTarget {
+    /// The line for running `code`: the first [`CODE_CHARS`] characters of
+    /// it, marked as cut when there was more.
+    pub fn code(code: &str) -> Self {
+        let code = if code.chars().count() <= CODE_CHARS {
+            code.to_string()
+        } else {
+            let mut kept: String = code.chars().take(CODE_CHARS).collect();
+            kept.push('…');
+            kept
+        };
+        ActivityTarget::Code { code }
+    }
 }
 
 /// One agent's one attempt on one Chrome tab. Mirrored by
@@ -370,6 +397,36 @@ mod tests {
             value["target"],
             serde_json::json!({ "kind": "named", "name": "Email" })
         );
+    }
+
+    #[test]
+    fn a_line_of_running_code_keeps_the_code() {
+        let mut line = entry(1);
+        line.action = AgentAction::Eval;
+        line.target = Some(ActivityTarget::code("return document.title"));
+        let value = serde_json::to_value(&line).unwrap();
+        assert_eq!(value["action"], "eval");
+        assert_eq!(
+            value["target"],
+            serde_json::json!({ "kind": "code", "code": "return document.title" })
+        );
+    }
+
+    #[test]
+    fn code_is_kept_up_to_its_cap_in_characters() {
+        let whole = "字".repeat(CODE_CHARS);
+        assert_eq!(
+            ActivityTarget::code(&whole),
+            ActivityTarget::Code {
+                code: whole.clone()
+            }
+        );
+        let ActivityTarget::Code { code } = ActivityTarget::code(&format!("{whole}ab")) else {
+            panic!("not a code line");
+        };
+        assert_eq!(code.chars().count(), CODE_CHARS + 1);
+        assert!(code.ends_with('…'));
+        assert!(code.starts_with(&whole));
     }
 
     #[test]

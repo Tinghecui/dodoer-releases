@@ -54,10 +54,12 @@ export interface ChromeTab {
 
 /** What an action was aimed at. Mirrors `ActivityTarget` in
  *  `src-tauri/src/browser/chrome/activity.rs`: the element's name from the
- *  agent's snapshot, or only "a password field". Never what was typed. */
+ *  agent's snapshot, or only "a password field". Never what was typed. For
+ *  running code, the code the agent sent (its first 4000 characters). */
 export type ChromeActivityTarget =
   | { kind: "named"; name: string }
   | { kind: "password" }
+  | { kind: "code"; code: string }
 
 /** One agent's one attempt on one Chrome tab. Mirrors `ActivityEntry` in
  *  `src-tauri/src/browser/chrome/activity.rs`. */
@@ -154,6 +156,22 @@ export function chromeAgents(): Promise<boolean> {
  *  opened; they stay open in Chrome. */
 export function chromeSetAgents(on: boolean): Promise<boolean> {
   return getShellTransport().call<boolean>("browser_chrome_set_agents", { on })
+}
+
+/**
+ * Whether agents may run their own code (`browser_eval`) in the Chrome tabs
+ * handed to them to read and act on. One switch for this computer's Chrome,
+ * off until the person turns it on; the backend keeps it only in memory
+ * (`docs/agent-chrome.md` 13.5).
+ */
+export function chromeEval(): Promise<boolean> {
+  return getShellTransport().call<boolean>("browser_chrome_eval")
+}
+
+/** Turn running code in Chrome on or off. The app's own shell only: no
+ *  agent can reach this. */
+export function chromeSetEval(on: boolean): Promise<boolean> {
+  return getShellTransport().call<boolean>("browser_chrome_set_eval", { on })
 }
 
 /** Bring a Chrome tab (an id from the list) to the front. */

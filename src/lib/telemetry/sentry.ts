@@ -129,6 +129,7 @@ export function start(next: ClientTelemetry, surface: Surface): void {
     beforeBreadcrumb: scrubBreadcrumb,
     beforeSendLog: (log) => (admitLog() ? scrubLog(log) : null),
   })
+  watchVisibility()
   if (next.user) setUser({ id: next.user })
   setTags({
     surface,
@@ -323,6 +324,13 @@ export function beginApiCall(command: string, surface: Surface): ApiCall {
         // A command this server does not have: the page and the server are
         // from different versions.
         logger.warn("API command not implemented", { command, surface })
+      } else if (result === "timeout" || result === "network") {
+        noteNetworkFailure(
+          command,
+          result,
+          surface,
+          Math.round(performance.now() - started)
+        )
       } else if (isFailure(result)) {
         logger.warn("API call failed", {
           command,
@@ -334,6 +342,150 @@ export function beginApiCall(command: string, surface: Surface): ApiCall {
       }
     },
   }
+}
+
+// ─── Network failures ─────────────────────────────────────────────────────
+//
+// A call the server never answered (a timeout, a failed fetch) says the link
+// is bad, and a page polling over a bad link says so many times a minute.
+// While the page is hidden each one is only counted, and one summary goes
+// out when it is shown again; while it is in view the same command failing
+// the same way is logged one by one `NETWORK_FAILURES_PER_MINUTE` times a
+// minute, and the rest as one count when the minute is over. What a page
+// counted when it is closed is dropped.
+
+/** Times one command failing one way is logged a minute while in view. */
+export const NETWORK_FAILURES_PER_MINUTE = 5
+/** Commands a hidden-page summary names. */
+export const SUMMARY_TOP_COMMANDS = 5
+
+type NetworkResult = "timeout" | "network"
+interface Held {
+  command: string
+  result: NetworkResult
+  count: number
+}
+
+let failureSurface: Surface = "web"
+let failureWindowStart = 0
+/** Failures logged in this minute, by `command:result`. */
+const failuresInWindow = new Map<string, number>()
+/** Failures past the limit in this minute, by `command:result`. */
+const heldInView = new Map<string, Held>()
+let heldTimer: ReturnType<typeof setTimeout> | null = null
+let hiddenSince: number | null = null
+/** Failures while hidden, by `command:result`. */
+const heldHidden = new Map<string, Held>()
+let watchingVisibility = false
+
+function pageHidden(): boolean {
+  return (
+    typeof document !== "undefined" && document.visibilityState === "hidden"
+  )
+}
+
+function hold(into: Map<string, Held>, command: string, result: NetworkResult) {
+  const key = `${command}:${result}`
+  const held = into.get(key)
+  if (held) held.count++
+  else into.set(key, { command, result, count: 1 })
+}
+
+function noteNetworkFailure(
+  command: string,
+  result: NetworkResult,
+  surface: Surface,
+  durationMs: number
+): void {
+  failureSurface = surface
+  const now = Date.now()
+  if (pageHidden()) {
+    hiddenSince ??= now
+    hold(heldHidden, command, result)
+    return
+  }
+  if (now - failureWindowStart >= 60_000) {
+    flushHeldInView()
+    failureWindowStart = now
+  }
+  const key = `${command}:${result}`
+  const logged = (failuresInWindow.get(key) ?? 0) + 1
+  failuresInWindow.set(key, logged)
+  if (logged <= NETWORK_FAILURES_PER_MINUTE) {
+    logger.warn("API call failed", {
+      command,
+      result,
+      duration_ms: durationMs,
+      surface,
+      ...pageState(),
+    })
+    return
+  }
+  hold(heldInView, command, result)
+  heldTimer ??= setTimeout(flushHeldInView, failureWindowStart + 60_000 - now)
+}
+
+/** One log for each command that failed past the limit, and a new minute. */
+function flushHeldInView(): void {
+  if (heldTimer !== null) clearTimeout(heldTimer)
+  heldTimer = null
+  for (const held of heldInView.values()) {
+    logger.warn("API call failed again", {
+      command: held.command,
+      result: held.result,
+      count: held.count,
+      surface: failureSurface,
+    })
+  }
+  heldInView.clear()
+  failuresInWindow.clear()
+  failureWindowStart = 0
+}
+
+/** One log for all the page counted while it was hidden. */
+function flushHeldHidden(): void {
+  const since = hiddenSince
+  hiddenSince = null
+  if (heldHidden.size === 0) return
+  const byCommand = new Map<string, number>()
+  let total = 0
+  let timeouts = 0
+  for (const held of heldHidden.values()) {
+    total += held.count
+    if (held.result === "timeout") timeouts += held.count
+    byCommand.set(held.command, (byCommand.get(held.command) ?? 0) + held.count)
+  }
+  heldHidden.clear()
+  const top = [...byCommand]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, SUMMARY_TOP_COMMANDS)
+    .map(([command, count]) => `${command}:${count}`)
+    .join(",")
+  logger.warn("API calls failed while hidden", {
+    count: total,
+    timeouts,
+    network: total - timeouts,
+    commands: byCommand.size,
+    top_commands: top,
+    hidden_ms: since === null ? -1 : Date.now() - since,
+    surface: failureSurface,
+  })
+}
+
+function onVisibilityChange(): void {
+  if (pageHidden()) {
+    hiddenSince = Date.now()
+    flushHeldInView()
+  } else {
+    flushHeldHidden()
+  }
+}
+
+function watchVisibility(): void {
+  if (watchingVisibility || typeof document === "undefined") return
+  watchingVisibility = true
+  if (pageHidden()) hiddenSince = Date.now()
+  document.addEventListener("visibilitychange", onVisibilityChange)
 }
 
 // ─── The event socket ─────────────────────────────────────────────────────
@@ -535,4 +687,16 @@ export function resetForTests(): void {
   reconnect = null
   wsState = "none"
   wsCloses = 0
+  if (heldTimer !== null) clearTimeout(heldTimer)
+  heldTimer = null
+  failureSurface = "web"
+  failureWindowStart = 0
+  failuresInWindow.clear()
+  heldInView.clear()
+  hiddenSince = null
+  heldHidden.clear()
+  if (watchingVisibility) {
+    document.removeEventListener("visibilitychange", onVisibilityChange)
+    watchingVisibility = false
+  }
 }

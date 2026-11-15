@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ErrorEvent as SentryErrorEvent } from "@sentry/browser"
 
 const sdk = vi.hoisted(() => ({
@@ -74,6 +74,7 @@ vi.mock("@sentry/browser", () => {
 
 import {
   MAX_ERRORS,
+  NETWORK_FAILURES_PER_MINUTE,
   admitError,
   beginApiCall,
   describeElement,
@@ -180,6 +181,129 @@ describe("beginApiCall", () => {
     expect(isFailure(502)).toBe(true)
     expect(isFailure("network")).toBe(true)
     expect(isFailure("error")).toBe(true)
+  })
+})
+
+describe("network failures", () => {
+  let visibility: DocumentVisibilityState = "visible"
+
+  function show(state: DocumentVisibilityState) {
+    visibility = state
+    document.dispatchEvent(new Event("visibilitychange"))
+  }
+
+  function warnings(message: string) {
+    return sdk.logger.warn.mock.calls.filter(([m]) => m === message)
+  }
+
+  beforeEach(() => {
+    visibility = "visible"
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibility,
+    })
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    delete (document as { visibilityState?: unknown }).visibilityState
+  })
+
+  it("counts them while hidden and sends one summary when shown", () => {
+    start(CONFIG, "remote-desktop")
+    show("hidden")
+    for (let i = 0; i < 4; i++) {
+      beginApiCall("get_git_head", "remote-desktop").end("timeout")
+    }
+    beginApiCall("get_git_head", "remote-desktop").end("network")
+    beginApiCall("list_folders", "remote-desktop").end("network")
+    expect(sdk.logger.warn).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(90_000)
+    show("visible")
+    expect(sdk.logger.warn).toHaveBeenCalledTimes(1)
+    expect(sdk.logger.warn).toHaveBeenCalledWith(
+      "API calls failed while hidden",
+      {
+        count: 6,
+        timeouts: 4,
+        network: 2,
+        commands: 2,
+        top_commands: "get_git_head:5,list_folders:1",
+        hidden_ms: 90_000,
+        surface: "remote-desktop",
+      }
+    )
+
+    show("hidden")
+    show("visible")
+    expect(sdk.logger.warn).toHaveBeenCalledTimes(1)
+  })
+
+  it("still logs what the server answered while hidden", () => {
+    start(CONFIG, "web")
+    show("hidden")
+    beginApiCall("a", "web").end(503)
+    beginApiCall("b", "web").end(501)
+    beginApiCall("c", "web").end("error")
+    expect(sdk.logger.warn.mock.calls.map(([m]) => m)).toEqual([
+      "API call failed",
+      "API command not implemented",
+      "API call failed",
+    ])
+  })
+
+  it(`logs ${NETWORK_FAILURES_PER_MINUTE} a minute in view, then a count`, () => {
+    start(CONFIG, "web")
+    for (let i = 0; i < NETWORK_FAILURES_PER_MINUTE + 3; i++) {
+      beginApiCall("get_git_head", "web").end("timeout")
+    }
+    beginApiCall("get_git_head", "web").end("network")
+    beginApiCall("list_folders", "web").end("timeout")
+    expect(warnings("API call failed")).toHaveLength(
+      NETWORK_FAILURES_PER_MINUTE + 2
+    )
+    expect(warnings("API call failed again")).toHaveLength(0)
+
+    vi.advanceTimersByTime(60_000)
+    expect(warnings("API call failed again")).toEqual([
+      [
+        "API call failed again",
+        {
+          command: "get_git_head",
+          result: "timeout",
+          count: 3,
+          surface: "web",
+        },
+      ],
+    ])
+
+    beginApiCall("get_git_head", "web").end("timeout")
+    expect(warnings("API call failed")).toHaveLength(
+      NETWORK_FAILURES_PER_MINUTE + 3
+    )
+  })
+
+  it("sends the held count when the page is hidden", () => {
+    start(CONFIG, "web")
+    for (let i = 0; i < NETWORK_FAILURES_PER_MINUTE + 2; i++) {
+      beginApiCall("get_git_head", "web").end("network")
+    }
+    show("hidden")
+    expect(warnings("API call failed again")).toEqual([
+      [
+        "API call failed again",
+        {
+          command: "get_git_head",
+          result: "network",
+          count: 2,
+          surface: "web",
+        },
+      ],
+    ])
+    vi.advanceTimersByTime(60_000)
+    expect(warnings("API call failed again")).toHaveLength(1)
   })
 })
 

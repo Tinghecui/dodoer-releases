@@ -12,8 +12,8 @@
 # - 私有 PR 打了 macos-build 标签：public-sync 把它同步到 macos/pr/<n>，这里编、冒烟、不发，结果报回那个 PR（「公开 CI / desktop-macos」）。
 #   PR 再推会重编（上一次没编完的取消），去掉标签或关掉 PR 就删 macos/pr/<n>
 # - 手动触发（Actions → desktop-macos → Run workflow）：编任意分支只放 artifact；ref 填正式版 tag 并勾 publish 可以补发
-# - release-train.yml 调它（workflow_call，train 为真）：product 每合一次就编触发的那个提交、发下一个修订版。tag 还没有，
-#   Release 建在这个提交上；发之前等这个提交的 Test 过（scripts/cowork-wait-test.sh），说明用调用方给的改动清单
+# - release-train.yml 调它（workflow_call，train 为真）：product 每合一次就编触发的那个提交、发下一个修订版。tag 它一开始就建在
+#   这个提交上了，Release 挂到已有的 tag 上；发之前等这个提交的 Test 过（scripts/cowork-wait-test.sh），说明用调用方给的改动清单
 #
 # 自动更新包用 TAURI_SIGNING_PRIVATE_KEY（+ _PASSWORD）签，签名绑定版本号（requireSignedVersion）。私钥丢了已经装好的 app 就再也收不到更新。
 # app 本身用 DODOER_CODESIGN_P12（+ _PASSWORD）里的自签名证书签（不是 Apple 开发者证书，「无法验证开发者」照旧）：macOS 的
@@ -48,7 +48,7 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: "要发的 cowork-codeg-vX.Y.Z（还没有这个 tag）；编的是调用方触发的那个提交"
+        description: "要发的 cowork-codeg-vX.Y.Z（release-train 已经把它和 v1.Y.Z 建在调用方触发的那个提交上）；编的就是那个提交"
         type: string
         required: true
       notes:
@@ -111,7 +111,7 @@ jobs:
           set -euo pipefail
           tag_re='^cowork-codeg-v([0-9]+)\.([0-9]+)\.([0-9]+)$'
           if [[ -n "$TAG_INPUT" ]]; then
-            # release-train.yml：要发的号由它定，tag 发 Release 时才建
+            # release-train.yml：要发的号由它定，cowork-codeg-vX.Y.Z 和 v1.Y.Z 两个 tag 它先建好了
             tag="$TAG_INPUT"; publish=true
           elif [[ "$REF" =~ $tag_re ]]; then
             tag="$REF"
@@ -266,7 +266,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # 自动发版的 tag 还没有，按提交取
+          # 自动发版按提交取（tag 也建在这个提交上）
           ref: ${{ inputs.train && github.sha || needs.prepare.outputs.tag }}
       - id: gate
         name: 等这个提交的 Test 过（自动发版）
@@ -335,6 +335,7 @@ jobs:
               cat "$RUNNER_TEMP/create.err" >&2
               grep -q 'HTTP 403' "$RUNNER_TEMP/create.err" || exit 1
               # 403：编的时候 main 上又合了改 .github/workflows 的提交，GITHUB_TOKEN 不能把 tag 建在 workflow 跟 main 不一样的提交上。
+              # 自动发版的 tag 一开始就占好了，不走这里；手动 tag（v1.Y.Z 要在这里新建）和重跑（占的 tag 已经删了）才会
               # 「回退到上一版」只从 tag 的源码读数据库迁移，迁移跟 main 一样的话 tag 建在 main 上读到的也一样；不一样就只能手动补发
               git fetch -q --depth=1 origin main
               main=$(git rev-parse FETCH_HEAD)

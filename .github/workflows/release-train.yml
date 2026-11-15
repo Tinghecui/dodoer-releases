@@ -5,6 +5,7 @@
 # - 一次只发一班：前一班还在编，新的推送排队，排队的只留最新的一个（concurrency），编的时候合进来的几个 PR 攒到下一班
 # - 编包和这个提交的 Test 同时开始，Test 过了才发（scripts/cowork-wait-test.sh）；Test 没过先重跑一次没过的 job，还没过或被更新的推送顶掉，这一班不发
 # - 不发：这个提交已经有 tag（手动发过）、上一版以来只改了文档（*.md、docs/）
+# - 一开始就占号：两个 tag 在 plan 里先建在这个提交上，编完的 Release 挂到已有的 tag 上；没发出来的 tag 最后删掉（untag），号留给下一班
 # - 更新说明：上一版以来公开 main 上各个提交说明里的「- 标题（#号）」行（public-sync.sh 推 main 时写进去，标题过了 denylist）
 # - 不给 cowork 开 runtime.lock 的 PR（那个只有手动 tag 才开）；员工的服务器从门户升级 codeg
 # - 发完删老的自动版本（说明里带 <!-- release-train --> 的），server 包、桌面包各留最近 30 个
@@ -31,10 +32,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: read
+      contents: write # 占号：推这一班的两个 tag，删上一班占着没发出来的
     outputs:
       release: ${{ steps.plan.outputs.release }}
       tag: ${{ steps.plan.outputs.tag }}
+      desktop_tag: ${{ steps.plan.outputs.desktop_tag }}
       notes: ${{ steps.plan.outputs.notes }}
     steps:
       - uses: actions/checkout@v4
@@ -42,10 +44,27 @@ jobs:
           fetch-depth: 0 # 要所有 tag 和上一版以来的提交说明
       - id: plan
         name: 发不发、发哪个号
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag_re='^cowork-codeg-v0\.([0-9]+)\.([0-9]+)$'
+          mark=release-train # 这里占的 tag 是 annotated，说明第一行是它（手动打的 tag 说明是版本说明）
           skip() { echo "release=false" >> "$GITHUB_OUTPUT"; echo "这次不发：$*" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
+
+          # 上一班占了号、没发出来，最后删 tag 那一步也没成：先删掉，不然从它往上数会空一个号、更新说明漏掉那几个 PR。
+          # 只删这里占的：手动打的 tag 也是先有 tag、编完才有 Release。一次只跑一班（concurrency），没有 Release 的就是没发出来的
+          released=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
+          for t in $(git for-each-ref --format='%(objecttype)|%(refname:short)|%(contents:subject)' 'refs/tags/cowork-codeg-v*' 'refs/tags/v1.*' \
+                       | awk -F'|' -v m="$mark" '$1 == "tag" && $3 == m { print $2 }'); do
+            grep -qxF "$t" <<<"$released" && continue
+            if gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$t"; then
+              git tag -d "$t" >/dev/null
+              echo "删了上一班占着没发出来的 $t" | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::上一班占着没发出来的 $t 删不掉，这一班从它往上数"
+            fi
+          done
 
           here=$(git tag --points-at HEAD | grep -E "$tag_re" | head -1 || true)
           [[ -z "$here" ]] || skip "这个提交已经发过（$here）"
@@ -70,9 +89,25 @@ jobs:
 
           items=$(git log --reverse --format=%B "$last..HEAD" | grep -E '^- .+（#[0-9]+）$' | awk '!seen[$0]++' || true)
           notes=$(printf '## 改动（%s 以来）\n\n%s' "$last" "${items:-- 小改动和修复}")
+
+          # 占号：两个 tag 现在就建在这个提交上，server 包、桌面包编完把 Release 挂到已有的 tag 上（--target 不起作用，不再建 ref）。
+          # GITHUB_TOKEN 不能把 tag 建在 .github/workflows 跟 main 不一样的提交上（403）。以前编完 45 分钟才建，编的时候 main 上
+          # 合进改 workflow 的提交，server 包就发不出去（2026-11-15 v0.6.9、v0.6.10）。排队的那一班开始时它的提交就是 main 最新的
+          # （更新的推送会顶掉排队的），现在建基本都成。GITHUB_TOKEN 推的 tag 不会再触发 cowork-release、desktop-macos
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          for t in "$tag" "v$desktop"; do git tag -a "$t" -m "$mark" -m "$run_url 占的号，这一班没发出来就删掉" HEAD; done
+          if ! git push -q --atomic origin "refs/tags/$tag" "refs/tags/v$desktop"; then
+            main=$(git ls-remote origin refs/heads/main | cut -f1)
+            [[ "$main" != "$(git rev-parse HEAD)" ]] || { echo "::error::tag $tag、v$desktop 推不上去"; exit 1; }
+            skip "main 上又合进了提交（${main:0:12}），tag 建不到这个提交上；这些改动跟排队的下一班一起发"
+          fi
+
           {
             echo "release=true"
             echo "tag=$tag"
+            echo "desktop_tag=v$desktop"
             echo "notes<<__RELEASE_NOTES__"
             printf '%s\n' "$notes"
             echo "__RELEASE_NOTES__"
@@ -104,6 +139,31 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       DODOER_CODESIGN_P12: ${{ secrets.DODOER_CODESIGN_P12 }}
       DODOER_CODESIGN_PASSWORD: ${{ secrets.DODOER_CODESIGN_PASSWORD }}
+
+  # plan 占的两个 tag，哪个没发出 Release（编挂了、冒烟或 Test 没过、被取消）就删掉，号留给下一班；这一步也没成的话下一班的 plan 再删。
+  # 只发出一个的时候跟以前一样：桌面包发了、server 包没发，下一班跳过已有的 v1.Y.Z，server 包空一个号
+  untag:
+    name: 没发出来的号退回去
+    needs: [plan, server, desktop]
+    if: ${{ always() && needs.plan.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: 删掉没有 Release 的 tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAGS: ${{ needs.plan.outputs.tag }} ${{ needs.plan.outputs.desktop_tag }}
+        run: |
+          set -euo pipefail
+          # 列 Release 失败就整步失败、什么都不删：删了已经发出去的 Release 的 tag，那个 Release 就没了 tag
+          released=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
+          for t in $TAGS; do
+            if grep -qxF "$t" <<<"$released"; then echo "$t 发了"; continue; fi
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$t"
+            echo "$t 没发出来，删了 tag，号留给下一班" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
 
   prune:
     name: 删老的自动版本

@@ -42,6 +42,25 @@ export function prVisualState(hint: PrHint): PrVisualState {
   return hint.draft ? "draft" : "open"
 }
 
+/** Path segments that start the change part of a pull/merge request URL on
+ *  the forges codeg reads (`/pull/`, Gitea's `/pulls/`, GitLab's
+ *  `/-/merge_requests/`). Everything before is the repository. */
+const PR_URL_MARKERS = new Set(["pull", "pulls", "-", "merge_requests"])
+
+/** The `owner/repo` (GitLab: `group/sub/repo`) a pull request URL points
+ *  into, or null when the URL isn't one. A conversation's own pull request can
+ *  be in any repository, so the hover bubble names it. */
+export function prRepoFromUrl(url: string): string | null {
+  let segments: string[]
+  try {
+    segments = new URL(url).pathname.split("/").filter(Boolean)
+  } catch {
+    return null
+  }
+  const marker = segments.findIndex((s) => PR_URL_MARKERS.has(s))
+  return marker >= 2 ? segments.slice(0, marker).join("/") : null
+}
+
 /** Statuses are small, flat JSON from the backend in a stable field order. */
 export function samePrStatus(a: FolderPrStatus, b: FolderPrStatus): boolean {
   return a === b || JSON.stringify(a) === JSON.stringify(b)

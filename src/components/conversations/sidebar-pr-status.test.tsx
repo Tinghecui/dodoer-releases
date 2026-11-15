@@ -76,10 +76,11 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe("SidebarPrIndicator", () => {
-  it("shows the number, state and a running pie for an open pull request", () => {
+  it("shows the state and a running pie for an open pull request, without the number", () => {
     applyPrStatuses([{ folder_id: 3, status: hint() }])
     const { container } = withIntl(<SidebarPrIndicator folderId={3} />)
-    expect(screen.getByText("#42")).toBeTruthy()
+    // Cowork: the number lives in the hover bubble, not the row.
+    expect(screen.queryByText("#42")).toBeNull()
     expect(container.querySelector('[data-pr-indicator="open"]')).not.toBeNull()
     expect(
       container.querySelector('[data-checks-glyph="running"]')
@@ -91,39 +92,42 @@ describe("SidebarPrIndicator", () => {
 
   it("falls back to the conversation's own pull request", () => {
     applyConversationPrStatuses([{ conversation_id: 8, status: hint() }])
-    withIntl(
+    const { container } = withIntl(
       <>
         <SidebarPrIndicator folderId={1} />
         <SidebarPrIndicator folderId={1} conversationId={8} />
       </>
     )
-    expect(screen.getAllByText("#42")).toHaveLength(1)
+    expect(container.querySelectorAll("[data-pr-indicator]")).toHaveLength(1)
+    expect(screen.getByText(/^Pull request #42,/)).toBeTruthy()
 
     // A worktree folder's answer wins over the conversation's.
     cleanup()
     applyPrStatuses([{ folder_id: 1, status: hint({ number: 7 }) }])
     withIntl(<SidebarPrIndicator folderId={1} conversationId={8} />)
-    expect(screen.getByText("#7")).toBeTruthy()
-    expect(screen.queryByText("#42")).toBeNull()
+    expect(screen.getByText(/^Pull request #7,/)).toBeTruthy()
+    expect(screen.queryByText(/^Pull request #42,/)).toBeNull()
   })
 
-  it("marks drafts and drops the checks once merged", () => {
+  it("marks drafts, and draws nothing once merged or closed", () => {
     applyPrStatuses([
       { folder_id: 3, status: hint({ draft: true }) },
       { folder_id: 4, status: hint({ state: "merged" }) },
+      { folder_id: 5, status: hint({ state: "closed" }) },
     ])
     const { container } = withIntl(
       <>
         <SidebarPrIndicator folderId={3} />
         <SidebarPrIndicator folderId={4} />
+        <SidebarPrIndicator folderId={5} />
       </>
     )
     expect(
       container.querySelector('[data-pr-indicator="draft"]')
     ).not.toBeNull()
-    expect(
-      container.querySelector('[data-pr-indicator="merged"]')
-    ).not.toBeNull()
+    // Cowork: a finished pull request is history, not something to act on —
+    // the row stays quiet; the hover bubble still shows it.
+    expect(container.querySelectorAll("[data-pr-indicator]")).toHaveLength(1)
     expect(container.querySelectorAll("[data-checks-glyph]")).toHaveLength(1)
   })
 
@@ -161,6 +165,9 @@ describe("SidebarPrDetails", () => {
       },
     ])
     withIntl(<SidebarPrDetails folderId={3} />)
+    expect(screen.getByText("Pull request")).toBeTruthy()
+    // The worktree's own repository needs no naming.
+    expect(screen.queryByText("acme/app")).toBeNull()
     expect(screen.getByText("· changes requested")).toBeTruthy()
     expect(screen.getByText("1 passed · 1 failed · 1 running")).toBeTruthy()
     expect(screen.getByText("Has merge conflicts")).toBeTruthy()
@@ -259,5 +266,18 @@ describe("the hover bubble", () => {
     ])
     withIntl(<SidebarConversationHoverDetails conversation={conv(1)} />)
     expect(screen.getByText("#9")).toBeTruthy()
+    // Labelled as the conversation's, with its repository: it can be in any
+    // repository, not the folder's branch shown above it.
+    expect(screen.getByText("This conversation's pull request")).toBeTruthy()
+    expect(screen.getByText("acme/app")).toBeTruthy()
+
+    // Merged: gone from the row, still in the bubble.
+    cleanup()
+    applyConversationPrStatuses([
+      { conversation_id: 7, status: hint({ number: 9, state: "merged" }) },
+    ])
+    withIntl(<SidebarConversationHoverDetails conversation={conv(1)} />)
+    expect(screen.getByText("#9")).toBeTruthy()
+    expect(screen.getByText("Merged")).toBeTruthy()
   })
 })

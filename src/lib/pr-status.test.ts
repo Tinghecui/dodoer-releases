@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   agentPrConversationIds,
   checksIndicator,
+  prRepoFromUrl,
   prVisualState,
   samePrStatus,
   worktreeFolderIds,
@@ -75,6 +76,27 @@ describe("prVisualState", () => {
     expect(prVisualState(hint({ draft: true }))).toBe("draft")
     expect(prVisualState(hint({ state: "merged", draft: true }))).toBe("merged")
     expect(prVisualState(hint({ state: "closed" }))).toBe("closed")
+  })
+})
+
+describe("prRepoFromUrl", () => {
+  it("reads the repository out of each forge's pull request URL", () => {
+    expect(prRepoFromUrl("https://github.com/acme/app/pull/42")).toBe(
+      "acme/app"
+    )
+    expect(
+      prRepoFromUrl("https://git.corp.com/team/sub/app/-/merge_requests/7")
+    ).toBe("team/sub/app")
+    expect(prRepoFromUrl("https://gitea.example.com/acme/app/pulls/3")).toBe(
+      "acme/app"
+    )
+  })
+
+  it("gives up on anything that isn't a pull request URL", () => {
+    expect(prRepoFromUrl("")).toBeNull()
+    expect(prRepoFromUrl("not a url")).toBeNull()
+    expect(prRepoFromUrl("https://github.com/pull/42")).toBeNull()
+    expect(prRepoFromUrl("https://github.com/acme/app")).toBeNull()
   })
 })
 

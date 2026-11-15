@@ -12,13 +12,14 @@ import { useTranslations } from "next-intl"
 import { openUrl } from "@/lib/platform"
 import {
   checksIndicator,
+  prRepoFromUrl,
   prVisualState,
   type ChecksIndicator,
   type PrVisualState,
 } from "@/lib/pr-status"
-import type { ForgeProviderId, PrChecksSummary, PrHint } from "@/lib/types"
+import type { ForgeProviderId, PrChecksSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { usePrStatus } from "@/stores/pr-status-store"
+import { usePrStatus, usePrStatusStore } from "@/stores/pr-status-store"
 import { InfoItem } from "./session-details-content"
 
 type StateLabelKey = "stateOpen" | "stateDraft" | "stateMerged" | "stateClosed"
@@ -127,19 +128,16 @@ export function ChecksGlyph({
   )
 }
 
-/** Checks only matter while the change can still land. */
-function rowChecks(hint: PrHint): ChecksIndicator | null {
-  return hint.state === "open" ? checksIndicator(hint.checks) : null
-}
-
 /**
- * The row's pull-request mark: state icon, number, and the checks glyph.
- * Display only — the row's right slot swaps to the quick actions on hover,
- * and the hover bubble (`SidebarPrDetails`) carries the link.
+ * The row's pull-request mark: state icon and the checks glyph. Display only —
+ * the row's right slot swaps to the quick actions on hover, and the hover
+ * bubble (`SidebarPrDetails`) carries the number, repository and link.
  *
- * Renders nothing unless there is a pull request: the worktree folder's
- * branch's, or — for a conversation outside codeg worktrees — the one of the
- * worktree its agent made or the one it opened (see `PrStatusPoller`).
+ * Renders nothing unless there is an OPEN (or draft) pull request: the
+ * worktree folder's branch's, or — for a conversation outside codeg worktrees
+ * — the one of the worktree its agent made or the one it opened (see
+ * `PrStatusPoller`). Cowork: no number, and nothing once merged or closed —
+ * the list is for what still needs attention; the bubble keeps the history.
  */
 export const SidebarPrIndicator = memo(function SidebarPrIndicator({
   folderId,
@@ -150,10 +148,10 @@ export const SidebarPrIndicator = memo(function SidebarPrIndicator({
 }) {
   const t = useTranslations("Folder.prStatus")
   const status = usePrStatus(folderId, conversationId)
-  if (!status || status.kind !== "pr") return null
+  if (!status || status.kind !== "pr" || status.state !== "open") return null
   const visual = prVisualState(status)
   const { Icon, className, labelKey } = PR_STATE_GLYPH[visual]
-  const checks = rowChecks(status)
+  const checks = checksIndicator(status.checks)
   const label = [
     t("rowLabel", { number: status.number, state: t(labelKey) }),
     checks ? checksLabel(t, checks, status.checks) : null,
@@ -166,9 +164,6 @@ export const SidebarPrIndicator = memo(function SidebarPrIndicator({
       data-pr-indicator={visual}
     >
       <Icon className={cn("h-3 w-3 shrink-0", className)} aria-hidden />
-      <span aria-hidden className="tabular-nums">
-        #{status.number}
-      </span>
       {checks && <ChecksGlyph indicator={checks} />}
       <span className="sr-only">{label}</span>
     </span>
@@ -212,7 +207,9 @@ function checksBreakdown(t: PrT, checks: PrChecksSummary): string {
  * The hover bubble's pull-request field: a link to the pull request with its
  * state, review and checks — or, when there is no account to read the forge
  * with, how to get one. Nothing when neither the folder nor the
- * conversation has an answer.
+ * conversation has an answer. The conversation's own pull request (not its
+ * worktree folder's) is labelled as such and names its repository: it can be
+ * in any repository, not the folder's branch shown just above.
  *
  * Request-free like the rest of the bubble: it reads what the poller already
  * stored.
@@ -226,11 +223,17 @@ export function SidebarPrDetails({
 }) {
   const t = useTranslations("Folder.prStatus")
   const status = usePrStatus(folderId, conversationId)
+  const fromFolder = usePrStatusStore(
+    (s) => folderId != null && s.byFolder.has(folderId)
+  )
   if (!status || status.kind === "unavailable") return null
+  const sectionLabel = t(
+    fromFolder ? "sectionLabel" : "sectionLabelConversation"
+  )
 
   if (status.kind === "no_account") {
     return (
-      <InfoItem label={t("sectionLabel")}>
+      <InfoItem label={sectionLabel}>
         <p className="text-xs text-muted-foreground" data-pr-hint="no-account">
           {status.provider === "github"
             ? t("noAccountGithub")
@@ -245,7 +248,7 @@ export function SidebarPrDetails({
 
   if (status.kind === "no_pr") {
     return (
-      <InfoItem label={t("sectionLabel")}>
+      <InfoItem label={sectionLabel}>
         <span className="text-xs text-muted-foreground">{t("noPr")}</span>
       </InfoItem>
     )
@@ -256,8 +259,9 @@ export function SidebarPrDetails({
   const open = status.state === "open"
   const checks = open ? checksIndicator(status.checks) : null
   const breakdown = open ? checksBreakdown(t, status.checks) : ""
+  const repo = fromFolder ? null : prRepoFromUrl(status.url)
   return (
-    <InfoItem label={t("sectionLabel")} valueClassName="space-y-1">
+    <InfoItem label={sectionLabel} valueClassName="space-y-1">
       <button
         type="button"
         disabled={!status.url}
@@ -269,6 +273,9 @@ export function SidebarPrDetails({
         className="inline-flex max-w-full items-center gap-1.5 rounded-sm text-start text-xs hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:no-underline"
       >
         <Icon className={cn("h-3.5 w-3.5 shrink-0", className)} aria-hidden />
+        {repo && (
+          <span className="min-w-0 truncate text-muted-foreground">{repo}</span>
+        )}
         <span className="font-medium tabular-nums">#{status.number}</span>
         <span className="text-muted-foreground">{t(labelKey)}</span>
         {open && status.review_decision === "approved" && (

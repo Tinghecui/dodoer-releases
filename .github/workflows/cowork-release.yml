@@ -46,6 +46,14 @@ on:
         type: boolean
         required: false
         default: false
+    # 调用方要逐个传（release-train.yml 只传两个遥测 DSN）；qa-package.yml 不传。COWORK_REPO_TOKEN 照旧只有手动 tag 那次有
+    secrets:
+      CODEG_TELEMETRY_BUILTIN_DSN:
+        required: false
+      CODEG_TELEMETRY_BUILTIN_WEB_DSN:
+        required: false
+      COWORK_REPO_TOKEN:
+        required: false
 
 permissions:
   contents: write
@@ -128,8 +136,14 @@ jobs:
           workspaces: "./src-tauri -> target"
           shared-key: release-ubuntu-22.04
           cache-on-failure: true
+      # 发版的包把 Sentry 的 DSN 编进去（option_env!，src-tauri/src/telemetry/config.rs，docs/telemetry.md §5.1），默认开遥测。
+      # 只有要发布的那次给（tag、或调用方给了 version）；pr/**、qa/** 的构建不给，编出来的和本地一样是关的。
+      # DSN 编进公开的包里本来就等于公开；这里只是不让每个 PR 的产物都带着它
       - name: cargo build --release
         working-directory: src-tauri
+        env:
+          CODEG_TELEMETRY_BUILTIN_DSN: ${{ (inputs.version != '' || github.ref_type == 'tag') && secrets.CODEG_TELEMETRY_BUILTIN_DSN || '' }}
+          CODEG_TELEMETRY_BUILTIN_WEB_DSN: ${{ (inputs.version != '' || github.ref_type == 'tag') && secrets.CODEG_TELEMETRY_BUILTIN_WEB_DSN || '' }}
         run: |
           cargo build --release --bin codeg-server --no-default-features --features server-bin
           cargo build --release --bin codeg-mcp --no-default-features --features mcp-bin

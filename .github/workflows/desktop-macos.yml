@@ -70,6 +70,11 @@ on:
         required: true
       DODOER_CODESIGN_PASSWORD:
         required: true
+      # 发版的包编进 Sentry 的 DSN（见下面 build 那步）；不传就是关的
+      CODEG_TELEMETRY_BUILTIN_DSN:
+        required: false
+      CODEG_TELEMETRY_BUILTIN_WEB_DSN:
+        required: false
 
 permissions:
   contents: read
@@ -227,11 +232,16 @@ jobs:
           echo "DODOER_SIGNING_IDENTITY=$sha1" >> "$GITHUB_ENV"
           echo "DODOER_SIGNING_KEYCHAIN=$kc" >> "$GITHUB_ENV"
 
+      # 要发布的包把 Sentry 的 DSN 编进 app 自带的 codeg-server（prepare-sidecars 编它，继承这里的环境；
+      # src-tauri/src/telemetry/config.rs，docs/telemetry.md §5.1、§5.11），本机工作区默认上报。每晚、macos/pr/<n>、
+      # 手动只编不发的不给，和本地编的一样是关的。冒烟（--local-daemon-smoke）起的 daemon 自己关着遥测
       - id: build
         name: tauri build、冒烟、打包
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CODEG_TELEMETRY_BUILTIN_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_DSN || '' }}
+          CODEG_TELEMETRY_BUILTIN_WEB_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_WEB_DSN || '' }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: scripts/cowork-desktop-build.sh full
 

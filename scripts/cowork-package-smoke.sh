@@ -29,6 +29,7 @@ env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=$H USER=tester SHELL=/bin/bash \
   COWORK_LISTEN=127.0.0.1:$P PASEO_PASSWORD="$TOKEN" \
   CODEG_TOKEN_FILE=/run/cred/token CODEG_DATA_DIR=$H/.codeg CODEG_STATIC_DIR=$L/web \
   CODEG_PROJECTS_ROOT=$H/work CODEG_UPDATE_DISABLED=1 CODEG_COWORK_PORTAL=1 \
+  CODEG_TELEMETRY=off \
   setpriv --reuid=1500 --regid=1500 --clear-groups $L/codeg-server > /tmp/server.log 2>&1 &
 PID=$!
 for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:$P/ && break; sleep 1; done
@@ -47,6 +48,8 @@ echo "create demo:        $(c -H "$A" -d '{"name":"demo"}' http://127.0.0.1:$P/a
 echo "check_app_update:   $(c -H "$A" -d '{}' http://127.0.0.1:$P/api/check_app_update)"
 P64=$(printf %s "$TOKEN" | base64 -w0 | tr '+/' '-_' | tr -d '=')
 echo "ws upgrade:         $(curl -s -o /dev/null -w '%{http_code}' --http1.1 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H "Sec-WebSocket-Protocol: codeg-events, codeg-token.$P64" --max-time 3 http://127.0.0.1:$P/ws/events)"
+# A release build carries the Sentry DSNs (docs/telemetry.md §5.1); a smoke run must not report, nor print them.
+chk "CODEG_TELEMETRY=off: no telemetry in cowork_info" "$(code -H "$A" -d '{}' http://127.0.0.1:$P/api/cowork_info >/dev/null; grep -c '"telemetry"' /tmp/body)" 0
 echo "== origin check (portal mode)"
 H1="Host: alice.example.com:443"; XP="X-Forwarded-Proto: https"
 chk "no Origin (curl / cowork-root)" "$(code -H "$A" -d '{}' http://127.0.0.1:$P/api/health)" 200

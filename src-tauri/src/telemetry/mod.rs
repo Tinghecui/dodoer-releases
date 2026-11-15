@@ -1,10 +1,11 @@
 //! Cowork: diagnostics to Sentry — errors, API timings and the connection
 //! logs that tell whose problem a failure was. Design: `docs/telemetry.md`.
 //!
-//! Off unless `CODEG_TELEMETRY_DSN` / `CODEG_TELEMETRY_WEB_DSN` are set
-//! ([`config`]), and compiled in only with the `telemetry` feature, which
-//! `server-bin` turns on; without it every function here passes through. The
-//! touch points, a line or two each:
+//! On when `CODEG_TELEMETRY_DSN` / `CODEG_TELEMETRY_WEB_DSN` are set or, without
+//! them, when the build has DSNs built in (release builds do); off with
+//! `CODEG_TELEMETRY=off` ([`config`]). Compiled in only with the `telemetry`
+//! feature, which `server-bin` turns on; without it every function here passes
+//! through. The touch points, a line or two each:
 //!
 //! * `cowork::init_process_env` calls [`take_env`], which reads the variables
 //!   and removes them from the environment (agents and terminals never see
@@ -133,19 +134,42 @@ fn taken_config() -> config::TelemetryConfig {
         .unwrap_or_else(|| config::resolve(&|k| std::env::var(k).ok()))
 }
 
+/// The data directory `codeg-server` pinned before the logging init, where
+/// the install id is kept.
+#[cfg(feature = "telemetry")]
+fn data_dir() -> std::path::PathBuf {
+    std::env::var_os("CODEG_DATA_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codeg")))
+        .unwrap_or_else(|| std::path::PathBuf::from(".codeg"))
+}
+
+/// The settings, with the install id filled in when it is the user, and
+/// logged: on (and from where) or off (and why).
+#[cfg(feature = "telemetry")]
+fn startup_config() -> config::TelemetryConfig {
+    let mut config = taken_config();
+    if config.install_id_user && config.enabled() {
+        config.user = config::install_id(&data_dir());
+    }
+    tracing::info!("[telemetry] {}", config.summary());
+    config
+}
+
 /// Start reporting, when configured. After the logging subscriber is
 /// installed (it logs what it did) and before the tokio runtime is built
 /// (threads started later inherit the client).
 #[cfg(feature = "telemetry")]
 pub fn init_server() -> TelemetryGuard {
     TelemetryGuard {
-        _client: client::init(taken_config()),
+        _client: client::init(startup_config()),
     }
 }
 
 #[cfg(not(feature = "telemetry"))]
 pub fn init_server() -> TelemetryGuard {
-    if taken_config().enabled() {
+    if taken_config().from_env() {
         tracing::warn!("[telemetry] CODEG_TELEMETRY_* is set but this build has no telemetry");
     }
     TelemetryGuard {}

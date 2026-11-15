@@ -2029,10 +2029,11 @@
     "loadFailed": "Échec du chargement : {message}"
   },
   "CrashReportSettings": {
-    "title": "Envoyer les rapports de plantage et de blocage de l'app de bureau",
-    "description": "Quand dodoer plante, se bloque ou est forcé à quitter, il le signale au démarrage suivant, via le serveur Cowork auquel il est connecté, qui le transmet à Sentry. Désactivé sauf si vous l'activez ; le désactiver supprime ce qui est conservé sur cet ordinateur.",
-    "whatIsSent": "Envoyé : ce qui s'est passé (un plantage, un blocage ou une fermeture anormale), le message d'erreur et l'emplacement dans le code expurgés, la durée du blocage, si une mise à jour ou une fermeture était en cours, la version de l'app et le système d'exploitation.",
-    "whatIsNotSent": "Non envoyé : le contenu des conversations, les chemins de fichiers, les adresses web.",
+    "title": "Envoyer des données de diagnostic (plantages, blocages, erreurs)",
+    "description": "Activé par défaut ; vous pouvez le désactiver à tout moment. Quand dodoer plante, se bloque ou est forcé à quitter, il le signale au démarrage suivant ; les erreurs et les appels échoués de l'espace de travail local sont aussi signalés. Les rapports partent vers Sentry via le serveur Cowork auquel vous êtes connecté, ou via le backend local intégré à dodoer. Le désactiver arrête l'envoi et supprime ce qui est conservé sur cet ordinateur.",
+    "whatIsSent": "Envoyé : ce qui s'est passé (un plantage, un blocage, une sortie anormale, une erreur, un appel échoué), le message d'erreur nettoyé et l'emplacement dans le code, la durée, si une mise à jour ou une fermeture était en cours, la version de l'application, le système d'exploitation et un identifiant d'installation généré au hasard (pas votre nom d'utilisateur).",
+    "whatIsNotSent": "Non envoyé : le contenu des conversations, le code et le contenu des fichiers, les chemins de fichiers, les adresses web, la sortie du terminal, votre nom d'utilisateur.",
+    "restartNote": "Pour l'espace de travail local, un changement prend effet au prochain démarrage de dodoer. Les fenêtres d'un espace de travail distant suivent les réglages de leur serveur ; ce bouton ne les concerne pas.",
     "saveFailed": "Impossible d'enregistrer le réglage : {message}"
   },
   "MentionPanelSettings": {

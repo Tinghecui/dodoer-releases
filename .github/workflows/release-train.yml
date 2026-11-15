@@ -124,6 +124,10 @@ jobs:
       ref: ${{ github.sha }}
       notes: ${{ needs.plan.outputs.notes }}
       train: true
+    # 编进包里的 Sentry DSN（docs/telemetry.md §5.1）。只传这两个：COWORK_REPO_TOKEN 不给，自动发版不开 cowork 的 PR
+    secrets:
+      CODEG_TELEMETRY_BUILTIN_DSN: ${{ secrets.CODEG_TELEMETRY_BUILTIN_DSN }}
+      CODEG_TELEMETRY_BUILTIN_WEB_DSN: ${{ secrets.CODEG_TELEMETRY_BUILTIN_WEB_DSN }}
 
   desktop:
     name: 桌面包
@@ -139,6 +143,8 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       DODOER_CODESIGN_P12: ${{ secrets.DODOER_CODESIGN_P12 }}
       DODOER_CODESIGN_PASSWORD: ${{ secrets.DODOER_CODESIGN_PASSWORD }}
+      CODEG_TELEMETRY_BUILTIN_DSN: ${{ secrets.CODEG_TELEMETRY_BUILTIN_DSN }}
+      CODEG_TELEMETRY_BUILTIN_WEB_DSN: ${{ secrets.CODEG_TELEMETRY_BUILTIN_WEB_DSN }}
 
   # plan 占的两个 tag，哪个没发出 Release（编挂了、冒烟或 Test 没过、被取消）就删掉，号留给下一班；这一步也没成的话下一班的 plan 再删。
   # 只发出一个的时候跟以前一样：桌面包发了、server 包没发，下一班跳过已有的 v1.Y.Z，server 包空一个号

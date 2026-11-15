@@ -1,13 +1,15 @@
 "use client"
 
 /**
- * "Send desktop crash and hang reports" — the consent for the desktop app's
- * own reports (`src-tauri/src/crash_report`, docs/telemetry.md §5.11). Off
- * until the person turns it on, and it says what is sent, where, and what is
- * not, right under the switch.
+ * "Send diagnostics (crashes, hangs, errors)" — the desktop app's own
+ * switch for its crash and hang reports (`src-tauri/src/crash_report`) and
+ * for the reports of its local workspace: its own daemon and local windows
+ * (docs/telemetry.md §5.11). On unless the person turns it off, and it says
+ * what is sent, where, and what is not, right under the switch.
  *
  * Desktop-only, but in remote windows too: the switch is the app's, and the
- * calls go to the app, not to the window's server.
+ * calls go to the app, not to the window's server. What a remote window
+ * itself reports follows its server, not this switch.
  */
 
 import { useCallback, useEffect, useState } from "react"
@@ -63,8 +65,8 @@ export function CrashReportSettingsSection() {
     [t]
   )
 
-  // Hidden until the stored value is known: a switch shown "off" by guess
-  // would misstate a consent the person may have given.
+  // Hidden until the stored value is known: a switch shown by guess would
+  // misstate the person's choice.
   if (!supported || enabled === null) return null
 
   return (
@@ -76,12 +78,13 @@ export function CrashReportSettingsSection() {
           {t("description")}
           <span className="mt-1 block">{t("whatIsSent")}</span>
           <span className="mt-1 block">{t("whatIsNotSent")}</span>
+          <span className="mt-1 block">{t("restartNote")}</span>
         </>
       }
-      htmlFor="crash-reports-enabled"
+      htmlFor="diagnostics-enabled"
       control={
         <Switch
-          id="crash-reports-enabled"
+          id="diagnostics-enabled"
           checked={enabled}
           disabled={saving}
           onCheckedChange={(next) => {

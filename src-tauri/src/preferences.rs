@@ -18,10 +18,23 @@ const CODEG_DIR_NAME: &str = ".codeg";
 #[serde(default)]
 pub struct AppPreferences {
     pub disable_hardware_acceleration: bool,
-    /// Cowork fork: "Send desktop crash and hang reports" (`crash_report`),
-    /// off unless the person turns it on. Read here because the panic hook
-    /// and the watchdog need it as the app starts.
-    pub crash_reports: bool,
+    /// Cowork fork: "Send diagnostics (crashes, hangs, errors)": the desktop
+    /// app's crash and hang reports (`crash_report`) and the reports of its
+    /// own daemon and local windows (`local_daemon::ChildSpec`). `None` —
+    /// never touched — is on; only the person's own "off" is `Some(false)`.
+    /// Read here because the panic hook and the watchdog need it as the app
+    /// starts. The key of #290's switch (`crash_reports`, off by default and
+    /// so `false` in every file saved since) is not read: its `false` does
+    /// not tell a choice from a default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<bool>,
+}
+
+impl AppPreferences {
+    /// Whether diagnostics are sent: unless the person turned them off.
+    pub fn diagnostics_enabled(&self) -> bool {
+        self.diagnostics.unwrap_or(true)
+    }
 }
 
 pub fn preferences_file_path() -> Option<PathBuf> {
@@ -54,4 +67,28 @@ pub fn save(prefs: &AppPreferences) -> io::Result<()> {
     let serialized = serde_json::to_string_pretty(prefs)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
     fs::write(&path, serialized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagnostics_are_on_until_turned_off() {
+        let read = |raw: &str| serde_json::from_str::<AppPreferences>(raw).unwrap();
+        assert!(read("{}").diagnostics_enabled());
+        // #290's default-off key says nothing about a choice.
+        assert!(read(r#"{"crash_reports":false}"#).diagnostics_enabled());
+        assert!(read(r#"{"diagnostics":true}"#).diagnostics_enabled());
+        assert!(!read(r#"{"diagnostics":false}"#).diagnostics_enabled());
+
+        let untouched = serde_json::to_string(&AppPreferences::default()).unwrap();
+        assert!(!untouched.contains("diagnostics"), "{untouched}");
+        let off = AppPreferences {
+            diagnostics: Some(false),
+            ..Default::default()
+        };
+        let saved = serde_json::to_string(&off).unwrap();
+        assert!(!read(&saved).diagnostics_enabled());
+    }
 }

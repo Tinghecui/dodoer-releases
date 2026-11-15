@@ -56,6 +56,9 @@ pub const CHILD_ENV: &str = "CODEG_DESKTOP_CHILD";
 pub const HOST_BRIDGE_URL_ENV: &str = "CODEG_HOST_BRIDGE_URL";
 pub const HOST_BRIDGE_TOKEN_ENV: &str = "CODEG_HOST_BRIDGE_TOKEN";
 
+/// The child's telemetry switch (`telemetry::config::SWITCH`).
+pub const TELEMETRY_SWITCH_ENV: &str = "CODEG_TELEMETRY";
+
 /// The executable's bare name.
 pub const SERVER_BIN: &str = if cfg!(windows) {
     "codeg-server.exe"
@@ -171,6 +174,10 @@ pub struct ChildSpec {
     /// Random per app launch; the child accepts nothing else.
     pub token: String,
     pub host_bridge: Option<HostBridgeEnv>,
+    /// The person turned diagnostics off (`preferences::AppPreferences`):
+    /// the child gets `CODEG_TELEMETRY=off`. Otherwise it reports as its
+    /// build says (a release build has DSNs built in, `telemetry::config`).
+    pub telemetry_off: bool,
 }
 
 impl ChildSpec {
@@ -196,6 +203,9 @@ impl ChildSpec {
         if let Some(bridge) = &self.host_bridge {
             envs.push((HOST_BRIDGE_URL_ENV, bridge.url.clone().into()));
             envs.push((HOST_BRIDGE_TOKEN_ENV, bridge.token.clone().into()));
+        }
+        if self.telemetry_off {
+            envs.push((TELEMETRY_SWITCH_ENV, "off".into()));
         }
         envs
     }
@@ -286,6 +296,8 @@ pub struct LaunchConfig {
     pub data_dir: PathBuf,
     pub token: String,
     pub host_bridge: Option<HostBridgeEnv>,
+    /// [`ChildSpec::telemetry_off`].
+    pub telemetry_off: bool,
     /// How long one start may take before it counts as failed.
     pub start_timeout: Duration,
 }
@@ -298,6 +310,7 @@ impl LaunchConfig {
             port,
             token: self.token.clone(),
             host_bridge: self.host_bridge.clone(),
+            telemetry_off: self.telemetry_off,
         }
     }
 }
@@ -789,6 +802,8 @@ pub fn run_smoke(args: &[String]) -> i32 {
             data_dir: data.path().to_path_buf(),
             token: crate::cli_run::hello::random_hex(32),
             host_bridge: None,
+            // A smoke run is not anybody's use of the app.
+            telemetry_off: true,
             start_timeout: START_TIMEOUT,
         };
         let daemon = match LocalDaemon::start(config).await {
@@ -890,6 +905,7 @@ mod tests {
             port: 43123,
             token: "t0k".into(),
             host_bridge: None,
+            telemetry_off: false,
         };
         let envs: std::collections::HashMap<_, _> = spec.envs().into_iter().collect();
         assert_eq!(
@@ -906,7 +922,25 @@ mod tests {
         );
         assert_eq!(envs[CHILD_ENV], OsString::from("1"));
         assert!(!envs.contains_key(HOST_BRIDGE_URL_ENV));
+        // Diagnostics on: the child reports as its build says.
+        assert!(!envs.contains_key(TELEMETRY_SWITCH_ENV));
         assert_eq!(spec.base_url(), "http://127.0.0.1:43123");
+    }
+
+    #[test]
+    fn diagnostics_off_switches_the_childs_telemetry_off() {
+        let spec = ChildSpec {
+            server: PathBuf::from("/app/codeg-server"),
+            data_dir: PathBuf::from("/d"),
+            port: 1,
+            token: "t".into(),
+            host_bridge: None,
+            telemetry_off: true,
+        };
+        let envs: std::collections::HashMap<_, _> = spec.envs().into_iter().collect();
+        assert_eq!(envs[TELEMETRY_SWITCH_ENV], OsString::from("off"));
+        let switch = format!("CODEG_{}", crate::telemetry::config::SWITCH);
+        assert_eq!(TELEMETRY_SWITCH_ENV, switch);
     }
 
     #[test]
@@ -920,6 +954,7 @@ mod tests {
                 url: "http://127.0.0.1:5000".into(),
                 token: "b".into(),
             }),
+            telemetry_off: false,
         };
         let envs: std::collections::HashMap<_, _> = spec.envs().into_iter().collect();
         assert_eq!(
@@ -975,6 +1010,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             token: "t".into(),
             host_bridge: None,
+            telemetry_off: true,
             start_timeout: Duration::from_secs(5),
         })
         .await
@@ -1006,6 +1042,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             token: "t".into(),
             host_bridge: None,
+            telemetry_off: true,
             start_timeout: Duration::from_secs(5),
         })
         .await

@@ -2029,10 +2029,11 @@
     "loadFailed": "Load failed: {message}"
   },
   "CrashReportSettings": {
-    "title": "Send desktop crash and hang reports",
-    "description": "When dodoer crashes, hangs or is force quit, it reports that the next time it starts, through the Cowork server it is connected to, which passes it on to Sentry. Off unless you turn it on; turning it off deletes what is kept on this computer.",
-    "whatIsSent": "Sent: what happened (a crash, a hang, or an exit that was not a normal quit), the scrubbed error message and code location, how long it hung, whether an update or a quit was under way, the app version and the operating system.",
-    "whatIsNotSent": "Not sent: conversation content, file paths, web addresses.",
+    "title": "Send diagnostics (crashes, hangs, errors)",
+    "description": "On by default; you can turn it off at any time. When dodoer crashes, hangs or is force quit, it reports that the next time it starts; errors and failed calls in the local workspace are reported too. Reports go to Sentry through the Cowork server you are connected to, or through dodoer's own local backend. Turning it off stops sending and deletes what is kept on this computer.",
+    "whatIsSent": "Sent: what happened (a crash, a hang, an exit that was not a normal quit, an error, a failed call), the scrubbed error message and code location, how long it took, whether an update or a quit was under way, the app version, the operating system, and a randomly generated install id (not your user name).",
+    "whatIsNotSent": "Not sent: conversation content, code and file contents, file paths, web addresses, terminal output, your user name.",
+    "restartNote": "For the local workspace, a change takes effect the next time dodoer starts. Windows of a remote workspace report as the server they are connected to says; this switch does not affect them.",
     "saveFailed": "Failed to save the setting: {message}"
   },
   "MentionPanelSettings": {

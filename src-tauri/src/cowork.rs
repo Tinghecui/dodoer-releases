@@ -30,7 +30,7 @@
 //! | `CODEG_HOST`, `CODEG_PORT`, `CODEG_DATA_DIR`, `CODEG_STATIC_DIR` | upstream meaning; only the `COWORK_` alias is added. |
 //! | `CODEG_LISTEN` / `COWORK_LISTEN` / `PASEO_LISTEN` | `host:port` fallback for whichever of host/port is still unset. |
 //! | `CODEG_PUBLIC_ORIGIN` | portal mode: extra browser origins (comma-separated) allowed besides the request's own. |
-//! | `CODEG_TELEMETRY_*` | reporting to Sentry, off unless the DSNs are set; read and removed from the environment by [`crate::telemetry::take_env`]. See `docs/telemetry.md`. |
+//! | `CODEG_TELEMETRY`, `CODEG_TELEMETRY_*` | reporting to Sentry: the DSNs set here, else those a release build carries; `CODEG_TELEMETRY=off` turns it off. Read and removed from the environment by [`crate::telemetry::take_env`]. See `docs/telemetry.md`. |
 //! | `CODEG_SHARED_NPM_PREFIX` | an npm prefix (absolute) where the administrator installed agents for every user, read-only to us (Cowork: `/usr`, its ACP adapters and CLIs). npx agents are also looked up in its `bin/` and read their version from its `lib/node_modules` ([`shared_npm_prefix`]). |
 //!
 //! In portal mode `CODEG_BRIDGE_PORTS` defaults to `off` (the ports after

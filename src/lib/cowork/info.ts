@@ -3,14 +3,16 @@
 // `POST /api/cowork_info` exists only on the Cowork build of codeg-server.
 // On an upstream server the call fails and every Cowork feature stays hidden,
 // so the UI degrades to plain codeg. The local desktop workspace never asks
-// (its backend is this machine, not a Cowork server); a desktop window bound
-// to a remote workspace asks that server, like the browser does.
+// for these (its backend is this machine, not a Cowork server) — except for
+// its telemetry alone (`loadLocalDaemonTelemetry`); a desktop window bound to
+// a remote workspace asks that server, like the browser does.
 
 import { useEffect, useSyncExternalStore } from "react"
 import { extractAppCommandError } from "@/lib/app-error"
 import { isDesktop, isRemoteDesktopWindow } from "@/lib/platform"
 import { normalizeClientTelemetry, type ClientTelemetry } from "@/lib/telemetry"
 import { getTransport } from "@/lib/transport"
+import { isLocalChildDaemon } from "@/lib/transport/local-daemon"
 import {
   getWebConnectionSnapshot,
   subscribeWebConnection,
@@ -85,6 +87,23 @@ export function loadCoworkInfo(): Promise<CoworkInfo | null> {
       inflight = null
     })
   return inflight
+}
+
+/**
+ * Where a local window of the desktop app reports (docs/telemetry.md §5.11):
+ * `cowork_info.telemetry` of the app's own daemon, the `codeg-server` child,
+ * and nothing else of `cowork_info` — the local workspace is not a Cowork
+ * server's, so no other Cowork feature applies to it. Null outside such a
+ * window (the browser, remote windows, an in-process daemon) and when the
+ * daemon does not report (a build without DSNs, or diagnostics turned off).
+ * Rejects when the daemon could not be asked, so the caller can try again.
+ */
+export async function loadLocalDaemonTelemetry(): Promise<ClientTelemetry | null> {
+  if (!isDesktop() || isRemoteDesktopWindow() || !isLocalChildDaemon()) {
+    return null
+  }
+  const raw = await getTransport().call<unknown>("cowork_info", {})
+  return normalizeCoworkInfo(raw)?.telemetry ?? null
 }
 
 /** Last loaded value, or null while unknown / not Cowork. */

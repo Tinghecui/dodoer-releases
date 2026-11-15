@@ -1,6 +1,6 @@
 # 遥测：看清「哪里坏了、是谁的问题」
 
-状态：第 1 步（服务端，`src-tauri/src/telemetry/`）、第 2 步（前端，`src/lib/telemetry/`）、第 3 步（对话收尾和「反馈问题」）已写，都还没发版。实现和下面方案不一样的地方记在第 10 节。
+状态：第 1 步（服务端，`src-tauri/src/telemetry/`）、第 2 步（前端，`src/lib/telemetry/`）、第 3 步（对话收尾和「反馈问题」）、桌面端崩溃和卡死（第 5.11 节）已写。2026-11-15 起**默认开、可以关**：发版的包里编进了上报地址（第 5.1 节、第 10 节「默认开」）。实现和下面方案不一样的地方记在第 10 节。
 
 ## 1. 问题
 
@@ -22,7 +22,8 @@
 
 约束：
 
-- **默认关。** 不配置就不采、不连外网、连遥测的前端代码都不加载。公开安装包里不带任何上报地址。
+- **默认开，可以关。**（2026-11-15 起；最初是默认关、安装包里不带上报地址。）发版的服务端包和桌面 app 里编进了两个上报地址（服务端项目、前端项目），不用配置就上报；一个环境变量（`CODEG_TELEMETRY=off`）或桌面端设置里的一个开关就全关。自己编的、PR 和测试的构建不带地址，和以前一样是关的。部署自己配了上报地址的（我们的生产机）照旧用自己的，行为不变。
+- **别人机器上不带人名。** 用内置地址上报时，用户标识是数据目录里随机生成的安装编号，不是系统用户名；environment 是 `community` / `desktop-local`，和生产机的 `production` 分开看。
 - **不采内容。** 对话、代码、文件内容、终端输出、文件路径一律不上报（第 5.7 节）。
 - **不在服务器上装常驻的采集程序。** 生产机内存紧，上报嵌在 codeg-server 进程里。
 - **费用封顶。** 用量有上限，超了就丢，不会多花钱（第 5.8 节）。
@@ -31,11 +32,12 @@
 
 - 用户行为分析（哪些功能没人用、哪一步放弃）和录屏。那是另一类工具（PostHog）的事，等有了多个真实用户再接；前端留了统一的入口，到时不用再改各处调用。
 - 机器指标（CPU、内存、磁盘）的长期曲线。侧栏的资源表已经能看当前值。
-- 桌面端自己的进程（Tauri 的 Rust 那一半）和手机 App。第一版只管服务器和网页前端；桌面端的远端窗口跑的是同一份前端，自动带上（第 5.11 节）。
+- 手机 App。桌面端的远端窗口跑的是同一份前端，自动带上；桌面端自己的崩溃和卡死、本机工作区（app 自带的 `codeg-server` 和本机窗口）2026-11-15 起也报（第 5.11 节）。
+- 桌面端「内嵌 daemon」模式（`CODEG_DESKTOP_DAEMON=embedded`，以及开了「随 app 启动网页服务」时）：daemon 在 app 自己的进程里，桌面主程序不链接 Sentry，这种模式下本机后端不报（崩溃和卡死照样报，前提是连着一台会上报的 Cowork 服务器）。
 
 ## 3. 一句话方案
 
-用 Sentry。codeg-server 进程内直接上报服务端的错误、接口耗时和连接日志；前端的遥测不直接连 Sentry，而是走 codeg 自己的接口，由 codeg-server 转发出去。开关和上报地址只来自服务器的环境变量，前端从 `cowork_info` 得知要不要开。
+用 Sentry。codeg-server 进程内直接上报服务端的错误、接口耗时和连接日志；前端的遥测不直接连 Sentry，而是走 codeg 自己的接口，由 codeg-server 转发出去。上报地址来自服务器的环境变量，没有就用发行包编进去的；前端从 `cowork_info` 得知要不要开，自己不带地址。
 
 ```
 浏览器 / 桌面端远端窗口                    codeg-server（每个员工一个进程）            Sentry
@@ -65,21 +67,39 @@
 
 ### 5.1 开关和配置
 
-只有环境变量，和 Cowork 现有的做法一致（`COWORK_<X>` 是 `CODEG_<X>` 的别名）。读完从进程环境里删掉，agent、终端这些子进程看不到。
+环境变量（`COWORK_<X>` 是 `CODEG_<X>` 的别名，两个都设时 `CODEG_` 的说了算），加上发版构建编进去的两个上报地址。环境变量读完从进程环境里删掉，agent、终端这些子进程看不到。
+
+**每一半（服务端项目、前端项目）的上报地址从哪来**，从上往下第一条成立的算（`src-tauri/src/telemetry/config.rs`）：
+
+| # | 条件 | 结果 |
+|---|---|---|
+| 1 | `CODEG_TELEMETRY=off`（或 `0`、`false`、`no`） | 两半都关 |
+| 2 | 这一半的变量设了值：`CODEG_TELEMETRY_DSN` / `CODEG_TELEMETRY_WEB_DSN` | 用它（来源：环境） |
+| 3 | 这一半的变量设了，但是空的（`CODEG_TELEMETRY_DSN=`） | 这一半关 |
+| 4 | 这一半没设，另一半的变量设了值 | 这一半关：部署自己配了 Sentry，没配的那一半不掺我们内置的 |
+| 5 | 这个构建编进了地址（`CODEG_TELEMETRY_BUILTIN_DSN` / `_WEB_DSN`，编译时） | 用内置的（来源：内置） |
+| 6 | 都没有 | 关 |
+
+「没设」和「设成空」是两回事：systemd 的 `Environment=CODEG_TELEMETRY_DSN=` 或者 shell 里 `export CODEG_TELEMETRY_DSN=` 算设成空，只关服务端那一半；整个关用 `CODEG_TELEMETRY=off`。启动日志里有一行写明每一半是开着（来源：环境 / 内置）还是关着、为什么，例如 `[telemetry] server reports on (built in), web reports off (CODEG_TELEMETRY=off)`。
+
+**内置地址**：发版的 workflow 在 `cargo build` 那一步的环境里给 `CODEG_TELEMETRY_BUILTIN_DSN`、`CODEG_TELEMETRY_BUILTIN_WEB_DSN`（公开仓库 Tinghecui/dodoer-releases 的 Actions secret），`option_env!` 把它编进 `codeg-server`。只有真要发布的那次构建给：`cowork-release.yml` 的 `backend`（tag 或调用方给了 `version`，即手动 tag 和 release-train），`desktop-macos.yml` 的 `build`（`publish` 为真）。`pr/**`、`qa/**`、`macos/pr/**`、每晚、Test 的构建都不给，编出来的和本地一样是关的；公开仓库没有 `pull_request` 触发的 workflow，fork 的 PR 拿不到。包的冒烟测试带着 `CODEG_TELEMETRY=off` 起服务，不上报，也不在日志里打出地址。
+
+**其他变量**：
 
 | 变量 | 作用 |
 |---|---|
-| `CODEG_TELEMETRY_DSN` | 服务端项目的上报地址。不设：服务端遥测整个关掉，Sentry 客户端不初始化。 |
-| `CODEG_TELEMETRY_WEB_DSN` | 前端项目的上报地址。不设：`cowork_info` 里没有遥测配置，前端不加载遥测代码，转发接口回 404。 |
-| `CODEG_TELEMETRY_ENV` | 环境名，默认 `production`。AI QA 的环境设 `ai-qa`，两边的数据分开看。 |
+| `CODEG_TELEMETRY` | 总开关，`off` / `0` / `false` / `no` 全关。别的值（含空）不起作用。 |
+| `CODEG_TELEMETRY_DSN` | 服务端项目的上报地址，见上表。服务端这一半关着时 Sentry 客户端不初始化。 |
+| `CODEG_TELEMETRY_WEB_DSN` | 前端项目的上报地址，见上表。关着时 `cowork_info` 里没有遥测配置，前端不加载遥测代码，转发接口回 404。 |
+| `CODEG_TELEMETRY_ENV` | 环境名。默认：用环境变量的地址时 `production`；用内置地址时 `community`，桌面 app 自带的 daemon（环境里有 `CODEG_DESKTOP_CHILD=1`）是 `desktop-local`。AI QA 的环境设 `ai-qa`。 |
 | `CODEG_TELEMETRY_TRACES` | 接口追踪的抽样率，0 到 1，默认 1。量大了往下调。 |
-| `CODEG_TELEMETRY_USER` | 这个进程的用户标识。默认是系统用户名去掉 `cw-` 前缀。 |
+| `CODEG_TELEMETRY_USER` | 这个进程的用户标识。默认：用环境变量的地址时是系统用户名去掉 `cw-` 前缀（生产机，和以前一样）；用内置地址时是安装编号（第 5.7 节）。 |
 
-`CoworkInfo` 多一个可空的字段，前端据此决定开不开：
+`CoworkInfo` 多一个可空的字段，前端据此决定开不开。服务端用内置地址时照样给出去，前端自己不内置地址：
 
 ```jsonc
 "telemetry": {
-  "dsn": "…",              // CODEG_TELEMETRY_WEB_DSN
+  "dsn": "…",              // 前端项目的地址（环境变量或内置的）
   "environment": "production",
   "release": "cowork-codeg-v0.6.0",   // 服务端读 COWORK-VERSION
   "tracesSampleRate": 1,
@@ -87,7 +107,7 @@
 }
 ```
 
-上游服务器没有 `cowork_info`，本机的桌面工作区不问 `cowork_info`，两种情况下前端的遥测都保持关闭，行为和现在完全一样。
+上游服务器没有 `cowork_info`，前端的遥测保持关闭。桌面端本机工作区的窗口只问 app 自带的 daemon 要 `cowork_info.telemetry` 这一项（第 5.11 节）。
 
 ### 5.2 服务端：`src-tauri/src/telemetry.rs`
 
@@ -219,6 +239,10 @@ pub fn client_config() -> Option<ClientTelemetry>;
 - 名叫 `working_dir`、`cwd`、`path`、`file`、`title`、`prompt`、`text`、`content` 的字段直接丢掉。
 - 消息截到 500 字符。
 
+用户标识：生产机上是员工的登录名去掉 `cw-`（那是我们自己的服务器）。用内置地址上报的机器——别人的服务器、用户自己的 Mac——不用系统用户名（那是个人信息），用一个安装编号：第一次上报时随机生成（UUID 的前 12 个十六进制字符），存在数据目录的 `telemetry-install-id` 里，以后一直用它。同一台机器的记录能算成一个用户，但认不出是谁；删掉文件就换一个。桌面端本机工作区的 daemon、本机窗口、崩溃报告都用 daemon 的这个编号。
+
+本机工作区的数据（2026-11-15 起也报）满是用户自己的路径和用户名，核过一遍：家目录下的路径（`/Users/<x>/…`、`/home/<x>/…`、`C:\Users\<x>\…`）整段换掉；别的三层以上的绝对路径只留第一段；面包屑和日志的消息、字段走同一套规则，`working_dir`、`cwd`、`path` 这类字段整个丢掉；事件里的主机名（`server_name`）、用户的用户名 / 邮箱 / IP 清空。没盖住的：家目录路径里带空格时，空格后面的部分会留下（`/Users/<x>/My Projects/a` 剩 `~/<redacted> Projects/a`），不含用户名。
+
 剩下的风险：错误消息里偶尔会带项目名或分支名（比如「名为 X 的项目已存在」）。第二道防线是 Sentry 项目设置里的数据清洗和「不存 IP」，都打开；真漏了可以按条删除。
 
 ### 5.8 用量和费用上限
@@ -248,15 +272,17 @@ pub fn client_config() -> Option<ClientTelemetry>;
 
 ### 5.11 桌面端
 
-- 远端窗口：跑的是同一份前端，问的是它连的那台服务器的 `cowork_info`，上报经 Rust 代理走同一个转发接口。等桌面端发了带这份代码的版本就自动生效。追踪头暂时带不过去（代理自己组请求头），两头的记录靠时间和 request_id 对。
-- 本机工作区：不问 `cowork_info`，遥测不开。
+- 远端窗口：跑的是同一份前端，问的是它连的那台服务器的 `cowork_info`，上报经 Rust 代理走同一个转发接口。追踪头暂时带不过去（代理自己组请求头），两头的记录靠时间和 request_id 对。开不开、报到哪，跟着那台服务器走，不受桌面端的开关影响。
+- 本机工作区（2026-11-15 起）：本机后端是 app 带着的 `codeg-server` 子进程（`local_daemon.rs`，默认的 child 模式），它启动时照第 5.1 节的规则开遥测——发版的包里有内置地址，所以默认开，environment `desktop-local`，用户是安装编号。本机窗口只问它要 `cowork_info.telemetry` 这一项（`loadLocalDaemonTelemetry`，`cowork_info` 的其他内容不用，本机工作区不因此变成 Cowork 工作区），有就启动前端遥测（`surface=desktop-local`），信封经子进程的 `/api/telemetry_envelope` 转发，和远端窗口走同一个代理。内嵌 daemon 模式不报（第 2 节）。
 - 桌面端自己的进程：崩溃和卡死，见下面。Rust 代理的连接断开还没做。
+
+**开关**：设置 → 通用 →「发送诊断数据（崩溃、卡死、报错）」，桌面端的总开关，**默认开**。存在 `~/.codeg/preferences.json` 的 `diagnostics`：没有这一项 = 开，只有用户自己关掉才写 `false`。关掉时：崩溃和卡死不记、不发，攒着的删掉（立刻生效）；app 下次启动子进程时给它 `CODEG_TELEMETRY=off`，本机后端和本机窗口都不报（下次启动 dodoer 后生效，开关下面写着）。#290 的 `crash_reports` 那一项不再读：它默认是 `false`，存过任何设置的文件里都有，分不出是不是用户自己关的。
 
 #### 桌面端自己的进程：崩溃和卡死（2026-11-15）
 
 起因：2026-11-15 dodoer 在 macOS 上应用内升级完以后卡死，两次都要强制退出，遥测里什么都没有，是靠 `/Library/Logs/DiagnosticReports/codeg_*.hang` 和 app 日志查出来的（tokio worker 被 `AppHandle::restart()` 卡住，#271 修了）。那是用户自己的电脑，所以单独征得同意。
 
-**开关**：设置 → 通用 → 「发送桌面端崩溃和卡死报告」，**默认关**。存在 `~/.codeg/preferences.json` 的 `crash_reports`（和「关闭硬件加速」同一个文件，启动时不用等数据库就能读）。本机窗口和远端窗口里都有（调的是桌面端自己的命令，不经服务器）。开关下面写明：发什么（崩溃和卡死的类型、脱敏后的报错和代码位置、卡了多久、当时是否在升级或退出、版本、系统类型），发到哪（连着的 Cowork 服务器，由它转给 Sentry），不发什么（对话内容、文件路径、网址）。关掉时把本机攒着的记录全删掉。
+**开关**：上面那个总开关（最初是单独的「发送桌面端崩溃和卡死报告」，默认关）。存在 `~/.codeg/preferences.json`（和「关闭硬件加速」同一个文件，启动时不用等数据库就能读）。本机窗口和远端窗口里都有（调的是桌面端自己的命令，不经服务器）。开关下面写明：默认开、可以关；发什么（崩溃、卡死、报错的类型、脱敏后的报错和代码位置、耗时、当时是否在升级或退出、版本、系统类型、安装编号），发到哪（连着的 Cowork 服务器或 app 自带的本机后端，由它转给 Sentry），不发什么（对话内容、代码和文件内容、文件路径、网址、终端输出、用户名）。关掉时把本机攒着的记录全删掉。
 
 **采什么**（都在下次启动时补报，崩溃、卡死的那一刻发不出去）。记录放在数据目录下的 `crash-reports/`（调试构建用 `crash-reports-dev/`，和装好的版本互不干扰），开关关着时什么都不写。
 
@@ -273,12 +299,12 @@ pub fn client_config() -> Option<ClientTelemetry>;
 - **macOS 的系统报告**：下次启动时看 `/Library/Logs/DiagnosticReports/` 和 `~/Library/Logs/DiagnosticReports/` 里上次看过以后新出现的 `codeg*.hang` / `codeg*.ips`，只取头部的几个字段（`.ips` 第一行 JSON 的 `bug_type`、`app_version`、`os_version`、`timestamp`；`.hang` 开头的 `Date/Time`、`Duration`、`Steps`、`Event`、`OS Version`、`Version`），**不上传文件本身**（里面有路径、用户名、主机名，文件名里也有主机名，所以文件名只取类型）。第一次打开开关时只记下当时的时间，之前的报告不补。读不到就算了。
 - **脱敏**：消息过服务端同一套 `telemetry::scrub::scrub_text`（家目录路径、令牌、网址、邮箱），再把双引号（含中文引号）里的内容换成 `"…"`——`Debug` 打出来的字符串、文件名、会话标题多半在引号里。代码位置只留 crate 里的相对路径：依赖的 `…/.cargo/registry/src/<索引>/tokio-1.x/src/…` 只留 `tokio-1.x/src/…`，其他绝对路径只留最后三段。线程名也过一遍。
 
-**怎么发**：启动 30 秒后（之后每 10 分钟，直到发完或退出），开关开着且有待发的事件时，按保存的远端连接的顺序问 `cowork_info`，第一个给了 `telemetry`（web 遥测 DSN）的服务器就是发送对象。不问本机工作区（它不问 `cowork_info`，也不另开 DSN）。信封里：DSN、环境、用户标识照那台服务器给的；`release` 是**出事那次运行**的桌面端版本（`dodoer-desktop@<版本>`，升级后卡死的那次和下次启动的版本不一样）；标签 `surface=desktop-native`、`kind=panic|hang|unclean-exit`、`fatal`、`os`。经那台服务器的 `/api/telemetry_envelope` 转发，用的是远端窗口代理调服务器接口的同一段代码（同一套认证、自定义请求头和重定向规则）。服务端的校验只看大小和 DSN，这种信封不用改服务端就能过。
+**怎么发**：启动 30 秒后（之后每 10 分钟，直到发完或退出），开关开着且有待发的事件时，按保存的远端连接的顺序问 `cowork_info`，第一个给了 `telemetry`（web 遥测 DSN）的服务器就是发送对象；一个都没有（只用本机工作区）就问 app 自带的 daemon，它用内置地址上报时就经它发（2026-11-15 起；以前不问本机）。信封里：DSN、环境、用户标识照那台服务器给的；`release` 是**出事那次运行**的桌面端版本（`dodoer-desktop@<版本>`，升级后卡死的那次和下次启动的版本不一样）；标签 `surface=desktop-native`、`kind=panic|hang|unclean-exit`、`fatal`、`os`。经那台服务器的 `/api/telemetry_envelope` 转发，用的是远端窗口代理调服务器接口的同一段代码（同一套认证、自定义请求头和重定向规则）。服务端的校验只看大小和 DSN，这种信封不用改服务端就能过。
 
 - 发成功（Sentry 回 2xx）、或被拒收（服务端 400、Sentry 4xx）就删本地记录；没送到（网络、502、429）留着下次再试。
 - 待发的最多留 5 条、7 天，超了丢最旧的。
 
-**不做**：不传调试符号、minidump、调用栈（panic 的调用栈只在本机日志里）；不采对话内容；不在本机工作区模式下另开 DSN。Rust 代理的连接断开另做。
+**不做**：不传调试符号、minidump、调用栈（panic 的调用栈只在本机日志里）；不采对话内容；桌面主程序不另带 DSN（本机的上报都经自带的 daemon）。Rust 代理的连接断开另做。
 
 ## 6. 分步
 
@@ -295,7 +321,7 @@ pub fn client_config() -> Option<ClientTelemetry>;
 
 ## 7. 验收
 
-1. **默认关**：不配环境变量起服务，`cowork_info` 里没有 `telemetry`，浏览器没有请求遥测的 chunk，没有 `telemetry_envelope` 调用。
+1. **没有地址就关**：本地编的（没有内置地址）不配环境变量起服务，`cowork_info` 里没有 `telemetry`，浏览器没有请求遥测的 chunk，没有 `telemetry_envelope` 调用；发版的包带 `CODEG_TELEMETRY=off` 起服务也一样。发版的包什么都不配，启动日志写 `on (built in)`，Sentry 里出现 environment `community`、用户是 12 位编号的记录。
 2. **服务端**：配上之后启动时带 `CODEG_TELEMETRY_SELFTEST=1` 打一条测试 ERROR，一分钟内出现在 Sentry 的服务端项目里，带版本、环境、用户。
 3. **前端**：浏览器控制台调自检函数，前端项目里出现一条错误，没有 IP。
 4. **两头串起来**：发一条消息，`acp_prompt` 在 Sentry 里是一条追踪，里面有浏览器的 span 和服务器的事务，两者之差就是网络耗时。
@@ -310,7 +336,8 @@ pub fn client_config() -> Option<ClientTelemetry>;
 - 服务器挂了的那段时间，前端的记录要等恢复后才补发；这期间只有心跳告警。
 - 只能分出「浏览器到服务器」和「服务器内部」两段，分不出中间哪一跳慢。
 - 服务端错误没有调用栈；前端在上传源码映射之前堆栈是压缩的。
-- 桌面端进程、手机 App 没覆盖。
+- 手机 App 没覆盖；桌面端内嵌 daemon 模式下本机后端不报。
+- 内置地址是公开的（第 10 节「默认开」）：谁都能往这两个项目里灌数据。
 - 回答不了「哪里难用」，那要靠人的反馈和以后的行为分析。
 
 ## 9. 放弃或推后的方案
@@ -357,3 +384,22 @@ pub fn client_config() -> Option<ClientTelemetry>;
 - **panic 钩子里不做脱敏**：钩子里只写原始消息（截到 2 KB）和位置，脱敏在下次启动合成事件时做。钩子里少跑正则就少一个出错的机会，原始记录只在用户自己的电脑上、开关开着时才有。
 - **单引号里的内容不去掉**：英文里单引号多半是撇号（`can't`），Rust 自己的消息（`thread 'main'`）也用它；只去双引号和中文引号里的。
 - **记录在 setup 里才开始写**：单实例插件在 setup 之前就让第二个实例退出了，在 `run()` 开头写的话，第二个实例会把正在运行的那个当成「上次没正常退出」。
+
+### 默认开（2026-11-15）
+
+用户决定：服务端、网页、桌面端崩溃和卡死、本机工作区全部默认开，可以关（第 2、5.1、5.11 节）。
+
+- **怎么开的**：上报地址编进发行的 `codeg-server`（`option_env!("CODEG_TELEMETRY_BUILTIN_DSN")` / `_WEB_DSN`，空字符串当没有），环境变量优先。前端不内置，照旧从 `cowork_info` 拿；桌面主程序不内置，本机的上报都经它带着的 `codeg-server` 子进程。
+- **生产机不变**：`/etc/cowork/telemetry.env` 两个地址都配了，按第 5.1 节第 2 条用环境变量的，environment 和用户标识的默认值也照旧（`production`、登录名）。
+- **一半配了另一半没配就不掺内置的**（第 5.1 节第 4 条）：配了自己 Sentry 的部署（AI QA、以后别的团队），没配的那一半不会悄悄报到我们的项目里。
+- **桌面端的开关**从「崩溃和卡死报告」改成总开关「发送诊断数据」，偏好换了个键（`diagnostics`，三态：没有 = 开）。旧键 `crash_reports` 不读：它默认 `false`，分不出是不是用户关的；#290 才发了一天，按「没设过」处理。
+- **运行中切换**：崩溃报告立刻生效；本机后端和本机窗口下次启动 dodoer 才生效（子进程的环境在启动时定）。没做成重启子进程：重启会打断正在跑的对话，为一个开关不值得。
+- **代价：地址等于公开。** 编进公开发行的程序里，谁解包都能拿到，可以往这两个 Sentry 项目里灌假数据、刷掉免费额度。兜底：转发接口自己的额度（每进程每分钟 60 个信封、带报错的另 30 个，第 5.4 节）只管经我们服务器转发的那部分，直接拿地址往 Sentry 发的拦不住；所以还要靠 Sentry 自己的项目限额。前端那个地址本来就会经 `cowork_info` 给到浏览器，服务端那个地址以前只在生产机上。要是被滥用了，换一个地址（Sentry 里给项目新建 Client Key、停掉旧的，改 secret、发一版），旧版本的包就报不进来了。
+- **待办（要人在 Sentry 后台做）**：两个项目（服务端、前端）都打开 Spike Protection；在 Client Keys 里给内置的那两个 key 设速率限制（比如每分钟几百条）；确认「不存 IP」和数据清洗（第 5.7 节）在两个项目里都开着；Inbound Filters 按 environment 看一下 `community` / `desktop-local` 的量，必要时单独限。生产机用的 key 最好和内置的分开（各一个 Client Key），被刷的时候只停内置那个。
+- **放弃的方案**：
+  - 地址放在前端包里、网页直连 Sentry：广告拦截和跨境网络照样拦（第 9 节），地址照样公开。
+  - 自己架一个转发服务、包里只带它的地址：多一个常驻服务要运维，转发服务的地址同样公开，只是多了一层限速；量起来了再考虑。
+  - 每个安装先找我们注册拿令牌：要账号体系，第三方的服务器也得能连到我们，太重。
+  - 用户标识沿用系统用户名：别人机器上的用户名是个人信息；用主机名也一样。
+  - 所有构建都内置地址（含 PR、qa）：每次 CI、冒烟都会往生产的项目里报，数据脏；PR 产物也没必要带。
+

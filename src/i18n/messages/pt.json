@@ -2029,10 +2029,11 @@
     "loadFailed": "Falha ao carregar: {message}"
   },
   "CrashReportSettings": {
-    "title": "Enviar relatórios de falhas e travamentos do app para desktop",
-    "description": "Quando o dodoer falha, trava ou é forçado a fechar, ele informa isso na próxima vez que abrir, pelo servidor Cowork ao qual está conectado, que repassa ao Sentry. Desativado, a menos que você ative; ao desativar, o que estiver guardado neste computador é apagado.",
-    "whatIsSent": "Enviado: o que aconteceu (uma falha, um travamento ou um encerramento anormal), a mensagem de erro e o local no código já anonimizados, quanto tempo ficou travado, se havia uma atualização ou um encerramento em andamento, a versão do app e o sistema operacional.",
-    "whatIsNotSent": "Não enviado: conteúdo das conversas, caminhos de arquivos, endereços web.",
+    "title": "Enviar dados de diagnóstico (falhas, travamentos, erros)",
+    "description": "Ativado por padrão; você pode desativar a qualquer momento. Quando o dodoer falha, trava ou é forçado a fechar, ele informa isso na próxima vez que iniciar; erros e chamadas que falharam no espaço de trabalho local também são informados. Os relatórios vão para o Sentry pelo servidor Cowork ao qual você está conectado ou pelo backend local do dodoer. Desativar interrompe o envio e apaga o que está guardado neste computador.",
+    "whatIsSent": "Enviado: o que aconteceu (uma falha, um travamento, uma saída que não foi normal, um erro, uma chamada que falhou), a mensagem de erro limpa e o local no código, quanto tempo levou, se havia uma atualização ou um encerramento em andamento, a versão do app, o sistema operacional e um ID de instalação gerado aleatoriamente (não o seu nome de usuário).",
+    "whatIsNotSent": "Não enviado: conteúdo das conversas, código e conteúdo de arquivos, caminhos de arquivos, endereços web, saída do terminal, seu nome de usuário.",
+    "restartNote": "Para o espaço de trabalho local, a mudança vale a partir da próxima vez que o dodoer iniciar. Janelas de um espaço de trabalho remoto seguem as configurações do servidor a que estão conectadas; este botão não as afeta.",
     "saveFailed": "Não foi possível salvar a configuração: {message}"
   },
   "MentionPanelSettings": {

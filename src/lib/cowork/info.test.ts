@@ -8,6 +8,10 @@ vi.mock("@/lib/platform", () => ({
   isDesktop: () => platform.desktop,
   isRemoteDesktopWindow: () => platform.desktop && platform.remote,
 }))
+const daemon = vi.hoisted(() => ({ child: false }))
+vi.mock("@/lib/transport/local-daemon", () => ({
+  isLocalChildDaemon: () => daemon.child,
+}))
 const conn = vi.hoisted(() => ({
   state: "connected",
   listeners: new Set<() => void>(),
@@ -27,6 +31,7 @@ import {
   getCachedCoworkInfo,
   isProjectExistsError,
   loadCoworkInfo,
+  loadLocalDaemonTelemetry,
   normalizeCoworkInfo,
   resetCoworkInfoForTests,
   useCoworkInfo,
@@ -44,7 +49,59 @@ beforeEach(() => {
   call.mockReset()
   platform.desktop = false
   platform.remote = false
+  daemon.child = false
   resetCoworkInfoForTests()
+})
+
+describe("loadLocalDaemonTelemetry", () => {
+  const telemetry = {
+    dsn: "https://key@o1.ingest.us.sentry.io/3",
+    environment: "desktop-local",
+    release: "cowork-codeg-v0.7.0",
+    tracesSampleRate: 1,
+    commandSampleRates: {},
+    user: "0a1b2c3d4e5f",
+  }
+
+  it("takes only the telemetry of the app's own daemon", async () => {
+    platform.desktop = true
+    daemon.child = true
+    call.mockResolvedValue({ ...INFO, telemetry })
+    await expect(loadLocalDaemonTelemetry()).resolves.toEqual(telemetry)
+    expect(call).toHaveBeenCalledWith("cowork_info", {})
+    // The rest of cowork_info does not make the local workspace a Cowork one.
+    expect(getCachedCoworkInfo()).toBeNull()
+  })
+
+  it("is null when the daemon does not report", async () => {
+    platform.desktop = true
+    daemon.child = true
+    call.mockResolvedValue(INFO)
+    await expect(loadLocalDaemonTelemetry()).resolves.toBeNull()
+  })
+
+  it("does not ask outside a local window with a child daemon", async () => {
+    for (const [desktop, remote, child] of [
+      [false, false, true],
+      [true, true, true],
+      [true, false, false],
+    ]) {
+      platform.desktop = desktop
+      platform.remote = remote
+      daemon.child = child
+      await expect(loadLocalDaemonTelemetry()).resolves.toBeNull()
+    }
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it("rejects when the daemon cannot be asked", async () => {
+    platform.desktop = true
+    daemon.child = true
+    call.mockRejectedValue({ code: "network_error" })
+    await expect(loadLocalDaemonTelemetry()).rejects.toEqual({
+      code: "network_error",
+    })
+  })
 })
 
 describe("normalizeCoworkInfo", () => {

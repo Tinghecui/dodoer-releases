@@ -46,9 +46,10 @@ export function normalizeClientTelemetry(raw: unknown): ClientTelemetry | null {
   }
 }
 
-/** Which kind of window this is: the browser, or a desktop window bound to
- *  a remote server (its calls go through the desktop app's proxy). */
-export type Surface = "web" | "remote-desktop"
+/** Which kind of window this is: the browser, a desktop window bound to a
+ *  remote server (its calls go through the desktop app's proxy), or a
+ *  desktop window of the local workspace (the app's own daemon). */
+export type Surface = "web" | "remote-desktop" | "desktop-local"
 
 /** How an API call ended: "ok", an HTTP status, no answer in time, no
  *  answer at all, or the request never left (the browser refused it). */

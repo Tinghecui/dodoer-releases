@@ -2029,10 +2029,11 @@
     "loadFailed": "Laden fehlgeschlagen: {message}"
   },
   "CrashReportSettings": {
-    "title": "Absturz- und Hängeberichte der Desktop-App senden",
-    "description": "Wenn dodoer abstürzt, hängt oder sofort beendet wird, meldet es das beim nächsten Start über den verbundenen Cowork-Server, der es an Sentry weiterleitet. Standardmäßig aus; beim Ausschalten wird gelöscht, was auf diesem Computer gespeichert ist.",
-    "whatIsSent": "Gesendet wird: was passiert ist (ein Absturz, ein Hänger oder ein Ende ohne normales Beenden), die bereinigte Fehlermeldung und Codestelle, wie lange es hing, ob gerade ein Update oder das Beenden lief, die App-Version und das Betriebssystem.",
-    "whatIsNotSent": "Nicht gesendet werden: Gesprächsinhalte, Dateipfade, Webadressen.",
+    "title": "Diagnosedaten senden (Abstürze, Hänger, Fehler)",
+    "description": "Standardmäßig an; Sie können es jederzeit ausschalten. Stürzt dodoer ab, hängt es oder wird es zwangsweise beendet, meldet es das beim nächsten Start; Fehler und fehlgeschlagene Aufrufe im lokalen Arbeitsbereich werden ebenfalls gemeldet. Die Meldungen gehen über den verbundenen Cowork-Server oder über das lokale Backend von dodoer an Sentry. Ausschalten beendet das Senden und löscht, was auf diesem Computer gespeichert ist.",
+    "whatIsSent": "Gesendet: was passiert ist (ein Absturz, ein Hänger, ein nicht normales Beenden, ein Fehler, ein fehlgeschlagener Aufruf), die bereinigte Fehlermeldung und Codestelle, die Dauer, ob gerade ein Update oder das Beenden lief, die App-Version, das Betriebssystem und eine zufällig erzeugte Installations-ID (nicht Ihr Benutzername).",
+    "whatIsNotSent": "Nicht gesendet: Gesprächsinhalte, Code und Dateiinhalte, Dateipfade, Webadressen, Terminalausgaben, Ihr Benutzername.",
+    "restartNote": "Für den lokalen Arbeitsbereich wirkt eine Änderung beim nächsten Start von dodoer. Fenster eines entfernten Arbeitsbereichs melden nach den Einstellungen ihres Servers; dieser Schalter betrifft sie nicht.",
     "saveFailed": "Einstellung konnte nicht gespeichert werden: {message}"
   },
   "MentionPanelSettings": {

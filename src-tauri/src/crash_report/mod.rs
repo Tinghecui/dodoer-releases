@@ -1,8 +1,8 @@
 //! Cowork fork: the desktop app's own crashes and hangs, reported at the next
-//! start through the Cowork server the app is connected to
-//! (docs/telemetry.md §5.11). Off unless the person turns on "Send desktop
-//! crash and hang reports" (`preferences.json` → `crash_reports`); while off
-//! nothing is written and nothing is sent.
+//! start through the Cowork server the app is connected to, else through its
+//! own daemon (docs/telemetry.md §5.11). On unless the person turns off "Send
+//! diagnostics" (`preferences.json` → `diagnostics`); while off nothing is
+//! written and nothing is sent.
 //!
 //! A crash or a hang cannot report itself, so a run leaves files behind
 //! instead ([`store`]), and the next start turns them into reports
@@ -149,7 +149,7 @@ pub fn start(app: &tauri::AppHandle) {
         return;
     }
     install_panic_hook();
-    let on = crate::preferences::load().crash_reports;
+    let on = crate::preferences::load().diagnostics_enabled();
     ENABLED.store(on, Ordering::SeqCst);
     if !on {
         // Nothing is kept while the switch is off.
@@ -346,17 +346,19 @@ pub struct CrashReportSettings {
 #[tauri::command]
 pub async fn get_crash_report_settings() -> Result<CrashReportSettings, AppCommandError> {
     Ok(CrashReportSettings {
-        enabled: crate::preferences::load().crash_reports,
+        enabled: crate::preferences::load().diagnostics_enabled(),
     })
 }
 
-/// Turn the switch on or off. Off forgets everything kept so far.
+/// Turn the switch on or off. Off forgets everything kept so far. The app's
+/// own daemon reads it when it starts (`local_daemon::ChildSpec`), so for it
+/// and the local windows the change takes effect at the next start.
 #[tauri::command]
 pub async fn update_crash_report_settings(
     settings: CrashReportSettings,
 ) -> Result<CrashReportSettings, AppCommandError> {
     let mut prefs = crate::preferences::load();
-    prefs.crash_reports = settings.enabled;
+    prefs.diagnostics = Some(settings.enabled);
     crate::preferences::save(&prefs).map_err(|err| {
         AppCommandError::io_error("Failed to save the crash report setting")
             .with_detail(err.to_string())

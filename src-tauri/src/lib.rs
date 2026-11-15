@@ -437,6 +437,8 @@ mod tauri_app {
             data_dir: data_dir.to_path_buf(),
             token: crate::cli_run::hello::random_hex(32),
             host_bridge: Some(bridge.env()),
+            // Cowork fork: "Send diagnostics" off reaches the daemon too.
+            telemetry_off: !crate::preferences::load().diagnostics_enabled(),
             start_timeout: LOCAL_DAEMON_START_TIMEOUT,
         };
         match tauri::async_runtime::block_on(crate::local_daemon::LocalDaemon::start(config)) {

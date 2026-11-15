@@ -34,36 +34,43 @@ beforeEach(() => {
   toastError.mockClear()
   getSettings.mockReset()
   updateSettings.mockReset()
-  getSettings.mockResolvedValue({ enabled: false })
+  getSettings.mockResolvedValue({ enabled: true })
 })
 afterEach(() => cleanup())
 
 describe("CrashReportSettingsSection", () => {
-  it("is off until turned on, and says what is and is not sent", async () => {
+  it("shows the app's value, and says what is and is not sent", async () => {
     renderSection()
     const toggle = await screen.findByRole("switch", {
-      name: "Send desktop crash and hang reports",
+      name: "Send diagnostics (crashes, hangs, errors)",
     })
-    expect(toggle).toHaveAttribute("aria-checked", "false")
-    expect(screen.getByText(/^Sent:/)).toBeInTheDocument()
+    expect(toggle).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByText(/^On by default/)).toBeInTheDocument()
+    expect(screen.getByText(/^Sent:.*install id/)).toBeInTheDocument()
     expect(
-      screen.getByText(
-        "Not sent: conversation content, file paths, web addresses."
-      )
+      screen.getByText(/^Not sent:.*your user name\.$/)
     ).toBeInTheDocument()
+    expect(screen.getByText(/next time dodoer starts/)).toBeInTheDocument()
   })
 
-  it("saves the consent", async () => {
+  it("shows a switch the person turned off as off", async () => {
+    getSettings.mockResolvedValue({ enabled: false })
+    renderSection()
+    const toggle = await screen.findByRole("switch")
+    expect(toggle).toHaveAttribute("aria-checked", "false")
+  })
+
+  it("saves the choice", async () => {
     const user = userEvent.setup()
-    updateSettings.mockResolvedValue({ enabled: true })
+    updateSettings.mockResolvedValue({ enabled: false })
     renderSection()
 
     await user.click(await screen.findByRole("switch"))
 
     await waitFor(() =>
-      expect(updateSettings).toHaveBeenCalledWith({ enabled: true })
+      expect(updateSettings).toHaveBeenCalledWith({ enabled: false })
     )
-    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false")
   })
 
   it("puts the switch back when the save fails", async () => {
@@ -74,7 +81,7 @@ describe("CrashReportSettingsSection", () => {
     await user.click(await screen.findByRole("switch"))
 
     await waitFor(() => expect(toastError).toHaveBeenCalled())
-    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false")
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true")
   })
 
   it("is not shown outside the desktop app", async () => {

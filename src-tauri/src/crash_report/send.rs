@@ -3,8 +3,9 @@
 //! `cowork_info` names a web DSN) and forward each report through that
 //! server's `/api/telemetry_envelope`, with the call the remote windows'
 //! proxy makes (`remote_proxy::call_api`: the same token, custom headers and
-//! redirect rules). The app's local workspace is never asked: it has no
-//! `cowork_info` and no DSN of its own.
+//! redirect rules). When none does, the app's own daemon (the `codeg-server`
+//! child, `local_daemon`) is asked the same way: a release build reports
+//! with the DSNs built into it, unless diagnostics are off.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,19 +66,34 @@ fn verdict(outcome: &Result<Value, AppCommandError>) -> Verdict {
     }
 }
 
-/// The first saved connection whose server says where to report.
+/// Where `conn`'s server says to report, if it does.
+async fn target_of(
+    proxy: &RemoteProxyState,
+    conn: &RemoteWorkspaceConnectionInfo,
+) -> Option<Target> {
+    let info = call_api(proxy, conn, "cowork_info", None, Some(CALL_TIMEOUT_MS)).await;
+    info.ok().as_ref().and_then(Target::from_cowork_info)
+}
+
+/// The first saved connection whose server says where to report; else the
+/// app's own daemon, when it reports.
 async fn find_server(
     db: &DatabaseConnection,
     proxy: &RemoteProxyState,
 ) -> Option<(RemoteWorkspaceConnectionInfo, Target)> {
-    let connections = remote_workspace_connection_service::list(db).await.ok()?;
+    let connections = remote_workspace_connection_service::list(db)
+        .await
+        .unwrap_or_default();
     for conn in connections {
-        let info = call_api(proxy, &conn, "cowork_info", None, Some(CALL_TIMEOUT_MS)).await;
-        if let Some(target) = info.ok().as_ref().and_then(Target::from_cowork_info) {
+        if let Some(target) = target_of(proxy, &conn).await {
             return Some((conn, target));
         }
     }
-    None
+    let Ok(Some(local)) = crate::local_daemon::connection_info().await else {
+        return None;
+    };
+    let target = target_of(proxy, &local).await?;
+    Some((local, target))
 }
 
 /// One round. True when nothing is left to send (or nothing may be sent).

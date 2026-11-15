@@ -98,6 +98,17 @@ function server(initial: HostDeviceList) {
         }
         return current
       }
+      if (command === "stop_host_device") {
+        current = {
+          ...current,
+          devices: current.devices.map((d) =>
+            d.id === args.id
+              ? { ...d, stopped: true, shell: false, browser: false }
+              : d
+          ),
+        }
+        return current
+      }
       throw new Error(`unexpected ${command}`)
     }
   )
@@ -235,6 +246,71 @@ describe("StatusBarDevices", () => {
     await waitFor(() =>
       expect(document.querySelector(`[data-device="${BOOK}"]`)).toBeNull()
     )
+  })
+
+  it("stops a device's lending from here, once confirmed", async () => {
+    server({ devices: BOTH, unnamedHosts: 0 })
+    await mount(["host_bridge_ws", "host_devices", "stop_host_device"])
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Devices" })
+    )
+    // Only a device that is online and lends something can be stopped.
+    expect(row(BOOK).queryByRole("button", { name: "Stop lending" })).toBeNull()
+    await userEvent.click(
+      row(IMAC).getByRole("button", { name: "Stop lending" })
+    )
+    expect(
+      row(IMAC).getByText(/^Stop everything desktop lends\?/)
+    ).toBeInTheDocument()
+    expect(env.call).not.toHaveBeenCalledWith(
+      "stop_host_device",
+      expect.anything()
+    )
+    await userEvent.click(
+      row(IMAC).getByRole("button", { name: "Stop lending" })
+    )
+    expect(env.call).toHaveBeenCalledWith("stop_host_device", { id: IMAC })
+    await waitFor(() =>
+      expect(
+        document.querySelector(`[data-device="${IMAC}"] [data-device-stopped]`)
+      ).not.toBeNull()
+    )
+    expect(row(IMAC).queryByRole("button", { name: "Stop lending" })).toBeNull()
+  })
+
+  it("offers no stop where the server cannot", async () => {
+    server({ devices: BOTH, unnamedHosts: 0 })
+    await mount()
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Devices" })
+    )
+    expect(row(IMAC).queryByRole("button", { name: "Stop lending" })).toBeNull()
+  })
+
+  it("names the conversations working on a device", async () => {
+    server({
+      devices: [
+        {
+          ...BOTH[0],
+          inUse: [
+            { conversationId: 7, title: "Fix the build" },
+            { conversationId: 8, title: "" },
+          ],
+        },
+        BOTH[1],
+      ],
+      unnamedHosts: 0,
+    })
+    await mount()
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Devices" })
+    )
+    expect(
+      row(IMAC).getByText("In use by: Fix the build, Untitled")
+    ).toBeInTheDocument()
+    expect(
+      document.querySelector(`[data-device="${BOOK}"] [data-device-in-use]`)
+    ).toBeNull()
   })
 
   it("shows what the server refused", async () => {

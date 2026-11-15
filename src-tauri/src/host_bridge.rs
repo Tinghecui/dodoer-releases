@@ -557,6 +557,19 @@ pub mod ws_host {
             let _ = (client_key, dial);
             Err("this app lends no shell".to_string())
         }
+        /// The person stopped what this computer lends the socket's server,
+        /// from another of their devices, at `at` (`host_stop`,
+        /// `docs/devices.md` 7.2): lend it nothing until they lend again
+        /// here.
+        async fn stopped(&self, at: i64) {
+            let _ = at;
+        }
+        /// The stop the person lent again after, here: said in every
+        /// registration as `relent`, which is what lets the server take
+        /// this computer's lendings again.
+        async fn relent(&self) -> Option<i64> {
+            None
+        }
     }
 
     /// The window behind the socket got focus.
@@ -587,6 +600,15 @@ pub mod ws_host {
         shell: Option<&ShellHost>,
         device: Option<&HostDevice>,
     ) -> String {
+        register_value(capabilities, window, shell, device).to_string()
+    }
+
+    fn register_value(
+        capabilities: &[String],
+        window: &str,
+        shell: Option<&ShellHost>,
+        device: Option<&HostDevice>,
+    ) -> Value {
         let mut frame = json!({
             "action": "host_register",
             "capabilities": capabilities,
@@ -598,23 +620,36 @@ pub mod ws_host {
         if let Some(device) = device {
             frame["device"] = json!(device);
         }
-        frame.to_string()
+        frame
     }
 
     /// What `host` registers with, on a socket whose server takes shells or
-    /// not: its capabilities, and its shell (with `shell`) when it lends one.
+    /// not: its capabilities, and its shell (with `shell`) when it lends one;
+    /// `relent` once the person lent again here after a stop.
     pub async fn registration(host: &dyn WsHost, takes_shells: bool) -> String {
         let mut capabilities = host.capabilities().await;
         let shell = if takes_shells { host.shell().await } else { None };
         if shell.is_some() {
             capabilities.push(tunnel::CAPABILITY.to_string());
         }
-        register_frame(
+        let mut frame = register_value(
             &capabilities,
             &host.window(),
             shell.as_ref(),
             host.device().as_ref(),
-        )
+        );
+        if let Some(at) = host.relent().await {
+            frame["relent"] = json!(at);
+        }
+        frame.to_string()
+    }
+
+    /// A `host_stop`: when the person stopped this computer's lendings.
+    pub fn parse_stop(frame: &Value) -> Option<i64> {
+        if frame.get("type").and_then(Value::as_str) != Some("host_stop") {
+            return None;
+        }
+        frame.get("at")?.as_i64()
     }
 
     /// A `host_tunnel`: its id and the key to let in.
@@ -827,6 +862,43 @@ mod tests {
             ws_host::parse_call(&serde_json::json!({"type": "pong"})),
             None
         );
+        let stop = serde_json::to_value(ServerMsg::HostStop { at: 7 });
+        assert_eq!(ws_host::parse_stop(&stop.unwrap()), Some(7));
+        assert_eq!(ws_host::parse_stop(&order), None);
+    }
+
+    /// A host that lent again after a stop says so in its registration, as
+    /// the server reads it.
+    #[tokio::test]
+    async fn a_registration_after_lending_again_names_the_stop() {
+        use crate::web::ws_attach::ClientMsg;
+        struct LentAgain;
+        #[async_trait::async_trait]
+        impl ws_host::WsHost for LentAgain {
+            async fn capabilities(&self) -> Vec<String> {
+                vec!["browser".to_string()]
+            }
+
+            fn window(&self) -> String {
+                "remote-workspace-3".to_string()
+            }
+
+            async fn dispatch(&self, _call: BridgeCall) -> serde_json::Value {
+                serde_json::Value::Null
+            }
+
+            async fn relent(&self) -> Option<i64> {
+                Some(7)
+            }
+        }
+        let register = ws_host::registration(&LentAgain, false).await;
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(&register).unwrap(),
+            ClientMsg::HostRegister {
+                relent: Some(7),
+                ..
+            }
+        ));
     }
 
     #[test]

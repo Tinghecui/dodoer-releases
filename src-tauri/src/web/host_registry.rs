@@ -35,7 +35,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use super::host_devices::{
     now_ms, DeviceBook, DeviceList, DeviceRecord, DeviceView, ForgetError, NameError, Presence,
-    Seen,
+    Seen, StopError,
 };
 use super::working_device::WorkingDevices;
 use super::ws_attach::ServerMsg;
@@ -98,6 +98,8 @@ pub enum TunnelError {
     Offline { name: String, last_seen: i64 },
     /// An app on it is connected, and lends no shell.
     NotLent { name: String },
+    /// Its lending was stopped from elsewhere (`stop_device`).
+    Stopped { name: String },
     /// The old name, with several devices and none called that.
     Ambiguous { names: Vec<String> },
     /// [`TUNNELS_PER_MINUTE`] opened to that device in the last minute
@@ -131,6 +133,8 @@ pub enum BrowserRouteError {
     Offline { name: String, last_seen: i64 },
     /// An app on it is connected, and lends no tabs.
     NotLent { name: String },
+    /// Its lending was stopped from elsewhere (`stop_device`).
+    Stopped { name: String },
     /// Several devices lend their tabs, and the call names none of them.
     ChooseDevice { names: Vec<String> },
     /// A tab id that names no device, and no device listed it.
@@ -210,6 +214,13 @@ impl Inner {
         self.clock
     }
 
+    /// When the lending of the computer `device` was stopped from
+    /// elsewhere, while it is.
+    fn stopped_at(&self, device: Option<&HostDevice>) -> Option<i64> {
+        let record = self.book.get(&device?.id)?;
+        record.stopped_at
+    }
+
     /// The windows lending their tabs: each device's in the book, or — with
     /// none in it — the apps from before devices.
     fn browser_lenders(&self) -> impl Iterator<Item = &Host> {
@@ -250,6 +261,11 @@ impl Inner {
 
     /// The window of `record` lending its tabs, the one used last.
     fn browser_on(&self, record: &DeviceRecord) -> Result<&Host, BrowserRouteError> {
+        if record.stopped_at.is_some() {
+            return Err(BrowserRouteError::Stopped {
+                name: record.name.clone(),
+            });
+        }
         let mut on_it = self.hosts.iter().filter(|h| h.is_on(&record.id)).peekable();
         if on_it.peek().is_none() {
             return Err(BrowserRouteError::Offline {
@@ -359,6 +375,11 @@ impl Inner {
                 }
             },
         };
+        if record.stopped_at.is_some() {
+            return Err(TunnelError::Stopped {
+                name: record.name.clone(),
+            });
+        }
         let mut on_it = self.hosts.iter().filter(|h| h.is_on(&record.id)).peekable();
         if on_it.peek().is_none() {
             return Err(TunnelError::Offline {
@@ -601,6 +622,15 @@ impl HostRegistry {
             let seen = what_it_says(shell.as_ref(), app_version.as_deref());
             inner.book.seen(device, seen, now_ms());
         }
+        // A stopped computer lends nothing here, whatever its app says, and
+        // its app is told again (`docs/devices.md` 7.2).
+        let (capabilities, shell) = match inner.stopped_at(device.as_ref()) {
+            Some(at) => {
+                let _ = tx.try_send(ServerMsg::HostStop { at });
+                (Vec::new(), None)
+            }
+            None => (capabilities, shell),
+        };
         inner.hosts.push(Host {
             id,
             tx,
@@ -757,6 +787,72 @@ impl HostRegistry {
         self.lock().book.get(id).is_some()
     }
 
+    /// Stop everything the computer `id` lends here, from any device or the
+    /// web (`docs/devices.md` 7.2): what its apps lend is used no more, the
+    /// calls and tunnels to it end, and its apps are told to stop lending.
+    /// It lends again only once an app on it says it lent again there
+    /// ([`resume_device`](Self::resume_device)).
+    pub fn stop_device(&self, id: &str) -> Result<(), StopError> {
+        let mut inner = self.lock();
+        let Some(at) = inner.book.stop(id, now_ms()) else {
+            return Err(StopError::NoSuchDevice);
+        };
+        let on_it: Vec<u64> = inner
+            .hosts
+            .iter()
+            .filter(|h| h.is_on(id))
+            .map(|h| h.id)
+            .collect();
+        for host in inner.hosts.iter_mut().filter(|h| h.is_on(id)) {
+            host.capabilities.clear();
+            host.shell = None;
+            let _ = host.tx.try_send(ServerMsg::HostStop { at });
+        }
+        // Dropping the senders fails the calls waiting on it at once.
+        inner.pending.retain(|_, p| !on_it.contains(&p.host));
+        inner.tunnels.retain(|_, t| !on_it.contains(&t.host));
+        inner.tabs.retain(|_, host| !on_it.contains(host));
+        self.publish_ssh(&inner);
+        drop(inner);
+        tracing::info!("[host-registry] computer {} stopped", short(id));
+        self.note_book();
+        Ok(())
+    }
+
+    /// An app on the computer `id` lent again there, after the stop at `at`
+    /// it was told of: what it lends from its next registration on is used.
+    pub fn resume_device(&self, id: &str, at: i64) -> bool {
+        let resumed = self.lock().book.resume(id, at);
+        if resumed {
+            tracing::info!("[host-registry] computer {} lends again", short(id));
+            self.note_book();
+        }
+        resumed
+    }
+
+    /// Whether the lending of the computer `id` is stopped.
+    pub fn is_stopped(&self, id: &str) -> bool {
+        self.lock()
+            .book
+            .get(id)
+            .is_some_and(|record| record.stopped_at.is_some())
+    }
+
+    /// Resolves once the lending of the computer `id` is stopped: what ends
+    /// the tunnels open to it.
+    pub async fn stopped(&self, id: &str) {
+        // Subscribed before looking, so no stop slips between the two.
+        let mut changes = self.watch_book();
+        loop {
+            if self.is_stopped(id) {
+                return;
+            }
+            if changes.changed().await.is_err() {
+                return std::future::pending().await;
+            }
+        }
+    }
+
     /// The computers online now were last seen now.
     pub fn touch_online(&self) {
         let mut inner = self.lock();
@@ -794,6 +890,17 @@ impl HostRegistry {
                 book.seen(device, seen, now_ms());
                 in_book = true;
             }
+            let stopped = device
+                .as_ref()
+                .and_then(|d| book.get(&d.id))
+                .and_then(|record| record.stopped_at);
+            let (capabilities, shell) = match stopped {
+                Some(at) => {
+                    let _ = host.tx.try_send(ServerMsg::HostStop { at });
+                    (Vec::new(), None)
+                }
+                None => (capabilities, shell),
+            };
             host.capabilities = capabilities;
             host.window = window;
             host.shell = shell;
@@ -1585,6 +1692,7 @@ mod tests {
             user: Some("me".into()),
             first_seen: 1,
             last_seen: 2,
+            stopped_at: None,
         }]);
         let list = registry.device_list();
         assert_eq!(list.devices.len(), 1);
@@ -1693,6 +1801,7 @@ mod tests {
             user: Some("me".into()),
             first_seen: 1,
             last_seen: 2,
+            stopped_at: None,
         }]);
         assert_eq!(
             offline.check_shell(ShellTarget::Device(&book_id)),
@@ -1798,5 +1907,96 @@ mod tests {
             tunnel_to(&registry, ShellTarget::Device(&book_id)).await,
             TunnelError::TimedOut
         );
+    }
+
+    /// The `host_stop` a host was told, with its time.
+    fn stop_told(rx: &mut mpsc::Receiver<ServerMsg>) -> i64 {
+        match rx.try_recv() {
+            Ok(ServerMsg::HostStop { at }) => at,
+            other => panic!("expected host_stop, got {other:?}"),
+        }
+    }
+
+    /// A device stopped from elsewhere lends nothing, whatever its app says,
+    /// and its app is told so whenever it registers, until it says it lent
+    /// again after that very stop. Another device goes on.
+    #[tokio::test]
+    async fn a_stopped_device_lends_nothing_until_it_lends_again_there() {
+        let registry = Arc::new(HostRegistry::new());
+        let (imac, mut imac_rx) = lending(&registry, "imac", "Study iMac", "me");
+        let (_book, mut book_rx) = lending(&registry, "book", "MacBook", "me");
+        let imac_id = device("imac", "").id;
+        let book_id = device("book", "").id;
+        assert_eq!(
+            registry.stop_device("nobody-0123456789"),
+            Err(StopError::NoSuchDevice)
+        );
+
+        registry.stop_device(&imac_id).unwrap();
+        let at = stop_told(&mut imac_rx);
+        assert!(book_rx.try_recv().is_err(), "another is not told");
+        assert!(registry.is_stopped(&imac_id));
+        let held = Err(TunnelError::Stopped {
+            name: "study-imac".into(),
+        });
+        assert_eq!(registry.check_shell(ShellTarget::Device(&imac_id)), held);
+        assert_eq!(
+            registry.route_open(Some("study-imac")),
+            Err(BrowserRouteError::Stopped {
+                name: "study-imac".into()
+            })
+        );
+        assert_eq!(registry.check_shell(ShellTarget::Device(&book_id)), Ok(()));
+        let list = registry.device_list();
+        let shown = list.devices.iter().find(|d| d.id == imac_id).unwrap();
+        assert!(shown.stopped && shown.online && !shown.shell);
+
+        // What its app says it lends, as if nothing happened: held back.
+        imac.update_on(
+            lends_shell(),
+            None,
+            Some(shell_host("me")),
+            Some(device("imac", "Study iMac")),
+        );
+        assert_eq!(stop_told(&mut imac_rx), at);
+        assert_eq!(registry.check_shell(ShellTarget::Device(&imac_id)), held);
+        // Another app on it registering is told too.
+        let (_again, mut again_rx) = lending(&registry, "imac", "Study iMac", "me");
+        assert_eq!(stop_told(&mut again_rx), at);
+        assert_eq!(registry.check_shell(ShellTarget::Device(&imac_id)), held);
+
+        // Lent again after another stop than this one: still stopped.
+        assert!(!registry.resume_device(&imac_id, at - 1));
+        assert!(registry.is_stopped(&imac_id));
+        assert!(registry.resume_device(&imac_id, at));
+        assert!(!registry.is_stopped(&imac_id));
+        imac.update_on(
+            lends_shell(),
+            None,
+            Some(shell_host("me")),
+            Some(device("imac", "Study iMac")),
+        );
+        assert!(imac_rx.try_recv().is_err(), "not told again");
+        assert_eq!(registry.check_shell(ShellTarget::Device(&imac_id)), Ok(()));
+    }
+
+    /// What ends the tunnels open to a device: its stop.
+    #[tokio::test]
+    async fn waiting_on_a_stop_ends_with_it() {
+        let registry = Arc::new(HostRegistry::new());
+        let (_imac, _imac_rx) = lending(&registry, "imac", "Study iMac", "me");
+        let imac_id = device("imac", "").id;
+        let waiting = {
+            let registry = Arc::clone(&registry);
+            let id = imac_id.clone();
+            tokio::spawn(async move { registry.stopped(&id).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        registry.stop_device(&imac_id).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

@@ -942,6 +942,10 @@ pub fn api_routes() -> Router {
             post(crate::web::host_devices::forget_host_device),
         )
         .route(
+            "/stop_host_device",
+            post(crate::web::host_devices::stop_host_device),
+        )
+        .route(
             "/get_conversation_device",
             post(crate::web::working_device::get_conversation_device),
         )

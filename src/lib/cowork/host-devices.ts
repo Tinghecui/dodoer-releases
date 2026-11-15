@@ -21,6 +21,10 @@ import {
  *  (`FEATURE` in `src-tauri/src/web/host_devices.rs`). */
 export const HOST_DEVICES_FEATURE = "host_devices"
 
+/** The `server_info` feature of a server that can stop a device's lending
+ *  from elsewhere (`STOP_FEATURE` there, `docs/devices.md` 7.2). */
+export const HOST_DEVICES_STOP_FEATURE = "stop_host_device"
+
 /** `NAME_MAX` there. */
 export const DEVICE_NAME_MAX = 32
 
@@ -50,6 +54,18 @@ export interface HostDevice {
   browser: boolean
   /** …and the person lets agents use their own Chrome there. */
   chrome: boolean
+  /** Its lending was stopped from elsewhere: it lends again only once the
+   *  person lends it again on it. Missing from a server from before this. */
+  stopped?: boolean
+  /** The conversations open now that work on it, the one used last
+   *  first. */
+  inUse?: DeviceInUse[]
+}
+
+/** `InUse` there. */
+export interface DeviceInUse {
+  conversationId: number
+  title: string
 }
 
 /** `DeviceList` there. */
@@ -79,6 +95,11 @@ export function renameHostDevice(
   name: string
 ): Promise<HostDeviceList> {
   return getTransport().call("rename_host_device", { id, name })
+}
+
+/** Stop everything device `id` lends, from here (`docs/devices.md` 7.2). */
+export function stopHostDevice(id: string): Promise<HostDeviceList> {
+  return getTransport().call("stop_host_device", { id })
 }
 
 /** Take a device that is not connected out of the book. */
@@ -145,6 +166,7 @@ export const HOST_DEVICES_POLL_OPEN_MS = 5_000
 export function useHostDevices(watching: boolean) {
   const [applies] = useState(hostDevicesApply)
   const [serverTakes, setServerTakes] = useState(false)
+  const [serverStops, setServerStops] = useState(false)
   const [list, setList] = useState<HostDeviceList | null>(null)
   const [thisDeviceId, setThisDeviceId] = useState<string | null>(null)
   /** Bumped by every read issued and every answer adopted: a read is applied
@@ -176,9 +198,10 @@ export function useHostDevices(watching: boolean) {
       // No transport to ask (yet): nothing has said the server can answer.
       return
     }
-    return transport.onServerInfo?.((info) =>
+    return transport.onServerInfo?.((info) => {
       setServerTakes(serverHasFeature(info, HOST_DEVICES_FEATURE))
-    )
+      setServerStops(serverHasFeature(info, HOST_DEVICES_STOP_FEATURE))
+    })
   }, [applies])
 
   useEffect(() => {
@@ -218,5 +241,11 @@ export function useHostDevices(watching: boolean) {
     }
   }, [applies])
 
-  return { list: applies && serverTakes ? list : null, thisDeviceId, adopt }
+  return {
+    list: applies && serverTakes ? list : null,
+    thisDeviceId,
+    adopt,
+    /** The server can stop a device's lending. */
+    canStop: applies && serverTakes && serverStops,
+  }
 }

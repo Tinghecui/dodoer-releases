@@ -20,6 +20,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useLocale } from "next-intl"
 import {
+  CircleStop,
   Laptop,
   Monitor,
   MonitorSmartphone,
@@ -52,6 +53,7 @@ import {
   lastSeenText,
   normalizeDeviceName,
   renameHostDevice,
+  stopHostDevice,
   useHostDevices,
   type HostDevice,
   type HostDeviceList,
@@ -61,6 +63,7 @@ import { cn } from "@/lib/utils"
 
 const AGENT_MARK = "text-violet-600 dark:text-violet-400"
 const ONLINE_MARK = "bg-emerald-500"
+const STOPPED_TONE = "text-amber-600 dark:text-amber-400"
 
 type Text = (key: CoworkTextKey, values?: Record<string, string>) => string
 
@@ -81,7 +84,7 @@ function nameProblem(
 export function StatusBarDevices({ className }: { className?: string }) {
   const t = useCoworkText()
   const [open, setOpen] = useState(false)
-  const { list, thisDeviceId, adopt } = useHostDevices(open)
+  const { list, thisDeviceId, adopt, canStop } = useHostDevices(open)
   const [error, setError] = useState<string | null>(null)
 
   if (!list) return null
@@ -130,6 +133,7 @@ export function StatusBarDevices({ className }: { className?: string }) {
                 device={device}
                 list={list}
                 here={device.id === thisDeviceId}
+                canStop={canStop}
                 onChanged={(next) => {
                   setError(null)
                   adopt(next)
@@ -174,17 +178,21 @@ function KindIcon({ kind }: { kind: string | null }) {
   return <Icon className="size-3.5 shrink-0 text-muted-foreground" />
 }
 
-/** One device: its name (which can be changed), where it is, what it lends. */
+/** One device: its name (which can be changed), where it is, what it
+ *  lends, which conversations work on it; its lending can be stopped. */
 function DeviceRow({
   device,
   list,
   here,
+  canStop,
   onChanged,
   onError,
 }: {
   device: HostDevice
   list: HostDeviceList
   here: boolean
+  /** The server can stop a device's lending. */
+  canStop: boolean
   onChanged: (next: HostDeviceList) => void
   onError: (message: string) => void
 }) {
@@ -194,6 +202,7 @@ function DeviceRow({
   const [draft, setDraft] = useState(device.name)
   const [problem, setProblem] = useState<string | null>(null)
   const [forgetting, setForgetting] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const lends = [
@@ -202,6 +211,14 @@ function DeviceRow({
     device.chrome && t("devicesLendsChrome"),
   ].filter((label): label is string => !!label)
   const about = device.computerName || device.model
+  const stoppable =
+    canStop &&
+    device.online &&
+    !device.stopped &&
+    (device.shell || device.browser)
+  const inUse = (device.inUse ?? [])
+    .map((c) => c.title || t("devicesUntitled"))
+    .join(", ")
 
   const save = async () => {
     const name = normalizeDeviceName(draft)
@@ -234,10 +251,23 @@ function DeviceRow({
     }
   }
 
+  const stop = async () => {
+    setBusy(true)
+    try {
+      onChanged(await stopHostDevice(device.id))
+    } catch (e) {
+      onError(toErrorMessage(e))
+    } finally {
+      setBusy(false)
+      setStopping(false)
+    }
+  }
+
   return (
     <li
       data-device={device.id}
       data-online={device.online ? "true" : "false"}
+      data-stopped={device.stopped ? "true" : undefined}
       className="flex flex-col gap-1 px-2 py-1.5"
     >
       <div className="flex items-center gap-2">
@@ -271,6 +301,18 @@ function DeviceRow({
             }}
           >
             <Pencil className="size-3" />
+          </Button>
+        )}
+        {stoppable && !editing && !stopping && (
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label={t("devicesStop")}
+            title={t("devicesStop")}
+            disabled={busy}
+            onClick={() => setStopping(true)}
+          >
+            <CircleStop className="size-3" />
           </Button>
         )}
         {!device.online && !editing && !forgetting && (
@@ -310,6 +352,25 @@ function DeviceRow({
           </span>
         )}
       </div>
+
+      {device.stopped && (
+        <p
+          data-device-stopped=""
+          className={cn("pl-5.5 text-2xs", STOPPED_TONE)}
+        >
+          {t("devicesStopped")}
+        </p>
+      )}
+
+      {inUse && (
+        <p
+          data-device-in-use=""
+          title={inUse}
+          className="truncate pl-5.5 text-2xs text-muted-foreground"
+        >
+          {t("devicesInUse", { titles: inUse })}
+        </p>
+      )}
 
       {editing && (
         <form
@@ -356,6 +417,30 @@ function DeviceRow({
             </p>
           )}
         </form>
+      )}
+
+      {stopping && (
+        <div className="flex flex-col gap-1 pl-5.5 text-2xs">
+          <span>{t("devicesStopConfirm", { name: device.name })}</span>
+          <div className="flex items-center justify-end gap-1">
+            <Button
+              size="xs"
+              variant="destructive"
+              disabled={busy}
+              onClick={() => void stop()}
+            >
+              {t("devicesStop")}
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => setStopping(false)}
+            >
+              {t("devicesCancel")}
+            </Button>
+          </div>
+        </div>
       )}
 
       {forgetting && (

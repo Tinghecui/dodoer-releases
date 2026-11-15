@@ -32,6 +32,10 @@ export interface HostSshStatus {
   /** The computer is kept from sleeping while the service runs (macOS, on
    *  AC power); missing from an app from before this. */
   awake?: boolean
+  /** The person stopped what this computer lends the server from another
+   *  of their devices, and has not lent again here (`docs/devices.md` 7.2):
+   *  nothing is lent to it, the browser and Chrome included. */
+  stopped?: boolean
 }
 
 /** `SelfTest` in `src-tauri/src/host_ssh/sshd.rs`. */
@@ -61,6 +65,12 @@ export function setHostSshLent(
   lent: boolean
 ): Promise<HostSshStatus> {
   return getShellTransport().call("host_ssh_set_lent", { connectionId, lent })
+}
+
+/** Lend again after a stop from elsewhere: the browser and Chrome as their
+ *  own switches say. The shell stays off until it is lent again itself. */
+export function lendHostSshAgain(connectionId: number): Promise<HostSshStatus> {
+  return getShellTransport().call("host_ssh_lend_again", { connectionId })
 }
 
 export function runHostSshSelfTest(): Promise<HostSshSelfTest> {

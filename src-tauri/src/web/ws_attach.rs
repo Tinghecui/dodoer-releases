@@ -93,6 +93,10 @@ pub enum ClientMsg {
         /// `docs/devices.md`). An app from before this names none.
         #[serde(default)]
         device: Option<crate::host_device::HostDevice>,
+        /// The person lent again on this computer after the stop at this
+        /// time (`host_stop`'s `at`, `docs/devices.md` 7.2): what lifts it.
+        #[serde(default)]
+        relent: Option<i64>,
     },
     /// Cowork fork: a host's answer to `host_call` — the host bridge's
     /// outcome for that call, as `host_bridge::dispatch` returns it.
@@ -164,6 +168,11 @@ pub enum ServerMsg {
         tunnel_id: String,
         client_key: String,
     },
+    /// Cowork fork: the person stopped this computer's lending from
+    /// elsewhere at `at` (`web::host_registry::stop_device`,
+    /// `docs/devices.md` 7.2): stop lending to this server, until the person
+    /// lends again on this computer; then register with `relent: at`.
+    HostStop { at: i64 },
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -397,6 +406,26 @@ mod tests {
         ));
     }
 
+    /// `docs/devices.md` 7.2.
+    #[test]
+    fn a_stop_and_a_lending_again_read_as_documented() {
+        assert_eq!(
+            serde_json::to_value(ServerMsg::HostStop { at: 5 }).unwrap(),
+            serde_json::json!({"type": "host_stop", "at": 5})
+        );
+        let again: ClientMsg = serde_json::from_str(
+            r#"{"action":"host_register","capabilities":["shell"],"relent":5}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            again,
+            ClientMsg::HostRegister {
+                relent: Some(5),
+                ..
+            }
+        ));
+    }
+
     #[test]
     fn host_messages_parse_and_serialize_as_documented() {
         let register: ClientMsg = serde_json::from_str(
@@ -405,12 +434,12 @@ mod tests {
         .unwrap();
         assert!(matches!(
             register,
-            ClientMsg::HostRegister { ref capabilities, window: Some(ref w), shell: None, device: None }
+            ClientMsg::HostRegister { ref capabilities, window: Some(ref w), shell: None, device: None, relent: None }
                 if capabilities == &["browser"] && w == "remote-workspace-3"
         ));
         assert!(matches!(
             serde_json::from_str::<ClientMsg>(r#"{"action":"host_register"}"#).unwrap(),
-            ClientMsg::HostRegister { ref capabilities, window: None, shell: None, device: None }
+            ClientMsg::HostRegister { ref capabilities, window: None, shell: None, device: None, relent: None }
                 if capabilities.is_empty()
         ));
         let shell: ClientMsg = serde_json::from_str(

@@ -401,19 +401,27 @@ async fn handle_client_msg(
             window,
             shell,
             device,
-        } => match host {
-            Some(registration) => registration.update_on(capabilities, window, shell, device),
-            None => {
-                *host = Some(state.host_registry.register_on(
-                    outbound_tx.clone(),
-                    capabilities,
-                    window,
-                    shell,
-                    device,
-                    app_version.clone(),
-                ))
+            relent,
+        } => {
+            // Lent again on that computer after a stop: lifted before what
+            // it lends is taken in.
+            if let (Some(at), Some(device)) = (relent, device.as_ref()) {
+                state.host_registry.resume_device(&device.id, at);
             }
-        },
+            match host {
+                Some(registration) => registration.update_on(capabilities, window, shell, device),
+                None => {
+                    *host = Some(state.host_registry.register_on(
+                        outbound_tx.clone(),
+                        capabilities,
+                        window,
+                        shell,
+                        device,
+                        app_version.clone(),
+                    ))
+                }
+            }
+        }
         ClientMsg::HostTunnelResult { tunnel_id, error } => {
             let why = error.unwrap_or_else(|| "the desktop app did not say".to_string());
             let refused = host

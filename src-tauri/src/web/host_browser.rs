@@ -182,6 +182,7 @@ fn route_note(error: &BrowserRouteError) -> String {
              agents use its browser, then try again. Do not use another device instead unless \
              the user says so."
         ),
+        BrowserRouteError::Stopped { name } => super::host_devices::stopped_note(name),
         BrowserRouteError::ChooseDevice { names } => format!(
             "Several of the user's devices lend their browser ({}). Pass `device` with the one \
              the user means; ask them if you do not know.",

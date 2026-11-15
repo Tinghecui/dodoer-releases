@@ -2120,6 +2120,16 @@ async fn run_ws_connection<R, RFut, F, Fut>(
                                         });
                                         continue;
                                     }
+                                    // Cowork fork: stopped from another of
+                                    // the person's devices. What this app
+                                    // lends goes back, and the registration
+                                    // that follows says so
+                                    // (`docs/devices.md` 7.2).
+                                    if let Some(at) = ws_host::parse_stop(&frame) {
+                                        let host = Arc::clone(host);
+                                        tokio::spawn(async move { host.stopped(at).await });
+                                        continue;
+                                    }
                                     // The server takes hosts: register. The
                                     // frame still goes on to the webview,
                                     // which asked for it.
@@ -2486,6 +2496,15 @@ impl DesktopWsHost {
 impl WsHost for DesktopWsHost {
     async fn capabilities(&self) -> Vec<String> {
         use tauri::Manager;
+        // Cowork fork: stopped from another device, nothing is lent until
+        // the person lends again here (`docs/devices.md` 7.2).
+        let stopped = match &self.lending {
+            Some(lending) => lending.is_stopped(&self.server).await,
+            None => false,
+        };
+        if stopped {
+            return Vec::new();
+        }
         let mut capabilities = host_capabilities(&self.config).await;
         // The person lets this window's agents use their own Chrome: said
         // beside `browser`, through which Chrome is reached, so that a server
@@ -2517,6 +2536,15 @@ impl WsHost for DesktopWsHost {
 
     async fn shell(&self) -> Option<crate::host_ssh::ShellHost> {
         self.lending.as_ref()?.shell_for(&self.server).await
+    }
+
+    async fn stopped(&self, at: i64) {
+        use crate::commands::host_ssh::stopped_from_elsewhere;
+        stopped_from_elsewhere(&self.app, &self.server, at).await;
+    }
+
+    async fn relent(&self) -> Option<i64> {
+        self.lending.as_ref()?.lent_again_after(&self.server).await
     }
 
     fn changes(&self) -> Option<watch::Receiver<u64>> {

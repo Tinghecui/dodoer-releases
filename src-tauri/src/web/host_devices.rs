@@ -19,7 +19,9 @@
 //!   and what it lends;
 //! * `POST /api/rename_host_device` — the name the person chose, or kept;
 //! * `POST /api/forget_host_device` — a device that is not connected, gone
-//!   from the book.
+//!   from the book;
+//! * `POST /api/stop_host_device` — everything a device lends stopped from
+//!   elsewhere, until it lends again there (`docs/devices.md` 7.2).
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -31,6 +33,7 @@ use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 
 use super::host_registry::HostRegistry;
+use super::working_device::with_in_use;
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::db::service::app_metadata_service;
@@ -39,6 +42,10 @@ use crate::host_device::HostDevice;
 /// The `server_info` feature a client looks for before it shows the devices
 /// (`compat::FEATURES`).
 pub const FEATURE: &str = "host_devices";
+
+/// The `server_info` feature of a server that can stop a device's lending
+/// (`/api/stop_host_device`, `host_stop`).
+pub const STOP_FEATURE: &str = "stop_host_device";
 
 /// Where the book is kept (`app_metadata`), as JSON.
 const KEY_BOOK: &str = "host_devices.registry";
@@ -95,6 +102,11 @@ pub struct DeviceRecord {
     /// When it was last connected (now, while it is).
     #[serde(default)]
     pub last_seen: i64,
+    /// When its lending was stopped from elsewhere (`docs/devices.md` 7.2),
+    /// in milliseconds since 1970: nothing it lends is used until the app
+    /// on it lends again there, saying it saw this stop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_at: Option<i64>,
 }
 
 /// The book as it is written.
@@ -130,6 +142,12 @@ pub enum NameError {
 pub enum ForgetError {
     /// It is connected: it would be back at once, with a new name.
     Online,
+    NoSuchDevice,
+}
+
+/// Why a device's lending was not stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopError {
     NoSuchDevice,
 }
 
@@ -187,6 +205,7 @@ impl DeviceBook {
             user: seen.user.map(str::to_string),
             first_seen: now,
             last_seen: now,
+            stopped_at: None,
         });
     }
 
@@ -235,6 +254,25 @@ impl DeviceBook {
         self.devices.len() != before
     }
 
+    /// Its lending stopped from elsewhere, now unless it was already: when
+    /// it was, or `None` for no such device.
+    pub fn stop(&mut self, id: &str, now: i64) -> Option<i64> {
+        let record = self.devices.iter_mut().find(|d| d.id == id)?;
+        Some(*record.stopped_at.get_or_insert(now))
+    }
+
+    /// The app on `id` lent again there after the stop at `at`: whether that
+    /// was the stop in force, which is lifted. One it never saw is not.
+    pub fn resume(&mut self, id: &str, at: i64) -> bool {
+        match self.devices.iter_mut().find(|d| d.id == id) {
+            Some(record) if record.stopped_at == Some(at) => {
+                record.stopped_at = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The names the server's `~/.ssh/config` has. A name made up here that
     /// is one of them is made up again; whether any was.
     pub fn set_reserved(&mut self, reserved: BTreeSet<String>) -> bool {
@@ -258,6 +296,7 @@ impl DeviceBook {
                     named: kept.named,
                     first_seen: kept.first_seen,
                     user: now.user.clone().or(kept.user),
+                    stopped_at: kept.stopped_at.or(now.stopped_at),
                     ..now.clone()
                 },
                 None => kept,
@@ -459,6 +498,16 @@ pub fn ago(then: i64, now: i64) -> String {
     }
 }
 
+/// What an agent is told of a device whose lending was stopped from
+/// elsewhere (`docs/devices.md` 7.2).
+pub fn stopped_note(name: &str) -> String {
+    format!(
+        "The user stopped lending `{name}` from another device. Only the user can lend it again, \
+         on that computer itself: tell them, and do not use another device instead unless they \
+         say so."
+    )
+}
+
 /// One device as a client is shown it.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -481,6 +530,21 @@ pub struct DeviceView {
     pub browser: bool,
     /// …and the person lets agents use their own Chrome there.
     pub chrome: bool,
+    /// Its lending was stopped from elsewhere: nothing it lends is used
+    /// until it lends again there.
+    pub stopped: bool,
+    /// The conversations open now that work on it (filled in by the
+    /// handlers, `working_device::in_use`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub in_use: Vec<InUse>,
+}
+
+/// A conversation working on a device.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InUse {
+    pub conversation_id: i32,
+    pub title: String,
 }
 
 /// What the registry knows of a device right now.
@@ -509,6 +573,8 @@ impl DeviceView {
             shell: presence.shell,
             browser: presence.browser,
             chrome: presence.chrome,
+            stopped: record.stopped_at.is_some(),
+            in_use: Vec::new(),
         }
     }
 }
@@ -583,7 +649,8 @@ fn spawn_ticker(registry: Arc<HostRegistry>) {
 
 /// `POST /api/list_host_devices` (`cowork::api_routes`).
 pub async fn list_host_devices(Extension(state): Extension<Arc<AppState>>) -> Json<DeviceList> {
-    Json(state.host_registry.device_list())
+    let list = state.host_registry.device_list();
+    Json(with_in_use(&state, list).await)
 }
 
 #[derive(Debug, Deserialize)]
@@ -606,7 +673,8 @@ pub async fn rename_host_device(
         .host_registry
         .rename_device(&params.id, &params.name)
         .map_err(|e| name_error(e, &params.name))?;
-    Ok(Json(state.host_registry.device_list()))
+    let list = state.host_registry.device_list();
+    Ok(Json(with_in_use(&state, list).await))
 }
 
 fn name_error(error: NameError, name: &str) -> AppCommandError {
@@ -646,7 +714,29 @@ pub async fn forget_host_device(
             ),
             ForgetError::NoSuchDevice => AppCommandError::not_found("No such device"),
         })?;
-    Ok(Json(state.host_registry.device_list()))
+    let list = state.host_registry.device_list();
+    Ok(Json(with_in_use(&state, list).await))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopHostDeviceParams {
+    id: String,
+}
+
+/// `POST /api/stop_host_device` (`cowork::api_routes`): stop everything a
+/// device lends, from wherever the person is (`docs/devices.md` 7.2). The
+/// list afterwards.
+pub async fn stop_host_device(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<StopHostDeviceParams>,
+) -> Result<Json<DeviceList>, AppCommandError> {
+    state
+        .host_registry
+        .stop_device(&params.id)
+        .map_err(|_| AppCommandError::not_found("No such device"))?;
+    let list = state.host_registry.device_list();
+    Ok(Json(with_in_use(&state, list).await))
 }
 
 #[cfg(test)]
@@ -801,6 +891,7 @@ mod tests {
             user: Some("me".into()),
             first_seen: 5,
             last_seen: 6,
+            stopped_at: None,
         };
         book.restore(vec![
             kept("a", "desktop", true),
@@ -833,6 +924,32 @@ mod tests {
         assert!(book.forget(&a.id));
         assert!(!book.forget(&a.id));
         assert!(book.records().is_empty());
+    }
+
+    /// A stop holds from its first time on, through a restart, and is lifted
+    /// only by a lending again that saw it.
+    #[test]
+    fn a_stop_holds_until_the_app_lends_again_after_it() {
+        let mut book = DeviceBook::default();
+        let a = device("a", "iMac", "iMac", None);
+        book.seen(&a, Seen::default(), 1);
+        assert_eq!(book.stop("nobody-0123456789", 5), None);
+        assert_eq!(book.stop(&a.id, 5), Some(5));
+        assert_eq!(book.stop(&a.id, 9), Some(5), "stopped once");
+
+        let mut restarted = DeviceBook::default();
+        restarted.restore(book.records().to_vec());
+        assert_eq!(restarted.get(&a.id).unwrap().stopped_at, Some(5));
+        // An app that registered before the book was read back is held too.
+        let mut early = DeviceBook::default();
+        early.seen(&a, Seen::default(), 7);
+        early.restore(book.records().to_vec());
+        assert_eq!(early.get(&a.id).unwrap().stopped_at, Some(5));
+
+        assert!(!book.resume(&a.id, 4));
+        assert!(book.resume(&a.id, 5));
+        assert_eq!(book.get(&a.id).unwrap().stopped_at, None);
+        assert!(!book.resume(&a.id, 5), "nothing to lift");
     }
 
     #[test]
@@ -897,6 +1014,7 @@ mod tests {
                     "shell": true,
                     "browser": false,
                     "chrome": false,
+                    "stopped": false,
                 }],
                 "unnamedHosts": 1,
             })

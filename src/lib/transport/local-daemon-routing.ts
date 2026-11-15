@@ -90,6 +90,7 @@ export const SHELL_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   "get_system_close_behavior_settings",
   "get_system_rendering_settings",
   "host_device",
+  "host_ssh_lend_again",
   "host_ssh_permissions",
   "host_ssh_repair_permission",
   "host_ssh_self_test",

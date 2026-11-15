@@ -26,7 +26,7 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 
-use super::host_devices::{ago, now_ms};
+use super::host_devices::{ago, now_ms, stopped_note};
 use super::host_registry::{HostRegistry, ShellTarget, TunnelError};
 use super::shutdown::ShutdownSignal;
 use crate::cli_run::CliRunService;
@@ -177,6 +177,7 @@ fn refusal(error: TunnelError) -> (StatusCode, String) {
                  says so."
             ),
         ),
+        TunnelError::Stopped { name } => (StatusCode::FORBIDDEN, stopped_note(&name)),
         TunnelError::Ambiguous { names } => (
             StatusCode::CONFLICT,
             format!(
@@ -235,8 +236,18 @@ pub async fn serve_cli_end(
     match tunnels.open(query.device.as_deref(), caller).await {
         Ok(desktop) => {
             let shutdown = tunnels.shutdown.clone();
+            // Its lending stopped from elsewhere ends it too (`docs/devices.md`
+            // 7.2), whatever the app on it does.
+            let target = match query.device.as_deref() {
+                Some(id) => ShellTarget::Device(id),
+                None => ShellTarget::Default,
+            };
+            let stop = tunnels
+                .registry
+                .shell_device(target)
+                .map(|device| (Arc::clone(&tunnels.registry), device));
             ws.protocols([TUNNEL_PROTOCOL])
-                .on_upgrade(move |cli| join(cli, desktop, shutdown))
+                .on_upgrade(move |cli| join(cli, desktop, shutdown, stop))
                 .into_response()
         }
         Err((status, message)) => (status, message).into_response(),
@@ -304,7 +315,12 @@ pub async fn desktop_end(
 }
 
 /// Carry each side's binary messages to the other until one closes.
-async fn join(cli: WebSocket, desktop: WebSocket, shutdown: Option<Arc<ShutdownSignal>>) {
+async fn join(
+    cli: WebSocket,
+    desktop: WebSocket,
+    shutdown: Option<Arc<ShutdownSignal>>,
+    stop: Option<(Arc<HostRegistry>, String)>,
+) {
     let (cli_out, cli_in) = cli.split();
     let (desktop_out, desktop_in) = desktop.split();
     let stopping = async {
@@ -313,10 +329,19 @@ async fn join(cli: WebSocket, desktop: WebSocket, shutdown: Option<Arc<ShutdownS
             None => std::future::pending().await,
         }
     };
+    let stopped = async {
+        match &stop {
+            Some((registry, device)) => registry.stopped(device).await,
+            None => std::future::pending().await,
+        }
+    };
     tokio::select! {
         _ = pass(cli_in, desktop_out) => {}
         _ = pass(desktop_in, cli_out) => {}
         _ = stopping => {}
+        _ = stopped => {
+            tracing::info!("[host-tunnel] a tunnel ended: its device was stopped");
+        }
     }
     tracing::debug!("[host-tunnel] a tunnel closed");
 }

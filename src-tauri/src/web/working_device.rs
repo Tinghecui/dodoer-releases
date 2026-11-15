@@ -28,7 +28,7 @@ use sea_orm::{DatabaseConnection, EntityTrait};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use super::host_devices::{now_ms, DeviceView};
+use super::host_devices::{now_ms, DeviceList, DeviceView, InUse};
 use super::host_registry::HostRegistry;
 use crate::acp::delegation::transport::DevicesOp;
 use crate::acp::manager::ConnectionManager;
@@ -308,6 +308,53 @@ pub async fn get_conversation_device(
     Json(ConversationDeviceAnswer {
         device: working_view(&state.host_registry, root),
     })
+}
+
+/// How many conversations a device lists as working on it.
+const IN_USE_SHOWN: usize = 5;
+
+/// `list` with the conversations open now that work on each device
+/// (`DeviceView::in_use`, the devices panel), the one used last first.
+pub async fn with_in_use(state: &AppState, mut list: DeviceList) -> DeviceList {
+    let mut records = state.host_registry.working().records();
+    records.sort_by_key(|c| std::cmp::Reverse(c.touched));
+    for device in &mut list.devices {
+        for record in &records {
+            if record.working.as_deref() != Some(device.id.as_str()) {
+                continue;
+            }
+            if device.in_use.len() >= IN_USE_SHOWN {
+                break;
+            }
+            let conversation = record.conversation_id;
+            let open = state
+                .connection_manager
+                .find_connection_by_conversation_id(conversation)
+                .await;
+            if open.is_none() {
+                continue;
+            }
+            if let Some(title) = title_of(&state.db.conn, conversation).await {
+                device.in_use.push(InUse {
+                    conversation_id: conversation,
+                    title,
+                });
+            }
+        }
+    }
+    list
+}
+
+/// A conversation's title; none for one deleted or gone.
+async fn title_of(db: &DatabaseConnection, conversation_id: i32) -> Option<String> {
+    let row = crate::db::entities::conversation::Entity::find_by_id(conversation_id)
+        .one(db)
+        .await
+        .ok()??;
+    if row.deleted_at.is_some() {
+        return None;
+    }
+    Some(row.title.unwrap_or_default())
 }
 
 /// The working device of the top-level `conversation`, as clients are shown
@@ -904,7 +951,9 @@ fn describe(device: &DeviceView, now: i64) -> String {
     if !about.is_empty() {
         line.push_str(&format!(" ({})", about.join(", ")));
     }
-    if device.online {
+    if device.stopped {
+        line.push_str(": the user stopped lending it from another device");
+    } else if device.online {
         line.push_str(": online; ");
         line.push_str(&lends(device));
     } else {
@@ -932,6 +981,9 @@ fn lends(device: &DeviceView) -> String {
 
 /// What the agent can do on the device it is to work on.
 fn how_to_use(device: &DeviceView) -> String {
+    if device.stopped {
+        return super::host_devices::stopped_note(&device.name);
+    }
     if !device.online {
         return format!(
             "It is offline (last online {}): tell the user, and ask them to open this workspace \

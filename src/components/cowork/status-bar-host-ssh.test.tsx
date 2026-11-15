@@ -15,6 +15,10 @@ const env = vi.hoisted(() => ({
   connectionId: 3 as number | null,
   handlers: new Map<string, () => void>(),
   serverInfo: null as ((info: { features: string[] }) => void) | null,
+  warning: vi.fn(),
+}))
+vi.mock("sonner", () => ({
+  toast: { warning: env.warning, error: vi.fn() },
 }))
 vi.mock("@/lib/transport", () => ({
   getShellTransport: () => ({
@@ -88,6 +92,10 @@ function app(
         current = status({ lent: !!args?.lent, running: !!args?.lent })
         return current
       }
+      if (command === "host_ssh_lend_again") {
+        current = { ...current, stopped: false }
+        return current
+      }
       if (command === "host_ssh_self_test") {
         return { ok: true, tools: ["git", "node"], detail: null }
       }
@@ -134,6 +142,7 @@ const permissionRow = (permission: HostSshPermission) =>
 
 beforeEach(() => {
   env.call.mockReset()
+  env.warning.mockReset()
   env.handlers.clear()
   env.serverInfo = null
   env.desktop = true
@@ -291,6 +300,60 @@ describe("StatusBarHostSsh", () => {
     await waitFor(() =>
       expect(button).toHaveAttribute("data-host-ssh-lent", "true")
     )
+  })
+
+  it("says lending was stopped elsewhere, and lends again from a click here", async () => {
+    app(status({ stopped: true }))
+    mount()
+    fireEvent.click(await trigger())
+    expect(
+      await screen.findByText(
+        "Lending to Team server was stopped from another device: the command line, the browser and Chrome are not lent to it. Only this computer can lend them again."
+      )
+    ).toBeInTheDocument()
+    // Opened already stopped: nothing new to pop up about.
+    expect(env.warning).not.toHaveBeenCalled()
+    expect(callsOf("host_ssh_lend_again")).toEqual([])
+
+    fireEvent.click(screen.getByRole("button", { name: "Lend again" }))
+    await waitFor(() =>
+      expect(document.querySelector("[data-host-ssh-stopped]")).toBeNull()
+    )
+    expect(callsOf("host_ssh_lend_again")).toEqual([
+      ["host_ssh_lend_again", { connectionId: 3 }],
+    ])
+    // The shell has its own switch, and stays off.
+    expect(setLentCalls()).toEqual([])
+  })
+
+  it("says a stop where the shell cannot be lent, with no switch for it", async () => {
+    app(status({ supported: false, stopped: true }))
+    mount()
+    fireEvent.click(await trigger())
+    await screen.findByRole("button", { name: "Lend again" })
+    expect(
+      screen.queryByRole("button", { name: "Lend this computer" })
+    ).not.toBeInTheDocument()
+  })
+
+  it("pops up once when a stop comes in", async () => {
+    const answers = app(status({ lent: true, running: true }))
+    mount()
+    const button = await trigger()
+    await waitFor(() =>
+      expect(env.handlers.has("host-ssh://changed")).toBe(true)
+    )
+    answers.set(status({ stopped: true }))
+    act(() => env.handlers.get("host-ssh://changed")?.())
+    await waitFor(() =>
+      expect(env.warning).toHaveBeenCalledWith(
+        "Lending to Team server was stopped from another device."
+      )
+    )
+    expect(button).toHaveAttribute("data-host-ssh-lent", "false")
+    act(() => env.handlers.get("host-ssh://changed")?.())
+    await waitFor(() => expect(callsOf("host_ssh_status").length).toBe(3))
+    expect(env.warning).toHaveBeenCalledTimes(1)
   })
   describe("macOS permissions", () => {
     it("says which are in force while lent, and offers to fix the rest", async () => {

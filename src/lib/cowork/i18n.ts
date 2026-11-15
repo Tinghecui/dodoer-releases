@@ -125,6 +125,13 @@ const en = {
     "The agents of {server} can run commands on this computer as you (they use `ssh` and this computer's name in the devices list), while this window is open.",
   hostSshAwake:
     "While lent, this computer does not go to sleep (when on power).",
+  hostSshStopped:
+    "Lending to {server} was stopped from another device: the command line, the browser and Chrome are not lent to it. Only this computer can lend them again.",
+  hostSshLendAgainHint:
+    "“Lend again” gives back the browser and Chrome as their own switches say; the command line takes “Lend this computer” below.",
+  hostSshLendAgain: "Lend again",
+  hostSshStoppedToast: "Lending to {server} was stopped from another device.",
+  hostSshTooltipStopped: "Lending was stopped from another device",
   hostSshServerNotReady:
     "This server cannot reach a lent computer yet — it needs a newer Cowork. For now lending only readies this computer, and the self-test is all that logs in.",
   hostSshNotRunning: "The SSH service did not start: {detail}",
@@ -194,6 +201,13 @@ const en = {
     "You and the agents will call this computer by this name. You can change it later from the devices icon at the foot of the sidebar.",
   devicesNameConfirm: "Use this name",
   devicesNameSkip: "Skip",
+  devicesStop: "Stop lending",
+  devicesStopConfirm:
+    "Stop everything {name} lends? What agents are running there is cut off, and only that computer can lend it again.",
+  devicesStopped:
+    "Lending stopped from elsewhere. Lend it again on that computer (an older dodoer there needs updating first).",
+  devicesInUse: "In use by: {titles}",
+  devicesUntitled: "Untitled",
   // The mark beside a conversation's composer (`conversation-device-badge.tsx`).
   conversationDeviceWorksOn:
     "The agent of this conversation works on {name}. To switch, tell it which device to use.",
@@ -312,6 +326,13 @@ const zhCN: Record<CoworkTextKey, string> = {
   hostSshHintOn:
     "「{server}」的智能体可以以你的身份在这台电脑上执行命令（它们用 `ssh` 加这台电脑在设备列表里的名字），只在这个窗口开着时有效。",
   hostSshAwake: "借出期间这台电脑不会睡眠（接着电源时）。",
+  hostSshStopped:
+    "已从别的设备停止借出：命令行、浏览器和 Chrome 都不再借给「{server}」，只能在这台电脑上重新借出。",
+  hostSshLendAgainHint:
+    "「重新借出」按浏览器和 Chrome 各自的开关恢复；命令行要再点下面的「借出这台电脑」。",
+  hostSshLendAgain: "重新借出",
+  hostSshStoppedToast: "已从别的设备停止借给「{server}」。",
+  hostSshTooltipStopped: "已从别的设备停止借出",
   hostSshServerNotReady:
     "这台服务器现在还连不到借出的电脑，要等 Cowork 升级。目前借出只是把这台电脑这一侧准备好，只有自检会登录进来。",
   hostSshNotRunning: "SSH 服务没有启动：{detail}",
@@ -376,6 +397,13 @@ const zhCN: Record<CoworkTextKey, string> = {
     "你和智能体会用这个名字称呼这台电脑。以后可以在侧栏底部的设备图标里改。",
   devicesNameConfirm: "就用这个",
   devicesNameSkip: "跳过",
+  devicesStop: "停止借出",
+  devicesStopConfirm:
+    "停止 {name} 的所有借出？智能体在那台电脑上正在跑的会断开，之后只能在那台电脑上重新借出。",
+  devicesStopped:
+    "已从别处停止借出。要在那台电脑上重新借出（那台的 dodoer 是老版本的话要先更新）。",
+  devicesInUse: "正在用它的对话：{titles}",
+  devicesUntitled: "未命名",
   conversationDeviceWorksOn:
     "这个对话的智能体在 {name} 上操作。要换，跟它说用哪台。",
   conversationDeviceOffline:
@@ -490,6 +518,13 @@ const zhTW: Record<CoworkTextKey, string> = {
   hostSshHintOn:
     "「{server}」的智慧體可以以你的身分在這台電腦上執行命令（它們用 `ssh` 加這台電腦在裝置列表裡的名字），只在這個視窗開著時有效。",
   hostSshAwake: "借出期間這台電腦不會睡眠（接著電源時）。",
+  hostSshStopped:
+    "已從別的裝置停止借出：命令列、瀏覽器和 Chrome 都不再借給「{server}」，只能在這台電腦上重新借出。",
+  hostSshLendAgainHint:
+    "「重新借出」依瀏覽器和 Chrome 各自的開關恢復；命令列要再點下面的「借出這台電腦」。",
+  hostSshLendAgain: "重新借出",
+  hostSshStoppedToast: "已從別的裝置停止借給「{server}」。",
+  hostSshTooltipStopped: "已從別的裝置停止借出",
   hostSshServerNotReady:
     "這台伺服器現在還連不到借出的電腦，要等 Cowork 升級。目前借出只是把這台電腦這一側準備好，只有自我檢查會登入進來。",
   hostSshNotRunning: "SSH 服務沒有啟動：{detail}",
@@ -554,6 +589,13 @@ const zhTW: Record<CoworkTextKey, string> = {
     "你和智慧體會用這個名字稱呼這台電腦。之後可以在側欄底部的裝置圖示裡改。",
   devicesNameConfirm: "就用這個",
   devicesNameSkip: "跳過",
+  devicesStop: "停止借出",
+  devicesStopConfirm:
+    "停止 {name} 的所有借出？智慧體在那台電腦上正在跑的會斷開，之後只能在那台電腦上重新借出。",
+  devicesStopped:
+    "已從別處停止借出。要在那台電腦上重新借出（那台的 dodoer 是舊版的話要先更新）。",
+  devicesInUse: "正在用它的對話：{titles}",
+  devicesUntitled: "未命名",
   conversationDeviceWorksOn:
     "這個對話的智慧體在 {name} 上操作。要換，跟它說用哪台。",
   conversationDeviceOffline:

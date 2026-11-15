@@ -47,6 +47,18 @@ async fn load_lent_servers(conn: &DatabaseConnection) -> BTreeSet<String> {
     }
 }
 
+async fn store_lent_servers(
+    conn: &DatabaseConnection,
+    servers: &BTreeSet<String>,
+) -> Result<(), AppCommandError> {
+    let stored =
+        serde_json::to_string(servers).map_err(|e| AppCommandError::io_error(e.to_string()))?;
+    app_metadata_service::upsert_value(conn, KEY_LENT_SERVERS, &stored)
+        .await
+        .map_err(AppCommandError::from)?;
+    Ok(())
+}
+
 /// At launch, before any window: clear away what an earlier run left, and
 /// take up the lendings as stored. Nothing starts here — the service follows
 /// the remote windows (`window_opened`).
@@ -135,15 +147,49 @@ pub async fn host_ssh_set_lent(
     let server = server_of(&db.conn, connection_id).await?;
     let _stored_in_order = STORE_LOCK.lock().await;
     let servers = lending.set_lent(&server, lent).await;
-    let stored = serde_json::to_string(&servers)
-        .map_err(|e| AppCommandError::io_error(e.to_string()))?;
-    if let Err(e) = app_metadata_service::upsert_value(&db.conn, KEY_LENT_SERVERS, &stored).await {
+    if let Err(e) = store_lent_servers(&db.conn, &servers).await {
         // Not kept, so not left in force either: a lending that the next
         // launch would not know of is one nobody could see to take back.
         lending.set_lent(&server, !lent).await;
-        return Err(AppCommandError::from(e));
+        return Err(e);
     }
     Ok(lending.status(&server).await)
+}
+
+/// Lend again what the server of `connection_id` was stopped from using
+/// elsewhere (`docs/devices.md` 7.2): the browser and Chrome as their own
+/// switches say. The shell stays off until its own switch is turned on.
+#[tauri::command]
+pub async fn host_ssh_lend_again(
+    db: State<'_, AppDatabase>,
+    lending: State<'_, Arc<Lending>>,
+    connection_id: i32,
+) -> Result<LendingStatus, AppCommandError> {
+    let server = server_of(&db.conn, connection_id).await?;
+    lending.lend_again(&server).await;
+    Ok(lending.status(&server).await)
+}
+
+/// `server` said the person stopped what this computer lends it from
+/// another of their devices, at `at` (`host_stop`): the shell is no longer
+/// lent to it, here and as stored.
+pub async fn stopped_from_elsewhere(app: &tauri::AppHandle, server: &str, at: i64) {
+    let Some(db) = app.try_state::<AppDatabase>() else {
+        return;
+    };
+    let Some(lending) = app.try_state::<Arc<Lending>>() else {
+        return;
+    };
+    let _stored_in_order = STORE_LOCK.lock().await;
+    let Some(servers) = lending.stopped_from_elsewhere(server, at).await else {
+        return;
+    };
+    tracing::info!("[host-ssh] stopped from another device: {server}");
+    // Left as stored, the next launch lends the shell again only for the
+    // server to stop it again at the first registration.
+    if let Err(e) = store_lent_servers(&db.conn, &servers).await {
+        tracing::warn!("[host-ssh] the stop is not stored: {e}");
+    }
 }
 
 /// The computer this app is on, as it names it to servers (`host_device`):

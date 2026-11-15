@@ -63,6 +63,10 @@ pub const FEATURES: &[&str] = &[
     // `/api/get_conversation_device`: the device a conversation works on,
     // for the mark beside its composer (`web::working_device`).
     "conversation_device",
+    // `/api/stop_host_device`: a device's lending stopped from elsewhere,
+    // and `host_stop` to its apps (`web::host_registry`, `docs/devices.md`
+    // 7.2).
+    "stop_host_device",
 ];
 
 /// The contract as one value: the `server_info` frame carries it as is
@@ -115,7 +119,8 @@ mod tests {
                 "system_resources",
                 "host_ssh",
                 "host_devices",
-                "conversation_device"
+                "conversation_device",
+                "stop_host_device"
             ])
         );
     }
@@ -131,6 +136,7 @@ mod tests {
         assert!(FEATURES.contains(&crate::host_ssh::tunnel::FEATURE));
         assert!(FEATURES.contains(&crate::web::host_devices::FEATURE));
         assert!(FEATURES.contains(&crate::web::working_device::FEATURE));
+        assert!(FEATURES.contains(&crate::web::host_devices::STOP_FEATURE));
     }
 
     #[test]

@@ -20,10 +20,15 @@
  * the app are in force: an update of the app leaves the switch in System
  * Settings on while the grant behind it no longer matches, and "Fix" clears
  * it and asks again.
+ *
+ * Stopped from another of the person's devices (`docs/devices.md` 7.2), it
+ * says so — on any system, since the browser and Chrome were stopped too —
+ * and lends again only from here.
  */
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Laptop } from "lucide-react"
+import { toast } from "sonner"
 
 import {
   AlertDialog,
@@ -45,6 +50,7 @@ import { useRemoteConnection } from "@/contexts/remote-connection-context"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   getHostSshPermissions,
+  lendHostSshAgain,
   repairHostSshPermission,
   runHostSshSelfTest,
   setHostSshLent,
@@ -77,6 +83,18 @@ export function StatusBarHostSsh({ className }: { className?: string }) {
   const [asked, setAsked] = useState(false)
   const [permissionError, setPermissionError] = useState<string | null>(null)
   const watchPermissions = open && !!status?.lent
+  const stopped = !!status?.stopped
+
+  // Said once when it happens, wherever the person is looking; the panel
+  // keeps saying it until they lend again.
+  const wasStopped = useRef<boolean | null>(null)
+  useEffect(() => {
+    if (status === null) return
+    if (stopped && wasStopped.current === false) {
+      toast.warning(t("hostSshStoppedToast", { server }))
+    }
+    wasStopped.current = stopped
+  }, [status, stopped, server, t])
 
   const loadPermissions = useCallback(async () => {
     try {
@@ -96,10 +114,11 @@ export function StatusBarHostSsh({ className }: { className?: string }) {
     return () => window.removeEventListener("focus", onFocus)
   }, [watchPermissions, loadPermissions])
 
-  if (connectionId === null || !status?.supported) return null
+  if (connectionId === null || status === null) return null
+  if (!status.supported && !stopped) return null
 
   const { lent, running } = status
-  const trouble = lent && !running
+  const trouble = (lent && !running) || stopped
 
   const handleOpenChange = (next: boolean) => {
     setOpen(next)
@@ -137,6 +156,18 @@ export function StatusBarHostSsh({ className }: { className?: string }) {
     }
   }
 
+  const lendAgain = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      adopt(await lendHostSshAgain(connectionId))
+    } catch (e) {
+      setError(toErrorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const selfTest = async () => {
     setTesting(true)
     setTest(null)
@@ -156,7 +187,13 @@ export function StatusBarHostSsh({ className }: { className?: string }) {
           <button
             type="button"
             aria-label={t("hostSshTitle")}
-            title={t(lent ? "hostSshTooltipOn" : "hostSshTooltipOff")}
+            title={t(
+              stopped
+                ? "hostSshTooltipStopped"
+                : lent
+                  ? "hostSshTooltipOn"
+                  : "hostSshTooltipOff"
+            )}
             data-host-ssh-lent={lent ? "true" : "false"}
             className={cn(
               "flex shrink-0 items-center transition-colors",
@@ -206,6 +243,27 @@ export function StatusBarHostSsh({ className }: { className?: string }) {
             >
               {t("hostSshAwake")}
             </p>
+          )}
+
+          {stopped && (
+            <div
+              data-host-ssh-stopped=""
+              className="flex flex-col gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-2xs text-amber-700 dark:text-amber-300"
+            >
+              <p>{t("hostSshStopped", { server })}</p>
+              {status.supported && (
+                <p className="text-3xs">{t("hostSshLendAgainHint")}</p>
+              )}
+              <Button
+                size="xs"
+                variant="outline"
+                className="self-start"
+                disabled={busy}
+                onClick={() => void lendAgain()}
+              >
+                {t(busy ? "hostSshWorking" : "hostSshLendAgain")}
+              </Button>
+            </div>
           )}
 
           {!serverTakes && (
@@ -316,17 +374,19 @@ export function StatusBarHostSsh({ className }: { className?: string }) {
             </div>
           )}
 
-          <Button
-            size="sm"
-            variant={lent ? "outline" : "default"}
-            className="w-full"
-            disabled={busy}
-            onClick={() => (lent ? void apply(false) : setConfirming(true))}
-          >
-            {busy
-              ? t("hostSshWorking")
-              : t(lent ? "hostSshStop" : "hostSshLend")}
-          </Button>
+          {status.supported && (
+            <Button
+              size="sm"
+              variant={lent ? "outline" : "default"}
+              className="w-full"
+              disabled={busy}
+              onClick={() => (lent ? void apply(false) : setConfirming(true))}
+            >
+              {busy
+                ? t("hostSshWorking")
+                : t(lent ? "hostSshStop" : "hostSshLend")}
+            </Button>
+          )}
           {lent && running && (
             <Button
               size="sm"

@@ -54,17 +54,46 @@ pub struct LendingStatus {
     /// Whether the computer is kept from sleeping now, while the service
     /// runs (`awake`; macOS only, on AC power).
     pub awake: bool,
+    /// Whether the person stopped what this computer lends the server from
+    /// another of their devices, and has not lent again here since
+    /// (`docs/devices.md` 7.2).
+    pub stopped: bool,
+}
+
+/// A stop of what this computer lends a server, told by that server
+/// (`host_stop`): its time there, in milliseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// Nothing is lent to the server.
+    Stopped(i64),
+    /// The person lent again here since; the server is told so (`relent`).
+    LentAgain(i64),
 }
 
 #[derive(Default)]
 struct State {
     /// The servers this computer is lent to (`server_key`).
     lent: BTreeSet<String>,
+    /// The last stop each server told of, for as long as the app runs: a
+    /// server tells it again at every registration until it is lent again.
+    stops: HashMap<String, Stop>,
     /// The remote windows open now, each with its server.
     open: HashMap<u64, String>,
     /// Why the last start failed; cleared by the next that works, and by
     /// there being nothing to start.
     error: Option<String>,
+}
+
+impl State {
+    /// The person lent again here after `server`'s stop; whether there was
+    /// one.
+    fn lend_again(&mut self, server: &str) -> bool {
+        let Some(Stop::Stopped(at)) = self.stops.get(server).copied() else {
+            return false;
+        };
+        self.stops.insert(server.to_string(), Stop::LentAgain(at));
+        true
+    }
 }
 
 /// Which servers this computer is lent to, and the service that follows from
@@ -139,12 +168,14 @@ impl Lending {
     }
 
     /// Lend this computer to `base_url`'s server, or stop. Returns every
-    /// server lent to now, for the caller to store.
+    /// server lent to now, for the caller to store. Lending is lending again
+    /// after a stop, too.
     pub async fn set_lent(&self, base_url: &str, lent: bool) -> BTreeSet<String> {
         let servers = {
             let mut state = self.state.lock().await;
             let server = server_key(base_url);
             if lent {
+                state.lend_again(&server);
                 state.lent.insert(server);
             } else {
                 state.lent.remove(&server);
@@ -159,12 +190,67 @@ impl Lending {
         let running = self.sshd.endpoint().await.is_some();
         let awake = self.awake.held().await;
         let state = self.state.lock().await;
+        let server = server_key(base_url);
         LendingStatus {
             supported: supported(),
-            lent: state.lent.contains(&server_key(base_url)),
+            lent: state.lent.contains(&server),
             running,
             error: state.error.clone(),
             awake,
+            stopped: matches!(state.stops.get(&server), Some(Stop::Stopped(_))),
+        }
+    }
+
+    /// The person stopped what this computer lends `base_url`'s server, from
+    /// another of their devices, at `at`: the shell is lent to it no more.
+    /// Returns every server lent to now, for the caller to store; `None`
+    /// when nothing changed — that stop told again, or lent again after.
+    pub async fn stopped_from_elsewhere(
+        &self,
+        base_url: &str,
+        at: i64,
+    ) -> Option<BTreeSet<String>> {
+        let servers = {
+            let mut state = self.state.lock().await;
+            let server = server_key(base_url);
+            let known = state.stops.get(&server).copied();
+            if known == Some(Stop::Stopped(at)) || known == Some(Stop::LentAgain(at)) {
+                return None;
+            }
+            state.lent.remove(&server);
+            state.stops.insert(server, Stop::Stopped(at));
+            state.lent.clone()
+        };
+        self.reconcile().await;
+        Some(servers)
+    }
+
+    /// The person lent again here after `base_url`'s server stopped this
+    /// computer, without lending it the shell: its browser and Chrome are
+    /// lent as their own switches say. Whether there was a stop.
+    pub async fn lend_again(&self, base_url: &str) -> bool {
+        let again = self.state.lock().await.lend_again(&server_key(base_url));
+        if again {
+            self.changed.send_modify(|version| *version += 1);
+        }
+        again
+    }
+
+    /// Whether `base_url`'s server stopped this computer and it was not lent
+    /// again since: it is lent nothing.
+    pub async fn is_stopped(&self, base_url: &str) -> bool {
+        let state = self.state.lock().await;
+        let stop = state.stops.get(&server_key(base_url));
+        matches!(stop, Some(Stop::Stopped(_)))
+    }
+
+    /// The stop of `base_url`'s server the person lent again after, for the
+    /// registrations to say (`relent`).
+    pub async fn lent_again_after(&self, base_url: &str) -> Option<i64> {
+        let state = self.state.lock().await;
+        match state.stops.get(&server_key(base_url)) {
+            Some(Stop::LentAgain(at)) => Some(*at),
+            _ => None,
         }
     }
 
@@ -330,6 +416,38 @@ mod tests {
 
         assert!(lending.set_lent("https://a.example", false).await.is_empty());
         assert!(!lending.status("https://a.example").await.lent);
+    }
+
+    /// A stop from elsewhere takes the shell back and holds until the person
+    /// lends again here; told again, or late, it changes nothing.
+    #[tokio::test]
+    async fn a_stop_from_elsewhere_holds_until_lent_again_here() {
+        const A: &str = "https://a.example";
+        let (lending, _state) = lending(&[A, "https://b.example"]);
+        let servers = lending.stopped_from_elsewhere(A, 5).await.unwrap();
+        assert_eq!(servers.len(), 1);
+        let status = lending.status(A).await;
+        assert!(status.stopped && !status.lent);
+        assert!(lending.is_stopped(A).await);
+        assert!(!lending.status("https://b.example").await.stopped);
+        assert_eq!(lending.stopped_from_elsewhere(A, 5).await, None);
+        assert_eq!(lending.lent_again_after(A).await, None);
+
+        assert!(lending.lend_again(A).await);
+        assert!(!lending.lend_again(A).await);
+        assert!(!lending.is_stopped(A).await);
+        assert!(!lending.status(A).await.lent);
+        assert_eq!(lending.lent_again_after(A).await, Some(5));
+        // The same stop, told by a frame sent before the server heard.
+        assert_eq!(lending.stopped_from_elsewhere(A, 5).await, None);
+        assert!(!lending.is_stopped(A).await);
+
+        // A new stop; lending the shell again is lending again, too.
+        assert!(lending.stopped_from_elsewhere(A, 9).await.is_some());
+        assert!(lending.is_stopped(A).await);
+        lending.set_lent(A, true).await;
+        assert!(!lending.is_stopped(A).await);
+        assert_eq!(lending.lent_again_after(A).await, Some(9));
     }
 
     /// The service follows the windows: up when a lent server's window

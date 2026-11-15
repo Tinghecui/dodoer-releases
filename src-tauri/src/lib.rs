@@ -1950,6 +1950,7 @@ mod tauri_app {
                 chat_authoring_commands::set_chat_authoring_settings,
                 crate::commands::host_ssh::host_ssh_status,
                 crate::commands::host_ssh::host_ssh_set_lent,
+                crate::commands::host_ssh::host_ssh_lend_again,
                 crate::commands::host_ssh::host_ssh_self_test,
                 crate::commands::host_ssh::host_ssh_permissions,
                 crate::commands::host_ssh::host_ssh_repair_permission,

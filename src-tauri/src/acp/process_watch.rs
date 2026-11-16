@@ -12,15 +12,17 @@
 //! 「不知道」和「没有」一定要分开（宁可漏报，不误报）：文件不存在 = 进程不在
 //! 了，是确定的答案；读不了（没权限等别的错）= 不知道。
 //!
-//! 这一步只有读法和测试，还没接进轮询，函数暂时没有调用方。
+//! 后半是判「?」：[`sample`] 在放开所有锁以后照 [`WatchTarget`] 读一次，
+//! [`observe`] / [`judge`] 把读到的东西变成结论。15 秒一次的轮询在
+//! `ConnectionManager::refresh_process_watch`。
 
-// 判「?」的轮询接上以后去掉。非 Linux 上用到这些读法的测试不编，测试构建里
-// 也会有没用到的（`ProcessProbe::matches` 等），一起放过。
-#![cfg_attr(any(not(test), not(target_os = "linux")), allow(dead_code))]
-
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+
+use chrono::{DateTime, Utc};
+
+use crate::acp::types::BackgroundUncertainReason;
 
 /// 生产上读的进程目录。
 pub(crate) const PROC_ROOT: &str = "/proc";
@@ -214,6 +216,273 @@ pub(crate) fn writers_of(
         }
     }
     Some(writers)
+}
+
+/// 读进程信息的办法：生产读 `/proc`（[`LiveProc`]），测试注入假的。
+pub(crate) trait ProcReader: Send + Sync {
+    /// 按 pid 查一个进程，见 [`probe_process`]。
+    fn probe(&self, pid: u32) -> ProcessProbe;
+    /// 子孙进程，见 [`descendants`]。
+    fn descendants(&self, pid: u32) -> Option<Vec<u32>>;
+    /// 在 `pids` 里找以写方式打开着 `path` 的进程，见 [`writers_of`]。
+    fn writers_of(&self, pids: &[u32], path: &Path) -> Option<Vec<ProcessIdentity>>;
+}
+
+/// 生产用的读法：读 [`PROC_ROOT`]。
+pub(crate) struct LiveProc;
+
+impl ProcReader for LiveProc {
+    fn probe(&self, pid: u32) -> ProcessProbe {
+        probe_process(Path::new(PROC_ROOT), pid)
+    }
+
+    fn descendants(&self, pid: u32) -> Option<Vec<u32>> {
+        descendants(Path::new(PROC_ROOT), pid)
+    }
+
+    fn writers_of(&self, pids: &[u32], path: &Path) -> Option<Vec<ProcessIdentity>> {
+        // `fd/*` 的链接目标是解析过符号链接的绝对路径，先把任务给的路径也解析一遍。
+        let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        writers_of(Path::new(PROC_ROOT), pids, &resolved)
+    }
+}
+
+/// 安静时限的环境变量（秒）。
+pub(crate) const SILENCE_TIMEOUT_ENV: &str = "CODEG_ACP_SILENCE_TIMEOUT_SECS";
+
+/// 安静时限的默认值：30 分钟。
+pub(crate) const DEFAULT_SILENCE_TIMEOUT_SECS: i64 = 1800;
+
+/// 读安静时限的设置：没设、`0`、负数、不是数字、大到换算会溢出的，都用默认值。
+fn parse_silence_timeout(raw: Option<&str>) -> chrono::Duration {
+    raw.and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        // `chrono::Duration::seconds` 超出范围会 panic，读设置的地方在定时器里，没人看着。
+        .and_then(chrono::Duration::try_seconds)
+        .unwrap_or_else(|| chrono::Duration::seconds(DEFAULT_SILENCE_TIMEOUT_SECS))
+}
+
+/// 安静时限（[`SILENCE_TIMEOUT_ENV`]），每个进程只读一次。
+pub(crate) fn silence_timeout() -> chrono::Duration {
+    static SECS: std::sync::OnceLock<chrono::Duration> = std::sync::OnceLock::new();
+    *SECS.get_or_init(|| parse_silence_timeout(std::env::var(SILENCE_TIMEOUT_ENV).ok().as_deref()))
+}
+
+/// 一条连接上观察进程攒下来的东西，放在 [`crate::acp::SessionState`] 里。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ProcessWatch {
+    /// pid 格子读到过的最后一个非 0 值；0 是还没读到过（还没启动）。
+    pub seen_pid: u32,
+    /// 第一次看到的智能体身份，以后 `starttime` 对不上就是 pid 被重用了。
+    pub agent: Option<ProcessIdentity>,
+    /// 后台任务 id → 绑上的写它输出文件的进程。没绑上的任务不在这里。
+    pub writers: BTreeMap<String, Vec<ProcessIdentity>>,
+    /// 上一次观察的结论：`Some` 是「?」。有进展时清掉。
+    pub uncertain: Option<BackgroundUncertainReason>,
+}
+
+/// 一个要看写进程的后台任务：还没完、`task_type` 是 `shell` / `monitor`、带输出文件。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WatchedTask {
+    pub task_id: String,
+    pub output: PathBuf,
+}
+
+/// 一次采样要读什么，在会话读锁下记下来，放开锁以后再读 `/proc`。
+#[derive(Debug, Clone)]
+pub(crate) struct WatchTarget {
+    /// 采样时 pid 格子的值。
+    pub pid: u32,
+    /// 采样时的 [`ProcessWatch`]（只读，看哪些任务已经绑过）。
+    pub watch: ProcessWatch,
+    pub tasks: Vec<WatchedTask>,
+    /// 要不要数活着的子进程（已经安静过了时限才要）。
+    pub needs_children: bool,
+}
+
+/// 一次采样读到的东西。`None` / [`ProcessProbe::Unknown`] 都是不知道。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WatchSample {
+    /// 智能体；pid 格子是 0 时是不知道。
+    pub agent: ProcessProbe,
+    /// 有没有活着的子孙进程。
+    pub has_children: Option<bool>,
+    /// 这次新绑上的写进程（之前没绑过的任务）。
+    pub new_writers: Vec<(String, Vec<ProcessIdentity>)>,
+    /// 绑过的任务：写进程里还有没有活着的。
+    pub writers_alive: Vec<(String, Option<bool>)>,
+}
+
+impl WatchSample {
+    fn unknown() -> Self {
+        Self {
+            agent: ProcessProbe::Unknown,
+            has_children: None,
+            new_writers: Vec::new(),
+            writers_alive: Vec::new(),
+        }
+    }
+}
+
+/// 照 `target` 读一次进程信息（会碰文件系统，在 `spawn_blocking` 里调）。
+pub(crate) fn sample(reader: &dyn ProcReader, target: &WatchTarget) -> WatchSample {
+    if target.pid == 0 {
+        return WatchSample::unknown();
+    }
+    let mut out = WatchSample {
+        agent: reader.probe(target.pid),
+        ..WatchSample::unknown()
+    };
+
+    // 绑过的任务：按身份直接查写进程，pid 被重用（`starttime` 对不上）也算不活。
+    for task in &target.tasks {
+        let Some(writers) = target.watch.writers.get(&task.task_id) else {
+            continue;
+        };
+        let mut alive = Some(false);
+        for writer in writers {
+            match reader.probe(writer.pid).matches(*writer) {
+                Some(true) => {
+                    alive = Some(true);
+                    break;
+                }
+                Some(false) => {}
+                None => alive = None,
+            }
+        }
+        out.writers_alive.push((task.task_id.clone(), alive));
+    }
+
+    // 子孙只在智能体活着、而且真要用（有没绑的任务，或者已经安静过了时限）时才找。
+    let unbound: Vec<&WatchedTask> = target
+        .tasks
+        .iter()
+        .filter(|t| !target.watch.writers.contains_key(&t.task_id))
+        .collect();
+    let agent_alive = matches!(out.agent, ProcessProbe::Alive { .. });
+    if !agent_alive || (unbound.is_empty() && !target.needs_children) {
+        return out;
+    }
+    let Some(found) = reader.descendants(target.pid) else {
+        return out;
+    };
+    for task in unbound {
+        if let Some(writers) = reader.writers_of(&found, &task.output) {
+            if !writers.is_empty() {
+                out.new_writers.push((task.task_id.clone(), writers));
+            }
+        }
+    }
+    if target.needs_children {
+        // 僵尸不算活的；有一个活的就是有，全都确定不在才是没有。
+        let mut has = Some(false);
+        for pid in &found {
+            match reader.probe(*pid) {
+                ProcessProbe::Alive { .. } => {
+                    has = Some(true);
+                    break;
+                }
+                ProcessProbe::Gone => {}
+                ProcessProbe::Unknown => has = None,
+            }
+        }
+        out.has_children = has;
+    }
+    out
+}
+
+/// 判「?」时连接自己的样子（不碰进程）。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WatchInput {
+    /// 在跑：连接是 `Prompting`，或者最后一次 `ConversationStatusChanged` 是 `in_progress`。
+    pub running: bool,
+    /// 在等后台：`count > 0`。
+    pub waiting: bool,
+    /// 现在 pid 格子的值。
+    pub pid: u32,
+    pub last_progress_at: DateTime<Utc>,
+    pub now: DateTime<Utc>,
+    pub silence: chrono::Duration,
+}
+
+/// 判「?」（纯函数）：原因按 `agent_exited`、`background_process_exited`、
+/// `silent_without_children` 的顺序取第一个成立的；任何一样不知道，那一条就不成立。
+pub(crate) fn judge(
+    watch: &ProcessWatch,
+    input: &WatchInput,
+    sample: &WatchSample,
+) -> Option<BackgroundUncertainReason> {
+    if !(input.running || input.waiting) {
+        return None;
+    }
+    // 智能体：pid 格子先前非 0、现在 0（`on_exit` 只在真回收时清零）是退出；
+    // 从来没见过非 0 是还没启动，不知道。
+    let agent_alive = if input.pid == 0 {
+        if watch.seen_pid != 0 {
+            return Some(BackgroundUncertainReason::AgentExited);
+        }
+        None
+    } else {
+        match sample.agent {
+            ProcessProbe::Gone => return Some(BackgroundUncertainReason::AgentExited),
+            ProcessProbe::Alive { start } => {
+                let first_seen = watch.agent.filter(|a| a.pid == input.pid);
+                if first_seen.is_some_and(|a| a.start != start) {
+                    return Some(BackgroundUncertainReason::AgentExited);
+                }
+                Some(true)
+            }
+            ProcessProbe::Unknown => None,
+        }
+    };
+    if sample
+        .writers_alive
+        .iter()
+        .any(|(_, alive)| *alive == Some(false))
+    {
+        return Some(BackgroundUncertainReason::BackgroundProcessExited);
+    }
+    let quiet = input.now.signed_duration_since(input.last_progress_at) >= input.silence;
+    if quiet && agent_alive == Some(true) && sample.has_children == Some(false) {
+        return Some(BackgroundUncertainReason::SilentWithoutChildren);
+    }
+    None
+}
+
+/// 把一次（没过期的）采样记进 `watch`，返回新的结论（也写进 `watch.uncertain`）。
+/// `tasks` 是采样时要看的任务，不在里面的任务的绑定丢掉。
+pub(crate) fn observe(
+    watch: &mut ProcessWatch,
+    input: &WatchInput,
+    tasks: &[WatchedTask],
+    sample: &WatchSample,
+) -> Option<BackgroundUncertainReason> {
+    let reason = judge(watch, input, sample);
+    if input.pid != 0 {
+        if watch.seen_pid != input.pid {
+            watch.agent = None;
+        }
+        watch.seen_pid = input.pid;
+        if let (None, ProcessProbe::Alive { start }) = (watch.agent, sample.agent) {
+            watch.agent = Some(ProcessIdentity {
+                pid: input.pid,
+                start,
+            });
+        }
+    }
+    watch
+        .writers
+        .retain(|task_id, _| tasks.iter().any(|t| &t.task_id == task_id));
+    for (task_id, writers) in &sample.new_writers {
+        if tasks.iter().any(|t| &t.task_id == task_id) {
+            watch
+                .writers
+                .entry(task_id.clone())
+                .or_insert_with(|| writers.clone());
+        }
+    }
+    watch.uncertain = reason;
+    reason
 }
 
 #[cfg(test)]
@@ -471,6 +740,406 @@ mod tests {
         child.kill().unwrap();
         child.wait().unwrap();
         assert_eq!(probe_process(root, pid).matches(identity), Some(false));
+    }
+
+    // ---- 判「?」（完成标准 10、12、14） ----
+
+    use BackgroundUncertainReason::{AgentExited, BackgroundProcessExited, SilentWithoutChildren};
+
+    fn t0() -> DateTime<Utc> {
+        DateTime::from_timestamp(1_800_000_000, 0).unwrap()
+    }
+
+    /// 在跑、pid 100、一分钟前刚有进展、时限 30 分钟。
+    fn input() -> WatchInput {
+        WatchInput {
+            running: true,
+            waiting: false,
+            pid: 100,
+            last_progress_at: t0(),
+            now: t0() + chrono::Duration::minutes(1),
+            silence: chrono::Duration::seconds(DEFAULT_SILENCE_TIMEOUT_SECS),
+        }
+    }
+
+    /// 已经见过 pid 100（starttime 7）。
+    fn watched() -> ProcessWatch {
+        ProcessWatch {
+            seen_pid: 100,
+            agent: Some(ProcessIdentity { pid: 100, start: 7 }),
+            ..ProcessWatch::default()
+        }
+    }
+
+    /// 智能体活着（starttime 7）、有活着的子进程。
+    fn healthy() -> WatchSample {
+        WatchSample {
+            agent: ProcessProbe::Alive { start: 7 },
+            has_children: Some(true),
+            new_writers: Vec::new(),
+            writers_alive: Vec::new(),
+        }
+    }
+
+    fn quiet_for(minutes: i64) -> WatchInput {
+        WatchInput {
+            now: t0() + chrono::Duration::minutes(minutes),
+            ..input()
+        }
+    }
+
+    #[test]
+    fn silence_marks_only_at_the_deadline_and_without_children() {
+        let lonely = WatchSample {
+            has_children: Some(false),
+            ..healthy()
+        };
+        let just_before = WatchInput {
+            now: t0() + chrono::Duration::seconds(DEFAULT_SILENCE_TIMEOUT_SECS - 1),
+            ..input()
+        };
+        assert_eq!(judge(&watched(), &just_before, &lonely), None);
+        let at_deadline = WatchInput {
+            now: t0() + chrono::Duration::seconds(DEFAULT_SILENCE_TIMEOUT_SECS),
+            ..input()
+        };
+        assert_eq!(
+            judge(&watched(), &at_deadline, &lonely),
+            Some(SilentWithoutChildren)
+        );
+        // 子进程不知道或者有：2 小时也不标。
+        let unknown_children = WatchSample {
+            has_children: None,
+            ..healthy()
+        };
+        assert_eq!(judge(&watched(), &quiet_for(120), &unknown_children), None);
+        assert_eq!(judge(&watched(), &quiet_for(120), &healthy()), None);
+        // 智能体活不活不知道：也不标。
+        let unknown_agent = WatchSample {
+            agent: ProcessProbe::Unknown,
+            ..lonely.clone()
+        };
+        assert_eq!(judge(&watched(), &quiet_for(120), &unknown_agent), None);
+    }
+
+    #[test]
+    fn a_live_agent_with_children_is_never_marked_while_running_or_waiting() {
+        for minutes in [15, 31, 120] {
+            assert_eq!(judge(&watched(), &quiet_for(minutes), &healthy()), None);
+            let waiting = WatchInput {
+                running: false,
+                waiting: true,
+                ..quiet_for(minutes)
+            };
+            assert_eq!(judge(&watched(), &waiting, &healthy()), None);
+        }
+    }
+
+    #[test]
+    fn neither_running_nor_waiting_is_never_marked() {
+        let idle = WatchInput {
+            running: false,
+            waiting: false,
+            pid: 0,
+            ..quiet_for(120)
+        };
+        let gone = WatchSample {
+            agent: ProcessProbe::Gone,
+            has_children: Some(false),
+            ..healthy()
+        };
+        assert_eq!(judge(&watched(), &idle, &gone), None);
+    }
+
+    #[test]
+    fn agent_exit_is_read_from_the_pid_cell_and_the_process_table() {
+        // pid 格子先前非 0、现在 0：回收了。
+        let reaped = WatchInput { pid: 0, ..input() };
+        assert_eq!(
+            judge(&watched(), &reaped, &WatchSample::unknown()),
+            Some(AgentExited)
+        );
+        // 还没启动（从来没见过非 0）：不算退出。
+        assert_eq!(
+            judge(&ProcessWatch::default(), &reaped, &WatchSample::unknown()),
+            None
+        );
+        // `/proc/<pid>` 不在了 / 僵尸：退出。
+        let gone = WatchSample {
+            agent: ProcessProbe::Gone,
+            ..healthy()
+        };
+        assert_eq!(judge(&watched(), &input(), &gone), Some(AgentExited));
+        // pid 被重用：starttime 对不上。
+        let reused = WatchSample {
+            agent: ProcessProbe::Alive { start: 99 },
+            ..healthy()
+        };
+        assert_eq!(judge(&watched(), &input(), &reused), Some(AgentExited));
+        // 读进程表失败：不知道，不标。
+        let unknown = WatchSample {
+            agent: ProcessProbe::Unknown,
+            ..healthy()
+        };
+        assert_eq!(judge(&watched(), &input(), &unknown), None);
+    }
+
+    #[test]
+    fn bound_writers_that_died_mark_the_task_and_unknowns_do_not() {
+        let waiting = WatchInput {
+            running: false,
+            waiting: true,
+            ..input()
+        };
+        let dead = WatchSample {
+            writers_alive: vec![("t1".into(), Some(false))],
+            ..healthy()
+        };
+        assert_eq!(
+            judge(&watched(), &waiting, &dead),
+            Some(BackgroundProcessExited)
+        );
+        let unknown = WatchSample {
+            writers_alive: vec![("t1".into(), None)],
+            ..healthy()
+        };
+        assert_eq!(judge(&watched(), &waiting, &unknown), None);
+        let alive = WatchSample {
+            writers_alive: vec![("t1".into(), Some(true))],
+            ..healthy()
+        };
+        assert_eq!(judge(&watched(), &waiting, &alive), None);
+        // 智能体自己退出排在前面。
+        let both = WatchSample {
+            agent: ProcessProbe::Gone,
+            ..dead
+        };
+        assert_eq!(judge(&watched(), &waiting, &both), Some(AgentExited));
+    }
+
+    /// 假的进程表：按 pid 给死活，子孙和写进程是固定的。
+    struct FakeReader {
+        probes: BTreeMap<u32, ProcessProbe>,
+        children: Option<Vec<u32>>,
+        writers: Option<Vec<ProcessIdentity>>,
+    }
+
+    impl ProcReader for FakeReader {
+        fn probe(&self, pid: u32) -> ProcessProbe {
+            self.probes.get(&pid).copied().unwrap_or(ProcessProbe::Gone)
+        }
+        fn descendants(&self, _pid: u32) -> Option<Vec<u32>> {
+            self.children.clone()
+        }
+        fn writers_of(&self, _pids: &[u32], _path: &Path) -> Option<Vec<ProcessIdentity>> {
+            self.writers.clone()
+        }
+    }
+
+    fn sample_task() -> WatchedTask {
+        WatchedTask {
+            task_id: "t1".into(),
+            output: PathBuf::from("/tmp/fake-task.out"),
+        }
+    }
+
+    #[test]
+    fn writers_are_bound_once_then_checked_by_identity() {
+        let task = sample_task();
+        let writer = ProcessIdentity {
+            pid: 300,
+            start: 30,
+        };
+        let mut reader = FakeReader {
+            probes: BTreeMap::from([
+                (100, ProcessProbe::Alive { start: 7 }),
+                (300, ProcessProbe::Alive { start: 30 }),
+            ]),
+            children: Some(vec![300]),
+            writers: Some(vec![writer]),
+        };
+        let waiting = WatchInput {
+            running: false,
+            waiting: true,
+            ..input()
+        };
+        let mut watch = ProcessWatch::default();
+        let target = |watch: &ProcessWatch| WatchTarget {
+            pid: 100,
+            watch: watch.clone(),
+            tasks: vec![task.clone()],
+            needs_children: false,
+        };
+
+        // 第一次：绑上写进程，记下智能体身份，没有「?」。
+        let first = sample(&reader, &target(&watch));
+        assert_eq!(first.new_writers, vec![("t1".to_string(), vec![writer])]);
+        assert_eq!(
+            observe(&mut watch, &waiting, std::slice::from_ref(&task), &first),
+            None
+        );
+        assert_eq!(watch.seen_pid, 100);
+        assert_eq!(watch.agent, Some(ProcessIdentity { pid: 100, start: 7 }));
+        assert_eq!(watch.writers["t1"], vec![writer]);
+
+        // 写进程的 pid 被重用（starttime 对不上）：算不活。
+        reader.probes.insert(300, ProcessProbe::Alive { start: 31 });
+        let reused = sample(&reader, &target(&watch));
+        assert_eq!(reused.writers_alive, vec![("t1".to_string(), Some(false))]);
+        assert_eq!(
+            observe(&mut watch, &waiting, std::slice::from_ref(&task), &reused),
+            Some(BackgroundProcessExited)
+        );
+        assert_eq!(watch.uncertain, Some(BackgroundProcessExited));
+
+        // 读进程表失败：不知道，不标。
+        reader.probes.insert(300, ProcessProbe::Unknown);
+        let unknown = sample(&reader, &target(&watch));
+        assert_eq!(
+            observe(&mut watch, &waiting, std::slice::from_ref(&task), &unknown),
+            None
+        );
+
+        // 任务结束了（不在要看的列表里）：绑定丢掉。
+        let done = sample(
+            &reader,
+            &WatchTarget {
+                tasks: vec![],
+                ..target(&watch)
+            },
+        );
+        observe(&mut watch, &waiting, &[], &done);
+        assert!(watch.writers.is_empty());
+    }
+
+    #[test]
+    fn a_task_never_bound_is_never_marked() {
+        let reader = FakeReader {
+            probes: BTreeMap::from([(100, ProcessProbe::Alive { start: 7 })]),
+            children: Some(vec![]),
+            writers: Some(vec![]),
+        };
+        let waiting = WatchInput {
+            running: false,
+            waiting: true,
+            ..input()
+        };
+        let mut watch = watched();
+        let target = WatchTarget {
+            pid: 100,
+            watch: watch.clone(),
+            tasks: vec![sample_task()],
+            needs_children: false,
+        };
+        let got = sample(&reader, &target);
+        assert!(got.new_writers.is_empty());
+        assert!(got.writers_alive.is_empty());
+        assert_eq!(
+            observe(
+                &mut watch,
+                &waiting,
+                std::slice::from_ref(&sample_task()),
+                &got
+            ),
+            None
+        );
+        assert!(watch.writers.is_empty());
+    }
+
+    #[test]
+    fn children_are_counted_only_when_needed_and_zombies_do_not_count() {
+        let reader = FakeReader {
+            probes: BTreeMap::from([
+                (100, ProcessProbe::Alive { start: 7 }),
+                (200, ProcessProbe::Gone),
+            ]),
+            children: Some(vec![200]),
+            writers: None,
+        };
+        let mut target = WatchTarget {
+            pid: 100,
+            watch: watched(),
+            tasks: vec![],
+            needs_children: false,
+        };
+        assert_eq!(sample(&reader, &target).has_children, None);
+        target.needs_children = true;
+        assert_eq!(sample(&reader, &target).has_children, Some(false));
+        // pid 格子是 0：什么都不读，全是不知道。
+        target.pid = 0;
+        assert_eq!(sample(&reader, &target), WatchSample::unknown());
+    }
+
+    #[test]
+    fn silence_timeout_falls_back_to_the_default_on_bad_values() {
+        let default = chrono::Duration::seconds(DEFAULT_SILENCE_TIMEOUT_SECS);
+        assert_eq!(parse_silence_timeout(None), default);
+        assert_eq!(parse_silence_timeout(Some("0")), default);
+        assert_eq!(parse_silence_timeout(Some("-5")), default);
+        assert_eq!(parse_silence_timeout(Some("soon")), default);
+        assert_eq!(parse_silence_timeout(Some("")), default);
+        assert_eq!(parse_silence_timeout(Some(&i64::MAX.to_string())), default);
+        assert_eq!(
+            parse_silence_timeout(Some("99999999999999999999999")),
+            default
+        );
+        assert_eq!(
+            parse_silence_timeout(Some(" 600 ")),
+            chrono::Duration::seconds(600)
+        );
+    }
+
+    /// 完成标准 14：真进程。测试进程起一个 `sleep 600`，标准输出接到临时文件，从测试
+    /// 进程自己出发绑上它；`SIGKILL` 它、回收以后再观察一次，这个任务变成
+    /// `background_process_exited`。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_killed_background_writer_is_reported_as_exited() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("sleep.out");
+        let file = std::fs::File::create(&out).unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("600")
+            .stdout(file)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let task = WatchedTask {
+            task_id: "bg".into(),
+            output: out,
+        };
+        let me = std::process::id();
+        let waiting = WatchInput {
+            running: false,
+            waiting: true,
+            pid: me,
+            ..input()
+        };
+        let mut watch = ProcessWatch::default();
+        let target = |watch: &ProcessWatch| WatchTarget {
+            pid: me,
+            watch: watch.clone(),
+            tasks: vec![task.clone()],
+            needs_children: false,
+        };
+
+        let first = sample(&LiveProc, &target(&watch));
+        assert_eq!(
+            observe(&mut watch, &waiting, std::slice::from_ref(&task), &first),
+            None
+        );
+        assert!(
+            watch.writers["bg"].iter().any(|w| w.pid == pid),
+            "the sleep child is bound as the writer: {watch:?}"
+        );
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let after = sample(&LiveProc, &target(&watch));
+        assert_eq!(
+            observe(&mut watch, &waiting, std::slice::from_ref(&task), &after),
+            Some(BackgroundProcessExited)
+        );
     }
 
     #[cfg(not(target_os = "linux"))]

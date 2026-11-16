@@ -6,7 +6,8 @@ use serde::{ser::SerializeStruct, Serialize, Serializer};
 use tokio::sync::{broadcast, RwLock};
 
 use crate::acp::types::{
-    BackgroundPendingEntry, BackgroundPendingTask, BackgroundUncertainReason, ConnectionStatus,
+    BackgroundPendingEntry, BackgroundPendingState, BackgroundPendingTask,
+    BackgroundUncertainReason, ConnectionStatus,
 };
 use crate::acp::{AcpEvent, EventBusMetrics, EventEnvelope, InternalEventBus, SessionState};
 
@@ -716,7 +717,10 @@ where
         // broadcast below says exactly what this event changed. 已经断开的连接
         // 不再报读数（它的后台活跟着进程没了，「?」在断开那一刻已经留下）。
         let disconnected = is_disconnect(&payload);
-        let background_before = (moves_background_pending(&payload)
+        // 进程观察标过「?」的连接，任何有进展的事件都会把它清掉，所以也要读前后
+        // （只看一个字段，平常是 `None`，热路径照旧不读读数）。
+        let before_reason = s.process_watch.uncertain;
+        let background_before = ((moves_background_pending(&payload) || before_reason.is_some())
             && s.status != ConnectionStatus::Disconnected)
             .then(|| {
                 let tasks = if disconnected {
@@ -730,12 +734,12 @@ where
         if let Some((before_id, before, before_tasks)) = background_before {
             // The CLI and the background work in it end with the
             // connection, whatever the counts last said.
-            let after = if disconnected {
-                (0, Vec::new())
+            let (after, after_reason) = if disconnected {
+                ((0, Vec::new()), None)
             } else {
-                s.background_pending()
+                (s.background_pending(), s.process_watch.uncertain)
             };
-            let after_tasks = if after.0 > 0 {
+            let after_tasks = if after.0 > 0 || after_reason.is_some() {
                 s.background_pending_tasks()
             } else {
                 Vec::new()
@@ -747,8 +751,10 @@ where
                     generation: s.generation,
                     before: (before_id, before),
                     before_tasks,
+                    before_reason,
                     after: (s.conversation_id, after),
                     after_tasks,
+                    after_reason,
                     disconnected,
                 },
             );
@@ -916,9 +922,13 @@ struct BackgroundPendingUpdate {
     before: BackgroundPendingReading,
     /// 断开前还没完的后台任务（只在断开时读）。
     before_tasks: Vec<BackgroundPendingTask>,
+    /// 事件前进程观察的结论（活着的连接上的「?」）。
+    before_reason: Option<BackgroundUncertainReason>,
     after: BackgroundPendingReading,
-    /// 事件后还没完的后台任务（`count > 0` 时才读）。
+    /// 事件后还没完的后台任务（`count > 0` 或有「?」时才读）。
     after_tasks: Vec<BackgroundPendingTask>,
+    /// 事件后进程观察的结论。
+    after_reason: Option<BackgroundUncertainReason>,
     /// 事件是断开。
     disconnected: bool,
 }
@@ -937,6 +947,38 @@ fn publish_background_pending(emitter: &EventEmitter, update: BackgroundPendingU
     for change in background_pending_broadcasts(slots, update) {
         emit_event(emitter, BACKGROUND_PENDING_EVENT, change);
     }
+}
+
+/// Cowork 加的：轮询改了一条连接的进程观察结论（`before` → `s.process_watch.uncertain`），
+/// 走和事件同一条路（同一个表、同一套编号）把这一行发出去。调用方拿着会话写锁。
+pub(crate) fn publish_process_observation(
+    emitter: &EventEmitter,
+    s: &SessionState,
+    before: Option<BackgroundUncertainReason>,
+) {
+    if s.status == ConnectionStatus::Disconnected {
+        return;
+    }
+    let after_reason = s.process_watch.uncertain;
+    let reading = s.background_pending();
+    let after_tasks = if reading.0 > 0 || after_reason.is_some() {
+        s.background_pending_tasks()
+    } else {
+        Vec::new()
+    };
+    publish_background_pending(
+        emitter,
+        BackgroundPendingUpdate {
+            generation: s.generation,
+            before: (s.conversation_id, reading.clone()),
+            before_tasks: Vec::new(),
+            before_reason: before,
+            after: (s.conversation_id, reading),
+            after_tasks,
+            after_reason,
+            disconnected: false,
+        },
+    );
 }
 
 /// 编号是 `generation` 的连接给 `conversation_id` 报读数：编号不比表里的小就记下、返回
@@ -967,17 +1009,32 @@ fn background_pending_broadcasts(
         generation,
         before,
         before_tasks,
+        before_reason,
         after,
         after_tasks,
+        after_reason,
         disconnected,
     } = update;
     let (before_id, (before_count, _)) = &before;
     let after_id = after.0;
+    let (after_count, after_names) = after.1.clone();
+    // 事件前这一行在客户端上不是空的：有沙漏，或者有活着的连接的「?」。
+    let before_shown = *before_count > 0 || before_reason.is_some();
     let mut out = Vec::new();
 
     if disconnected {
         // 断开不换对话。断开前在等后台，后台活跟着进程没了：留「?」。`count` 照旧 0。
-        let Some(conversation_id) = after_id.filter(|_| *before_count > 0) else {
+        if *before_count == 0 {
+            // 只是在跑、被进程观察标了「?」的：不留（回合由 `handle_terminal_event` 标成
+            // 取消），把客户端上那个「?」清掉。
+            if let Some(conversation_id) = after_id.filter(|_| before_reason.is_some()) {
+                if admit_background_reading(slots, conversation_id, generation) {
+                    out.push(BackgroundPendingEntry::idle(conversation_id));
+                }
+            }
+            return out;
+        }
+        let Some(conversation_id) = after_id else {
             return out;
         };
         if !admit_background_reading(slots, conversation_id, generation) {
@@ -999,7 +1056,7 @@ fn background_pending_broadcasts(
     let relinked = *before_id != after_id;
     let old_row_admitted = !relinked
         || before_id
-            .filter(|_| *before_count > 0)
+            .filter(|_| before_shown)
             .is_none_or(|old| admit_background_reading(slots, old, generation));
     let new_row_admitted =
         after_id.is_some_and(|id| admit_background_reading(slots, id, generation));
@@ -1015,7 +1072,28 @@ fn background_pending_broadcasts(
         }
     }
 
-    for mut change in background_pending_changes(before, after) {
+    let mut changes = background_pending_changes(before.clone(), after);
+    // 进程观察的「?」：读数没变、只有结论变了，或者 `count` 是 0 的那一行带着「?」，
+    // [`background_pending_changes`] 都不会发，这里补上。
+    if relinked {
+        if let Some(old) = before_id.filter(|_| *before_count == 0 && before_reason.is_some()) {
+            changes.insert(0, BackgroundPendingEntry::idle(old));
+        }
+        if let Some(new) = after_id.filter(|_| after_count == 0 && after_reason.is_some()) {
+            changes.push(BackgroundPendingEntry::idle(new));
+        }
+    } else if let Some(conversation_id) = after_id {
+        if before_reason != after_reason && changes.is_empty() {
+            changes.push(BackgroundPendingEntry::reading(
+                conversation_id,
+                after_count,
+                after_names,
+                Vec::new(),
+            ));
+        }
+    }
+
+    for mut change in changes {
         let admitted = if Some(change.conversation_id) == after_id {
             new_row_admitted
         } else {
@@ -1023,6 +1101,13 @@ fn background_pending_broadcasts(
         };
         if !admitted {
             continue;
+        }
+        if Some(change.conversation_id) == after_id {
+            if let Some(reason) = after_reason {
+                change.state = BackgroundPendingState::Uncertain;
+                change.reason = Some(reason);
+                change.tasks = after_tasks.clone();
+            }
         }
         // 上面已经为删「?」发过 `idle` 了，同一条不重发。
         if change.count == 0 && out.contains(&change) {
@@ -1265,6 +1350,88 @@ mod tests {
         emit_with_state(&state, &emitter, watcher_activity(&[], 2)).await;
         assert!(background_events(&mut rx).is_empty());
         assert_eq!(broadcaster.merge_background_pending(Vec::new()).len(), 1);
+    }
+
+    /// 完成标准 11、13：轮询把一条活着的连接标成「?」时广播它（`count` 的意思不变）；
+    /// 一条内容事件是进展，「?」马上变回「等后台」并广播。
+    #[tokio::test]
+    async fn a_live_uncertain_mark_is_published_and_cleared_by_progress() {
+        use crate::acp::types::BackgroundUncertainReason;
+        let state = fresh_state();
+        state.write().await.conversation_id = Some(7);
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        emit_with_state(&state, &emitter, watcher_activity(&[("b1", "Watch CI")], 1)).await;
+        let _ = background_events(&mut rx);
+
+        {
+            let mut s = state.write().await;
+            s.process_watch.uncertain = Some(BackgroundUncertainReason::AgentExited);
+            publish_process_observation(&emitter, &s, None);
+        }
+        assert_eq!(
+            background_events(&mut rx),
+            vec![serde_json::json!({
+                "conversation_id": 7,
+                "count": 1,
+                "names": ["Watch CI"],
+                "state": "uncertain",
+                "reason": "agent_exited",
+                "tasks": [{ "task_id": "b1", "name": "Watch CI" }],
+            })]
+        );
+        // 活着的连接的「?」不进留下来的表。
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::ContentDelta {
+                text: "still here".to_string(),
+                parent_tool_use_id: None,
+            },
+        )
+        .await;
+        assert_eq!(state.read().await.process_watch.uncertain, None);
+        let cleared = background_events(&mut rx);
+        assert_eq!(cleared.len(), 1);
+        assert_eq!(cleared[0]["state"], "waiting");
+        assert_eq!(cleared[0]["count"], 1);
+        assert!(cleared[0]["reason"].is_null());
+
+        // 没有「?」时内容事件照旧什么都不发。
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::ContentDelta {
+                text: "more".to_string(),
+                parent_tool_use_id: None,
+            },
+        )
+        .await;
+        assert!(background_events(&mut rx).is_empty());
+    }
+
+    /// 在跑、没有后台活的连接被标了「?」（`count` 是 0）以后断开：不留「?」，清成 `idle`
+    /// （回合由 `handle_terminal_event` 标成取消）。
+    #[tokio::test]
+    async fn a_foreground_uncertain_mark_is_cleared_on_disconnect() {
+        use crate::acp::types::BackgroundUncertainReason;
+        let state = fresh_state();
+        state.write().await.conversation_id = Some(7);
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        {
+            let mut s = state.write().await;
+            s.process_watch.uncertain = Some(BackgroundUncertainReason::AgentExited);
+            publish_process_observation(&emitter, &s, None);
+        }
+        let marked = background_events(&mut rx);
+        assert_eq!(marked.len(), 1);
+        assert_eq!(marked[0]["state"], "uncertain");
+        assert_eq!(marked[0]["count"], 0);
+
+        emit_with_state(&state, &emitter, disconnected()).await;
+        assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
     }
 
     /// 完成标准 2：断开前 `count` 是 0，和原来一样什么都不发，也不留「?」。

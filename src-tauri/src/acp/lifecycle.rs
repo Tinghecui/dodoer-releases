@@ -3506,6 +3506,9 @@ async fn connection_worker_loop(
     }
 }
 
+/// Cowork 加的：进程观察（侧栏的「?」）的轮询间隔。
+const PROCESS_WATCH_INTERVAL: Duration = Duration::from_secs(15);
+
 /// Subscribe to the in-process bus synchronously and return the dispatcher
 /// loop future. Filters out events the lifecycle worker doesn't care about
 /// (high-frequency ContentDelta / ToolCall / PermissionRequest etc.) and
@@ -3539,8 +3542,22 @@ pub fn lifecycle_subscriber_task(
         // event by dropping the sender (worker drains its queue and exits).
         let mut workers: HashMap<String, mpsc::Sender<Arc<EventEnvelope>>> = HashMap::new();
         let mut lag_throttle = LagLogThrottle::new(LAG_LOG_WINDOW);
+        // Cowork 加的：每 15 秒看一次在跑、在等后台的连接的进程（侧栏的「?」），跟着
+        // 订阅者一起停。第一次在启动 15 秒以后。
+        let mut process_watch = tokio::time::interval_at(
+            tokio::time::Instant::now() + PROCESS_WATCH_INTERVAL,
+            PROCESS_WATCH_INTERVAL,
+        );
+        process_watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            match rx.recv().await {
+            let received = tokio::select! {
+                received = rx.recv() => received,
+                _ = process_watch.tick() => {
+                    manager.refresh_process_watch().await;
+                    continue;
+                }
+            };
+            match received {
                 Ok(envelope_arc) => {
                     // Off-worker delegation correlation. Register parent-side
                     // `delegate_to_agent` tool_call_ids the instant they come

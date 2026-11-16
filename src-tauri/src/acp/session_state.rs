@@ -561,6 +561,14 @@ pub struct SessionState {
     /// Cowork 加的：建出来时拿的进程内递增编号。侧栏的「留下来的『?』」按对话记最新的编号，
     /// 编号更小（更旧）的连接发来的读数不能盖过新连接（见 `web::event_bridge`）。
     pub(crate) generation: u64,
+    /// Cowork 加的：上一次「有进展」的时候。除了 `ConversationStatusChanged` 和 watcher 原样
+    /// 重发的 `BackgroundActivity` 快照，每个事件都更新它（`last_activity_at` 是空闲回收用的，
+    /// 每个事件都更新）。判「安静很久」（`silent_without_children`）看它。
+    pub last_progress_at: DateTime<Utc>,
+    /// Cowork 加的：这条连接上最后一次 `ConversationStatusChanged` 是不是 `in_progress`。
+    pub(crate) conversation_in_progress: bool,
+    /// Cowork 加的：观察进程攒下来的东西和上一次的结论（「?」），见 `acp::process_watch`。
+    pub(crate) process_watch: crate::acp::process_watch::ProcessWatch,
 
     /// Per-connection event broadcaster used by the WS attach protocol.
     /// New subscribers register receivers here while holding the SessionState
@@ -977,6 +985,9 @@ impl SessionState {
             event_seq: 0,
             generation: next_session_generation(),
             last_activity_at: Utc::now(),
+            last_progress_at: Utc::now(),
+            conversation_in_progress: false,
+            process_watch: crate::acp::process_watch::ProcessWatch::default(),
             event_stream: Arc::new(ConnectionEventStream::new()),
             recent_events: RecentEventsBuffer::new(),
             delegation_token: None,
@@ -1060,6 +1071,12 @@ impl SessionState {
     /// 单一分发器：把一个 AcpEvent 应用到 self。注意此方法**不**自增 event_seq——
     /// seq 由 emit_with_state 在外层管理（这样 apply_event 可独立单元测试）。
     pub fn apply_event(&mut self, payload: &AcpEvent) {
+        // Cowork 加的：除了状态变化和 watcher 原样重发的快照，每个事件都是「有进展」，
+        // 上一次进程观察的结论（「?」）跟着作废。在改状态之前比。
+        if self.is_progress(payload) {
+            self.last_progress_at = Utc::now();
+            self.process_watch.uncertain = None;
+        }
         let was_prompting = self.status == ConnectionStatus::Prompting;
         // A tool call's status before this event, to spot the moment it settles.
         let tool_call_before = match payload {
@@ -1073,6 +1090,28 @@ impl SessionState {
         };
         self.apply_event_inner(payload);
         self.track_turn_files(payload, was_prompting, tool_call_before);
+    }
+
+    /// Cowork 加的：`payload` 算不算「有进展」。`ConversationStatusChanged` 不算；和现在
+    /// 一模一样、`settled` 和 `turns` 都是空的 `BackgroundActivity`（watcher 每次轮询的原样
+    /// 快照）不算；别的都算。
+    fn is_progress(&self, payload: &AcpEvent) -> bool {
+        match payload {
+            AcpEvent::ConversationStatusChanged { .. } => false,
+            AcpEvent::BackgroundActivity {
+                turns,
+                outstanding,
+                outstanding_tasks,
+                settled,
+                ..
+            } => {
+                !(turns.is_empty()
+                    && settled.is_empty()
+                    && *outstanding == self.background_outstanding
+                    && *outstanding_tasks == self.background_outstanding_tasks)
+            }
+            _ => true,
+        }
     }
 
     /// Keep `crate::agent_turn_files` in step with this connection: a turn
@@ -1739,8 +1778,11 @@ impl SessionState {
                     entries: serde_json::to_value(entries).unwrap_or(serde_json::Value::Null),
                 });
             }
-            AcpEvent::ConversationStatusChanged { .. } => {
-                // No-op on purpose. Conversation row `status` is row-level
+            AcpEvent::ConversationStatusChanged { status, .. } => {
+                // Cowork 加的：判「?」时算不算「在跑」要看它（只记这一个布尔）。
+                self.conversation_in_progress =
+                    *status == crate::db::entities::conversation::ConversationStatus::InProgress;
+                // Otherwise a no-op on purpose. Conversation row `status` is row-level
                 // metadata persisted by the lifecycle subscriber / send_prompt
                 // path, not in-flight session state — snapshot consumers read
                 // status via the conversation list endpoints, not via
@@ -2055,6 +2097,29 @@ impl SessionState {
         tasks.sort_by(|a, b| a.task_id.cmp(&b.task_id));
         tasks.truncate(crate::acp::types::BACKGROUND_PENDING_TASKS_MAX);
         tasks
+    }
+
+    /// Cowork 加的：判「?」时算「在跑」：连接是 `Prompting`，或者这条连接上最后一次
+    /// `ConversationStatusChanged` 是 `in_progress`。
+    pub(crate) fn watch_running(&self) -> bool {
+        self.status == ConnectionStatus::Prompting || self.conversation_in_progress
+    }
+
+    /// Cowork 加的：要看写进程的后台任务：还没完的 AIR async task 里 `task_type` 是
+    /// `shell` / `monitor`、带输出文件的。后台子 agent 没有自己的进程，不看。
+    pub(crate) fn watched_tasks(&self) -> Vec<crate::acp::process_watch::WatchedTask> {
+        self.async_tasks
+            .values()
+            .filter(|t| !crate::acp::types::async_task_state_is_terminal(&t.state))
+            .filter(|t| matches!(t.task_type.as_str(), "shell" | "monitor"))
+            .filter_map(|t| {
+                let path = t.output_file_path.as_deref().filter(|p| !p.is_empty())?;
+                Some(crate::acp::process_watch::WatchedTask {
+                    task_id: t.task_id.clone(),
+                    output: PathBuf::from(path),
+                })
+            })
+            .collect()
     }
 
     /// Whether this connection has launched background work (async sub-agent /
@@ -3897,6 +3962,58 @@ mod tests {
         let tasks = w.background_pending_tasks();
         assert_eq!(tasks.len(), crate::acp::types::BACKGROUND_PENDING_TASKS_MAX);
         assert_eq!(tasks[0].task_id, "w00");
+    }
+
+    /// Cowork 完成标准 11：watcher 原样重发的快照不算进展，只动空闲计时。
+    #[test]
+    fn identical_background_snapshot_is_not_progress() {
+        let mut s = SessionState::new("c1".into(), AgentType::ClaudeCode, None, "w".into(), None);
+        let snapshot = AcpEvent::BackgroundActivity {
+            session_id: "sid".into(),
+            turns: vec![],
+            outstanding: 1,
+            outstanding_tasks: vec![],
+            settled: vec![],
+            watermark: 1,
+        };
+        s.apply_event(&snapshot);
+        let hour_ago = Utc::now() - chrono::Duration::hours(1);
+        s.last_progress_at = hour_ago;
+        s.last_activity_at = hour_ago;
+        s.process_watch.uncertain =
+            Some(crate::acp::types::BackgroundUncertainReason::SilentWithoutChildren);
+
+        s.apply_event(&snapshot);
+        assert_eq!(s.last_progress_at, hour_ago);
+        assert!(s.last_activity_at > hour_ago);
+        assert!(s.process_watch.uncertain.is_some());
+
+        // 状态变化也不算进展，但要记下是不是在跑。
+        s.apply_event(&AcpEvent::ConversationStatusChanged {
+            conversation_id: 7,
+            status: crate::db::entities::conversation::ConversationStatus::InProgress,
+        });
+        assert_eq!(s.last_progress_at, hour_ago);
+        assert!(s.conversation_in_progress);
+        assert!(s.watch_running());
+
+        // 数变了的快照是进展：计时更新，结论清掉。
+        s.apply_event(&AcpEvent::BackgroundActivity {
+            session_id: "sid".into(),
+            turns: vec![],
+            outstanding: 2,
+            outstanding_tasks: vec![],
+            settled: vec![],
+            watermark: 2,
+        });
+        assert!(s.last_progress_at > hour_ago);
+        assert_eq!(s.process_watch.uncertain, None);
+
+        s.apply_event(&AcpEvent::ConversationStatusChanged {
+            conversation_id: 7,
+            status: crate::db::entities::conversation::ConversationStatus::PendingReview,
+        });
+        assert!(!s.conversation_in_progress);
     }
 
     /// Cowork：每个 `SessionState` 一个递增的编号，后建的大。

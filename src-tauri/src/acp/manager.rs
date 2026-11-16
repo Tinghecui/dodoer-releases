@@ -3536,27 +3536,162 @@ impl ConnectionManager {
                 continue;
             };
             let (count, names) = state.background_pending();
-            if count == 0 {
+            // Cowork 加的：进程观察标了「?」的连接即使 `count` 是 0 也列出来。
+            let uncertain = state.process_watch.uncertain;
+            if count == 0 && uncertain.is_none() {
                 continue;
             }
             let busier = by_conversation
                 .get(&conversation_id)
                 .is_none_or(|have| count > have.count);
             if busier {
-                by_conversation.insert(
+                let tasks = state.background_pending_tasks();
+                let mut entry = crate::acp::types::BackgroundPendingEntry::reading(
                     conversation_id,
-                    crate::acp::types::BackgroundPendingEntry::reading(
-                        conversation_id,
-                        count,
-                        names,
-                        state.background_pending_tasks(),
-                    ),
+                    count,
+                    names,
+                    tasks.clone(),
                 );
+                if let Some(reason) = uncertain {
+                    entry.state = crate::acp::types::BackgroundPendingState::Uncertain;
+                    entry.reason = Some(reason);
+                    entry.tasks = tasks;
+                }
+                by_conversation.insert(conversation_id, entry);
             }
         }
         let mut entries: Vec<_> = by_conversation.into_values().collect();
         entries.sort_by_key(|e| e.conversation_id);
         entries
+    }
+
+    /// Cowork 加的：15 秒一次的进程观察（`lifecycle_subscriber_task` 调）。只看在跑或在等
+    /// 后台、pid 格子非 0（或先前非 0、现在 0）的连接，读法见 `acp::process_watch`。
+    pub async fn refresh_process_watch(&self) {
+        self.refresh_process_watch_with(
+            Arc::new(crate::acp::process_watch::LiveProc),
+            chrono::Utc::now(),
+            crate::acp::process_watch::silence_timeout(),
+        )
+        .await;
+    }
+
+    /// [`Self::refresh_process_watch`] 的本体，读进程的办法和时钟可以注入。
+    ///
+    /// 先在读锁下给每条要看的连接记下 `event_seq` 和 pid，放开所有锁以后在
+    /// `spawn_blocking` 里读 `/proc`；回来拿写锁时 `event_seq` 或 pid 变了，这次观察整个
+    /// 丢掉（不写、不广播）。结论变了才广播，走 [`crate::web::event_bridge`] 同一条路。
+    pub(crate) async fn refresh_process_watch_with(
+        &self,
+        reader: Arc<dyn crate::acp::process_watch::ProcReader>,
+        now: chrono::DateTime<chrono::Utc>,
+        silence: chrono::Duration,
+    ) {
+        use crate::acp::process_watch::{WatchInput, WatchTarget};
+        use std::sync::atomic::Ordering::SeqCst;
+
+        /// 一条要看的连接。`target` 是 `None`：已经不在跑也不在等后台，只把旧结论清掉。
+        struct Plan {
+            state: Arc<tokio::sync::RwLock<crate::acp::SessionState>>,
+            emitter: EventEmitter,
+            pid_cell: Arc<std::sync::atomic::AtomicU32>,
+            seq: u64,
+            input: WatchInput,
+            target: Option<WatchTarget>,
+        }
+
+        let plans: Vec<Plan> = {
+            let connections = self.connections.lock().await;
+            let mut plans = Vec::new();
+            for conn in connections.values() {
+                let s = conn.state.read().await;
+                if s.status == ConnectionStatus::Disconnected {
+                    continue;
+                }
+                let pid = conn.child_pid.load(SeqCst);
+                let running = s.watch_running();
+                let waiting = s.background_pending().0 > 0;
+                let input = WatchInput {
+                    running,
+                    waiting,
+                    pid,
+                    last_progress_at: s.last_progress_at,
+                    now,
+                    silence,
+                };
+                let watched = (running || waiting) && (pid != 0 || s.process_watch.seen_pid != 0);
+                let target = if watched {
+                    Some(WatchTarget {
+                        pid,
+                        watch: s.process_watch.clone(),
+                        tasks: s.watched_tasks(),
+                        needs_children: now.signed_duration_since(s.last_progress_at) >= silence,
+                    })
+                } else if s.process_watch.uncertain.is_some() {
+                    None
+                } else {
+                    continue;
+                };
+                plans.push(Plan {
+                    state: Arc::clone(&conn.state),
+                    emitter: conn.emitter.clone(),
+                    pid_cell: Arc::clone(&conn.child_pid),
+                    seq: s.event_seq,
+                    input,
+                    target,
+                });
+            }
+            plans
+        };
+        if plans.is_empty() {
+            return;
+        }
+
+        // 放开了所有锁才读 `/proc`。
+        let targets: Vec<Option<WatchTarget>> = plans.iter().map(|p| p.target.clone()).collect();
+        let samples = match tokio::task::spawn_blocking(move || {
+            targets
+                .iter()
+                .map(|target| {
+                    target
+                        .as_ref()
+                        .map(|t| crate::acp::process_watch::sample(reader.as_ref(), t))
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        {
+            Ok(samples) => samples,
+            Err(err) => {
+                tracing::warn!("[ACP] process watch sampling failed: {err}");
+                return;
+            }
+        };
+
+        for (plan, sample) in plans.into_iter().zip(samples) {
+            let mut s = plan.state.write().await;
+            if s.event_seq != plan.seq
+                || plan.pid_cell.load(SeqCst) != plan.input.pid
+                || s.status == ConnectionStatus::Disconnected
+            {
+                continue;
+            }
+            let before = s.process_watch.uncertain;
+            match (plan.target.as_ref(), sample) {
+                (Some(target), Some(sample)) => {
+                    crate::acp::process_watch::observe(
+                        &mut s.process_watch,
+                        &plan.input,
+                        &target.tasks,
+                        &sample,
+                    );
+                }
+                _ => s.process_watch.uncertain = None,
+            }
+            if s.process_watch.uncertain != before {
+                crate::web::event_bridge::publish_process_observation(&plan.emitter, &s, before);
+            }
+        }
     }
 
     /// Cowork 加的：`acp_list_background_pending` 两个入口返回的东西：活着的连接的读数
@@ -8379,6 +8514,177 @@ mod tests {
                 .map(|e| (e.conversation_id, e.count, e.state))
                 .collect::<Vec<_>>(),
             vec![(42, 2, BackgroundPendingState::Waiting)]
+        );
+    }
+
+    /// 给轮询注入的假进程表：按 pid 给死活，记下被读了几次；`during` 在每次读的时候跑
+    /// （模拟采样期间连接上又来了事件、pid 变了）。
+    struct CountingReader {
+        probes: std::collections::BTreeMap<u32, crate::acp::process_watch::ProcessProbe>,
+        calls: std::sync::atomic::AtomicUsize,
+        during: Box<dyn Fn() + Send + Sync>,
+    }
+
+    impl CountingReader {
+        fn new(
+            probes: &[(u32, crate::acp::process_watch::ProcessProbe)],
+            during: impl Fn() + Send + Sync + 'static,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                probes: probes.iter().copied().collect(),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                during: Box::new(during),
+            })
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl crate::acp::process_watch::ProcReader for CountingReader {
+        fn probe(&self, pid: u32) -> crate::acp::process_watch::ProcessProbe {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            (self.during)();
+            self.probes
+                .get(&pid)
+                .copied()
+                .unwrap_or(crate::acp::process_watch::ProcessProbe::Gone)
+        }
+        fn descendants(&self, _pid: u32) -> Option<Vec<u32>> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(vec![])
+        }
+        fn writers_of(
+            &self,
+            _pids: &[u32],
+            _path: &std::path::Path,
+        ) -> Option<Vec<crate::acp::process_watch::ProcessIdentity>> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(vec![])
+        }
+    }
+
+    /// 一条绑着对话 42、在跑（`Prompting`）、pid 是 `pid` 的连接，事件发到 `broadcaster`。
+    fn watched_connection(
+        id: &str,
+        pid: u32,
+        broadcaster: &Arc<WebEventBroadcaster>,
+    ) -> AgentConnection {
+        let mut conn = fake_connection(id, Some(42));
+        conn.emitter = EventEmitter::test_web_only(broadcaster.clone());
+        conn.child_pid
+            .store(pid, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut state) = conn.state.try_write() {
+            state.status = ConnectionStatus::Prompting;
+        }
+        conn
+    }
+
+    fn background_broadcasts(rx: &mut broadcast::Receiver<WebEvent>) -> Vec<serde_json::Value> {
+        let mut out = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if evt.channel == crate::web::event_bridge::BACKGROUND_PENDING_EVENT {
+                out.push((*evt.payload).clone());
+            }
+        }
+        out
+    }
+
+    fn silence() -> chrono::Duration {
+        chrono::Duration::seconds(1800)
+    }
+
+    /// 完成标准 13：稳定的一次采样发现智能体不在了，广播 `agent_exited` 的「?」，列表里也有；
+    /// 空闲的连接从头到尾一个文件都没读。
+    #[tokio::test]
+    async fn process_watch_reports_an_exited_agent_and_skips_idle_connections() {
+        use crate::acp::process_watch::ProcessProbe;
+        let mgr = ConnectionManager::new();
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let watched = watched_connection("c1", 4242, &broadcaster);
+        // 空闲的连接：pid 非 0，但不在跑也不在等后台。
+        let idle = watched_connection("c2", 4343, &broadcaster);
+        if let Ok(mut state) = idle.state.try_write() {
+            state.status = ConnectionStatus::Connected;
+            state.conversation_id = Some(43);
+        }
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert("c1".into(), watched);
+            map.insert("c2".into(), idle);
+        }
+        let reader = CountingReader::new(&[(4343, ProcessProbe::Alive { start: 1 })], || {});
+        mgr.refresh_process_watch_with(reader.clone(), chrono::Utc::now(), silence())
+            .await;
+
+        let sent = background_broadcasts(&mut rx);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["conversation_id"], 42);
+        assert_eq!(sent[0]["state"], "uncertain");
+        assert_eq!(sent[0]["reason"], "agent_exited");
+        assert_eq!(sent[0]["count"], 0);
+        // 只读了 c1 的一次 stat。
+        assert_eq!(reader.calls(), 1);
+
+        let listed = mgr
+            .list_background_pending_with_uncertain(&broadcaster)
+            .await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].conversation_id, 42);
+        assert_eq!(
+            listed[0].reason,
+            Some(crate::acp::types::BackgroundUncertainReason::AgentExited)
+        );
+
+        // 同样的结论再来一次：不重发。
+        mgr.refresh_process_watch_with(reader.clone(), chrono::Utc::now(), silence())
+            .await;
+        assert!(background_broadcasts(&mut rx).is_empty());
+    }
+
+    /// 完成标准 13：采样期间 `event_seq` 加 1 或 pid 变了，这次观察整个丢掉。
+    #[tokio::test]
+    async fn process_watch_drops_a_sample_that_raced_an_event_or_a_new_pid() {
+        use crate::acp::process_watch::ProcessProbe;
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+
+        // 采样期间来了一个事件。
+        let mgr = ConnectionManager::new();
+        let conn = watched_connection("c1", 4242, &broadcaster);
+        let state = Arc::clone(&conn.state);
+        mgr.connections.lock().await.insert("c1".into(), conn);
+        let reader = CountingReader::new(&[], move || {
+            state.blocking_write().event_seq += 1;
+        });
+        mgr.refresh_process_watch_with(reader.clone(), chrono::Utc::now(), silence())
+            .await;
+        assert_eq!(reader.calls(), 1);
+        assert!(background_broadcasts(&mut rx).is_empty());
+        let s = mgr.get_state("c1").await.unwrap();
+        assert_eq!(
+            s.read().await.process_watch,
+            crate::acp::process_watch::ProcessWatch::default()
+        );
+
+        // 采样期间 pid 变了（刚启动的智能体换了进程）。
+        let mgr = ConnectionManager::new();
+        let conn = watched_connection("c1", 4242, &broadcaster);
+        let cell = Arc::clone(&conn.child_pid);
+        mgr.connections.lock().await.insert("c1".into(), conn);
+        let reader = CountingReader::new(&[(4242, ProcessProbe::Gone)], move || {
+            cell.store(5151, std::sync::atomic::Ordering::SeqCst);
+        });
+        mgr.refresh_process_watch_with(reader.clone(), chrono::Utc::now(), silence())
+            .await;
+        assert_eq!(reader.calls(), 1);
+        assert!(background_broadcasts(&mut rx).is_empty());
+        let s = mgr.get_state("c1").await.unwrap();
+        assert_eq!(
+            s.read().await.process_watch,
+            crate::acp::process_watch::ProcessWatch::default()
         );
     }
 

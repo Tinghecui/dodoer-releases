@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   countUnreadByGroup,
   ensureSeenHydrated,
   isConversationUnread,
   clearConversationUnreadMark,
+  markAllConversationsAccepted,
   markConversationAccepted,
   markConversationSeen,
   markConversationUnread,
@@ -245,5 +246,114 @@ describe("withoutUnreadChange", () => {
     await withoutUnreadChange(before, async () => {})
     const after = conv(21, "pending_review", Date.now())
     expect(isConversationUnread(after, state())).toBe(false)
+  })
+})
+
+describe("markAllConversationsAccepted", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useConversationSeenStore.setState({
+      scope: null,
+      baselineAt: 0,
+      seen: {},
+      markedUnread: {},
+    })
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(T0)
+  })
+  afterEach(() => vi.useRealTimers())
+
+  const state = () => useConversationSeenStore.getState()
+
+  it("clears every unread conversation as of now", () => {
+    ensureSeenHydrated()
+    vi.setSystemTime(T0 + 10_000)
+    markConversationUnread(1)
+    markConversationAccepted(2, iso(T0 + 1_000))
+    const handMarked = conv(1, "in_progress", T0 + 5_000)
+    const seenThenEnded = conv(2, "pending_review", T0 + 20_000)
+    const endedBefore = conv(3, "cancelled", T0 + 15_000)
+    const endedRecently = conv(4, "pending_review", T0 + 30_000)
+    vi.setSystemTime(T0 + 40_000)
+    for (const c of [handMarked, seenThenEnded, endedBefore, endedRecently]) {
+      expect(isConversationUnread(c, state())).toBe(true)
+    }
+
+    markAllConversationsAccepted()
+
+    for (const c of [handMarked, seenThenEnded, endedBefore, endedRecently]) {
+      expect(isConversationUnread(c, state())).toBe(false)
+    }
+    expect(state().seen).toEqual({})
+    expect(state().markedUnread).toEqual({})
+    expect(state().baselineAt).toBe(T0 + 40_000)
+  })
+
+  it("keeps turns that end after the clear unread", () => {
+    vi.setSystemTime(T0 + 40_000)
+    markAllConversationsAccepted()
+    expect(
+      isConversationUnread(conv(5, "pending_review", T0 + 50_000), state())
+    ).toBe(true)
+  })
+
+  it("survives a reload", () => {
+    markConversationUnread(6)
+    vi.setSystemTime(T0 + 40_000)
+    markAllConversationsAccepted()
+    useConversationSeenStore.setState({ scope: null, markedUnread: { "6": 1 } })
+    ensureSeenHydrated()
+    expect(state().baselineAt).toBe(T0 + 40_000)
+    expect(state().markedUnread).toEqual({})
+  })
+})
+
+describe("writes from another window", () => {
+  const KEY = "jenny:conversation-seen:v1:local"
+
+  beforeEach(() => {
+    localStorage.clear()
+    useConversationSeenStore.setState({
+      scope: null,
+      baselineAt: 0,
+      seen: {},
+      markedUnread: {},
+    })
+  })
+
+  const state = () => useConversationSeenStore.getState()
+
+  function writeFromOtherWindow(key: string, data: object) {
+    const newValue = JSON.stringify(data)
+    localStorage.setItem(key, newValue)
+    window.dispatchEvent(new StorageEvent("storage", { key, newValue }))
+  }
+
+  it("reloads the store when the active scope changes elsewhere", () => {
+    markConversationUnread(1)
+    markConversationSeen(2)
+    writeFromOtherWindow(KEY, { baselineAt: 123, seen: {}, markedUnread: {} })
+    expect(state().baselineAt).toBe(123)
+    expect(state().seen).toEqual({})
+    expect(state().markedUnread).toEqual({})
+  })
+
+  it("does not write the old data back on the next action", () => {
+    markConversationUnread(1)
+    writeFromOtherWindow(KEY, { baselineAt: 123, seen: {}, markedUnread: {} })
+    markConversationUnread(9)
+    const stored = JSON.parse(localStorage.getItem(KEY) ?? "{}")
+    expect(stored.baselineAt).toBe(123)
+    expect(Object.keys(stored.markedUnread)).toEqual(["9"])
+  })
+
+  it("ignores other scopes", () => {
+    markConversationUnread(1)
+    writeFromOtherWindow("jenny:conversation-seen:v1:remote-7", {
+      baselineAt: 123,
+      seen: {},
+      markedUnread: {},
+    })
+    expect(state().markedUnread["1"]).toBeGreaterThan(0)
   })
 })

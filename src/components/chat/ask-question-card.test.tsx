@@ -75,7 +75,7 @@ const multi: PendingQuestionState = {
   ],
 }
 
-// Two single-select questions — exercises the tabbed multi-question layout.
+// Two single-select questions, displayed together.
 const twoSingle: PendingQuestionState = {
   question_id: "q-two",
   created_at: "2026-01-01T00:00:00Z",
@@ -103,7 +103,7 @@ const twoSingle: PendingQuestionState = {
   ],
 }
 
-// First question is multi-select — used to assert it does NOT auto-advance.
+// First question allows multiple picks while the second remains visible.
 const twoMultiFirst: PendingQuestionState = {
   question_id: "q-two-multi",
   created_at: "2026-01-01T00:00:00Z",
@@ -132,6 +132,106 @@ const twoMultiFirst: PendingQuestionState = {
 }
 
 describe("AskQuestionCard", () => {
+  const recommendations: PendingQuestionState = {
+    question_id: "recommendations",
+    created_at: single.created_at,
+    questions: [
+      {
+        ...single.questions[0],
+        options: [
+          { label: "Incremental (Recommended)", description: "smaller diffs" },
+          { label: "Rewrite", description: "clean slate" },
+        ],
+      },
+      {
+        ...multi.questions[0],
+        options: [
+          { label: "auth (Recommended)", description: "" },
+          { label: "billing (Recommended)", description: "" },
+          { label: "ui", description: "" },
+        ],
+      },
+      { ...twoSingle.questions[1], id: "unrecommended" },
+    ],
+  }
+
+  it("renders letters, parentheses and advice without preselecting", () => {
+    renderCard(recommendations)
+    expect(screen.getAllByText("A")).toHaveLength(3)
+    expect(screen.getByText("(smaller diffs)")).toBeInTheDocument()
+    expect(screen.getAllByText("⭐ Recommended")).toHaveLength(3)
+    expect(
+      screen.getByText(enMessages.Folder.chat.askQuestion.recommendationHint)
+    ).toBeInTheDocument()
+    for (const control of [
+      ...screen.getAllByRole("radio"),
+      ...screen.getAllByRole("checkbox"),
+    ]) {
+      expect(control).not.toBeChecked()
+    }
+    const option = screen.getByRole("radio", { name: /Incremental/ })
+    fireEvent.click(option)
+    expect(option.closest("label")).toHaveClass("bg-primary/10")
+  })
+
+  it("fills recommendations without submitting, leaves unanswered questions gated, and permits edits", () => {
+    const onAnswer = renderCard(recommendations)
+    fireEvent.click(
+      screen.getByRole("button", { name: "Use all recommendations" })
+    )
+    expect(onAnswer).not.toHaveBeenCalled()
+    expect(screen.getByRole("radio", { name: /Incremental/ })).toBeChecked()
+    expect(screen.getByRole("checkbox", { name: /auth/ })).toBeChecked()
+    expect(screen.getByRole("checkbox", { name: /billing/ })).toBeChecked()
+    expect(screen.getByRole("radio", { name: "P" })).not.toBeChecked()
+    expect(screen.getByRole("button", { name: /Submit/ })).toBeDisabled()
+    fireEvent.click(screen.getByRole("radio", { name: /Rewrite/ }))
+    fireEvent.click(screen.getByRole("checkbox", { name: /billing/ }))
+    fireEvent.click(screen.getByRole("radio", { name: "P" }))
+    fireEvent.click(screen.getByRole("button", { name: /Submit/ }))
+    expect(onAnswer).toHaveBeenCalledWith("recommendations", {
+      answers: [
+        { questionId: "qa", labels: ["Rewrite"] },
+        { questionId: "qb", labels: ["auth (Recommended)"] },
+        { questionId: "unrecommended", labels: ["P"] },
+      ],
+      declined: false,
+    })
+    expect(
+      screen.getByRole("button", { name: "Use all recommendations" })
+    ).toBeDisabled()
+  })
+
+  it("replaces custom answers only for questions with recommendations", () => {
+    renderCard(recommendations)
+    const other = screen.getAllByRole("radio", {
+      name: "None fit, write my own",
+    })
+    fireEvent.click(other[0])
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "custom first" },
+    })
+    fireEvent.click(other[1])
+    fireEvent.change(screen.getAllByRole("textbox")[1], {
+      target: { value: "custom last" },
+    })
+    fireEvent.click(
+      screen.getByRole("button", { name: "Use all recommendations" })
+    )
+    expect(screen.queryByDisplayValue("custom first")).not.toBeInTheDocument()
+    expect(screen.getByDisplayValue("custom last")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Submit/ })).toBeEnabled()
+  })
+
+  it("disables bulk selection when no option is recommended", () => {
+    renderCard(single)
+    expect(
+      screen.getByRole("button", { name: "Use all recommendations" })
+    ).toBeDisabled()
+    expect(screen.queryByText("⭐ Recommended")).not.toBeInTheDocument()
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+  })
+
   it("submits a single-select choice keyed by question id", () => {
     const onAnswer = renderCard(single)
     fireEvent.click(screen.getByRole("radio", { name: /Incremental/ }))
@@ -209,9 +309,9 @@ describe("AskQuestionCard", () => {
     })
     expect(screen.getAllByRole("radio")).toHaveLength(2)
     expect(
-      screen.queryByRole("radio", { name: "Other" })
+      screen.queryByRole("radio", { name: "None fit, write my own" })
     ).not.toBeInTheDocument()
-    expect(screen.queryByText("Other")).not.toBeInTheDocument()
+    expect(screen.queryByText("None fit, write my own")).not.toBeInTheDocument()
     expect(
       screen.queryByPlaceholderText("Type your answer…")
     ).not.toBeInTheDocument()
@@ -238,9 +338,9 @@ describe("AskQuestionCard", () => {
     })
     expect(screen.getAllByRole("checkbox")).toHaveLength(3)
     expect(
-      screen.queryByRole("checkbox", { name: "Other" })
+      screen.queryByRole("checkbox", { name: "None fit, write my own" })
     ).not.toBeInTheDocument()
-    expect(screen.queryByText("Other")).not.toBeInTheDocument()
+    expect(screen.queryByText("None fit, write my own")).not.toBeInTheDocument()
     expect(
       screen.queryByPlaceholderText("Type your answer…")
     ).not.toBeInTheDocument()
@@ -248,7 +348,9 @@ describe("AskQuestionCard", () => {
 
   it("submits the typed Other text as the answer label", () => {
     const onAnswer = renderCard(single)
-    fireEvent.click(screen.getByRole("radio", { name: "Other" }))
+    fireEvent.click(
+      screen.getByRole("radio", { name: "None fit, write my own" })
+    )
     fireEvent.change(screen.getByPlaceholderText("Type your answer…"), {
       target: { value: "a third way" },
     })
@@ -262,7 +364,9 @@ describe("AskQuestionCard", () => {
   it("single-select Other replaces a prior option choice", () => {
     const onAnswer = renderCard(single)
     fireEvent.click(screen.getByRole("radio", { name: /Incremental/ }))
-    fireEvent.click(screen.getByRole("radio", { name: "Other" }))
+    fireEvent.click(
+      screen.getByRole("radio", { name: "None fit, write my own" })
+    )
     fireEvent.change(screen.getByPlaceholderText("Type your answer…"), {
       target: { value: "custom" },
     })
@@ -325,7 +429,9 @@ describe("AskQuestionCard", () => {
 
   it("skips with a declined answer", () => {
     const onAnswer = renderCard(single)
-    fireEvent.click(screen.getByRole("button", { name: "Skip" }))
+    fireEvent.click(
+      screen.getByRole("button", { name: "Skip, let the agent decide" })
+    )
     expect(onAnswer).toHaveBeenCalledWith("q-1", {
       answers: [],
       declined: true,
@@ -340,7 +446,9 @@ describe("AskQuestionCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Submit" }))
     expect(onAnswer).toHaveBeenCalledTimes(1)
     expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Skip" })).toBeDisabled()
+    expect(
+      screen.getByRole("button", { name: "Skip, let the agent decide" })
+    ).toBeDisabled()
     expect(screen.getByRole("radio", { name: /Incremental/ })).toBeDisabled()
     expect(container.querySelector(".animate-spin")).not.toBeNull()
     d.resolve()
@@ -374,7 +482,9 @@ describe("AskQuestionCard", () => {
     expect(alert).toHaveTextContent("Couldn't submit. Please try again.")
     const submit = screen.getByRole("button", { name: "Submit" })
     expect(submit).not.toBeDisabled()
-    expect(screen.getByRole("button", { name: "Skip" })).not.toBeDisabled()
+    expect(
+      screen.getByRole("button", { name: "Skip, let the agent decide" })
+    ).not.toBeDisabled()
     fireEvent.click(submit)
     expect(onAnswer).toHaveBeenCalledTimes(2)
   })
@@ -475,79 +585,50 @@ describe("AskQuestionCard", () => {
     })
   })
 
-  it("renders one tab per question when there are multiple", () => {
+  it("shows every question numbered, with no tabs or Next action", () => {
     renderCard(twoSingle)
-    expect(screen.getAllByRole("tab")).toHaveLength(2)
-  })
-
-  it("auto-advances to the next tab after a single-select pick", () => {
-    renderCard(twoSingle)
-    expect(screen.getAllByRole("tab")[0]).toHaveAttribute(
-      "aria-selected",
-      "true"
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument()
+    expect(screen.getByText("First question?").parentElement).toHaveTextContent(
+      "1. First question?"
     )
-    // Picking an option on the first tab moves to the second.
-    fireEvent.click(screen.getByRole("radio", { name: "X" }))
-    const tabs = screen.getAllByRole("tab")
-    expect(tabs[1]).toHaveAttribute("aria-selected", "true")
-    expect(tabs[0]).toHaveAttribute("aria-selected", "false")
-    // The second tab's options are now the visible ones.
-    expect(screen.getByText("P")).toBeInTheDocument()
-  })
-
-  it("does not auto-advance on a multi-select pick", () => {
-    renderCard(twoMultiFirst)
-    fireEvent.click(screen.getByRole("checkbox", { name: "X" }))
-    // Still on the first tab so further options can be picked.
-    expect(screen.getAllByRole("tab")[0]).toHaveAttribute(
-      "aria-selected",
-      "true"
-    )
-    expect(screen.getByText("Y")).toBeInTheDocument()
-  })
-
-  it("marks a tab as confirmed once it is answered", () => {
-    renderCard(twoSingle)
-    expect(screen.getAllByRole("tab")[0]).toHaveAttribute(
-      "data-answered",
-      "false"
-    )
-    fireEvent.click(screen.getByRole("radio", { name: "X" }))
-    expect(screen.getAllByRole("tab")[0]).toHaveAttribute(
-      "data-answered",
-      "true"
-    )
-  })
-
-  it("advances the active tab with the Next button", () => {
-    renderCard(twoSingle)
-    expect(screen.getAllByRole("tab")[0]).toHaveAttribute(
-      "aria-selected",
-      "true"
-    )
-    fireEvent.click(screen.getByRole("button", { name: /Next/ }))
-    const tabs = screen.getAllByRole("tab")
-    expect(tabs[1]).toHaveAttribute("aria-selected", "true")
-    // The last tab has no further tab, so Next is gone.
+    expect(
+      screen.getByText("Second question?").parentElement
+    ).toHaveTextContent("2. Second question?")
+    expect(screen.getAllByText("Select one")).toHaveLength(2)
     expect(
       screen.queryByRole("button", { name: /Next/ })
     ).not.toBeInTheDocument()
   })
 
+  it("keeps both questions visible after a single-select pick", () => {
+    renderCard(twoSingle)
+    fireEvent.click(screen.getByRole("radio", { name: "X" }))
+    expect(screen.getByRole("radio", { name: "X" })).toBeChecked()
+    expect(screen.getByRole("radio", { name: "P" })).toBeVisible()
+  })
+
+  it("keeps multi-select and the following question visible", () => {
+    renderCard(twoMultiFirst)
+    fireEvent.click(screen.getByRole("checkbox", { name: "X" }))
+    expect(screen.getByText("Y")).toBeInTheDocument()
+    expect(screen.getByRole("radio", { name: "P" })).toBeVisible()
+    expect(screen.getByText("Select one or more")).toBeInTheDocument()
+  })
+
   it("shows a progress counter that advances as questions are answered", () => {
     renderCard(twoSingle)
     expect(screen.getByText("0/2")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("radio", { name: "X" })) // auto-advances
+    fireEvent.click(screen.getByRole("radio", { name: "X" }))
     expect(screen.getByText("1/2")).toBeInTheDocument()
     fireEvent.click(screen.getByRole("radio", { name: "P" }))
     expect(screen.getByText("2/2")).toBeInTheDocument()
   })
 
-  it("enables Submit only after every tab is answered, then submits all", () => {
+  it("enables Submit only after every question is answered, then submits all", () => {
     const onAnswer = renderCard(twoSingle)
     const submit = screen.getByRole("button", { name: /Submit/ })
     expect(submit).toBeDisabled()
-    // Answer tab 1 (auto-advances to tab 2), then answer tab 2.
+    // Answer the two questions independently.
     fireEvent.click(screen.getByRole("radio", { name: "X" }))
     expect(screen.getByRole("button", { name: /Submit/ })).toBeDisabled()
     fireEvent.click(screen.getByRole("radio", { name: "P" }))
@@ -582,7 +663,8 @@ describe("AskQuestionCard", () => {
     )
     // No stale selection carries over: the new set renders fresh and ungated.
     expect(screen.queryByText("Incremental")).not.toBeInTheDocument()
-    expect(screen.getAllByRole("tab")).toHaveLength(2)
+    expect(screen.getByRole("radio", { name: "X" })).toBeVisible()
+    expect(screen.getByRole("radio", { name: "P" })).toBeVisible()
     expect(screen.getByRole("button", { name: /Submit/ })).toBeDisabled()
   })
 
@@ -621,8 +703,7 @@ describe("AskQuestionCard collapse", () => {
     // collapsed blocking question must not read as a dismissed one.
     expect(screen.getByText("The agent needs your input")).toBeInTheDocument()
     expect(screen.getByText("0/2")).toBeInTheDocument()
-    // The tab strip goes with the body.
-    expect(screen.queryByRole("tab")).not.toBeInTheDocument()
+    expect(screen.queryByText("First question?")).not.toBeInTheDocument()
   })
 
   it("reports the collapsed state on the toggle", () => {

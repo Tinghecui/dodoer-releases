@@ -187,18 +187,27 @@ function detectedService(
 }
 
 describe("FileWorkspaceTabBar close all", () => {
-  it("uses the existing close-all action from the tab row", () => {
-    const { container } = renderStrip()
-    const button = screen.getByRole("button", { name: "Close All" })
-    expect(container.querySelector("[data-file-tabs-close-all]")).toBe(button)
-    fireEvent.click(button)
-    expect(mocks.closeAllFileTabs).toHaveBeenCalledTimes(1)
-  })
-
-  it("does not render a close-all button without files", () => {
-    mocks.fileTabs = []
+  it("has no close-all button in the tab row", () => {
     const { container } = renderStrip()
     expect(container.querySelector("[data-file-tabs-close-all]")).toBeNull()
+    expect(screen.queryByRole("button", { name: "Close All" })).toBeNull()
+  })
+
+  it("keeps close, close others and close all in the tab's context menu", async () => {
+    mocks.fileTabs = [fileTab("/repo/a.ts"), fileTab("/repo/b.ts")]
+    renderStrip()
+    await act(async () => {
+      fireEvent.contextMenu(screen.getAllByRole("tab")[0])
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(screen.getByRole("menuitem", { name: "Close" })).toBeInTheDocument()
+    expect(
+      screen.getByRole("menuitem", { name: "Close Others" })
+    ).toBeInTheDocument()
+    await act(async () => {
+      screen.getByRole("menuitem", { name: "Close All" }).click()
+    })
+    expect(mocks.closeAllFileTabs).toHaveBeenCalledTimes(1)
   })
 })
 

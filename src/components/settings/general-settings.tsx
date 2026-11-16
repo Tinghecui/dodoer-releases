@@ -42,6 +42,7 @@ import type { AvailableTerminalShells, TerminalShellOption } from "@/lib/types"
 import { usePlatform } from "@/hooks/use-platform"
 import { relaunchApp } from "@/lib/updater"
 import { toErrorMessage } from "@/lib/app-error"
+import { ClearUnreadSettingsSection } from "@/components/settings/clear-unread-settings"
 import { CloseBehaviorSettingsSection } from "@/components/settings/close-behavior-settings"
 import { CrashReportSettingsSection } from "@/components/settings/crash-report-settings"
 import { DesktopNotificationSettingsSection } from "@/components/settings/desktop-notification-settings"
@@ -518,6 +519,8 @@ export function GeneralSettings() {
             )}
           </SettingsSection>
         )}
+
+        <ClearUnreadSettingsSection />
 
         <MentionPanelSettingsSection />
 

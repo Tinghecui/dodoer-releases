@@ -103,11 +103,15 @@ export function compareByPinnedAtDesc(
  * activity (`updated_at`) first.
  */
 export function compareByAttention(
-  isUnread: (conv: DbConversationSummary) => boolean
+  isUnread: (conv: DbConversationSummary) => boolean,
+  byTime: (
+    a: DbConversationSummary,
+    b: DbConversationSummary
+  ) => number = compareByUpdatedAtDesc
 ): (a: DbConversationSummary, b: DbConversationSummary) => number {
   const band = (conv: DbConversationSummary) =>
     conv.status === "in_progress" ? 0 : isUnread(conv) ? 1 : 2
-  return (a, b) => band(a) - band(b) || compareByUpdatedAtDesc(a, b)
+  return (a, b) => band(a) - band(b) || byTime(a, b)
 }
 
 /**
@@ -247,7 +251,8 @@ export function groupByFolderWithReuse(
   filtered: readonly DbConversationSummary[],
   sortMode: SidebarSortMode,
   prev: Map<number, DbConversationSummary[]>,
-  childToParent?: ReadonlyMap<number, number>
+  childToParent?: ReadonlyMap<number, number>,
+  isUnread: (conv: DbConversationSummary) => boolean = () => false
 ): Map<number, DbConversationSummary[]> {
   const next = new Map<number, DbConversationSummary[]>()
   for (const conv of filtered) {
@@ -257,11 +262,13 @@ export function groupByFolderWithReuse(
     else next.set(groupId, [conv])
   }
 
-  const byTime =
+  const byAttention = compareByAttention(
+    isUnread,
     sortMode === "updated" ? compareByUpdatedAtDesc : compareByCreatedAtDesc
+  )
   // jenny fork: a folder's Loop conversation stays on top of its folder.
   const comparator = (a: DbConversationSummary, b: DbConversationSummary) =>
-    Number(b.kind === "loop") - Number(a.kind === "loop") || byTime(a, b)
+    Number(b.kind === "loop") - Number(a.kind === "loop") || byAttention(a, b)
   for (const [folderId, list] of next) {
     list.sort(comparator)
     const prevList = prev.get(folderId)
@@ -302,6 +309,22 @@ export function selectPinnedWithReuse(
 }
 
 /**
+ * Whether "Show completed" being off hides `conv` from the sidebar. A
+ * conversation waiting on the user (`isAwaiting`: a question, a permission, a
+ * plan approval) never hides, even when marked completed: the bell's yellow
+ * count must always lead to a row to answer from. Once the wait ends, the
+ * completed row hides again as before. Every section that honours
+ * `showCompleted` goes through this, so they all agree.
+ */
+export function hiddenAsCompleted(
+  conv: DbConversationSummary,
+  showCompleted: boolean,
+  isAwaiting: (conv: DbConversationSummary) => boolean
+): boolean {
+  return !showCompleted && conv.status === "completed" && !isAwaiting(conv)
+}
+
+/**
  * Select the folderless "chat mode" conversations (`kind === "chat"`) for the
  * flat "Chat" sidebar section. Sorted most-recently-updated first whatever the
  * sidebar's `sortMode` says, and labelled with that same stamp (see
@@ -309,21 +332,23 @@ export function selectPinnedWithReuse(
  * {@link selectPinnedWithReuse}).
  *
  * Excludes pinned conversations (they surface in the Pinned section, an explicit
- * override) and — unless `showCompleted` — completed ones, matching how
- * `folderConversations` is filtered for the folders section.
+ * override) and — unless `showCompleted` — completed ones not waiting on the
+ * user ({@link hiddenAsCompleted}), matching how `folderConversations` is
+ * filtered for the folders section.
  *
  * `prev` is the array returned last call (threaded via a ref by the caller).
  */
 export function selectChatConversationsWithReuse(
   conversations: readonly DbConversationSummary[],
   showCompleted: boolean,
-  prev: DbConversationSummary[]
+  prev: DbConversationSummary[],
+  isAwaiting: (conv: DbConversationSummary) => boolean = () => false
 ): DbConversationSummary[] {
   const next: DbConversationSummary[] = []
   for (const conv of conversations) {
     if (conv.pinned_at != null) continue
     if (conv.kind !== "chat") continue
-    if (!showCompleted && conv.status === "completed") continue
+    if (hiddenAsCompleted(conv, showCompleted, isAwaiting)) continue
     next.push(conv)
   }
   next.sort(compareByUpdatedAtDesc)
@@ -340,7 +365,8 @@ export function selectChatConversationsWithReuse(
  * - Pinned conversations are excluded. They already have a dedicated top
  *   section, and a Recent copy would be a second row for the same conversation
  *   two sections apart.
- * - Completed ones follow `showCompleted`, like every other section.
+ * - Completed ones follow `showCompleted`, like every other section — unless
+ *   they wait on the user ({@link hiddenAsCompleted}).
  * - A folder conversation is included only when its folder is OPEN
  *   (`openFolderIds`). `list_all_conversations` returns rows for every
  *   non-deleted folder — open or not — and the Folders section silently drops
@@ -371,12 +397,13 @@ export function selectRecentConversationsWithReuse(
   openFolderIds: ReadonlySet<number>,
   prev: DbConversationSummary[],
   filter: SidebarRecentFilter = "all",
-  isUnread: (conv: DbConversationSummary) => boolean = () => false
+  isUnread: (conv: DbConversationSummary) => boolean = () => false,
+  isAwaiting: (conv: DbConversationSummary) => boolean = () => false
 ): DbConversationSummary[] {
   const next: DbConversationSummary[] = []
   for (const conv of conversations) {
     if (conv.pinned_at != null) continue
-    if (!showCompleted && conv.status === "completed") continue
+    if (hiddenAsCompleted(conv, showCompleted, isAwaiting)) continue
     const isChat = conv.kind === "chat"
     if (!isChat && !openFolderIds.has(conv.folder_id)) continue
     // The user's "just chats" / "just folder sessions" narrowing. Same split

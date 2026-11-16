@@ -131,6 +131,7 @@ import {
   formatRelative,
   groupByFolderWithReuse,
   headerIndexForFolder,
+  hiddenAsCompleted,
   mergeChildrenById,
   nextHeaderAfter,
   pointerYToTargetIndex,
@@ -159,6 +160,10 @@ import {
   isConversationUnread,
   useConversationSeenStore,
 } from "@/stores/conversation-seen-store"
+import {
+  awaitingUserFor,
+  useAwaitingUserStore,
+} from "@/stores/awaiting-user-store"
 import { ConversationManageDialog } from "./conversation-manage-dialog"
 import { openConversationTagsManager } from "./conversation-tags-manager"
 import {
@@ -1446,6 +1451,24 @@ export function SidebarConversationList({
     [conversations, tagFilter, tagFilterActive]
   )
 
+  // Sessions parked on the user (the bell's yellow count). "Show completed"
+  // off never hides one of these — see `hiddenAsCompleted`. Same test as the
+  // bell (`awaitingUserFor`): a live connection's prompt, or the task engine's
+  // headless merge / run waiting on the user (#167). The store hands back the
+  // same map / set when nothing changed, so this stays stable between
+  // unrelated events.
+  const awaitingState = useAwaitingUserStore(
+    useShallow((s) => ({
+      bySession: s.bySession,
+      byTaskConversation: s.byTaskConversation,
+    }))
+  )
+  const isAwaiting = useCallback(
+    (conv: DbConversationSummary) =>
+      awaitingUserFor(awaitingState, conv.external_id, conv.id) != null,
+    [awaitingState]
+  )
+
   // Folder grouping source: pinned conversations are surfaced in the dedicated
   // Pinned section, and folderless chat conversations in the dedicated Chat
   // section, so exclude both here; then apply the completed filter as before.
@@ -1454,8 +1477,8 @@ export function SidebarConversationList({
       (c) => c.pinned_at == null && c.kind !== "chat"
     )
     if (showCompleted) return base
-    return base.filter((c) => c.status !== "completed")
-  }, [shownConversations, showCompleted])
+    return base.filter((c) => !hiddenAsCompleted(c, showCompleted, isAwaiting))
+  }, [shownConversations, showCompleted, isAwaiting])
 
   // Flat "Chat" bucket: folderless chat-mode conversations, most-recently-updated
   // first, with reference reuse (so an unrelated status event doesn't rebuild it
@@ -1465,11 +1488,12 @@ export function SidebarConversationList({
     const next = selectChatConversationsWithReuse(
       shownConversations,
       showCompleted,
-      chatConvsRef.current
+      chatConvsRef.current,
+      isAwaiting
     )
     chatConvsRef.current = next
     return next
-  }, [shownConversations, showCompleted])
+  }, [shownConversations, showCompleted, isAwaiting])
 
   // Pinned bucket: the FULL conversation list (ignores "Show completed" — a
   // pinned conversation stays visible regardless), sorted most-recently-pinned
@@ -1518,11 +1542,19 @@ export function SidebarConversationList({
       openFolderIds,
       recentConvsRef.current,
       recentFilter,
-      isUnread
+      isUnread,
+      isAwaiting
     )
     recentConvsRef.current = next
     return next
-  }, [shownConversations, showCompleted, openFolderIds, recentFilter, isUnread])
+  }, [
+    shownConversations,
+    showCompleted,
+    openFolderIds,
+    recentFilter,
+    isUnread,
+    isAwaiting,
+  ])
 
   // Maps each open worktree child folder → its (open) root folder. A child is
   // only redirected when its parent is also open, so a worktree whose root was
@@ -1558,11 +1590,12 @@ export function SidebarConversationList({
       folderConversations,
       sortMode,
       byFolderRef.current,
-      displayChildToParent
+      displayChildToParent,
+      isUnread
     )
     byFolderRef.current = grouped
     return grouped
-  }, [folderConversations, sortMode, displayChildToParent])
+  }, [folderConversations, sortMode, displayChildToParent, isUnread])
 
   // Counts the unfiltered-but-non-pinned conversations per display group, so the
   // empty-hint renderer distinguishes a truly empty folder from one whose rows

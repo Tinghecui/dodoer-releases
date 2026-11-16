@@ -12,6 +12,7 @@ import {
   formatRelative,
   groupByFolderWithReuse,
   headerIndexForFolder,
+  hiddenAsCompleted,
   mergeChildrenById,
   nextHeaderAfter,
   pointerYToTargetIndex,
@@ -322,6 +323,123 @@ describe("groupByFolderWithReuse", () => {
       new Map()
     )
     expect([...withEmpty.keys()].sort((a, b) => a - b)).toEqual([10, 11])
+  })
+  it("orders each folder running, then unread, then the rest", () => {
+    const list = [
+      conv(1, 10),
+      conv(2, 10, { status: "in_progress" }),
+      conv(3, 10),
+      conv(4, 10),
+      conv(5, 10, { status: "completed" }),
+    ]
+    const unread = new Set([1, 3])
+    const grouped = groupByFolderWithReuse(
+      list,
+      "created",
+      new Map(),
+      undefined,
+      (c) => unread.has(c.id)
+    )
+    expect(grouped.get(10)!.map((c) => c.id)).toEqual([2, 3, 1, 5, 4])
+  })
+
+  it("puts a running unread conversation in the running band", () => {
+    const list = [
+      conv(1, 10, { status: "in_progress" }),
+      conv(2, 10, { status: "in_progress" }),
+      conv(3, 10),
+    ]
+    const unread = new Set([1, 3])
+    const grouped = groupByFolderWithReuse(
+      list,
+      "created",
+      new Map(),
+      undefined,
+      (c) => unread.has(c.id)
+    )
+    expect(grouped.get(10)!.map((c) => c.id)).toEqual([2, 1, 3])
+  })
+
+  describe("orders within a band by the sidebar sort mode", () => {
+    const at = (ms: number) => new Date(1_700_000_000_000 + ms).toISOString()
+    const list = [
+      conv(1, 10, { updated_at: at(9 * MINUTE) }),
+      conv(2, 10, { updated_at: at(8 * MINUTE) }),
+      conv(3, 10, { updated_at: at(7 * MINUTE) }),
+      conv(4, 10, { updated_at: at(1 * MINUTE) }),
+    ]
+    const unread = new Set([1, 2])
+    const order = (mode: "created" | "updated") =>
+      groupByFolderWithReuse(list, mode, new Map(), undefined, (c) =>
+        unread.has(c.id)
+      )
+        .get(10)!
+        .map((c) => c.id)
+
+    it("newest created first in created mode", () => {
+      expect(order("created")).toEqual([2, 1, 4, 3])
+    })
+
+    it("newest activity first in updated mode", () => {
+      expect(order("updated")).toEqual([1, 2, 3, 4])
+    })
+  })
+
+  it("keeps a Loop conversation on top of its folder above every band", () => {
+    const list = [
+      conv(1, 10, { kind: "loop" }),
+      conv(2, 10, { status: "in_progress" }),
+      conv(3, 10),
+    ]
+    const grouped = groupByFolderWithReuse(
+      list,
+      "created",
+      new Map(),
+      undefined,
+      (c) => c.id === 3
+    )
+    expect(grouped.get(10)!.map((c) => c.id)).toEqual([1, 2, 3])
+  })
+
+  it("refreshes only the folder whose read state changed", () => {
+    const a1 = conv(1, 10)
+    const a2 = conv(2, 10)
+    const b1 = conv(3, 20)
+    const b2 = conv(4, 20)
+    const list = [a1, a2, b1, b2]
+    const unread = new Set([1, 3])
+    const first = groupByFolderWithReuse(
+      list,
+      "created",
+      new Map(),
+      undefined,
+      (c) => unread.has(c.id)
+    )
+    expect(first.get(10)!.map((c) => c.id)).toEqual([1, 2])
+
+    unread.delete(1)
+    const second = groupByFolderWithReuse(
+      list,
+      "created",
+      first,
+      undefined,
+      (c) => unread.has(c.id)
+    )
+    expect(second.get(10)!.map((c) => c.id)).toEqual([2, 1])
+    expect(second.get(10)).not.toBe(first.get(10))
+    expect(second.get(20)).toBe(first.get(20))
+  })
+
+  it("refreshes only the folder whose conversation started running", () => {
+    const a1 = conv(1, 10)
+    const a2 = conv(2, 10)
+    const b1 = conv(3, 20)
+    const first = groupByFolderWithReuse([a1, a2, b1], "created", new Map())
+    const a1Running = { ...a1, status: "in_progress" }
+    const second = groupByFolderWithReuse([a1Running, a2, b1], "created", first)
+    expect(second.get(10)!.map((c) => c.id)).toEqual([1, 2])
+    expect(second.get(10)).not.toBe(first.get(10))
+    expect(second.get(20)).toBe(first.get(20))
   })
 })
 
@@ -1499,6 +1617,23 @@ describe("selectChatConversationsWithReuse", () => {
     ).toEqual([1, 2])
   })
 
+  it("keeps a completed chat that waits on the user, until the wait ends", () => {
+    const done = conv(1, 99, { kind: "chat", status: "completed" })
+    const waiting = new Set([1])
+    const isAwaiting = (c: DbConversationSummary) => waiting.has(c.id)
+    const first = selectChatConversationsWithReuse(
+      [done],
+      false,
+      [],
+      isAwaiting
+    )
+    expect(first.map((c) => c.id)).toEqual([1])
+    waiting.clear()
+    expect(
+      selectChatConversationsWithReuse([done], false, first, isAwaiting)
+    ).toEqual([])
+  })
+
   it("returns the prev array when membership is referentially unchanged", () => {
     const a = conv(1, 99, { kind: "chat" })
     const first = selectChatConversationsWithReuse([a], true, [])
@@ -1598,6 +1733,42 @@ describe("selectRecentConversationsWithReuse", () => {
     ).toEqual([2, 1])
   })
 
+  it("keeps a completed conversation that waits on the user, until the wait ends", () => {
+    const doneWaiting = conv(1, 10, { status: "completed" })
+    const doneIdle = conv(2, 10, { status: "completed" })
+    const doneChat = conv(3, 99, { kind: "chat", status: "completed" })
+    const waiting = new Set([1, 3])
+    const isAwaiting = (c: DbConversationSummary) => waiting.has(c.id)
+    const pick = () =>
+      selectRecentConversationsWithReuse(
+        [doneWaiting, doneIdle, doneChat],
+        false,
+        open,
+        [],
+        "all",
+        () => false,
+        isAwaiting
+      ).map((c) => c.id)
+    expect(pick()).toEqual([3, 1])
+    waiting.clear()
+    expect(pick()).toEqual([])
+  })
+
+  it("still drops a waiting conversation whose folder is closed", () => {
+    const closed = conv(1, 77, { status: "completed" })
+    expect(
+      selectRecentConversationsWithReuse(
+        [closed],
+        false,
+        open,
+        [],
+        "all",
+        () => false,
+        () => true
+      )
+    ).toEqual([])
+  })
+
   it("orders by last activity, not by creation time", () => {
     // A session created long ago but touched this morning must outrank one
     // created moments ago and left alone: that is what "Recent" means.
@@ -1636,6 +1807,24 @@ describe("selectRecentConversationsWithReuse", () => {
     const first = selectRecentConversationsWithReuse([a], true, open, [])
     const second = selectRecentConversationsWithReuse([a], true, open, first)
     expect(second).toBe(first)
+  })
+})
+
+describe("hiddenAsCompleted", () => {
+  const no = () => false
+  const yes = () => true
+
+  it("hides a completed conversation only while Show completed is off", () => {
+    const done = conv(1, 10, { status: "completed" })
+    expect(hiddenAsCompleted(done, false, no)).toBe(true)
+    expect(hiddenAsCompleted(done, true, no)).toBe(false)
+    expect(hiddenAsCompleted(conv(2, 10), false, no)).toBe(false)
+  })
+
+  it("never hides a conversation waiting on the user", () => {
+    expect(
+      hiddenAsCompleted(conv(1, 10, { status: "completed" }), false, yes)
+    ).toBe(false)
   })
 })
 
@@ -2126,6 +2315,34 @@ describe("buildRows — folder paging", () => {
       kind: "conversation",
       conversation: { id: 104 },
     })
+  })
+
+  it("lists an old unread session on the folder's first page", () => {
+    const list = Array.from({ length: 7 }, (_, i) => conv(300 + i, 3))
+    const byFolder = groupByFolderWithReuse(
+      list,
+      "created",
+      new Map(),
+      undefined,
+      (c) => c.id === 300
+    )
+    const rows = buildRows({
+      pinned: [],
+      pinnedExpanded: true,
+      orderedFolderIds: [3],
+      byFolder,
+      folderExpanded: {},
+      folderTotalCounts: new Map([[3, 7]]),
+      foldersExpanded: true,
+      chatConversations: [],
+      chatsExpanded: true,
+      folderPageSize: FOLDER_PAGE_SIZE,
+    })
+    const shown = rows.flatMap((r) =>
+      r.kind === "conversation" ? [r.conversation.id] : []
+    )
+    expect(shown).toHaveLength(FOLDER_PAGE_SIZE)
+    expect(shown[0]).toBe(300)
   })
 
   it("honours a per-folder limit and retires the footer when all are out", () => {

@@ -31,6 +31,10 @@ import {
 } from "@/stores/app-workspace-store"
 import enMessages from "@/i18n/messages/en.json"
 import {
+  useAwaitingUserStore,
+  type AwaitingUserKind,
+} from "@/stores/awaiting-user-store"
+import {
   resetFolderTabsStore,
   useFolderTabsStore,
 } from "@/stores/folder-tabs-store"
@@ -2714,5 +2718,110 @@ describe("SidebarConversationList — folder header and folder-tabs mode", () =>
       before === "true" ? "false" : "true"
     )
     expect(useFolderTabsStore.getState().scope).toBe(1)
+  })
+})
+
+describe("SidebarConversationList — completed but waiting on the user", () => {
+  // dodoer #315: the bell's yellow count must always lead to a row to answer
+  // from. With "Show completed" off, a completed conversation whose agent is
+  // parked on a permission stays in every section that would hold it —
+  // Folders, Chat and Recent — and hides again once the wait ends. Both of
+  // the bell's sources count: a live connection (`bySession`) and the task
+  // engine's headless session (`byTaskConversation`, #167).
+  function waitingTree(showRecent: boolean) {
+    return (
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <SidebarConversationList
+          showCompleted={false}
+          showRecent={showRecent}
+          sortMode="created"
+        />
+      </NextIntlClientProvider>
+    )
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+    const folders = [folder(1, "Repo")]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: [
+        conv(21, 1, { status: "completed", external_id: "folder-wait" }),
+        conv(22, 99, {
+          kind: "chat",
+          status: "completed",
+          external_id: "chat-wait",
+        }),
+        conv(23, 1, { status: "completed", external_id: "idle" }),
+        conv(24, 1),
+        // A headless task run parked on the user: no connection, only the
+        // task list's conversation id.
+        conv(25, 1, { status: "completed", external_id: "task-wait" }),
+      ],
+    })
+    useAwaitingUserStore.setState({
+      bySession: new Map<string, AwaitingUserKind>([
+        ["folder-wait", "permission"],
+        ["chat-wait", "permission"],
+      ]),
+      byTaskConversation: new Set([25]),
+    })
+  })
+  afterEach(() => {
+    useAwaitingUserStore.setState({
+      bySession: new Map(),
+      byTaskConversation: new Set(),
+    })
+  })
+  const stopWaiting = () =>
+    act(() => {
+      useAwaitingUserStore.setState({
+        bySession: new Map(),
+        byTaskConversation: new Set(),
+      })
+    })
+
+  const rowsOf = (id: number) =>
+    document.querySelectorAll(`[data-conversation-id="${id}"]`)
+
+  it("keeps the folder row and the chat row, each with its yellow mark", () => {
+    render(waitingTree(false))
+    expect(rowsOf(21)).toHaveLength(1)
+    expect(rowsOf(22)).toHaveLength(1)
+    expect(rowsOf(25)).toHaveLength(1)
+    // Completed and not waiting: hidden as before.
+    expect(rowsOf(23)).toHaveLength(0)
+    expect(rowsOf(24)).toHaveLength(1)
+    for (const id of ["21", "22", "25"]) {
+      const card = document
+        .querySelector(`[data-conversation-id="${id}"]`)!
+        .closest("[data-conv-key]")!
+      expect(
+        card.querySelector('[data-awaiting-user="permission"]')
+      ).not.toBeNull()
+    }
+    expect(document.querySelectorAll("[data-awaiting-user]")).toHaveLength(3)
+
+    stopWaiting()
+    expect(rowsOf(21)).toHaveLength(0)
+    expect(rowsOf(22)).toHaveLength(0)
+    expect(rowsOf(25)).toHaveLength(0)
+    expect(rowsOf(24)).toHaveLength(1)
+  })
+
+  it("keeps the Recent copy too, and drops it once the wait ends", () => {
+    render(waitingTree(true))
+    // Canonical row (Folders / Chat) + the Recent copy.
+    expect(rowsOf(21)).toHaveLength(2)
+    expect(rowsOf(22)).toHaveLength(2)
+    expect(rowsOf(25)).toHaveLength(2)
+    expect(rowsOf(23)).toHaveLength(0)
+
+    stopWaiting()
+    expect(rowsOf(21)).toHaveLength(0)
+    expect(rowsOf(22)).toHaveLength(0)
+    expect(rowsOf(25)).toHaveLength(0)
+    expect(rowsOf(24)).toHaveLength(2)
   })
 })

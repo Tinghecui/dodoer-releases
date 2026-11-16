@@ -3,9 +3,7 @@
 import { useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
-  Check,
   ChevronDown,
-  ChevronRight,
   ChevronUp,
   Loader2,
   MessageCircleQuestionMark,
@@ -16,7 +14,6 @@ import { Progress } from "@/components/ui/progress"
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import { splitRecommended } from "@/lib/ask-question"
 import type {
@@ -96,8 +93,6 @@ export function AskQuestionCard({
   const [state, setState] = useState<Record<string, QState>>(() =>
     initialState(questions, initialSelections)
   )
-  // Active tab in the multi-question layout.
-  const [activeId, setActiveId] = useState(() => questions[0]?.id ?? "")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(false)
   // Synchronous guard against a double-submit before `submitting` re-renders.
@@ -122,26 +117,13 @@ export function AskQuestionCard({
   )
   const complete = answeredCount === questions.length
 
-  // Reserve one stable content height for the whole set so switching between a
-  // few-option tab and a many-option tab never resizes the card. Sized to the
-  // tallest question (its option count plus the "Other" row, unless that
-  // question disallows free text),
-  // capped to the viewport; a taller-than-estimated tab scrolls internally.
-  const maxRows = useMemo(
-    () =>
-      questions.reduce(
-        (m, q) =>
-          Math.max(m, q.options.length + (q.allow_other === false ? 0 : 1)),
-        1
-      ),
-    [questions]
+  const hasRecommendations = questions.some((q) =>
+    q.options.some((opt) => splitRecommended(opt.label).recommended)
   )
-  const bodyHeight = `min(${maxRows * 4 + 1}rem, 50svh)`
 
   if (question.question_id !== renderedId) {
     setRenderedId(question.question_id)
     setState(initialState(questions, initialSelections))
-    setActiveId(questions[0]?.id ?? "")
     setSubmitting(false)
     setError(false)
     // Collapsed too, and this one is not housekeeping. A replacement set is a
@@ -174,14 +156,26 @@ export function AskQuestionCard({
       // Single-select: picking a real option clears "Other".
       return { ...prev, [q.id]: { ...s, chosen: [label], otherActive: false } }
     })
-    // A single-select pick advances to the next question so a multi-question set
-    // reads as a guided sequence. Multi-select must not jump (you may pick
-    // several); toggling "Other" must not jump (you still need to type).
-    if (!q.multi_select) {
-      const idx = questions.findIndex((x) => x.id === q.id)
-      const next = questions[idx + 1]
-      if (next) setActiveId(next.id)
-    }
+  }
+
+  const useRecommendations = () => {
+    setState((prev) => {
+      const next = { ...prev }
+      for (const q of questions) {
+        const recommended = q.options
+          .filter((opt) => splitRecommended(opt.label).recommended)
+          .map((opt) => opt.label)
+        // Leave questions without advice untouched, including typed answers.
+        if (recommended.length === 0) continue
+        next[q.id] = {
+          ...prev[q.id],
+          chosen: q.multi_select ? recommended : recommended.slice(0, 1),
+          otherActive: false,
+          otherText: prev[q.id]?.otherText ?? "",
+        }
+      }
+      return next
+    })
   }
 
   const toggleOther = (q: QuestionSpec) => {
@@ -219,7 +213,7 @@ export function AskQuestionCard({
   // Single-select picks flow through the shared RadioGroup using index-based
   // radix values ("0", "1", …) so a real option whose label happens to equal the
   // "Other" sentinel can never collide with it. The sentinel turns on free text
-  // (no advance); a real index selects its option by verbatim label + advances.
+  // while a real index selects its option by verbatim label.
   const onRadioChange = (q: QuestionSpec, value: string) => {
     if (value === OTHER_VALUE) {
       // radix never fires this when "Other" is already the value, so toggleOther
@@ -275,14 +269,9 @@ export function AskQuestionCard({
   // The read-only/answered view passes an empty subtitle; with no second line the
   // header row centers the icon, title and count instead of top-aligning them.
   const resolvedSubtitle = subtitle ?? t("subtitle")
-  const activeIndex = questions.findIndex((q) => q.id === activeId)
-  const nextId =
-    activeIndex >= 0 && activeIndex < questions.length - 1
-      ? questions[activeIndex + 1].id
-      : null
 
   // Every control is inert while a live answer is in flight (`submitting`) and in
-  // the read-only/answered view (`readOnly`). Tabs stay navigable in both.
+  // the read-only/answered view (`readOnly`).
   const locked = submitting || readOnly
 
   // A selectable option card: the radix control state colors the card. The
@@ -291,7 +280,7 @@ export function AskQuestionCard({
   // view keeps the selection crisp (no opacity dim) so the answer stands out.
   const cardClass = (selected: boolean) =>
     cn(
-      "flex w-full items-start gap-2.5 rounded-lg border p-2.5 font-normal transition-colors",
+      "flex w-full items-start gap-2 rounded-md border p-2 font-normal transition-colors",
       selected ? "border-primary bg-primary/10" : "border-border/60",
       submitting && "cursor-not-allowed opacity-60",
       readOnly && !submitting && "cursor-default",
@@ -300,29 +289,35 @@ export function AskQuestionCard({
     )
 
   const optionBody = (
+    index: number,
     text: string,
     recommended: boolean,
     description?: string
   ) => (
-    <span className="min-w-0 flex-1">
-      <span className="flex flex-wrap items-center gap-1.5 text-sm font-medium">
-        {text}
+    <span className="flex min-w-0 flex-1 items-start gap-1.5 text-sm">
+      <span
+        aria-hidden="true"
+        className="flex size-5 shrink-0 items-center justify-center rounded border text-xs font-semibold"
+      >
+        {String.fromCharCode(65 + index)}
+      </span>
+      <span aria-hidden="true">•</span>
+      <span className="min-w-0 break-words [overflow-wrap:anywhere]">
+        <span className="font-semibold">{text}</span>
+        {description && (
+          <span className="text-muted-foreground">{` (${description})`}</span>
+        )}
         {recommended && (
-          <Badge variant="secondary" className="text-3xs">
-            {t("recommended")}
-          </Badge>
+          <span className="ms-1.5 text-xs text-muted-foreground">
+            ⭐ {t("recommended")}
+          </span>
         )}
       </span>
-      {description && (
-        <span className="mt-0.5 block text-xs text-muted-foreground">
-          {description}
-        </span>
-      )}
     </span>
   )
 
   // The options + free-text "Other" block for one question, reused by the
-  // single-question layout and each tab panel.
+  // live card and the expanded historical record.
   const renderOptions = (q: QuestionSpec) => {
     const s = state[q.id]
     const otherId = `${q.id}-other`
@@ -367,8 +362,8 @@ export function AskQuestionCard({
 
     if (q.multi_select) {
       return (
-        <div className="space-y-1.5">
-          {q.options.map((opt) => {
+        <div role="group" aria-label={q.question} className="space-y-1.5">
+          {q.options.map((opt, i) => {
             const selected = s?.chosen.includes(opt.label) ?? false
             const { text, recommended } = splitRecommended(opt.label)
             return (
@@ -379,19 +374,19 @@ export function AskQuestionCard({
                   onCheckedChange={() => select(q, opt.label)}
                   className="mt-0.5"
                 />
-                {optionBody(text, recommended, opt.description)}
+                {optionBody(i, text, recommended, opt.description)}
               </Label>
             )
           })}
           {q.allow_other !== false && (
-            <Label className={cardClass(s?.otherActive ?? false)}>
+            <Label className="flex items-center gap-2 py-1 text-xs font-normal text-muted-foreground">
               <Checkbox
                 checked={s?.otherActive ?? false}
                 disabled={locked}
                 onCheckedChange={() => toggleOther(q)}
                 className="mt-0.5"
               />
-              <span className="text-sm font-medium">{t("other")}</span>
+              <span>{t("other")}</span>
             </Label>
           )}
           {q.allow_other !== false && otherInput}
@@ -410,6 +405,7 @@ export function AskQuestionCard({
     return (
       <div className="space-y-1.5">
         <RadioGroup
+          aria-label={q.question}
           value={value}
           onValueChange={(v) => onRadioChange(q, v)}
           disabled={locked}
@@ -427,12 +423,12 @@ export function AskQuestionCard({
                   }}
                   className="mt-0.5 data-[state=checked]:border-primary data-[state=checked]:bg-primary"
                 />
-                {optionBody(text, recommended, opt.description)}
+                {optionBody(i, text, recommended, opt.description)}
               </Label>
             )
           })}
           {q.allow_other !== false && (
-            <Label className={cardClass(s?.otherActive ?? false)}>
+            <Label className="flex items-center gap-2 py-1 text-xs font-normal text-muted-foreground">
               <RadioGroupItem
                 value={OTHER_VALUE}
                 onClick={() => {
@@ -440,7 +436,7 @@ export function AskQuestionCard({
                 }}
                 className="mt-0.5 data-[state=checked]:border-primary data-[state=checked]:bg-primary"
               />
-              <span className="text-sm font-medium">{t("other")}</span>
+              <span>{t("other")}</span>
             </Label>
           )}
         </RadioGroup>
@@ -449,12 +445,15 @@ export function AskQuestionCard({
     )
   }
 
-  const questionHeading = (q: QuestionSpec) => (
-    <div className="flex items-center gap-2">
+  const questionHeading = (q: QuestionSpec, index: number) => (
+    <div className="flex items-start justify-between gap-2">
+      <p className="min-w-0 break-words text-sm font-medium text-foreground/90 [overflow-wrap:anywhere]">
+        <span aria-hidden="true">{index + 1}. </span>
+        <span>{q.question}</span>
+      </p>
       <Badge variant="outline" className="shrink-0 text-3xs">
         {q.multi_select ? t("multiSelect") : t("singleSelect")}
       </Badge>
-      <p className="text-sm text-foreground/90">{q.question}</p>
     </div>
   )
 
@@ -512,6 +511,11 @@ export function AskQuestionCard({
                 {resolvedSubtitle}
               </p>
             )}
+            {!readOnly && !collapsed && (
+              <p className="text-xs text-muted-foreground">
+                {t("recommendationHint")}
+              </p>
+            )}
           </div>
           {isMulti && (
             <span className="shrink-0 self-center text-xs tabular-nums text-muted-foreground">
@@ -540,91 +544,49 @@ export function AskQuestionCard({
           )}
         </div>
 
-        {!collapsed &&
-          (isMulti ? (
-            <Tabs
-              value={activeId}
-              onValueChange={setActiveId}
-              className="flex min-h-0 flex-col gap-2"
-            >
-              <TabsList className="w-full shrink-0">
-                {questions.map((q, i) => {
-                  const done = isAnswered(state[q.id])
-                  return (
-                    <TabsTrigger
-                      key={q.id}
-                      value={q.id}
-                      disabled={submitting}
-                      data-answered={done ? "true" : "false"}
-                      className="min-w-0 gap-1.5 data-[state=active]:bg-background data-[state=active]:shadow-sm data-[answered=true]:text-primary"
-                    >
-                      {done ? (
-                        <Check className="size-3.5 shrink-0 text-primary" />
-                      ) : (
-                        <span className="flex size-4 shrink-0 items-center justify-center rounded-full border border-current text-3xs leading-none">
-                          {i + 1}
-                        </span>
-                      )}
-                      <span className="truncate">{q.header}</span>
-                    </TabsTrigger>
-                  )
-                })}
-              </TabsList>
-              {questions.map((q) => (
-                <TabsContent
-                  key={q.id}
-                  value={q.id}
-                  style={{ height: bodyHeight }}
-                  className="mt-0 flex-none space-y-2.5 overflow-y-auto pr-1"
-                >
-                  {questionHeading(q)}
-                  {renderOptions(q)}
-                </TabsContent>
-              ))}
-            </Tabs>
-          ) : (
-            <div className="min-h-0 space-y-2.5 overflow-y-auto pr-1">
-              {questions.map((q) => (
-                <div key={q.id} className="space-y-2.5">
-                  {questionHeading(q)}
-                  {renderOptions(q)}
-                </div>
-              ))}
-            </div>
-          ))}
+        {!collapsed && (
+          <div className="min-h-0 space-y-4 overflow-y-auto overscroll-contain pr-1">
+            {questions.map((q, i) => (
+              <div key={q.id} className="space-y-2.5">
+                {questionHeading(q, i)}
+                {renderOptions(q)}
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Footer — dropped in the read-only/answered view and while collapsed */}
         {!readOnly && !collapsed && (
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
             <Button
               variant="ghost"
               size="sm"
               onClick={skip}
               disabled={submitting}
+              className="h-auto min-h-8 max-w-full whitespace-normal break-words text-start"
             >
               {t("skip")}
             </Button>
-            <div className="ml-auto flex items-center gap-2">
+            <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
               {error && (
                 <span role="alert" className="text-xs text-destructive">
                   {t("submitError")}
                 </span>
               )}
-              {isMulti && nextId && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setActiveId(nextId)}
-                  disabled={submitting}
-                >
-                  {t("next")}
-                  <ChevronRight className="ml-1 size-3.5" />
-                </Button>
-              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={useRecommendations}
+                disabled={submitting || !hasRecommendations}
+                className="h-auto min-h-8 max-w-full whitespace-normal break-words"
+              >
+                {t("useRecommendations")}
+              </Button>
               <Button
                 size="sm"
                 disabled={!complete || submitting}
                 onClick={submit}
+                className="h-auto min-h-8 max-w-full whitespace-normal break-words"
               >
                 {submitting && (
                   <Loader2 className="mr-1.5 size-3.5 animate-spin" />

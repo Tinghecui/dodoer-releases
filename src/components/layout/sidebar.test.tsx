@@ -324,6 +324,68 @@ describe("Sidebar — fixed nav region", () => {
     useAppWorkspaceStore.setState({ conversations: [], folders: [] })
   })
 
+  it("counts a completed session waiting on the user, the row the list keeps", () => {
+    // dodoer #315: marking a session completed hides it from the list, but not
+    // while it waits on the user — the list keeps that row (see
+    // sidebar-conversation-list.test.tsx, "completed but waiting on the
+    // user"), so the bell's yellow count can include it and still point at a
+    // row the user can find. Both sources count: a live connection and the
+    // task engine's headless session (#167).
+    const row = (c: Partial<DbConversationSummary>) =>
+      ({
+        id: 0,
+        folder_id: 10,
+        title: "session",
+        title_locked: false,
+        agent_type: "claude_code",
+        status: "completed",
+        kind: "regular",
+        model: null,
+        git_branch: null,
+        external_id: null,
+        message_count: 0,
+        child_count: 0,
+        created_at: "2026-01-01",
+        pinned_at: null,
+        updated_at: "2026-01-02",
+        ...c,
+      }) as DbConversationSummary
+    useAppWorkspaceStore.setState({
+      conversations: [
+        row({ id: 1, external_id: "folder-wait" }),
+        row({ id: 2, external_id: "chat-wait", kind: "chat", folder_id: 99 }),
+        row({ id: 3, external_id: "idle" }),
+        row({ id: 4, external_id: "task-wait" }),
+      ],
+      folders: [{ id: 10 }] as FolderDetail[],
+    })
+    act(() => {
+      useAwaitingUserStore.setState({
+        bySession: new Map<string, AwaitingUserKind>([
+          ["folder-wait", "permission"],
+          ["chat-wait", "permission"],
+        ]),
+        byTaskConversation: new Set([4]),
+      })
+    })
+    const { container, unmount } = renderSidebar()
+    const bell = container.querySelector("[data-sidebar-bell]")!
+    expect(
+      bell.querySelector('[data-global-awaiting-count="3"]')
+    ).not.toBeNull()
+    // The list is told to hide completed rows; it still keeps these three.
+    expect(spies.listProps?.showCompleted).toBe(false)
+    act(() => {
+      useAwaitingUserStore.setState({
+        bySession: new Map(),
+        byTaskConversation: new Set(),
+      })
+    })
+    expect(bell.querySelector("[data-global-awaiting-count]")).toBeNull()
+    unmount()
+    useAppWorkspaceStore.setState({ conversations: [], folders: [] })
+  })
+
   it("counts a headless merge waiting on approval once, whatever says so", () => {
     // #167: the task engine's merge session has no connection here until it
     // is opened; the task list marks it by conversation id instead.

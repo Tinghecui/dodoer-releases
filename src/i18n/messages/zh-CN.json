@@ -1978,6 +1978,16 @@
     "agentsLoading": "加载 Agent 设置中...",
     "skillPacksLoading": "正在加载技能包…"
   },
+  "ClearUnreadSettings": {
+    "title": "清零未读",
+    "description": "把当前后端的所有未读对话标成已读。之后新结束的回合照常变成未读。",
+    "button": "清零未读",
+    "confirmTitle": "清零所有未读？",
+    "confirmDescription": "当前后端的所有未读对话（包括手动标成未读的）都会标成已读，无法撤销。",
+    "cancel": "取消",
+    "confirm": "清零",
+    "cleared": "所有未读已清零"
+  },
   "CloseBehaviorSettings": {
     "title": "关闭按钮行为",
     "description": "选择点击主窗口关闭按钮时的行为。",
@@ -4336,12 +4346,14 @@
       "askQuestion": {
         "title": "智能体需要你的选择",
         "subtitle": "回答后点击提交，可随时跳过",
-        "recommended": "推荐",
-        "other": "其他",
+        "recommended": "建议",
+        "useRecommendations": "全按建议",
+        "recommendationHint": "⭐ 是建议，不是默认选中",
+        "other": "都不合适，自己写",
         "otherPlaceholder": "输入你的回答…",
         "singleSelect": "单选",
-        "multiSelect": "多选",
-        "skip": "跳过",
+        "multiSelect": "可多选",
+        "skip": "跳过，让它自己判断",
         "next": "下一题",
         "submit": "提交",
         "submitError": "提交失败，请重试。",

@@ -98,6 +98,7 @@ function writePersisted(scope: string, data: PersistedSeen): void {
 /** Load the stored data for the active backend once (and again if the
  *  backend changes). Safe to call often. */
 export function ensureSeenHydrated(): void {
+  bindStorageSync()
   const scope = currentScope()
   if (useConversationSeenStore.getState().scope === scope) return
   const stored = readPersisted(scope)
@@ -112,6 +113,21 @@ export function ensureSeenHydrated(): void {
   }
   writePersisted(scope, fresh)
   useConversationSeenStore.setState({ scope, ...fresh })
+}
+
+let storageSyncBound = false
+
+function bindStorageSync(): void {
+  if (storageSyncBound || typeof window === "undefined") return
+  storageSyncBound = true
+  window.addEventListener("storage", reloadOnForeignWrite)
+}
+
+function reloadOnForeignWrite(event: StorageEvent): void {
+  const { scope } = useConversationSeenStore.getState()
+  if (!scope || event.key !== scope) return
+  const stored = readPersisted(scope)
+  if (stored) useConversationSeenStore.setState(stored)
 }
 
 export function pruneSeen(
@@ -186,6 +202,16 @@ export function markConversationAccepted(
 ): void {
   clearConversationUnreadMark(conversationId)
   markConversationSeen(conversationId, updatedAt)
+}
+
+export function markAllConversationsAccepted(): void {
+  ensureSeenHydrated()
+  useConversationSeenStore.setState({
+    baselineAt: Date.now(),
+    seen: {},
+    markedUnread: {},
+  })
+  persist()
 }
 
 /** Whether a conversation is unread right now (reads the live store). */

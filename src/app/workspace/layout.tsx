@@ -537,19 +537,17 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                     it) and, while files are maximized, a left one (0 wide while
                     the sidebar covers it). Per-file actions live in
                     FileWorkspaceHeader below, above every FileWorkspacePanel
-                    render branch. `bg-muted` shades the strip like a browser tab
-                    bar (matches the conversation column and the bottom
-                    StatusBar). With a workspace background image on, the
-                    strip + every tab go transparent (reveal the image) and a
-                    hairline bottom border (ws-strip-line) sits under the reserves
-                    and inactive tabs, arching over the active tab (the active
-                    browser-tab-item's `::after`) — same as the conversation column. */}
-                <div className="flex h-[3.25rem] shrink-0 items-stretch bg-muted ws-transparent-bg">
-                  {fileHoldsLeft && <ChromeReserve width={leftCornerWidth} />}
+                    render branch. */}
+                <div className="flex h-[3.25rem] shrink-0 items-stretch bg-background ws-transparent-bg pt-2.5">
+                  {fileHoldsLeft && (
+                    <ChromeReserve width={leftCornerWidth} line={false} />
+                  )}
                   <div className="flex min-w-0 flex-1 items-stretch">
                     <FileWorkspaceTabBar />
                   </div>
-                  {fileHoldsRight && <ChromeReserve width={rightCornerWidth} />}
+                  {fileHoldsRight && (
+                    <ChromeReserve width={rightCornerWidth} line={false} />
+                  )}
                 </div>
                 {/* Pane activation on the file content + its detail header, not
                     the top bar (see the conversation section). */}

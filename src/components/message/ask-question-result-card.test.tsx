@@ -1,5 +1,5 @@
 import { type ReactElement } from "react"
-import { fireEvent, render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { describe, expect, it } from "vitest"
 
@@ -81,11 +81,16 @@ describe("AskQuestionResultCard", () => {
     expect(chosen).toBeDisabled()
     expect(screen.getByRole("radio", { name: /Rewrite/ })).not.toBeChecked()
     // "(Recommended)" is split off into a badge; the chosen description shows.
-    expect(screen.getByText("Recommended")).toBeInTheDocument()
-    expect(screen.getByText("Smaller steps")).toBeInTheDocument()
+    expect(screen.getByText("⭐ Recommended")).toBeInTheDocument()
+    expect(screen.getByText("(Smaller steps)")).toBeInTheDocument()
     // No footer actions in the read-only record.
     expect(screen.queryByRole("button", { name: "Submit" })).toBeNull()
-    expect(screen.queryByRole("button", { name: "Skip" })).toBeNull()
+    expect(
+      screen.queryByRole("button", { name: "Use all recommendations" })
+    ).toBeNull()
+    expect(
+      screen.queryByRole("button", { name: "Skip, let the agent decide" })
+    ).toBeNull()
   })
 
   it("keeps Other hidden in the record of an ask that disallowed it", () => {
@@ -120,7 +125,9 @@ describe("AskQuestionResultCard", () => {
 
     expect(screen.getAllByRole("radio")).toHaveLength(2)
     expect(screen.getByRole("radio", { name: "Rewrite" })).toBeChecked()
-    expect(screen.queryByRole("radio", { name: "Other" })).toBeNull()
+    expect(
+      screen.queryByRole("radio", { name: "None fit, write my own" })
+    ).toBeNull()
   })
 
   it("checks the picked options and surfaces a free-text Other answer in multi-select", () => {
@@ -159,7 +166,9 @@ describe("AskQuestionResultCard", () => {
     expect(screen.getByRole("checkbox", { name: "Alpha" })).toBeChecked()
     expect(screen.getByRole("checkbox", { name: "Beta" })).not.toBeChecked()
     // The pick that isn't an option is the free-text "Other" answer.
-    expect(screen.getByRole("checkbox", { name: "Other" })).toBeChecked()
+    expect(
+      screen.getByRole("checkbox", { name: "None fit, write my own" })
+    ).toBeChecked()
     expect(screen.getByDisplayValue("Custom thing")).toBeInTheDocument()
   })
 
@@ -220,7 +229,7 @@ describe("AskQuestionResultCard", () => {
     expect(screen.queryByRole("button", { name: "Submit" })).toBeNull()
   })
 
-  it("lays multiple questions out as tabs once expanded", () => {
+  it("shows all numbered questions and their answers once expanded", () => {
     const input = JSON.stringify({
       questions: [
         {
@@ -253,10 +262,17 @@ describe("AskQuestionResultCard", () => {
     )
     expand()
 
-    const tabs = screen.getAllByRole("tab")
-    expect(tabs).toHaveLength(2)
-    expect(within(tabs[0]).getByText("First")).toBeInTheDocument()
-    expect(within(tabs[1]).getByText("Second")).toBeInTheDocument()
+    expect(screen.queryByRole("tab")).toBeNull()
+    expect(screen.getByText("First?").parentElement).toHaveTextContent(
+      "1. First?"
+    )
+    expect(screen.getByText("Second?").parentElement).toHaveTextContent(
+      "2. Second?"
+    )
+    for (const label of ["X", "Q"]) {
+      expect(screen.getByRole("radio", { name: label })).toBeChecked()
+      expect(screen.getByRole("radio", { name: label })).toBeDisabled()
+    }
   })
 
   it("shows an awaiting state with question chips while in flight", () => {
@@ -359,7 +375,9 @@ describe("AskQuestionResultCard", () => {
     expect(screen.getByRole("checkbox", { name: "Auth" })).toBeChecked()
     expect(screen.getByRole("checkbox", { name: "Search" })).toBeChecked()
     expect(screen.getByRole("checkbox", { name: "Billing" })).not.toBeChecked()
-    expect(screen.getByRole("checkbox", { name: "Other" })).not.toBeChecked()
+    expect(
+      screen.getByRole("checkbox", { name: "None fit, write my own" })
+    ).not.toBeChecked()
   })
 
   it("matches a CLI answer sentence whose question contains double quotes", () => {
@@ -525,9 +543,9 @@ describe("AskQuestionResultCard", () => {
     expect(screen.queryByText(result.noSelection)).toBeNull()
     expand()
     // Accessible name is the option label + its description.
-    const chosen = screen.getByRole("radio", { name: "选项 A a" })
+    const chosen = screen.getByRole("radio", { name: "选项 A (a)" })
     expect(chosen).toBeChecked()
-    expect(screen.getByRole("radio", { name: "选项 B b" })).not.toBeChecked()
+    expect(screen.getByRole("radio", { name: "选项 B (b)" })).not.toBeChecked()
     expect(chosen).toBeDisabled()
   })
 
@@ -658,7 +676,9 @@ describe("AskQuestionResultCard", () => {
     expect(screen.queryByText(/user_note/)).toBeNull()
 
     expand()
-    expect(screen.getByRole("radio", { name: "Other" })).toBeChecked()
+    expect(
+      screen.getByRole("radio", { name: "None fit, write my own" })
+    ).toBeChecked()
     expect(screen.getByDisplayValue("Inspect flaky logs")).toBeInTheDocument()
     expect(screen.getByRole("radio", { name: /Run tests/ })).not.toBeChecked()
     expect(screen.getByRole("radio", { name: /Stop/ })).not.toBeChecked()

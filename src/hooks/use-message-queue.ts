@@ -81,6 +81,13 @@ export interface UseMessageQueueReturn {
   failHead: (failure?: QueueFailureKind) => void
   /** Clear an item's `failed` flag so the auto-flush sends it again. */
   retry: (id: string) => void
+  /**
+   * Cowork fork: clear `failed` / `failure` on every failed item except the
+   * one under edit, in one commit, keeping order and ids. The auto-flush then
+   * sends them one per turn in queue order. Returns how many it cleared — a
+   * second call in the same tick finds none and changes nothing.
+   */
+  retryAll: () => number
   /** Returns nothing while the head is a failed item: it waits for retry. */
   dequeue: () => QueuedMessage | undefined
   remove: (id: string) => void
@@ -112,7 +119,14 @@ export function useMessageQueue(
   const [queue, setQueue] = useState<QueuedMessage[]>(() =>
     storageKey ? readStoredQueue(storageKey) : []
   )
-  const [editingItemId, setEditingItemId] = useState<string | null>(null)
+  const [editingItemId, setEditingItemIdState] = useState<string | null>(null)
+  // Cowork fork: same-tick copy of `editingItemId` for `retryAll`, which must
+  // skip the item under edit even before React commits the new id.
+  const editingItemIdRef = useRef<string | null>(null)
+  const setEditingItemId = useCallback((id: string | null) => {
+    editingItemIdRef.current = id
+    setEditingItemIdState(id)
+  }, [])
   // Authoritative copy of the queue, updated SYNCHRONOUSLY by every mutation
   // (before the React state commit). Reads that must observe the same-tick
   // result of a mutation — the direct-send queue routing — go through this
@@ -201,6 +215,20 @@ export function useMessageQueue(
     [commit]
   )
 
+  const retryAll = useCallback((): number => {
+    // Read the ref, not the state: a second click in the same tick (or an
+    // auto-flush dequeue between them) must see this call's result.
+    const editing = editingItemIdRef.current
+    let cleared = 0
+    const next = queueRef.current.map((item) => {
+      if (!item.failed || item.id === editing) return item
+      cleared += 1
+      return { ...item, failed: false, failure: undefined }
+    })
+    if (cleared > 0) commit(next)
+    return cleared
+  }, [commit])
+
   const dequeue = useCallback((): QueuedMessage | undefined => {
     const current = queueRef.current
     if (current.length === 0 || current[0].failed) return undefined
@@ -215,7 +243,7 @@ export function useMessageQueue(
       }
       commit(queueRef.current.filter((item) => item.id !== id))
     },
-    [commit, editingItemId]
+    [commit, editingItemId, setEditingItemId]
   )
 
   const reorder = useCallback(
@@ -253,7 +281,7 @@ export function useMessageQueue(
       )
       setEditingItemId(null)
     },
-    [commit]
+    [commit, setEditingItemId]
   )
 
   const moveToFront = useCallback(
@@ -268,13 +296,16 @@ export function useMessageQueue(
 
   const getQueueLength = useCallback(() => queueRef.current.length, [])
 
-  const startEditing = useCallback((id: string) => {
-    setEditingItemId(id)
-  }, [])
+  const startEditing = useCallback(
+    (id: string) => {
+      setEditingItemId(id)
+    },
+    [setEditingItemId]
+  )
 
   const cancelEditing = useCallback(() => {
     setEditingItemId(null)
-  }, [])
+  }, [setEditingItemId])
 
   return {
     queue,
@@ -283,6 +314,7 @@ export function useMessageQueue(
     requeueFailed,
     failHead,
     retry,
+    retryAll,
     dequeue,
     remove,
     reorder,

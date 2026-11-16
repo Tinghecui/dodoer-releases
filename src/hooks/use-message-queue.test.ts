@@ -345,3 +345,151 @@ describe("useMessageQueue across a reload", () => {
     expect(window.sessionStorage.getItem(KEY)).toContain('"displayText":"A"')
   })
 })
+
+// Cowork fork: "Retry all" after a reload left several rows failed.
+describe("useMessageQueue retryAll", () => {
+  it("clears every failed item in one go, keeping order and ids", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => {
+      result.current.enqueue(draft("B"), null)
+      result.current.enqueue(draft("C"), null)
+    })
+    act(() => result.current.failHead())
+    act(() => result.current.requeueFailed(draft("A"), null, "auth"))
+    const before = result.current.queue
+    expect(before.map((item) => item.failed === true)).toEqual([
+      true,
+      true,
+      false,
+    ])
+    let cleared = -1
+    act(() => {
+      cleared = result.current.retryAll()
+    })
+    expect(cleared).toBe(2)
+    expect(texts(result.current.queue)).toEqual(["A", "B", "C"])
+    expect(result.current.queue.map((item) => item.id)).toEqual(
+      before.map((item) => item.id)
+    )
+    expect(result.current.queue.every((item) => !item.failed)).toBe(true)
+    expect(result.current.queue.every((item) => !item.failure)).toBe(true)
+    // The row that was not failed is the same object.
+    expect(result.current.queue[2]).toBe(before[2])
+  })
+
+  it("leaves the item under edit failed", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => {
+      result.current.requeueFailed(draft("B"), null)
+      result.current.requeueFailed(draft("A"), null, "auth")
+    })
+    const [a, b] = result.current.queue
+    act(() => result.current.startEditing(a.id))
+    let cleared = -1
+    act(() => {
+      cleared = result.current.retryAll()
+    })
+    expect(cleared).toBe(1)
+    expect(result.current.queue[0]).toBe(a)
+    expect(result.current.queue[0]).toMatchObject({
+      failed: true,
+      failure: "auth",
+    })
+    expect(result.current.queue[1]).toMatchObject({ id: b.id, failed: false })
+  })
+
+  it("does nothing the second time in the same tick", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => {
+      result.current.requeueFailed(draft("B"), null)
+      result.current.requeueFailed(draft("A"), null)
+    })
+    let first = -1
+    let second = -1
+    let afterFirst: typeof result.current.queue = []
+    act(() => {
+      first = result.current.retryAll()
+      second = result.current.retryAll()
+    })
+    afterFirst = result.current.queue
+    expect(first).toBe(2)
+    expect(second).toBe(0)
+    act(() => {
+      second = result.current.retryAll()
+    })
+    expect(second).toBe(0)
+    expect(result.current.queue).toBe(afterFirst)
+  })
+
+  it("keeps failed rows in send order across a reload, a retry and a second failure", () => {
+    window.sessionStorage.clear()
+    const KEY = "cowork:message-queue:v1:local:retry-all"
+    const first = renderHook(() => useMessageQueue(KEY))
+    act(() => {
+      first.result.current.enqueue(draft("A"), null)
+      first.result.current.enqueue(draft("B"), null)
+      first.result.current.enqueue(draft("C"), null)
+    })
+    first.unmount()
+
+    const { result } = renderHook(() => useMessageQueue(KEY))
+    expect(result.current.queue.every((item) => item.failed)).toBe(true)
+    act(() => {
+      result.current.retryAll()
+    })
+    let sent: ReturnType<typeof result.current.dequeue>
+    act(() => {
+      sent = result.current.dequeue()
+    })
+    expect(sent!.draft.displayText).toBe("A")
+    // A fails again: back at the head, failed, holding B and C.
+    act(() => result.current.requeueFailed(sent!.draft, sent!.modeId))
+    expect(texts(result.current.queue)).toEqual(["A", "B", "C"])
+    expect(result.current.queue.map((item) => item.failed === true)).toEqual([
+      true,
+      false,
+      false,
+    ])
+    act(() => {
+      sent = result.current.dequeue()
+    })
+    expect(sent!).toBeUndefined()
+
+    act(() => {
+      result.current.retryAll()
+    })
+    const order: string[] = []
+    for (let i = 0; i < 3; i++) {
+      act(() => {
+        sent = result.current.dequeue()
+      })
+      order.push(sent!.draft.displayText)
+    }
+    expect(order).toEqual(["A", "B", "C"])
+    expect(result.current.queue).toEqual([])
+  })
+
+  it("puts a send that failed back ahead of a head flagged while it was out", () => {
+    // requeueFailed still inserts at index 0: the one that went out is always
+    // older than anything still queued.
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => {
+      result.current.enqueue(draft("A"), null)
+      result.current.enqueue(draft("B"), null)
+      result.current.enqueue(draft("C"), null)
+    })
+    let sent: ReturnType<typeof result.current.dequeue>
+    act(() => {
+      sent = result.current.dequeue()
+    })
+    expect(sent!.draft.displayText).toBe("A")
+    act(() => result.current.failHead())
+    act(() => result.current.requeueFailed(sent!.draft, sent!.modeId))
+    expect(texts(result.current.queue)).toEqual(["A", "B", "C"])
+    expect(result.current.queue.map((item) => item.failed === true)).toEqual([
+      true,
+      true,
+      false,
+    ])
+  })
+})

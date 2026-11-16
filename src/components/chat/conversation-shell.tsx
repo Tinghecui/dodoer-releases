@@ -125,6 +125,8 @@ interface ConversationShellProps {
   onQueueDelete?: (id: string) => void
   /** jenny fork: send a failed queued item again. */
   onQueueRetry?: (id: string) => void
+  /** Cowork fork: send every failed queued item again, in queue order. */
+  onQueueRetryAll?: () => void
   /** Cowork fork: threaded straight through to the composer's queue list.
    *  See `ChatInputProps.queueFailedHeadNotice`. */
   queueFailedHeadNotice?: QueueFailedHeadNotice | null
@@ -218,6 +220,7 @@ export function ConversationShell({
   onQueueEdit,
   onQueueDelete,
   onQueueRetry,
+  onQueueRetryAll,
   queueFailedHeadNotice,
   onQueueSteer,
   editingItemId,
@@ -389,6 +392,7 @@ export function ConversationShell({
               onQueueEdit={onQueueEdit}
               onQueueDelete={onQueueDelete}
               onQueueRetry={onQueueRetry}
+              onQueueRetryAll={onQueueRetryAll}
               queueFailedHeadNotice={queueFailedHeadNotice}
               onQueueSteer={onQueueSteer}
               editingItemId={editingItemId}

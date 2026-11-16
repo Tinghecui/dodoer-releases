@@ -3732,6 +3732,8 @@
         "sendFailed": "Send failed",
         "retry": "Retry",
         "retryItem": "Send this message again",
+        "retryAll": "Retry all ({count})",
+        "retryAllHint": "Send the failed messages again, in their order",
         "failedHeadHint": "The first message failed to send, and the messages below are waiting for it. Retry it or remove it to continue.",
         "failedSingleHint": "This message failed to send. Retry it or remove it.",
         "agentNotInstalledHint": "{agent} is not installed or enabled yet.",

@@ -782,6 +782,7 @@ const ConversationTabView = memo(function ConversationTabView({
     requeueFailed: mqRequeueFailed,
     failHead: mqFailHead,
     retry: mqRetry,
+    retryAll: mqRetryAll,
     getQueueLength: mqGetQueueLength,
     dequeue: mqDequeue,
     remove: mqRemove,
@@ -2704,6 +2705,39 @@ const ConversationTabView = memo(function ConversationTabView({
     ]
   )
 
+  // Cowork fork: "Retry all" — the same rule as a single retry above. No
+  // usable agent: clear nothing, say why and try the connection once. A
+  // usable agent: clear every failed row (the hook skips the one under edit)
+  // and let the auto-flush send them one per turn in queue order, starting
+  // the connection it waits for if it is down.
+  const handleQueueRetryAll = useCallback(() => {
+    if (agentUnavailableReason == null) {
+      const cleared = mqRetryAll()
+      const status = connStatusRef.current
+      if (
+        cleared > 0 &&
+        (status == null || status === "disconnected" || status === "error")
+      )
+        handleFocus()
+      return
+    }
+    handleFocus()
+    toast.error(agentUnavailableReason, {
+      id: `queue-agent-unavailable:${tabId}`,
+      action: {
+        label: tAgentSelector("openAgentsSettings"),
+        onClick: handleOpenAgentsSettings,
+      },
+    })
+  }, [
+    agentUnavailableReason,
+    mqRetryAll,
+    handleFocus,
+    tabId,
+    tAgentSelector,
+    handleOpenAgentsSettings,
+  ])
+
   // Cowork fork: what the queue's hint adds while its head is failed (the
   // hint itself — "the first message failed, the rest wait for it" — is the
   // queue's own). No usable agent: the reason, and the Agents settings the
@@ -2889,6 +2923,7 @@ const ConversationTabView = memo(function ConversationTabView({
       onQueueEdit={handleQueueEdit}
       onQueueDelete={mqRemove}
       onQueueRetry={handleQueueRetry}
+      onQueueRetryAll={handleQueueRetryAll}
       queueFailedHeadNotice={queueFailedHeadNotice}
       onQueueSteer={
         // Same gate as the composer's mid-turn send, plus a turn actually in
@@ -3021,6 +3056,7 @@ const ConversationTabView = memo(function ConversationTabView({
                 onQueueEdit={handleQueueEdit}
                 onQueueDelete={mqRemove}
                 onQueueRetry={handleQueueRetry}
+                onQueueRetryAll={handleQueueRetryAll}
                 queueFailedHeadNotice={queueFailedHeadNotice}
                 editingItemId={mqEditingItemId}
                 editingDraftText={editingQueueDraftText}

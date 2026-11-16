@@ -104,6 +104,36 @@ describe("no usable agent fails the waiting message", () => {
     ).toHaveLength(3)
   })
 
+  it("routes both composers' Retry all through the panel", () => {
+    expect(source.split("onQueueRetryAll={handleQueueRetryAll}")).toHaveLength(
+      3
+    )
+  })
+
+  it("does not un-fail anything on Retry all while there is no usable agent", () => {
+    const retryAll = between(
+      "const handleQueueRetryAll = useCallback(",
+      "const queueHeadFailure ="
+    )
+    expect(retryAll).toContain("agentUnavailableReason")
+    expect(retryAll).toContain("toast.error")
+    expect(retryAll).toContain("`queue-agent-unavailable:${tabId}`")
+    expect(retryAll).toContain("onClick: handleOpenAgentsSettings")
+    const usable = retryAll.slice(
+      retryAll.indexOf("if (agentUnavailableReason == null) {"),
+      retryAll.indexOf("return\n")
+    )
+    // Reconnect only when something was cleared and the connection is down.
+    expect(usable).toContain("mqRetryAll()")
+    expect(usable.indexOf("mqRetryAll()")).toBeLessThan(
+      usable.indexOf("handleFocus()")
+    )
+    expect(usable).toContain("cleared > 0")
+    expect(usable).toContain('status === "disconnected"')
+    expect(usable).toContain('status === "error"')
+    expect(usable).toContain("status == null")
+  })
+
   it("drops the waiting-for-the-agent line once the head is failed", () => {
     const start = chatInput.indexOf("data-jenny-queue-waiting")
     const condition = chatInput.slice(start - 500, start)

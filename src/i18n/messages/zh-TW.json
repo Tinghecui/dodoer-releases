@@ -3732,6 +3732,8 @@
         "sendFailed": "傳送失敗",
         "retry": "重試",
         "retryItem": "重新傳送這則訊息",
+        "retryAll": "全部重試（{count}）",
+        "retryAllHint": "依原順序重新傳送失敗的訊息",
         "failedHeadHint": "第 1 則訊息傳送失敗，後面的訊息在等它。重試或刪除它，才會繼續傳送。",
         "failedSingleHint": "這則訊息傳送失敗。可以重試，或刪除它。",
         "agentNotInstalledHint": "{agent} 尚未安裝或啟用。",

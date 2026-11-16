@@ -3732,6 +3732,8 @@
         "sendFailed": "Falha no envio",
         "retry": "Tentar novamente",
         "retryItem": "Enviar esta mensagem novamente",
+        "retryAll": "Tentar todas novamente ({count})",
+        "retryAllHint": "Enviar de novo as mensagens que falharam, na ordem original",
         "failedHeadHint": "A primeira mensagem não pôde ser enviada, e as mensagens abaixo estão esperando por ela. Tente novamente ou remova-a para continuar.",
         "failedSingleHint": "Esta mensagem não pôde ser enviada. Tente novamente ou remova-a.",
         "agentNotInstalledHint": "{agent} ainda não está instalado ou habilitado.",

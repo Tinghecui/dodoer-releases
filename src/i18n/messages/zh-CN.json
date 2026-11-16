@@ -3732,6 +3732,8 @@
         "sendFailed": "发送失败",
         "retry": "重试",
         "retryItem": "重新发送这条消息",
+        "retryAll": "全部重试（{count}）",
+        "retryAllHint": "按原顺序重新发送失败的消息",
         "failedHeadHint": "第 1 条消息发送失败，后面的消息在等它。重试或删除它，才会继续发送。",
         "failedSingleHint": "这条消息发送失败。可以重试，或删除它。",
         "agentNotInstalledHint": "{agent} 还没有安装或启用。",

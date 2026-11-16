@@ -3732,6 +3732,8 @@
         "sendFailed": "Error al enviar",
         "retry": "Reintentar",
         "retryItem": "Enviar este mensaje de nuevo",
+        "retryAll": "Reintentar todos ({count})",
+        "retryAllHint": "Enviar de nuevo los mensajes fallidos, en su orden",
         "failedHeadHint": "El primer mensaje no se pudo enviar y los de abajo lo están esperando. Reinténtalo o elimínalo para continuar.",
         "failedSingleHint": "Este mensaje no se pudo enviar. Reinténtalo o elimínalo.",
         "agentNotInstalledHint": "{agent} aún no está instalado o habilitado.",

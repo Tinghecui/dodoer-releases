@@ -3732,6 +3732,8 @@
         "sendFailed": "Échec de l’envoi",
         "retry": "Réessayer",
         "retryItem": "Renvoyer ce message",
+        "retryAll": "Tout réessayer ({count})",
+        "retryAllHint": "Renvoyer les messages en échec, dans leur ordre",
         "failedHeadHint": "Le premier message n’a pas pu être envoyé et les messages suivants l’attendent. Réessayez ou supprimez-le pour continuer.",
         "failedSingleHint": "Ce message n’a pas pu être envoyé. Réessayez ou supprimez-le.",
         "agentNotInstalledHint": "{agent} n’est pas encore installé ou activé.",

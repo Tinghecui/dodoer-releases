@@ -3732,6 +3732,8 @@
         "sendFailed": "전송 실패",
         "retry": "다시 시도",
         "retryItem": "이 메시지를 다시 보내기",
+        "retryAll": "모두 다시 시도 ({count})",
+        "retryAllHint": "실패한 메시지를 원래 순서대로 다시 보내기",
         "failedHeadHint": "첫 번째 메시지 전송에 실패해 뒤의 메시지가 기다리고 있습니다. 다시 시도하거나 삭제해야 계속 전송됩니다.",
         "failedSingleHint": "이 메시지 전송에 실패했습니다. 다시 시도하거나 삭제하세요.",
         "agentNotInstalledHint": "{agent}이(가) 아직 설치되지 않았거나 사용 설정되지 않았습니다.",

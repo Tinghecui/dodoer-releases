@@ -26,6 +26,12 @@ interface MessageQueueDisplayProps {
   onDelete: (id: string) => void
   /** jenny fork: send a failed item again (see `QueuedMessage.failed`). */
   onRetry?: (id: string) => void
+  /**
+   * Cowork fork: send every failed row again, in queue order. Offered only
+   * while two or more shown rows are failed (one has its own retry).
+   */
+  onRetryAll?: () => void
+  /** The row under edit is not shown — its text is in the composer. */
   editingItemId: string | null
   /**
    * Send one queued item straight into the RUNNING turn over the session's
@@ -47,7 +53,6 @@ interface MessageQueueDisplayProps {
 interface QueueItemProps {
   item: QueuedMessage
   index: number
-  isEditing: boolean
   onEdit: (id: string) => void
   onDelete: (id: string) => void
   onRetry?: (id: string) => void
@@ -62,7 +67,6 @@ interface QueueItemProps {
 function QueueItem({
   item,
   index,
-  isEditing,
   onEdit,
   onDelete,
   onRetry,
@@ -74,18 +78,14 @@ function QueueItem({
   const t = useTranslations("Folder.chat.messageQueue")
   const dragControls = useDragControls()
 
-  // Keep the action visible, but disable rows that cannot be sent safely:
-  // * The row under edit. Its authoritative text is in the composer now, so
-  //   inserting would send the PRE-edit draft and then drop the row the edit
-  //   was going to save into. (The composer hides its own mid-turn send while
-  //   editing for the same reason.)
-  // * A draft carrying attachments on a pull-tool session. The pull channel
-  //   delivers text, so the backend rejects blocks there — every click would
-  //   land on the turn-end fallback, which only moves the row to the front
-  //   and never inserts it. It still goes out whole with the next turn.
+  // Keep the action visible, but disable a row that cannot be sent safely:
+  // a draft carrying attachments on a pull-tool session. The pull channel
+  // delivers text, so the backend rejects blocks there — every click would
+  // land on the turn-end fallback, which only moves the row to the front and
+  // never inserts it. It still goes out whole with the next turn. (The row
+  // under edit is not rendered at all — its text is in the composer.)
   const canSteer =
     Boolean(onSteerItem) &&
-    !isEditing &&
     (steerChannel === "native" || !draftRidesBlocks(item.draft))
 
   const startDrag = useCallback(
@@ -107,7 +107,6 @@ function QueueItem({
       className={cn(
         "flex items-center gap-1 rounded-md border px-1.5 py-1 text-3xs leading-none select-none [text-box-trim:both] [text-box-edge:cap_alphabetic]",
         "bg-[var(--g-fill1)] border-transparent",
-        isEditing && "border-primary/50 bg-primary/5",
         item.failed && "border-destructive/60 bg-destructive/5"
       )}
       data-queue-failed={item.failed ? "" : undefined}
@@ -183,6 +182,7 @@ export function MessageQueueDisplay({
   onEdit,
   onDelete,
   onRetry,
+  onRetryAll,
   editingItemId,
   onSteerItem,
   steerChannel = "pull",
@@ -215,12 +215,50 @@ export function MessageQueueDisplay({
     [onSteerItem]
   )
 
-  if (queue.length === 0) return null
+  // Cowork fork: the row under edit is in the composer, so it is not shown
+  // here too. The others keep their place in the whole queue as their number.
+  const editingIndex =
+    editingItemId === null
+      ? -1
+      : queue.findIndex((item) => item.id === editingItemId)
+  const shown =
+    editingIndex < 0
+      ? queue
+      : queue.filter((_, index) => index !== editingIndex)
+
+  // A drag only sees the shown rows; put the hidden one back at its index so
+  // the hook gets a full permutation (it drops a reorder of the wrong length).
+  const handleReorder = (items: QueuedMessage[]) => {
+    if (editingIndex < 0) {
+      onReorder(items)
+      return
+    }
+    const next = [...items]
+    next.splice(editingIndex, 0, queue[editingIndex])
+    onReorder(next)
+  }
+
+  if (shown.length === 0) return null
 
   // Cowork fork: a failed head holds everything behind it (the jenny rule in
   // `useMessageQueue.dequeue`), so "sent after this turn ends" would be
-  // untrue. Say what is holding the queue and how to release it.
+  // untrue. Say what is holding the queue and how to release it. Judged on
+  // the whole queue: a failed head under edit still holds the rest.
   const headFailed = queue[0].failed === true
+  const failedShown = shown.filter((item) => item.failed === true).length
+  const retryAllButton =
+    onRetryAll && failedShown >= 2 ? (
+      <button
+        type="button"
+        data-queue-retry-all=""
+        onClick={onRetryAll}
+        className="float-right ml-2 inline-flex items-center gap-1 rounded-sm bg-destructive/10 px-1.5 py-0.5 text-3xs leading-none text-destructive hover:bg-destructive/15"
+        title={t("retryAllHint")}
+      >
+        <RotateCcw className="h-2.5 w-2.5" />
+        <span>{t("retryAll", { count: failedShown })}</span>
+      </button>
+    ) : null
 
   return (
     <div className="pb-1">
@@ -230,6 +268,7 @@ export function MessageQueueDisplay({
           data-queue-blocked=""
           className="mb-1 text-xs leading-relaxed text-destructive"
         >
+          {retryAllButton}
           {failedHeadNotice?.reason ? (
             <span data-queue-blocked-reason="" className="mr-1">
               {failedHeadNotice.reason}
@@ -252,22 +291,22 @@ export function MessageQueueDisplay({
           data-queue-hint
           className="mb-1 text-xs leading-relaxed text-muted-foreground"
         >
+          {retryAllButton}
           {t("hint")}
         </p>
       )}
       <Reorder.Group
         as="div"
         axis="y"
-        values={queue}
-        onReorder={onReorder}
+        values={shown}
+        onReorder={handleReorder}
         className="flex max-h-28 flex-col gap-0.5 overflow-y-auto"
       >
-        {queue.map((item, index) => (
+        {shown.map((item) => (
           <QueueItem
             key={item.id}
             item={item}
-            index={index}
-            isEditing={editingItemId === item.id}
+            index={queue.indexOf(item)}
             onEdit={onEdit}
             onDelete={onDelete}
             onRetry={onRetry}

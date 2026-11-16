@@ -97,6 +97,8 @@ interface ChatInputProps {
   onQueueDelete?: (id: string) => void
   /** jenny fork: send a failed queued item again. */
   onQueueRetry?: (id: string) => void
+  /** Cowork fork: send every failed queued item again, in queue order. */
+  onQueueRetryAll?: () => void
   /** Cowork fork: why the failed head is stuck and where to fix it; threaded
    *  straight through to the queue list's hint. */
   queueFailedHeadNotice?: QueueFailedHeadNotice | null
@@ -178,6 +180,7 @@ export const ChatInput = memo(function ChatInput({
   onQueueEdit,
   onQueueDelete,
   onQueueRetry,
+  onQueueRetryAll,
   queueFailedHeadNotice,
   onQueueSteer,
   editingItemId,
@@ -540,6 +543,7 @@ export const ChatInput = memo(function ChatInput({
                   onEdit={onQueueEdit}
                   onDelete={onQueueDelete}
                   onRetry={onQueueRetry}
+                  onRetryAll={onQueueRetryAll}
                   failedHeadNotice={queueFailedHeadNotice}
                   editingItemId={editingItemId ?? null}
                   onSteerItem={onQueueSteer}

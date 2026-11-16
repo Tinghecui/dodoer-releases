@@ -3732,6 +3732,8 @@
         "sendFailed": "送信失敗",
         "retry": "再試行",
         "retryItem": "このメッセージを再送信",
+        "retryAll": "すべて再試行（{count}）",
+        "retryAllHint": "失敗したメッセージを元の順番で再送信",
         "failedHeadHint": "1 件目のメッセージの送信に失敗したため、後ろのメッセージが待機しています。再試行するか削除すると、続きが送信されます。",
         "failedSingleHint": "このメッセージの送信に失敗しました。再試行するか、削除してください。",
         "agentNotInstalledHint": "{agent} はまだインストールまたは有効化されていません。",

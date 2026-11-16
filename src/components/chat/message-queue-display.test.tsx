@@ -16,6 +16,26 @@ import type { QueuedMessage } from "@/hooks/use-message-queue"
 
 import { MessageQueueDisplay } from "./message-queue-display"
 
+// Catch the `onReorder` the display hands `Reorder.Group`, so a test can
+// emit a drag result without driving pointer events.
+const reorderGroup = vi.hoisted(() => {
+  const state = {
+    onReorder: null as null | ((items: QueuedMessage[]) => void),
+    capture(fn: unknown) {
+      state.onReorder = fn as (items: QueuedMessage[]) => void
+    },
+  }
+  return state
+})
+vi.mock("motion/react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("motion/react")>()
+  const Group = (props: Parameters<typeof actual.Reorder.Group>[0]) => {
+    reorderGroup.capture(props.onReorder)
+    return <actual.Reorder.Group {...props} />
+  }
+  return { ...actual, Reorder: { ...actual.Reorder, Group } }
+})
+
 const TQ = enMessages.Folder.chat.messageQueue
 
 function item(id: string, text: string): QueuedMessage {
@@ -212,18 +232,18 @@ describe("MessageQueueDisplay click-to-insert", () => {
     expect(screen.getAllByTitle(TQ.steerItemNow)).toHaveLength(2)
   })
 
-  it("disables the insert on the row being edited (the composer owns its text)", () => {
-    // While a row is under edit its real content lives in the composer;
-    // inserting would send the stale pre-edit draft and drop the row the save
-    // was headed for.
+  it("offers no insert for the row being edited (it is not shown)", () => {
+    // While a row is under edit its real content lives in the composer, so
+    // the row is hidden and with it the button that would send the stale
+    // pre-edit draft.
     renderDisplay({
       onSteerItem: vi.fn(async () => {}),
       steerChannel: "native",
       editingItemId: "q1",
     })
     const buttons = screen.getAllByRole("button", { name: "Steer" })
-    expect(buttons[0]).toBeDisabled()
-    expect(buttons[1]).toBeEnabled()
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0]).toBeEnabled()
   })
 })
 
@@ -359,6 +379,166 @@ describe("MessageQueueDisplay with a failed head", () => {
     )
     expect(container.querySelector("[data-queue-hint]")).toHaveTextContent(
       "第 1 条消息发送失败，后面的消息在等它。重试或删除它，才会继续发送。"
+    )
+  })
+})
+
+// Cowork fork: several failed rows (a reload marks the whole queue failed)
+// can be released with one click.
+describe("MessageQueueDisplay Retry all", () => {
+  const failed = (id: string, text: string): QueuedMessage => ({
+    ...item(id, text),
+    failed: true,
+  })
+  const retryAllButton = (container: HTMLElement) =>
+    container.querySelector("[data-queue-retry-all]")
+
+  it("offers Retry all only when two or more rows failed", () => {
+    const { container } = renderDisplay({
+      queue: [failed("q1", "use pnpm"), failed("q2", "run the tests")],
+      onRetry: vi.fn(),
+      onRetryAll: vi.fn(),
+    })
+    const button = retryAllButton(container)
+    expect(button).not.toBeNull()
+    expect(button).toHaveTextContent("Retry all (2)")
+    expect(button).toHaveAttribute("title", TQ.retryAllHint)
+    // It sits in the hint line.
+    expect(
+      container.querySelector("[data-queue-hint] [data-queue-retry-all]")
+    ).toBe(button)
+  })
+
+  it("has no Retry all with one failed row and one waiting", () => {
+    const { container } = renderDisplay({
+      queue: [failed("q1", "use pnpm"), item("q2", "run the tests")],
+      onRetry: vi.fn(),
+      onRetryAll: vi.fn(),
+    })
+    expect(retryAllButton(container)).toBeNull()
+  })
+
+  it("has no Retry all with nothing failed", () => {
+    const { container } = renderDisplay({ onRetryAll: vi.fn() })
+    expect(retryAllButton(container)).toBeNull()
+  })
+
+  it("does not count the row under edit", () => {
+    const { container } = renderDisplay({
+      queue: [
+        failed("q1", "use pnpm"),
+        failed("q2", "run the tests"),
+        item("q3", "ship it"),
+      ],
+      onRetryAll: vi.fn(),
+      editingItemId: "q1",
+    })
+    expect(retryAllButton(container)).toBeNull()
+  })
+
+  it("has no Retry all without a handler", () => {
+    const { container } = renderDisplay({
+      queue: [failed("q1", "use pnpm"), failed("q2", "run the tests")],
+      onRetry: vi.fn(),
+    })
+    expect(retryAllButton(container)).toBeNull()
+  })
+
+  it("counts interleaved failed rows and calls the handler once per click", async () => {
+    const onRetryAll = vi.fn()
+    const { container } = renderDisplay({
+      queue: [
+        failed("q1", "a"),
+        item("q2", "b"),
+        failed("q3", "c"),
+        item("q4", "d"),
+        failed("q5", "e"),
+      ],
+      onRetry: vi.fn(),
+      onRetryAll,
+    })
+    const button = retryAllButton(container) as HTMLElement
+    expect(button).toHaveTextContent("Retry all (3)")
+    await userEvent.click(button)
+    expect(onRetryAll).toHaveBeenCalledTimes(1)
+  })
+
+  it("renders the Chinese label", () => {
+    const { container } = render(
+      <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+        <MessageQueueDisplay
+          queue={[failed("q1", "use pnpm"), failed("q2", "run the tests")]}
+          onReorder={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onRetryAll={vi.fn()}
+          editingItemId={null}
+        />
+      </NextIntlClientProvider>
+    )
+    expect(retryAllButton(container)).toHaveTextContent("全部重试（2）")
+  })
+})
+
+// Cowork fork: the row under edit lives in the composer; showing it in the
+// queue too would show the message twice.
+describe("MessageQueueDisplay while a row is edited", () => {
+  const three = [item("q1", "one"), item("q2", "two"), item("q3", "three")]
+  const rowNumbers = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll("[data-queue-item]")).map((row) =>
+      row.getAttribute("data-queue-item")
+    )
+
+  it("hides the edited row and keeps the others' real numbers", () => {
+    const { container } = renderDisplay({
+      queue: [item("q1", "use pnpm"), item("q2", "run the tests")],
+      editingItemId: "q1",
+    })
+    expect(rowNumbers(container)).toEqual(["2"])
+    expect(container).not.toHaveTextContent("use pnpm")
+    expect(container.querySelector('[data-queue-item="2"]')).toHaveTextContent(
+      "#2"
+    )
+  })
+
+  it("renders nothing when the edited row is the only one", () => {
+    const { container } = renderDisplay({
+      queue: [item("q1", "use pnpm")],
+      editingItemId: "q1",
+    })
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it("puts the hidden row back at its index when another row is dragged", () => {
+    const onReorder = vi.fn()
+    renderDisplay({ queue: three, editingItemId: "q2", onReorder })
+    act(() => reorderGroup.onReorder?.([three[2], three[0]]))
+    expect(onReorder).toHaveBeenCalledTimes(1)
+    expect(
+      onReorder.mock.calls[0][0].map((row: QueuedMessage) => row.id)
+    ).toEqual(["q3", "q2", "q1"])
+  })
+
+  it("brings the row back in place, with its new text, once the edit ends", () => {
+    const { container, rerender } = renderDisplay({
+      queue: three,
+      editingItemId: "q2",
+    })
+    expect(rowNumbers(container)).toEqual(["1", "3"])
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <MessageQueueDisplay
+          queue={[three[0], item("q2", "two, edited"), three[2]]}
+          onReorder={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          editingItemId={null}
+        />
+      </NextIntlClientProvider>
+    )
+    expect(rowNumbers(container)).toEqual(["1", "2", "3"])
+    expect(container.querySelector('[data-queue-item="2"]')).toHaveTextContent(
+      "two, edited"
     )
   })
 })

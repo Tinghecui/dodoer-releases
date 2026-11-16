@@ -8,8 +8,16 @@ name: ai-qa
 run-name: "${{ inputs.pr && format('ai-qa PR #{0}', inputs.pr) || inputs.setup_only && 'ai-qa 只搭环境' || 'ai-qa' }}"
 
 on:
+  # 每晚那轮的兜底：准点的那次由生产机的 crontab 在 18:23 UTC 手动触发（-f nightly=true）；GitHub 的定时常晚几个小时，
+  # 晚到时那个提交已经测过（台账里有、或 Release 附件里有 tested-<版本>.txt）就跳过（run.sh 的 s_gate）
+  schedule:
+    - cron: "23 18 * * *"
   workflow_dispatch:
     inputs:
+      nightly:
+        description: "按每晚那次跑（定时任务用）：真 agent、测分支最新提交、验收还没验收过的 PR、同一个提交测过就跳过"
+        type: boolean
+        default: false
       ref:
         description: "源仓库的分支（空 = 默认分支）"
         default: ""
@@ -75,8 +83,8 @@ jobs:
       EVENT: ${{ github.event_name }}
       REF: ${{ inputs.ref }}
       PR: ${{ inputs.pr }}
-      NIGHTLY: "false"
-      REAL_AGENT: ${{ inputs.real_agent && 'true' || 'false' }}
+      NIGHTLY: ${{ (github.event_name == 'schedule' || inputs.nightly) && 'true' || 'false' }}
+      REAL_AGENT: ${{ (github.event_name == 'schedule' || inputs.nightly || inputs.real_agent) && 'true' || 'false' }}
       AIQA_ENV: ${{ inputs.env || 'cowork' }}
       SETUP_ONLY: ${{ inputs.setup_only && 'true' || 'false' }}
       HEAD_BUILD: ${{ inputs.head && 'true' || 'false' }}

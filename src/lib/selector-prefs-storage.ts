@@ -15,8 +15,18 @@
  * emitted. Snapshots, replays, and live events therefore all carry the
  * user-preferred values uniformly — there is no client-side "intercept
  * incoming event and overwrite locally" path.
+ *
+ * Cowork fork: each host has its own preferences. A desktop window on a remote
+ * host shares this origin's localStorage with the local window, so one key
+ * sent this machine's last picks to the remote host (or the other way round);
+ * the server fills in what it holds no default for from them (Grok / Hermes /
+ * Kiro never get one — `acp/session_prefs.rs`). This machine — and the web
+ * build, which never has a remote connection — keeps the original key, so
+ * picks saved before hosts were split stay this machine's and are never
+ * copied to a remote host.
  */
 
+import { getActiveRemoteConnectionId } from "@/lib/transport"
 import type { SessionModeStateInfo } from "@/lib/types"
 
 const STORAGE_KEY = "codeg:selector-prefs"
@@ -28,20 +38,27 @@ interface SelectorPrefs {
 
 type AllPrefs = Record<string, SelectorPrefs>
 
-function readAll(): AllPrefs {
+/** The key of the host behind this window: `…:remote-<id>` for a saved
+ *  remote connection (its id stays the same across reconnects). */
+function storageKey(): string {
+  const remoteId = getActiveRemoteConnectionId()
+  return remoteId == null ? STORAGE_KEY : `${STORAGE_KEY}:remote-${remoteId}`
+}
+
+function readAll(key: string = storageKey()): AllPrefs {
   if (typeof window === "undefined") return {}
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(key)
     return raw ? (JSON.parse(raw) as AllPrefs) : {}
   } catch {
     return {}
   }
 }
 
-function writeAll(all: AllPrefs) {
+function writeAll(key: string, all: AllPrefs) {
   if (typeof window === "undefined") return
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(all))
+    localStorage.setItem(key, JSON.stringify(all))
   } catch {
     /* ignore */
   }
@@ -68,7 +85,8 @@ function updatePrefs(
   agentType: string,
   fn: (prefs: SelectorPrefs) => SelectorPrefs
 ) {
-  const all = readAll()
+  const key = storageKey()
+  const all = readAll(key)
   const existing = prefsOf(all, agentType)
   // Re-project onto the current schema so legacy fields (`modesHash` /
   // `configHash` from before the backend took ownership of preference
@@ -79,7 +97,7 @@ function updatePrefs(
     configValues: existing?.configValues,
   }
   all[agentType] = fn(normalized)
-  writeAll(all)
+  writeAll(key, all)
 }
 
 /**

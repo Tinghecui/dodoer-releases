@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   getSavedModeId,
@@ -7,6 +7,13 @@ import {
   saveModePreference,
 } from "./selector-prefs-storage"
 
+// The saved connection behind this window: `null` for this machine (and the
+// web build), a saved connection's id in a desktop window on a remote host.
+const env = vi.hoisted(() => ({ remoteId: null as number | null }))
+vi.mock("@/lib/transport", () => ({
+  getActiveRemoteConnectionId: () => env.remoteId,
+}))
+
 const STORAGE_KEY = "codeg:selector-prefs"
 
 function seed(prefs: Record<string, unknown>) {
@@ -14,7 +21,10 @@ function seed(prefs: Record<string, unknown>) {
 }
 
 describe("selector-prefs-storage", () => {
-  beforeEach(() => localStorage.clear())
+  beforeEach(() => {
+    localStorage.clear()
+    env.remoteId = null
+  })
 
   it("round-trips a mode and config picks", () => {
     saveModePreference("codex", {
@@ -186,6 +196,87 @@ describe("selector-prefs-storage", () => {
     expect(getSavedPrefsForConnect("kiro")).toEqual({
       modeId: null,
       configValues: { model: "claude-sonnet-5" },
+    })
+  })
+
+  it("keeps this machine and each remote host apart", () => {
+    saveConfigPreference("codex", "model", "gpt-local")
+    saveModePreference("codex", {
+      current_mode_id: "plan",
+      available_modes: [],
+    })
+    env.remoteId = 1
+    saveConfigPreference("codex", "model", "gpt-remote-1")
+    env.remoteId = 2
+    saveModePreference("codex", {
+      current_mode_id: "auto",
+      available_modes: [],
+    })
+
+    // Each window sends its host only that host's own last picks.
+    env.remoteId = null
+    expect(getSavedPrefsForConnect("codex")).toEqual({
+      modeId: "plan",
+      configValues: { model: "gpt-local" },
+    })
+    env.remoteId = 1
+    expect(getSavedPrefsForConnect("codex")).toEqual({
+      modeId: null,
+      configValues: { model: "gpt-remote-1" },
+    })
+    expect(getSavedModeId("codex")).toBeNull()
+    env.remoteId = 2
+    expect(getSavedPrefsForConnect("codex")).toEqual({
+      modeId: "auto",
+      configValues: null,
+    })
+  })
+
+  it("sends a remote host it never saw nothing, not this machine's picks", () => {
+    // Grok / Hermes / Kiro never get a server-side default, so what the
+    // client sends is what a new session on the remote host starts with.
+    saveConfigPreference("grok", "model", "grok-local")
+    saveModePreference("kiro", {
+      current_mode_id: "kiro_planner",
+      available_modes: [],
+    })
+    env.remoteId = 9
+    expect(getSavedPrefsForConnect("grok")).toEqual({
+      modeId: null,
+      configValues: null,
+    })
+    expect(getSavedPrefsForConnect("kiro")).toEqual({
+      modeId: null,
+      configValues: null,
+    })
+  })
+
+  it("keeps the picks saved before hosts were split as this machine's", () => {
+    seed({ codex: { modeId: "plan", configValues: { model: "gpt-old" } } })
+    expect(getSavedPrefsForConnect("codex")).toEqual({
+      modeId: "plan",
+      configValues: { model: "gpt-old" },
+    })
+    env.remoteId = 1
+    expect(getSavedModeId("codex")).toBeNull()
+    saveConfigPreference("codex", "model", "gpt-remote")
+    // The remote pick lands under its own key; the old data is untouched.
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}")).toEqual({
+      codex: { modeId: "plan", configValues: { model: "gpt-old" } },
+    })
+    expect(
+      JSON.parse(localStorage.getItem(`${STORAGE_KEY}:remote-1`) ?? "{}")
+    ).toEqual({ codex: { configValues: { model: "gpt-remote" } } })
+  })
+
+  it("reads and writes only the original key without a remote host", () => {
+    // The web build never has a remote connection, so this is its behavior
+    // too: one key, the same one as before hosts were split.
+    saveConfigPreference("codex", "model", "gpt-5.3-codex")
+    expect(localStorage.length).toBe(1)
+    expect(localStorage.key(0)).toBe(STORAGE_KEY)
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}")).toEqual({
+      codex: { configValues: { model: "gpt-5.3-codex" } },
     })
   })
 })

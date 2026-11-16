@@ -1,5 +1,6 @@
 "use client"
 
+import { getActiveRemoteConnectionId } from "@/lib/transport"
 import type {
   SessionConfigOptionInfo,
   SessionConfigSelectInfo,
@@ -24,6 +25,13 @@ export function allSelectChoices(
 // and effort pickers showed a skeleton until the agent finished connecting.
 // Persisting it lets the composer show the last known lists at once; the live
 // lists from the agent overwrite the entry as soon as they arrive.
+//
+// Cowork fork: one cache per host. A desktop window on a remote host shares
+// this origin's localStorage with the local window, so a single key had each
+// window overwrite the other's lists with its own host's. This machine — and
+// the web build, which never has a remote connection — keeps the original key,
+// so the cache written before hosts were split stays this machine's and is
+// never copied to a remote host.
 
 export interface CachedSelectors {
   modes: SessionModeStateInfo | null
@@ -32,16 +40,26 @@ export interface CachedSelectors {
 
 const STORAGE_KEY = "jenny:selectors-cache:v1"
 
-let entries: Map<string, CachedSelectors> | null = null
+/** In-memory copy per host (storage key), read from storage on first use. */
+const byKey = new Map<string, Map<string, CachedSelectors>>()
 let version = 0
 const listeners = new Set<() => void>()
 
-function load(): Map<string, CachedSelectors> {
-  if (entries) return entries
-  entries = new Map()
+/** The key of the host behind this window: `…:remote-<id>` for a saved
+ *  remote connection (its id stays the same across reconnects). */
+function storageKey(): string {
+  const remoteId = getActiveRemoteConnectionId()
+  return remoteId == null ? STORAGE_KEY : `${STORAGE_KEY}:remote-${remoteId}`
+}
+
+function load(key: string = storageKey()): Map<string, CachedSelectors> {
+  const loaded = byKey.get(key)
+  if (loaded) return loaded
+  const entries = new Map<string, CachedSelectors>()
+  byKey.set(key, entries)
   if (typeof window === "undefined") return entries
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(key)
     if (!raw) return entries
     const parsed = JSON.parse(raw) as Record<string, CachedSelectors>
     for (const [agentType, value] of Object.entries(parsed)) {
@@ -59,13 +77,10 @@ function load(): Map<string, CachedSelectors> {
   return entries
 }
 
-function persist(): void {
-  if (typeof window === "undefined" || !entries) return
+function persist(key: string, entries: Map<string, CachedSelectors>): void {
+  if (typeof window === "undefined") return
   try {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify(Object.fromEntries(entries))
-    )
+    localStorage.setItem(key, JSON.stringify(Object.fromEntries(entries)))
   } catch {
     // Storage full or unavailable: the in-memory cache still works.
   }
@@ -85,12 +100,14 @@ export const selectorsCache = {
     return load().has(agentType)
   },
   set(agentType: string, value: CachedSelectors): void {
+    const key = storageKey()
+    const entries = load(key)
     // Store a copy: callers mutate the entry they read before setting it.
-    load().set(agentType, {
+    entries.set(agentType, {
       modes: value.modes,
       configOptions: value.configOptions,
     })
-    persist()
+    persist(key, entries)
     emit()
   },
 }
@@ -126,9 +143,9 @@ export function getSelectorsCacheVersion(): number {
   return version
 }
 
-/** Test hook: drop the in-memory copy so the next read reloads storage. */
+/** Test hook: drop the in-memory copies so the next read reloads storage. */
 export function resetSelectorsCacheForTests(): void {
-  entries = null
+  byKey.clear()
   version = 0
   listeners.clear()
 }

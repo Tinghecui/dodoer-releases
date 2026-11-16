@@ -8,6 +8,15 @@ import {
 } from "./selectors-cache"
 import type { SessionConfigOptionInfo } from "./types"
 
+// The saved connection behind this window: `null` for this machine (and the
+// web build), a saved connection's id in a desktop window on a remote host.
+const env = vi.hoisted(() => ({ remoteId: null as number | null }))
+vi.mock("@/lib/transport", () => ({
+  getActiveRemoteConnectionId: () => env.remoteId,
+}))
+
+const STORAGE_KEY = "jenny:selectors-cache:v1"
+
 const options: SessionConfigOptionInfo[] = [
   {
     id: "model",
@@ -28,6 +37,7 @@ describe("selectorsCache", () => {
   beforeEach(() => {
     localStorage.clear()
     resetSelectorsCacheForTests()
+    env.remoteId = null
   })
 
   it("persists entries across a reload of the module state", () => {
@@ -64,7 +74,79 @@ describe("selectorsCache", () => {
   })
 
   it("survives corrupt storage", () => {
-    localStorage.setItem("jenny:selectors-cache:v1", "{not json")
+    localStorage.setItem(STORAGE_KEY, "{not json")
     expect(selectorsCache.get("grok")).toBeUndefined()
+  })
+
+  it("keeps this machine and each remote host apart", () => {
+    const listOf = (value: string): SessionConfigOptionInfo[] => [
+      {
+        ...options[0],
+        kind: { ...options[0].kind, current_value: value },
+      } as SessionConfigOptionInfo,
+    ]
+    const shown = () => {
+      const kind = selectorsCache.get("codex")?.configOptions?.[0].kind
+      return kind?.type === "select" ? kind.current_value : null
+    }
+    selectorsCache.set("codex", { modes: null, configOptions: listOf("a") })
+    env.remoteId = 1
+    selectorsCache.set("codex", { modes: null, configOptions: listOf("b") })
+    env.remoteId = 2
+    selectorsCache.set("codex", { modes: null, configOptions: null })
+
+    // Apart in memory and again after a reload from storage.
+    for (const reload of [false, true]) {
+      if (reload) resetSelectorsCacheForTests()
+      env.remoteId = null
+      expect(shown()).toBe("a")
+      env.remoteId = 1
+      expect(shown()).toBe("b")
+      env.remoteId = 2
+      expect(selectorsCache.get("codex")?.configOptions).toBeNull()
+    }
+
+    // An offline pick in a remote window touches only that host's list.
+    env.remoteId = 1
+    setCachedConfigValue("codex", "model", "a")
+    expect(shown()).toBe("a")
+    env.remoteId = null
+    setCachedConfigValue("codex", "model", "b")
+    expect(shown()).toBe("b")
+    env.remoteId = 1
+    expect(shown()).toBe("a")
+  })
+
+  it("has nothing for a remote host it never saw, even with a local list", () => {
+    selectorsCache.set("codex", { modes: null, configOptions: options })
+    env.remoteId = 7
+    expect(selectorsCache.get("codex")).toBeUndefined()
+    expect(selectorsCache.has("codex")).toBe(false)
+  })
+
+  it("reads the cache saved before hosts were split as this machine's", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ grok: { modes: null, configOptions: options } })
+    )
+    expect(selectorsCache.get("grok")?.configOptions?.[0].id).toBe("model")
+    env.remoteId = 1
+    expect(selectorsCache.get("grok")).toBeUndefined()
+    selectorsCache.set("grok", { modes: null, configOptions: null })
+    // The remote host writes its own key; the old one stays this machine's.
+    expect(
+      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").grok.configOptions
+    ).toHaveLength(1)
+    expect(
+      JSON.parse(localStorage.getItem(`${STORAGE_KEY}:remote-1`) ?? "{}")
+    ).toEqual({ grok: { modes: null, configOptions: null } })
+  })
+
+  it("reads and writes only the original key without a remote host", () => {
+    // The web build never has a remote connection, so this is its behavior
+    // too: one key, the same one as before hosts were split.
+    selectorsCache.set("grok", { modes: null, configOptions: options })
+    expect(localStorage.length).toBe(1)
+    expect(localStorage.key(0)).toBe(STORAGE_KEY)
   })
 })

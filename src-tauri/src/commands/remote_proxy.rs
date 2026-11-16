@@ -628,9 +628,7 @@ pub(crate) async fn call_api(
     let status = response.status();
 
     if status == reqwest::StatusCode::UNAUTHORIZED {
-        return Err(AppCommandError::authentication_failed(
-            "Remote Workspace token is invalid",
-        ));
+        return Err(token_rejected());
     }
 
     if !status.is_success() {
@@ -655,6 +653,22 @@ pub(crate) async fn call_api(
     response.json::<Value>().await.map_err(|e| {
         AppCommandError::network("Failed to parse remote response").with_detail(e.to_string())
     })
+}
+
+/// 远端拒绝了这个窗口的口令（HTTP 401）时打的标记，放在 `i18n_params.reason`。
+/// 远端某条命令自己登录失败（git 推送、provider 的 key 不对）回的是 422，
+/// `code` 也是 `authentication_failed`，但不带这个标记，前端据此不登出窗口。
+const REMOTE_TOKEN_REJECTED: &str = "remote_token_rejected";
+
+/// 远端回 401：这个窗口的口令被拒（codeg-server 或它前面的 nginx / 门户回的都算）。
+/// 标记不放 `detail`：前端有 `detail` 就拿它当正文显示。
+fn token_rejected() -> AppCommandError {
+    let mut error = AppCommandError::authentication_failed("Remote Workspace token is invalid");
+    error.i18n_params = Some(BTreeMap::from([(
+        "reason".to_string(),
+        REMOTE_TOKEN_REJECTED.to_string(),
+    )]));
+    error
 }
 
 // ─── Multipart upload proxy ───────────────────────────────────────────
@@ -908,9 +922,7 @@ pub async fn remote_upload_attachment(
     let status = response.status();
 
     if status == reqwest::StatusCode::UNAUTHORIZED {
-        return Err(AppCommandError::authentication_failed(
-            "Remote Workspace token is invalid",
-        ));
+        return Err(token_rejected());
     }
 
     if !status.is_success() {
@@ -1275,9 +1287,7 @@ async fn upload_one_workspace_path(
 
     let status = response.status();
     if status == reqwest::StatusCode::UNAUTHORIZED {
-        return Err(AppCommandError::authentication_failed(
-            "Remote Workspace token is invalid",
-        ));
+        return Err(token_rejected());
     }
     if !status.is_success() {
         let raw_body = response.text().await.unwrap_or_default();
@@ -1494,9 +1504,7 @@ async fn remote_workspace_download_stream(
             })?;
         let status = ticket_response.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(AppCommandError::authentication_failed(
-                "Remote Workspace token is invalid",
-            ));
+            return Err(token_rejected());
         }
         if !status.is_success() {
             return remote_error_from_response(status, ticket_response).await;
@@ -4145,5 +4153,80 @@ mod tests {
                 "case: {path}"
             );
         }
+    }
+
+    // ─── 远端拒绝窗口口令的标记 ───────────────────────────────────────────
+
+    fn fake_connection(base_url: String) -> RemoteWorkspaceConnectionInfo {
+        RemoteWorkspaceConnectionInfo {
+            id: 1,
+            name: "fake remote".to_string(),
+            base_url,
+            token: "fake-token".to_string(),
+            headers: Vec::new(),
+            sort_order: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn json_response(status_line: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn rejection_reason(error: &AppCommandError) -> Option<&str> {
+        error
+            .i18n_params
+            .as_ref()
+            .and_then(|params| params.get("reason"))
+            .map(String::as_str)
+    }
+
+    /// 起一个只回一次 `response` 的假服务器，对它调一次 `call_api`。
+    async fn call_api_against(response: String) -> AppCommandError {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve_sequence(listener, vec![response]));
+        let proxy = RemoteProxyState::new();
+        let conn = fake_connection(format!("http://{addr}"));
+        let err = call_api(&proxy, &conn, "git_push", None, None)
+            .await
+            .expect_err("the fake server answers with an error");
+        server.await.unwrap();
+        err
+    }
+
+    #[test]
+    fn token_rejected_carries_the_marker_outside_detail() {
+        let err = token_rejected();
+        assert!(matches!(err.code, AppErrorCode::AuthenticationFailed));
+        assert_eq!(err.message, "Remote Workspace token is invalid");
+        assert_eq!(err.detail, None);
+        assert_eq!(err.i18n_key, None);
+        assert_eq!(rejection_reason(&err), Some("remote_token_rejected"));
+    }
+
+    #[tokio::test]
+    async fn call_api_marks_a_401_as_the_window_token_rejected() {
+        let err = call_api_against(json_response("401 Unauthorized", "")).await;
+        assert!(matches!(err.code, AppErrorCode::AuthenticationFailed));
+        assert_eq!(err.detail, None);
+        assert_eq!(rejection_reason(&err), Some(REMOTE_TOKEN_REJECTED));
+    }
+
+    #[tokio::test]
+    async fn call_api_passes_a_commands_own_auth_failure_through_unmarked() {
+        let err = call_api_against(json_response(
+            "422 Unprocessable Entity",
+            r#"{"code":"authentication_failed","message":"git push: authentication failed"}"#,
+        ))
+        .await;
+        assert!(matches!(err.code, AppErrorCode::AuthenticationFailed));
+        assert_eq!(err.message, "git push: authentication failed");
+        assert_eq!(rejection_reason(&err), None);
     }
 }

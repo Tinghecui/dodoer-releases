@@ -1,10 +1,13 @@
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use serde::{ser::SerializeStruct, Serialize, Serializer};
 use tokio::sync::{broadcast, RwLock};
 
-use crate::acp::types::{BackgroundPendingEntry, ConnectionStatus};
+use crate::acp::types::{
+    BackgroundPendingEntry, BackgroundPendingTask, BackgroundUncertainReason, ConnectionStatus,
+};
 use crate::acp::{AcpEvent, EventBusMetrics, EventEnvelope, InternalEventBus, SessionState};
 
 /// Broadcast-delivered event.
@@ -28,7 +31,22 @@ impl Serialize for WebEvent {
 
 pub struct WebEventBroadcaster {
     sender: broadcast::Sender<WebEvent>,
+    /// Cowork 加的：「留下来的『?』」，按对话 id。连接从 `ConnectionManager` 删掉以后还在，
+    /// 只在内存里（重启就没了）。只在很短的同步代码里拿着，从不跨 `.await`，拿着它时也不去拿
+    /// 别的锁（里面只会往 `sender` 发消息）。
+    background_slots: std::sync::Mutex<BackgroundSlots>,
 }
+
+/// Cowork 加的：一个对话在「留下来的『?』」表里的一格。
+#[derive(Debug, Default)]
+struct BackgroundSlot {
+    /// 报过读数或绑过这个对话的最新 [`crate::acp::SessionState`] 编号。
+    generation: u64,
+    /// 留下来的「?」；没有就是 `None`。
+    uncertain: Option<BackgroundPendingEntry>,
+}
+
+type BackgroundSlots = HashMap<i32, BackgroundSlot>;
 
 impl Default for WebEventBroadcaster {
     fn default() -> Self {
@@ -39,7 +57,42 @@ impl Default for WebEventBroadcaster {
 impl WebEventBroadcaster {
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(4096);
-        Self { sender }
+        Self {
+            sender,
+            background_slots: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn lock_background_slots(&self) -> std::sync::MutexGuard<'_, BackgroundSlots> {
+        self.background_slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Cowork 加的：`acp_list_background_pending` 的结果。`live` 是活着的连接的读数
+    /// （`ConnectionManager::list_background_pending`），再加上留下来的「?」里那些活着的连接
+    /// 没报过的对话；两边都有时以活着的连接为准。
+    pub fn merge_background_pending(
+        &self,
+        live: Vec<BackgroundPendingEntry>,
+    ) -> Vec<BackgroundPendingEntry> {
+        let mut entries = live;
+        {
+            let slots = self.lock_background_slots();
+            for (conversation_id, slot) in slots.iter() {
+                let Some(uncertain) = &slot.uncertain else {
+                    continue;
+                };
+                if entries
+                    .iter()
+                    .all(|e| e.conversation_id != *conversation_id)
+                {
+                    entries.push(uncertain.clone());
+                }
+            }
+        }
+        entries.sort_by_key(|e| e.conversation_id);
+        entries
     }
 
     /// Serialize `payload` once and broadcast. Returns the serialized
@@ -126,6 +179,20 @@ impl EventEmitter {
                     .map(|s| Arc::clone(&s))
             }
             EventEmitter::WebOnly { bus, .. } => Some(Arc::clone(bus)),
+            EventEmitter::Noop => None,
+        }
+    }
+
+    /// Cowork 加的：这个发射器背后的 [`WebEventBroadcaster`]（桌面从 `app.manage` 里找）。
+    pub fn web_broadcaster(&self) -> Option<Arc<WebEventBroadcaster>> {
+        match self {
+            #[cfg(feature = "tauri-runtime")]
+            EventEmitter::Tauri(app) => {
+                use tauri::Manager;
+                app.try_state::<Arc<WebEventBroadcaster>>()
+                    .map(|s| Arc::clone(&s))
+            }
+            EventEmitter::WebOnly { broadcaster, .. } => Some(Arc::clone(broadcaster)),
             EventEmitter::Noop => None,
         }
     }
@@ -501,7 +568,7 @@ pub const TOKEN_USAGE_SYNC_PROGRESS_EVENT: &str = "token-usage-sync://progress";
 /// Unified event emission: serializes the payload exactly once and dispatches
 /// the shared `Arc<Value>` to both the Tauri webview and the web broadcaster.
 pub fn emit_event(emitter: &EventEmitter, event: &str, payload: impl Serialize) {
-    match emitter {
+    let sent = match emitter {
         #[cfg(feature = "tauri-runtime")]
         EventEmitter::Tauri(app) => {
             use tauri::{Emitter, Manager};
@@ -513,13 +580,62 @@ pub fn emit_event(emitter: &EventEmitter, event: &str, payload: impl Serialize) 
             // copying the payload — Tauri serializes through the reference.
             let _ = app.emit(event, shared.as_ref());
             if let Some(web) = app.try_state::<Arc<WebEventBroadcaster>>() {
-                web.send_value(event, shared);
+                web.send_value(event, Arc::clone(&shared));
+            }
+            Some(shared)
+        }
+        EventEmitter::WebOnly { broadcaster, .. } => broadcaster.send(event, &payload),
+        EventEmitter::Noop => None,
+    };
+    // Cowork 加的：对话完成、取消或删掉了，留下来的「?」跟着删。只看这个频道发出去的内容，
+    // 不改 `ConversationChange` 本身。
+    if event == CONVERSATION_CHANGED_EVENT {
+        if let Some(conversation_id) = sent.as_deref().and_then(settled_conversation_id) {
+            clear_uncertain_background(emitter, conversation_id);
+        }
+    }
+}
+
+/// Cowork 加的：一条 [`CONVERSATION_CHANGED_EVENT`] 是不是说某个对话结束了（`Status` /
+/// `Upsert` 是 `completed` / `cancelled`，或者 `Deleted`）。是就返回对话 id。
+fn settled_conversation_id(value: &serde_json::Value) -> Option<i32> {
+    let settled = |status: &serde_json::Value| {
+        matches!(status.as_str(), Some("completed") | Some("cancelled"))
+    };
+    let id = |v: &serde_json::Value| v.as_i64().and_then(|n| i32::try_from(n).ok());
+    match value.get("kind")?.as_str()? {
+        "status" if settled(value.get("status")?) => id(value.get("id")?),
+        "upsert" => {
+            let summary = value.get("summary")?;
+            if settled(summary.get("status")?) {
+                id(summary.get("id")?)
+            } else {
+                None
             }
         }
-        EventEmitter::WebOnly { broadcaster, .. } => {
-            let _ = broadcaster.send(event, &payload);
-        }
-        EventEmitter::Noop => {}
+        "deleted" => id(value.get("id")?),
+        _ => None,
+    }
+}
+
+/// Cowork 加的：删掉一个对话留下来的「?」，删了就广播一条 `idle`。编号不动：旧连接照样不能
+/// 再把「?」写回来。
+fn clear_uncertain_background(emitter: &EventEmitter, conversation_id: i32) {
+    let Some(broadcaster) = emitter.web_broadcaster() else {
+        return;
+    };
+    // 拿着表锁发，和别的连接对同一个对话的广播排好先后。
+    let mut slots = broadcaster.lock_background_slots();
+    let removed = slots
+        .get_mut(&conversation_id)
+        .and_then(|slot| slot.uncertain.take())
+        .is_some();
+    if removed {
+        emit_event(
+            emitter,
+            BACKGROUND_PENDING_EVENT,
+            BackgroundPendingEntry::idle(conversation_id),
+        );
     }
 }
 
@@ -591,29 +707,52 @@ pub async fn emit_with_state_built<F>(
 where
     F: FnOnce(&mut SessionState) -> Option<AcpEvent>,
 {
-    let (envelope_arc, stream, evicted, turn_file_jobs, background_changes) = {
+    let (envelope_arc, stream, evicted, turn_file_jobs) = {
         let mut s = state.write().await;
         let Some(payload) = build(&mut s) else {
             return false;
         };
         // Cowork fork: read before and after under the same lock, so the
-        // broadcast below says exactly what this event changed.
-        let background_before = moves_background_pending(&payload)
-            .then(|| (s.conversation_id, s.background_pending()));
-        s.apply_event(&payload);
-        let background_changes = match background_before {
-            Some(before) => {
-                // The CLI and the background work in it end with the
-                // connection, whatever the counts last said.
-                let after = if is_disconnect(&payload) {
-                    (0, Vec::new())
+        // broadcast below says exactly what this event changed. 已经断开的连接
+        // 不再报读数（它的后台活跟着进程没了，「?」在断开那一刻已经留下）。
+        let disconnected = is_disconnect(&payload);
+        let background_before = (moves_background_pending(&payload)
+            && s.status != ConnectionStatus::Disconnected)
+            .then(|| {
+                let tasks = if disconnected {
+                    s.background_pending_tasks()
                 } else {
-                    s.background_pending()
+                    Vec::new()
                 };
-                background_pending_changes(before, (s.conversation_id, after))
-            }
-            None => Vec::new(),
-        };
+                (s.conversation_id, s.background_pending(), tasks)
+            });
+        s.apply_event(&payload);
+        if let Some((before_id, before, before_tasks)) = background_before {
+            // The CLI and the background work in it end with the
+            // connection, whatever the counts last said.
+            let after = if disconnected {
+                (0, Vec::new())
+            } else {
+                s.background_pending()
+            };
+            let after_tasks = if after.0 > 0 {
+                s.background_pending_tasks()
+            } else {
+                Vec::new()
+            };
+            // 拿着会话写锁把读数交给表、发出去：同一条连接的广播不会颠倒先后。表锁是叶子锁。
+            publish_background_pending(
+                emitter,
+                BackgroundPendingUpdate {
+                    generation: s.generation,
+                    before: (before_id, before),
+                    before_tasks,
+                    after: (s.conversation_id, after),
+                    after_tasks,
+                    disconnected,
+                },
+            );
+        }
         s.event_seq += 1;
         let envelope = Arc::new(EventEnvelope {
             seq: s.event_seq,
@@ -622,13 +761,7 @@ where
         });
         let evicted = s.push_recent_event(Arc::clone(&envelope));
         let turn_file_jobs = std::mem::take(&mut s.turn_file_jobs);
-        (
-            envelope,
-            s.event_stream(),
-            evicted,
-            turn_file_jobs,
-            background_changes,
-        )
+        (envelope, s.event_stream(), evicted, turn_file_jobs)
     };
 
     // Office auto-preview: confirm the files this turn's tool calls named.
@@ -708,10 +841,6 @@ where
             );
         }
     }
-    // Cowork fork: the same for the sidebar's background-work hourglass.
-    for change in background_changes {
-        emit_event(emitter, BACKGROUND_PENDING_EVENT, change);
-    }
     true
 }
 
@@ -757,29 +886,154 @@ fn background_pending_changes(
     let mut changes = Vec::new();
     if before_id != after_id {
         if let Some(conversation_id) = before_id.filter(|_| before_count > 0) {
-            changes.push(BackgroundPendingEntry {
-                conversation_id,
-                count: 0,
-                names: Vec::new(),
-            });
+            changes.push(BackgroundPendingEntry::idle(conversation_id));
         }
         if let Some(conversation_id) = after_id.filter(|_| after_count > 0) {
-            changes.push(BackgroundPendingEntry {
+            changes.push(BackgroundPendingEntry::reading(
                 conversation_id,
-                count: after_count,
-                names: after_names,
-            });
+                after_count,
+                after_names,
+                Vec::new(),
+            ));
         }
     } else if let Some(conversation_id) = after_id {
         if before_count != after_count || before_names != after_names {
-            changes.push(BackgroundPendingEntry {
+            changes.push(BackgroundPendingEntry::reading(
                 conversation_id,
-                count: after_count,
-                names: after_names,
-            });
+                after_count,
+                after_names,
+                Vec::new(),
+            ));
         }
     }
     changes
+}
+
+/// Cowork 加的：一条连接在一个会动读数的事件前后的样子，交给「留下来的『?』」表。
+struct BackgroundPendingUpdate {
+    /// 这条连接的 [`crate::acp::SessionState`] 编号。
+    generation: u64,
+    before: BackgroundPendingReading,
+    /// 断开前还没完的后台任务（只在断开时读）。
+    before_tasks: Vec<BackgroundPendingTask>,
+    after: BackgroundPendingReading,
+    /// 事件后还没完的后台任务（`count > 0` 时才读）。
+    after_tasks: Vec<BackgroundPendingTask>,
+    /// 事件是断开。
+    disconnected: bool,
+}
+
+/// Cowork 加的：把读数交给表，并把该发的广播发出去。拿着表锁发，和别的连接、和
+/// [`clear_uncertain_background`] 对同一个对话的广播排好先后。没有 broadcaster（`Noop`、
+/// 桌面上没注册）就只算不记。
+fn publish_background_pending(emitter: &EventEmitter, update: BackgroundPendingUpdate) {
+    let broadcaster = emitter.web_broadcaster();
+    let mut scratch = BackgroundSlots::new();
+    let mut guard = broadcaster.as_ref().map(|b| b.lock_background_slots());
+    let slots = match guard.as_mut() {
+        Some(slots) => &mut **slots,
+        None => &mut scratch,
+    };
+    for change in background_pending_broadcasts(slots, update) {
+        emit_event(emitter, BACKGROUND_PENDING_EVENT, change);
+    }
+}
+
+/// 编号是 `generation` 的连接给 `conversation_id` 报读数：编号不比表里的小就记下、返回
+/// `true`；更旧的连接返回 `false`（不进表、也不广播）。
+fn admit_background_reading(
+    slots: &mut BackgroundSlots,
+    conversation_id: i32,
+    generation: u64,
+) -> bool {
+    let slot = slots.entry(conversation_id).or_default();
+    if generation < slot.generation {
+        return false;
+    }
+    slot.generation = generation;
+    true
+}
+
+/// Cowork 加的：一次读数变化要发的 [`BACKGROUND_PENDING_EVENT`]，顺带改表：
+/// - 编号比表里小的连接，什么都不发、不记；
+/// - 活着的连接报读数（包括绑到这个对话上，即使 `count` 是 0），删掉留下来的「?」并发 `idle`；
+/// - 断开前 `count > 0`，发 `agent_exited` 的「?」并留在表里；
+/// - 其余和原来一样（[`background_pending_changes`]）。
+fn background_pending_broadcasts(
+    slots: &mut BackgroundSlots,
+    update: BackgroundPendingUpdate,
+) -> Vec<BackgroundPendingEntry> {
+    let BackgroundPendingUpdate {
+        generation,
+        before,
+        before_tasks,
+        after,
+        after_tasks,
+        disconnected,
+    } = update;
+    let (before_id, (before_count, _)) = &before;
+    let after_id = after.0;
+    let mut out = Vec::new();
+
+    if disconnected {
+        // 断开不换对话。断开前在等后台，后台活跟着进程没了：留「?」。`count` 照旧 0。
+        let Some(conversation_id) = after_id.filter(|_| *before_count > 0) else {
+            return out;
+        };
+        if !admit_background_reading(slots, conversation_id, generation) {
+            return out;
+        }
+        let entry = BackgroundPendingEntry::uncertain(
+            conversation_id,
+            BackgroundUncertainReason::AgentExited,
+            before_tasks,
+        );
+        if let Some(slot) = slots.get_mut(&conversation_id) {
+            slot.uncertain = Some(entry.clone());
+        }
+        out.push(entry);
+        return out;
+    }
+
+    // 换了对话：旧的那一行照原来的规矩清，但旧行上更新的连接说了算。
+    let relinked = *before_id != after_id;
+    let old_row_admitted = !relinked
+        || before_id
+            .filter(|_| *before_count > 0)
+            .is_none_or(|old| admit_background_reading(slots, old, generation));
+    let new_row_admitted =
+        after_id.is_some_and(|id| admit_background_reading(slots, id, generation));
+
+    // 活着的连接报了这个对话的读数（包括刚绑上、`count` 是 0）：留下来的「?」作废。
+    if let Some(conversation_id) = after_id.filter(|_| new_row_admitted) {
+        let removed = slots
+            .get_mut(&conversation_id)
+            .and_then(|slot| slot.uncertain.take())
+            .is_some();
+        if removed {
+            out.push(BackgroundPendingEntry::idle(conversation_id));
+        }
+    }
+
+    for mut change in background_pending_changes(before, after) {
+        let admitted = if Some(change.conversation_id) == after_id {
+            new_row_admitted
+        } else {
+            old_row_admitted
+        };
+        if !admitted {
+            continue;
+        }
+        // 上面已经为删「?」发过 `idle` 了，同一条不重发。
+        if change.count == 0 && out.contains(&change) {
+            continue;
+        }
+        if Some(change.conversation_id) == after_id && change.count > 0 {
+            change.tasks = after_tasks.clone();
+        }
+        out.push(change);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -883,6 +1137,9 @@ mod tests {
         let p = &*evt.payload;
         assert_eq!(p["conversation_id"], 7);
         assert_eq!(p["count"], 1);
+        assert_eq!(p["state"], "waiting");
+        assert!(p["reason"].is_null());
+        assert!(p["tasks"].is_array());
 
         // Same count again (a turn surfaced, nothing settled): no broadcast.
         emit_with_state(&state, &emitter, background_activity(1, 20)).await;
@@ -903,6 +1160,284 @@ mod tests {
         let p = &*evt.payload;
         assert_eq!(p["conversation_id"], 7);
         assert_eq!(p["count"], 0);
+        assert_eq!(p["state"], "uncertain");
+        assert_eq!(p["reason"], "agent_exited");
+    }
+
+    fn watcher_activity(tasks: &[(&str, &str)], watermark: u64) -> AcpEvent {
+        AcpEvent::BackgroundActivity {
+            session_id: "sid".into(),
+            turns: vec![],
+            outstanding: tasks.len() as u32,
+            outstanding_tasks: tasks
+                .iter()
+                .map(
+                    |(id, description)| crate::acp::types::BackgroundOutstandingTask {
+                        task_id: (*id).into(),
+                        kind: crate::acp::types::BackgroundTaskKind::Shell,
+                        tool_use_id: None,
+                        description: Some((*description).into()),
+                        started_at_ms: 1_000,
+                    },
+                )
+                .collect(),
+            settled: vec![],
+            watermark,
+        }
+    }
+
+    fn linked(conversation_id: i32) -> AcpEvent {
+        AcpEvent::ConversationLinked {
+            conversation_id,
+            folder_id: 1,
+            parent_conversation_id: None,
+            parent_tool_use_id: None,
+        }
+    }
+
+    fn disconnected() -> AcpEvent {
+        AcpEvent::StatusChanged {
+            status: ConnectionStatus::Disconnected,
+        }
+    }
+
+    /// 一个收 web 广播的发射器，和它后面的 broadcaster。
+    fn web_emitter() -> (
+        Arc<WebEventBroadcaster>,
+        EventEmitter,
+        broadcast::Receiver<WebEvent>,
+    ) {
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+        (broadcaster, emitter, rx)
+    }
+
+    /// 只留 `conversation://background` 上的广播。
+    fn background_events(rx: &mut broadcast::Receiver<WebEvent>) -> Vec<serde_json::Value> {
+        let mut out = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if evt.channel == BACKGROUND_PENDING_EVENT {
+                out.push((*evt.payload).clone());
+            }
+        }
+        out
+    }
+
+    /// 完成标准 2：等后台时断开，广播「?」（`count` 照旧 0、带断开前的任务）并留在表里。
+    #[tokio::test]
+    async fn disconnect_with_background_work_leaves_an_uncertain_mark() {
+        let state = fresh_state();
+        state.write().await.conversation_id = Some(7);
+        let (broadcaster, emitter, mut rx) = web_emitter();
+
+        emit_with_state(&state, &emitter, watcher_activity(&[("b1", "Watch CI")], 1)).await;
+        let first = background_events(&mut rx);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0]["count"], 1);
+        assert_eq!(first[0]["state"], "waiting");
+        assert_eq!(
+            first[0]["tasks"],
+            serde_json::json!([{ "task_id": "b1", "name": "Watch CI" }])
+        );
+
+        emit_with_state(&state, &emitter, disconnected()).await;
+        let second = background_events(&mut rx);
+        assert_eq!(
+            second,
+            vec![serde_json::json!({
+                "conversation_id": 7,
+                "count": 0,
+                "names": [],
+                "state": "uncertain",
+                "reason": "agent_exited",
+                "tasks": [{ "task_id": "b1", "name": "Watch CI" }],
+            })]
+        );
+        let listed = broadcaster.merge_background_pending(Vec::new());
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].state,
+            crate::acp::types::BackgroundPendingState::Uncertain
+        );
+
+        // 断开以后同一条连接再来的读数不算数。
+        emit_with_state(&state, &emitter, watcher_activity(&[], 2)).await;
+        assert!(background_events(&mut rx).is_empty());
+        assert_eq!(broadcaster.merge_background_pending(Vec::new()).len(), 1);
+    }
+
+    /// 完成标准 2：断开前 `count` 是 0，和原来一样什么都不发，也不留「?」。
+    #[tokio::test]
+    async fn disconnect_without_background_work_stays_quiet() {
+        let state = fresh_state();
+        state.write().await.conversation_id = Some(7);
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        emit_with_state(&state, &emitter, disconnected()).await;
+        assert!(background_events(&mut rx).is_empty());
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// 让对话 7 留下一个「?」：一条连接绑上 7、等后台、断开。
+    async fn leave_uncertain_mark(emitter: &EventEmitter) {
+        let state = fresh_state();
+        emit_with_state(&state, emitter, linked(7)).await;
+        emit_with_state(&state, emitter, watcher_activity(&[("b1", "Watch CI")], 1)).await;
+        emit_with_state(&state, emitter, disconnected()).await;
+    }
+
+    fn idle_entry(conversation_id: i32) -> serde_json::Value {
+        serde_json::json!({
+            "conversation_id": conversation_id,
+            "count": 0,
+            "names": [],
+            "state": "idle",
+            "reason": null,
+            "tasks": [],
+        })
+    }
+
+    /// 完成标准 4：新连接绑到这个对话上，即使 `count` 是 0，也删掉「?」并广播 `idle`。
+    #[tokio::test]
+    async fn a_new_connection_linking_the_conversation_clears_the_mark() {
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        leave_uncertain_mark(&emitter).await;
+        let _ = background_events(&mut rx);
+
+        let next = fresh_state();
+        emit_with_state(&next, &emitter, linked(7)).await;
+        assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// 完成标准 4：一条连接的对话 id 换成这个对话（不经 `ConversationLinked`）也算绑上。
+    #[tokio::test]
+    async fn a_connection_relinked_onto_the_conversation_clears_the_mark() {
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        leave_uncertain_mark(&emitter).await;
+        let _ = background_events(&mut rx);
+
+        let next = fresh_state();
+        emit_with_state(&next, &emitter, linked(8)).await;
+        next.write().await.conversation_id = Some(7);
+        emit_with_state(&next, &emitter, watcher_activity(&[], 1)).await;
+        assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// 完成标准 4：`conversation://changed` 的 `Status` 是完成 / 取消时删。
+    #[tokio::test]
+    async fn a_settled_status_clears_the_mark() {
+        for status in ["completed", "cancelled"] {
+            let (broadcaster, emitter, mut rx) = web_emitter();
+            leave_uncertain_mark(&emitter).await;
+            let _ = background_events(&mut rx);
+
+            // 还在审的状态不删。
+            emit_event(
+                &emitter,
+                CONVERSATION_CHANGED_EVENT,
+                ConversationChange::Status {
+                    id: 7,
+                    status: "pending_review".into(),
+                },
+            );
+            assert!(background_events(&mut rx).is_empty());
+            assert_eq!(broadcaster.merge_background_pending(Vec::new()).len(), 1);
+
+            emit_event(
+                &emitter,
+                CONVERSATION_CHANGED_EVENT,
+                ConversationChange::Status {
+                    id: 7,
+                    status: status.into(),
+                },
+            );
+            assert_eq!(background_events(&mut rx), vec![idle_entry(7)], "{status}");
+            assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+        }
+    }
+
+    /// 完成标准 4：界面上手动改状态走 `Upsert`，`summary.status` 是完成时删。
+    #[tokio::test]
+    async fn a_settled_upsert_clears_the_mark() {
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        leave_uncertain_mark(&emitter).await;
+        let _ = background_events(&mut rx);
+
+        let upsert = |status: &str| serde_json::json!({ "kind": "upsert", "summary": { "id": 7, "status": status } });
+        emit_event(
+            &emitter,
+            CONVERSATION_CHANGED_EVENT,
+            upsert("pending_review"),
+        );
+        assert!(background_events(&mut rx).is_empty());
+        emit_event(&emitter, CONVERSATION_CHANGED_EVENT, upsert("completed"));
+        assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// 完成标准 4：删掉对话时删。
+    #[tokio::test]
+    async fn deleting_the_conversation_clears_the_mark() {
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        leave_uncertain_mark(&emitter).await;
+        let _ = background_events(&mut rx);
+
+        emit_event(
+            &emitter,
+            CONVERSATION_CHANGED_EVENT,
+            ConversationChange::Deleted { id: 8 },
+        );
+        assert!(background_events(&mut rx).is_empty());
+        emit_event(
+            &emitter,
+            CONVERSATION_CHANGED_EVENT,
+            ConversationChange::Deleted { id: 7 },
+        );
+        assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// 完成标准 4：表只在内存里，服务器重启（新的 broadcaster）以后没有。
+    #[tokio::test]
+    async fn a_restarted_server_has_no_marks() {
+        let (broadcaster, emitter, _rx) = web_emitter();
+        leave_uncertain_mark(&emitter).await;
+        assert_eq!(broadcaster.merge_background_pending(Vec::new()).len(), 1);
+        let restarted = WebEventBroadcaster::new();
+        assert!(restarted.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// 完成标准 5：A 绑 7、B 再绑 7，A 带着 `count = 1` 断开：没有广播，表里没有「?」。
+    #[tokio::test]
+    async fn an_older_connection_cannot_overwrite_a_newer_one() {
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        let a = fresh_state();
+        let b = fresh_state();
+        emit_with_state(&a, &emitter, linked(7)).await;
+        emit_with_state(&b, &emitter, linked(7)).await;
+        let _ = background_events(&mut rx);
+
+        emit_with_state(&a, &emitter, watcher_activity(&[("b1", "Watch CI")], 1)).await;
+        emit_with_state(&a, &emitter, disconnected()).await;
+        assert!(background_events(&mut rx).is_empty());
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// 完成标准 3：同一个对话又有一条活连接报着 `count > 0` 时，列表以活连接为准。
+    #[tokio::test]
+    async fn the_list_prefers_a_live_reading_over_a_mark() {
+        let (broadcaster, emitter, _rx) = web_emitter();
+        leave_uncertain_mark(&emitter).await;
+        let live = BackgroundPendingEntry::reading(7, 2, vec!["sample.sh".into()], vec![]);
+        let listed = broadcaster.merge_background_pending(vec![
+            live.clone(),
+            BackgroundPendingEntry::reading(9, 1, vec![], vec![]),
+        ]);
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0], live);
+        assert_eq!(listed[1].conversation_id, 9);
     }
 
     #[test]
@@ -920,6 +1455,10 @@ mod tests {
         );
         assert_eq!(renamed.len(), 1);
         assert_eq!(renamed[0].names, vec!["b".to_string()]);
+        assert_eq!(
+            renamed[0].state,
+            crate::acp::types::BackgroundPendingState::Waiting
+        );
         // Re-linked with work out: clear the old row, mark the new one.
         let relinked = background_pending_changes((Some(7), one()), (Some(8), one()));
         assert_eq!(

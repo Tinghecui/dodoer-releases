@@ -3545,17 +3545,29 @@ impl ConnectionManager {
             if busier {
                 by_conversation.insert(
                     conversation_id,
-                    crate::acp::types::BackgroundPendingEntry {
+                    crate::acp::types::BackgroundPendingEntry::reading(
                         conversation_id,
                         count,
                         names,
-                    },
+                        state.background_pending_tasks(),
+                    ),
                 );
             }
         }
         let mut entries: Vec<_> = by_conversation.into_values().collect();
         entries.sort_by_key(|e| e.conversation_id);
         entries
+    }
+
+    /// Cowork 加的：`acp_list_background_pending` 两个入口返回的东西：活着的连接的读数
+    /// （[`Self::list_background_pending`]），加上 `broadcaster` 里留下来的「?」中活着的
+    /// 连接没报的对话。先放开连接表的锁，再拿表锁。
+    pub async fn list_background_pending_with_uncertain(
+        &self,
+        broadcaster: &crate::web::event_bridge::WebEventBroadcaster,
+    ) -> Vec<crate::acp::types::BackgroundPendingEntry> {
+        let live = self.list_background_pending().await;
+        broadcaster.merge_background_pending(live)
     }
 
     /// Raw per-connection rows for the pet panel's active-session list.
@@ -8293,6 +8305,80 @@ mod tests {
                 .map(|e| (e.conversation_id, e.count))
                 .collect::<Vec<_>>(),
             vec![(42, 3)]
+        );
+    }
+
+    /// Cowork 完成标准 3：断开、把连接从 manager 删掉以后列表里还有「?」；同一个对话又有
+    /// 一条 `count > 0` 的活连接时，列表里是活连接那条。
+    #[tokio::test]
+    async fn background_pending_list_keeps_an_uncertain_mark_after_the_connection_is_gone() {
+        use crate::acp::types::{BackgroundPendingState, BackgroundUncertainReason};
+        let mgr = ConnectionManager::new();
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+        let gone = fake_connection("c1", None);
+        emit_with_state(
+            &gone.state,
+            &emitter,
+            AcpEvent::ConversationLinked {
+                conversation_id: 42,
+                folder_id: 1,
+                parent_conversation_id: None,
+                parent_tool_use_id: None,
+            },
+        )
+        .await;
+        emit_with_state(
+            &gone.state,
+            &emitter,
+            AcpEvent::BackgroundActivity {
+                session_id: "sid".into(),
+                turns: vec![],
+                outstanding: 1,
+                outstanding_tasks: vec![],
+                settled: vec![],
+                watermark: 1,
+            },
+        )
+        .await;
+        mgr.connections.lock().await.insert("c1".to_string(), gone);
+        emit_with_state(
+            &mgr.get_state("c1").await.unwrap(),
+            &emitter,
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Disconnected,
+            },
+        )
+        .await;
+        mgr.connections.lock().await.remove("c1");
+
+        let entries = mgr
+            .list_background_pending_with_uncertain(&broadcaster)
+            .await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].conversation_id, 42);
+        assert_eq!(entries[0].count, 0);
+        assert_eq!(entries[0].state, BackgroundPendingState::Uncertain);
+        assert_eq!(
+            entries[0].reason,
+            Some(BackgroundUncertainReason::AgentExited)
+        );
+
+        // 一条活连接也绑着 42、报着后台活：以它为准。
+        let live = fake_connection("c2", Some(42));
+        if let Ok(mut state) = live.state.try_write() {
+            state.background_outstanding = 2;
+        }
+        mgr.connections.lock().await.insert("c2".to_string(), live);
+        let entries = mgr
+            .list_background_pending_with_uncertain(&broadcaster)
+            .await;
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.conversation_id, e.count, e.state))
+                .collect::<Vec<_>>(),
+            vec![(42, 2, BackgroundPendingState::Waiting)]
         );
     }
 

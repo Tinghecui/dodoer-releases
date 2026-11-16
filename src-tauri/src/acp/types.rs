@@ -1028,7 +1028,95 @@ pub struct BackgroundPendingEntry {
     /// Their labels, when the agent named them (may be fewer than `count`).
     #[serde(default)]
     pub names: Vec<String>,
+    /// Cowork 加的：侧栏这一行该画什么。新服务器发的每一条都带；老服务器的条目没有它，
+    /// 读进来是 `idle`（反正后端不读别人发的条目）。`count` 的意思不变：「?」的条目
+    /// `count` 照旧是 0，老客户端照旧把沙漏收起来。
+    #[serde(default)]
+    pub state: BackgroundPendingState,
+    /// `state` 是 `uncertain` 时为什么；否则是 `null`。
+    #[serde(default)]
+    pub reason: Option<BackgroundUncertainReason>,
+    /// 这条连接还没完的后台任务（最多 [`BACKGROUND_PENDING_TASKS_MAX`] 个，按 `task_id` 排）。
+    #[serde(default)]
+    pub tasks: Vec<BackgroundPendingTask>,
 }
+
+impl BackgroundPendingEntry {
+    /// 一条连接的读数：`count > 0` 是等后台，否则什么都没有。
+    pub fn reading(
+        conversation_id: i32,
+        count: u32,
+        names: Vec<String>,
+        tasks: Vec<BackgroundPendingTask>,
+    ) -> Self {
+        let state = if count > 0 {
+            BackgroundPendingState::Waiting
+        } else {
+            BackgroundPendingState::Idle
+        };
+        Self {
+            conversation_id,
+            count,
+            names,
+            state,
+            reason: None,
+            tasks: if count > 0 { tasks } else { Vec::new() },
+        }
+    }
+
+    /// 清掉这一行：没有沙漏，也没有「?」。
+    pub fn idle(conversation_id: i32) -> Self {
+        Self::reading(conversation_id, 0, Vec::new(), Vec::new())
+    }
+
+    /// 「?」：`count` 照旧是 0（老客户端收起沙漏），新客户端看 `state`。
+    pub fn uncertain(
+        conversation_id: i32,
+        reason: BackgroundUncertainReason,
+        tasks: Vec<BackgroundPendingTask>,
+    ) -> Self {
+        Self {
+            conversation_id,
+            count: 0,
+            names: Vec::new(),
+            state: BackgroundPendingState::Uncertain,
+            reason: Some(reason),
+            tasks,
+        }
+    }
+}
+
+/// Cowork 加的：[`BackgroundPendingEntry::state`] 的三个值。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundPendingState {
+    /// 什么都没有。
+    #[default]
+    Idle,
+    /// 等后台：`count > 0`，没有疑点。
+    Waiting,
+    /// 「?」：声称在跑或在等后台，但没有活着的进程在推进。
+    Uncertain,
+}
+
+/// Cowork 加的：「?」的原因，三个值和 dodoer 一样。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundUncertainReason {
+    AgentExited,
+    BackgroundProcessExited,
+    SilentWithoutChildren,
+}
+
+/// Cowork 加的：一个还没完的后台任务，给「?」的悬停写任务名。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundPendingTask {
+    pub task_id: String,
+    pub name: String,
+}
+
+/// [`BackgroundPendingEntry::tasks`] 最多带几个。
+pub const BACKGROUND_PENDING_TASKS_MAX: usize = 20;
 
 /// One background task settled by a `<task-notification>` transcript record,
 /// carried on [`AcpEvent::BackgroundActivity`]. `task_id` is the launch ack's
@@ -2917,5 +3005,61 @@ mod permission_option_tests {
         assert_eq!(id(PermissionOptionInfo::reject_once_in(&standing)), None);
         assert_eq!(id(PermissionOptionInfo::allow_once_in(&[])), None);
         assert_eq!(id(PermissionOptionInfo::reject_once_in(&[])), None);
+    }
+}
+
+#[cfg(test)]
+mod background_pending_entry_tests {
+    use super::*;
+
+    /// 老服务器发的条目（只有三个老字段）照样读得进来。
+    #[test]
+    fn background_pending_entry_reads_the_old_wire_shape() {
+        let old = serde_json::json!({ "conversation_id": 7, "count": 1, "names": ["Watch CI"] });
+        let entry: BackgroundPendingEntry = serde_json::from_value(old).unwrap();
+        assert_eq!(entry.conversation_id, 7);
+        assert_eq!(entry.count, 1);
+        assert_eq!(entry.names, vec!["Watch CI".to_string()]);
+        assert!(entry.reason.is_none());
+        assert!(entry.tasks.is_empty());
+    }
+
+    /// 等后台的条目：`count` / `names` 和原来一样，另外多三个字段。
+    #[test]
+    fn background_pending_entry_waiting_keeps_the_old_fields() {
+        let entry = BackgroundPendingEntry::reading(
+            7,
+            1,
+            vec!["Watch CI".to_string()],
+            vec![BackgroundPendingTask {
+                task_id: "b1".into(),
+                name: "Watch CI".into(),
+            }],
+        );
+        let wire = serde_json::to_value(&entry).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "conversation_id": 7,
+                "count": 1,
+                "names": ["Watch CI"],
+                "state": "waiting",
+                "reason": null,
+                "tasks": [{ "task_id": "b1", "name": "Watch CI" }],
+            })
+        );
+        let unclear = serde_json::to_value(BackgroundPendingEntry::uncertain(
+            7,
+            BackgroundUncertainReason::AgentExited,
+            vec![],
+        ))
+        .unwrap();
+        assert_eq!(unclear["count"], 0);
+        assert_eq!(unclear["state"], "uncertain");
+        assert_eq!(unclear["reason"], "agent_exited");
+        let idle = serde_json::to_value(BackgroundPendingEntry::idle(7)).unwrap();
+        assert_eq!(idle["state"], "idle");
+        assert!(idle["reason"].is_null());
+        assert_eq!(idle["tasks"], serde_json::json!([]));
     }
 }

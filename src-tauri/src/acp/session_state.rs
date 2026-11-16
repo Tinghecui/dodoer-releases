@@ -558,6 +558,9 @@ pub struct SessionState {
     // 事件锚点
     pub event_seq: u64,
     pub last_activity_at: DateTime<Utc>,
+    /// Cowork 加的：建出来时拿的进程内递增编号。侧栏的「留下来的『?』」按对话记最新的编号，
+    /// 编号更小（更旧）的连接发来的读数不能盖过新连接（见 `web::event_bridge`）。
+    pub(crate) generation: u64,
 
     /// Per-connection event broadcaster used by the WS attach protocol.
     /// New subscribers register receivers here while holding the SessionState
@@ -873,6 +876,12 @@ pub enum TurnStatusWriter {
     CliFallback,
 }
 
+/// Cowork 加的：[`SessionState::generation`] 的来源，从 1 开始。
+fn next_session_generation() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 impl SessionState {
     /// Claim the conversation-status write of the `TurnComplete` at `seq` for
     /// `writer`. `true` when `writer` owns it — newly, or already (a retry of
@@ -966,6 +975,7 @@ impl SessionState {
             last_error: None,
             session_started_tx: None,
             event_seq: 0,
+            generation: next_session_generation(),
             last_activity_at: Utc::now(),
             event_stream: Arc::new(ConnectionEventStream::new()),
             recent_events: RecentEventsBuffer::new(),
@@ -2007,6 +2017,44 @@ impl SessionState {
                 .collect();
         }
         (count, names)
+    }
+
+    /// Cowork 加的：还没完的后台任务，来源和 [`Self::background_pending`] 的名字一样：
+    /// 有活着的 AIR async task 就用它们（`name`，空的用 `description`），没有就用 watcher
+    /// 的任务（`description`，空的用 `task_id`）。按 `task_id` 排，最多
+    /// [`crate::acp::types::BACKGROUND_PENDING_TASKS_MAX`] 个。
+    pub fn background_pending_tasks(&self) -> Vec<crate::acp::types::BackgroundPendingTask> {
+        use crate::acp::types::BackgroundPendingTask;
+        let mut tasks: Vec<BackgroundPendingTask> = self
+            .async_tasks
+            .values()
+            .filter(|t| !crate::acp::types::async_task_state_is_terminal(&t.state))
+            .map(|t| BackgroundPendingTask {
+                task_id: t.task_id.clone(),
+                name: if t.name.is_empty() {
+                    t.description.clone()
+                } else {
+                    t.name.clone()
+                },
+            })
+            .collect();
+        if tasks.is_empty() {
+            tasks = self
+                .background_outstanding_tasks
+                .iter()
+                .map(|t| BackgroundPendingTask {
+                    task_id: t.task_id.clone(),
+                    name: t
+                        .description
+                        .clone()
+                        .filter(|d| !d.is_empty())
+                        .unwrap_or_else(|| t.task_id.clone()),
+                })
+                .collect();
+        }
+        tasks.sort_by(|a, b| a.task_id.cmp(&b.task_id));
+        tasks.truncate(crate::acp::types::BACKGROUND_PENDING_TASKS_MAX);
+        tasks
     }
 
     /// Whether this connection has launched background work (async sub-agent /
@@ -3775,6 +3823,88 @@ mod tests {
             watermark: 2,
         });
         assert_eq!(s.background_pending(), (0, vec![]));
+    }
+
+    /// Cowork：「?」悬停用的任务列表，来源和名字一样，按 `task_id` 排、最多 20 个。
+    #[test]
+    fn background_pending_tasks_follow_the_names_source_sorted_and_capped() {
+        use crate::acp::types::{
+            BackgroundOutstandingTask, BackgroundPendingTask, BackgroundTaskKind,
+        };
+        let mut s = fresh_state();
+        assert!(s.background_pending_tasks().is_empty());
+        let watcher_task = |id: &str, description: Option<&str>| BackgroundOutstandingTask {
+            task_id: id.into(),
+            kind: BackgroundTaskKind::Shell,
+            tool_use_id: None,
+            description: description.map(Into::into),
+            started_at_ms: 1_000,
+        };
+        s.apply_event(&AcpEvent::BackgroundActivity {
+            session_id: "sid".into(),
+            turns: vec![],
+            outstanding: 2,
+            outstanding_tasks: vec![
+                watcher_task("b2", None),
+                watcher_task("b1", Some("Watch CI")),
+            ],
+            settled: vec![],
+            watermark: 1,
+        });
+        let task = |id: &str, name: &str| BackgroundPendingTask {
+            task_id: id.into(),
+            name: name.into(),
+        };
+        assert_eq!(
+            s.background_pending_tasks(),
+            vec![task("b1", "Watch CI"), task("b2", "b2")]
+        );
+
+        // 有活着的 async task 就用它们；名字空的用 description。
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: AsyncTaskDelta {
+                name: Some("pnpm test".into()),
+                task_type: Some("shell".into()),
+                ..async_task_delta("t2", true)
+            },
+        });
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: AsyncTaskDelta {
+                name: Some(String::new()),
+                description: Some("sample.sh".into()),
+                task_type: Some("shell".into()),
+                ..async_task_delta("t1", true)
+            },
+        });
+        assert_eq!(
+            s.background_pending_tasks(),
+            vec![task("t1", "sample.sh"), task("t2", "pnpm test")]
+        );
+
+        // 最多 20 个。
+        let many: Vec<_> = (0..30)
+            .map(|i| watcher_task(&format!("w{i:02}"), None))
+            .collect();
+        let mut w = fresh_state();
+        w.apply_event(&AcpEvent::BackgroundActivity {
+            session_id: "sid".into(),
+            turns: vec![],
+            outstanding: 30,
+            outstanding_tasks: many,
+            settled: vec![],
+            watermark: 1,
+        });
+        let tasks = w.background_pending_tasks();
+        assert_eq!(tasks.len(), crate::acp::types::BACKGROUND_PENDING_TASKS_MAX);
+        assert_eq!(tasks[0].task_id, "w00");
+    }
+
+    /// Cowork：每个 `SessionState` 一个递增的编号，后建的大。
+    #[test]
+    fn session_states_take_increasing_generations() {
+        let a = fresh_state();
+        let b = fresh_state();
+        assert!(b.generation > a.generation);
     }
 
     #[test]

@@ -620,7 +620,11 @@ pub async fn acp_list_background_pending(
     Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<Vec<crate::acp::types::BackgroundPendingEntry>>, AppCommandError> {
     let manager = &state.connection_manager;
-    Ok(Json(manager.list_background_pending().await))
+    Ok(Json(
+        manager
+            .list_background_pending_with_uncertain(&state.event_broadcaster)
+            .await,
+    ))
 }
 
 #[derive(Deserialize)]

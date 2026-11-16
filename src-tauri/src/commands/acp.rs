@@ -12691,8 +12691,9 @@ pub async fn acp_list_connections(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_list_background_pending(
     manager: State<'_, ConnectionManager>,
+    web: State<'_, std::sync::Arc<crate::web::event_bridge::WebEventBroadcaster>>,
 ) -> Result<Vec<crate::acp::types::BackgroundPendingEntry>, AcpError> {
-    Ok(manager.list_background_pending().await)
+    Ok(manager.list_background_pending_with_uncertain(&web).await)
 }
 
 pub(crate) async fn acp_get_session_snapshot_core(

@@ -3631,7 +3631,8 @@
         "errors": {
           "connectionFailed": "连接失败",
           "sendPromptFailed": "消息发送失败：{error}",
-          "conversationMoved": "该会话已移到 {folder}，请重新发送消息，在那里继续。"
+          "conversationMoved": "该会话已移到 {folder}，请重新发送消息，在那里继续。",
+          "promptImagesTooLarge": "这条消息里的图片太大，智能体收不下（编码后 {size} MiB，上限 {limit} MiB）。请少发几张，或换小一点的图片。"
         }
       },
       "shared": {

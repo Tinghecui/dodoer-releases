@@ -99,6 +99,15 @@ pub enum AcpError {
         conversation_id: i32,
         folder_id: i32,
     },
+    /// The images in one prompt would not fit in one message to the agent:
+    /// the Claude and Codex adapters drop the connection on a message over
+    /// 32 MiB, and the user saw only "Broken pipe". Refused before anything is
+    /// sent (`acp::prompt_hydration`). Carries the English sentence built by
+    /// [`AcpError::prompt_images_too_large`]; the frontend recognizes its
+    /// stable wording (both transports carry it as the message) and reads the
+    /// two sizes back out of it for its own localized message.
+    #[error("{0}")]
+    PromptImagesTooLarge(String),
 }
 
 impl AcpError {
@@ -130,6 +139,19 @@ impl AcpError {
         Self::AgentAuthRequired(sanitize_protocol_message(&raw.into()))
     }
 
+    /// [`Self::PromptImagesTooLarge`] for images that come to `encoded_bytes`
+    /// once base64-encoded, against a cap of `limit_bytes`. The wording is
+    /// read by `src/lib/prompt-images-too-large.ts`: keep the two in step.
+    pub fn prompt_images_too_large(encoded_bytes: u64, limit_bytes: u64) -> Self {
+        const MIB: u64 = 1024 * 1024;
+        Self::PromptImagesTooLarge(format!(
+            "the images in this message are too big for the agent to accept \
+             ({:.1} MiB once encoded, the limit is {} MiB). Send fewer or smaller images.",
+            encoded_bytes as f64 / MIB as f64,
+            limit_bytes / MIB
+        ))
+    }
+
     /// Stable machine-readable identifier for this error kind.
     ///
     /// Returned to the frontend alongside the human-readable message so
@@ -155,6 +177,7 @@ impl AcpError {
             Self::AgentAuthRequired(_) => Some("agent_auth_required"),
             Self::AgentRuntimeOutdated(_) => Some("agent_runtime_outdated"),
             Self::ConversationMoved { .. } => Some("conversation_moved"),
+            Self::PromptImagesTooLarge(_) => Some("prompt_images_too_large"),
             Self::Protocol(_) => None,
         }
     }
@@ -237,6 +260,20 @@ mod tests {
         assert_eq!(payload(AcpError::agent_auth_required(raw)), raw);
         let raw = "cannot start MCP server /home/me/bin/codeg-mcp: permission denied";
         assert_eq!(payload(AcpError::mcp_rejected(raw)), raw);
+    }
+
+    /// `src/lib/prompt-images-too-large.ts` reads this sentence back: the
+    /// marker and both sizes must stay where it looks for them.
+    #[test]
+    fn the_too_big_images_message_names_both_sizes() {
+        const MIB: u64 = 1024 * 1024;
+        let err = AcpError::prompt_images_too_large(40 * MIB + MIB / 2, 30 * MIB);
+        assert_eq!(err.code(), Some("prompt_images_too_large"));
+        assert_eq!(
+            err.to_string(),
+            "the images in this message are too big for the agent to accept \
+             (40.5 MiB once encoded, the limit is 30 MiB). Send fewer or smaller images."
+        );
     }
 
     #[test]

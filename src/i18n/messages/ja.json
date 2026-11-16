@@ -3631,7 +3631,8 @@
         "errors": {
           "connectionFailed": "接続に失敗しました",
           "sendPromptFailed": "メッセージの送信に失敗しました: {error}",
-          "conversationMoved": "この会話は {folder} に移動されました。そちらで続けるには、メッセージをもう一度送信してください。"
+          "conversationMoved": "この会話は {folder} に移動されました。そちらで続けるには、メッセージをもう一度送信してください。",
+          "promptImagesTooLarge": "このメッセージの画像が大きすぎて、エージェントが受け取れません（エンコード後 {size} MiB、上限 {limit} MiB）。画像の枚数を減らすか、小さい画像にしてください。"
         }
       },
       "shared": {

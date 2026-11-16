@@ -13,6 +13,7 @@ import {
 } from "@/lib/connection-teardown"
 import { TurnBusyError } from "@/lib/turn-busy"
 import { ConversationMovedError } from "@/lib/conversation-moved"
+import { asPromptImagesTooLarge } from "@/lib/prompt-images-too-large"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { type AgentType, type PromptDraft } from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
@@ -564,6 +565,22 @@ export function useConnectionLifecycle({
           return
         }
         console.error("[ConnLifecycle] sendPrompt:", e)
+        // Images too big for one message to the agent (its adapter would have
+        // dropped the connection): say so in the user's language, with the
+        // sizes, instead of the backend's English sentence.
+        const imagesTooLarge = asPromptImagesTooLarge(e)
+        if (imagesTooLarge) {
+          notify({
+            level: "error",
+            key: `send-failed:${contextKey}`,
+            title: t("errors.promptImagesTooLarge", {
+              size: imagesTooLarge.size,
+              limit: imagesTooLarge.limit,
+            }),
+          })
+          onSendFailed?.(e)
+          return
+        }
         // The composer already cleared itself (sends are fire-and-forget), so
         // without a toast a failed send — an oversized body 413'd by the
         // server, a hydration failure, a network drop — looks like the message

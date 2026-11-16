@@ -40,6 +40,7 @@ import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { imageFilesFromClipboardApi } from "@/lib/clipboard-images"
 import { toErrorMessage } from "@/lib/app-error"
 import { isNoActiveTurnRejection } from "@/lib/turn-busy"
+import { asPromptImagesTooLarge } from "@/lib/prompt-images-too-large"
 import { buildSteerPayload } from "@/lib/prompt-draft"
 import {
   stepComposerHistory,
@@ -397,6 +398,8 @@ export function MessageInput({
   // upload / attachment toasts — read as a single coherent group when
   // scanning the file. Same namespace, no extra runtime cost.
   const tAttach = useTranslations("Folder.chat.messageInput")
+  // The send path's error copy, for the one refusal steering shares with it.
+  const tLifecycle = useTranslations("Folder.chat.connectionLifecycle")
   // Skills read from disk feed the menu only for an agent that does not
   // advertise them itself: Codex under `$` (its native command set is very
   // small), Antigravity and OpenCode under `/` beside their commands (their
@@ -1768,9 +1771,19 @@ export function MessageInput({
         // The turn ended in the race window — reroute through the queue.
         enqueueInstead()
       } else {
+        // Images too big for one message to the agent: the same localized
+        // sentence a send gets (`useConnectionLifecycle`).
+        const imagesTooLarge = asPromptImagesTooLarge(err)
         toast.error(
           t(steerChannel === "pull" ? "steerNoteFailed" : "steerFailed"),
-          { description: toErrorMessage(err) }
+          {
+            description: imagesTooLarge
+              ? tLifecycle("errors.promptImagesTooLarge", {
+                  size: imagesTooLarge.size,
+                  limit: imagesTooLarge.limit,
+                })
+              : toErrorMessage(err),
+          }
         )
       }
     } finally {
@@ -1789,6 +1802,7 @@ export function MessageInput({
     resetComposer,
     steerChannel,
     t,
+    tLifecycle,
   ])
 
   // Navigation/confirm/escape keys for the `/` (commands) and `$` (Codex skills)

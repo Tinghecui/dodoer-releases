@@ -11,7 +11,8 @@
  * 1. `TurnBusyError` is NOT an error: it routes to `onTurnInProgress` (the
  *    caller re-queues the draft) with no toast.
  * 2. Everything else surfaces as a `sendPromptFailed` error toast, preferring
- *    the structured backend message when one is present.
+ *    the structured backend message when one is present — except images too
+ *    big for one message to the agent, which get their own localized toast.
  */
 
 import { act, renderHook } from "@testing-library/react"
@@ -162,6 +163,29 @@ describe("useConnectionLifecycle send-failure surfacing", () => {
     // Toast first, then the state rollback — the rollback must not hide the
     // failure from the user.
     expect(calls).toEqual(["toast", "onSendFailed"])
+    consoleError.mockRestore()
+  })
+
+  it("says in the user's language that the images are too big for the agent", async () => {
+    // The Tauri shape: `AcpError::PromptImagesTooLarge`'s Display string.
+    const error =
+      "the images in this message are too big for the agent to accept " +
+      "(32.0 MiB once encoded, the limit is 30 MiB). Send fewer or smaller images."
+    sendPrompt.mockRejectedValue(error)
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+    const onSendFailed = vi.fn()
+
+    const { result } = renderLifecycle()
+    await act(async () => {
+      result.current.handleSend(draft(), null, { onSendFailed })
+      await flush()
+    })
+
+    expect(toastError).toHaveBeenCalledTimes(1)
+    expect(String(toastError.mock.calls[0][0])).toBe(
+      'errors.promptImagesTooLarge:{"size":"32.0","limit":"30"}'
+    )
+    expect(onSendFailed).toHaveBeenCalledWith(error)
     consoleError.mockRestore()
   })
 

@@ -2902,10 +2902,14 @@ impl ConnectionManager {
             // A dying process may never report its turn's end.
             crate::agent_turn_files::end_turn(conn_id, false, std::time::SystemTime::now());
             // First: a connection still in its handshake is not reading
-            // `cmd_tx`, and a full channel would hold the send below until it
-            // did. Cancelled, it stops and drops the receiver instead.
+            // `cmd_tx`. Cancelled, it stops and drops the receiver instead.
             conn.handshake.cancel();
-            let _ = conn.cmd_tx.send(ConnectionCommand::Disconnect).await;
+            // As in `disconnect_by_owner_window`: never waits on a full queue.
+            // A loop stuck on something else would otherwise hold the close of
+            // this one conversation. The entry, and with it the last sender,
+            // goes when `conn` drops below, so a loop that misses the command
+            // still ends once it has drained its queue.
+            let _ = conn.cmd_tx.try_send(ConnectionCommand::Disconnect);
             Ok(())
         } else {
             Err(AcpError::ConnectionNotFound(conn_id.into()))
@@ -5654,6 +5658,24 @@ mod tests {
             "disconnect_by_owner_window waited on a full queue"
         );
         assert!(win_rx.is_closed(), "the window's queue stayed open");
+    }
+
+    /// Same for closing one conversation: a full queue must not hold it, and
+    /// the entry still goes, so the loop's queue closes behind it.
+    #[tokio::test]
+    async fn a_full_command_queue_does_not_hold_a_single_disconnect() {
+        let mgr = ConnectionManager::new();
+        let one_rx = insert_live_connection(&mgr, "one", AgentType::ClaudeCode, None).await;
+        let tx = mgr.connections.lock().await["one"].cmd_tx.clone();
+        while tx.try_send(ConnectionCommand::Disconnect).is_ok() {}
+        drop(tx);
+        let result = tokio::time::timeout(Duration::from_secs(5), mgr.disconnect("one")).await;
+        assert!(
+            matches!(result, Ok(Ok(()))),
+            "disconnect waited on a full queue"
+        );
+        assert!(!mgr.connections.lock().await.contains_key("one"));
+        assert!(one_rx.is_closed(), "the conversation's queue stayed open");
     }
 
     /// The Antigravity sign-out ends that agent's connections and nobody
@@ -10821,29 +10843,52 @@ mod tests {
         // its blocks to whoever is attached right now; only the retained copy
         // drops them, so a reconnect renders it from `text` like any text-only
         // steer.
+        //
+        // One steer alone can no longer pass the budget: a message whose
+        // images exceed the agent's message cap
+        // (`prompt_hydration::PROMPT_IMAGES_MAX_ENCODED_BYTES`, under this
+        // budget) is refused before it is sent. So it takes two in one turn,
+        // each under that cap, that pass the budget together.
         let mgr = ConnectionManager::new();
-        let rx = mgr
+        let mut rx = mgr
             .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
             .await;
         mark_native_steering_ready(&mgr, "c1").await;
-        let fake_loop = answer_steer(rx, Ok(SteerOutcome::Injected));
+        let fake_loop = tokio::spawn(async move {
+            let mut sent = Vec::new();
+            for _ in 0..2 {
+                match rx.recv().await {
+                    Some(ConnectionCommand::Steer { blocks, reply }) => {
+                        let _ = reply.send(Ok(SteerOutcome::Injected));
+                        sent.push(blocks);
+                    }
+                    _ => panic!("expected a Steer command"),
+                }
+            }
+            sent
+        });
 
-        let huge = "A".repeat(MAX_FEEDBACK_ATTACHMENT_BYTES_PER_TURN + 1);
-        let item = mgr
-            .submit_feedback(
-                "c1",
-                "one enormous screenshot".into(),
-                Some(vec![PromptInputBlock::Image {
-                    data: huge,
-                    mime_type: "image/png".into(),
-                    uri: None,
-                }]),
-            )
+        // Two thirds of the budget each: the first fits, the second does not.
+        let size = (MAX_FEEDBACK_ATTACHMENT_BYTES_PER_TURN / 3) * 2;
+        let image = || {
+            Some(vec![PromptInputBlock::Image {
+                data: "A".repeat(size),
+                mime_type: "image/png".into(),
+                uri: None,
+            }])
+        };
+        let first = mgr
+            .submit_feedback("c1", "first screenshot".into(), image())
+            .await
+            .unwrap();
+        let second = mgr
+            .submit_feedback("c1", "one screenshot too many".into(), image())
             .await
             .unwrap();
 
+        assert_eq!(first.status, FeedbackStatus::Delivered);
         assert_eq!(
-            item.status,
+            second.status,
             FeedbackStatus::Delivered,
             "over budget is not a rejection — the agent already has the content"
         );
@@ -10852,21 +10897,21 @@ mod tests {
         let state = mgr.get_state("c1").await.unwrap();
         {
             let s = state.read().await;
-            assert_eq!(s.feedback.len(), 1);
+            assert_eq!(s.feedback.len(), 2);
+            assert!(s.feedback[0].blocks.is_some(), "the first one fits");
             assert_eq!(
-                s.feedback[0].blocks, None,
+                s.feedback[1].blocks, None,
                 "an over-budget attachment must not be kept for the turn"
             );
-            assert_eq!(s.feedback[0].text, "one enormous screenshot");
+            assert_eq!(s.feedback[1].text, "one screenshot too many");
         }
 
         // And the wire was never trimmed: the budget governs what codeg KEEPS,
         // not what the agent receives.
         let sent = fake_loop.await.unwrap();
         assert!(matches!(
-            sent.as_slice(),
-            [PromptInputBlock::Image { data, .. }]
-                if data.len() == MAX_FEEDBACK_ATTACHMENT_BYTES_PER_TURN + 1
+            sent[1].as_slice(),
+            [PromptInputBlock::Image { data, .. }] if data.len() == size
         ));
     }
 

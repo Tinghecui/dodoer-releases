@@ -2660,6 +2660,40 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
     )
   })
 
+  it("says in the user's language when the images are too big for the agent", async () => {
+    // The same refusal the send path localizes (`useConnectionLifecycle`):
+    // steering carries its images through the same hydration.
+    const user = userEvent.setup()
+    const { isNoActiveTurnRejection } = await import("@/lib/turn-busy")
+    vi.mocked(isNoActiveTurnRejection).mockReturnValue(false)
+    const onSteer = vi
+      .fn()
+      .mockRejectedValue(
+        "the images in this message are too big for the agent to accept " +
+          "(32.0 MiB once encoded, the limit is 30 MiB). Send fewer or smaller images."
+      )
+    const editor = await mountPrompting({ onSteer })
+    typeDraft(editor, "look at these")
+    await waitFor(() =>
+      expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+    )
+
+    await user.click(screen.getByLabelText(MI.steerIntoTurn))
+    await user.click(
+      await screen.findByRole("menuitem", { name: MI.steerIntoTurn })
+    )
+
+    const tooLarge =
+      enMessages.Folder.chat.connectionLifecycle.errors.promptImagesTooLarge
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(MI.steerFailed, {
+        description: tooLarge
+          .replace("{size}", "32.0")
+          .replace("{limit}", "30"),
+      })
+    )
+  })
+
   it("keeps the draft on a non-turn-end failure", async () => {
     const user = userEvent.setup()
     const { isNoActiveTurnRejection } = await import("@/lib/turn-busy")

@@ -3631,7 +3631,8 @@
         "errors": {
           "connectionFailed": "連線失敗",
           "sendPromptFailed": "訊息傳送失敗：{error}",
-          "conversationMoved": "此對話已移到 {folder}，請重新傳送訊息，在那裡繼續。"
+          "conversationMoved": "此對話已移到 {folder}，請重新傳送訊息，在那裡繼續。",
+          "promptImagesTooLarge": "這則訊息裡的圖片太大，智慧體收不下（編碼後 {size} MiB，上限 {limit} MiB）。請少傳幾張，或換小一點的圖片。"
         }
       },
       "shared": {

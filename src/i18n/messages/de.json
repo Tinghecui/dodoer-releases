@@ -3631,7 +3631,8 @@
         "errors": {
           "connectionFailed": "Verbindung fehlgeschlagen",
           "sendPromptFailed": "Nachricht konnte nicht gesendet werden: {error}",
-          "conversationMoved": "Diese Unterhaltung wurde nach {folder} verschoben. Sende die Nachricht erneut, um dort weiterzumachen."
+          "conversationMoved": "Diese Unterhaltung wurde nach {folder} verschoben. Sende die Nachricht erneut, um dort weiterzumachen.",
+          "promptImagesTooLarge": "Die Bilder in dieser Nachricht sind zu groß für den Agenten ({size} MiB nach der Kodierung, Limit {limit} MiB). Sende weniger oder kleinere Bilder."
         }
       },
       "shared": {

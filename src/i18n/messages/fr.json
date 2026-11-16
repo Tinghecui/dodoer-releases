@@ -3631,7 +3631,8 @@
         "errors": {
           "connectionFailed": "Échec de la connexion",
           "sendPromptFailed": "Échec de l'envoi du message : {error}",
-          "conversationMoved": "Cette conversation a été déplacée vers {folder}. Renvoyez votre message pour continuer là-bas."
+          "conversationMoved": "Cette conversation a été déplacée vers {folder}. Renvoyez votre message pour continuer là-bas.",
+          "promptImagesTooLarge": "Les images de ce message sont trop volumineuses pour l'agent ({size} Mio une fois encodées, la limite est de {limit} Mio). Envoyez moins d'images ou des images plus petites."
         }
       },
       "shared": {

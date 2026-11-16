@@ -54,6 +54,53 @@ use crate::web::handlers::files::UPLOAD_MAX_BYTES;
 /// ~85 MiB of base64 (+ one clone for the viewer projection).
 pub const HYDRATION_TOTAL_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Most base64 bytes of images one prompt may carry, inline and uploaded
+/// together. The Claude and Codex adapters read one JSON-RPC message of at
+/// most 32 MiB (`DEFAULT_MAX_MESSAGE_BYTES` in their `@agentclientprotocol/sdk`,
+/// checked in claude-agent-acp 0.106.0 and codex-acp 2.6.0); a bigger one makes
+/// the adapter exit and the session ends with only "Broken pipe". 30 MiB
+/// leaves 2 MiB for the text and the JSON around the images. Until images are
+/// shrunk before sending, a prompt over this is refused here with words the
+/// user can act on ([`AcpError::PromptImagesTooLarge`]).
+///
+/// Stricter than [`HYDRATION_TOTAL_MAX_BYTES`] (30 MiB encoded is about
+/// 22.5 MiB raw) and checked first, so that one is now only the memory
+/// backstop should this cap ever be raised.
+pub const PROMPT_IMAGES_MAX_ENCODED_BYTES: u64 = 30 * 1024 * 1024;
+
+/// Size of `n` raw bytes once base64-encoded (padded).
+fn base64_len(n: u64) -> u64 {
+    n.div_ceil(3) * 4
+}
+
+/// Base64 bytes of the images that already carry their payload (desktop
+/// inline sends). Markers are empty, so they add nothing here.
+fn inline_image_encoded_bytes(blocks: &[PromptInputBlock]) -> u64 {
+    blocks
+        .iter()
+        .map(|block| match block {
+            PromptInputBlock::Image { data, .. } => data.len() as u64,
+            PromptInputBlock::Resource {
+                mime_type: Some(mime),
+                blob: Some(blob),
+                ..
+            } if mime.starts_with("image/") => blob.len() as u64,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Refuse a prompt whose images would not fit in one message to the agent.
+fn check_agent_message_cap(encoded_bytes: u64) -> Result<(), AcpError> {
+    if encoded_bytes > PROMPT_IMAGES_MAX_ENCODED_BYTES {
+        return Err(AcpError::prompt_images_too_large(
+            encoded_bytes,
+            PROMPT_IMAGES_MAX_ENCODED_BYTES,
+        ));
+    }
+    Ok(())
+}
+
 /// Global bound on prompts hydrating CONTENT concurrently. The per-connection
 /// prompt lock (held at the call site) already serializes hydration within a
 /// connection, but the connection count itself is unbounded — one token can
@@ -79,12 +126,15 @@ static HYDRATION_CONCURRENCY: tokio::sync::Semaphore = tokio::sync::Semaphore::c
 /// Fill empty image payloads whose uri points at an uploaded file.
 ///
 /// Two passes: first resolve + validate every marker (jail, regular-file,
-/// per-file cap, aggregate cap) WITHOUT reading any content, then read and
-/// fill. An over-limit prompt is thus rejected before a single content byte
-/// is buffered. Mutates `blocks` in place. Errors abort the whole prompt (the
-/// caller rejects before any side effect — no conversation row is created and
-/// no status flips), so a deleted / oversized / out-of-jail upload surfaces
-/// as a structured send failure instead of a silently image-less prompt.
+/// per-file cap, agent message cap, aggregate cap) WITHOUT reading any
+/// content, then read and fill. An over-limit prompt is thus rejected before
+/// a single content byte is buffered. The agent message cap
+/// ([`PROMPT_IMAGES_MAX_ENCODED_BYTES`]) also counts images sent inline, so it
+/// covers the desktop's own sends too, which carry no marker. Mutates
+/// `blocks` in place. Errors abort the whole prompt (the caller rejects before
+/// any side effect — no conversation row is created and no status flips), so
+/// a deleted / oversized / out-of-jail upload surfaces as a structured send
+/// failure instead of a silently image-less prompt.
 pub async fn hydrate_prompt_blocks(
     blocks: &mut [PromptInputBlock],
     uploads_root: &Path,
@@ -93,6 +143,9 @@ pub async fn hydrate_prompt_blocks(
     let mut resolved: Vec<(usize, std::path::PathBuf)> = Vec::new();
     let mut canonical_root: Option<std::path::PathBuf> = None;
     let mut total_bytes: u64 = 0;
+    // Images that already carry their bytes (desktop inline sends) count too.
+    let mut encoded_bytes = inline_image_encoded_bytes(blocks);
+    check_agent_message_cap(encoded_bytes)?;
     for (idx, block) in blocks.iter().enumerate() {
         let uri = match block {
             PromptInputBlock::Image {
@@ -163,6 +216,10 @@ pub async fn hydrate_prompt_blocks(
                 UPLOAD_MAX_BYTES
             )));
         }
+        // Before the aggregate cap: the stricter of the two, and the one the
+        // user is told about in their own words.
+        encoded_bytes = encoded_bytes.saturating_add(base64_len(meta.len()));
+        check_agent_message_cap(encoded_bytes)?;
         total_bytes = total_bytes.saturating_add(meta.len());
         if total_bytes > HYDRATION_TOTAL_MAX_BYTES {
             return Err(AcpError::protocol(format!(
@@ -425,10 +482,12 @@ mod tests {
     #[tokio::test]
     async fn rejects_when_duplicate_markers_exceed_the_aggregate_cap() {
         // One legitimate ≤20 MiB upload referenced enough times to blow the
-        // 64 MiB aggregate: 4 × 18 MiB = 72 MiB. The cap must count every
+        // 64 MiB aggregate: 4 × 18 MiB = 72 MiB. The caps must count every
         // marker occurrence (each becomes its own base64 copy), and reject in
         // pass 1 — before any content read — so a tiny HTTP body cannot
-        // amplify into hundreds of MiB of server memory.
+        // amplify into hundreds of MiB of server memory. The agent message cap
+        // is the stricter of the two and is checked first, so it is the one
+        // that answers (at the second occurrence).
         let root = tempfile::tempdir().unwrap();
         let file = root.path().join("big.png");
         let f = std::fs::File::create(&file).unwrap();
@@ -443,7 +502,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("total limit"),
+            matches!(err, AcpError::PromptImagesTooLarge(_)),
             "unexpected error: {err}"
         );
         // Nothing was hydrated — all four blocks still carry empty data.
@@ -457,12 +516,13 @@ mod tests {
 
     #[tokio::test]
     async fn admits_markers_under_the_aggregate_cap() {
-        // 3 × 18 MiB = 54 MiB < 64 MiB — must hydrate all three. Sparse files
-        // read as zeros, which is fine for the size accounting under test.
+        // 3 × 7 MiB = 21 MiB (28 MiB encoded, under the agent message cap) —
+        // must hydrate all three. Sparse files read as zeros, which is fine
+        // for the size accounting under test.
         let root = tempfile::tempdir().unwrap();
         let file = root.path().join("ok.png");
         let f = std::fs::File::create(&file).unwrap();
-        f.set_len(18 * 1024 * 1024).unwrap();
+        f.set_len(7 * 1024 * 1024).unwrap();
         drop(f);
 
         let uri = to_file_uri(&file);
@@ -478,6 +538,87 @@ mod tests {
                 other => panic!("unexpected block: {other:?}"),
             }
         }
+    }
+
+    /// A sparse file of `mib` MiB under `root`.
+    fn sized_upload(root: &Path, name: &str, mib: u64) -> PathBuf {
+        let file = root.join(name);
+        let f = std::fs::File::create(&file).unwrap();
+        f.set_len(mib * 1024 * 1024).unwrap();
+        file
+    }
+
+    #[tokio::test]
+    async fn refuses_images_the_agent_adapter_cannot_take_in_one_message() {
+        // Two 12 MiB screenshots are 32 MiB once encoded: the adapters' 32 MiB
+        // message cap, where the agent used to drop the connection with only
+        // "Broken pipe". Refused before any read, in words the user can act on.
+        let root = tempfile::tempdir().unwrap();
+        let a = to_file_uri(&sized_upload(root.path(), "a.png", 12));
+        let b = to_file_uri(&sized_upload(root.path(), "b.png", 12));
+        let mut blocks = vec![image_block("", Some(&a)), image_block("", Some(&b))];
+        let err = hydrate_prompt_blocks(&mut blocks, root.path())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AcpError::PromptImagesTooLarge(_)),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.to_string().contains("too big for the agent to accept"),
+            "{err}"
+        );
+        for block in &blocks {
+            match block {
+                PromptInputBlock::Image { data, .. } => assert!(data.is_empty()),
+                other => panic!("unexpected block: {other:?}"),
+            }
+        }
+
+        // Just under the cap still goes through: 2 × 11 MiB is 29.3 MiB
+        // encoded, and one upload at the per-file cap (26.7 MiB) on its own.
+        let a = to_file_uri(&sized_upload(root.path(), "a.png", 11));
+        let b = to_file_uri(&sized_upload(root.path(), "b.png", 11));
+        let mut blocks = vec![image_block("", Some(&a)), image_block("", Some(&b))];
+        hydrate_prompt_blocks(&mut blocks, root.path())
+            .await
+            .unwrap();
+        let largest = sized_upload(root.path(), "c.png", UPLOAD_MAX_BYTES / (1024 * 1024));
+        let mut blocks = vec![image_block("", Some(&to_file_uri(&largest)))];
+        hydrate_prompt_blocks(&mut blocks, root.path())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn refuses_inline_images_over_the_message_cap_too() {
+        // The desktop's own sends carry their bytes inline and have no marker,
+        // but the same adapter reads the same message.
+        let mut blocks = vec![image_block(&"A".repeat(31 * 1024 * 1024), None)];
+        let err = hydrate_prompt_blocks(&mut blocks, Path::new("/nonexistent"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AcpError::PromptImagesTooLarge(_)),
+            "unexpected error: {err}"
+        );
+
+        // Inline and uploaded images count together: 20 MiB inline plus an
+        // 8 MiB upload (10.7 MiB encoded) is over.
+        let root = tempfile::tempdir().unwrap();
+        let upload = to_file_uri(&sized_upload(root.path(), "d.png", 8));
+        let inline = "A".repeat(20 * 1024 * 1024);
+        let mut blocks = vec![
+            resource_blob_block(&inline, "clipboard://x", "image/png"),
+            image_block("", Some(&upload)),
+        ];
+        let err = hydrate_prompt_blocks(&mut blocks, root.path())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AcpError::PromptImagesTooLarge(_)),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

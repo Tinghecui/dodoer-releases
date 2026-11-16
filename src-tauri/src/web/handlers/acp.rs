@@ -198,7 +198,9 @@ pub async fn acp_prompt(
                 }
                 // The conversation was moved to another folder: expected, and
                 // the client recovers by re-pointing its tab — not a fault.
-                AcpError::ConversationMoved { .. } => {
+                // Images too big for one message to the agent: the user's to
+                // fix (fewer or smaller images), not a fault either.
+                AcpError::ConversationMoved { .. } | AcpError::PromptImagesTooLarge(_) => {
                     AppCommandError::new(AppErrorCode::InvalidInput, message)
                 }
                 _ => AppCommandError::task_execution_failed(message),

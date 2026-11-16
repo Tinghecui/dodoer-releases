@@ -5,7 +5,7 @@ use sea_orm::{
     IntoActiveModel, QueryFilter, QueryOrder, Set, Statement,
 };
 
-use crate::db::entities::folder_command;
+use crate::db::entities::{folder, folder_command};
 use crate::db::error::DbError;
 use crate::models::FolderCommandInfo;
 
@@ -35,6 +35,18 @@ pub async fn list_by_folder(
     Ok(rows.into_iter().map(to_info).collect())
 }
 
+/// A command is only made for a folder that is still there: a missing one
+/// would fail the insert as a database fault, and a removed one would keep a
+/// command no one can see. `NotFound` is what the API answers as 404.
+async fn folder_is_there(conn: &DatabaseConnection, folder_id: i32) -> Result<(), DbError> {
+    folder::Entity::find_by_id(folder_id)
+        .filter(folder::Column::DeletedAt.is_null())
+        .one(conn)
+        .await?
+        .map(|_| ())
+        .ok_or_else(|| DbError::NotFound(format!("Folder not found: {folder_id}")))
+}
+
 pub async fn create(
     conn: &DatabaseConnection,
     folder_id: i32,
@@ -42,6 +54,7 @@ pub async fn create(
     command: &str,
     run_local: bool,
 ) -> Result<FolderCommandInfo, DbError> {
+    folder_is_there(conn, folder_id).await?;
     let now = Utc::now();
 
     // Get next sort_order
@@ -76,6 +89,7 @@ pub async fn create_many(
     if items.is_empty() {
         return Ok(());
     }
+    folder_is_there(conn, folder_id).await?;
 
     let now = Utc::now();
 
@@ -224,6 +238,41 @@ mod tests {
             .await
             .unwrap();
         assert!(!in_a_terminal.run_local);
+    }
+
+    // Not a database fault, and not a command left under a removed folder.
+    #[tokio::test]
+    async fn no_command_is_made_for_a_folder_that_is_gone() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/repo").await;
+        let items = [("dev".to_string(), "pnpm run dev".to_string())];
+        assert!(matches!(
+            create(&db.conn, folder_id + 1, "dev", "pnpm dev", false).await,
+            Err(DbError::NotFound(_))
+        ));
+        assert!(matches!(
+            create_many(&db.conn, folder_id + 1, &items).await,
+            Err(DbError::NotFound(_))
+        ));
+        crate::db::service::folder_service::soft_delete_folder(&db.conn, folder_id)
+            .await
+            .unwrap();
+        assert!(matches!(
+            create(&db.conn, folder_id, "dev", "pnpm dev", false).await,
+            Err(DbError::NotFound(_))
+        ));
+        assert!(matches!(
+            create_many(&db.conn, folder_id, &items).await,
+            Err(DbError::NotFound(_))
+        ));
+        assert!(list_by_folder(&db.conn, folder_id)
+            .await
+            .unwrap()
+            .is_empty());
+        // The API answers it as "not there" (404), not as a database error.
+        let gone = create(&db.conn, folder_id, "dev", "pnpm dev", false).await;
+        let err = crate::app_error::AppCommandError::from(gone.unwrap_err());
+        assert!(matches!(err.code, crate::app_error::AppErrorCode::NotFound));
     }
 
     #[tokio::test]

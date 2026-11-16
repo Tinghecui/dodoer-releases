@@ -77,7 +77,8 @@ pub async fn submit_session_feedback(
                 // prompt) and surfaces the others.
                 AcpError::NoActiveTurn
                 | AcpError::FeedbackDisabled
-                | AcpError::InvalidFeedback(_) => {
+                | AcpError::InvalidFeedback(_)
+                | AcpError::PromptImagesTooLarge(_) => {
                     AppCommandError::new(AppErrorCode::InvalidInput, message)
                 }
                 _ => AppCommandError::task_execution_failed(message),

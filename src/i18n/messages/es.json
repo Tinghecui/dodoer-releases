@@ -3631,7 +3631,8 @@
         "errors": {
           "connectionFailed": "Conexión fallida",
           "sendPromptFailed": "No se pudo enviar el mensaje: {error}",
-          "conversationMoved": "Esta conversación se movió a {folder}. Vuelve a enviar el mensaje para continuar allí."
+          "conversationMoved": "Esta conversación se movió a {folder}. Vuelve a enviar el mensaje para continuar allí.",
+          "promptImagesTooLarge": "Las imágenes de este mensaje son demasiado grandes para el agente ({size} MiB una vez codificadas, el límite es {limit} MiB). Envía menos imágenes o imágenes más pequeñas."
         }
       },
       "shared": {

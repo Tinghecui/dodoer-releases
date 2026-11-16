@@ -85,9 +85,11 @@ impl From<WebdavError> for AppCommandError {
                 .with_i18n(CONFIG_SYNC_I18N_KEY_UNAUTHORIZED, Default::default()),
             WebdavError::Forbidden => AppCommandError::network(message)
                 .with_i18n(CONFIG_SYNC_I18N_KEY_FORBIDDEN, Default::default()),
-            WebdavError::RemotePathMissing => AppCommandError::network(message)
+            // A remote folder that is not there or a share that is full is
+            // the user's setting to change, not a network fault.
+            WebdavError::RemotePathMissing => AppCommandError::configuration_invalid(message)
                 .with_i18n(CONFIG_SYNC_I18N_KEY_REMOTE_PATH, Default::default()),
-            WebdavError::InsufficientStorage => AppCommandError::network(message)
+            WebdavError::InsufficientStorage => AppCommandError::configuration_invalid(message)
                 .with_i18n(CONFIG_SYNC_I18N_KEY_QUOTA, Default::default()),
             WebdavError::Network | WebdavError::ResponseTooLarge => {
                 AppCommandError::network(message)
@@ -387,6 +389,28 @@ mod tests {
                 Ok(_) => panic!("{raw:?} should not be accepted as a WebDAV base URL"),
             }
         }
+    }
+
+    /// A missing remote folder or a full share is a setting for the user to
+    /// change (422), not a server fault (500); the message stays the same.
+    #[test]
+    fn a_missing_remote_folder_or_a_full_share_is_not_a_server_fault() {
+        use crate::app_error::AppErrorCode;
+        let missing = AppCommandError::from(WebdavError::RemotePathMissing);
+        assert!(
+            matches!(missing.code, AppErrorCode::ConfigurationInvalid),
+            "{missing:?}"
+        );
+        assert_eq!(
+            missing.i18n_key.as_deref(),
+            Some(CONFIG_SYNC_I18N_KEY_REMOTE_PATH)
+        );
+        let full = AppCommandError::from(WebdavError::InsufficientStorage);
+        assert!(
+            matches!(full.code, AppErrorCode::ConfigurationInvalid),
+            "{full:?}"
+        );
+        assert_eq!(full.i18n_key.as_deref(), Some(CONFIG_SYNC_I18N_KEY_QUOTA));
     }
 
     /// The whole point of hand-rolling these errors instead of wrapping

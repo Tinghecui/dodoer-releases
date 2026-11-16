@@ -3631,7 +3631,8 @@
         "errors": {
           "connectionFailed": "فشل الاتصال",
           "sendPromptFailed": "فشل إرسال الرسالة: {error}",
-          "conversationMoved": "نُقلت هذه المحادثة إلى \u2066{folder}\u2069. أعد إرسال رسالتك للمتابعة هناك."
+          "conversationMoved": "نُقلت هذه المحادثة إلى \u2066{folder}\u2069. أعد إرسال رسالتك للمتابعة هناك.",
+          "promptImagesTooLarge": "الصور في هذه الرسالة أكبر من أن يستقبلها الوكيل (\u2066{size} MiB\u2069 بعد الترميز، والحد \u2066{limit} MiB\u2069). أرسل صورًا أقل أو أصغر."
         }
       },
       "shared": {

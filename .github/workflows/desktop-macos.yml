@@ -24,10 +24,12 @@
 #
 # 黑苹果（2026-11-16 起）：用户家里的黑苹果（Intel i7-12700KF 20 线程 / 64GB）挂成自托管 runner（标签 hackintosh），在线就在它上面
 # 交叉编 arm64（build-hack，target 目录留在机器上，增量编），再交给 GitHub 的 macos-15 只做冒烟（smoke，几分钟）；实测编译
-# 从托管机器上的 ~56 分钟降到十几分钟。在不在线看 hackintosh-heartbeat.yml 最近一次成功的时间（45 分钟内算在线）；
-# 仓库变量 HACKINTOSH_BUILD=off 强制不用它，=force 不看心跳直接用（试流程用）。兜底：黑苹果不在线 → 跟以前一样全在 macos-15 上编（build）；黑苹果编挂了
-# 或冒烟没过 → build 接着在 macos-15 上重编；判定在线之后它又掉线、活一直排着 → watchdog 15 分钟后取消这次 run
-# （自动发版的号由 release-train 的 untag 退回，下一班心跳过期就走 macos-15）。
+# 从托管机器上的 ~56 分钟降到十几分钟。在不在线看 hackintosh-heartbeat.yml 最近一次成功的时间（45 分钟内算在线）；过期了
+# 先现派一次心跳、最多等 5 分钟，还没回来才算不在线。仓库变量 HACKINTOSH_BUILD=off 强制不用它，=force 不看心跳直接用（试流程用）。
+# 什么时候切到 macos-15（build）：只有机器的问题才切——黑苹果不在线；build-hack 在编译之前的步骤挂了（装依赖、钥匙串）、
+# 机器掉线、超时。编译 / 打包那一步挂了（在黑苹果上已经重试过一次）或者冒烟没过，多半是代码的问题，macos-15 编同样的代码
+# 也过不了，就让这次 run 红着，去看日志修代码；确实是黑苹果自己的问题，设 HACKINTOSH_BUILD=off 重跑。
+# 判定在线之后它又掉线、活一直排着 → watchdog 15 分钟后取消这次 run（自动发版的号由 release-train 的 untag 退回）。
 name: desktop-macos
 
 on:
@@ -97,10 +99,10 @@ jobs:
   prepare:
     name: 版本号、要不要编
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 12
     permissions:
       contents: read
-      actions: read
+      actions: write # 心跳过期时派一次 hackintosh-heartbeat 再等它
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
@@ -181,12 +183,30 @@ jobs:
             hack=true
             echo "仓库变量 HACKINTOSH_BUILD=force：不看心跳，直接用黑苹果（试新流程用，用完删掉变量）"
           else
-            last=$(gh run list -R "$GITHUB_REPOSITORY" -w hackintosh-heartbeat.yml -s success -L 1 \
-              --json updatedAt -q '.[0].updatedAt // empty' 2>/dev/null || true)
+            last_ok() {
+              gh run list -R "$GITHUB_REPOSITORY" -w hackintosh-heartbeat.yml -s success -L 1 \
+                --json updatedAt -q '.[0].updatedAt // empty' 2>/dev/null || true
+            }
+            last=$(last_ok)
             if [[ -n "$last" ]] && (( $(date +%s) - $(date -d "$last" +%s) < 2700 )); then
               hack=true
+              echo "黑苹果最近一次心跳：$last，在线"
+            else
+              # 心跳过期不马上切 GitHub：现派一次心跳，最多等 5 分钟（机器刚重启、网络刚恢复、几个 runner 都忙）
+              echo "黑苹果最近一次心跳：${last:-没有}，过期了；派一次心跳，最多等 5 分钟"
+              t0=$(date +%s)
+              gh workflow run hackintosh-heartbeat.yml -R "$GITHUB_REPOSITORY" \
+                --ref "$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)" || echo "::warning::派心跳失败"
+              while (( $(date +%s) - t0 < 300 )); do
+                sleep 15
+                last=$(last_ok)
+                if [[ -n "$last" ]] && (( $(date -d "$last" +%s) >= t0 )); then
+                  hack=true
+                  break
+                fi
+              done
+              echo "等了 $(( $(date +%s) - t0 )) 秒：hack=$hack（最近一次心跳 ${last:-没有}）"
             fi
-            echo "黑苹果最近一次心跳：${last:-没有}；hack=$hack"
           fi
           echo "hack=$hack" >> "$GITHUB_OUTPUT"
 
@@ -196,7 +216,10 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.build == 'true' && needs.prepare.outputs.hack == 'true'
     runs-on: [self-hosted, hackintosh]
-    timeout-minutes: 60
+    timeout-minutes: 75
+    outputs:
+      # 编译 / 打包这一步自己失败了（重试过一次）：多半是代码的问题，GitHub 上编同样的代码也过不了，不切过去
+      build_failed: ${{ steps.build.outcome == 'failure' }}
     env:
       CI: "true"
       NEXT_TELEMETRY_DISABLED: "1"
@@ -275,7 +298,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VERSION: ${{ needs.prepare.outputs.version }}
-        run: scripts/cowork-desktop-build.sh full
+        # 第一次失败在本机重试一次（下载依赖走代理，偶尔断）：代码错了重试也是增量编译，一两分钟就再失败
+        run: |
+          scripts/cowork-desktop-build.sh full && exit 0
+          echo "::warning::黑苹果上第一次编译失败，重试一次"
+          scripts/cowork-desktop-build.sh full
       # 自托管机器上钥匙串不会随机器销毁，搜索列表也要还原
       - name: 删掉临时钥匙串
         if: always()
@@ -345,7 +372,8 @@ jobs:
     needs: [prepare, build-hack, smoke]
     if: >-
       !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.build == 'true' &&
-      (needs.prepare.outputs.hack != 'true' || needs.build-hack.result != 'success' || needs.smoke.result != 'success')
+      (needs.prepare.outputs.hack != 'true' ||
+       (needs.build-hack.result != 'success' && needs.build-hack.outputs.build_failed != 'true'))
     runs-on: macos-15
     timeout-minutes: 120
     outputs:

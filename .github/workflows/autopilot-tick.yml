@@ -1,5 +1,7 @@
 # 公开镜像 Tinghecui/dodoer-releases：自动驾驶的调度台（源仓库 .cowork/autopilot/design.md 第 3 步；文件在源仓库 .github/public/workflows/ 里维护）。
-# 每 20 分钟一轮，不调 Claude：挑能做的 issue 派给执行员（autopilot-fix.yml）、把被打回的执行员 PR 派回去返工、开收件箱条目（源仓库 issue「待你决定」）、
+# 2026-11-16 起这里是**备份**：平时调度台跑在生产机上（源仓库 .cowork/autopilot/local-tick.sh，一两分钟看一眼），因为这里的定时上线 8 小时
+# 只自己触发了 1 次。定时的这一轮（TICK_FALLBACK=1）先看看板上的标记，生产机的调度台 30 分钟内跑过就什么都不做；手动派的照常跑。
+# 一轮做什么（不调 Claude）：挑能做的 issue 派给执行员（autopilot-fix.yml）、把被打回的执行员 PR 派回去返工、开收件箱条目（源仓库 issue「待你决定」）、
 # 2 级的到点按默认做、重写置顶看板、每天早上发摘要。AUTOPILOT=record 时只读，「本来会做什么」写进看板。
 # 这里只是个壳：取源仓库代码（默认分支），装 node，然后 exec .cowork/autopilot/sealed.sh tick；日志里只有每个阶段一行的进度，
 # 运行结束后 ai-qa-seal.yml 核对（定时触发的运行会触发 workflow_run；手动派的也会）。
@@ -10,8 +12,8 @@ name: autopilot-tick
 
 on:
   schedule:
-    # 不放整点（整点的定时最挤、常晚好几个小时）
-    - cron: "7,27,47 * * * *"
+    # 不放整点（整点的定时最挤、常晚好几个小时）。只是备份，一小时一次
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -38,6 +40,8 @@ jobs:
       CLAUDE_AUTH: ${{ vars.AUTOPILOT_CLAUDE_AUTH || 'oauth' }}
       MAX_FIX: ${{ vars.AUTOPILOT_MAX_FIX || '2' }}
       INBOX_BUDGET: ${{ vars.AUTOPILOT_INBOX_BUDGET || '10' }}
+      # 定时触发的是备份：生产机上的调度台最近跑过就让开（tick.mjs）
+      TICK_FALLBACK: ${{ github.event_name == 'schedule' && '1' || '' }}
       W: /home/runner/autopilot-work
     steps:
       - name: 取源码

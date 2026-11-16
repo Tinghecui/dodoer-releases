@@ -14,10 +14,11 @@ const mocks = vi.hoisted(() => ({
   isDesktop: vi.fn(() => false),
   tauriClose: vi.fn(async () => {}),
   toastSuccess: vi.fn(),
+  search: "folderId=1",
 }))
 
 vi.mock("next/navigation", () => ({
-  useSearchParams: () => new URLSearchParams("folderId=1"),
+  useSearchParams: () => new URLSearchParams(mocks.search),
 }))
 vi.mock("@/lib/transport", () => ({
   getTransport: () => ({}),
@@ -49,8 +50,16 @@ vi.mock("@/contexts/git-credential-context", () => ({
     children,
 }))
 vi.mock("@/components/layout/commit-dialog", () => ({
-  CommitWorkspace: ({ onCommitted }: { onCommitted: () => void }) => (
-    <button onClick={onCommitted}>commit</button>
+  CommitWorkspace: ({
+    onCommitted,
+    initialPaths,
+  }: {
+    onCommitted: () => void
+    initialPaths?: string[] | null
+  }) => (
+    <button onClick={onCommitted} data-paths={JSON.stringify(initialPaths)}>
+      commit
+    </button>
   ),
 }))
 
@@ -60,6 +69,7 @@ import enMessages from "@/i18n/messages/en.json"
 let close: MockInstance<() => void>
 
 beforeEach(() => {
+  mocks.search = "folderId=1"
   mocks.isDesktop.mockReturnValue(false)
   mocks.tauriClose.mockClear()
   close = vi.spyOn(window, "close").mockImplementation(() => {})
@@ -89,5 +99,21 @@ describe("commit page", () => {
     fireEvent.click(await screen.findByRole("button", { name: "commit" }))
     await vi.waitFor(() => expect(mocks.tauriClose).toHaveBeenCalledTimes(1))
     expect(close).not.toHaveBeenCalled()
+  })
+
+  // #427: right-clicking one file opens the window for that file only.
+  it("hands the paths it was opened for to the workspace", async () => {
+    mocks.search = `folderId=1&paths=${encodeURIComponent(
+      JSON.stringify(["README.md"])
+    )}`
+    renderPage()
+    const button = await screen.findByRole("button", { name: "commit" })
+    expect(button).toHaveAttribute("data-paths", '["README.md"]')
+  })
+
+  it("hands no paths to the workspace without the param", async () => {
+    renderPage()
+    const button = await screen.findByRole("button", { name: "commit" })
+    expect(button).toHaveAttribute("data-paths", "null")
   })
 })

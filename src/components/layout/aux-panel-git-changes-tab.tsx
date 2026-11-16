@@ -384,6 +384,13 @@ function buildChangeFileTree(changes: WorkingTreeChange[]): ChangeTreeNode[] {
   })
 }
 
+/** `paths` 里在目录 `dir` 下面的那些。从整份改动列表里取，不从（可能
+ *  被行数上限截掉一部分的）树节点里收。 */
+function changePathsUnder(paths: readonly string[], dir: string): string[] {
+  const prefix = `${dir.replace(/\/+$/, "")}/`
+  return paths.filter((path) => path.startsWith(prefix))
+}
+
 function collectExpandedDirectoryPaths(
   nodes: ChangeTreeNode[],
   expanded = new Set<string>()
@@ -780,15 +787,20 @@ export function GitChangesTab() {
     setExpandedUntrackedPaths(new Set())
   }, [allUntrackedDirectoryPaths, untrackedCanExpand])
 
-  const handleOpenCommitWindow = useCallback(() => {
-    if (!folder) return
-    openCommitWindow(folder.id).catch((error) => {
-      const message = toErrorMessage(error)
-      toast.error(t("toasts.openCommitWindowFailed"), {
-        description: message,
+  // 右键某个文件、目录点「提交代码」时带上它的路径，提交窗口只勾这些
+  // （#427）；工具栏和已跟踪分组的根不带，照旧勾全部已跟踪改动。
+  const handleOpenCommitWindow = useCallback(
+    (paths?: readonly string[]) => {
+      if (!folder) return
+      openCommitWindow(folder.id, { paths }).catch((error) => {
+        const message = toErrorMessage(error)
+        toast.error(t("toasts.openCommitWindowFailed"), {
+          description: message,
+        })
       })
-    })
-  }, [folder, t])
+    },
+    [folder, t]
+  )
 
   // Pull / fetch / push / stash for the toolbar's "more" menu, sharing the
   // branch selector's task tracking, credential retry and conflict dialog.
@@ -1288,7 +1300,9 @@ export function GitChangesTab() {
             <ContextMenuContent>
               <ContextMenuItem
                 onSelect={() => {
-                  handleOpenCommitWindow()
+                  handleOpenCommitWindow(
+                    changePathsUnder(trackedPaths, node.path)
+                  )
                 }}
               >
                 {t("actions.commitCode")}
@@ -1374,7 +1388,7 @@ export function GitChangesTab() {
           <ContextMenuContent>
             <ContextMenuItem
               onSelect={() => {
-                handleOpenCommitWindow()
+                handleOpenCommitWindow([file.path])
               }}
             >
               {t("actions.commitCode")}
@@ -1436,6 +1450,7 @@ export function GitChangesTab() {
       t,
       tCommon,
       tFileTree,
+      trackedPaths,
     ]
   )
 
@@ -1470,7 +1485,9 @@ export function GitChangesTab() {
             <ContextMenuContent>
               <ContextMenuItem
                 onSelect={() => {
-                  handleOpenCommitWindow()
+                  handleOpenCommitWindow(
+                    changePathsUnder(untrackedPaths, node.path)
+                  )
                 }}
               >
                 {t("actions.commitCode")}
@@ -1551,7 +1568,7 @@ export function GitChangesTab() {
           <ContextMenuContent>
             <ContextMenuItem
               onSelect={() => {
-                handleOpenCommitWindow()
+                handleOpenCommitWindow([file.path])
               }}
             >
               {t("actions.commitCode")}
@@ -1618,6 +1635,7 @@ export function GitChangesTab() {
       t,
       tCommon,
       tFileTree,
+      untrackedPaths,
     ]
   )
 
@@ -1732,7 +1750,7 @@ export function GitChangesTab() {
                 {tBranch("fetchRemoteBranches")}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={handleOpenCommitWindow}>
+              <DropdownMenuItem onSelect={() => handleOpenCommitWindow()}>
                 <GitCommitHorizontal />
                 {tBranch("openCommitWindow")}
               </DropdownMenuItem>
@@ -2049,7 +2067,7 @@ export function GitChangesTab() {
                     <ContextMenuContent>
                       <ContextMenuItem
                         onSelect={() => {
-                          handleOpenCommitWindow()
+                          handleOpenCommitWindow(untrackedPaths)
                         }}
                       >
                         {t("actions.commitCode")}

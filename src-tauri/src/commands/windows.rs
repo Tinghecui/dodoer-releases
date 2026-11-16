@@ -454,6 +454,23 @@ fn append_query_param(route: String, key: &str, value: &str) -> String {
     }
 }
 
+/// 提交窗口的地址。带了 `paths`（右键某个文件、目录点「提交代码」）时
+/// 拼成 `paths=<URL 编码的 JSON 数组>`，提交窗口只勾这些（#427），
+/// 和前端 `src/lib/commit-window-paths.ts` 的格式一致。
+fn commit_window_route(folder_id: i32, paths: Option<&[String]>) -> String {
+    let route = format!("commit?folderId={folder_id}");
+    let paths: Vec<&String> = paths
+        .unwrap_or_default()
+        .iter()
+        .filter(|path| !path.is_empty())
+        .collect();
+    if paths.is_empty() {
+        return route;
+    }
+    let json = serde_json::to_string(&paths).unwrap_or_else(|_| "[]".to_string());
+    append_query_param(route, "paths", &urlencoding::encode(&json))
+}
+
 fn append_remote_context(
     route: String,
     remote_connection_id: Option<i32>,
@@ -673,6 +690,7 @@ pub async fn open_folder_window(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn open_commit_window(
     app: AppHandle,
     window: tauri::WebviewWindow,
@@ -681,14 +699,33 @@ pub async fn open_commit_window(
     folder_id: i32,
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
+    paths: Option<Vec<String>>,
 ) -> Result<(), AppCommandError> {
     let owner_label = window.label().to_string();
     let label = match remote_connection_id {
         Some(remote_id) => format!("remote-commit-{remote_id}-{folder_id}"),
         None => format!("commit-{folder_id}"),
     };
+    let paths = paths.filter(|list| !list.is_empty());
 
     if let Some(existing) = app.get_webview_window(&label) {
+        // 已经开着的窗口：这次右键带了路径，就把它导航到新地址，
+        // 勾选跟着这次走，而不是还停在上一次的。
+        if paths.is_some() {
+            let remote_window_id = remote_window_id_from_window(&existing);
+            let target_route = append_remote_context(
+                commit_window_route(folder_id, paths.as_deref()),
+                remote_connection_id,
+                remote_window_id.as_deref(),
+            );
+            let target_json = serde_json::to_string(&format!("/{target_route}")).map_err(|e| {
+                AppCommandError::window("Failed to build commit navigation target", e.to_string())
+            })?;
+            let nav_script = format!("window.location.replace({target_json});");
+            existing.eval(&nav_script).map_err(|e| {
+                AppCommandError::window("Failed to navigate commit window", e.to_string())
+            })?;
+        }
         state.set_owner(label.clone(), owner_label);
         let _ = existing.unminimize();
         existing
@@ -710,8 +747,10 @@ pub async fn open_commit_window(
             })?;
         format!("{} - {}", titles.commit, folder.name)
     };
-    let (url_str, remote_window_id) =
-        route_with_new_remote_window(format!("commit?folderId={folder_id}"), remote_connection_id);
+    let (url_str, remote_window_id) = route_with_new_remote_window(
+        commit_window_route(folder_id, paths.as_deref()),
+        remote_connection_id,
+    );
     let url = WebviewUrl::App(url_str.into());
     let builder = WebviewWindowBuilder::new(&app, &label, url)
         .title(window_title)
@@ -2969,5 +3008,25 @@ mod workspace_traffic_light_tests {
         assert_eq!(workspace_traffic_light_xy(150.0), (23.0, 48.75));
         // centre 31 * 0.5 = 15.5 -> y = 15.5 + 2.25 = 17.75
         assert_eq!(workspace_traffic_light_xy(50.0), (23.0, 17.75));
+    }
+}
+
+#[cfg(test)]
+mod commit_window_route_tests {
+    use super::commit_window_route;
+
+    #[test]
+    fn without_paths_is_the_plain_route() {
+        assert_eq!(commit_window_route(7, None), "commit?folderId=7");
+        assert_eq!(commit_window_route(7, Some(&[])), "commit?folderId=7");
+    }
+
+    #[test]
+    fn carries_the_paths_as_an_encoded_json_list() {
+        let paths = vec!["README.md".to_string(), "docs/a&b.md".to_string()];
+        assert_eq!(
+            commit_window_route(7, Some(&paths)),
+            "commit?folderId=7&paths=%5B%22README.md%22%2C%22docs%2Fa%26b.md%22%5D"
+        );
     }
 }

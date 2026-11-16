@@ -25,6 +25,7 @@ import type { ConversationTaxonomy } from "./conversation-taxonomy"
 import { asConversationMovedError } from "./conversation-moved"
 import type { FolderThemeColor } from "./theme-presets"
 import type { FollowUpIntent } from "./task-follow-up"
+import { appendCommitPathsParam } from "./commit-window-paths"
 import type {
   JennyLoopConversation,
   JennyLoopSessionPage,
@@ -3836,21 +3837,34 @@ export async function resolveWorktreeFolder(
   return getTransport().call("resolve_worktree_folder", { repoPath, branch })
 }
 
-export async function openCommitWindow(folderId: number): Promise<void> {
+export interface OpenCommitWindowOptions {
+  /** 只勾这些文件（目录算它下面的改动）；不给就勾全部已跟踪改动。 */
+  paths?: readonly string[] | null
+}
+
+export async function openCommitWindow(
+  folderId: number,
+  options: OpenCommitWindowOptions = {}
+): Promise<void> {
   const locale = getCurrentEffectiveAppLocale()
+  const paths = options.paths?.length ? [...options.paths] : null
   if (isDesktop()) {
     return getShellTransport().call("open_commit_window", {
       folderId,
       locale,
       remoteConnectionId: getActiveRemoteConnectionId(),
+      paths,
     })
   }
-  return openAppWindow(`commit-${folderId}`, () =>
-    getTransport().call<{ path: string }>("open_commit_window", {
-      folderId,
-      locale,
-    })
-  )
+  // 路径只在前端拼到地址后面，不改后端接口。同名窗口已经开着时，
+  // openAppWindow 也会把它导航到新地址，勾选跟着这次右键走。
+  return openAppWindow(`commit-${folderId}`, async () => {
+    const { path } = await getTransport().call<{ path: string }>(
+      "open_commit_window",
+      { folderId, locale }
+    )
+    return { path: appendCommitPathsParam(path, paths) }
+  })
 }
 
 export type SettingsSection =

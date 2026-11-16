@@ -1065,10 +1065,14 @@ export async function openFolder(path: string): Promise<FolderDetail> {
   return invoke("open_folder", { path })
 }
 
-export async function openCommitWindow(folderId: number): Promise<void> {
+export async function openCommitWindow(
+  folderId: number,
+  options: { paths?: readonly string[] | null } = {}
+): Promise<void> {
   return invoke("open_commit_window", {
     folderId,
     locale: getCurrentEffectiveAppLocale(),
+    paths: options.paths?.length ? [...options.paths] : null,
   })
 }
 

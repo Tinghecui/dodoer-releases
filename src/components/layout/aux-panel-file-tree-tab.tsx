@@ -623,7 +623,8 @@ interface RenderNodeProps {
   onOpenFilePreview: (path: string) => void
   onOpenFileDiff: (path: string) => void
   onOpenDirDiff: (path: string) => void
-  onOpenCommitWindow: () => void
+  /** 带上右键的文件（目录），提交窗口只勾它们（#427）。 */
+  onOpenCommitWindow: (paths?: readonly string[]) => void
   onRequestCompareWithBranch: (target: FileActionTarget) => void
   onRequestRollback: (target: FileActionTarget) => void
   onOpenDirInTerminal: (dirPath: string, fileName: string) => Promise<void>
@@ -795,7 +796,7 @@ function RenderNode({
             </ContextMenuSubTrigger>
             <ContextMenuSubContent>
               <ContextMenuItem
-                onSelect={() => onOpenCommitWindow()}
+                onSelect={() => onOpenCommitWindow([node.path])}
                 disabled={isGitMenuDisabled}
               >
                 {t("actions.commitCode")}
@@ -1051,7 +1052,7 @@ function RenderNode({
           </ContextMenuSubTrigger>
           <ContextMenuSubContent>
             <ContextMenuItem
-              onSelect={() => onOpenCommitWindow()}
+              onSelect={() => onOpenCommitWindow([node.path])}
               disabled={isGitMenuDisabled}
             >
               {t("actions.commitCode")}
@@ -2127,15 +2128,18 @@ export function FileTreeTab() {
     [createTerminalInDirectory, t]
   )
 
-  const handleOpenCommitWindow = useCallback(() => {
-    if (!folder) return
-    openCommitWindow(folder.id).catch((error) => {
-      const message = toErrorMessage(error)
-      toast.error(t("toasts.openCommitWindowFailed"), {
-        description: message,
+  const handleOpenCommitWindow = useCallback(
+    (paths?: readonly string[]) => {
+      if (!folder) return
+      openCommitWindow(folder.id, { paths }).catch((error) => {
+        const message = toErrorMessage(error)
+        toast.error(t("toasts.openCommitWindowFailed"), {
+          description: message,
+        })
       })
-    })
-  }, [folder, t])
+    },
+    [folder, t]
+  )
 
   const handleRequestCreate = useCallback(
     (parentPath: string, kind: "file" | "dir") => {

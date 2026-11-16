@@ -82,6 +82,10 @@ interface CommitWorkspaceProps {
   /** The project folder whose commit message settings apply — a worktree
    *  folder's repository. Defaults to `folderId`. */
   projectFolderId?: number | null
+  /** 从某几个文件（或目录）打开时传入，如「变更」面板右键「提交代码」：
+   *  只勾这些路径（目录算它下面的所有改动），预览其中第一个。没给、
+   *  或者一个都不在改动里时，照旧勾上全部已跟踪改动。 */
+  initialPaths?: readonly string[] | null
   onCommitted?: () => void
   onCancel?: () => void
 }
@@ -205,6 +209,15 @@ function findFirstFile(nodes: TreeNode[]): string | undefined {
   return undefined
 }
 
+/** `paths` 里的文件本身，或者 `paths` 里某个目录下面的文件。 */
+function matchesInitialPaths(file: string, paths: readonly string[]) {
+  return paths.some((raw) => {
+    const path = raw.replace(/^\.\/+/, "").replace(/\/+$/, "")
+    if (!path) return false
+    return file === path || file.startsWith(`${path}/`)
+  })
+}
+
 function collectDirPaths(entries: GitStatusEntry[]) {
   const paths = new Set<string>()
 
@@ -242,6 +255,7 @@ export function CommitWorkspace({
   folderPath,
   folderId,
   projectFolderId,
+  initialPaths,
   onCommitted,
   onCancel,
 }: CommitWorkspaceProps) {
@@ -398,7 +412,22 @@ export function CommitWorkspace({
       const untracked = result.filter(
         (entry) => entry.status === UNTRACKED_STATUS
       )
-      setSelected(new Set(tracked.map((entry) => entry.file)))
+      const picked =
+        initialPaths && initialPaths.length > 0
+          ? result.filter((entry) =>
+              matchesInitialPaths(entry.file, initialPaths)
+            )
+          : []
+      const pickedFiles = new Set(picked.map((entry) => entry.file))
+      setSelected(
+        picked.length > 0
+          ? pickedFiles
+          : new Set(tracked.map((entry) => entry.file))
+      )
+      // 勾上的有未跟踪文件时把未跟踪分组展开，不然勾了也看不见。
+      if (picked.some((entry) => entry.status === UNTRACKED_STATUS)) {
+        setUntrackedOpen(true)
+      }
       const trackedDirs = collectDirPaths(tracked)
       trackedDirs.add(folderName)
       setExpandedTrackedDirs(trackedDirs)
@@ -406,10 +435,19 @@ export function CommitWorkspace({
       untrackedDirs.add(folderName)
       setExpandedUntrackedDirs(untrackedDirs)
 
-      // Auto-select the first file in visual tree order for diff preview
+      // Auto-select the first file in visual tree order for diff preview —
+      // among the picked files when the window was opened for some.
+      const previewTracked =
+        picked.length > 0
+          ? tracked.filter((entry) => pickedFiles.has(entry.file))
+          : tracked
+      const previewUntracked =
+        picked.length > 0
+          ? untracked.filter((entry) => pickedFiles.has(entry.file))
+          : untracked
       const firstFile =
-        findFirstFile(buildFileTree(tracked)) ??
-        findFirstFile(buildFileTree(untracked))
+        findFirstFile(buildFileTree(previewTracked)) ??
+        findFirstFile(buildFileTree(previewUntracked))
       if (firstFile) {
         await loadDiff(firstFile, result)
       }
@@ -421,7 +459,7 @@ export function CommitWorkspace({
     } finally {
       setLoadingStatus(false)
     }
-  }, [folderPath, folderName, loadDiff])
+  }, [folderPath, folderName, initialPaths, loadDiff])
 
   // Start over from the repository as it is now: no diff, no message, the
   // file list (and its selection) re-read. On a new folder, and after a

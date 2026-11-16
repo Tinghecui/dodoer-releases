@@ -1,7 +1,7 @@
-import { act, fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { toast } from "sonner"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   capChangeTreeToBudget,
@@ -144,10 +144,12 @@ const gitCommitMock = vi.hoisted(() =>
 )
 const generateMock = vi.hoisted(() => vi.fn())
 const cancelGenerateMock = vi.hoisted(() => vi.fn(async () => {}))
+const openCommitWindowMock = vi.hoisted(() => vi.fn(async () => {}))
 
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
   gitCommit: gitCommitMock,
+  openCommitWindow: openCommitWindowMock,
   gitGenerateCommitMessage: generateMock,
   gitGenerateCommitMessageCancel: cancelGenerateMock,
 }))
@@ -204,14 +206,35 @@ vi.mock("@/contexts/workspace-context", () => ({
   }),
 }))
 
-// Radix context menu → passthrough trigger, no lazy content.
+// Radix context menu → passthrough trigger, no lazy content. A test that
+// needs the menus sets `menus.render`: each menu is then a box holding its
+// row and its items, the items plain buttons.
+const menus = vi.hoisted(() => ({ render: false }))
 vi.mock("@/components/ui/context-menu", () => ({
-  ContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  ContextMenu: ({ children }: { children: React.ReactNode }) =>
+    menus.render ? <div data-testid="ctx">{children}</div> : <>{children}</>,
   ContextMenuTrigger: ({ children }: { children: React.ReactNode }) => (
     <>{children}</>
   ),
-  ContextMenuContent: () => null,
-  ContextMenuItem: () => null,
+  ContextMenuContent: ({ children }: { children: React.ReactNode }) =>
+    menus.render ? <div>{children}</div> : null,
+  ContextMenuItem: ({
+    children,
+    onSelect,
+  }: {
+    children: React.ReactNode
+    onSelect?: () => void
+  }) =>
+    menus.render ? (
+      <button type="button" onClick={() => onSelect?.()}>
+        {children}
+      </button>
+    ) : null,
+  ContextMenuSeparator: () => null,
+  ContextMenuSub: ({ children }: { children: React.ReactNode }) =>
+    menus.render ? <>{children}</> : null,
+  ContextMenuSubTrigger: () => null,
+  ContextMenuSubContent: () => null,
 }))
 
 // File tree → render name + children directly (expansion is irrelevant to the
@@ -839,5 +862,79 @@ describe("GitChangesTab untracked files and the ✨", () => {
     })
     expect(gitCommitMock).not.toHaveBeenCalled()
     expect(box.value).toBe("feat: add a")
+  })
+})
+
+// #427: "Commit code" on one row opens the commit window for that row only.
+describe("GitChangesTab commit code from a row's menu", () => {
+  const change = (path: string, status = "M") => ({
+    path,
+    status,
+    additions: 1,
+    deletions: 0,
+  })
+
+  // The innermost menu around `text`: a file row's own, not its folders'.
+  function commitCodeFor(text: string) {
+    const box = screen
+      .getAllByTestId("ctx")
+      .filter(
+        (el) =>
+          el.querySelector('[data-testid="ctx"]') === null &&
+          el.textContent?.includes(text)
+      )
+    expect(box).toHaveLength(1)
+    return within(box[0]).getByRole("button", { name: "Commit code" })
+  }
+
+  function setup() {
+    menus.render = true
+    openCommitWindowMock.mockClear()
+    store.git = [
+      change("docs/notes.md"),
+      change("README.md"),
+      change("draft.txt", "??"),
+    ]
+    renderTab()
+  }
+
+  afterEach(() => {
+    menus.render = false
+  })
+
+  it("passes a tracked file's path", () => {
+    setup()
+    fireEvent.click(commitCodeFor("README.md"))
+    expect(openCommitWindowMock).toHaveBeenCalledWith(expect.anything(), {
+      paths: ["README.md"],
+    })
+  })
+
+  it("passes an untracked file's path", () => {
+    setup()
+    fireEvent.click(commitCodeFor("draft.txt"))
+    expect(openCommitWindowMock).toHaveBeenCalledWith(expect.anything(), {
+      paths: ["draft.txt"],
+    })
+  })
+
+  it("passes a tracked directory's tracked changes only", () => {
+    menus.render = true
+    openCommitWindowMock.mockClear()
+    store.git = [
+      change("docs/a.md"),
+      change("docs/b.md"),
+      change("docs/c.md", "??"),
+      change("README.md"),
+    ]
+    renderTab()
+    // The tracked group renders first; a folder's own menu items sit after
+    // its row (the last child of its menu box).
+    const box = screen.getAllByText("docs")[0].closest('[data-testid="ctx"]')
+    const own = box?.lastElementChild as HTMLElement
+    fireEvent.click(within(own).getByRole("button", { name: "Commit code" }))
+    expect(openCommitWindowMock).toHaveBeenCalledWith(expect.anything(), {
+      paths: ["docs/a.md", "docs/b.md"],
+    })
   })
 })

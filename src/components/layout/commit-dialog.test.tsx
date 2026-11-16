@@ -10,6 +10,9 @@ const api = vi.hoisted(() => ({
   gitCommit: vi.fn(async () => ({ committed_files: 1 })),
   gitPush: vi.fn(async () => {}),
   gitListRemotes: vi.fn<(path: string) => Promise<GitRemote[]>>(),
+  readFilePreview: vi.fn<
+    (path: string, file: string) => Promise<{ content: string }>
+  >(async () => ({ content: "" })),
 }))
 
 vi.mock("@/lib/api", () => ({
@@ -21,7 +24,7 @@ vi.mock("@/lib/api", () => ({
   gitShowFile: vi.fn(async () => ""),
   gitStatus: api.gitStatus,
   deleteFileTreeEntry: vi.fn(),
-  readFilePreview: vi.fn(async () => ({ content: "" })),
+  readFilePreview: api.readFilePreview,
 }))
 vi.mock("@/contexts/git-credential-context", () => ({
   useGitCredential: () => ({
@@ -65,6 +68,7 @@ beforeEach(() => {
   api.gitCommit.mockClear()
   api.gitPush.mockClear()
   api.gitListRemotes.mockReset()
+  api.readFilePreview.mockClear()
   toast.warning.mockClear()
   toast.error.mockClear()
 })
@@ -192,5 +196,70 @@ describe("CommitWorkspace commit and push", () => {
     await waitFor(() => expect(onCommitted).toHaveBeenCalledTimes(1))
     expect(api.gitPush).toHaveBeenCalledTimes(1)
     expect(toast.warning).not.toHaveBeenCalled()
+  })
+})
+
+// #427: right-clicking one file and choosing "Commit" opens the window with
+// just that file ticked and previewed, not every tracked change.
+describe("CommitWorkspace opened for some paths", () => {
+  const STATUS: GitStatusEntry[] = [
+    { status: "M", file: "docs/notes.md" },
+    { status: "M", file: "README.md" },
+    { status: "??", file: "draft.txt" },
+    { status: "??", file: "src/new.ts" },
+  ]
+
+  function renderWorkspace(initialPaths?: string[]) {
+    api.gitStatus.mockResolvedValue(STATUS)
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <CommitWorkspace
+          folderPath="/repo"
+          folderId={1}
+          initialPaths={initialPaths}
+        />
+      </NextIntlClientProvider>
+    )
+  }
+
+  function lastPreviewedFile() {
+    const calls = api.readFilePreview.mock.calls
+    return calls[calls.length - 1]?.[1]
+  }
+
+  it("ticks and previews only the tracked file it was opened for", async () => {
+    renderWorkspace(["README.md"])
+
+    await screen.findByRole("button", { name: "Commit (1)" })
+    await waitFor(() => expect(lastPreviewedFile()).toBe("README.md"))
+  })
+
+  it("ticks an untracked file it was opened for", async () => {
+    renderWorkspace(["draft.txt"])
+
+    await screen.findByRole("button", { name: "Commit (1)" })
+    await waitFor(() => expect(lastPreviewedFile()).toBe("draft.txt"))
+    // The untracked group is open, so the ticked file is in sight.
+    expect(screen.getByText("draft.txt")).toBeInTheDocument()
+  })
+
+  it("ticks every change under a directory it was opened for", async () => {
+    renderWorkspace(["src"])
+
+    await screen.findByRole("button", { name: "Commit (1)" })
+    await waitFor(() => expect(lastPreviewedFile()).toBe("src/new.ts"))
+  })
+
+  it("falls back to every tracked change when none of the paths changed", async () => {
+    renderWorkspace(["gone.md"])
+
+    await screen.findByRole("button", { name: "Commit (2)" })
+  })
+
+  it("ticks every tracked change when opened without paths", async () => {
+    renderWorkspace()
+
+    await screen.findByRole("button", { name: "Commit (2)" })
+    await waitFor(() => expect(lastPreviewedFile()).toBe("docs/notes.md"))
   })
 })

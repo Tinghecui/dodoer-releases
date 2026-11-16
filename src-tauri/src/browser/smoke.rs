@@ -192,6 +192,7 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 folder_id,
                 None,
                 None,
+                None,
             )
             .await
             .map_err(err_string)?;

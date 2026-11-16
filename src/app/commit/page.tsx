@@ -1,6 +1,6 @@
 "use client"
 
-import { Suspense, useCallback, useEffect, useState } from "react"
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { useTranslations } from "next-intl"
 import { Loader2 } from "lucide-react"
@@ -14,6 +14,10 @@ import { GitCredentialProvider } from "@/contexts/git-credential-context"
 import { RemoteConnectionGate } from "@/contexts/remote-connection-context"
 import { brandTitle } from "@/lib/cowork/brand"
 import { closeAppWindow } from "@/lib/platform"
+import {
+  COMMIT_PATHS_PARAM,
+  parseCommitPathsParam,
+} from "@/lib/commit-window-paths"
 
 const TOAST_DURATION_MS = 6000
 
@@ -37,6 +41,12 @@ function CommitPageInner() {
   const hasValidFolderId = normalizedFolderId > 0
   const loading = hasValidFolderId && state.loadedId !== normalizedFolderId
   const folder = state.loadedId === normalizedFolderId ? state.folder : null
+  // 右键某个文件「提交代码」打开时带的路径：只勾它们（#427）。
+  const rawPaths = searchParams.get(COMMIT_PATHS_PARAM)
+  const initialPaths = useMemo(
+    () => parseCommitPathsParam(rawPaths),
+    [rawPaths]
+  )
   const error = state.loadedId === normalizedFolderId ? state.error : null
 
   // A commit refreshes the workspace itself, so a window that stays open (a
@@ -112,6 +122,7 @@ function CommitPageInner() {
               folderPath={folder.path}
               folderId={folder.id}
               projectFolderId={folder.parent_id ?? folder.id}
+              initialPaths={initialPaths}
               onCommitted={closeWindow}
               onCancel={closeWindow}
             />

@@ -218,7 +218,8 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.build == 'true' && needs.prepare.outputs.hack == 'true'
     runs-on: [self-hosted, hackintosh]
-    timeout-minutes: 75
+    # 编译约 20 分钟（失败重试一次再 20），等网络、上传最多再几十分钟
+    timeout-minutes: 110
     outputs:
       # 编译 / 打包这一步自己失败了（重试过一次）：多半是代码的问题，GitHub 上编同样的代码也过不了，不切过去
       build_failed: ${{ steps.build.outcome == 'failure' }}
@@ -230,6 +231,24 @@ jobs:
       DODOER_TARGET: aarch64-apple-darwin
       DODOER_SKIP_SMOKE: "1"
     steps:
+      # 开工前网络正好断着（切网、重启小火箭），拉代码就失败、转到 GitHub 上编；先等它恢复
+      - name: 等网络通
+        timeout-minutes: 12
+        continue-on-error: true
+        # 每 15 秒试一次能不能连上 GitHub（runner 的 .env 里配了小火箭的代理，curl 跟着走），连续 2 次通了才往下，
+        # 最多等 10 分钟；等不到也往下走，让后面的步骤自己失败
+        run: |
+          ok=0
+          for i in $(seq 1 40); do
+            if curl -fsS -o /dev/null -m 10 https://api.github.com/zen; then
+              ok=$((ok + 1))
+              if [[ $ok -ge 2 ]]; then echo "网络通了（第 ${i} 次检查）"; exit 0; fi
+            else
+              ok=0; echo "连不上 GitHub，15 秒后再试（第 ${i} 次）"
+            fi
+            sleep 15
+          done
+          echo "::warning::等了 10 分钟网络还没恢复"
       # clean: false：留着 src-tauri/target 和 node_modules 做增量（自托管不用 rust-cache，见 COWORK.md）
       - uses: actions/checkout@v4
         with:
@@ -307,6 +326,16 @@ jobs:
         run: |
           scripts/cowork-desktop-build.sh full && exit 0
           echo "::warning::黑苹果上第一次编译失败，重试一次"
+          # 失败多半是下载依赖时断了网：先等网络恢复（最多 10 分钟）再重试，不然重试也失败，会被当成代码的问题
+          ok=0
+          for i in $(seq 1 40); do
+            if curl -fsS -o /dev/null -m 10 https://api.github.com/zen; then
+              ok=$((ok + 1)); if [[ $ok -ge 2 ]]; then break; fi
+            else
+              ok=0; echo "连不上 GitHub，15 秒后再试（第 ${i} 次）"
+            fi
+            sleep 15
+          done
           scripts/cowork-desktop-build.sh full
       # 自托管机器上钥匙串不会随机器销毁，搜索列表也要还原
       - name: 删掉临时钥匙串
@@ -316,25 +345,75 @@ jobs:
             lockf -k -t 60 /tmp/dodoer-keychain-list.lock security delete-keychain "$DODOER_SIGNING_KEYCHAIN" || true
           fi
           rm -f "$RUNNER_TEMP/codesign.p12"
-      # 上传可能卡死：经小火箭的本机代理连 GitHub，连接断了却不报错，程序一直干等（2026-11-16 卡过 10 分钟，没有超时
-      # 要等到 job 的 75 分钟）。正常几分钟传完，15 分钟没完就停下、再传一次（overwrite），还不行这个 job 才失败
+      # 上传最容易被网络打断：经小火箭的本机代理连 GitHub，连接断了可能不报错、一直干等（2026-11-16 卡过 10 分钟），
+      # 切网、重启小火箭时连接被重置（2026-11-16 因此三次转到 GitHub 上编，一等一小时）。每次最多 15 分钟，
+      # 没传完就先等网络恢复（最多 10 分钟）再传，一共 3 次（overwrite），都不行这个 job 才失败
       - id: upload
         uses: actions/upload-artifact@v4
         timeout-minutes: 15
         continue-on-error: true
         with:
           name: dodoer-hack-dist
-          # 不传别名副本（同一个安装包换个名字，arm64 两份、Intel 一份，每份一百多 MB）：黑苹果上传只有几百 KB/s，
-          # 一次多传 140–280 MB 要多等十几分钟（2026-11-16）。publish 从带版本号的那份复制出来
           path: |
             dist/
             !dist/dodoer-macos-*.zip*
             !dist/dodoer-client-macos-*.zip*
           retention-days: 7
           if-no-files-found: error
-      - if: steps.upload.outcome != 'success'
+      - name: 上传没成：等网络恢复
+        if: steps.upload.outcome != 'success'
+        timeout-minutes: 12
+        continue-on-error: true
+        # 每 15 秒试一次能不能连上 GitHub（runner 的 .env 里配了小火箭的代理，curl 跟着走），连续 2 次通了才往下，
+        # 最多等 10 分钟；等不到也往下走，让后面的步骤自己失败
+        run: |
+          ok=0
+          for i in $(seq 1 40); do
+            if curl -fsS -o /dev/null -m 10 https://api.github.com/zen; then
+              ok=$((ok + 1))
+              if [[ $ok -ge 2 ]]; then echo "网络通了（第 ${i} 次检查）"; exit 0; fi
+            else
+              ok=0; echo "连不上 GitHub，15 秒后再试（第 ${i} 次）"
+            fi
+            sleep 15
+          done
+          echo "::warning::等了 10 分钟网络还没恢复"
+      - id: upload2
+        if: steps.upload.outcome != 'success'
         uses: actions/upload-artifact@v4
-        timeout-minutes: 20
+        timeout-minutes: 15
+        continue-on-error: true
+        with:
+          name: dodoer-hack-dist
+          overwrite: true
+          path: |
+            dist/
+            !dist/dodoer-macos-*.zip*
+            !dist/dodoer-client-macos-*.zip*
+          retention-days: 7
+          if-no-files-found: error
+      - name: 又没成：再等网络恢复
+        if: steps.upload.outcome != 'success' && steps.upload2.outcome != 'success'
+        timeout-minutes: 12
+        continue-on-error: true
+        # 每 15 秒试一次能不能连上 GitHub（runner 的 .env 里配了小火箭的代理，curl 跟着走），连续 2 次通了才往下，
+        # 最多等 10 分钟；等不到也往下走，让后面的步骤自己失败
+        run: |
+          ok=0
+          for i in $(seq 1 40); do
+            if curl -fsS -o /dev/null -m 10 https://api.github.com/zen; then
+              ok=$((ok + 1))
+              if [[ $ok -ge 2 ]]; then echo "网络通了（第 ${i} 次检查）"; exit 0; fi
+            else
+              ok=0; echo "连不上 GitHub，15 秒后再试（第 ${i} 次）"
+            fi
+            sleep 15
+          done
+          echo "::warning::等了 10 分钟网络还没恢复"
+      - id: upload3
+        if: steps.upload.outcome != 'success' && steps.upload2.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 15
         with:
           name: dodoer-hack-dist
           overwrite: true

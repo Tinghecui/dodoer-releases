@@ -3709,3 +3709,115 @@ describe("MessageInput live content for draft tidying", () => {
     await waitFor(() => expect(hasLiveComposerContent(draftKey)).toBe(false))
   })
 })
+
+// 编辑排队消息时输入框被换成那条消息；取消编辑后这条消息还在队里、会照常发出，
+// 输入框必须回到编辑前的样子，否则再按一次 Enter 就把它重复发一遍（#425）。
+describe("MessageInput cancelling a queue edit (#425)", () => {
+  const KEY = "message-input-test:cancel-queue-edit"
+  afterEach(() => {
+    cleanup()
+    clearMessageInputDraftV2(KEY)
+  })
+
+  const editing = {
+    isEditingQueueItem: true,
+    editingItemId: "q-s1",
+    editingDraftBlocks: [{ type: "text" as const, text: "S1 reply solo" }],
+  }
+
+  function tree(props: Partial<React.ComponentProps<typeof MessageInput>>) {
+    return (
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <MessageInput
+          onSend={vi.fn()}
+          promptCapabilities={CAPS}
+          draftStorageKey={KEY}
+          isPrompting
+          onEnqueue={vi.fn()}
+          {...props}
+        />
+      </NextIntlClientProvider>
+    )
+  }
+
+  /** 先按草稿挂上，再点某条排队消息的「编辑」，等它填进输入框。 */
+  async function mountEditing(
+    draft: string | null,
+    props: Partial<React.ComponentProps<typeof MessageInput>> = {}
+  ) {
+    if (draft != null) {
+      saveMessageInputDraftV2(KEY, {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: draft }] },
+        ],
+      })
+    }
+    const view = render(tree(props))
+    await waitFor(
+      () => expect(composerHandle.current?.getText()).toBe(draft ?? ""),
+      { timeout: 5000 }
+    )
+    view.rerender(tree({ ...editing, ...props }))
+    await waitFor(() =>
+      expect(composerHandle.current?.getText()).toBe("S1 reply solo")
+    )
+    return view
+  }
+
+  const cancelButton = (container: HTMLElement) =>
+    container.querySelector<HTMLButtonElement>(
+      `button[title="${enMessages.Folder.chat.messageQueue.cancelEdit}"]`
+    )!
+
+  it("puts the draft back when the cancel button is clicked", async () => {
+    const onCancelQueueEdit = vi.fn()
+    const view = await mountEditing("abc", { onCancelQueueEdit })
+    fireEvent.click(cancelButton(view.container))
+    expect(onCancelQueueEdit).toHaveBeenCalledTimes(1)
+    // 父组件随后把编辑状态清掉。
+    view.rerender(tree({ onCancelQueueEdit }))
+    await waitFor(() => expect(composerHandle.current?.getText()).toBe("abc"))
+    expect(loadMessageInputDraftV2(KEY)).not.toBeNull()
+  })
+
+  it("empties the composer on cancel when there was no draft", async () => {
+    const onCancelQueueEdit = vi.fn()
+    const view = await mountEditing(null, { onCancelQueueEdit })
+    fireEvent.click(cancelButton(view.container))
+    view.rerender(tree({ onCancelQueueEdit }))
+    await waitFor(() => expect(composerHandle.current?.isEmpty()).toBe(true))
+  })
+
+  it("puts the draft back on Escape too", async () => {
+    const onCancelQueueEdit = vi.fn()
+    const view = await mountEditing("abc", { onCancelQueueEdit })
+    const dom = composerHandle.current!.getEditor()!.view.dom as HTMLElement
+    fireEvent.keyDown(dom, { key: "Escape" })
+    expect(onCancelQueueEdit).toHaveBeenCalledTimes(1)
+    view.rerender(tree({ onCancelQueueEdit }))
+    await waitFor(() => expect(composerHandle.current?.getText()).toBe("abc"))
+  })
+
+  it("puts the draft back when the edited item leaves the queue", async () => {
+    const view = await mountEditing("abc")
+    // 被编辑的那条在编辑期间被删掉或发了出去：父组件直接把编辑状态清掉。
+    view.rerender(tree({}))
+    await waitFor(() => expect(composerHandle.current?.getText()).toBe("abc"))
+  })
+
+  it("still saves an edit as before", async () => {
+    const onSaveQueueEdit = vi.fn()
+    const view = await mountEditing("abc", { onSaveQueueEdit })
+    const save = view.container.querySelector<HTMLButtonElement>(
+      `button[title="${enMessages.Folder.chat.messageQueue.saveEdit}"]`
+    )!
+    fireEvent.click(save)
+    expect(onSaveQueueEdit).toHaveBeenCalledTimes(1)
+    expect(onSaveQueueEdit.mock.calls[0][0].displayText).toBe("S1 reply solo")
+    view.rerender(tree({ onSaveQueueEdit }))
+    await nextFrame()
+    await nextFrame()
+    expect(composerHandle.current?.isEmpty()).toBe(true)
+  })
+})

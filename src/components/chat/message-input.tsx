@@ -560,6 +560,8 @@ export function MessageInput({
   // doesn't clobber the user's in-progress changes — keyed on id, not display
   // text (two attachment-only items share the text "Attached 1 attachment").
   const prevEditingItemIdRef = useRef<string | null>(null)
+  // 这次编辑是保存掉的（handleSend 已经清了输入框），编辑结束时不再还原草稿。
+  const queueEditSavedRef = useRef(false)
   // Bridge so the early `onChange` handler can call the editor-driven slash
   // detection that is defined further down (after the slash state).
   const detectSlashTriggerRef = useRef<(() => void) | null>(null)
@@ -742,7 +744,12 @@ export function MessageInput({
       editingItemId != null &&
       editingItemId !== prevEditingItemIdRef.current
     ) {
+      const startingEdit = prevEditingItemIdRef.current == null
       prevEditingItemIdRef.current = editingItemId
+      queueEditSavedRef.current = false
+      // 编辑期间不存草稿，取消编辑时靠存着的草稿还原输入框：先把还没落盘的
+      // 那次存草稿落下来，免得它晚 300ms 才写、把排队消息当成草稿存进去。
+      if (startingEdit) flushDraftSave()
       // Same flushSync deferral as the hydration effect above: hydrateFromBlocks
       // can insert reference-badge NodeViews (synchronous @tiptap/react
       // flushSync). Mutation + focus run next frame, off the commit phase.
@@ -762,7 +769,37 @@ export function MessageInput({
       })
       return () => cancelAnimationFrame(raf)
     } else if (!isEditingQueueItem) {
+      const editEnded = prevEditingItemIdRef.current != null
       prevEditingItemIdRef.current = null
+      const saved = queueEditSavedRef.current
+      queueEditSavedRef.current = false
+      // 编辑结束但不是保存（点了取消、按了 Esc，或者那条在编辑期间被删掉、
+      // 发了出去）：消息还在队里或已经发出，输入框里那份是它的副本，留着再按
+      // Enter 就重复发一次（#425）。把输入框还原成编辑前的草稿，没有草稿就清空。
+      // 保存走 handleSend，它自己清输入框。
+      if (!editEnded || saved) return
+      // 不随依赖变化取消：这次还原只排这一回，effect 因别的依赖重跑时
+      // editEnded 已是 false，不会再排。
+      requestAnimationFrame(() => {
+        const ed = editorRef.current
+        // 同一帧里又点了另一条的「编辑」：那条的内容优先。
+        if (!ed || prevEditingItemIdRef.current != null) return
+        clearAttachments()
+        historyIndexRef.current = null
+        historyDraftRef.current = null
+        const loaded = effectiveDraftStorageKey
+          ? loadMessageInputDraftV2(effectiveDraftStorageKey)
+          : null
+        if (loaded?.kind === "doc") {
+          ed.setDoc(loaded.doc)
+        } else if (loaded?.kind === "legacyMarkdown") {
+          ed.setText(loaded.markdown)
+        } else {
+          ed.clear()
+        }
+        const editor = ed.getEditor()
+        setComposerEmpty(editor ? isComposerEmpty(editor) : true)
+      })
     }
   }, [
     isEditingQueueItem,
@@ -770,6 +807,9 @@ export function MessageInput({
     editingDraftText,
     editingDraftBlocks,
     hydrateFromBlocks,
+    flushDraftSave,
+    clearAttachments,
+    effectiveDraftStorageKey,
   ])
 
   useEffect(() => {
@@ -1679,6 +1719,7 @@ export function MessageInput({
 
     // Edit mode: save back to queue item
     if (isEditingQueueItem && onSaveQueueEdit) {
+      queueEditSavedRef.current = true
       onSaveQueueEdit(draft)
       resetComposer()
       return

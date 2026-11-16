@@ -660,9 +660,12 @@ impl Conversations for LiveConversations {
 #[serde(rename_all = "camelCase")]
 pub struct DevicesAnswer {
     pub text: String,
-    /// The conversation's working device, by name.
+    /// The conversation's working device, by name: 命令行那台。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub working: Option<String>,
+    /// 浏览器那台的名字（`browser_open_tab` 不带 `device` 开在它上面）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser: Option<String>,
     pub devices: Vec<DeviceState>,
 }
 
@@ -672,6 +675,7 @@ impl DevicesAnswer {
         Self {
             text: "The user's devices cannot be reached from here.".to_string(),
             working: None,
+            browser: None,
             devices: Vec::new(),
         }
     }
@@ -685,8 +689,10 @@ pub struct DeviceState {
     pub device: DeviceView,
     /// Chosen for this conversation.
     pub confirmed: bool,
-    /// This conversation's working device.
+    /// This conversation's working device: 命令行那台。
     pub working: bool,
+    /// 这个对话的浏览器那台。
+    pub for_browser: bool,
     /// Where the person's latest message came from.
     pub current: bool,
 }
@@ -775,17 +781,26 @@ impl DeviceTools {
         .unwrap_or_default();
         let mut text = describe_all(&devices, &state);
         if !devices.is_empty() {
-            text.push_str(&match working_name(&devices, &state) {
-                Some(name) => format!(
+            let shell = working_name(&devices, &state);
+            let browser = browser_name(&devices, &state);
+            text.push_str(&match (shell, browser) {
+                (Some(name), Some(other)) if name == other => format!(
                     "\nThis conversation works on `{name}`. Keep to it: a message from another \
                      device does not change it. Switch only when the user says so, with \
                      use_device."
                 ),
-                None if devices.len() == 1 => format!(
+                (None, None) if devices.len() == 1 => format!(
                     "\n`{}` is the user's only device: you may use it.",
                     devices[0].name
                 ),
-                None => format!("\n{}", not_picked()),
+                (None, None) => format!("\n{}", not_picked()),
+                // 命令行和浏览器在不同的电脑上，或者只选了一样（#341）。
+                (shell, browser) => format!(
+                    "\n{} Keep to what the user picked: a message from another device does not \
+                     change it. Switch only when the user says so, with use_device (it moves \
+                     both the shell and the browser to the device named).",
+                    parts_text(shell.as_deref(), browser.as_deref())
+                ),
             });
             text.push('\n');
             text.push_str(&latest_from(&devices, &state));
@@ -843,19 +858,39 @@ impl DeviceTools {
             None if devices.len() == 1 => devices[0].clone(),
             // Not named: the person picks in the app, not on a card.
             None => {
-                let working = state
-                    .working
-                    .as_deref()
-                    .and_then(|id| devices.iter().find(|d| d.id == id));
-                let Some(working) = working else {
+                let find = |id: Option<&str>| id.and_then(|id| devices.iter().find(|d| d.id == id));
+                let shell = find(state.shell_device());
+                let browser = find(state.browser_device());
+                if shell.is_none() {
                     self.hosts.working().want(conversation);
-                    return answer(not_picked(), devices, &state);
+                }
+                let text = match (shell, browser) {
+                    (None, None) => not_picked(),
+                    (Some(working), Some(other)) if working.id == other.id => format!(
+                        "This conversation works on `{}`, which the user picked. {}",
+                        working.name,
+                        how_to_use(working)
+                    ),
+                    // 两样分开选的，或者只选了一样（#341）。
+                    (shell, browser) => {
+                        let mut text = format!(
+                            "{} The user picked this in the app.",
+                            parts_text(
+                                shell.map(|d| d.name.as_str()),
+                                browser.map(|d| d.name.as_str())
+                            )
+                        );
+                        if let Some(device) = shell {
+                            text.push(' ');
+                            text.push_str(&part_use(device, DevicePart::Shell));
+                        }
+                        if let Some(device) = browser {
+                            text.push(' ');
+                            text.push_str(&part_use(device, DevicePart::Browser));
+                        }
+                        text
+                    }
                 };
-                let text = format!(
-                    "This conversation works on `{}`, which the user picked. {}",
-                    working.name,
-                    how_to_use(working)
-                );
                 return answer(text, devices, &state);
             }
             // Named by the person in the chat, not given yet: asked once.
@@ -918,12 +953,12 @@ impl DeviceTools {
         };
         let Some(device) = target else {
             self.hosts.working().want_browser(conversation);
-            return Err(not_picked());
+            return Err(not_picked_for(DevicePart::Browser));
         };
         if state.may_browse(&device.id) {
             return Ok(Some(device.name));
         }
-        Err(not_given(&device.name, browser_name(&devices, &state)))
+        Err(not_given(&device, DevicePart::Browser, &devices, &state))
     }
 
     /// The names of the devices the conversation on `connection_id` may
@@ -964,15 +999,18 @@ impl DeviceTools {
         if state.may_ssh(device_id) {
             return Ok(());
         }
-        let Some(working) = working_name(&devices, &state) else {
+        if working_name(&devices, &state).is_none() {
             self.hosts.working().want(conversation);
-            return Err(not_picked());
-        };
-        let name = devices
-            .iter()
-            .find(|d| d.id == device_id)
-            .map_or("that device", |d| d.name.as_str());
-        Err(not_given(name, Some(working)))
+            return Err(not_picked_for(DevicePart::Shell));
+        }
+        match devices.iter().find(|d| d.id == device_id) {
+            Some(device) => Err(not_given(device, DevicePart::Shell, &devices, &state)),
+            None => Err(format!(
+                "This conversation has not been given that device for its shell by the user. \
+                 Its shell is on `{}`, which the user picked: use that.",
+                working_name(&devices, &state).unwrap_or_default()
+            )),
+        }
     }
 
     /// The card: which device this conversation is to work on.
@@ -1066,11 +1104,13 @@ impl DeviceTools {
 
 fn answer(text: String, devices: Vec<DeviceView>, state: &ConversationDevice) -> DevicesAnswer {
     let working = working_name(&devices, state);
+    let browser = browser_name(&devices, state);
     let devices = devices
         .into_iter()
         .map(|device| DeviceState {
             confirmed: state.confirmed.contains(&device.id),
             working: state.working.as_deref() == Some(device.id.as_str()),
+            for_browser: state.browser_device() == Some(device.id.as_str()),
             current: state.last_from.as_deref() == Some(device.id.as_str()),
             device,
         })
@@ -1078,6 +1118,7 @@ fn answer(text: String, devices: Vec<DeviceView>, state: &ConversationDevice) ->
     DevicesAnswer {
         text,
         working,
+        browser,
         devices,
     }
 }
@@ -1111,14 +1152,109 @@ pub fn not_picked() -> String {
         .to_string()
 }
 
-/// What an agent is told when it goes for `name`, which its conversation has
-/// not been given.
-fn not_given(name: &str, working: Option<String>) -> String {
-    let mut text = format!("This conversation has not been given `{name}` by the user.");
-    if let Some(working) = working {
-        text.push_str(&format!(
-            " It works on `{working}`, which the user picked: use that."
-        ));
+/// 只有一样没选时给智能体的说明：命令行（`ssh`）或浏览器（#341）。
+pub fn not_picked_for(part: DevicePart) -> String {
+    let (what, how) = match part {
+        DevicePart::Shell => ("shell", " (`ssh`)"),
+        DevicePart::Browser => ("browser", " (browser_open_tab and the other browser tools)"),
+    };
+    format!(
+        "The user has not picked a computer for this conversation's {what}{how} yet. Tell them \
+         to pick one for the {what} with the device button below the message box in dodoer, \
+         then try again; do not ask them with ask_user_question. If their message named one \
+         (\"on the laptop\"), call use_device with that name instead."
+    )
+}
+
+fn part_word(part: DevicePart) -> &'static str {
+    match part {
+        DevicePart::Shell => "shell",
+        DevicePart::Browser => "browser",
+    }
+}
+
+/// 「命令行在哪台、浏览器在哪台」，没选的那一样说没选（#341）。
+fn parts_text(shell: Option<&str>, browser: Option<&str>) -> String {
+    let shell_text =
+        shell.map(|name| format!("This conversation's shell is on `{name}` (`ssh {name}`)."));
+    let browser_text = browser.map(|name| {
+        format!(
+            "This conversation's browser is on `{name}` (browser_open_tab without `device` opens \
+             there)."
+        )
+    });
+    match (shell_text, browser_text) {
+        (Some(shell), Some(browser)) => format!("{shell} {browser}"),
+        (Some(shell), None) => format!("{shell} {}", not_picked_for(DevicePart::Browser)),
+        (None, Some(browser)) => format!("{browser} {}", not_picked_for(DevicePart::Shell)),
+        (None, None) => not_picked(),
+    }
+}
+
+/// 这一样在 `device` 上现在能不能用、怎么用。
+fn part_use(device: &DeviceView, part: DevicePart) -> String {
+    let name = &device.name;
+    if device.stopped {
+        return super::host_devices::stopped_note(name);
+    }
+    if !device.online {
+        return format!(
+            "`{name}` is offline (last online {}): tell the user, and ask them to open this \
+             workspace in the dodoer desktop app on it. Do not use another device instead.",
+            super::host_devices::ago(device.last_seen, now_ms())
+        );
+    }
+    let lent = match part {
+        DevicePart::Shell => device.shell,
+        DevicePart::Browser => device.browser,
+    };
+    let what = part_word(part);
+    if lent {
+        format!("`{name}` is online and lends its {what}.")
+    } else {
+        format!(
+            "`{name}` does not lend its {what} now: tell the user, who can lend it from the \
+             dodoer desktop app on it. Do not use another device instead."
+        )
+    }
+}
+
+/// What an agent is told when it goes for `device` for `part`, which its
+/// conversation has not been given for that part.
+fn not_given(
+    device: &DeviceView,
+    part: DevicePart,
+    devices: &[DeviceView],
+    state: &ConversationDevice,
+) -> String {
+    let name = &device.name;
+    let what = part_word(part);
+    let mut text =
+        format!("This conversation has not been given `{name}` for its {what} by the user");
+    let (has, other_id, other) = match part {
+        DevicePart::Shell => (
+            working_name(devices, state),
+            state.browser_device(),
+            "browser",
+        ),
+        DevicePart::Browser => (browser_name(devices, state), state.shell_device(), "shell"),
+    };
+    if other_id == Some(device.id.as_str()) {
+        text.push_str(&format!(" (the user picked it for its {other} only)"));
+    }
+    text.push('.');
+    let same = state.shell_device() == state.browser_device();
+    match has {
+        Some(has) if same => text.push_str(&format!(
+            " It works on `{has}`, which the user picked: use that."
+        )),
+        Some(has) => text.push_str(&format!(
+            " Its {what} is on `{has}`, which the user picked: use that."
+        )),
+        None => text.push_str(&format!(
+            " No computer is picked for its {what} yet: the user picks one with the device \
+             button below the message box."
+        )),
     }
     text.push_str(&format!(
         " Only if the user asked for `{name}`, call use_device with the name `{name}` and try \
@@ -1217,8 +1353,15 @@ fn describe_all(devices: &[DeviceView], state: &ConversationDevice) -> String {
         text.push_str("\n- ");
         text.push_str(&describe(device, now));
         let mut marks = Vec::new();
-        if state.working.as_deref() == Some(device.id.as_str()) {
+        let id = Some(device.id.as_str());
+        let shell = state.shell_device() == id;
+        let browser = state.browser_device() == id;
+        if shell && browser {
             marks.push("this conversation's working device");
+        } else if shell {
+            marks.push("this conversation's shell");
+        } else if browser {
+            marks.push("this conversation's browser");
         } else if state.confirmed.contains(&device.id) {
             marks.push("confirmed for this conversation");
         }
@@ -2173,5 +2316,198 @@ mod tests {
 
         let a = set(serde_json::json!({ "conversationId": conversation, "deviceId": null })).await;
         assert_eq!((id(&a.device), id(&a.browser_device)), (None, None));
+    }
+
+    /// 两样不同台时 `list` 分开说命令行在哪、浏览器在哪；结构化的部分
+    /// 多浏览器那台的名字、每台多「是不是浏览器那台」。
+    #[tokio::test]
+    async fn split_the_list_says_where_each_part_is() {
+        let registry = Arc::new(HostRegistry::new());
+        let _imac = connect(&registry, "imac", "Study iMac");
+        let _book = connect(&registry, "book", "MacBook");
+        let person = Person::picking(None);
+        let tools = tools(&registry, &person);
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), Some(BOOK));
+
+        let listed = tools.list("conn-7").await;
+        let text = &listed.text;
+        assert!(!text.contains("This conversation works on"), "{text}");
+        assert!(text.contains("shell is on `study-imac`"), "{text}");
+        assert!(text.contains("`ssh study-imac`"), "{text}");
+        assert!(text.contains("browser is on `macbook`"), "{text}");
+        assert!(text.contains("browser_open_tab without `device`"), "{text}");
+        assert!(text.contains("[this conversation's shell]"), "{text}");
+        assert!(text.contains("[this conversation's browser]"), "{text}");
+        assert_eq!(listed.working.as_deref(), Some("study-imac"));
+        assert_eq!(listed.browser.as_deref(), Some("macbook"));
+        let imac = listed
+            .devices
+            .iter()
+            .find(|d| d.device.name == "study-imac")
+            .unwrap();
+        assert!(imac.working && !imac.for_browser);
+        let book = listed
+            .devices
+            .iter()
+            .find(|d| d.device.name == "macbook")
+            .unwrap();
+        assert!(!book.working && book.for_browser);
+        let json = serde_json::to_value(&listed).unwrap();
+        assert_eq!(json["browser"], "macbook", "{json}");
+        assert!(json["devices"][0].get("forBrowser").is_some(), "{json}");
+
+        // 只选了命令行：说浏览器没选、让用户去按钮上选。
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), None);
+        let listed = tools.list("conn-7").await;
+        let text = &listed.text;
+        assert!(text.contains("shell is on `study-imac`"), "{text}");
+        assert!(
+            text.contains("has not picked a computer for this conversation's browser"),
+            "{text}"
+        );
+        assert!(
+            text.contains("device button below the message box"),
+            "{text}"
+        );
+        assert_eq!(listed.browser, None);
+
+        // 只选了浏览器：说命令行没选。
+        registry.working().pick_part(7, None, None);
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), Some(BOOK));
+        let listed = tools.list("conn-7").await;
+        let text = &listed.text;
+        assert!(text.contains("browser is on `macbook`"), "{text}");
+        assert!(
+            text.contains("has not picked a computer for this conversation's shell"),
+            "{text}"
+        );
+
+        // 两样同一台：和原来一样。
+        registry.working().pick(7, Some(IMAC));
+        let listed = tools.list("conn-7").await;
+        assert!(
+            listed
+                .text
+                .contains("This conversation works on `study-imac`"),
+            "{}",
+            listed.text
+        );
+        assert_eq!(listed.browser.as_deref(), Some("study-imac"));
+        let imac = listed
+            .devices
+            .iter()
+            .find(|d| d.device.name == "study-imac")
+            .unwrap();
+        assert!(imac.working && imac.for_browser);
+    }
+
+    /// 拒绝的说明分命令行和浏览器：说的是哪一样、这一样在哪台。
+    #[tokio::test]
+    async fn split_refusals_say_which_part() {
+        let registry = Arc::new(HostRegistry::new());
+        let _imac = connect(&registry, "imac", "Study iMac");
+        let _book = connect(&registry, "book", "MacBook");
+        let person = Person::picking(None);
+        let tools = tools(&registry, &person);
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), Some(BOOK));
+
+        let refused = tools.check_ssh("conn-7", BOOK).await.unwrap_err();
+        assert!(
+            refused.contains("not been given `macbook` for its shell"),
+            "{refused}"
+        );
+        assert!(refused.contains("browser only"), "{refused}");
+        assert!(refused.contains("shell is on `study-imac`"), "{refused}");
+        let refused = tools
+            .resolve("conn-7", Some("study-imac"))
+            .await
+            .unwrap_err();
+        assert!(
+            refused.contains("not been given `study-imac` for its browser"),
+            "{refused}"
+        );
+        assert!(refused.contains("shell only"), "{refused}");
+        assert!(refused.contains("browser is on `macbook`"), "{refused}");
+
+        // 一样没选：说的是这一样。
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), None);
+        let refused = tools.resolve("conn-7", None).await.unwrap_err();
+        assert!(
+            refused.contains("has not picked a computer for this conversation's browser"),
+            "{refused}"
+        );
+        assert!(refused.contains("do not ask them with ask_user_question"));
+        registry.working().pick_part(7, None, None);
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), Some(BOOK));
+        let refused = tools.check_ssh("conn-7", IMAC).await.unwrap_err();
+        assert!(
+            refused.contains("has not picked a computer for this conversation's shell"),
+            "{refused}"
+        );
+    }
+
+    /// `use_device` 不带名字：说两样各在哪台。
+    #[tokio::test]
+    async fn split_use_device_without_a_name_says_both_parts() {
+        let registry = Arc::new(HostRegistry::new());
+        let _imac = connect(&registry, "imac", "Study iMac");
+        let _book = connect(&registry, "book", "MacBook");
+        let person = Person::picking(None);
+        let tools = tools(&registry, &person);
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), Some(BOOK));
+        let used = tools.use_device("conn-7", None).await;
+        assert!(
+            used.text.contains("shell is on `study-imac`"),
+            "{}",
+            used.text
+        );
+        assert!(
+            used.text.contains("browser is on `macbook`"),
+            "{}",
+            used.text
+        );
+        assert_eq!(used.browser.as_deref(), Some("macbook"));
+
+        // 只选了浏览器：说浏览器在哪，命令行没选。
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Shell), None);
+        let used = tools.use_device("conn-7", None).await;
+        assert!(
+            used.text.contains("browser is on `macbook`"),
+            "{}",
+            used.text
+        );
+        assert!(
+            used.text
+                .contains("has not picked a computer for this conversation's shell"),
+            "{}",
+            used.text
+        );
+        assert!(answer_for(&registry, 7).needs_pick);
+        assert!(person.asked().is_empty());
     }
 }

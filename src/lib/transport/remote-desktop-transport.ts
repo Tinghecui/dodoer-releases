@@ -8,6 +8,7 @@ import { WebEventStream } from "./web-event-stream"
 import { ServerInfoChannel } from "./server-info"
 import type { ServerCompat } from "@/lib/cowork/compat"
 import { beginApiCall, type ApiResult } from "@/lib/telemetry"
+import { isRemoteTokenRejected } from "@/lib/app-error"
 import type {
   CallOptions,
   EventStream,
@@ -81,13 +82,6 @@ interface RustError {
   i18n_params?: Record<string, string> | null
 }
 
-function isAuthenticationFailed(err: unknown): boolean {
-  if (err && typeof err === "object" && "code" in err) {
-    return (err as RustError).code === "authentication_failed"
-  }
-  return false
-}
-
 // Cowork fork: the codes the server answers with a 5xx
 // (`web/handlers/error.rs`). The proxy hands back the error, not the
 // status, so telemetry reads the status class off the code.
@@ -104,7 +98,10 @@ export function telemetryResultOf(err: unknown): ApiResult {
   const code =
     err && typeof err === "object" ? (err as RustError).code : undefined
   if (code === "network_error") return "network"
-  if (code === "authentication_failed") return 401
+  // #366: 只有代理打了标记的才是远端回的 401（窗口口令被拒）；不带标记的是
+  // 命令自己登录失败，服务器回的是 422。
+  if (isRemoteTokenRejected(err)) return 401
+  if (code === "authentication_failed") return 422
   if (code === "not_implemented") return 501
   if (code && SERVER_ERROR_CODES.has(code)) return 500
   return code ? 400 : "error"
@@ -244,10 +241,13 @@ export class RemoteDesktopTransport implements Transport {
       span.end(telemetryResultOf(err))
       if (this.destroyed) throw err
       // The Rust proxy returns 401 from the remote server as
-      // `AppErrorCode::AuthenticationFailed`. Surface the connection-expired
+      // `AppErrorCode::AuthenticationFailed` carrying the
+      // `remote_token_rejected` marker. Surface the connection-expired
       // UI in just the calling window (the rest stay live until they
       // themselves hit a 401 — per design we don't broadcast).
-      if (isAuthenticationFailed(err)) {
+      // Cowork fork (#366): 命令自己登录失败（git 推送、provider 的 key）也是
+      // `authentication_failed` 但不带标记，只是那条命令报错，窗口不登出。
+      if (isRemoteTokenRejected(err)) {
         if (this.wsOpen) this.resetReady()
         this.wsOpen = false
         this.setConnectionState("disconnected")

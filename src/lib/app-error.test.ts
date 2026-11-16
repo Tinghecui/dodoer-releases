@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest"
 
-import { isFetchNetworkError, toErrorMessage } from "./app-error"
+import {
+  REMOTE_TOKEN_REJECTED_REASON,
+  isFetchNetworkError,
+  isRemoteTokenRejected,
+  toErrorMessage,
+} from "./app-error"
 
 afterEach(() => {
   document.documentElement.lang = ""
@@ -40,5 +45,56 @@ describe("toErrorMessage for a request that got no response", () => {
     expect(toErrorMessage({ code: "network_error", message: "HTTP 502" })).toBe(
       "HTTP 502"
     )
+  })
+})
+
+// #366: 窗口口令被拒（代理打了标记）和命令自己登录失败要分得开。
+describe("isRemoteTokenRejected", () => {
+  it("is true only for authentication_failed carrying the proxy's marker", () => {
+    expect(REMOTE_TOKEN_REJECTED_REASON).toBe("remote_token_rejected")
+    expect(
+      isRemoteTokenRejected({
+        code: "authentication_failed",
+        message: "Remote Workspace token is invalid",
+        i18n_params: { reason: REMOTE_TOKEN_REJECTED_REASON },
+      })
+    ).toBe(true)
+    // 包在 Error 的 message 里的 JSON 也认得出
+    expect(
+      isRemoteTokenRejected(
+        new Error(
+          JSON.stringify({
+            code: "authentication_failed",
+            message: "Remote Workspace token is invalid",
+            i18n_params: { reason: REMOTE_TOKEN_REJECTED_REASON },
+          })
+        )
+      )
+    ).toBe(true)
+  })
+
+  it("is false for a command's own login failure and anything else", () => {
+    expect(
+      isRemoteTokenRejected({
+        code: "authentication_failed",
+        message: "git push: authentication failed",
+      })
+    ).toBe(false)
+    expect(
+      isRemoteTokenRejected({
+        code: "network_error",
+        message: "Request timed out",
+        i18n_params: { reason: REMOTE_TOKEN_REJECTED_REASON },
+      })
+    ).toBe(false)
+    expect(
+      isRemoteTokenRejected({
+        code: "authentication_failed",
+        message: "x",
+        i18n_params: { reason: "other" },
+      })
+    ).toBe(false)
+    expect(isRemoteTokenRejected(new Error("Unauthorized"))).toBe(false)
+    expect(isRemoteTokenRejected(null)).toBe(false)
   })
 })

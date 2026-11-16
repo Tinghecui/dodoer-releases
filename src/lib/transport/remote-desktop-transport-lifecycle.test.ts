@@ -699,6 +699,7 @@ describe("RemoteDesktopTransport connection health", () => {
     const error = {
       code: "authentication_failed",
       message: "Invalid remote token",
+      i18n_params: { reason: "remote_token_rejected" },
     }
     invokeMock.mockRejectedValueOnce(error)
 
@@ -709,6 +710,38 @@ describe("RemoteDesktopTransport connection health", () => {
     expect(onUnauthorized.mock.calls).toEqual([[]])
     stream.attach("agent-connection", {}, attachHandlers())
     expect(sentFrames()).toEqual([])
+  })
+
+  // #366: 命令自己登录失败（服务器回 422）和窗口口令被拒（代理打了标记的
+  // 401）都是 `authentication_failed`，只有后者才登出。
+  it("logs out only when the server refused the token, not when a command failed its own login", async () => {
+    const onUnauthorized = vi.fn()
+    const transport = createTransport({ onUnauthorized })
+    transport.eventStream()
+    await flush()
+    ready()
+    const commandError = {
+      code: "authentication_failed",
+      message: "git push: authentication failed",
+    }
+    invokeMock.mockRejectedValueOnce(commandError)
+
+    await expect(transport.call("git_push")).rejects.toBe(commandError)
+
+    expect(onUnauthorized).not.toHaveBeenCalled()
+    expect(transport.getConnectionSnapshot()).not.toBe("disconnected")
+
+    const rejected = {
+      code: "authentication_failed",
+      message: "Remote Workspace token is invalid",
+      i18n_params: { reason: "remote_token_rejected" },
+    }
+    invokeMock.mockRejectedValueOnce(rejected)
+
+    await expect(transport.call("get_status")).rejects.toBe(rejected)
+
+    expect(onUnauthorized).toHaveBeenCalledTimes(1)
+    expect(transport.getConnectionSnapshot()).toBe("disconnected")
   })
 
   it("does not label an ordinary HTTP failure as rejected credentials", async () => {

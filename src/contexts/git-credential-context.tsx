@@ -31,7 +31,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { extractAppCommandError, toErrorMessage } from "@/lib/app-error"
+import {
+  extractAppCommandError,
+  isRemoteTokenRejected,
+  toErrorMessage,
+} from "@/lib/app-error"
 import type { GitCredentials } from "@/lib/types"
 import {
   gitListRemotes,
@@ -84,7 +88,9 @@ export function useGitCredential(): GitCredentialContextValue {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function isAuthError(error: unknown): boolean {
+export function isAuthError(error: unknown): boolean {
+  // Cowork fork (#366): 远程窗口口令被拒，git 账号框帮不上忙。
+  if (isRemoteTokenRejected(error)) return false
   const appError = extractAppCommandError(error)
   if (appError?.code === "authentication_failed") return true
 

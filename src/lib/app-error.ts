@@ -82,6 +82,26 @@ export function isNotAGitRepoError(error: unknown): boolean {
   )
 }
 
+/**
+ * Cowork fork: 桌面远程代理在远端回 HTTP 401（窗口口令被拒）时，放在
+ * `i18n_params.reason` 里的标记（`remote_proxy.rs` 的 `REMOTE_TOKEN_REJECTED`）。
+ * 两边要一起改。
+ */
+export const REMOTE_TOKEN_REJECTED_REASON = "remote_token_rejected"
+
+/**
+ * Cowork fork: 远程服务器（或它前面的 nginx / 门户）拒绝了这个窗口的口令。
+ * 命令自己登录失败（git 推送、provider 的 key）也是 `authentication_failed`，
+ * 但不带标记，不能当成连接过期。只认标记，不按文字兜底。
+ */
+export function isRemoteTokenRejected(error: unknown): boolean {
+  const appError = extractAppCommandError(error)
+  return (
+    appError?.code === "authentication_failed" &&
+    appError.i18n_params?.reason === REMOTE_TOKEN_REJECTED_REASON
+  )
+}
+
 /** Whether a command failed because the thing it named does not exist —
  *  `AppErrorCode::NotFound` on the backend. */
 export function isNotFoundError(error: unknown): boolean {

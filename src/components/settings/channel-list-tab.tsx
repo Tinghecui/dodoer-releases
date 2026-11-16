@@ -49,10 +49,25 @@ import type {
   ChannelStatusInfo,
   ChannelType,
 } from "@/lib/types"
-import { toErrorMessage } from "@/lib/app-error"
+import {
+  extractAppCommandError,
+  isRemoteTokenRejected,
+  toErrorMessage,
+} from "@/lib/app-error"
 import { AddChatChannelDialog } from "./add-chat-channel-dialog"
 import { EditChatChannelDialog } from "./edit-chat-channel-dialog"
 import { WeixinQrcodeDialog } from "./weixin-qrcode-dialog"
+
+/**
+ * Cowork fork (#366): 微信通道连接失败时，是不是该弹扫码框：只有没设 token
+ * （`configuration_missing`）或登录失效（`authentication_failed`）才弹；远程
+ * 窗口口令被拒、网络错误这些扫码帮不上忙，照别的通道 toast。
+ */
+export function needsWeixinLogin(error: unknown): boolean {
+  if (isRemoteTokenRejected(error)) return false
+  const code = extractAppCommandError(error)?.code
+  return code === "authentication_failed" || code === "configuration_missing"
+}
 
 export function ChannelListTab() {
   const t = useTranslations("ChatChannelSettings")
@@ -135,7 +150,7 @@ export function ChannelListTab() {
         toast.success(t("connectSuccess"))
         await loadChannels()
       } catch (err: unknown) {
-        if (channelType === "weixin") {
+        if (channelType === "weixin" && needsWeixinLogin(err)) {
           // No token or token expired — show QR code dialog
           setQrcodeChannelId(id)
         } else {

@@ -405,7 +405,21 @@ describe("remote desktop event recovery", () => {
 describe("telemetryResultOf", () => {
   it("maps the proxy's error codes to how the call ended", () => {
     expect(telemetryResultOf({ code: "network_error" })).toBe("network")
-    expect(telemetryResultOf({ code: "authentication_failed" })).toBe(401)
+    // #366: 代理打了标记的是窗口口令被拒（401）；不带标记的是命令自己
+    // 登录失败，服务器实际回的是 422。
+    expect(
+      telemetryResultOf({
+        code: "authentication_failed",
+        message: "Remote Workspace token is invalid",
+        i18n_params: { reason: "remote_token_rejected" },
+      })
+    ).toBe(401)
+    expect(
+      telemetryResultOf({
+        code: "authentication_failed",
+        message: "git push: authentication failed",
+      })
+    ).toBe(422)
     expect(telemetryResultOf({ code: "not_implemented" })).toBe(501)
     expect(telemetryResultOf({ code: "database_error" })).toBe(500)
     expect(telemetryResultOf({ code: "invalid_input" })).toBe(400)

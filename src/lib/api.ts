@@ -12,6 +12,7 @@ import {
   unauthorizedSource,
 } from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
+import { isRemoteTokenRejected } from "./app-error"
 import { randomUUID } from "./utils"
 import { getCurrentEffectiveAppLocale } from "./i18n"
 import {
@@ -5089,7 +5090,7 @@ export async function uploadWorkspaceLocalPathsToRemote(args: {
       }
     )
   } catch (err) {
-    if (isRemoteAuthenticationFailed(err)) {
+    if (isRemoteTokenRejected(err)) {
       notifyRemoteDesktopUnauthorized()
     }
     throw err
@@ -5123,15 +5124,6 @@ export async function cancelWorkspaceTransfer(
   return getShellTransport().call<boolean>("remote_cancel_workspace_transfer", {
     transferId,
   })
-}
-
-function isRemoteAuthenticationFailed(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    (err as { code?: unknown }).code === "authentication_failed"
-  )
 }
 
 export function isUploadAbortError(err: unknown): boolean {
@@ -5262,7 +5254,7 @@ async function downloadWorkspaceViaRemoteProxy(opts: {
       }
     )
   } catch (err) {
-    if (isRemoteAuthenticationFailed(err)) {
+    if (isRemoteTokenRejected(err)) {
       notifyRemoteDesktopUnauthorized()
     }
     throw err

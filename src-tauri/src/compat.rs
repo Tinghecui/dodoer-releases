@@ -71,6 +71,9 @@ pub const FEATURES: &[&str] = &[
     // device on the button beside its composer (`web::working_device`,
     // `docs/devices.md` 6.7).
     "conversation_device_pick",
+    // `/api/set_conversation_device` 的 `part`：一个对话的命令行和浏览器
+    // 各选一台电脑（`web::working_device`，`docs/devices.md` 6.7）。
+    "conversation_device_split",
 ];
 
 /// The contract as one value: the `server_info` frame carries it as is
@@ -125,7 +128,8 @@ mod tests {
                 "host_devices",
                 "conversation_device",
                 "stop_host_device",
-                "conversation_device_pick"
+                "conversation_device_pick",
+                "conversation_device_split"
             ])
         );
     }
@@ -142,6 +146,7 @@ mod tests {
         assert!(FEATURES.contains(&crate::web::host_devices::FEATURE));
         assert!(FEATURES.contains(&crate::web::working_device::FEATURE));
         assert!(FEATURES.contains(&crate::web::working_device::PICK_FEATURE));
+        assert!(FEATURES.contains(&crate::web::working_device::SPLIT_FEATURE));
         assert!(FEATURES.contains(&crate::web::host_devices::STOP_FEATURE));
     }
 

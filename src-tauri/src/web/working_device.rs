@@ -57,6 +57,11 @@ pub const FEATURE: &str = "conversation_device";
 /// `/api/set_conversation_device`: the person picks the device in the app.
 pub const PICK_FEATURE: &str = "conversation_device_pick";
 
+/// `server_info` 里的功能名：一个对话的命令行和浏览器可以各选一台电脑
+/// （`set_conversation_device` 的 `part`，回答里的 `browserDevice`、
+/// `needsBrowserPick`）。
+pub const SPLIT_FEATURE: &str = "conversation_device_split";
+
 const KEY: &str = "host_devices.conversations";
 
 /// How many conversations are remembered: the ones used last.
@@ -76,9 +81,17 @@ const CARD_HEADER: &str = "选设备";
 #[serde(rename_all = "camelCase")]
 pub struct ConversationDevice {
     pub conversation_id: i32,
-    /// The device it works on.
+    /// The device it works on: 命令行用的那台（存的名字沿用 `working`，
+    /// 老记录里它也是浏览器那台）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working: Option<String>,
+    /// 浏览器单独选的那台；只在 `browser_apart` 时算数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<String>,
+    /// 浏览器是单独选的：`browser` 就是浏览器那台（没有就是明确不用）。
+    /// 没有这个字段的老记录、不带 `part` 的选择：浏览器跟着 `working`。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub browser_apart: bool,
     /// The devices the person has chosen for it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub confirmed: Vec<String>,
@@ -91,6 +104,9 @@ pub struct ConversationDevice {
     /// device button is amber while it is set.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub wanted: i64,
+    /// 和 `wanted` 一样，只是等的是浏览器那一样。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub browser_wanted: i64,
     /// When it last changed, in milliseconds since 1970.
     #[serde(default)]
     pub touched: i64,
@@ -98,6 +114,59 @@ pub struct ConversationDevice {
 
 fn is_zero(value: &i64) -> bool {
     *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// 一个对话用电脑的哪一样：命令行（`ssh`）还是浏览器。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DevicePart {
+    Shell,
+    Browser,
+}
+
+impl ConversationDevice {
+    /// 命令行用的那台。
+    pub fn shell_device(&self) -> Option<&str> {
+        self.working.as_deref()
+    }
+
+    /// 浏览器用的那台。
+    pub fn browser_device(&self) -> Option<&str> {
+        if self.browser_apart {
+            self.browser.as_deref()
+        } else {
+            self.working.as_deref()
+        }
+    }
+
+    /// 这个对话可以 `ssh` 到它：命令行那台，或卡片上确认过的。
+    pub fn may_ssh(&self, device: &str) -> bool {
+        self.shell_device() == Some(device) || self.confirmed.iter().any(|d| d == device)
+    }
+
+    /// 这个对话可以在它上面开网页：浏览器那台，或卡片上确认过的。
+    pub fn may_browse(&self, device: &str) -> bool {
+        self.browser_device() == Some(device) || self.confirmed.iter().any(|d| d == device)
+    }
+
+    /// 两样都改成 `device`（浏览器跟着命令行）。
+    fn set_both(&mut self, device: Option<&str>) {
+        self.working = device.map(str::to_string);
+        self.browser = None;
+        self.browser_apart = false;
+    }
+
+    /// 两样又是同一台时，回到「浏览器跟着命令行」的存法。
+    fn settle(&mut self) {
+        if self.browser_apart && self.browser == self.working {
+            self.browser = None;
+            self.browser_apart = false;
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -134,11 +203,12 @@ impl WorkingDevices {
     /// chosen for it.
     pub fn work_on(&self, conversation_id: i32, device: &str) {
         self.change(conversation_id, |c| {
-            c.working = Some(device.to_string());
+            c.set_both(Some(device));
             if !c.confirmed.iter().any(|d| d == device) {
                 c.confirmed.push(device.to_string());
             }
             c.wanted = 0;
+            c.browser_wanted = 0;
         });
     }
 
@@ -147,11 +217,48 @@ impl WorkingDevices {
     /// confirmed before goes, so that the agent cannot move off the pick
     /// without the person (`docs/devices.md` 6.7).
     pub fn pick(&self, conversation_id: i32, device: Option<&str>) {
+        self.pick_part(conversation_id, None, device);
+    }
+
+    /// 界面上只给一样选：`part` 为 `None` 时和 [`Self::pick`] 一样两样都改。
+    /// 另一样不动；卡片上确认过的都作废。
+    pub fn pick_part(&self, conversation_id: i32, part: Option<DevicePart>, device: Option<&str>) {
+        let device = device.map(str::to_string);
         self.change(conversation_id, |c| {
-            c.working = device.map(str::to_string);
-            c.confirmed = device.map(str::to_string).into_iter().collect();
-            c.wanted = 0;
+            match part {
+                None => {
+                    c.set_both(device.as_deref());
+                    c.wanted = 0;
+                    c.browser_wanted = 0;
+                }
+                Some(DevicePart::Shell) => {
+                    // 浏览器原来跟着命令行的，先把它记成自己的那台。
+                    c.browser = c.browser_device().map(str::to_string);
+                    c.browser_apart = true;
+                    c.working = device;
+                    c.wanted = 0;
+                }
+                Some(DevicePart::Browser) => {
+                    c.browser = device;
+                    c.browser_apart = true;
+                    c.browser_wanted = 0;
+                }
+            }
+            // 界面上一选，卡片上确认过的都作废（`docs/devices.md` 6.7）。
+            c.confirmed.clear();
+            c.settle();
         });
+    }
+
+    /// 浏览器那一样没选、智能体在等：设备按钮请用户给浏览器选一台。
+    pub fn want_browser(&self, conversation_id: i32) {
+        if self
+            .get(conversation_id)
+            .is_some_and(|c| c.browser_device().is_some() || c.browser_wanted != 0)
+        {
+            return;
+        }
+        self.change(conversation_id, |c| c.browser_wanted = now_ms());
     }
 
     /// An agent of the conversation needed a device, and the person has
@@ -179,9 +286,13 @@ impl WorkingDevices {
         let mut changed = false;
         for c in inner.values_mut() {
             let before = c.clone();
+            if c.browser_apart && c.browser.as_deref() == Some(device) {
+                c.browser = None;
+            }
             if c.working.as_deref() == Some(device) {
                 c.working = None;
             }
+            c.settle();
             c.confirmed.retain(|d| d != device);
             if c.last_from.as_deref() == Some(device) {
                 c.last_from = None;
@@ -359,20 +470,28 @@ pub struct ConversationDeviceAnswer {
     pub needs_pick: bool,
     /// How many devices the book has: the button is offered from two on.
     pub device_count: usize,
+    /// 浏览器用的那台，和 `device` 一样是现在的样子；没有是 `null`。
+    pub browser_device: Option<DeviceView>,
+    /// 浏览器那一样没选、智能体在等。
+    pub needs_browser_pick: bool,
 }
 
 /// What the device button of the top-level `conversation` shows.
 pub fn answer_for(registry: &HostRegistry, conversation: i32) -> ConversationDeviceAnswer {
-    let device = working_view(registry, conversation);
-    let needs_pick = device.is_none()
-        && registry
-            .working()
-            .get(conversation)
-            .is_some_and(|c| c.wanted != 0);
+    let state = registry.working().get(conversation).unwrap_or_default();
+    let devices = registry.device_list().devices;
+    let view = |id: Option<&str>| {
+        let id = id?;
+        devices.iter().find(|device| device.id == id).cloned()
+    };
+    let device = view(state.shell_device());
+    let browser_device = view(state.browser_device());
     ConversationDeviceAnswer {
+        needs_pick: device.is_none() && state.wanted != 0,
+        needs_browser_pick: browser_device.is_none() && state.browser_wanted != 0,
         device,
-        needs_pick,
-        device_count: registry.device_list().devices.len(),
+        browser_device,
+        device_count: devices.len(),
     }
 }
 
@@ -394,6 +513,9 @@ pub struct SetConversationDeviceParams {
     /// None: the conversation is to use no device.
     #[serde(default)]
     device_id: Option<String>,
+    /// 只改哪一样；不带就两样都改。
+    #[serde(default)]
+    part: Option<DevicePart>,
 }
 
 /// `POST /api/set_conversation_device` (`cowork::api_routes`): the person
@@ -414,7 +536,10 @@ pub async fn set_conversation_device(
         }
     }
     let root = stored_root_of(&state.db.conn, params.conversation_id).await?;
-    state.host_registry.working().pick(root, device);
+    state
+        .host_registry
+        .working()
+        .pick_part(root, params.part, device);
     Ok(Json(answer_for(&state.host_registry, root)))
 }
 
@@ -428,7 +553,7 @@ pub async fn with_in_use(state: &AppState, mut list: DeviceList) -> DeviceList {
     records.sort_by_key(|c| std::cmp::Reverse(c.touched));
     for device in &mut list.devices {
         for record in &records {
-            if record.working.as_deref() != Some(device.id.as_str()) {
+            if !uses(record, &device.id) {
                 continue;
             }
             if device.in_use.len() >= IN_USE_SHOWN {
@@ -451,6 +576,11 @@ pub async fn with_in_use(state: &AppState, mut list: DeviceList) -> DeviceList {
         }
     }
     list
+}
+
+/// 这个对话在用 `device`：命令行或浏览器选的是它。
+fn uses(record: &ConversationDevice, device: &str) -> bool {
+    record.shell_device() == Some(device) || record.browser_device() == Some(device)
 }
 
 /// A conversation's title; none for one deleted or gone.
@@ -700,7 +830,16 @@ impl DeviceTools {
             None => None,
         };
         let chosen = match named {
-            Some(device) if devices.len() == 1 || state.confirmed.contains(&device.id) => device,
+            // 已经确认过，或者两样本来都在它上面：直接换。只给了其中一样的
+            // 那台，点名换整台要在卡片上问一次。
+            Some(device)
+                if devices.len() == 1
+                    || state.confirmed.contains(&device.id)
+                    || (state.shell_device() == Some(device.id.as_str())
+                        && state.browser_device() == Some(device.id.as_str())) =>
+            {
+                device
+            }
             None if devices.len() == 1 => devices[0].clone(),
             // Not named: the person picks in the app, not on a card.
             None => {
@@ -773,19 +912,18 @@ impl DeviceTools {
                 None => return Ok(Some(wanted.clone())),
             },
             None => state
-                .working
-                .as_deref()
+                .browser_device()
                 .and_then(|id| devices.iter().find(|d| d.id == id))
                 .cloned(),
         };
         let Some(device) = target else {
-            self.hosts.working().want(conversation);
+            self.hosts.working().want_browser(conversation);
             return Err(not_picked());
         };
-        if state.confirmed.contains(&device.id) {
+        if state.may_browse(&device.id) {
             return Ok(Some(device.name));
         }
-        Err(not_given(&device.name, working_name(&devices, &state)))
+        Err(not_given(&device.name, browser_name(&devices, &state)))
     }
 
     /// The names of the devices the conversation on `connection_id` may
@@ -799,13 +937,13 @@ impl DeviceTools {
             return Some(devices.into_iter().map(|d| d.name).collect());
         }
         let state = self.hosts.working().get(conversation).unwrap_or_default();
-        if state.confirmed.is_empty() {
-            self.hosts.working().want(conversation);
+        if state.browser_device().is_none() && state.confirmed.is_empty() {
+            self.hosts.working().want_browser(conversation);
         }
         Some(
             devices
                 .into_iter()
-                .filter(|d| state.confirmed.contains(&d.id))
+                .filter(|d| state.may_browse(&d.id))
                 .map(|d| d.name)
                 .collect(),
         )
@@ -823,7 +961,7 @@ impl DeviceTools {
             return Ok(());
         }
         let state = self.hosts.working().get(conversation).unwrap_or_default();
-        if state.confirmed.iter().any(|d| d == device_id) {
+        if state.may_ssh(device_id) {
             return Ok(());
         }
         let Some(working) = working_name(&devices, &state) else {
@@ -945,7 +1083,13 @@ fn answer(text: String, devices: Vec<DeviceView>, state: &ConversationDevice) ->
 }
 
 fn working_name(devices: &[DeviceView], state: &ConversationDevice) -> Option<String> {
-    let id = state.working.as_deref()?;
+    let id = state.shell_device()?;
+    devices.iter().find(|d| d.id == id).map(|d| d.name.clone())
+}
+
+/// 浏览器那台的名字。
+fn browser_name(devices: &[DeviceView], state: &ConversationDevice) -> Option<String> {
+    let id = state.browser_device()?;
     devices.iter().find(|d| d.id == id).map(|d| d.name.clone())
 }
 
@@ -1470,12 +1614,15 @@ mod tests {
         // No working device and none named.
         let refused = tools.resolve("conn-7", None).await.unwrap_err();
         assert!(refused.contains("has not picked a computer"), "{refused}");
-        assert!(answer_for(&registry, 7).needs_pick);
+        // 网页没地方开：等的是浏览器那一样（#341）。
+        let shown = answer_for(&registry, 7);
+        assert!(shown.needs_browser_pick && !shown.needs_pick);
         let refused = tools
             .check_ssh("conn-7", "imac-0123456789")
             .await
             .unwrap_err();
         assert!(refused.contains("has not picked a computer"), "{refused}");
+        assert!(answer_for(&registry, 7).needs_pick);
         assert_eq!(tools.confirmed_names("conn-7").await, Some(Vec::new()));
 
         // Picked in the app.
@@ -1539,7 +1686,9 @@ mod tests {
         registry.working().pick(7, Some("imac-0123456789"));
         let kept = registry.working().get(7).unwrap();
         assert_eq!(kept.working.as_deref(), Some("imac-0123456789"));
-        assert_eq!(kept.confirmed, ["imac-0123456789"]);
+        assert_eq!(kept.browser_device(), Some("imac-0123456789"));
+        // 选的那台本来就是两样都在用的，不用再记进确认过的（#341）。
+        assert!(kept.confirmed.is_empty());
 
         // The agent names the other one: the person is asked, and says no.
         let person = Person::picking(None);
@@ -1727,5 +1876,302 @@ mod tests {
         let records = state.host_registry.working().records();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].conversation_id, conversation);
+    }
+
+    // ---- 命令行和浏览器分开选（#341）----
+
+    const IMAC: &str = "imac-0123456789";
+    const BOOK: &str = "book-0123456789";
+
+    /// 老记录（只有 `working`）读出来两样都是那台，`confirmed` 不变；
+    /// 「命令行有、浏览器不用」和反过来的都能存下、读回来。
+    #[test]
+    fn split_old_records_read_as_one_device_for_both() {
+        let old: ConversationDevice = serde_json::from_str(
+            r#"{"conversationId":7,"working":"imac-0123456789","confirmed":["book-0123456789"]}"#,
+        )
+        .unwrap();
+        assert_eq!(old.shell_device(), Some(IMAC));
+        assert_eq!(old.browser_device(), Some(IMAC));
+        assert_eq!(old.confirmed, [BOOK]);
+
+        let working = WorkingDevices::default();
+        working.pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        working.pick_part(7, Some(DevicePart::Browser), None);
+        working.pick_part(8, Some(DevicePart::Browser), Some(BOOK));
+        let text = serde_json::to_string(&Stored {
+            conversations: working.records(),
+        })
+        .unwrap();
+        let back: Stored = serde_json::from_str(&text).unwrap();
+        let restored = WorkingDevices::default();
+        restored.restore(back.conversations);
+        let seven = restored.get(7).unwrap();
+        assert_eq!(seven.shell_device(), Some(IMAC), "{text}");
+        assert_eq!(seven.browser_device(), None, "{text}");
+        let eight = restored.get(8).unwrap();
+        assert_eq!(eight.shell_device(), None, "{text}");
+        assert_eq!(eight.browser_device(), Some(BOOK), "{text}");
+    }
+
+    /// `part` 只改那一样，另一样不动；不带 `part` 两样都改；界面上每次选择
+    /// 都清空卡片上确认过的。
+    #[test]
+    fn split_a_pick_changes_only_its_part() {
+        let working = WorkingDevices::default();
+        working.work_on(7, IMAC);
+        working.work_on(7, BOOK);
+
+        working.pick_part(7, Some(DevicePart::Browser), Some(IMAC));
+        let c = working.get(7).unwrap();
+        assert_eq!(c.shell_device(), Some(BOOK));
+        assert_eq!(c.browser_device(), Some(IMAC));
+        assert!(c.confirmed.is_empty());
+
+        working.work_on(7, IMAC);
+        working.pick_part(7, Some(DevicePart::Shell), Some(BOOK));
+        let c = working.get(7).unwrap();
+        assert_eq!(c.shell_device(), Some(BOOK));
+        assert_eq!(c.browser_device(), Some(IMAC));
+        assert!(c.confirmed.is_empty());
+
+        working.pick_part(7, Some(DevicePart::Shell), None);
+        let c = working.get(7).unwrap();
+        assert_eq!(c.shell_device(), None);
+        assert_eq!(c.browser_device(), Some(IMAC));
+
+        working.work_on(7, BOOK);
+        working.pick_part(7, None, Some(IMAC));
+        let c = working.get(7).unwrap();
+        assert_eq!(c.shell_device(), Some(IMAC));
+        assert_eq!(c.browser_device(), Some(IMAC));
+        assert!(c.confirmed.is_empty());
+
+        working.pick_part(7, None, None);
+        let c = working.get(7).unwrap();
+        assert_eq!((c.shell_device(), c.browser_device()), (None, None));
+    }
+
+    /// 两样各记各的「在等」：命令行选了、浏览器在等是常见的情况。
+    #[test]
+    fn split_each_part_is_waited_for_on_its_own() {
+        let working = WorkingDevices::default();
+        working.pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        working.pick_part(7, Some(DevicePart::Browser), None);
+        working.want(7);
+        assert_eq!(working.get(7).unwrap().wanted, 0, "命令行已经有了");
+        working.want_browser(7);
+        assert!(working.get(7).unwrap().browser_wanted > 0);
+        working.pick_part(7, Some(DevicePart::Browser), Some(BOOK));
+        assert_eq!(working.get(7).unwrap().browser_wanted, 0);
+    }
+
+    /// 回答：`device` 是命令行那台，`browserDevice` 是浏览器那台，
+    /// `needsPick` / `needsBrowserPick` 各说各的。
+    #[tokio::test]
+    async fn split_the_answer_says_both_parts() {
+        let registry = Arc::new(HostRegistry::new());
+        let _imac = connect(&registry, "imac", "Study iMac");
+        let _book = connect(&registry, "book", "MacBook");
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Shell), Some(BOOK));
+        registry.working().want_browser(7);
+        let shown = answer_for(&registry, 7);
+        assert_eq!(shown.device.as_ref().map(|d| d.id.as_str()), Some(BOOK));
+        assert_eq!(shown.browser_device, None);
+        assert!(!shown.needs_pick);
+        assert!(shown.needs_browser_pick);
+        let json = serde_json::to_value(&shown).unwrap();
+        assert!(json.get("browserDevice").is_some(), "{json}");
+        assert_eq!(json["needsBrowserPick"], true, "{json}");
+
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), Some(IMAC));
+        let shown = answer_for(&registry, 7);
+        assert_eq!(
+            shown.browser_device.as_ref().map(|d| d.id.as_str()),
+            Some(IMAC)
+        );
+        assert!(!shown.needs_browser_pick);
+
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Shell), None);
+        registry.working().want(7);
+        let shown = answer_for(&registry, 7);
+        assert!(shown.needs_pick && !shown.needs_browser_pick);
+    }
+
+    /// 命令行 A、浏览器 B：`ssh A` 通过、`ssh B` 被拒；网页不带 `device`
+    /// 开在 B，`device: A` 被拒；列标签只列 B。
+    #[tokio::test]
+    async fn split_ssh_and_browser_are_checked_apart() {
+        let registry = Arc::new(HostRegistry::new());
+        let _imac = connect(&registry, "imac", "Study iMac");
+        let _book = connect(&registry, "book", "MacBook");
+        let person = Person::picking(None);
+        let tools = tools(&registry, &person);
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), Some(BOOK));
+
+        assert_eq!(tools.check_ssh("conn-7", IMAC).await, Ok(()));
+        let refused = tools.check_ssh("conn-7", BOOK).await.unwrap_err();
+        assert!(refused.contains("`study-imac`"), "{refused}");
+
+        assert_eq!(
+            tools.resolve("conn-7", None).await,
+            Ok(Some("macbook".into()))
+        );
+        assert_eq!(
+            tools.resolve("conn-7", Some("macbook")).await,
+            Ok(Some("macbook".into()))
+        );
+        let refused = tools
+            .resolve("conn-7", Some("study-imac"))
+            .await
+            .unwrap_err();
+        assert!(refused.contains("`macbook`"), "{refused}");
+        assert_eq!(
+            tools.confirmed_names("conn-7").await,
+            Some(vec!["macbook".to_string()])
+        );
+        assert!(person.asked().is_empty());
+    }
+
+    /// 只选了命令行、浏览器没选：网页被拒、记下浏览器在等，不退到命令行那台；
+    /// 只选了浏览器：`ssh` 被拒、记下命令行在等。
+    #[tokio::test]
+    async fn split_a_part_not_picked_is_refused() {
+        let registry = Arc::new(HostRegistry::new());
+        let _imac = connect(&registry, "imac", "Study iMac");
+        let _book = connect(&registry, "book", "MacBook");
+        let person = Person::picking(None);
+        let tools = tools(&registry, &person);
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), None);
+
+        assert_eq!(tools.check_ssh("conn-7", IMAC).await, Ok(()));
+        assert!(tools.resolve("conn-7", None).await.is_err());
+        assert!(tools.resolve("conn-7", Some("study-imac")).await.is_err());
+        assert_eq!(tools.confirmed_names("conn-7").await, Some(Vec::new()));
+        let shown = answer_for(&registry, 7);
+        assert!(shown.needs_browser_pick && !shown.needs_pick);
+
+        registry.working().pick_part(7, None, None);
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), Some(BOOK));
+        assert!(tools.check_ssh("conn-7", BOOK).await.is_err());
+        assert!(tools.check_ssh("conn-7", IMAC).await.is_err());
+        assert_eq!(
+            tools.resolve("conn-7", None).await,
+            Ok(Some("macbook".into()))
+        );
+        let shown = answer_for(&registry, 7);
+        assert!(shown.needs_pick && !shown.needs_browser_pick);
+    }
+
+    /// 对话里点名换（`use_device`）两样一起换，这台进确认过的。
+    #[tokio::test]
+    async fn split_use_device_moves_both_parts() {
+        let registry = Arc::new(HostRegistry::new());
+        let _imac = connect(&registry, "imac", "Study iMac");
+        let _book = connect(&registry, "book", "MacBook");
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), Some(BOOK));
+        let person = Person::picking(Some("study-imac"));
+        let tools = tools(&registry, &person);
+        let used = tools.use_device("conn-7", Some("study-imac")).await;
+        assert_eq!(used.working.as_deref(), Some("study-imac"));
+        assert_eq!(person.asked().len(), 1, "只给了命令行，点名换整台要确认");
+        let c = registry.working().get(7).unwrap();
+        assert_eq!(c.shell_device(), Some(IMAC));
+        assert_eq!(c.browser_device(), Some(IMAC));
+        assert_eq!(c.confirmed, [IMAC]);
+        assert_eq!(
+            tools.resolve("conn-7", None).await,
+            Ok(Some("study-imac".into()))
+        );
+    }
+
+    /// 设备面板的「正在用它的对话」：命令行或浏览器选的是它都算。
+    #[test]
+    fn split_a_device_is_in_use_for_either_part() {
+        let working = WorkingDevices::default();
+        working.pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        working.pick_part(7, Some(DevicePart::Browser), Some(BOOK));
+        let c = working.get(7).unwrap();
+        assert!(uses(&c, IMAC));
+        assert!(uses(&c, BOOK));
+        working.pick_part(7, Some(DevicePart::Shell), None);
+        let c = working.get(7).unwrap();
+        assert!(!uses(&c, IMAC));
+        assert!(uses(&c, BOOK));
+    }
+
+    /// 接口的 `part`：`shell`、`browser`、不带。
+    #[tokio::test]
+    async fn split_the_endpoint_takes_a_part() {
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/split-folder").await;
+        let conversation =
+            seed_conversation(&db, folder, crate::models::agent::AgentType::ClaudeCode).await;
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState::new_for_test(db, dir.path().to_path_buf()));
+        let _imac = connect(&state.host_registry, "imac", "Study iMac");
+        let _book = connect(&state.host_registry, "book", "MacBook");
+        let set = |body: serde_json::Value| {
+            let state = Arc::clone(&state);
+            async move {
+                let params: SetConversationDeviceParams = serde_json::from_value(body).unwrap();
+                set_conversation_device(Extension(state), Json(params))
+                    .await
+                    .expect("picked")
+                    .0
+            }
+        };
+        let id = |d: &Option<DeviceView>| d.as_ref().map(|d| d.id.clone());
+
+        let a = set(serde_json::json!({ "conversationId": conversation, "deviceId": IMAC })).await;
+        assert_eq!(
+            (id(&a.device), id(&a.browser_device)),
+            (Some(IMAC.into()), Some(IMAC.into()))
+        );
+
+        let a = set(serde_json::json!({
+            "conversationId": conversation, "deviceId": BOOK, "part": "browser"
+        }))
+        .await;
+        assert_eq!(
+            (id(&a.device), id(&a.browser_device)),
+            (Some(IMAC.into()), Some(BOOK.into()))
+        );
+
+        let a = set(serde_json::json!({
+            "conversationId": conversation, "deviceId": null, "part": "shell"
+        }))
+        .await;
+        assert_eq!(
+            (id(&a.device), id(&a.browser_device)),
+            (None, Some(BOOK.into()))
+        );
+
+        let a = set(serde_json::json!({ "conversationId": conversation, "deviceId": null })).await;
+        assert_eq!((id(&a.device), id(&a.browser_device)), (None, None));
     }
 }

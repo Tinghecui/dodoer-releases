@@ -1,5 +1,6 @@
 # 公开镜像 Tinghecui/dodoer-releases：自动驾驶的执行员（源仓库 .cowork/autopilot/design.md；文件在源仓库 .github/public/workflows/ 里维护）。
 # 领一个源仓库的 issue，先写一个会失败的测试、再修到通过，推 autopilot/<issue>-<短名>、开 PR。
+# 功能 issue（正文有「完成标准」，源仓库 .cowork/autopilot/spec-issue.md）一次只做「PR 拆分」表的一行（row），分支 autopilot/<issue>-r<行>-<短名>。
 # 给了 pr = 返工：调度台（autopilot-tick.yml）把被审查员打回、或者 CI 没过的执行员 PR 派回来，在那个分支上接着改。
 # 这里只是个壳：取源仓库代码、装工具链，然后 exec .cowork/autopilot/sealed.sh fix。脚本的输出全部进文件、产物传回源仓库
 # Release「autopilot-artifacts」，这份日志里只有每个阶段一行的进度；运行结束后 ai-qa-seal.yml 会核对这一点。
@@ -8,7 +9,7 @@
 # AUTOPILOT_FIX_MODEL（默认 claude-opus-5-5）、AUTOPILOT_DAILY_USD（默认 15）。
 name: autopilot-fix
 # 整个值要加引号：里面的「 #」不加引号会被 YAML 当成注释截掉
-run-name: "autopilot-fix #${{ inputs.issue }}${{ inputs.pr && format(' rework {0}', inputs.pr) || '' }}"
+run-name: "autopilot-fix #${{ inputs.issue }}${{ inputs.row && format(' row {0}', inputs.row) || '' }}${{ inputs.pr && format(' rework {0}', inputs.pr) || '' }}"
 
 on:
   workflow_dispatch:
@@ -24,6 +25,9 @@ on:
         default: ""
       pr:
         description: "返工：执行员给这个 issue 开的 PR 号（空 = 新修）"
+        default: ""
+      row:
+        description: "功能 issue：做「PR 拆分」表的第几行（空 = 脚本自己算下一行；不是功能 issue 的不用填）"
         default: ""
 
 permissions:
@@ -48,6 +52,7 @@ jobs:
       SOURCE_REPO: Tinghecui/cowork-codeg
       ISSUE: ${{ inputs.issue }}
       PR: ${{ inputs.pr }}
+      ROW: ${{ inputs.row }}
       AUTOPILOT: ${{ vars.AUTOPILOT || 'record' }}
       CLAUDE_AUTH: ${{ vars.AUTOPILOT_CLAUDE_AUTH || 'oauth' }}
       MODEL: ${{ inputs.model || vars.AUTOPILOT_FIX_MODEL || 'claude-opus-5-5' }}

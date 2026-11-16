@@ -1,13 +1,14 @@
-# 公开镜像 Tinghecui/dodoer-releases 的桌面版 dodoer.app（macOS arm64 和 Intel 各一个包，固定的自签名证书签名；文件在私有仓库 cowork-codeg 的
+# 公开镜像 Tinghecui/dodoer-releases 的桌面版 dodoer.app（macOS arm64；Intel 包见 desktop-macos-intel.yml。固定的自签名证书签名；文件在私有仓库 cowork-codeg 的
 # .github/public/workflows/ 里维护）。跑在 GitHub 托管的 macOS 机器上，公开仓库不收费。
 # 编法、冒烟、打包都在 scripts/cowork-desktop-build.sh 里。只有一种包（完整版，自带 codeg-server；2026-11-09 去掉了纯客户端版），
 # 一台机器编前端、sidecar 和主程序，最后 publish 发版。
 #
 # - tag cowork-codeg-vX.Y.Z 同步过来：编正式版，版本号 1.Y.Z，发到本仓库的 Release v1.Y.Z：安装 zip（带版本号的一份，
 #   加上不带版本号的 dodoer-macos-arm64.zip 和门户下载链接用的 dodoer-client-macos-arm64.zip，内容一样；Intel 的是 *-macos-x64.zip，
-#   没有 client 那个别名）、
-#   自动更新用的 .app.tar.gz + .sig（两个架构各一份）、latest.json 和 latest-client.json（darwin-aarch64，有 Intel 包时加 darwin-x86_64）（两个都指这个包：装过纯客户端版的 app 从
-#   latest-client.json 查更新，这样就更新成完整版）。装好的 app 从 releases/latest/download/latest(-client).json 查更新
+#   没有 client 那个别名，每天北京时间 5 点由 desktop-macos-intel.yml 单独编、挂到当时最新的 Release 上）、
+#   自动更新用的 .app.tar.gz + .sig、latest.json 和 latest-client.json（darwin-aarch64，两个都指这个包：装过纯客户端版的 app 从
+#   latest-client.json 查更新，这样就更新成完整版），以及原样带上的上一版 latest-x64.json（Intel 的 app 查它）。
+#   装好的 app 从 releases/latest/download/latest(-client|-x64).json 查更新
 # - 每晚（北京时间 02:37）编一次 main，冒烟、不发：PR 上只查配置（test.yml 的 Desktop editions），编出来的包最晚第二天知道。
 #   main 的这个提交已经有一次成功的 desktop-macos（前一晚、或者打 tag 发版那次）就跳过
 # - 私有 PR 打了 macos-build 标签：public-sync 把它同步到 macos/pr/<n>，这里编、冒烟、不发，结果报回那个 PR（「公开 CI / desktop-macos」）。
@@ -322,114 +323,6 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # 黑苹果上原生编 Intel 包（2026-11-16 起）：黑苹果本身就是 Intel，冒烟直接在这里跑，不用另一台机器
-  build-x64-hack:
-    name: dodoer.app (macOS Intel，黑苹果原生编译)
-    needs: prepare
-    if: needs.prepare.outputs.build == 'true' && needs.prepare.outputs.hack == 'true'
-    runs-on: [self-hosted, hackintosh]
-    timeout-minutes: 75
-    outputs:
-      # 编译 / 打包这一步自己失败了（重试过一次）：多半是代码的问题，GitHub 上编同样的代码也过不了，不切过去
-      build_failed: ${{ steps.build.outcome == 'failure' }}
-    env:
-      CI: "true"
-      NEXT_TELEMETRY_DISABLED: "1"
-      NEXT_PUBLIC_PRODUCT_NAME: ${{ inputs.product_name || 'dodoer' }}
-      NODE_OPTIONS: --max-old-space-size=8192
-    steps:
-      # clean: false：留着 src-tauri/target 和 node_modules 做增量（自托管不用 rust-cache，见 COWORK.md）
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || (github.ref_type == 'branch' && github.sha) || github.ref }}
-          clean: false
-      - name: 工具链（机器上装好的 rustup / node / pnpm）
-        run: |
-          node --version; pnpm --version; rustc --version
-      - run: pnpm install --frozen-lockfile
-      - name: 签名证书（临时钥匙串）
-        env:
-          P12: ${{ secrets.DODOER_CODESIGN_P12 }}
-          P12_PASSWORD: ${{ secrets.DODOER_CODESIGN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$P12" || -z "$P12_PASSWORD" ]]; then
-            echo "::error::缺 Secret DODOER_CODESIGN_P12 / DODOER_CODESIGN_PASSWORD：不签名的包装上以后屏幕录制等授权会失效"
-            exit 1
-          fi
-          kc="$RUNNER_TEMP/dodoer-codesign.keychain-db"
-          kc_pw=$(openssl rand -hex 16)
-          echo "::add-mask::$kc_pw"
-          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/codesign.p12"
-          lockf -k -t 60 /tmp/dodoer-keychain-list.lock security create-keychain -p "$kc_pw" "$kc"
-          security set-keychain-settings -lut 21600 "$kc"
-          security unlock-keychain -p "$kc_pw" "$kc"
-          security import "$RUNNER_TEMP/codesign.p12" -k "$kc" -f pkcs12 -P "$P12_PASSWORD" -T /usr/bin/codesign
-          rm -f "$RUNNER_TEMP/codesign.p12"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pw" "$kc" >/dev/null
-          echo "DODOER_KEYCHAIN_PASSWORD=$kc_pw" >> "$GITHUB_ENV"
-          sha1=$(security find-certificate -c "dodoer code signing" -Z "$kc" | awk '/SHA-1 hash:/ {print $3}')
-          if [[ ! "$sha1" =~ ^[0-9A-F]{40}$ ]]; then
-            echo "::error::临时钥匙串里没有 dodoer code signing 证书"
-            exit 1
-          fi
-          echo "DODOER_SIGNING_IDENTITY=$sha1" >> "$GITHUB_ENV"
-          echo "DODOER_SIGNING_KEYCHAIN=$kc" >> "$GITHUB_ENV"
-      # runner 是 LaunchDaemon，plist 里必须有 SessionCreate=true：不然进程在系统的安全会话里，实际的搜索列表
-      # 只有 System.keychain，user 域的列表设了也不管用，codesign 报 no identity found（2026-11-16 踩过）。
-      # 编译前再解锁一次、把搜索列表重设成「临时钥匙串 + 还在的其他钥匙串」（每个 job 都会留一条旧路径），
-      # 再按全局搜索确认找得到这个身份，找不到就在这里失败（几十秒），不用等编完 15 分钟才在签名时失败
-      - name: 钥匙串再检查一次
-        run: |
-          set -euo pipefail
-          security unlock-keychain -p "$DODOER_KEYCHAIN_PASSWORD" "$DODOER_SIGNING_KEYCHAIN"
-          # 这台机器上有几个 runner，同一个用户、同一份搜索列表：读改写要加锁，别的 runner 正在用的钥匙串
-          # （文件还在）要留着，只去掉已经删掉的和自己的重复项
-          # shellcheck disable=SC2016
-          lockf -k -t 60 /tmp/dodoer-keychain-list.lock bash -c '
-            keep=()
-            while IFS= read -r k; do
-              k=$(echo "$k" | tr -d "\" ")
-              [[ -f "$k" && "$k" != "$1" ]] && keep+=("$k")
-            done < <(security list-keychains -d user)
-            security list-keychains -d user -s "$1" ${keep[@]+"${keep[@]}"}
-          ' _ "$DODOER_SIGNING_KEYCHAIN"
-          security list-keychains -d user
-          security show-keychain-info "$DODOER_SIGNING_KEYCHAIN"
-          security find-identity -p codesigning "$DODOER_SIGNING_KEYCHAIN"
-          security find-identity -p codesigning | grep -q "$DODOER_SIGNING_IDENTITY" || {
-            echo "::error::搜索列表里找不到签名身份 $DODOER_SIGNING_IDENTITY"
-            exit 1
-          }
-      - id: build
-        name: tauri build、冒烟、打包
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # 和下面 build 一样：要发布的包编进 Sentry 的 DSN（2026-11-16 以前这里漏了，黑苹果编的 v1.6.27、v1.6.28 本机工作区不上报）
-          CODEG_TELEMETRY_BUILTIN_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_DSN || '' }}
-          CODEG_TELEMETRY_BUILTIN_WEB_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_WEB_DSN || '' }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-        # 第一次失败在本机重试一次（下载依赖走代理，偶尔断）：代码错了重试也是增量编译，一两分钟就再失败
-        run: |
-          scripts/cowork-desktop-build.sh full && exit 0
-          echo "::warning::黑苹果上第一次编译失败，重试一次"
-          scripts/cowork-desktop-build.sh full
-      # 自托管机器上钥匙串不会随机器销毁，搜索列表也要还原
-      - name: 删掉临时钥匙串
-        if: always()
-        run: |
-          if [[ -n "${DODOER_SIGNING_KEYCHAIN:-}" ]]; then
-            lockf -k -t 60 /tmp/dodoer-keychain-list.lock security delete-keychain "$DODOER_SIGNING_KEYCHAIN" || true
-          fi
-          rm -f "$RUNNER_TEMP/codesign.p12"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dodoer-x64-hack-dist
-          path: dist/
-          retention-days: 7
-          if-no-files-found: error
-
   # 黑苹果编的包在 arm64 机器上冒烟（同一个脚本的 smoke 模式）
   smoke:
     name: 冒烟（macos-15，黑苹果编的包）
@@ -468,9 +361,9 @@ jobs:
           set -euo pipefail
           for i in $(seq 1 30); do
             st=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
-              -q '[.jobs[] | select(.name | test("黑苹果(交叉|原生)编译")) | select(.status == "queued" or .status == "waiting" or .status == "pending")] | length')
+              -q '[.jobs[] | select(.name | test("黑苹果交叉编译")) | select(.status == "queued" or .status == "waiting" or .status == "pending")] | length')
             if [[ "$st" == 0 ]]; then
-              echo "黑苹果的活（arm64、Intel）都接了"; exit 0
+              echo "黑苹果的活都接了"; exit 0
             fi
             sleep 30
           done
@@ -585,122 +478,14 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # Intel 包在托管的 Intel 机器上编：黑苹果不在线、或者黑苹果那边是机器的问题时（同 build 的规则）
-  build-x64:
-    name: dodoer.app (macOS Intel)
-    needs: [prepare, build-x64-hack]
-    if: >-
-      !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.build == 'true' &&
-      (needs.prepare.outputs.hack != 'true' ||
-       (needs.build-x64-hack.result != 'success' && needs.build-x64-hack.outputs.build_failed != 'true'))
-    runs-on: macos-15-intel
-    timeout-minutes: 120
-    outputs:
-      artifact: ${{ steps.build.outputs.full_name }}
-    env:
-      CI: "true"
-      NEXT_TELEMETRY_DISABLED: "1"
-      NEXT_PUBLIC_PRODUCT_NAME: ${{ inputs.product_name || 'dodoer' }}
-      NODE_OPTIONS: --max-old-space-size=4096
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || (github.ref_type == 'branch' && github.sha) || github.ref }}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: "./src-tauri -> target"
-          # 只缓存依赖，codeg 每次重编
-          shared-key: desktop-macos-x64
-
-      - name: pnpm（corepack，按 package.json 的 packageManager）
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          corepack enable --install-directory "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.local/bin:$PATH"
-          node --version; pnpm --version; rustc --version
-          echo "PNPM_STORE=$(pnpm store path --silent)" >> "$GITHUB_ENV"
-      - uses: actions/cache@v4
-        with:
-          path: ${{ env.PNPM_STORE }}
-          key: pnpm-macos-x64-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: pnpm-macos-x64-
-      - run: pnpm install --frozen-lockfile
-
-      # 证书导进一个临时钥匙串，加进搜索列表让 codesign 找得到；身份用证书的 SHA-1 指定（自签名证书不受信任，
-      # find-identity -v 列不出它，按名字找不稳，codesign 按哈希找不看信任）
-      - name: 签名证书（临时钥匙串）
-        env:
-          P12: ${{ secrets.DODOER_CODESIGN_P12 }}
-          P12_PASSWORD: ${{ secrets.DODOER_CODESIGN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$P12" || -z "$P12_PASSWORD" ]]; then
-            echo "::error::缺 Secret DODOER_CODESIGN_P12 / DODOER_CODESIGN_PASSWORD：不签名的包装上以后屏幕录制等授权会失效"
-            exit 1
-          fi
-          kc="$RUNNER_TEMP/dodoer-codesign.keychain-db"
-          kc_pw=$(openssl rand -hex 16)
-          echo "::add-mask::$kc_pw"
-          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/codesign.p12"
-          security create-keychain -p "$kc_pw" "$kc"
-          security set-keychain-settings -lut 21600 "$kc"
-          security unlock-keychain -p "$kc_pw" "$kc"
-          security import "$RUNNER_TEMP/codesign.p12" -k "$kc" -f pkcs12 -P "$P12_PASSWORD" -T /usr/bin/codesign
-          rm -f "$RUNNER_TEMP/codesign.p12"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pw" "$kc" >/dev/null
-          # shellcheck disable=SC2046
-          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
-          sha1=$(security find-certificate -c "dodoer code signing" -Z "$kc" | awk '/SHA-1 hash:/ {print $3}')
-          if [[ ! "$sha1" =~ ^[0-9A-F]{40}$ ]]; then
-            echo "::error::临时钥匙串里没有 dodoer code signing 证书"
-            exit 1
-          fi
-          security find-identity -p codesigning "$kc"
-          echo "DODOER_SIGNING_IDENTITY=$sha1" >> "$GITHUB_ENV"
-          echo "DODOER_SIGNING_KEYCHAIN=$kc" >> "$GITHUB_ENV"
-
-      # 要发布的包把 Sentry 的 DSN 编进 app 自带的 codeg-server（prepare-sidecars 编它，继承这里的环境；
-      # src-tauri/src/telemetry/config.rs，docs/telemetry.md §5.1、§5.11），本机工作区默认上报。每晚、macos/pr/<n>、
-      # 手动只编不发的不给，和本地编的一样是关的。冒烟（--local-daemon-smoke）起的 daemon 自己关着遥测
-      - id: build
-        name: tauri build、冒烟、打包
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          CODEG_TELEMETRY_BUILTIN_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_DSN || '' }}
-          CODEG_TELEMETRY_BUILTIN_WEB_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_WEB_DSN || '' }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: scripts/cowork-desktop-build.sh full
-
-      - name: 删掉临时钥匙串
-        if: always()
-        run: |
-          if [[ -n "${DODOER_SIGNING_KEYCHAIN:-}" ]]; then
-            security delete-keychain "$DODOER_SIGNING_KEYCHAIN" || true
-          fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.build.outputs.full_name }}
-          path: dist/
-          retention-days: 7
-          if-no-files-found: error
-
   # latest.json 和 latest-client.json 内容一样，都指向这次 Release 的 .app.tar.gz：装过纯客户端版（1.3.0 起有过）的 app
   # 从 latest-client.json 查更新，同一把签名私钥、同一个 identifier（app.codeg）、同一个数据目录，所以它就地更新成完整版。
   # 两个 json 在每个 Release 里都放一份，补发旧版本时不会把已经装了新版的人「更新」回去（app 只认更大的号）。
   # 编过、冒烟过才发
   publish:
     name: 发 Release
-    needs: [prepare, build, build-hack, smoke, build-x64, build-x64-hack]
-    # arm64：托管机器编的（build 成功），或者黑苹果编的、冒烟过了（build 没跑）。Intel 包有就一起发，没编出来不挡 arm64
-    # （那次 run 照样是红的，Intel 用户这一版收不到更新，下一版再说）
+    needs: [prepare, build, build-hack, smoke]
+    # 托管机器编的（build 成功），或者黑苹果编的、冒烟过了（build 没跑）
     if: >-
       !cancelled() && needs.prepare.outputs.publish == 'true' &&
       (needs.build.result == 'success' || (needs.build.result == 'skipped' && needs.smoke.result == 'success'))
@@ -727,13 +512,6 @@ jobs:
         with:
           name: ${{ needs.build.result == 'success' && needs.build.outputs.artifact || 'dodoer-hack-dist' }}
           path: dist
-      - uses: actions/download-artifact@v4
-        if: >-
-          (!inputs.train || steps.gate.outputs.ok == 'true') &&
-          (needs.build-x64.result == 'success' || (needs.build-x64.result == 'skipped' && needs.build-x64-hack.result == 'success'))
-        with:
-          name: ${{ needs.build-x64.result == 'success' && needs.build-x64.outputs.artifact || 'dodoer-x64-hack-dist' }}
-          path: dist-x64
       - name: 发 Release
         if: ${{ !inputs.train || steps.gate.outputs.ok == 'true' }}
         env:
@@ -753,15 +531,14 @@ jobs:
           UPDATER=$(one "dodoer-$VERSION-macos-arm64.app.tar.gz")
           ALIAS=$(one "dodoer-macos-arm64.zip")
           CLIENT_ALIAS=$(one "dodoer-client-macos-arm64.zip")
-          # Intel 包（有的话）：挪进 dist/，和 arm64 的一起发
-          X64_NAME="" X64_UPDATER="" X64_ALIAS=""
-          if [[ -d dist-x64 ]]; then
-            mv dist-x64/* dist/
-            X64_NAME=$(one "dodoer-$VERSION-*-macos-x64.zip"); X64_NAME="${X64_NAME%.zip}"
-            X64_UPDATER=$(one "dodoer-$VERSION-macos-x64.app.tar.gz")
-            X64_ALIAS=$(one "dodoer-macos-x64.zip")
+          # Intel 包每天单独编、挂到当时最新的 Release 上（desktop-macos-intel.yml），自动更新查 latest-x64.json。
+          # Intel 的 app 查的是 releases/latest/download/latest-x64.json，所以每一版都要带一份：原样带上上一个 Release 里的
+          X64_MANIFEST=""
+          if gh release download -R "$RELEASE_REPO" -p latest-x64.json -D "$RUNNER_TEMP/x64" 2>/dev/null; then
+            cp "$RUNNER_TEMP/x64/latest-x64.json" dist/latest-x64.json && X64_MANIFEST=dist/latest-x64.json
+            echo "带上上一版的 latest-x64.json：$(jq -c '{version, url: .platforms["darwin-x86_64"].url}' dist/latest-x64.json)"
           else
-            echo "::warning::这一版没有 Intel 包（没编出来），只发 arm64；latest.json 里没有 darwin-x86_64，Intel 的 app 这一版收不到更新"
+            echo "::notice::上一个 Release 里没有 latest-x64.json（还没发过 Intel 包）"
           fi
           rel="v$VERSION"
           if [[ -n "$NOTES_INPUT" ]]; then
@@ -771,40 +548,26 @@ jobs:
             subject=$(git tag -l --format='%(contents:subject)' "$TAG" 2>/dev/null || true)
             notes="${subject:-$TAG}"
           fi
-          x64_sig="" x64_url=""
-          if [[ -n "$X64_UPDATER" ]]; then
-            x64_sig=$(cat "dist/$X64_UPDATER.sig"); x64_url="https://github.com/$RELEASE_REPO/releases/download/$rel/$X64_UPDATER"
-          fi
           for out in latest.json latest-client.json; do
             jq -n --arg version "$VERSION" --arg notes "$notes" \
               --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               --arg signature "$(cat "dist/$UPDATER.sig")" \
               --arg url "https://github.com/$RELEASE_REPO/releases/download/$rel/$UPDATER" \
-              --arg x64_sig "$x64_sig" --arg x64_url "$x64_url" \
               '{version: $version, notes: $notes, pub_date: $pub_date,
-                platforms: ({"darwin-aarch64": {signature: $signature, url: $url},
-                             "darwin-aarch64-app": {signature: $signature, url: $url}}
-                            + (if $x64_url == "" then {} else
-                               {"darwin-x86_64": {signature: $x64_sig, url: $x64_url},
-                                "darwin-x86_64-app": {signature: $x64_sig, url: $x64_url}} end))}' > "dist/$out"
+                platforms: {"darwin-aarch64": {signature: $signature, url: $url},
+                            "darwin-aarch64-app": {signature: $signature, url: $url}}}' > "dist/$out"
             echo "== $out"; cat "dist/$out"
           done
           body=$(printf '%s\n\n对应 %s。\n\n安装包 `%s.zip`（也叫 `%s`；`%s` 是同一个文件，给门户的下载链接用）。打开后在开始页选「在这台电脑上工作」或者一台服务器，本机和服务器上的工作区可以同时开着。\n\n已经装了 dodoer 的（包括以前的纯客户端版），app 里会提示更新，点更新、重启就是这一版。\n第一次装：解压后把 dodoer.app 拖进「应用程序」，再在终端执行 `xattr -dr com.apple.quarantine /Applications/dodoer.app`（没有 Apple 开发者签名）。\n' \
             "$notes" "$TAG" "$NAME" "$ALIAS" "$CLIENT_ALIAS")
           # release-train.yml 按这个标记删老的自动版本。tag v$VERSION 建在编的这个提交上（手动 tag 也是，不再建在 main 上）：
           # 桌面 app「回退到上一版」之前，从上一版 tag 的源码读它认的数据库迁移（src-tauri/src/update/rollback.rs）
-          if [[ -n "$X64_NAME" ]]; then
-            body=$(printf '%s\nIntel 的 Mac：安装包是 `%s.zip`（也叫 `%s`），其他一样。\n' "$body" "$X64_NAME" "$X64_ALIAS")
-          fi
           target=$(git rev-parse HEAD)
           if [[ "$TRAIN" == true ]]; then body=$(printf '%s\n\n%s' "$body" "<!-- release-train -->"); fi
           files=("dist/$NAME.zip" "dist/$NAME.zip.sha256" "dist/$ALIAS" "dist/$ALIAS.sha256"
                  "dist/$CLIENT_ALIAS" "dist/$CLIENT_ALIAS.sha256"
                  "dist/$UPDATER" "dist/$UPDATER.sig" dist/latest.json dist/latest-client.json)
-          if [[ -n "$X64_NAME" ]]; then
-            files+=("dist/$X64_NAME.zip" "dist/$X64_NAME.zip.sha256" "dist/$X64_ALIAS" "dist/$X64_ALIAS.sha256"
-                    "dist/$X64_UPDATER" "dist/$X64_UPDATER.sig")
-          fi
+          if [[ -n "$X64_MANIFEST" ]]; then files+=("$X64_MANIFEST"); fi
           if gh release view "$rel" -R "$RELEASE_REPO" >/dev/null 2>&1; then
             gh release upload "$rel" -R "$RELEASE_REPO" --clobber "${files[@]}"
           else

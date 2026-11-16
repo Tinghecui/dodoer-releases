@@ -21,7 +21,7 @@
 #   dodoer-<ver>-<sha8>-macos-arm64.zip(.sha256)             安装包
 #   dodoer-macos-arm64.zip(.sha256)                          同一个文件、名字不带版本（releases/latest/download/… 直接指它）
 #   dodoer-client-macos-arm64.zip(.sha256)                   还是同一个文件：门户「桌面版」的下载链接（以前给纯客户端版）指这个名字，留着不让它 404
-#   dodoer-<ver>-macos-arm64.app.tar.gz(.sig)                自动更新包  ← latest.json 和 latest-client.json
+#   dodoer-<ver>-macos-arm64.app.tar.gz(.sig)                自动更新包  ← latest.json 和 latest-client.json（x64 的 ← latest-x64.json）
 # latest.json / latest-client.json 由 workflow 在发布时生成，两个都指这个自动更新包：装过纯客户端版的 app 从 latest-client.json
 # 查更新（endpoint 编在它自己的包里），这样它就更新成完整版。
 set -euo pipefail
@@ -45,6 +45,12 @@ case "${target:-$(uname -m)}" in
   x86_64-apple-darwin|x86_64) arch=x64; lipo_arch=x86_64 ;;
   *) fail "DODOER_TARGET 只认 aarch64-apple-darwin、x86_64-apple-darwin，现在是 ${target:-本机 $(uname -m)}" ;;
 esac
+# Intel 包一天才编一次（desktop-macos-intel.yml），版本跟不上 arm64，latest.json 里放不下（只有一个 version）：
+# 它从自己的 latest-x64.json 查更新。写在命令行上，不另加配置文件（check-desktop-editions.mjs 只认 configs=(…) 那一行的文件）
+if [[ "$arch" == x64 ]]; then
+  expect_endpoint="$releases/latest-x64.json"
+  configs+=(--config "{\"plugins\":{\"updater\":{\"endpoints\":[\"$expect_endpoint\"]}}}")
+fi
 if [[ -n "$target" ]]; then
   bundle="$root/src-tauri/target/$target/release/bundle/macos"
 else

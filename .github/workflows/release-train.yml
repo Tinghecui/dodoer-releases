@@ -180,18 +180,24 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: server 包、桌面包各留最近 30 个
+      # Intel 包一天才编一次（desktop-macos-intel.yml），挂在当天的某个版本上；一天十几个版本，30 个只够两天多，
+      # 所以带 Intel 包的版本另外留最近 3 个（Intel 用户回退到上一版要用）
+      - name: server 包、桌面包各留最近 30 个，带 Intel 包的再多留 3 个
         env:
           GH_TOKEN: ${{ github.token }}
           KEEP: "30"
+          KEEP_X64: "3"
         run: |
           set -euo pipefail
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq '.[] | select((.body // "") | contains("<!-- release-train -->")) | "\(.created_at) \(.tag_name)"' \
+            --jq '.[] | select((.body // "") | contains("<!-- release-train -->"))
+                  | "\(.created_at) \(.tag_name) \(any(.assets[]; .name | endswith("-macos-x64.app.tar.gz")))"' \
             | sort -r > "$RUNNER_TEMP/auto.txt"
+          awk '$3 == "true" { print $2 }' "$RUNNER_TEMP/auto.txt" | head -n "$KEEP_X64" > "$RUNNER_TEMP/keep-x64.txt"
           for prefix in cowork-codeg-v v1.; do
             awk -v p="$prefix" 'index($2, p) == 1 { print $2 }' "$RUNNER_TEMP/auto.txt" | tail -n "+$((KEEP + 1))" \
               | while read -r t; do
+                  if grep -qxF "$t" "$RUNNER_TEMP/keep-x64.txt"; then echo "留着 $t（带 Intel 包）"; continue; fi
                   gh release delete "$t" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag && echo "删了 $t"
                 done
           done

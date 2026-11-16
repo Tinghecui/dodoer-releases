@@ -105,14 +105,32 @@ pub struct GithubAsset {
     pub name: String,
 }
 
+/// The architecture in the update package's file name
+/// (`dodoer-<version>-macos-<arch>.app.tar.gz`, scripts/cowork-desktop-build.sh).
+pub fn package_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        other => other,
+    }
+}
+
 /// The release a rollback goes to: the newest published (neither draft nor
 /// prerelease) `v<version>` release older than `current` that has the
-/// manifest. Other tags in the repository (the server packages'
-/// `cowork-codeg-v…`) do not parse and are passed over.
+/// manifest and its own update package for `arch`. Other tags in the
+/// repository (the server packages' `cowork-codeg-v…`) do not parse and are
+/// passed over.
+///
+/// The package matters for Intel: its builds come once a day, and every
+/// release in between carries the last Intel manifest as it was so that
+/// `releases/latest/download/latest-x64.json` resolves. Such a copy points at
+/// an older release's package; only the release holding the package has the
+/// manifest of its own version.
 pub fn previous_release<'a>(
     releases: &'a [GithubRelease],
     current: &Version,
     manifest: &str,
+    arch: &str,
 ) -> Option<(Version, &'a GithubRelease)> {
     releases
         .iter()
@@ -120,7 +138,13 @@ pub fn previous_release<'a>(
         .filter(|release| release.assets.iter().any(|asset| asset.name == manifest))
         .filter_map(|release| {
             let version = Version::parse(release.tag_name.strip_prefix('v')?).ok()?;
-            (version.pre.is_empty() && version < *current).then_some((version, release))
+            let package = format!("-{version}-macos-{arch}.app.tar.gz");
+            let has_package = release
+                .assets
+                .iter()
+                .any(|asset| asset.name.ends_with(&package));
+            (version.pre.is_empty() && version < *current && has_package)
+                .then_some((version, release))
         })
         .max_by(|a, b| a.0.cmp(&b.0))
 }
@@ -200,7 +224,8 @@ pub async fn find_target(
                 AppCommandError::network("Failed to read the list of releases")
                     .with_detail(e.to_string())
             })?;
-    let Some((version, release)) = previous_release(&releases, current, &source.manifest)
+    let Some((version, release)) =
+        previous_release(&releases, current, &source.manifest, package_arch())
     else {
         return Ok(None);
     };
@@ -310,24 +335,85 @@ mod tests {
 
     #[test]
     fn previous_is_the_newest_older_desktop_release_with_the_manifest() {
-        let mut draft = release("v1.6.1", &["latest.json"]);
+        let mut draft = release(
+            "v1.6.1",
+            &["latest.json", "dodoer-1.6.1-macos-arm64.app.tar.gz"],
+        );
         draft.draft = true;
         let releases = vec![
-            release("v1.6.3", &["latest.json"]),
+            release(
+                "v1.6.3",
+                &["latest.json", "dodoer-1.6.3-macos-arm64.app.tar.gz"],
+            ),
             draft,
-            release("cowork-codeg-v0.6.1", &["cowork-codeg-server-linux-x64.tar.gz"]),
-            release("v1.6.0", &["latest.json"]),
-            release("v1.5.9", &["other.json"]),
-            release("v1.5.0", &["latest.json"]),
-            release("v1.6.1-jenny.1", &["latest.json"]),
+            release(
+                "cowork-codeg-v0.6.1",
+                &["cowork-codeg-server-linux-x64.tar.gz"],
+            ),
+            release(
+                "v1.6.0",
+                &["latest.json", "dodoer-1.6.0-macos-arm64.app.tar.gz"],
+            ),
+            release(
+                "v1.5.9",
+                &["other.json", "dodoer-1.5.9-macos-arm64.app.tar.gz"],
+            ),
+            release(
+                "v1.5.0",
+                &["latest.json", "dodoer-1.5.0-macos-arm64.app.tar.gz"],
+            ),
+            release(
+                "v1.6.1-jenny.1",
+                &["latest.json", "dodoer-1.6.1-jenny.1-macos-arm64.app.tar.gz"],
+            ),
         ];
         let current = Version::parse("1.6.2").unwrap();
-        let (version, found) = previous_release(&releases, &current, "latest.json").unwrap();
+        let (version, found) =
+            previous_release(&releases, &current, "latest.json", "arm64").unwrap();
         assert_eq!(version, Version::parse("1.6.0").unwrap());
         assert_eq!(found.tag_name, "v1.6.0");
 
         let oldest = Version::parse("1.5.0").unwrap();
-        assert!(previous_release(&releases, &oldest, "latest.json").is_none());
+        assert!(previous_release(&releases, &oldest, "latest.json", "arm64").is_none());
+    }
+
+    #[test]
+    fn previous_intel_release_is_one_with_its_own_package() {
+        // v1.6.4 and v1.6.3 carry the latest-x64.json of v1.6.2 as it was
+        let releases = vec![
+            release(
+                "v1.6.5",
+                &["latest-x64.json", "dodoer-1.6.5-macos-x64.app.tar.gz"],
+            ),
+            release(
+                "v1.6.4",
+                &["latest-x64.json", "dodoer-1.6.4-macos-arm64.app.tar.gz"],
+            ),
+            release(
+                "v1.6.3",
+                &["latest-x64.json", "dodoer-1.6.3-macos-arm64.app.tar.gz"],
+            ),
+            release(
+                "v1.6.2",
+                &["latest-x64.json", "dodoer-1.6.2-macos-x64.app.tar.gz"],
+            ),
+        ];
+        let current = Version::parse("1.6.5").unwrap();
+        let found = previous_release(&releases, &current, "latest-x64.json", "x64");
+        assert_eq!(found.unwrap().0, Version::parse("1.6.2").unwrap());
+        // an arm64 app goes back to the newest older release with an arm64 package
+        let arm64 = previous_release(&releases, &current, "latest-x64.json", "arm64");
+        assert_eq!(arm64.unwrap().0, Version::parse("1.6.4").unwrap());
+    }
+
+    #[test]
+    fn package_arch_names_this_build() {
+        let arch = package_arch();
+        if cfg!(target_arch = "aarch64") {
+            assert_eq!(arch, "arm64");
+        } else if cfg!(target_arch = "x86_64") {
+            assert_eq!(arch, "x64");
+        }
     }
 
     #[test]

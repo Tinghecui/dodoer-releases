@@ -5724,7 +5724,9 @@
     "goToLogin": "로그인으로 이동",
     "versionChangedTitle": "서버가 dodoer {version}(으)로 실행 중입니다",
     "versionChangedDescription": "이 페이지는 아직 {version}입니다. 새로고침하면 서버의 버전을 사용합니다.",
-    "reloadPage": "새로고침"
+    "reloadPage": "새로고침",
+    "webAssetsChangedTitle": "인터페이스의 새 버전이 준비되었습니다({version})",
+    "webAssetsChangedDescription": "페이지를 새로고침하면 사용할 수 있습니다. 새로고침하지 않아도 계속 작업할 수 있습니다."
   },
   "LiveFeedback": {
     "placeholder": "{agent}이(가) 작업하는 동안 메모 보내기…",

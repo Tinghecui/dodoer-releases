@@ -5724,7 +5724,9 @@
     "goToLogin": "Go to login",
     "versionChangedTitle": "The server is now running dodoer {version}",
     "versionChangedDescription": "This page is still on {version}. Reload it to use the server's version.",
-    "reloadPage": "Reload"
+    "reloadPage": "Reload",
+    "webAssetsChangedTitle": "A new version of the interface is ready ({version})",
+    "webAssetsChangedDescription": "Reload the page to use it. You can also keep working without reloading."
   },
   "LiveFeedback": {
     "placeholder": "Send a note to {agent} while it works…",

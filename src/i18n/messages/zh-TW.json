@@ -5724,7 +5724,9 @@
     "goToLogin": "前往登入",
     "versionChangedTitle": "伺服器已執行 dodoer {version}",
     "versionChangedDescription": "此頁面仍是 {version}，重新整理後即可使用伺服器上的版本。",
-    "reloadPage": "重新整理"
+    "reloadPage": "重新整理",
+    "webAssetsChangedTitle": "介面有新版本（{version}）",
+    "webAssetsChangedDescription": "重新整理頁面就能用上，不重新整理也可以繼續使用。"
   },
   "LiveFeedback": {
     "placeholder": "在 {agent} 工作時給它留言…",

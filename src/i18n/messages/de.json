@@ -5724,7 +5724,9 @@
     "goToLogin": "Zur Anmeldung",
     "versionChangedTitle": "Auf dem Server läuft jetzt dodoer {version}",
     "versionChangedDescription": "Diese Seite läuft noch mit {version}. Lade sie neu, um die Version des Servers zu verwenden.",
-    "reloadPage": "Neu laden"
+    "reloadPage": "Neu laden",
+    "webAssetsChangedTitle": "Eine neue Version der Oberfläche ist bereit ({version})",
+    "webAssetsChangedDescription": "Lade die Seite neu, um sie zu verwenden. Du kannst auch ohne Neuladen weiterarbeiten."
   },
   "LiveFeedback": {
     "placeholder": "Sende {agent} eine Notiz, während er arbeitet…",

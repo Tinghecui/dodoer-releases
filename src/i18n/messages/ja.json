@@ -5724,7 +5724,9 @@
     "goToLogin": "ログインへ移動",
     "versionChangedTitle": "サーバーは dodoer {version} で動作しています",
     "versionChangedDescription": "このページはまだ {version} です。再読み込みするとサーバーのバージョンを使用します。",
-    "reloadPage": "再読み込み"
+    "reloadPage": "再読み込み",
+    "webAssetsChangedTitle": "インターフェースの新しいバージョンがあります（{version}）",
+    "webAssetsChangedDescription": "ページを再読み込みすると使えます。再読み込みしなくてもそのまま作業を続けられます。"
   },
   "LiveFeedback": {
     "placeholder": "{agent} の作業中にメモを送る…",

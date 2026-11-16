@@ -26,8 +26,23 @@ const mocks = vi.hoisted(() => {
     serverVersion: vi.fn<() => Promise<string | null>>(),
     ownRestart: { running: false, listeners: new Set<() => void>() },
     toast: Object.assign(vi.fn(), { dismiss: vi.fn() }),
+    events: new Map<string, Set<(payload: unknown) => void>>(),
   }
 })
+
+vi.mock("@/lib/platform", () => ({
+  subscribe: async (event: string, handler: (payload: unknown) => void) => {
+    let handlers = mocks.events.get(event)
+    if (!handlers) {
+      handlers = new Set()
+      mocks.events.set(event, handlers)
+    }
+    handlers.add(handler)
+    return () => {
+      handlers.delete(handler)
+    }
+  },
+}))
 
 vi.mock("@/lib/transport/web-connection-store", () => ({
   subscribeWebConnection: mocks.subscribe,
@@ -78,8 +93,10 @@ beforeEach(() => {
   mocks.toast.dismiss.mockReset()
   mocks.ownRestart.running = false
   mocks.ownRestart.listeners.clear()
+  mocks.events.clear()
   vi.stubEnv("NODE_ENV", "production")
   vi.stubEnv("CODEG_APP_VERSION", "0.37.0")
+  vi.stubEnv("CODEG_RELEASE_VERSION", "cowork-codeg-v0.6.39")
 })
 
 afterEach(() => {
@@ -188,5 +205,75 @@ describe("WebVersionNotice", () => {
     await settle()
     expect(mocks.serverVersion).not.toHaveBeenCalled()
     expect(mocks.toast).not.toHaveBeenCalled()
+  })
+
+  describe("when the server switches to new web files", () => {
+    function emitAssetsChanged(release: string | null) {
+      act(() => {
+        for (const handler of mocks.events.get("web_assets_changed") ?? []) {
+          handler({ release })
+        }
+      })
+    }
+
+    it("offers a reload when the files are another release than the page", async () => {
+      renderNotice()
+      await settle()
+      mocks.toast.mockClear()
+
+      emitAssetsChanged("cowork-codeg-v0.6.40")
+
+      expect(mocks.toast).toHaveBeenCalledTimes(1)
+      const [title, options] = mocks.toast.mock.calls[0]
+      expect(title).toBe(
+        "A new version of the interface is ready (cowork-codeg-v0.6.40)"
+      )
+      expect(options).toMatchObject({
+        id: WEB_VERSION_TOAST_ID,
+        description:
+          "Reload the page to use it. You can also keep working without reloading.",
+        duration: Infinity,
+        action: { label: "Reload" },
+      })
+    })
+
+    it("stays quiet when the files are this page's release", async () => {
+      renderNotice()
+      await settle()
+      emitAssetsChanged("cowork-codeg-v0.6.39")
+      expect(mocks.toast).not.toHaveBeenCalled()
+    })
+
+    it("stays quiet when the event names no release", async () => {
+      renderNotice()
+      await settle()
+      emitAssetsChanged(null)
+      expect(mocks.toast).not.toHaveBeenCalled()
+    })
+
+    it("stays quiet when the page does not know its own release", async () => {
+      vi.stubEnv("CODEG_RELEASE_VERSION", "")
+      renderNotice()
+      await settle()
+      emitAssetsChanged("cowork-codeg-v0.6.40")
+      expect(mocks.toast).not.toHaveBeenCalled()
+    })
+
+    it("does not listen in a desktop window", async () => {
+      mocks.usesWebTransport.mockReturnValue(false)
+      renderNotice()
+      await settle()
+      expect(mocks.events.get("web_assets_changed")?.size ?? 0).toBe(0)
+      emitAssetsChanged("cowork-codeg-v0.6.40")
+      expect(mocks.toast).not.toHaveBeenCalled()
+    })
+
+    it("leaves the page's own upgrade to report itself", async () => {
+      mocks.ownRestart.running = true
+      renderNotice()
+      await settle()
+      emitAssetsChanged("cowork-codeg-v0.6.40")
+      expect(mocks.toast).not.toHaveBeenCalled()
+    })
   })
 })

@@ -5724,7 +5724,9 @@
     "goToLogin": "Aller à la connexion",
     "versionChangedTitle": "Le serveur exécute désormais dodoer {version}",
     "versionChangedDescription": "Cette page est encore en version {version}. Rechargez-la pour utiliser la version du serveur.",
-    "reloadPage": "Recharger"
+    "reloadPage": "Recharger",
+    "webAssetsChangedTitle": "Une nouvelle version de l'interface est prête ({version})",
+    "webAssetsChangedDescription": "Rechargez la page pour l'utiliser. Vous pouvez aussi continuer à travailler sans recharger."
   },
   "LiveFeedback": {
     "placeholder": "Envoyez une note à {agent} pendant qu'il travaille…",

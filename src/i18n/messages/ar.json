@@ -5724,7 +5724,9 @@
     "goToLogin": "الانتقال إلى تسجيل الدخول",
     "versionChangedTitle": "يعمل الخادم الآن بإصدار dodoer {version}",
     "versionChangedDescription": "لا تزال هذه الصفحة على الإصدار {version}. أعد تحميلها لاستخدام إصدار الخادم.",
-    "reloadPage": "إعادة التحميل"
+    "reloadPage": "إعادة التحميل",
+    "webAssetsChangedTitle": "يتوفر إصدار جديد من الواجهة ({version})",
+    "webAssetsChangedDescription": "أعد تحميل الصفحة لاستخدامه. يمكنك أيضًا مواصلة العمل دون إعادة التحميل."
   },
   "LiveFeedback": {
     "placeholder": "أرسل ملاحظة إلى {agent} أثناء عمله…",

@@ -5948,6 +5948,8 @@
     "sitesBlockingLabel": "Blocking",
     "sitesPausedLabel": "Paused",
     "sitesPauseSwitch": "Block sensitive sites",
+    "sitesNotBlocking": "Not blocking sensitive sites",
+    "sitesPanelPaused": "Paused: agents can use every site",
     "sitesPausedNotice": "Blocking paused: agents can now use every site signed in as you, including those below. The list is kept; turn this back on to restore it.",
     "sitesGroupMail": "Mail",
     "sitesGroupAccounts": "Passwords and accounts",

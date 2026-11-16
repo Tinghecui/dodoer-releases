@@ -5948,6 +5948,8 @@
     "sitesBlockingLabel": "Bloqueando",
     "sitesPausedLabel": "En pausa",
     "sitesPauseSwitch": "Bloquear sitios sensibles",
+    "sitesNotBlocking": "No se están bloqueando los sitios sensibles",
+    "sitesPanelPaused": "En pausa: los agentes pueden usar cualquier sitio",
     "sitesPausedNotice": "Bloqueo en pausa: los agentes ahora pueden usar cualquier sitio con tu sesión iniciada, incluidos los de abajo. La lista se conserva; vuelve a activarlo para restaurarla.",
     "sitesGroupMail": "Correo",
     "sitesGroupAccounts": "Contraseñas y cuentas",

@@ -24,7 +24,13 @@
  * one for every local window, one per remote window — and told to the
  * backend again when the app starts, which keeps it only in memory.
  *
- * Under it, the switch for running agents' own code in the tabs they may act
+ * Under it, the switch for the sensitive sites (`docs/agent-chrome.md` 13.8),
+ * the same one as by the list on the settings page: off, the list is paused
+ * and agents may use every site. While it is paused the glyph carries an
+ * amber dot, connected or not, so a pause is not forgotten. The two follow
+ * each other through `browser://chrome-sites`; nothing asks first.
+ *
+ * Under that, the switch for running agents' own code in the tabs they may act
  * on (`ChromeEvalPanelSwitch`, `docs/agent-chrome.md` 13.5), with its risk
  * spelled out; the same switch is on the settings page.
  *
@@ -106,6 +112,12 @@ import {
 } from "@/lib/browser/chrome-api"
 import type { AgentAction, GrantLevel } from "@/lib/browser/types"
 import { getCurrentWindowLabel } from "@/lib/browser/window-label"
+import {
+  chromeSetSites,
+  chromeSites,
+  subscribeChromeSites,
+  type ChromeSites,
+} from "@/lib/browser/chrome-sites"
 import { lendBrowserSwitch } from "@/lib/cowork/remote-browser"
 import { isDesktop } from "@/lib/platform"
 import { formatTimeAgo } from "@/lib/relative-time"
@@ -157,6 +169,7 @@ function ChromeItem({ className }: { className?: string }) {
   const [tabs, setTabs] = useState<ChromeTab[]>([])
   const [open, setOpen] = useState(false)
   const [agents, setAgents] = useState(false)
+  const [sites, setSites] = useState<ChromeSites | null>(null)
   const [activity, setActivity] = useState<
     Record<string, ChromeActivityEntry[]>
   >({})
@@ -235,6 +248,32 @@ function ChromeItem({ className }: { className?: string }) {
     }
   }, [])
 
+  // The sensitive sites, for the pause: asked once, then followed through
+  // every change, whichever window made it.
+  useEffect(() => {
+    let cancelled = false
+    let off: (() => void) | null = null
+    let heard = false
+    void subscribeChromeSites((next) => {
+      heard = true
+      if (!cancelled) setSites(next)
+    })
+      .then((unsubscribe) => {
+        if (cancelled) unsubscribe()
+        else off = unsubscribe
+      })
+      .catch(() => {})
+    chromeSites()
+      .then((current) => {
+        if (!cancelled && !heard) setSites(current)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+      off?.()
+    }
+  }, [])
+
   const state = status?.state ?? "disconnected"
   const problem = status?.problem ?? null
 
@@ -284,6 +323,23 @@ function ChromeItem({ className }: { className?: string }) {
     }
   }
 
+  /** On keeps the list in force; off pauses it. The list itself goes back as
+   *  the app has it. */
+  const switchSites = async (on: boolean) => {
+    if (!sites) return
+    try {
+      setSites(
+        await chromeSetSites({
+          blocked: sites.blocked,
+          allowed: sites.allowed,
+          paused: !on,
+        })
+      )
+    } catch (error) {
+      toast.error(t("sitesFailed", { message: toErrorMessage(error) }))
+    }
+  }
+
   const jump = async (tabId: string) => {
     try {
       await chromeActivate(tabId)
@@ -308,13 +364,18 @@ function ChromeItem({ className }: { className?: string }) {
       : state === "waiting"
         ? t("statusWaiting")
         : t("statusDisconnected")
+  const sitesPaused = sites?.paused === true
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           aria-label={t("title")}
-          title={`${t("title")} · ${statusLine}`}
+          title={
+            sitesPaused
+              ? `${t("title")} · ${statusLine} · ${t("sitesNotBlocking")}`
+              : `${t("title")} · ${statusLine}`
+          }
           className={cn(
             "relative flex shrink-0 items-center transition-colors hover:text-foreground",
             className
@@ -327,6 +388,13 @@ function ChromeItem({ className }: { className?: string }) {
               state === "waiting" && "animate-pulse text-amber-500"
             )}
           />
+          {sitesPaused ? (
+            <span
+              data-sites-paused=""
+              aria-hidden="true"
+              className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-amber-500"
+            />
+          ) : null}
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" align="start" className="w-80 gap-2 p-2.5">
@@ -391,6 +459,32 @@ function ChromeItem({ className }: { className?: string }) {
               : t("agentsHint")}
           </p>
         </div>
+
+        {/* An app that knows nothing of the pause answers without it. */}
+        {typeof sites?.paused === "boolean" ? (
+          <div
+            data-sites-row=""
+            className={cn(
+              "rounded-lg border px-2 py-1.5",
+              sitesPaused && "border-amber-500/50 bg-amber-500/5"
+            )}
+          >
+            <label className="flex items-center justify-between gap-2">
+              <span className="text-2xs font-medium">
+                {t("sitesPauseSwitch")}
+              </span>
+              <Switch
+                checked={!sitesPaused}
+                onCheckedChange={(on) => void switchSites(on)}
+              />
+            </label>
+            {sitesPaused ? (
+              <p className="mt-0.5 text-3xs text-amber-600 dark:text-amber-400">
+                {t("sitesPanelPaused")}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
 
         <ChromeEvalPanelSwitch open={open} />
 

@@ -7,6 +7,7 @@ import type { ChromeSiteEdits, ChromeSites } from "@/lib/browser/chrome-sites"
 const mocks = vi.hoisted(() => ({
   chromeSites: vi.fn(),
   chromeSetSites: vi.fn(),
+  heardSites: null as ((sites: ChromeSites) => void) | null,
   toast: { success: vi.fn(), error: vi.fn() },
 }))
 
@@ -14,6 +15,10 @@ vi.mock("@/lib/browser/chrome-sites", async (original) => ({
   ...(await original<typeof import("@/lib/browser/chrome-sites")>()),
   chromeSites: mocks.chromeSites,
   chromeSetSites: mocks.chromeSetSites,
+  subscribeChromeSites: (handler: (sites: ChromeSites) => void) => {
+    mocks.heardSites = handler
+    return Promise.resolve(() => {})
+  },
 }))
 vi.mock("sonner", () => ({ toast: mocks.toast }))
 
@@ -90,6 +95,7 @@ async function typeAndAdd(text: string) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mocks.heardSites = null
   keepWhatIsSet()
 })
 
@@ -293,6 +299,27 @@ describe("ChromeSitesSettings", () => {
       allowed: ["pay.example-pay.test", "mail.example-mail.test"],
     })
     expect(mocks.chromeSetSites.mock.lastCall?.[0]).not.toHaveProperty("paused")
+  })
+
+  it("follows a change made in another window, such as the Chrome panel", async () => {
+    await renderRow()
+    expect(screen.queryByText(/^Blocking paused/)).toBeNull()
+
+    await act(async () => {
+      mocks.heardSites?.(sites({ paused: true }))
+    })
+    expect(screen.getByText(/^Blocking paused/)).toBeVisible()
+    expect(
+      screen.getByRole("switch", { name: "Block sensitive sites" })
+    ).toHaveAttribute("aria-checked", "false")
+
+    await act(async () => {
+      mocks.heardSites?.(sites({ allowed: ["mail.example-mail.test"] }))
+    })
+    expect(screen.queryByText(/^Blocking paused/)).toBeNull()
+    expect(
+      screen.getByRole("button", { name: "mail.example-mail.test" })
+    ).toHaveAttribute("aria-pressed", "false")
   })
 
   it("keeps the row to a fixed width", async () => {

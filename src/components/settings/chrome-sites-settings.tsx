@@ -16,6 +16,10 @@
  * change is the backend's (it keeps the list and lets go of a tab agents have
  * on a site now kept off); what it answers is what the row shows.
  *
+ * A change made in another window — the switch in the sidebar's Chrome panel
+ * most of all — reaches this row as `browser://chrome-sites`, so an open
+ * settings page never shows a pause that is no longer so.
+ *
  * An older app answers with neither groups nor the pause: its defaults show
  * as one "Default list" group, and there is no pause switch.
  */
@@ -34,6 +38,7 @@ import {
   chromeSetSites,
   chromeSites,
   normalizeSite,
+  subscribeChromeSites,
   type ChromeSiteEdits,
   type ChromeSiteGroup,
   type ChromeSites,
@@ -73,9 +78,23 @@ export function ChromeSitesSettings() {
 
   useEffect(() => {
     let cancelled = false
+    let off: (() => void) | null = null
+    // A change made elsewhere (the sidebar's Chrome panel, another settings
+    // window) comes as an event; it is newer than the answer to a question
+    // asked before it.
+    let heard = false
+    void subscribeChromeSites((next) => {
+      heard = true
+      if (!cancelled) setSites(next)
+    })
+      .then((unsubscribe) => {
+        if (cancelled) unsubscribe()
+        else off = unsubscribe
+      })
+      .catch(() => {})
     chromeSites()
       .then((current) => {
-        if (!cancelled) setSites(current)
+        if (!cancelled && !heard) setSites(current)
       })
       .catch((error) => {
         if (!cancelled) {
@@ -84,6 +103,7 @@ export function ChromeSitesSettings() {
       })
     return () => {
       cancelled = true
+      off?.()
     }
   }, [t])
 

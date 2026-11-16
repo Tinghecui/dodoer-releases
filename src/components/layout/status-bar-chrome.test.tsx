@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+import type { ChromeSiteEdits, ChromeSites } from "@/lib/browser/chrome-sites"
 import type {
   ChromeActivityEntry,
   ChromeStatus,
@@ -32,6 +33,9 @@ const mocks = vi.hoisted(() => ({
   owners: new Map<string, string>(),
   heardStatus: null as ((status: unknown) => void) | null,
   heardTabs: null as ((tabs: unknown) => void) | null,
+  chromeSites: vi.fn(),
+  chromeSetSites: vi.fn(),
+  heardSites: null as ((sites: ChromeSites) => void) | null,
   openSettingsWindow: vi.fn(async () => {}),
   toast: { success: vi.fn(), error: vi.fn() },
 }))
@@ -59,6 +63,14 @@ vi.mock("@/lib/browser/chrome-api", () => ({
   },
   subscribeChromeTabs: (handler: (tabs: unknown) => void) => {
     mocks.heardTabs = handler
+    return Promise.resolve(() => {})
+  },
+}))
+vi.mock("@/lib/browser/chrome-sites", () => ({
+  chromeSites: mocks.chromeSites,
+  chromeSetSites: mocks.chromeSetSites,
+  subscribeChromeSites: (handler: (sites: ChromeSites) => void) => {
+    mocks.heardSites = handler
     return Promise.resolve(() => {})
   },
 }))
@@ -107,6 +119,17 @@ const CONNECTED = status({
   state: "connected",
   product: "Chrome/154.0.8037.98",
 })
+
+function sites(over: Partial<ChromeSites> = {}): ChromeSites {
+  return {
+    defaults: ["mail.example-mail.test"],
+    blocked: ["shop.example.test"],
+    allowed: [],
+    paused: false,
+    groups: [{ id: "mail", sites: ["mail.example-mail.test"] }],
+    ...over,
+  }
+}
 
 const TABS: ChromeTab[] = [
   { id: "1", title: "Inbox", host: "mail.example.com" },
@@ -162,6 +185,124 @@ beforeEach(() => {
   mocks.owners.clear()
   mocks.openSettingsWindow.mockClear()
   mocks.toast.error.mockReset()
+  mocks.heardSites = null
+  mocks.chromeSites.mockReset().mockResolvedValue(sites())
+  mocks.chromeSetSites
+    .mockReset()
+    .mockImplementation(async (edits: ChromeSiteEdits) =>
+      sites({ ...edits, paused: edits.paused ?? false })
+    )
+})
+
+describe("StatusBarChrome and the sensitive sites", () => {
+  const glyph = () => screen.getByRole("button", { name: "Your own Chrome" })
+  const dot = () => glyph().querySelector("[data-sites-paused]")
+
+  it("has no dot while the list is in force", async () => {
+    await mount()
+    expect(dot()).toBeNull()
+    expect(glyph()).toHaveAttribute("title", "Your own Chrome · Not connected")
+  })
+
+  it("marks the glyph while the list is paused, connected or not", async () => {
+    mocks.chromeSites.mockResolvedValue(sites({ paused: true }))
+    await mount()
+    expect(dot()).not.toBeNull()
+    expect(dot()?.getAttribute("class")).toContain("bg-amber-500")
+    expect(glyph()).toHaveAttribute(
+      "title",
+      "Your own Chrome · Not connected · Not blocking sensitive sites"
+    )
+
+    await act(async () => {
+      mocks.heardStatus?.(CONNECTED)
+    })
+    expect(dot()).not.toBeNull()
+    expect(glyph()).toHaveAttribute(
+      "title",
+      "Your own Chrome · Connected to Chrome/154.0.8037.98 · Not blocking sensitive sites"
+    )
+  })
+
+  it("pauses the list from the panel, and turns it back on, never asking", async () => {
+    await mount()
+    await openPanel()
+    const toggle = screen.getByRole("switch", {
+      name: "Block sensitive sites",
+    })
+    expect(toggle).toHaveAttribute("aria-checked", "true")
+    expect(screen.queryByText("Paused: agents can use every site")).toBeNull()
+
+    await act(async () => {
+      fireEvent.click(toggle)
+    })
+    expect(screen.queryByRole("alertdialog")).toBeNull()
+    expect(mocks.chromeSetSites).toHaveBeenCalledTimes(1)
+    expect(mocks.chromeSetSites).toHaveBeenLastCalledWith({
+      blocked: ["shop.example.test"],
+      allowed: [],
+      paused: true,
+    })
+    expect(
+      screen.getByRole("switch", { name: "Block sensitive sites" })
+    ).toHaveAttribute("aria-checked", "false")
+    const notice = screen.getByText("Paused: agents can use every site")
+    expect(notice).toBeVisible()
+    expect(notice.closest("[data-sites-row]")?.className).toContain(
+      "border-amber"
+    )
+    expect(dot()).not.toBeNull()
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("switch", { name: "Block sensitive sites" })
+      )
+    })
+    expect(mocks.chromeSetSites).toHaveBeenLastCalledWith({
+      blocked: ["shop.example.test"],
+      allowed: [],
+      paused: false,
+    })
+    expect(screen.queryByText("Paused: agents can use every site")).toBeNull()
+    expect(dot()).toBeNull()
+  })
+
+  it("follows a pause made on the settings page without being reopened", async () => {
+    await mount()
+    await openPanel()
+    expect(dot()).toBeNull()
+
+    await act(async () => {
+      mocks.heardSites?.(sites({ paused: true }))
+    })
+    expect(dot()).not.toBeNull()
+    expect(
+      screen.getByRole("switch", { name: "Block sensitive sites" })
+    ).toHaveAttribute("aria-checked", "false")
+
+    await act(async () => {
+      mocks.heardSites?.(sites({ paused: false }))
+    })
+    expect(dot()).toBeNull()
+    expect(
+      screen.getByRole("switch", { name: "Block sensitive sites" })
+    ).toHaveAttribute("aria-checked", "true")
+  })
+
+  it("says so when the pause could not be changed", async () => {
+    mocks.chromeSetSites.mockRejectedValue(new Error("disk full"))
+    await mount()
+    await openPanel()
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("switch", { name: "Block sensitive sites" })
+      )
+    })
+    expect(mocks.toast.error).toHaveBeenCalled()
+    expect(
+      screen.getByRole("switch", { name: "Block sensitive sites" })
+    ).toHaveAttribute("aria-checked", "true")
+  })
 })
 
 describe("StatusBarChrome", () => {

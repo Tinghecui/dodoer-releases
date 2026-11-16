@@ -5948,6 +5948,8 @@
     "sitesBlockingLabel": "攔著",
     "sitesPausedLabel": "已暫停",
     "sitesPauseSwitch": "攔著敏感網站",
+    "sitesNotBlocking": "沒在攔敏感網站",
+    "sitesPanelPaused": "已暫停：智能體可以操作所有網站",
     "sitesPausedNotice": "已暫停攔截：智慧體現在可以帶著你的登入狀態操作所有網站，包括下面這些。名單留著，重新打開就恢復。",
     "sitesGroupMail": "郵箱",
     "sitesGroupAccounts": "密碼和帳號",

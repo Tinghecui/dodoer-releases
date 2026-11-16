@@ -5948,6 +5948,8 @@
     "sitesBlockingLabel": "차단 중",
     "sitesPausedLabel": "일시 중지됨",
     "sitesPauseSwitch": "민감한 사이트 차단",
+    "sitesNotBlocking": "민감한 사이트를 차단하지 않는 중",
+    "sitesPanelPaused": "일시 중지됨: 에이전트가 모든 사이트를 사용할 수 있습니다",
     "sitesPausedNotice": "차단 일시 중지됨: 이제 에이전트가 내 로그인 상태로 아래 사이트를 포함한 모든 사이트를 조작할 수 있습니다. 목록은 그대로 유지되며, 다시 켜면 원래대로 돌아갑니다.",
     "sitesGroupMail": "메일",
     "sitesGroupAccounts": "비밀번호와 계정",

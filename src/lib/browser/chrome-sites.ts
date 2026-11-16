@@ -9,6 +9,7 @@
 // reaches these commands.
 
 import { getShellTransport } from "@/lib/transport"
+import type { UnsubscribeFn } from "@/lib/transport/types"
 
 /** Mirrors `ChromeSites` in `src-tauri/src/commands/browser_chrome.rs`. */
 export interface ChromeSites {
@@ -39,6 +40,11 @@ export interface ChromeSiteEdits {
   paused?: boolean
 }
 
+/** Sent to every window of the app after each change of the list or the
+ *  pause, with what `chromeSites()` would answer (`SITES_EVENT` in
+ *  `src-tauri/src/browser/chrome/mod.rs`). */
+export const CHROME_SITES_EVENT = "browser://chrome-sites"
+
 export function chromeSites(): Promise<ChromeSites> {
   return getShellTransport().call<ChromeSites>("browser_chrome_sites")
 }
@@ -52,6 +58,14 @@ export function chromeSetSites(edits: ChromeSiteEdits): Promise<ChromeSites> {
     allowed: edits.allowed,
     ...(edits.paused === undefined ? {} : { paused: edits.paused }),
   })
+}
+
+/** Every change of the list or the pause, whichever window made it: the
+ *  settings page and the sidebar's Chrome panel follow each other this way. */
+export function subscribeChromeSites(
+  handler: (sites: ChromeSites) => void
+): Promise<UnsubscribeFn> {
+  return getShellTransport().subscribe<ChromeSites>(CHROME_SITES_EVENT, handler)
 }
 
 /** Longest a host name can be (RFC 1035). */

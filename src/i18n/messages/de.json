@@ -5948,6 +5948,8 @@
     "sitesBlockingLabel": "Blockiert",
     "sitesPausedLabel": "Pausiert",
     "sitesPauseSwitch": "Sensible Websites blockieren",
+    "sitesNotBlocking": "Sensible Websites werden nicht blockiert",
+    "sitesPanelPaused": "Pausiert: Agenten können jede Website nutzen",
     "sitesPausedNotice": "Blockieren pausiert: Agenten können jetzt jede Website mit deiner Anmeldung bedienen, auch die unten. Die Liste bleibt erhalten; schalte es wieder ein, um sie wiederherzustellen.",
     "sitesGroupMail": "E-Mail",
     "sitesGroupAccounts": "Passwörter und Konten",

@@ -5948,6 +5948,8 @@
     "sitesBlockingLabel": "محظورة",
     "sitesPausedLabel": "متوقف مؤقتًا",
     "sitesPauseSwitch": "حظر المواقع الحساسة",
+    "sitesNotBlocking": "لا يتم حظر المواقع الحساسة",
+    "sitesPanelPaused": "متوقف مؤقتًا: يمكن للوكلاء استخدام كل المواقع",
     "sitesPausedNotice": "الحظر متوقف مؤقتًا: يمكن للوكلاء الآن استخدام كل المواقع بتسجيل دخولك، بما فيها المواقع أدناه. القائمة محفوظة؛ أعد التشغيل لاستعادتها.",
     "sitesGroupMail": "البريد",
     "sitesGroupAccounts": "كلمات المرور والحسابات",

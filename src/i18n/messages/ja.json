@@ -5948,6 +5948,8 @@
     "sitesBlockingLabel": "ブロック中",
     "sitesPausedLabel": "一時停止中",
     "sitesPauseSwitch": "機密サイトをブロック",
+    "sitesNotBlocking": "機密サイトをブロックしていません",
+    "sitesPanelPaused": "一時停止中：エージェントはすべてのサイトを操作できます",
     "sitesPausedNotice": "ブロックを一時停止中：エージェントはあなたのログイン状態で、下のサイトを含むすべてのサイトを操作できます。リストはそのまま残り、オンに戻すと元どおりになります。",
     "sitesGroupMail": "メール",
     "sitesGroupAccounts": "パスワードとアカウント",

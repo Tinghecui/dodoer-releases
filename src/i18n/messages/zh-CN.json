@@ -5948,6 +5948,8 @@
     "sitesBlockingLabel": "拦着",
     "sitesPausedLabel": "已暂停",
     "sitesPauseSwitch": "拦着敏感网站",
+    "sitesNotBlocking": "没在拦敏感网站",
+    "sitesPanelPaused": "已暂停：智能体可以操作所有网站",
     "sitesPausedNotice": "已暂停拦截：智能体现在可以带着你的登录状态操作所有网站，包括下面这些。名单留着，重新打开就恢复。",
     "sitesGroupMail": "邮箱",
     "sitesGroupAccounts": "密码和账号",

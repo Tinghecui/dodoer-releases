@@ -1,0 +1,7 @@
+# Rust 版本钉死：CI（.github/public/workflows/ 下所有装 Rust 的步骤都读这个文件）、本地、执行员用同一个 rustc，
+# 新 stable 出来不会让没改代码的 PR 突然 fmt / clippy 红。1.100.0 = 2026-11-16 公开 CI 最近一次绿的 Test 实际用的版本。
+# 升级：改这里开 PR，PR 上的 Rust fmt / clippy 会把新版本要改的地方报出来（源仓库 .cowork/journal/2026-11-16-pin-rust-toolchain.md）。
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

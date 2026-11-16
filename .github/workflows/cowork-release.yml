@@ -16,6 +16,7 @@ on:
       - "scripts/cowork-package-smoke.sh"
       - "src-tauri/Cargo.toml"
       - "src-tauri/Cargo.lock"
+      - "rust-toolchain.toml"
       - "package.json"
       - "pnpm-lock.yaml"
   workflow_dispatch:
@@ -130,7 +131,17 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL; df -h / | tail -1
           sudo apt-get install -y -qq pkg-config libssl-dev >/dev/null
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust 版本（读 rust-toolchain.toml）
+        id: toolchain
+        shell: bash
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml 2>/dev/null || true)
+          [[ -n "$channel" ]] || { channel=stable; echo "::warning::没读到 rust-toolchain.toml 的 channel（这个提交还没有这个文件？），用 stable"; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: clippy, rustfmt
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"

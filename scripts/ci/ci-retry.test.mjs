@@ -1,29 +1,10 @@
 // node --test scripts/ci/ 跑（公开 CI 的 Workflow lint 那一格）
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import {
-  activeFlaky,
-  decide,
-  failedSteps,
-  failedTests,
-  judgeJob,
-} from "./ci-retry.mjs"
+import { decide, failedSteps, failedTests, judgeJob } from "./ci-retry.mjs"
 
 const ts = (s) => `2026-11-14T15:02:56.5459626Z ${s}`
 const log = (...lines) => lines.map(ts).join("\n")
-const flaky = {
-  tests: [
-    {
-      test: "host_ssh::sshd::tests::the_service_starts",
-      reason: "#231",
-      expires: "2026-12-15",
-    },
-    { test: "old::flaky", reason: "x", expires: "2026-11-01" },
-    { test: "no::reason", expires: "2026-12-31" },
-  ],
-}
-const today = "2026-11-15"
-
 const cargoFail = (name) =>
   log(
     "##[group]Run actions/checkout@v4",
@@ -34,15 +15,6 @@ const cargoFail = (name) =>
     "failures:",
     "##[error]Process completed with exit code 101."
   )
-
-test("名单：没过期、写了原因的才算", () => {
-  const { active, expired } = activeFlaky(flaky, today)
-  assert.deepEqual([...active], ["host_ssh::sshd::tests::the_service_starts"])
-  assert.deepEqual(expired, ["old::flaky"])
-  // 到期当天还算
-  assert.ok(activeFlaky(flaky, "2026-12-15").active.size === 1)
-  assert.ok(activeFlaky(flaky, "2026-12-16").active.size === 0)
-})
 
 test("没过的步骤：每个 exit code 往前到它的 ##[group]Run", () => {
   const { found, steps } = failedSteps(
@@ -79,29 +51,23 @@ test("cargo 和 vitest 的测试名（去掉颜色）", () => {
   )
 })
 
-test("名单里的测试挂了 → 重跑；别的测试挂了 → 不重跑", () => {
-  const { active } = activeFlaky(flaky, today)
-  assert.equal(
-    judgeJob(
-      {
-        name: "Rust server",
-        log: cargoFail("host_ssh::sshd::tests::the_service_starts"),
-      },
-      active
-    ).ok,
-    true
-  )
-  const real = judgeJob(
-    { name: "Rust server", log: cargoFail("acp::real_bug") },
-    active
-  )
+test("测试挂了 → 不重跑（步骤里已经单独重跑过一次了），原因里写是哪条", () => {
+  const real = judgeJob({
+    name: "Rust server",
+    log: cargoFail("host_ssh::sshd::tests::the_service_starts"),
+  })
   assert.equal(real.ok, false)
-  assert.match(real.reason, /acp::real_bug/)
-  // 过期的不算
-  assert.equal(
-    judgeJob({ name: "Rust server", log: cargoFail("old::flaky") }, active).ok,
-    false
-  )
+  assert.match(real.reason, /host_ssh::sshd::tests::the_service_starts 没过/)
+  const build = judgeJob({
+    name: "Rust cli",
+    log: log(
+      "##[group]Run cargo test",
+      "error[E0425]: cannot find value `x` in this scope",
+      "##[error]Process completed with exit code 101."
+    ),
+  })
+  assert.equal(build.ok, false)
+  assert.match(build.reason, /不是测试没过/)
 })
 
 test("没过的那一步里有网络错误 → 重跑；别的步骤里有不算", () => {
@@ -110,10 +76,7 @@ test("没过的那一步里有网络错误 → 重跑；别的步骤里有不算
     " ERR_PNPM_META_FETCH_FAIL  GET https://registry.npmjs.org/x: request to failed, reason: ECONNRESET",
     "##[error]Process completed with exit code 1."
   )
-  assert.equal(
-    judgeJob({ name: "Frontend build", log: net }, new Set()).ok,
-    true
-  )
+  assert.equal(judgeJob({ name: "Frontend build", log: net }).ok, true)
   const elsewhere = log(
     "##[group]Run rust-cache",
     "failed to download cache: ETIMEDOUT",
@@ -121,23 +84,19 @@ test("没过的那一步里有网络错误 → 重跑；别的步骤里有不算
     "error: this could be a `const fn`",
     "##[error]Process completed with exit code 101."
   )
-  assert.equal(
-    judgeJob({ name: "Rust cli", log: elsewhere }, new Set()).ok,
-    false
-  )
+  assert.equal(judgeJob({ name: "Rust cli", log: elsewhere }).ok, false)
 })
 
-test("一个 job 里测试挂在名单上、clippy 又挂了 → 不重跑", () => {
-  const { active } = activeFlaky(flaky, today)
+test("一个 job 里一步是网络错误、另一步是真失败 → 不重跑", () => {
   const both = log(
-    "##[group]Run cargo test",
-    "test host_ssh::sshd::tests::the_service_starts ... FAILED",
-    "##[error]Process completed with exit code 101.",
+    "##[group]Run pnpm install --frozen-lockfile",
+    "ERR_PNPM_FETCH_FAILED",
+    "##[error]Process completed with exit code 1.",
     "##[group]Run cargo clippy",
     "error: lint",
     "##[error]Process completed with exit code 101."
   )
-  assert.equal(judgeJob({ name: "Rust server", log: both }, active).ok, false)
+  assert.equal(judgeJob({ name: "Rust server", log: both }).ok, false)
 })
 
 test('rustfmt 的 diff 里有 "failed to fetch" 不算网络错误，fmt、lint 本来就不重跑', () => {
@@ -146,9 +105,9 @@ test('rustfmt 的 diff 里有 "failed to fetch" 不算网络错误，fmt、lint 
     '-        .map_err(|e| AppCommandError::network(format!("failed to fetch models.dev catalog: {e}")))?;',
     "##[error]Process completed with exit code 1."
   )
-  assert.equal(judgeJob({ name: "Rust fmt", log: fmt }, new Set()).ok, false)
+  assert.equal(judgeJob({ name: "Rust fmt", log: fmt }).ok, false)
   // 别的 job 里的 diff 行也不当输出
-  assert.equal(judgeJob({ name: "Rust server", log: fmt }, new Set()).ok, false)
+  assert.equal(judgeJob({ name: "Rust server", log: fmt }).ok, false)
 })
 
 test("找不到没过的步骤时只认机器出问题", () => {
@@ -156,27 +115,25 @@ test("找不到没过的步骤时只认机器出问题", () => {
     "##[group]Run cargo test",
     "The runner has received a shutdown signal."
   )
-  assert.equal(
-    judgeJob({ name: "Rust desktop", log: lost }, new Set()).ok,
-    true
-  )
+  assert.equal(judgeJob({ name: "Rust desktop", log: lost }).ok, true)
   const timeout = log(
     "##[group]Run cargo test",
     "test a::b has been running for over 60 seconds"
   )
-  assert.equal(
-    judgeJob({ name: "Rust desktop", log: timeout }, new Set()).ok,
-    false
-  )
+  assert.equal(judgeJob({ name: "Rust desktop", log: timeout }).ok, false)
 })
 
 test("整轮：所有没过的 job 都能重跑才重跑", () => {
   const ok = {
-    name: "Rust server",
-    log: cargoFail("host_ssh::sshd::tests::the_service_starts"),
+    name: "Frontend vitest (2/6)",
+    log: log(
+      "##[group]Run pnpm install --frozen-lockfile",
+      "request to https://registry.npmjs.org/x failed, reason: ECONNRESET",
+      "##[error]Process completed with exit code 1."
+    ),
   }
   const bad = { name: "Rust cli", log: cargoFail("cli::real") }
-  assert.equal(decide([ok], flaky, today).retry, true)
-  assert.equal(decide([ok, bad], flaky, today).retry, false)
-  assert.equal(decide([], flaky, today).retry, false)
+  assert.equal(decide([ok]).retry, true)
+  assert.equal(decide([ok, bad]).retry, false)
+  assert.equal(decide([]).retry, false)
 })

@@ -86,8 +86,16 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust 版本（读 rust-toolchain.toml）
+        id: toolchain
+        shell: bash
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml 2>/dev/null || true)
+          [[ -n "$channel" ]] || { channel=stable; echo "::warning::没读到 rust-toolchain.toml 的 channel（这个提交还没有这个文件？），用 stable"; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
           components: clippy, rustfmt
       # 只读 test.yml 那份（main 上存的），不存：执行员的改动不该进别人用的缓存
       - uses: swatinem/rust-cache@v2

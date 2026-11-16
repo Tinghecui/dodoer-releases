@@ -207,9 +207,18 @@ jobs:
           node-version: 24
           cache: "pnpm"
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Rust 版本（读 rust-toolchain.toml）
+        id: toolchain
+        shell: bash
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml 2>/dev/null || true)
+          [[ -n "$channel" ]] || { channel=stable; echo "::warning::没读到 rust-toolchain.toml 的 channel（这个提交还没有这个文件？），用 stable"; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: clippy, rustfmt
           targets: ${{ matrix.target }}
 
       - name: Rust cache
@@ -753,9 +762,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Rust 版本（读 rust-toolchain.toml）
+        id: toolchain
+        shell: bash
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml 2>/dev/null || true)
+          [[ -n "$channel" ]] || { channel=stable; echo "::warning::没读到 rust-toolchain.toml 的 channel（这个提交还没有这个文件？），用 stable"; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: clippy, rustfmt
           targets: ${{ matrix.target }}
 
       - name: Rust cache

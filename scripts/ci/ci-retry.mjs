@@ -2,19 +2,18 @@
 // 公开镜像的 Test 第一次跑挂了时，判断是不是偶发失败，是就把没过的 job 自动重跑一次（只一次）。
 // 公开仓库的 report-status.yml 在 Test 结束、结论是 failure、run_attempt 是 1 时调它；重跑了就把私有提交上的
 // 「公开 CI / Test」报成 pending（不报 failure，product-ci-alert 不开 ci-red issue），第二次还挂才照常报 failure。
-// 思路照 jenny 的 dev-flow（ACanvasHERE/dodoer 的 scripts/dev-flow/checks.md「自动重跑一次」「已知环境失败」），
+// 思路照 jenny 的 dev-flow（ACanvasHERE/dodoer 的 scripts/dev-flow/checks.md「自动重跑一次」），
 // 规则见 COWORK.md「合并：auto-merge 和 product 的 ruleset」。
 //
-// 每个没过的 job 都满足下面之一才重跑，有一个是真失败就不重跑：
-// 1. 没过的那一步的输出命中网络、托管机器出问题的模式（RETRY_PATTERNS）；
-// 2. 没过的测试（cargo 的 `test x ... FAILED`、vitest 的 `FAIL  文件 > 用例`）全在 scripts/ci/flaky-tests.json 里、没过期。
-// 名单只用来「重跑一次」，不跳过测试：重跑还挂就是红的。
+// 每个没过的 job 的每个没过的步骤，输出都命中网络、托管机器出问题的模式（RETRY_PATTERNS）才重跑，有一个是真失败就不重跑。
+// 测试没过不在这里重跑：test.yml 的测试步骤里已经把挂掉的用例单独重跑过一次了（scripts/ci/rerun-failed.mjs），
+// 走到这里说明重跑还挂、或者挂得太多 / 报告不完整，都不是偶发。以前的偶发名单 scripts/ci/flaky-tests.json 2026-11-16 废了
+// （源仓库 .cowork/journal/2026-11-16-ci-in-step-retry.md）。
 //
 //   用法：node scripts/ci/ci-retry.mjs <owner/repo> <run id>     （GH_TOKEN 要能读 Actions 日志、重跑 run）
 //        GITHUB_OUTPUT 有就写 retried=true|false 和 reason=<一句话>
 import { execFileSync } from "node:child_process"
-import { appendFileSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { appendFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
 // 只匹配没过的那一步自己的输出（不看命令文本、别的步骤）
@@ -54,7 +53,7 @@ export function failedSteps(log) {
     : { found: false, steps: [lines] }
 }
 
-/** 没过的测试名：cargo（完整模块路径）和 vitest（「文件 > 用例」） */
+/** 没过的测试名：cargo（完整模块路径）和 vitest（「文件 > 用例」），只用来写原因 */
 export function failedTests(lines) {
   const out = new Set()
   for (const l of lines) {
@@ -68,23 +67,6 @@ export function failedTests(lines) {
   return [...out]
 }
 
-/** 名单里今天还有效的测试名；过期的单列出来（日志里提醒删掉或续期） */
-export function activeFlaky(list, today) {
-  const active = new Set()
-  const expired = []
-  for (const item of list?.tests ?? []) {
-    if (
-      !item?.test ||
-      !item?.reason ||
-      !/^\d{4}-\d\d-\d\d$/.test(item.expires ?? "")
-    )
-      continue
-    if (item.expires >= today) active.add(item.test)
-    else expired.push(item.test)
-  }
-  return { active, expired }
-}
-
 // 这几种 job 没过只会是代码的问题（格式、lint、workflow 语法），不重跑；它们的输出里有源码（rustfmt 的 diff），
 // 源码里的 "failed to fetch" 这类字符串会被当成网络错误（2026-11-15 run 43686608097 的 Rust fmt）
 const NEVER_RETRY = /^(Rust fmt|Frontend lint|Workflow lint|Desktop editions)$/
@@ -92,7 +74,7 @@ const NEVER_RETRY = /^(Rust fmt|Frontend lint|Workflow lint|Desktop editions)$/
 const DIFF_LINE = /^[-+]/
 
 /** 一个没过的步骤：{ ok, reason }（name 是 job 名） */
-function judgeStep(name, lines, found, active) {
+function judgeStep(name, lines, found) {
   const output = lines.filter((l) => !DIFF_LINE.test(l)).join("\n")
   const hit = RETRY_PATTERNS.map((re) => output.match(re)).find(Boolean)
   if (hit) return { ok: true, reason: `${name}：${hit[0]}` }
@@ -100,23 +82,15 @@ function judgeStep(name, lines, found, active) {
   const tests = failedTests(lines)
   if (tests.length === 0)
     return { ok: false, reason: `${name}：不是测试没过（编译、lint 之类）` }
-  const unknown = tests.filter((t) => !active.has(t))
-  if (unknown.length > 0)
-    return {
-      ok: false,
-      reason: `${name}：${unknown.slice(0, 3).join("、")} 没过`,
-    }
-  return { ok: true, reason: `${name}：已知偶发 ${tests.join("、")}` }
+  return { ok: false, reason: `${name}：${tests.slice(0, 3).join("、")} 没过` }
 }
 
 /** 一个没过的 job 能不能重跑：它每个没过的步骤都能重跑才行。{ ok, reason } */
-export function judgeJob(job, active) {
+export function judgeJob(job) {
   if (NEVER_RETRY.test(job.name))
     return { ok: false, reason: `${job.name}：这种检查没过不是偶发` }
   const { found, steps } = failedSteps(job.log ?? "")
-  const verdicts = steps.map((lines) =>
-    judgeStep(job.name, lines, found, active)
-  )
+  const verdicts = steps.map((lines) => judgeStep(job.name, lines, found))
   return (
     verdicts.find((v) => !v.ok) ?? {
       ok: true,
@@ -126,18 +100,15 @@ export function judgeJob(job, active) {
 }
 
 /** 整轮：没过的 job 全都能重跑才重跑 */
-export function decide(jobs, flakyList, today) {
-  const { active, expired } = activeFlaky(flakyList, today)
-  if (jobs.length === 0)
-    return { retry: false, reason: "没找到没过的 job", expired }
-  const verdicts = jobs.map((j) => judgeJob(j, active))
+export function decide(jobs) {
+  if (jobs.length === 0) return { retry: false, reason: "没找到没过的 job" }
+  const verdicts = jobs.map((j) => judgeJob(j))
   const bad = verdicts.find((v) => !v.ok)
-  if (bad) return { retry: false, reason: bad.reason, verdicts, expired }
+  if (bad) return { retry: false, reason: bad.reason, verdicts }
   return {
     retry: true,
     reason: verdicts.map((v) => v.reason).join("；"),
     verdicts,
-    expired,
   }
 }
 
@@ -154,10 +125,6 @@ function main() {
     console.error("用法：node scripts/ci/ci-retry.mjs <owner/repo> <run id>")
     process.exit(2)
   }
-  const root = join(fileURLToPath(import.meta.url), "../../..")
-  const flaky = JSON.parse(
-    readFileSync(join(root, "scripts/ci/flaky-tests.json"), "utf8")
-  )
   const failed = JSON.parse(
     gh([
       "api",
@@ -175,12 +142,7 @@ function main() {
     }
     return { name: j.name, log }
   })
-  const today = new Date().toISOString().slice(0, 10)
-  const d = decide(jobs, flaky, today)
-  for (const t of d.expired)
-    console.log(
-      `::warning::flaky-tests.json 里的 ${t} 过期了，不再算偶发；删掉或续期`
-    )
+  const d = decide(jobs)
   for (const v of d.verdicts ?? [])
     console.log(`${v.ok ? "可重跑" : "真失败"}  ${v.reason}`)
   let retried = false

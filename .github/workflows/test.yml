@@ -79,9 +79,12 @@ jobs:
               - "tsconfig.json"
               - "components.json"
               - ".github/workflows/test.yml"
+              - "scripts/ci/rerun-failed.mjs"
             rust:
               - "src-tauri/**"
+              - "rust-toolchain.toml"
               - ".github/workflows/test.yml"
+              - "scripts/ci/rerun-failed.mjs"
             editions:
               - "src-tauri/**"
               - "scripts/cowork-desktop-build.sh"
@@ -191,7 +194,12 @@ jobs:
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - name: Unit tests (vitest)
-        run: pnpm vitest run --shard=${{ matrix.shard }}/6
+        # 挂掉的用例（最多 3 条、报告完整）所在的文件单独重跑一次，都过了就放行；重跑才过的每条留一个 ::warning 注解、
+        # 写进这一步的 summary（scripts/ci/rerun-failed.mjs；源仓库 .cowork/journal/2026-11-16-ci-in-step-retry.md）
+        run: >-
+          node scripts/ci/rerun-failed.mjs vitest "Frontend vitest (${{ matrix.shard }}/6)"
+          "pnpm vitest run --shard=${{ matrix.shard }}/6"
+          "pnpm vitest run --reporter=verbose"
 
   rust:
     needs: changes
@@ -212,24 +220,34 @@ jobs:
         mode: [server]
         include:
           - mode: desktop
-            # 桌面（`tauri-runtime`，默认 feature）那一侧：只做类型检查（cargo check + clippy，`--tests` 把单元测试也检查了），
-            # 不 `cargo test`：桌面 crate 的测试二进制要 codegen + 链接，太重。`test-utils` 开着是因为没有它 `db::test_helpers` 等不编
+            # 桌面（`tauri-runtime`，默认 feature）那一侧：只做类型检查（clippy，`--tests` 把单元测试也检查了），
+            # 不 `cargo test`：桌面 crate 的测试二进制要 codegen + 链接，太重。`test-utils` 开着是因为没有它 `db::test_helpers` 等不编。
+            # 以前 clippy 前面还有一步参数一模一样的 cargo check：clippy 本来就做完 check 的全部检查，那一步只是把主 crate 多查一遍（2026-11-16 删）
             check_only: true
-            cargo_args: "--features test-utils --lib --tests"
             clippy_args: "--features test-utils --lib --tests"
           - mode: server
             cargo_args: "--no-default-features --features server-bin --bin codeg-server --lib"
             clippy_args: "--no-default-features --features server-bin --bin codeg-server --lib"
           - mode: cli
-            cargo_args: "--no-default-features --features cli-bin --lib cli::"
+            cargo_args: "--no-default-features --features cli-bin --lib"
+            # 只跑 cli:: 下的测试；重跑时不带（拼的是完整的测试名）
+            test_filter: "cli::"
             clippy_args: "--no-default-features --features cli-bin --bin codeg-cli --lib"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Rust 版本（读 rust-toolchain.toml）
+        id: toolchain
+        shell: bash
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml 2>/dev/null || true)
+          [[ -n "$channel" ]] || { channel=stable; echo "::warning::没读到 rust-toolchain.toml 的 channel（这个提交还没有这个文件？），用 stable"; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
         with:
-          components: clippy
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: clippy, rustfmt
 
       - name: Rust cache
         # 只缓存依赖；慢的是 codeg_lib 这一个大 crate，每个 PR 都改它，每次重编
@@ -261,10 +279,11 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h / | tail -1; free -h | sed -n '2p'
 
-      - name: cargo check
-        if: matrix.check_only
-        working-directory: src-tauri
-        run: cargo check ${{ matrix.cargo_args }}
+      - uses: actions/setup-node@v4
+        # cargo test 经 scripts/ci/rerun-failed.mjs 跑
+        if: ${{ !matrix.check_only }}
+        with:
+          node-version: 24
 
       - name: sshd（host_ssh 的测试要起真的）
         # `host_ssh` 的测试用普通账号起系统的 sshd（只听 127.0.0.1、临时密钥），托管机器上不一定装了 openssh-server。
@@ -278,7 +297,12 @@ jobs:
         working-directory: src-tauri
         env:
           CODEG_HOST_SSH_TEST_STRICT: ${{ matrix.mode == 'server' && '1' || '' }}
-        run: cargo test ${{ matrix.cargo_args }}
+        # 挂掉的测试（最多 3 条、每个没过的测试程序都报完了）用 --exact 单独重跑一次，都过了就放行，记录和 vitest 一样
+        # （scripts/ci/rerun-failed.mjs）。--no-fail-fast：不然第一个挂了的测试程序后面的都没跑，只重跑挂掉的几条会漏测
+        run: >-
+          node ../scripts/ci/rerun-failed.mjs libtest "Rust ${{ matrix.mode }}"
+          "cargo test ${{ matrix.cargo_args }} --no-fail-fast ${{ matrix.test_filter }}"
+          "cargo test ${{ matrix.cargo_args }} --no-fail-fast -- --exact"
 
       - name: cargo clippy
         # 测试没过也照样跑：不然这一轮只报测试，修好了下一轮才报 clippy，多来回一次（#223 就是这样）
@@ -321,10 +345,18 @@ jobs:
         with:
           # 要往回找 PR 从 main 分出来的地方（或 main 上一次通过的提交）
           fetch-depth: 0
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Rust 版本（读 rust-toolchain.toml）
+        id: toolchain
+        shell: bash
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml 2>/dev/null || true)
+          [[ -n "$channel" ]] || { channel=stable; echo "::warning::没读到 rust-toolchain.toml 的 channel（这个提交还没有这个文件？），用 stable"; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
         with:
-          components: rustfmt
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: clippy, rustfmt
       - name: 这次改了的行格式对不对
         id: fmt
         env:
@@ -358,10 +390,18 @@ jobs:
       CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Rust 版本（读 rust-toolchain.toml）
+        id: toolchain
+        shell: bash
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml 2>/dev/null || true)
+          [[ -n "$channel" ]] || { channel=stable; echo "::warning::没读到 rust-toolchain.toml 的 channel（这个提交还没有这个文件？），用 stable"; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
         with:
-          components: clippy
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: clippy, rustfmt
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:

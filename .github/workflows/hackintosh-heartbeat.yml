@@ -1,7 +1,12 @@
-# 黑苹果自托管 runner（标签 hackintosh）的心跳：每 10 分钟在它上面跑一次空任务。desktop-macos.yml 看最近一次成功的时间
+# 黑苹果自托管 runner（标签 hackintosh）的心跳：每 10 分钟在它上面跑一次小任务。desktop-macos.yml 看最近一次成功的时间
 # 判断它在不在线（45 分钟内算在线），不在线就全在 GitHub 托管机器上编。
 # 黑苹果离线时这里的 run 会排着；同一组新排的会把旧的顶掉，最多积一个。GitHub 的定时任务常被压着（几个小时才跑一次），
 # 所以另有机器每 10 分钟用 workflow_dispatch 派一次，下面的 schedule 只是备用；3 个 runner 都忙时心跳也要排队，阈值放宽到 45 分钟。
+#
+# 顺便给状态页（hackintosh-status-pages.yml，2026-11-16 起）记数：beat 在黑苹果上采负载、内存、磁盘，host 记下来；
+# queue 在 GitHub 机器上记这一刻 3 个 runner 各在跑什么、几个活在排队（不等 beat：runner 都忙时 beat 排着，
+# 这份快照照样能说明机器在线）。都记在本仓库的 hackintosh-status 分支（scripts/hackintosh-status-record.sh）。
+# host、queue 记失败不算心跳失败（continue-on-error），在线判断只看 beat。
 name: hackintosh-heartbeat
 
 on:
@@ -21,7 +26,88 @@ jobs:
     name: 心跳
     runs-on: [self-hosted, hackintosh]
     timeout-minutes: 5
+    outputs:
+      metrics: ${{ steps.metrics.outputs.metrics }}
     steps:
-      - run: |
+      # 机器上是 macOS 自带的 bash 3.2 和 /usr/bin/jq；都是不用 sudo 的命令。采不到的项记 null，不让心跳失败
+      - id: metrics
+        run: |
           echo "黑苹果在线：$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           df -h / | tail -1
+          num() { case "$1" in ''|*[!0-9.]*) echo null ;; *) echo "$1" ;; esac; }
+          load=$(sysctl -n vm.loadavg | tr -d '{}')
+          # 第二次采样才是这一秒的（第一次是开机以来的平均）
+          idle=$(top -l 2 -n 0 -s 1 | awk '/CPU usage/ {v=$7} END {sub("%", "", v); print v}')
+          mem_used=$(vm_stat | awk '/page size of/ {ps=$8} /^Pages active/ {a=$3+0} /^Pages wired down/ {w=$4+0}
+                                    /occupied by compressor/ {c=$5+0} END {printf "%d", (a+w+c)*ps}')
+          mem_free_pct=$(memory_pressure -Q 2>/dev/null | awk -F': ' '/free percentage/ {sub("%", "", $2); print $2}')
+          read -r disk_total disk_free <<<"$(df -k /System/Volumes/Data | awk 'END {print $2*1024, $4*1024}')"
+          swap_used=$(sysctl -n vm.swapusage | awk '{v=$6; m=1; if (v ~ /G$/) m=1024; sub(/[MG]$/, "", v); printf "%d", v*m*1048576}')
+          boot=$(sysctl -n kern.boottime | sed -E 's/^\{ sec = ([0-9]+),.*/\1/')
+          # 每个在干活的 runner 有一个 Runner.Worker，减掉心跳自己这个
+          workers=$(( $(pgrep -f Runner.Worker | wc -l) - 1 ))
+          metrics=$(jq -cn --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg load "$load" \
+            --argjson cpus "$(num "$(sysctl -n hw.ncpu)")" --argjson idle "$(num "$idle")" \
+            --argjson mem_total "$(num "$(sysctl -n hw.memsize)")" --argjson mem_used "$(num "$mem_used")" \
+            --argjson mem_free_pct "$(num "$mem_free_pct")" --argjson swap_used "$(num "$swap_used")" \
+            --argjson disk_total "$(num "$disk_total")" --argjson disk_free "$(num "$disk_free")" \
+            --argjson boot "$(num "$boot")" --argjson busy "$(num "$workers")" \
+            '{t: $t, load: ($load | split(" ") | map(select(. != "") | tonumber)), cpus: $cpus,
+              cpu: (if $idle == null then null else ((100 - $idle) * 10 | round / 10) end),
+              mem_total: $mem_total, mem_used: $mem_used, mem_free_pct: $mem_free_pct, swap_used: $swap_used,
+              disk_total: $disk_total, disk_free: $disk_free, boot: $boot, busy: $busy}') || metrics=""
+          echo "$metrics"
+          echo "metrics=$metrics" >> "$GITHUB_OUTPUT"
+
+  host:
+    name: 记负载
+    needs: beat
+    if: needs.beat.outputs.metrics != ''
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/hackintosh-status-record.sh
+          sparse-checkout-cone-mode: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          LINE: ${{ needs.beat.outputs.metrics }}
+        run: bash scripts/hackintosh-status-record.sh host "$LINE"
+
+  queue:
+    name: 记 runner 和排队
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/hackintosh-status-record.sh
+          sparse-checkout-cone-mode: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 这一刻在跑、在排队的 run 里，要 hackintosh 标签的 job（不算这次心跳自己）
+          jobs=$(for s in in_progress queued; do
+                   gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=$s&per_page=50" \
+                     -q '.workflow_runs[] | "\(.id)\t\(.name)"'
+                 done | sort -u | while IFS=$'\t' read -r id wf; do
+                   [[ "$id" == "$GITHUB_RUN_ID" ]] && continue
+                   gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?per_page=100" \
+                     | jq -c --arg wf "$wf" --argjson run "$id" '.jobs[] | select(.labels | index("hackintosh"))
+                         | select(.status != "completed")
+                         | {wf: $wf, run: $run, job: .name, status: .status, runner: .runner_name, started: .started_at}'
+                 done | jq -cs .)
+          line=$(jq -cn --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson jobs "$jobs" \
+            '{t: $t, running: [$jobs[] | select(.status == "in_progress")],
+              queued: [$jobs[] | select(.status != "in_progress")]}')
+          echo "$line"
+          bash scripts/hackintosh-status-record.sh queue "$line"

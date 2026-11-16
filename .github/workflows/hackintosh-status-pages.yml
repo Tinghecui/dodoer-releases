@@ -1,0 +1,41 @@
+# 黑苹果编译机的状态页：把 .github/public/status-page/ 发到本仓库的 GitHub Pages（https://<owner>.github.io/<repo>/）。
+# 页面是静态的，数据在浏览器里从 hackintosh-status 分支（hackintosh-heartbeat.yml 每 10 分钟记）和 GitHub 公开 API 读，
+# 所以只有页面本身改了才要重新发。Pages 的来源设成「GitHub Actions」（仓库 Settings → Pages），2026-11-16 用 API 开的。
+name: hackintosh-status-pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/public/status-page/**
+      - .github/workflows/hackintosh-status-pages.yml
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 发状态页
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/public/status-page
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .github/public/status-page
+      - id: deploy
+        uses: actions/deploy-pages@v4

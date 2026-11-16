@@ -53,6 +53,22 @@ pub const POLLED_COMMANDS: &[(&str, f32)] = &[
     ("get_system_resources", 0.01),
     ("list_host_devices", 0.01),
     ("health", 0.01),
+    // Every 10 s per open conversation (`CONVERSATION_DEVICE_POLL_MS`).
+    ("get_conversation_device", 0.01),
+    // The sidebar's pull-request marks, every 20 s (`pr-status-poller.tsx`).
+    ("folder_pr_statuses", 0.01),
+    ("conversation_pr_statuses", 0.01),
+    // Panels and dialogs that re-read while they are shown.
+    ("get_jenny_progress", 0.01),
+    ("get_loop_conversation", 0.01),
+    ("get_loop_session_page", 0.01),
+    ("get_conversation", 0.01),
+    ("read_workbench_app_log", 0.01),
+    ("git_list_conflicts", 0.01),
+    ("forge_auto_status", 0.01),
+    ("renew_office_watch", 0.01),
+    ("codex_poll_device_code", 0.01),
+    ("weixin_check_qrcode", 0.01),
 ];
 
 /// Modules whose INFO lines also go to Sentry as logs (WARN and ERROR go from
@@ -585,6 +601,31 @@ mod tests {
         assert_eq!(command_sample_rate("acp_touch_connection", 1.0), 0.01);
         assert_eq!(command_sample_rate("acp_touch_connection", 0.0), 0.0);
         assert_eq!(command_sample_rate("acp_prompt", 0.5), 0.5);
+    }
+
+    #[test]
+    fn timer_polls_of_the_web_ui_are_listed() {
+        // Three of the four that filled the relay's general budget.
+        for command in [
+            "get_conversation_device",
+            "folder_pr_statuses",
+            "conversation_pr_statuses",
+        ] {
+            assert_eq!(command_sample_rate(command, 1.0), 0.01, "{command}");
+        }
+        // The fourth is read when a person opens a conversation, not on a
+        // timer: it stays fully sampled.
+        assert_eq!(command_sample_rate("get_folder_conversation", 1.0), 1.0);
+        assert_eq!(command_sample_rate("save_opened_tabs", 1.0), 1.0);
+    }
+
+    #[test]
+    fn polled_command_names_are_unique() {
+        let mut names: Vec<&str> = POLLED_COMMANDS.iter().map(|(n, _)| *n).collect();
+        names.sort_unstable();
+        let total = names.len();
+        names.dedup();
+        assert_eq!(names.len(), total);
     }
 
     #[test]

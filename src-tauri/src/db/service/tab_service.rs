@@ -1,4 +1,5 @@
 use chrono::Utc;
+use sea_orm::sea_query::Expr;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseConnection,
     EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
@@ -6,7 +7,7 @@ use sea_orm::{
 use std::sync::OnceLock;
 use tokio::sync::Mutex;
 
-use crate::db::entities::opened_tab;
+use crate::db::entities::{app_metadata, opened_tab};
 use crate::db::error::DbError;
 use crate::db::service::app_metadata_service;
 use crate::models::agent::AgentType;
@@ -38,6 +39,36 @@ pub struct CasOutcome {
     pub version: i64,
     /// Canonical persisted tab set after the call.
     pub tabs: Vec<OpenedTab>,
+}
+
+/// The opening statement of every version-mutating tab transaction.
+///
+/// SeaORM opens SQLite transactions with a plain (deferred) `BEGIN`, so a
+/// transaction that reads first (the CAS reads the version) holds a read
+/// snapshot and only asks for the write lock at its first write. If another
+/// pooled connection is writing at that moment (an agent's transcript, a
+/// canvas move — [`version_lock`] only orders tab writers), SQLite answers
+/// `SQLITE_BUSY` (5) at once: `busy_timeout` is not consulted for a
+/// transaction that already holds a read snapshot, because waiting could
+/// deadlock. One that does get the lock after another commit fails with
+/// `SQLITE_BUSY_SNAPSHOT` (517) instead. Both reach the client as "database is
+/// locked" (`save_opened_tabs` → 500). Same hazard and same rule as
+/// `canvas_service::claim_writer`: write first, so the lock is taken before any
+/// snapshot exists and an ordinary busy writer is waited out.
+///
+/// Touching the version row leaves its value alone; a missing row (a database
+/// whose tabs were never saved) is created as "0", which is what
+/// [`get_tabs_version`] already reads it as.
+async fn claim_writer<C: ConnectionTrait>(conn: &C) -> Result<(), DbError> {
+    let touched = app_metadata::Entity::update_many()
+        .col_expr(app_metadata::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(app_metadata::Column::Key.eq(OPENED_TABS_VERSION_KEY))
+        .exec(conn)
+        .await?;
+    if touched.rows_affected == 0 {
+        app_metadata_service::upsert_value(conn, OPENED_TABS_VERSION_KEY, "0").await?;
+    }
+    Ok(())
 }
 
 fn parse_agent_type(s: &str) -> Option<AgentType> {
@@ -143,7 +174,8 @@ pub async fn save_all_tabs<C: ConnectionTrait>(
 /// version, then bumps it. A stale save (built from an older version because
 /// another client committed first) is rejected without touching the table — the
 /// caller is handed the current truth (`accepted: false`) to reconcile against.
-/// The read-check-write runs in a single transaction so it is atomic.
+/// The read-check-write runs in a single transaction so it is atomic; it
+/// claims the write lock before the read (see [`claim_writer`]).
 pub async fn save_all_tabs_cas(
     conn: &DatabaseConnection,
     items: Vec<OpenedTab>,
@@ -151,11 +183,13 @@ pub async fn save_all_tabs_cas(
 ) -> Result<CasOutcome, DbError> {
     let _guard = version_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
 
     let current = get_tabs_version(&txn).await?;
     if current != expected_version {
         let tabs = list_all_tabs(&txn).await?;
-        txn.commit().await?;
+        // Nothing to keep: the claim was the only write.
+        txn.rollback().await?;
         return Ok(CasOutcome {
             accepted: false,
             version: current,
@@ -208,6 +242,9 @@ async fn mutate_tabs_and_bump(
 ) -> Result<TabInvalidation, DbError> {
     let _guard = version_lock().lock().await;
     let txn = conn.begin().await?;
+    // The deletes open with a write anyway, but a retarget of no ids would
+    // read the version first.
+    claim_writer(&txn).await?;
     let changed = match mutation {
         TabMutation::DeleteConversation(conversation_id) => {
             opened_tab::Entity::delete_many()
@@ -335,4 +372,138 @@ pub async fn retarget_conversation_tabs_and_bump(
     conversation_ids: &[i32],
 ) -> Result<TabInvalidation, DbError> {
     mutate_tabs_and_bump(conn, TabMutation::RetargetConversations(conversation_ids)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_helpers::{fresh_disk_db, seed_conversation, seed_folder};
+    use std::time::Duration;
+
+    fn tab(folder_id: i32, conversation_id: i32, position: i32) -> OpenedTab {
+        OpenedTab {
+            id: 0,
+            folder_id,
+            conversation_id: Some(conversation_id),
+            agent_type: AgentType::ClaudeCode,
+            position,
+            is_active: position == 0,
+            is_pinned: false,
+        }
+    }
+
+    /// Another connection holds the write lock while a save starts (an agent's
+    /// transcript write, say). The save must wait for it, not fail with
+    /// "database is locked": a save that read the version before asking for
+    /// the lock got `SQLITE_BUSY` at once (`save_opened_tabs` → 500).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cas_save_waits_out_another_writer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = fresh_disk_db(dir.path()).await;
+        let folder_id = seed_folder(&db, "/tmp/tabs-lock-wait").await;
+        let conversation_id = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+
+        let other = db.conn.begin().await.expect("begin other writer");
+        app_metadata_service::upsert_value(&other, "tabs_lock_test_other", "held")
+            .await
+            .expect("other writer takes the lock");
+
+        let conn = db.conn.clone();
+        let items = vec![tab(folder_id, conversation_id, 0)];
+        let save = tokio::spawn(async move { save_all_tabs_cas(&conn, items, 0).await });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!save.is_finished(), "the save waits for the lock");
+        other.commit().await.expect("other writer commits");
+
+        let outcome = save.await.expect("join").expect("no lock error");
+        assert!(outcome.accepted);
+        assert_eq!(outcome.version, 1);
+        assert_eq!(outcome.tabs.len(), 1);
+        assert_eq!(get_tabs_version(&db.conn).await.unwrap(), 1);
+    }
+
+    /// Saves racing a stream of unrelated writes on other connections all
+    /// land, and the version counts each of them once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cas_saves_beside_concurrent_writes_never_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = fresh_disk_db(dir.path()).await;
+        let folder_id = seed_folder(&db, "/tmp/tabs-lock-race").await;
+        let conversation_id = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+
+        let writers: Vec<_> = (0..3)
+            .map(|n| {
+                let conn = db.conn.clone();
+                tokio::spawn(async move {
+                    for i in 0..20 {
+                        let txn = conn.begin().await?;
+                        let key = format!("tabs_lock_test_{n}");
+                        app_metadata_service::upsert_value(&txn, &key, &i.to_string()).await?;
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                        txn.commit().await?;
+                    }
+                    Ok::<(), DbError>(())
+                })
+            })
+            .collect();
+
+        for version in 0..20 {
+            let items = vec![tab(folder_id, conversation_id, 0)];
+            let outcome = save_all_tabs_cas(&db.conn, items, version)
+                .await
+                .expect("no lock error");
+            assert!(outcome.accepted);
+            assert_eq!(outcome.version, version + 1);
+        }
+        for writer in writers {
+            writer.await.expect("join").expect("writer");
+        }
+        assert_eq!(get_tabs_version(&db.conn).await.unwrap(), 20);
+    }
+
+    /// The claim changes nothing a rejected save would show: the version and
+    /// the rows stay as they were.
+    #[tokio::test]
+    async fn stale_cas_save_is_rejected_and_writes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = fresh_disk_db(dir.path()).await;
+        let folder_id = seed_folder(&db, "/tmp/tabs-lock-stale").await;
+        let first = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+        let second = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+
+        let saved = save_all_tabs_cas(&db.conn, vec![tab(folder_id, first, 0)], 0)
+            .await
+            .unwrap();
+        assert!(saved.accepted);
+
+        let stale = save_all_tabs_cas(&db.conn, vec![tab(folder_id, second, 0)], 0)
+            .await
+            .unwrap();
+        assert!(!stale.accepted);
+        assert_eq!(stale.version, 1);
+        assert_eq!(stale.tabs.len(), 1);
+        assert_eq!(stale.tabs[0].conversation_id, Some(first));
+        assert_eq!(get_tabs_version(&db.conn).await.unwrap(), 1);
+        let rows = list_all_tabs(&db.conn).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].conversation_id, Some(first));
+    }
+
+    /// A fresh database has no version row; the claim creates it as "0", so a
+    /// rejected first save still reads version 0.
+    #[tokio::test]
+    async fn claim_on_a_fresh_database_keeps_version_zero() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = fresh_disk_db(dir.path()).await;
+        let folder_id = seed_folder(&db, "/tmp/tabs-lock-fresh").await;
+        let conversation_id = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+
+        let stale = save_all_tabs_cas(&db.conn, vec![tab(folder_id, conversation_id, 0)], 3)
+            .await
+            .unwrap();
+        assert!(!stale.accepted);
+        assert_eq!(stale.version, 0);
+        assert!(stale.tabs.is_empty());
+        assert_eq!(get_tabs_version(&db.conn).await.unwrap(), 0);
+    }
 }

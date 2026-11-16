@@ -148,7 +148,11 @@ pub fn client_config() -> Option<ClientTelemetry>;
 
 - 每个请求建一个 Sentry 事务，名字是 `POST /api/<命令>`；请求头里有 `sentry-trace` 就续上那条追踪和它的抽样决定，没有（手机 App、codeg-cli、agent 的 MCP 调用）就按自己的抽样率。标签带上现有的 `request_id`，Sentry 里的一条记录能回到日志文件里的同一个请求。
 - 每个请求绑一个独立的 hub，并发请求的标签互不污染。
-- 轮询接口（第 4 节那三个，加 `get_system_resources`、`health`）按 1% 抽样；`telemetry_envelope` 自己不追踪。名单放在一个 JSON 文件里，Rust 和前端各自读它，保证两边一致。
+- 轮询接口按 1% 抽样；`telemetry_envelope` 自己不追踪。名单只在 Rust 里（`config::POLLED_COMMANDS`），经 `cowork_info` 发给前端，两边一致（见第 10 节「轮询名单不放共享的 JSON 文件」）。名单里是网页端定时重发的命令：
+  - 一直在跑的：第 4 节那三个，加 `get_system_resources`、`list_host_devices`、`health`、`get_conversation_device`（每个打开的对话 10 秒一次）、`folder_pr_statuses` / `conversation_pr_statuses`（侧栏 PR 标记，20 秒一次）；
+  - 面板、对话框开着时才跑的：`get_jenny_progress`、`get_loop_conversation`、`get_loop_session_page`、`get_conversation`（子 agent 对话框）、`read_workbench_app_log`、`git_list_conflicts`、`forge_auto_status`、`renew_office_watch`、`codex_poll_device_code`、`weixin_check_qrcode`。
+  - 用户打开对话时读的 `get_folder_conversation` 不在名单里（回合结束后的几次补读也是有限次的退避，不是定时轮询）。2026-11-16 前 `get_conversation_device` 和两个 PR 状态接口按 1.0 全采，8 小时里占了网页事务的大头，把转发的普通额度（每分钟 60 个信封）打满，同一时段的网页报错被浏览器限速丢掉。
+  - 新加定时轮询的命令时，把它加进名单。
 - 响应是 5xx：上报一条错误，按「命令 + 错误码」归类，消息过脱敏。#201 那种「日志里没有 ERROR、但接口回了 500」的情况就不会再漏。
 - 响应是 501（接口不存在）：记一条日志，带命令名和前后端版本。新旧版本交接时的不匹配就能数出来。
 

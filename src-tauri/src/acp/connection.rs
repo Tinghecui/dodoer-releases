@@ -15802,6 +15802,19 @@ async fn run_conversation_loop(
                                     inj.broker.cancel_by_parent_turn(conn_id).await;
                                 }
                             }
+                            // Cowork 加的：适配器说这个会话接不下去了（底下的 CLI
+                            // 被杀了，见 `session_failure_ends_session`），连接就跟着
+                            // 结束：发 `Disconnected`，后台任务留下 agent_exited 的
+                            // 「?」，而不是一直挂着沙漏等一个没人推进的任务。
+                            if terminal_failure
+                                .as_ref()
+                                .is_some_and(session_failure_ends_session)
+                            {
+                                tracing::info!(
+                                    "[ACP] agent reported its session lost; closing connection_id={conn_id}"
+                                );
+                                disconnect_requested = true;
+                            }
                             break;
                         }
                         _ = terminal_poll_interval.tick(), if !tracked_terminal_tool_calls.is_empty() => {
@@ -20020,6 +20033,19 @@ fn response_session_failure(
         );
     }
     record
+}
+
+/// Cowork 加的：回合收尾的 AIR 失败记录是不是在说「这个会话在这条连接上接不下去了」。
+///
+/// 只认三样都对上的：`severity` 是 `error`、`category` 是 `connection`、`actions` 里有
+/// `new_session`。claude-agent-acp 在底下的 Claude CLI 没了（被杀、崩了）时就这样收尾：
+/// 「The connection to Claude was lost.」，建议开新会话。适配器进程还活着，所以连接本身
+/// 不会断，后台计数一直挂着，侧栏就一直是沙漏。网络重试中的 `warning`、只建议 `retry`
+/// 的失败、额度和请求类的错误都不算：下一条消息还能在这条连接上接着走。
+fn session_failure_ends_session(record: &SessionFailureRecord) -> bool {
+    record.severity == "error"
+        && record.category == "connection"
+        && record.actions.iter().any(|a| a == "new_session")
 }
 
 /// Strict SemVer floor check: true when `version >= min` by SemVer
@@ -52162,6 +52188,175 @@ mod tests {
             .await;
             assert_eq!(raw_output.as_deref(), Some(text), "{agent_type:?} {status}");
         }
+    }
+
+    fn air_failure(category: &str, severity: &str, actions: &[&str]) -> SessionFailureRecord {
+        SessionFailureRecord {
+            id: "p1:error".into(),
+            revision: 1,
+            category: category.into(),
+            severity: severity.into(),
+            title: "The connection to Claude was lost.".into(),
+            details: None,
+            actions: actions.iter().map(|a| a.to_string()).collect(),
+            resolved: false,
+        }
+    }
+
+    #[test]
+    fn only_a_lost_session_failure_ends_the_session() {
+        // claude-agent-acp 底下的 CLI 没了时的收尾记录。
+        assert!(session_failure_ends_session(&air_failure(
+            "connection",
+            "error",
+            &["new_session"]
+        )));
+        // 还在重试、只建议重试、别的类别：连接留着。
+        assert!(!session_failure_ends_session(&air_failure(
+            "connection",
+            "warning",
+            &["new_session"]
+        )));
+        assert!(!session_failure_ends_session(&air_failure(
+            "connection",
+            "error",
+            &["retry"]
+        )));
+        assert!(!session_failure_ends_session(&air_failure(
+            "limit",
+            "error",
+            &["new_session"]
+        )));
+    }
+
+    /// 回合以 claude「The connection to Claude was lost.」（connection 类、建议
+    /// new_session 的 AIR 失败）收尾，而且还挂着一个后台任务：对话循环自己结束
+    /// （`Ok(None)`，`run_connection` 接着发 `Disconnected`），不再干等下一条命令。
+    /// 只建议 retry 的失败，循环照旧留着。
+    #[tokio::test]
+    async fn a_lost_session_failure_ends_the_conversation_loop() {
+        use agent_client_protocol::schema::v1::PromptResponse;
+
+        async fn run(actions: &'static [&'static str]) -> Option<bool> {
+            let (client_end, agent_end) = agent_client_protocol::Channel::duplex();
+            let agent = tokio::spawn(async move {
+                let _ = Agent
+                    .builder()
+                    .on_receive_request(
+                        async |_req: NewSessionRequest,
+                               responder: Responder<NewSessionResponse>,
+                               _cx: ConnectionTo<Client>| {
+                            responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+                        },
+                        on_receive_request!(),
+                    )
+                    .on_receive_request(
+                        async move |_req: PromptRequest,
+                                    responder: Responder<PromptResponse>,
+                                    _cx: ConnectionTo<Client>| {
+                            let meta = meta_map(serde_json::json!({"jetbrains": {"air": {
+                                "version": 1,
+                                "sessionFailure": {
+                                    "id": "p1:error",
+                                    "revision": 6,
+                                    "category": "connection",
+                                    "severity": "error",
+                                    "title": "The connection to Claude was lost.",
+                                    "actions": actions,
+                                },
+                            }}}));
+                            responder.respond(PromptResponse::new(StopReason::EndTurn).meta(meta))
+                        },
+                        on_receive_request!(),
+                    )
+                    .connect_with(agent_end, async |_cx: ConnectionTo<Client>| {
+                        std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                    })
+                    .await;
+            });
+
+            let state = Arc::new(RwLock::new(SessionState::new(
+                "conn-lost".to_string(),
+                AgentType::ClaudeCode,
+                None,
+                "win".to_string(),
+                None,
+            )));
+            // 断开前还在等的那个后台任务。
+            state.write().await.background_outstanding = 1;
+            let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+            let loop_state = Arc::clone(&state);
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel::<bool>();
+            let client = tokio::spawn(async move {
+                let _ = Client
+                    .builder()
+                    .connect_with(client_end, async move |cx: ConnectionTo<Agent>| {
+                        let raw = cx
+                            .send_request_to(
+                                Agent,
+                                UntypedMessage::new("session/new", NewSessionRequest::new("/tmp"))?,
+                            )
+                            .block_task()
+                            .await?;
+                        let response: NewSessionResponse = serde_json::from_value(raw)
+                            .map_err(agent_client_protocol::Error::into_internal_error)?;
+                        let mut session = AgentSession::attach(&cx, response)?;
+                        let perms = PendingPermissions::default();
+                        let ledger = background_watch::PromptLedger::shared();
+                        let stderr_tail = Arc::new(StderrTail::new());
+                        let result = run_conversation_loop(
+                            &mut session,
+                            "conn-lost",
+                            &EventEmitter::Noop,
+                            &loop_state,
+                            AgentType::ClaudeCode,
+                            &perms,
+                            &mut cmd_rx,
+                            Arc::new(TerminalRuntime::with_base_env(BTreeMap::new())),
+                            "/tmp",
+                            false,
+                            &[],
+                            &ledger,
+                            None,
+                            &stderr_tail,
+                        )
+                        .await;
+                        let _ = done_tx.send(matches!(result, Ok(None)));
+                        Ok(())
+                    })
+                    .await;
+            });
+
+            state.write().await.turn_in_flight = true;
+            cmd_tx
+                .send(ConnectionCommand::Prompt {
+                    blocks: vec![PromptInputBlock::Text {
+                        text: "kill".into(),
+                    }],
+                    user_message: None,
+                    internal_suffix: Vec::new(),
+                })
+                .await
+                .expect("the loop is running");
+            let ended = tokio::time::timeout(std::time::Duration::from_secs(5), done_rx)
+                .await
+                .ok()
+                .map(|r| r.expect("the loop reports how it ended"));
+            client.abort();
+            agent.abort();
+            ended
+        }
+
+        assert_eq!(
+            run(&["new_session"]).await,
+            Some(true),
+            "a lost session must end the loop cleanly, not wait for the next command"
+        );
+        assert_eq!(
+            run(&["retry"]).await,
+            None,
+            "a retryable failure keeps the connection"
+        );
     }
 }
 

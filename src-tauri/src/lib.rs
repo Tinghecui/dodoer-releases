@@ -219,6 +219,12 @@ mod tauri_app {
             services.stop();
         }
         if let Some(cm) = app.try_state::<ConnectionManager>() {
+            // 断开之前：本进程还在跑的回合先标成被打断，断开时的 CAS 就不会把它写成普通的「已取消」。
+            if let Some(db) = app.try_state::<db::AppDatabase>() {
+                tauri::async_runtime::block_on(
+                    crate::commands::conversations::interrupt_running_turns_core(&db.conn, &cm),
+                );
+            }
             tauri::async_runtime::block_on(cm.disconnect_all());
         }
         // The SSH service lent to remote workspaces (`host_ssh`).
@@ -972,6 +978,10 @@ mod tauri_app {
                 // other runtime of this data directory, never with a private
                 // `codeg-cli --standalone` server that has it alone. The
                 // window does not wait for that one: it says so and leaves.
+                // 拿自己的锁之前探：没有别的进程用这个数据目录时，启动后把上次留下的
+                // `in_progress` 标成被打断（拿了锁以后再探，自己的锁也会算进去）。
+                let scan_stranded_turns =
+                    crate::runtime_lock::no_other_runtime(&effective_data_dir);
                 let refused = match crate::runtime_lock::try_shared(&effective_data_dir) {
                     Ok(Some(lock)) => {
                         app.manage(HeldRuntimeLock(lock));
@@ -1014,6 +1024,13 @@ mod tauri_app {
                 ))
                 .map_err(|e| e.to_string())?;
                 app.manage(database);
+                // 起子进程或内置 daemon 之前：上次没跑完（崩溃、被杀、断电）留下的回合标成被打断。
+                if scan_stranded_turns {
+                    let db = app.state::<db::AppDatabase>();
+                    tauri::async_runtime::block_on(
+                        crate::commands::conversations::interrupt_stranded_turns_core(&db.conn),
+                    );
+                }
                 // Cowork fork: crash and hang reports, when switched on
                 // (`crash_report`).
                 crate::crash_report::start(app.handle());

@@ -3498,6 +3498,19 @@ impl ConnectionManager {
         connections.values().map(|c| c.info()).collect()
     }
 
+    /// 本进程每个连接绑定的对话 id（没绑对话的连接跳过）。退出时只标这些对话「被打断」：
+    /// 同一个数据目录的别的进程正在跑的不能碰。
+    pub async fn bound_conversation_ids(&self) -> Vec<i32> {
+        let connections = self.connections.lock().await;
+        let mut ids = Vec::new();
+        for conn in connections.values() {
+            if let Some(id) = conn.state.read().await.conversation_id {
+                ids.push(id);
+            }
+        }
+        ids
+    }
+
     /// Cowork fork: every conversation with background work still out on a
     /// live connection — what a client's sidebar starts from, before
     /// `conversation://background` keeps it current. Several connections bound
@@ -5782,6 +5795,20 @@ mod tests {
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
+    }
+
+    #[tokio::test]
+    async fn bound_conversation_ids_lists_only_bound_connections() {
+        let mgr = ConnectionManager::new();
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert("c1".into(), fake_connection("c1", Some(11)));
+            map.insert("c2".into(), fake_connection("c2", None));
+            map.insert("c3".into(), fake_connection("c3", Some(33)));
+        }
+        let mut ids = mgr.bound_conversation_ids().await;
+        ids.sort_unstable();
+        assert_eq!(ids, vec![11, 33]);
     }
 
     /// Spawn a two-level process tree: `sh` (the stand-in for the agent CLI)

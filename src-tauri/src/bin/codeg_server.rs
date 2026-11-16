@@ -181,6 +181,11 @@ fn main() -> ExitCode {
     // Before anything opens the database (see `runtime_lock`): every server
     // shares the data directory, and waits while a `codeg-cli --standalone`
     // server has it — which itself takes it alone, or leaves untouched.
+    // 启动时要不要把上次留下的 `in_progress` 标成被打断：探测一定在拿自己的锁之前
+    // （拿了以后自己的锁也算「别人」）。桌面版的子进程也扫：app 拿着共享锁但自己不跑智能体，
+    // 子进程崩了 app 会重启它，只按「只有自己」判断的话永远扫不到。
+    let scan_stranded_turns = codeg_lib::runtime_lock::no_other_runtime(&resolved_data_dir)
+        || std::env::var(codeg_lib::local_daemon::CHILD_ENV).is_ok_and(|v| v == "1");
     let exclusive = std::env::var(codeg_lib::runtime_lock::EXCLUSIVE_ENV).is_ok_and(|v| v == "1");
     let _runtime_lock = match codeg_lib::runtime_lock::hold_for_server(&resolved_data_dir) {
         Ok(Some(lock)) => Some(lock),
@@ -255,7 +260,11 @@ fn main() -> ExitCode {
         .enable_all()
         .build()
         .expect("Failed to build tokio runtime")
-        .block_on(async_main(proxy_auth_config, stdin_closed))
+        .block_on(async_main(
+            proxy_auth_config,
+            stdin_closed,
+            scan_stranded_turns,
+        ))
 }
 
 /// stdin 关闭以后最多等这么久就退出：停机要先取消回合（最多 5 秒）、断开智能体
@@ -265,6 +274,7 @@ const STDIN_EOF_EXIT_AFTER: std::time::Duration = std::time::Duration::from_secs
 async fn async_main(
     proxy_auth_config: Option<codeg_lib::web::proxy_auth::ProxyAuthConfig>,
     stdin_closed: Option<tokio::sync::oneshot::Receiver<()>>,
+    scan_stranded_turns: bool,
 ) -> ExitCode {
     let port: u16 = std::env::var("CODEG_PORT")
         .ok()
@@ -319,6 +329,11 @@ async fn async_main(
         .await
         .expect("Failed to initialize database");
     codeg_lib::cowork::secure_db_files(&data_dir);
+
+    // 任何引擎和服务起来之前：上次没跑完（崩溃、被杀、断电）留下的回合标成被打断。
+    if scan_stranded_turns {
+        codeg_lib::commands::conversations::interrupt_stranded_turns_core(&db.conn).await;
+    }
 
     // Logging phase 2: override the default level from the persisted
     // `logging.level` now that the DB is open. Phase 3 (wiring the emitter)

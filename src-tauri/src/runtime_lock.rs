@@ -104,6 +104,21 @@ pub fn try_exclusive(data_dir: &Path) -> io::Result<Option<RuntimeLock>> {
     }
 }
 
+/// 有没有别的进程拿着这个数据目录的运行锁（共享的、独占的都算）：没有是 `true`。
+/// 探完马上放掉，自己不留锁；文件系统不支持加锁时算 `true`。
+/// 一定要在拿自己的锁之前探，拿了以后自己的锁也会让这里返回 `false`。
+pub fn no_other_runtime(data_dir: &Path) -> bool {
+    let file = match open(data_dir) {
+        Ok(file) => file,
+        Err(e) => return locking_unsupported(&e),
+    };
+    match file.try_lock() {
+        Ok(()) => file.unlock().is_ok(),
+        Err(TryLockError::WouldBlock) => false,
+        Err(TryLockError::Error(e)) => locking_unsupported(&e),
+    }
+}
+
 /// The shared lock, waited for as long as a private server holds the
 /// directory; `waiting` hears how long it has been, every 30 s.
 pub fn shared_waiting(
@@ -167,6 +182,23 @@ mod tests {
         );
         drop(alone);
         assert!(try_shared(dir.path()).unwrap().is_some());
+    }
+
+    #[test]
+    fn no_other_runtime_sees_any_holder_and_leaves_no_lock_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(no_other_runtime(dir.path()), "空目录没有别人");
+        assert!(try_exclusive(dir.path()).unwrap().is_some(), "探完不留锁");
+
+        let other = try_shared(dir.path()).unwrap().expect("shared");
+        assert!(!no_other_runtime(dir.path()), "别的句柄拿着共享锁");
+        drop(other);
+
+        assert!(no_other_runtime(dir.path()));
+        assert!(
+            try_shared(dir.path()).unwrap().is_some(),
+            "探完以后共享锁马上还能拿到"
+        );
     }
 
     #[test]

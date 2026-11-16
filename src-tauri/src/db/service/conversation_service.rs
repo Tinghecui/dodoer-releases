@@ -177,6 +177,42 @@ pub async fn update_status_if(
     Ok(result.rows_affected > 0)
 }
 
+/// 把还停在 `in_progress` 的回合改成 `cancelled`（被打断），返回改了哪些 id。
+/// `only` 是 `Some` 时只看这些 id（退出时：本进程连接上绑定的对话），`Some(&[])` 不查库；
+/// `None` 时扫全部（启动时：上次没跑完留下的）。Loop 行由 Loop 工作台自己管，不碰。
+/// 不改 `updated_at`：未读和侧栏排序都按它，一次升级扫出的一堆老行不该全跳到最上面变成未读。
+pub async fn interrupt_in_progress(
+    conn: &DatabaseConnection,
+    only: Option<&[i32]>,
+) -> Result<Vec<i32>, DbError> {
+    use sea_orm::sea_query::Expr;
+    if only.is_some_and(<[i32]>::is_empty) {
+        return Ok(Vec::new());
+    }
+    let mut running = conversation::Entity::find()
+        .select_only()
+        .column(conversation::Column::Id)
+        .filter(conversation::Column::Status.eq(conversation::ConversationStatus::InProgress))
+        .filter(conversation::Column::Kind.ne(ConversationKind::Loop));
+    if let Some(ids) = only {
+        running = running.filter(conversation::Column::Id.is_in(ids.iter().copied()));
+    }
+    let ids: Vec<i32> = running.into_tuple().all(conn).await?;
+    if ids.is_empty() {
+        return Ok(ids);
+    }
+    conversation::Entity::update_many()
+        .col_expr(
+            conversation::Column::Status,
+            Expr::value(conversation::ConversationStatus::Cancelled),
+        )
+        .filter(conversation::Column::Id.is_in(ids.iter().copied()))
+        .filter(conversation::Column::Status.eq(conversation::ConversationStatus::InProgress))
+        .exec(conn)
+        .await?;
+    Ok(ids)
+}
+
 /// Manual rename: set the title AND lock it. Once locked, the per-turn
 /// auto-title backfill ([`refresh_auto_title`]) leaves this row alone, so the
 /// user's hand-picked name survives every subsequent session-file parse.
@@ -1949,6 +1985,75 @@ mod tests {
         .await
         .expect("child");
         (parent.id, child.id)
+    }
+
+    async fn seed_conv(conn: &DatabaseConnection, folder_id: i32, title: &str) -> i32 {
+        create(
+            conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some(title.into()),
+            None,
+        )
+        .await
+        .expect("create")
+        .id
+    }
+
+    async fn status_of(conn: &DatabaseConnection, id: i32) -> conversation::Model {
+        conversation::Entity::find_by_id(id)
+            .one(conn)
+            .await
+            .expect("query")
+            .expect("row")
+    }
+
+    #[tokio::test]
+    async fn interrupt_in_progress_marks_stranded_turns_and_leaves_others() {
+        use conversation::ConversationStatus as S;
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-interrupt-stranded").await;
+        let running = seed_conv(&db.conn, folder, "running").await;
+        let review = seed_conv(&db.conn, folder, "review").await;
+        update_status(&db.conn, review, S::PendingReview)
+            .await
+            .expect("review");
+        let looped = seed_conv(&db.conn, folder, "loop").await;
+        let mut active: conversation::ActiveModel = status_of(&db.conn, looped).await.into();
+        active.kind = Set(ConversationKind::Loop);
+        active.update(&db.conn).await.expect("flip kind");
+        let before = status_of(&db.conn, running).await.updated_at;
+
+        let marked = interrupt_in_progress(&db.conn, None).await.expect("scan");
+
+        assert_eq!(marked, vec![running]);
+        let row = status_of(&db.conn, running).await;
+        assert_eq!(row.status, S::Cancelled);
+        assert_eq!(row.updated_at, before, "不改 updated_at");
+        assert_eq!(status_of(&db.conn, review).await.status, S::PendingReview);
+        assert_eq!(status_of(&db.conn, looped).await.status, S::InProgress);
+    }
+
+    #[tokio::test]
+    async fn interrupt_in_progress_only_touches_the_given_ids() {
+        use conversation::ConversationStatus as S;
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-interrupt-only").await;
+        let a = seed_conv(&db.conn, folder, "a").await;
+        let b = seed_conv(&db.conn, folder, "b").await;
+
+        let none = interrupt_in_progress(&db.conn, Some(&[]))
+            .await
+            .expect("empty");
+        assert!(none.is_empty());
+        assert_eq!(status_of(&db.conn, a).await.status, S::InProgress);
+
+        let marked = interrupt_in_progress(&db.conn, Some(&[a]))
+            .await
+            .expect("only a");
+        assert_eq!(marked, vec![a]);
+        assert_eq!(status_of(&db.conn, a).await.status, S::Cancelled);
+        assert_eq!(status_of(&db.conn, b).await.status, S::InProgress);
     }
 
     #[tokio::test]

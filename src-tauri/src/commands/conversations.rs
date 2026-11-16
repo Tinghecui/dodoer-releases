@@ -28,6 +28,35 @@ use crate::web::event_bridge::{
     IMPORT_SCAN_PROGRESS_EVENT, TABS_CHANGED_EVENT,
 };
 
+/// 启动时：上次没跑完就停了（崩溃、被杀、断电）留下的 `in_progress` 全部标成被打断
+/// （`cancelled`），侧栏不再一直转圈。只在没有别的进程用这个数据目录时调（见调用处）。
+/// 只打日志、不返回错误。
+pub async fn interrupt_stranded_turns_core(conn: &sea_orm::DatabaseConnection) {
+    match conversation_service::interrupt_in_progress(conn, None).await {
+        Ok(ids) if ids.is_empty() => {}
+        Ok(ids) => tracing::info!(
+            "[startup] turns left running by the last run marked interrupted: {ids:?}"
+        ),
+        Err(e) => tracing::warn!("[startup] marking turns left running as interrupted: {e}"),
+    }
+}
+
+/// 退出时：本进程连接上还在跑的回合先标成被打断，再去 cancel 智能体。
+/// 先标再 cancel：cancel 的写库是 `in_progress → cancelled` 的 CAS，先 cancel 的话就成了普通的
+/// 「已取消」；先标了 CAS 就落空，不会再写、也不发事件。只标本进程绑定的对话，
+/// 同一个数据目录别的进程在跑的不碰。只打日志、不返回错误，标完不发事件（服务一停网页重连会整表重拉）。
+pub async fn interrupt_running_turns_core(
+    conn: &sea_orm::DatabaseConnection,
+    manager: &crate::acp::manager::ConnectionManager,
+) {
+    let bound = manager.bound_conversation_ids().await;
+    match conversation_service::interrupt_in_progress(conn, Some(&bound)).await {
+        Ok(ids) if ids.is_empty() => {}
+        Ok(ids) => tracing::info!("[quit] turns still running marked interrupted: {ids:?}"),
+        Err(e) => tracing::warn!("[quit] marking running turns as interrupted: {e}"),
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ListAllConversationsOptions {
     pub(crate) folder_ids: Option<Vec<i32>>,

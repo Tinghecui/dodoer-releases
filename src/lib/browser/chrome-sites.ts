@@ -18,11 +18,25 @@ export interface ChromeSites {
   blocked: string[]
   /** Entries of `defaults` the person lets agents use after all. */
   allowed: string[]
+  /** The person paused the list: agents may use every site, the list kept
+   *  as it is. Missing from an app older than the pause. */
+  paused?: boolean
+  /** `defaults` by kind, in order (`mail`, `accounts`, `payments`, `banks`,
+   *  `exchanges`). Missing from an app older than the groups. */
+  groups?: ChromeSiteGroup[]
+}
+
+/** Mirrors `ChromeSiteGroup` in `browser_chrome.rs`. */
+export interface ChromeSiteGroup {
+  id: string
+  sites: string[]
 }
 
 export interface ChromeSiteEdits {
   blocked: string[]
   allowed: string[]
+  /** Left out, the pause stays as it is. */
+  paused?: boolean
 }
 
 export function chromeSites(): Promise<ChromeSites> {
@@ -30,11 +44,13 @@ export function chromeSites(): Promise<ChromeSites> {
 }
 
 /** Keep the edits and put them in force; a Chrome tab agents have on a site
- *  now kept off is let go of. Resolves with the edits as the app kept them. */
+ *  now kept off is let go of. Resolves with the edits as the app kept them.
+ *  `paused` goes only when given: an older app has no such argument. */
 export function chromeSetSites(edits: ChromeSiteEdits): Promise<ChromeSites> {
   return getShellTransport().call<ChromeSites>("browser_chrome_set_sites", {
     blocked: edits.blocked,
     allowed: edits.allowed,
+    ...(edits.paused === undefined ? {} : { paused: edits.paused }),
   })
 }
 

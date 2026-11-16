@@ -1,6 +1,7 @@
 "use client"
 
 import {
+  CircleHelp,
   CirclePause,
   Hourglass,
   ListTodo,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import type { AwaitingUserKind } from "@/stores/awaiting-user-store"
+import type { BackgroundUncertainReason } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { UNREAD_LABEL_KEYS } from "./sidebar-unread-badge"
 
@@ -35,11 +37,24 @@ const AWAITING: Record<
   plan: { icon: ListTodo, label: "statusAwaitingPlanBadge" },
 }
 
+/** Cowork fork (#386): the sentence per reason a row is a「?」. */
+const UNCERTAIN_REASON: Record<
+  BackgroundUncertainReason,
+  | "statusUncertainAgentExited"
+  | "statusUncertainBackgroundExited"
+  | "statusUncertainSilent"
+> = {
+  agent_exited: "statusUncertainAgentExited",
+  background_process_exited: "statusUncertainBackgroundExited",
+  silent_without_children: "statusUncertainSilent",
+}
+
 /**
  * The trailing badge of a conversation row: a filled mark while the agent is
  * parked on the user (a question to answer, a permission or a plan to
- * approve) — its turn is still running then, but it is the user's move — a
- * spinner while it runs, an
+ * approve) — its turn is still running then, but it is the user's move — an
+ * outline question mark when the server sees no live process moving it any
+ * more (Cowork fork, #386), a spinner while it runs, an
  * hourglass while its turn has ended but background work it launched (a
  * background shell, a monitor) is still out — the agent will wake up again —
  * a red cross when the turn did not finish, otherwise its relative time
@@ -55,6 +70,7 @@ const AWAITING: Record<
  */
 export function ConversationActivityBadge({
   awaiting,
+  uncertain,
   running,
   waiting,
   cancelled,
@@ -67,6 +83,13 @@ export function ConversationActivityBadge({
   /** What the agent waits on the user for (see `useAwaitingUser`); outranks
    *  `running`, which stays true the whole time it waits. */
   awaiting?: AwaitingUserKind | null
+  /** Cowork fork (#386): the server says it claims to run or wait on
+   *  background work, but no live process is moving it. Outranks `running`
+   *  and `waiting`; only `awaiting` outranks it. */
+  uncertain?: {
+    reason?: BackgroundUncertainReason | null
+    names: string[]
+  } | null
   running: boolean
   /** Outstanding background work after the turn ended (see
    *  `useBackgroundPending`); ignored while `running`. */
@@ -107,6 +130,34 @@ export function ConversationActivityBadge({
         >
           <Icon className="h-3 w-3" strokeWidth={2.25} />
         </span>
+        <span className="sr-only">{title}</span>
+      </span>
+    )
+  }
+  if (uncertain) {
+    // An outline mark, apart from the filled "needs you" question above.
+    const reasonKey = uncertain.reason
+      ? UNCERTAIN_REASON[uncertain.reason]
+      : undefined
+    const title = [
+      t("statusUncertainBadge"),
+      reasonKey ? t(reasonKey) : null,
+      uncertain.names.length > 0
+        ? t("statusBackgroundTasks", { names: uncertain.names.join(", ") })
+        : null,
+    ]
+      .filter((line): line is string => line != null)
+      .join("\n")
+    return (
+      <span
+        className="relative inline-flex shrink-0 items-center justify-center"
+        title={title}
+        data-background-uncertain={uncertain.reason ?? ""}
+      >
+        <CircleHelp
+          className="h-3.5 w-3.5 text-[var(--st-unread)]"
+          aria-hidden
+        />
         <span className="sr-only">{title}</span>
       </span>
     )

@@ -8,6 +8,7 @@ import {
   BACKGROUND_PENDING_EVENT,
   type AsyncTaskRecord,
   type BackgroundPendingEntry,
+  type BackgroundUncertainReason,
 } from "@/lib/types"
 
 /**
@@ -31,11 +32,17 @@ import {
  * know a session, the connection here wins.
  */
 export interface BackgroundPending {
-  /** How many pieces of background work are still live (at least 1). */
+  /** How many pieces of background work are still live (at least 1; 0 for
+   *  a「?」, whose work went down with its process). */
   count: number
   /** Labels of the live async tasks (may be fewer than `count`: the
-   *  transcript watcher only counts). */
+   *  transcript watcher only counts). For a「?」, the tasks that were out. */
   names: string[]
+  /** Cowork fork (#386): only the server sets it — it claims to run or wait,
+   *  but no live process is moving it. Absent: plain waiting. */
+  state?: "uncertain"
+  /** Why it is a「?」(with `state` only). */
+  reason?: BackgroundUncertainReason | null
 }
 
 interface BackgroundPendingState {
@@ -66,6 +73,8 @@ export function backgroundPendingOf(conn: {
 function samePending(a: BackgroundPending, b: BackgroundPending): boolean {
   return (
     a.count === b.count &&
+    a.state === b.state &&
+    (a.reason ?? null) === (b.reason ?? null) &&
     a.names.length === b.names.length &&
     a.names.every((n, i) => n === b.names[i])
   )
@@ -106,7 +115,22 @@ export function publishBackgroundPending(
   useBackgroundPendingStore.setState({ bySession: next })
 }
 
-function pendingOfEntry(entry: BackgroundPendingEntry): BackgroundPending {
+/** What a server entry puts on its row; `null` when it clears the row.
+ *  Cowork fork (#386): an entry with `state` goes by it — `uncertain` stays
+ *  even at `count: 0`, `idle` clears; one without (an older server) goes by
+ *  `count` as before. */
+function pendingOfEntry(
+  entry: BackgroundPendingEntry
+): BackgroundPending | null {
+  if (entry.state === "uncertain") {
+    return {
+      count: entry.count,
+      names: (entry.tasks ?? []).map((t) => t.name || t.task_id),
+      state: "uncertain",
+      reason: entry.reason ?? null,
+    }
+  }
+  if (entry.state === "idle" || entry.count <= 0) return null
   return { count: entry.count, names: entry.names ?? [] }
 }
 
@@ -117,27 +141,28 @@ export function replaceServerBackgroundPending(
 ): void {
   const next = new Map<number, BackgroundPending>()
   for (const entry of entries) {
-    if (entry.count > 0) next.set(entry.conversation_id, pendingOfEntry(entry))
+    const pending = pendingOfEntry(entry)
+    if (pending) next.set(entry.conversation_id, pending)
   }
   useBackgroundPendingStore.setState({ byConversation: next })
 }
 
 /** Cowork fork: apply one `conversation://background` broadcast — the
- *  conversation's whole current state, `count: 0` clearing it. A no-op (same
- *  reference) when it changes nothing. */
+ *  conversation's whole current state, `count: 0` (or `state: "idle"`)
+ *  clearing it. A no-op (same reference) when it changes nothing. */
 export function applyServerBackgroundPending(
   entry: BackgroundPendingEntry
 ): void {
   const prev = useBackgroundPendingStore.getState().byConversation
   const have = prev.get(entry.conversation_id)
-  if (entry.count <= 0) {
+  const pending = pendingOfEntry(entry)
+  if (!pending) {
     if (!have) return
     const next = new Map(prev)
     next.delete(entry.conversation_id)
     useBackgroundPendingStore.setState({ byConversation: next })
     return
   }
-  const pending = pendingOfEntry(entry)
   if (have && samePending(have, pending)) return
   const next = new Map(prev)
   next.set(entry.conversation_id, pending)
@@ -146,17 +171,81 @@ export function applyServerBackgroundPending(
 
 /** The live background work of a conversation: its connection's here when one
  *  is attached, else what the server says about conversation `conversationId`
- *  (Cowork fork), else `null`. */
+ *  (Cowork fork), else `null`. A server「?」(#386) wins over this window's
+ *  connection: the server watches the process, the connection here only
+ *  relays what the agent last said. */
 export function backgroundPendingFor(
   state: BackgroundPendingState,
   externalId: string | null | undefined,
   conversationId?: number | null
 ): BackgroundPending | null {
+  const server =
+    conversationId != null
+      ? state.byConversation.get(conversationId)
+      : undefined
+  if (server?.state === "uncertain") return server
   const live = externalId ? state.bySession.get(externalId) : undefined
   if (live) return live
-  return conversationId != null
-    ? (state.byConversation.get(conversationId) ?? null)
-    : null
+  return server ?? null
+}
+
+/** Cowork fork (#386): what a row shows for its background work — the
+ *  hourglass (`waiting`: the turn ended, work still out) or the「?」
+ *  (`uncertain`); at most one is set. A completed / cancelled conversation
+ *  never shows a「?」: the user (or the agent) has closed it. */
+export interface BackgroundMark {
+  waiting: BackgroundPending | null
+  uncertain: BackgroundPending | null
+}
+
+const NO_MARK: BackgroundMark = { waiting: null, uncertain: null }
+
+export function backgroundMarkOf(
+  status: string,
+  pending: BackgroundPending | null
+): BackgroundMark {
+  if (!pending) return NO_MARK
+  if (pending.state === "uncertain") {
+    return status === "completed" || status === "cancelled"
+      ? NO_MARK
+      : { waiting: null, uncertain: pending }
+  }
+  return status === "in_progress"
+    ? NO_MARK
+    : { waiting: pending, uncertain: null }
+}
+
+type MarkInput = { id: number; external_id: string | null; status: string }
+
+/** {@link backgroundMarkOf} of a conversation, read from a store snapshot. */
+export function backgroundMarkFor(
+  state: BackgroundPendingState,
+  conv: MarkInput
+): BackgroundMark {
+  return backgroundMarkOf(
+    conv.status,
+    backgroundPendingFor(state, conv.external_id, conv.id)
+  )
+}
+
+/** Cowork fork (#386): the background work holds the row's unread back —
+ *  waiting or「?」, the agent is not done yet. */
+export function holdsBackUnread(
+  state: BackgroundPendingState,
+  conv: MarkInput
+): boolean {
+  const mark = backgroundMarkFor(state, conv)
+  return mark.waiting != null || mark.uncertain != null
+}
+
+/** Cowork fork (#386): counts as running in the sidebar — its turn runs, or
+ *  it waits on background work, or the server marked it「?」. What the
+ *  attention order's first band and the running counts go by. */
+export function isConversationActive(
+  state: BackgroundPendingState,
+  conv: MarkInput
+): boolean {
+  return conv.status === "in_progress" || holdsBackUnread(state, conv)
 }
 
 /** The live background work of the session behind `externalId` — or, with no

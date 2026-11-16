@@ -164,6 +164,11 @@ import {
   awaitingUserFor,
   useAwaitingUserStore,
 } from "@/stores/awaiting-user-store"
+import {
+  holdsBackUnread,
+  isConversationActive,
+  useBackgroundPendingStore,
+} from "@/stores/background-pending-store"
 import { ConversationManageDialog } from "./conversation-manage-dialog"
 import { openConversationTagsManager } from "./conversation-tags-manager"
 import {
@@ -1527,6 +1532,23 @@ export function SidebarConversationList({
     [seenState]
   )
 
+  // Cowork fork (#386): a conversation waiting on background work, or marked
+  // 「?」by the server, counts as running — first in the attention order, in
+  // the folder's running count, out of its unread count (its row holds the
+  // unread dot back too). The store hands back the same maps when nothing
+  // changed.
+  const backgroundState = useBackgroundPendingStore(
+    useShallow((s) => ({
+      bySession: s.bySession,
+      byConversation: s.byConversation,
+    }))
+  )
+  const isActive = useCallback(
+    (conv: DbConversationSummary) =>
+      isConversationActive(backgroundState, conv),
+    [backgroundState]
+  )
+
   // Flat "Recent" bucket: every reachable conversation — folder-bound and chat
   // alike — most recently active first, gated on the folder still being open so
   // closing a folder also removes its sessions here. Always ordered by
@@ -1543,7 +1565,8 @@ export function SidebarConversationList({
       recentConvsRef.current,
       recentFilter,
       isUnread,
-      isAwaiting
+      isAwaiting,
+      isActive
     )
     recentConvsRef.current = next
     return next
@@ -1554,6 +1577,7 @@ export function SidebarConversationList({
     recentFilter,
     isUnread,
     isAwaiting,
+    isActive,
   ])
 
   // Maps each open worktree child folder → its (open) root folder. A child is
@@ -1591,11 +1615,12 @@ export function SidebarConversationList({
       sortMode,
       byFolderRef.current,
       displayChildToParent,
-      isUnread
+      isUnread,
+      isActive
     )
     byFolderRef.current = grouped
     return grouped
-  }, [folderConversations, sortMode, displayChildToParent, isUnread])
+  }, [folderConversations, sortMode, displayChildToParent, isUnread, isActive])
 
   // Counts the unfiltered-but-non-pinned conversations per display group, so the
   // empty-hint renderer distinguishes a truly empty folder from one whose rows
@@ -1611,7 +1636,8 @@ export function SidebarConversationList({
     return map
   }, [conversations, displayChildToParent])
 
-  // Running (`in_progress`) sessions per display group — what the folder header
+  // Running (`in_progress`, or waiting on background work / 「?」— Cowork
+  // fork, #386) sessions per display group — what the folder header
   // badge shows. Counted off the FULL conversation list rather than `byFolder`
   // on purpose: the badge answers "is there work running in here", so neither
   // the "Show completed" filter nor a session being pinned into the Pinned
@@ -1621,12 +1647,12 @@ export function SidebarConversationList({
   const folderRunningCounts = useMemo(() => {
     const map = new Map<number, number>()
     for (const conv of conversations) {
-      if (conv.status !== "in_progress") continue
+      if (!isActive(conv)) continue
       const groupId = displayChildToParent.get(conv.folder_id) ?? conv.folder_id
       map.set(groupId, (map.get(groupId) ?? 0) + 1)
     }
     return map
-  }, [conversations, displayChildToParent])
+  }, [conversations, displayChildToParent, isActive])
 
   // Unread root sessions per display group (jenny fork) — same grouping and
   // full-list counting as the running badge, so collapsing a folder or
@@ -1634,11 +1660,11 @@ export function SidebarConversationList({
   const folderUnreadCounts = useMemo(
     () =>
       countUnreadByGroup(
-        conversations,
+        conversations.filter((c) => !holdsBackUnread(backgroundState, c)),
         seenState,
         (folderId) => displayChildToParent.get(folderId) ?? folderId
       ),
-    [conversations, seenState, displayChildToParent]
+    [conversations, seenState, displayChildToParent, backgroundState]
   )
 
   // The REORDERABLE folders: worktree child folders are excluded (they follow
@@ -1729,6 +1755,7 @@ export function SidebarConversationList({
       buildRows({
         sessionActivity,
         isUnread,
+        isActive,
         pinned,
         pinnedExpanded,
         // Top-level (reorderable) folders drive the outer order; buildRows nests
@@ -1759,6 +1786,7 @@ export function SidebarConversationList({
     [
       sessionActivity,
       isUnread,
+      isActive,
       pinned,
       pinnedExpanded,
       reorderableFolderIds,

@@ -88,7 +88,10 @@ import { ConversationStatusDot } from "./conversation-status-dot"
 import { ConversationActivityBadge } from "./conversation-activity-badge"
 import { isInterruptedTurn } from "./interrupted-turn-bar"
 import { useAwaitingUser } from "@/stores/awaiting-user-store"
-import { useBackgroundPending } from "@/stores/background-pending-store"
+import {
+  backgroundMarkOf,
+  useBackgroundPending,
+} from "@/stores/background-pending-store"
 import { useIsCanceledTaskConversation } from "@/stores/canceled-task-store"
 import { SessionDetailsDialog } from "./session-details-dialog"
 import { SidebarConversationHoverDetails } from "./sidebar-conversation-hover-details"
@@ -389,7 +392,14 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
     conversation.external_id,
     conversation.id
   )
-  const isWaiting = !isRunning && background != null
+  // Cowork fork (#386): `waiting` is the hourglass, `uncertain` the server's
+  // 「?」(it claims to run or wait, but no live process is moving it; never
+  // on a completed / cancelled row). Both keep the running colour and hold
+  // back the unread dot.
+  const backgroundMark = backgroundMarkOf(status, background)
+  const isWaiting = backgroundMark.waiting != null
+  const uncertain = backgroundMark.uncertain
+  const holdsUnread = isWaiting || uncertain != null
   // The agent stopped mid-turn to ask the user something (a question, a
   // permission, a plan approval): still `in_progress`, but it is the user's
   // move, so the spinner gives way to a "needs you" mark.
@@ -569,7 +579,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                         />
                       )}
                       <ConversationStatusDot
-                        status={isWaiting ? "in_progress" : status}
+                        status={holdsUnread ? "in_progress" : status}
                         size="sm"
                         className="absolute -right-0.5 -bottom-0.5 ring-2 ring-sidebar"
                       />
@@ -583,7 +593,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                     <span
                       className={cn(
                         "relative min-w-0 max-w-max flex-1 truncate text-[0.8125rem]",
-                        isUnread && !isWaiting
+                        isUnread && !holdsUnread
                           ? "font-semibold text-sidebar-foreground"
                           : "font-normal",
                         isOpenInTab && "text-primary"
@@ -700,7 +710,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                         !isSubsession && "group-hover:hidden"
                       )}
                     >
-                      {isUnread && !isWaiting && !unreadOnCancelledMark && (
+                      {isUnread && !holdsUnread && !unreadOnCancelledMark && (
                         <span className="mr-1.5 inline-flex">
                           <UnreadDot ending={unreadEnding} />
                         </span>
@@ -728,8 +738,9 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                       )}
                       <ConversationActivityBadge
                         awaiting={awaiting}
+                        uncertain={uncertain}
                         running={isRunning}
-                        waiting={isWaiting ? background : null}
+                        waiting={backgroundMark.waiting}
                         cancelled={isCancelled}
                         interrupted={isInterruptedTurn(conversation)}
                         unread={isUnread}

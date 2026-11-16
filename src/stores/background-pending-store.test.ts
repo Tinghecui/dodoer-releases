@@ -1,10 +1,17 @@
 import { act, renderHook, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { AsyncTaskRecord, BackgroundPendingEntry } from "@/lib/types"
+import type {
+  AsyncTaskRecord,
+  BackgroundPendingEntry,
+  BackgroundUncertainReason,
+} from "@/lib/types"
 import {
   applyServerBackgroundPending,
+  backgroundMarkFor,
+  backgroundMarkOf,
   backgroundPendingOf,
+  isConversationActive,
   publishBackgroundPending,
   replaceServerBackgroundPending,
   useBackgroundPending,
@@ -214,5 +221,142 @@ describe("server background pending (Cowork fork)", () => {
     renderHook(() => useBackgroundPendingSync())
     await waitFor(() => expect(h.list).toHaveBeenCalled())
     expect(useBackgroundPendingStore.getState().byConversation.size).toBe(0)
+  })
+})
+
+const uncertain = (
+  conversationId: number,
+  reason: BackgroundUncertainReason | null = "agent_exited",
+  tasks: { task_id: string; name: string }[] = []
+): BackgroundPendingEntry => ({
+  conversation_id: conversationId,
+  count: 0,
+  names: [],
+  state: "uncertain",
+  reason,
+  tasks,
+})
+
+// Cowork fork (#386): the server's「?」— a conversation that claims to run or
+// wait on background work, but no live process is moving it.
+describe("server uncertain entries (Cowork fork)", () => {
+  const idle = (conversationId: number): BackgroundPendingEntry => ({
+    conversation_id: conversationId,
+    count: 0,
+    names: [],
+    state: "idle",
+    reason: null,
+    tasks: [],
+  })
+
+  it("keeps a count-0 uncertain entry from a full listing", () => {
+    replaceServerBackgroundPending([
+      uncertain(3, "agent_exited", [{ task_id: "t1", name: "Watch CI" }]),
+    ])
+    expect(useBackgroundPendingStore.getState().byConversation.get(3)).toEqual({
+      count: 0,
+      names: ["Watch CI"],
+      state: "uncertain",
+      reason: "agent_exited",
+    })
+  })
+
+  it("keeps a count-0 uncertain broadcast, and an idle one clears it", () => {
+    applyServerBackgroundPending(uncertain(3, "background_process_exited"))
+    expect(
+      useBackgroundPendingStore.getState().byConversation.get(3)?.state
+    ).toBe("uncertain")
+    const before = useBackgroundPendingStore.getState().byConversation
+    applyServerBackgroundPending(uncertain(3, "background_process_exited"))
+    expect(useBackgroundPendingStore.getState().byConversation).toBe(before)
+    applyServerBackgroundPending(idle(3))
+    expect(useBackgroundPendingStore.getState().byConversation.has(3)).toBe(
+      false
+    )
+  })
+
+  it("drops idle entries from a listing, and reads waiting ones as before", () => {
+    replaceServerBackgroundPending([
+      idle(1),
+      {
+        ...entry(2, 1, ["a"]),
+        state: "waiting",
+        reason: null,
+        tasks: [{ task_id: "t", name: "a" }],
+      },
+    ])
+    const map = useBackgroundPendingStore.getState().byConversation
+    expect(map.has(1)).toBe(false)
+    expect(map.get(2)).toEqual({ count: 1, names: ["a"] })
+  })
+
+  it("lets the server's「?」win over this client's own waiting connection", () => {
+    act(() => {
+      publishBackgroundPending([conn("sess-9", [task("1", "running")])])
+      replaceServerBackgroundPending([uncertain(9)])
+    })
+    const { result } = renderHook(() => useBackgroundPending("sess-9", 9))
+    expect(result.current?.state).toBe("uncertain")
+    expect(result.current?.reason).toBe("agent_exited")
+  })
+})
+
+describe("backgroundMarkOf (Cowork fork)", () => {
+  const waiting = { count: 1, names: ["a"] }
+  const unclear = {
+    count: 0,
+    names: [],
+    state: "uncertain" as const,
+    reason: "agent_exited" as const,
+  }
+
+  it("shows the hourglass only after the turn ended", () => {
+    expect(backgroundMarkOf("pending_review", waiting)).toEqual({
+      waiting,
+      uncertain: null,
+    })
+    expect(backgroundMarkOf("in_progress", waiting)).toEqual({
+      waiting: null,
+      uncertain: null,
+    })
+  })
+
+  it("shows「?」unless the conversation is completed or cancelled", () => {
+    expect(backgroundMarkOf("pending_review", unclear).uncertain).toBe(unclear)
+    expect(backgroundMarkOf("in_progress", unclear).uncertain).toBe(unclear)
+    expect(backgroundMarkOf("completed", unclear)).toEqual({
+      waiting: null,
+      uncertain: null,
+    })
+    expect(backgroundMarkOf("cancelled", unclear)).toEqual({
+      waiting: null,
+      uncertain: null,
+    })
+  })
+
+  it("reads a conversation's mark straight from the store", () => {
+    replaceServerBackgroundPending([uncertain(5)])
+    const state = useBackgroundPendingStore.getState()
+    expect(
+      backgroundMarkFor(state, {
+        id: 5,
+        external_id: null,
+        status: "pending_review",
+      }).uncertain?.reason
+    ).toBe("agent_exited")
+    expect(
+      isConversationActive(state, {
+        id: 5,
+        external_id: null,
+        status: "pending_review",
+      })
+    ).toBe(true)
+    expect(
+      isConversationActive(state, {
+        id: 6,
+        external_id: null,
+        status: "pending_review",
+      })
+    ).toBe(false)
   })
 })

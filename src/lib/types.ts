@@ -847,11 +847,32 @@ export const CONVERSATION_CHANGED_EVENT = "conversation://changed"
  *  ended, for the sidebar's hourglass on rows this client holds no connection
  *  to. Mirrors the Rust `BackgroundPendingEntry`; `count: 0` clears it. Listed
  *  by `acp_list_background_pending`, then kept current on
- *  `BACKGROUND_PENDING_EVENT`. */
+ *  `BACKGROUND_PENDING_EVENT`.
+ *
+ *  `state` / `reason` / `tasks` 是 #386 加的，老服务器的条目没有它们（那时照
+ *  `count` 判断）。`state` 是 `uncertain`（侧栏的「?」）时 `count` 照旧是 0。 */
 export interface BackgroundPendingEntry {
   conversation_id: number
   count: number
   names: string[]
+  state?: BackgroundPendingEntryState
+  reason?: BackgroundUncertainReason | null
+  tasks?: BackgroundPendingTask[]
+}
+
+/** Cowork fork (#386): `idle` 什么都没有，`waiting` 等后台，`uncertain`「?」。 */
+export type BackgroundPendingEntryState = "idle" | "waiting" | "uncertain"
+
+/** Cowork fork (#386): 为什么是「?」。 */
+export type BackgroundUncertainReason =
+  | "agent_exited"
+  | "background_process_exited"
+  | "silent_without_children"
+
+/** Cowork fork (#386): 一个还没完的后台任务。 */
+export interface BackgroundPendingTask {
+  task_id: string
+  name: string
 }
 
 export const BACKGROUND_PENDING_EVENT = "conversation://background"

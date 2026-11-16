@@ -1397,6 +1397,131 @@ describe("SidebarConversationCard waiting on background work", () => {
   })
 })
 
+// Cowork fork (#386): the server says no live process is moving this
+// conversation any more — a「?」instead of the hourglass, still no unread dot.
+describe("SidebarConversationCard status unclear", () => {
+  // Later suites reuse conversation 31: leave no「?」behind.
+  afterEach(() => {
+    useBackgroundPendingStore.setState({
+      bySession: new Map(),
+      byConversation: new Map(),
+    })
+  })
+  beforeEach(() => {
+    localStorage.clear()
+    useConversationSeenStore.setState({
+      scope: null,
+      baselineAt: 0,
+      seen: {},
+      markedUnread: {},
+    })
+    useBackgroundPendingStore.setState({
+      bySession: new Map(),
+      byConversation: new Map(),
+    })
+    useAwaitingUserStore.setState({
+      bySession: new Map(),
+      byTaskConversation: new Set(),
+    })
+  })
+
+  const ended = {
+    ...conv(31),
+    status: "pending_review",
+    external_id: "sess-31",
+    updated_at: new Date(Date.now() + 1_000).toISOString(),
+  }
+
+  function renderCard(c: DbConversationSummary) {
+    return renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={false}
+        timeLabel="5m"
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+      />
+    )
+  }
+
+  const unclear = () =>
+    replaceServerBackgroundPending([
+      {
+        conversation_id: 31,
+        count: 0,
+        names: [],
+        state: "uncertain",
+        reason: "agent_exited",
+        tasks: [{ task_id: "t1", name: "Watch CI" }],
+      },
+    ])
+
+  it("shows a question mark with the reason and tasks, and no unread dot", () => {
+    act(() => unclear())
+    const { container, queryByText } = renderCard(ended)
+    const mark = container.querySelector(
+      '[data-background-uncertain="agent_exited"]'
+    )
+    expect(mark).not.toBeNull()
+    expect(mark?.getAttribute("title")).toBe(
+      [
+        "Status unclear: no live process is moving this conversation",
+        "The agent process has exited",
+        "Tasks: Watch CI",
+      ].join("\n")
+    )
+    expect(container.querySelector("[data-jenny-unread-dot]")).toBeNull()
+    expect(container.querySelector("[data-background-pending]")).toBeNull()
+    expect(queryByText("5m")).toBeNull()
+  })
+
+  it("outranks the spinner of a turn that claims to run", () => {
+    act(() => unclear())
+    const { container } = renderCard({ ...ended, status: "in_progress" })
+    expect(
+      container.querySelector("[data-background-uncertain]")
+    ).not.toBeNull()
+    expect(container.querySelector(".animate-spin")).toBeNull()
+  })
+
+  it("gives way to a question the agent asks the user", () => {
+    act(() => {
+      unclear()
+      publishAwaitingUser([
+        {
+          connectionId: "c",
+          sessionId: "sess-31",
+          parentConnectionId: null,
+          pendingPermission: null,
+          pendingAskQuestion: {
+            question_id: "q",
+            questions: [{} as QuestionSpec],
+            created_at: "2026-11-12T00:00:00Z",
+          },
+          pendingPlanApproval: null,
+        },
+      ])
+    })
+    const { container } = renderCard({ ...ended, status: "in_progress" })
+    expect(container.querySelector("[data-awaiting-user]")).not.toBeNull()
+    expect(container.querySelector("[data-background-uncertain]")).toBeNull()
+  })
+
+  it("is never shown on a completed or cancelled conversation", () => {
+    act(() => unclear())
+    const { container } = renderCard({ ...ended, status: "completed" })
+    expect(container.querySelector("[data-background-uncertain]")).toBeNull()
+    cleanup()
+    const cancelled = renderCard({ ...ended, status: "cancelled" })
+    expect(
+      cancelled.container.querySelector("[data-background-uncertain]")
+    ).toBeNull()
+  })
+})
+
 // #102: a turn the agent refused or could not run (not signed in) is stored as
 // `cancelled`, and it ended, so the row is unread too. One red mark, not a
 // "finished, not viewed" dot beside a "cancelled" cross.

@@ -10,6 +10,11 @@ import {
   useAwaitingUserStore,
 } from "@/stores/awaiting-user-store"
 import {
+  holdsBackUnread,
+  isConversationActive,
+  useBackgroundPendingStore,
+} from "@/stores/background-pending-store"
+import {
   countUnreadByGroup,
   useConversationSeenStore,
 } from "@/stores/conversation-seen-store"
@@ -53,6 +58,14 @@ export function SidebarBell({
       byTaskConversation: s.byTaskConversation,
     }))
   )
+  // Cowork fork (#386): waiting on background work or marked「?」counts as
+  // running, not unread — its row holds the unread dot back too.
+  const backgroundState = useBackgroundPendingStore(
+    useShallow((s) => ({
+      bySession: s.bySession,
+      byConversation: s.byConversation,
+    }))
+  )
   // Roots only: a sub-agent's prompt already marks its parent's session.
   // One count per row, whichever source (a live connection, or the task
   // engine's headless merge or task run, #167) — or both — says it waits.
@@ -61,9 +74,15 @@ export function SidebarBell({
       c.parent_id == null &&
       awaitingUserFor(awaitingState, c.external_id, c.id) != null
   ).length
-  const running = conversations.filter((c) => c.status === "in_progress").length
+  const running = conversations.filter((c) =>
+    isConversationActive(backgroundState, c)
+  ).length
   const unread =
-    countUnreadByGroup(conversations, seenState, () => 0).get(0) ?? 0
+    countUnreadByGroup(
+      conversations.filter((c) => !holdsBackUnread(backgroundState, c)),
+      seenState,
+      () => 0
+    ).get(0) ?? 0
   const label = t("sortBySessionActivity")
 
   return (

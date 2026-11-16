@@ -5,6 +5,7 @@ import {
   applyReorder,
   buildOwnerHeaderIndex,
   buildRows,
+  compareByAttention,
   computeStickyState,
   conversationRowTimestamp,
   flatIndexOfConversation,
@@ -27,6 +28,11 @@ import {
   type ConversationRow,
   type SidebarRow,
 } from "./sidebar-conversation-grouping"
+import {
+  isConversationActive,
+  replaceServerBackgroundPending,
+  useBackgroundPendingStore,
+} from "@/stores/background-pending-store"
 
 const MINUTE = 60_000
 
@@ -2350,5 +2356,71 @@ describe("buildRows — folder paging", () => {
     const all = build({ 1: 15 })
     expect(convCount(all, 1)).toBe(12)
     expect(moreRows(all)).toEqual([])
+  })
+})
+
+// Cowork fork (#386): a conversation waiting on background work, or one the
+// server marked「?」, counts as running — band 0, ahead of the unread ones.
+describe("compareByAttention with background work", () => {
+  it("puts waiting and「?」rows first, then unread, then read", () => {
+    replaceServerBackgroundPending([
+      { conversation_id: 1, count: 1, names: ["Watch CI"] },
+      {
+        conversation_id: 2,
+        count: 0,
+        names: [],
+        state: "uncertain",
+        reason: "agent_exited",
+        tasks: [],
+      },
+    ])
+    const ended = { status: "pending_review" }
+    // Newest last, so the bands — not the time — decide the order.
+    const waiting = conv(1, 10, ended)
+    const unclear = conv(2, 10, ended)
+    const unread = conv(3, 10, ended)
+    const read = conv(4, 10, ended)
+    const isUnread = (c: DbConversationSummary) => c.id !== 4
+    const isActive = (c: DbConversationSummary) =>
+      isConversationActive(useBackgroundPendingStore.getState(), c)
+
+    const sorted = [read, unread, unclear, waiting].sort(
+      compareByAttention(isUnread, undefined, isActive)
+    )
+    expect(sorted.map((c) => c.id)).toEqual([2, 1, 3, 4])
+
+    const grouped = groupByFolderWithReuse(
+      [read, unread, unclear, waiting],
+      "updated",
+      new Map(),
+      undefined,
+      isUnread,
+      isActive
+    )
+    expect(grouped.get(10)!.map((c) => c.id)).toEqual([2, 1, 3, 4])
+
+    const recent = selectRecentConversationsWithReuse(
+      [read, unread, unclear, waiting],
+      true,
+      new Set([10]),
+      [],
+      "all",
+      isUnread,
+      undefined,
+      isActive
+    )
+    expect(recent.map((c) => c.id)).toEqual([2, 1, 3, 4])
+
+    useBackgroundPendingStore.setState({
+      bySession: new Map(),
+      byConversation: new Map(),
+    })
+  })
+
+  it("keeps the old bands without an isActive predicate", () => {
+    const running = conv(1, 10, { status: "in_progress" })
+    const unread = conv(2, 10, { status: "pending_review" })
+    const sorted = [unread, running].sort(compareByAttention(() => true))
+    expect(sorted.map((c) => c.id)).toEqual([1, 2])
   })
 })

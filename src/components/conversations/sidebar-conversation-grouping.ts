@@ -96,21 +96,32 @@ export function compareByPinnedAtDesc(
   return right.id - left.id
 }
 
+/** The running test the attention order uses when the caller passes none:
+ *  the turn is running. */
+export function isInProgress(conv: DbConversationSummary): boolean {
+  return conv.status === "in_progress"
+}
+
 /**
  * jenny fork: the attention order used wherever the sidebar lists sessions
  * "by activity" (the bell's activity view and the Recent section): running
  * (`in_progress`) first, then unread, then the rest, each band newest
  * activity (`updated_at`) first.
+ *
+ * Cowork fork (#386): `isActive` widens "running" — the list passes
+ * `isConversationActive`, so a conversation waiting on background work or
+ * marked「?」by the server sits in the first band too.
  */
 export function compareByAttention(
   isUnread: (conv: DbConversationSummary) => boolean,
   byTime: (
     a: DbConversationSummary,
     b: DbConversationSummary
-  ) => number = compareByUpdatedAtDesc
+  ) => number = compareByUpdatedAtDesc,
+  isActive: (conv: DbConversationSummary) => boolean = isInProgress
 ): (a: DbConversationSummary, b: DbConversationSummary) => number {
   const band = (conv: DbConversationSummary) =>
-    conv.status === "in_progress" ? 0 : isUnread(conv) ? 1 : 2
+    isActive(conv) ? 0 : isUnread(conv) ? 1 : 2
   return (a, b) => band(a) - band(b) || byTime(a, b)
 }
 
@@ -252,7 +263,8 @@ export function groupByFolderWithReuse(
   sortMode: SidebarSortMode,
   prev: Map<number, DbConversationSummary[]>,
   childToParent?: ReadonlyMap<number, number>,
-  isUnread: (conv: DbConversationSummary) => boolean = () => false
+  isUnread: (conv: DbConversationSummary) => boolean = () => false,
+  isActive: (conv: DbConversationSummary) => boolean = isInProgress
 ): Map<number, DbConversationSummary[]> {
   const next = new Map<number, DbConversationSummary[]>()
   for (const conv of filtered) {
@@ -264,7 +276,8 @@ export function groupByFolderWithReuse(
 
   const byAttention = compareByAttention(
     isUnread,
-    sortMode === "updated" ? compareByUpdatedAtDesc : compareByCreatedAtDesc
+    sortMode === "updated" ? compareByUpdatedAtDesc : compareByCreatedAtDesc,
+    isActive
   )
   // jenny fork: a folder's Loop conversation stays on top of its folder.
   const comparator = (a: DbConversationSummary, b: DbConversationSummary) =>
@@ -398,7 +411,8 @@ export function selectRecentConversationsWithReuse(
   prev: DbConversationSummary[],
   filter: SidebarRecentFilter = "all",
   isUnread: (conv: DbConversationSummary) => boolean = () => false,
-  isAwaiting: (conv: DbConversationSummary) => boolean = () => false
+  isAwaiting: (conv: DbConversationSummary) => boolean = () => false,
+  isActive: (conv: DbConversationSummary) => boolean = isInProgress
 ): DbConversationSummary[] {
   const next: DbConversationSummary[] = []
   for (const conv of conversations) {
@@ -413,7 +427,7 @@ export function selectRecentConversationsWithReuse(
     if (filter === "cli" && conv.source !== "cli") continue
     next.push(conv)
   }
-  next.sort(compareByAttention(isUnread))
+  next.sort(compareByAttention(isUnread, undefined, isActive))
   return arraysShallowEqual(prev, next) ? prev : next
 }
 
@@ -1316,6 +1330,9 @@ export function buildRows(args: {
   sessionActivity?: boolean
   /** jenny fork: unread test for the activity view's middle band. */
   isUnread?: (conv: DbConversationSummary) => boolean
+  /** Cowork fork (#386): running test for the activity view's first band
+   *  (default: `in_progress`). */
+  isActive?: (conv: DbConversationSummary) => boolean
   pinned: readonly DbConversationSummary[]
   pinnedExpanded: boolean
   orderedFolderIds: readonly number[]
@@ -1462,7 +1479,13 @@ export function buildRows(args: {
     }
     roots.forEach(visit)
     return [...unique.values()]
-      .sort(compareByAttention(args.isUnread ?? (() => false)))
+      .sort(
+        compareByAttention(
+          args.isUnread ?? (() => false),
+          undefined,
+          args.isActive
+        )
+      )
       .map((conversation) => ({ kind: "conversation", conversation, depth: 0 }))
   }
 

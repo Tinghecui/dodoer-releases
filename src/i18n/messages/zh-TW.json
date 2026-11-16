@@ -2336,6 +2336,7 @@
       "statusUnreadBadge": "已完成，尚未查看",
       "statusUnreadCancelledBadge": "已取消，尚未查看",
       "statusCancelledBadge": "本輪未完成",
+      "statusInterruptedBadge": "被打斷：這一輪沒跑完",
       "statusCancelledUnreadBadge": "本輪未完成，尚未查看",
       "goalActiveBadge": "目標進行中",
       "goalPausedBadge": "目標已暫停",
@@ -3553,6 +3554,11 @@
       "diffDescriptionConflict": "{path} · 磁碟與未儲存內容"
     },
     "chat": {
+      "interruptedTurn": {
+        "notice": "上一輪被打斷了：還沒跑完，程式或伺服器就關閉、當機或重新啟動了。",
+        "continue": "繼續",
+        "prompt": "上一輪還沒跑完就被打斷了。請先檢查已經做了哪些，再從那裡接著做完。"
+      },
       "acpConnections": {
         "actions": {
           "openAgentsSettings": "打開 Agents 管理",

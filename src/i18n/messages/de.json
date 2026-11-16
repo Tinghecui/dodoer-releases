@@ -2336,6 +2336,7 @@
       "statusUnreadBadge": "Fertig – noch nicht angesehen",
       "statusUnreadCancelledBadge": "Abgebrochen – noch nicht angesehen",
       "statusCancelledBadge": "Durchlauf nicht abgeschlossen",
+      "statusInterruptedBadge": "Unterbrochen: Dieser Durchlauf wurde nicht abgeschlossen",
       "statusCancelledUnreadBadge": "Durchlauf nicht abgeschlossen – noch nicht angesehen",
       "goalActiveBadge": "Ziel in Bearbeitung",
       "goalPausedBadge": "Ziel pausiert",
@@ -3553,6 +3554,11 @@
       "diffDescriptionConflict": "{path} · Disk vs ungespeichert"
     },
     "chat": {
+      "interruptedTurn": {
+        "notice": "Der letzte Durchlauf wurde unterbrochen: Die App oder der Server wurde beendet, ist abgestürzt oder wurde neu gestartet, bevor er fertig war.",
+        "continue": "Fortsetzen",
+        "prompt": "Der letzte Durchlauf wurde unterbrochen, bevor er fertig war. Prüfe zuerst, was bereits erledigt ist, und mach dann dort weiter."
+      },
       "acpConnections": {
         "actions": {
           "openAgentsSettings": "Agenten-Einstellungen öffnen",

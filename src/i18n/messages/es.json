@@ -2336,6 +2336,7 @@
       "statusUnreadBadge": "Terminada: aún sin ver",
       "statusUnreadCancelledBadge": "Cancelada: aún sin ver",
       "statusCancelledBadge": "El turno no terminó",
+      "statusInterruptedBadge": "Interrumpido: este turno no terminó",
       "statusCancelledUnreadBadge": "El turno no terminó: aún sin ver",
       "goalActiveBadge": "Objetivo en curso",
       "goalPausedBadge": "Objetivo en pausa",
@@ -3553,6 +3554,11 @@
       "diffDescriptionConflict": "{path} · disco vs sin guardar"
     },
     "chat": {
+      "interruptedTurn": {
+        "notice": "El último turno se interrumpió: la aplicación o el servidor se cerró, falló o se reinició antes de que terminara.",
+        "continue": "Continuar",
+        "prompt": "El último turno se interrumpió antes de terminar. Primero revisa lo que ya se hizo y luego continúa desde ahí."
+      },
       "acpConnections": {
         "actions": {
           "openAgentsSettings": "Abrir ajustes de agentes",

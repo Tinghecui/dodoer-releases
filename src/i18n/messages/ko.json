@@ -2336,6 +2336,7 @@
       "statusUnreadBadge": "완료됨 · 아직 확인하지 않음",
       "statusUnreadCancelledBadge": "취소됨 · 아직 확인하지 않음",
       "statusCancelledBadge": "이번 턴이 완료되지 않음",
+      "statusInterruptedBadge": "중단됨: 이번 턴이 완료되지 않음",
       "statusCancelledUnreadBadge": "이번 턴이 완료되지 않음 · 아직 확인하지 않음",
       "goalActiveBadge": "목표 진행 중",
       "goalPausedBadge": "목표 일시 중지됨",
@@ -3553,6 +3554,11 @@
       "diffDescriptionConflict": "{path} · 디스크 vs 저장되지 않음"
     },
     "chat": {
+      "interruptedTurn": {
+        "notice": "이전 턴이 중단되었습니다: 완료되기 전에 앱 또는 서버가 종료되었거나, 충돌했거나, 다시 시작되었습니다.",
+        "continue": "계속",
+        "prompt": "이전 턴이 완료되기 전에 중단되었습니다. 먼저 이미 완료된 작업을 확인한 다음, 거기서부터 이어서 진행하세요."
+      },
       "acpConnections": {
         "actions": {
           "openAgentsSettings": "에이전트 설정 열기",

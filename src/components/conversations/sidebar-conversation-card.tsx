@@ -86,6 +86,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ConversationStatusDot } from "./conversation-status-dot"
 import { ConversationActivityBadge } from "./conversation-activity-badge"
+import { isInterruptedTurn } from "./interrupted-turn-bar"
 import { useAwaitingUser } from "@/stores/awaiting-user-store"
 import { useBackgroundPending } from "@/stores/background-pending-store"
 import { useIsCanceledTaskConversation } from "@/stores/canceled-task-store"
@@ -730,6 +731,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                         running={isRunning}
                         waiting={isWaiting ? background : null}
                         cancelled={isCancelled}
+                        interrupted={isInterruptedTurn(conversation)}
                         unread={isUnread}
                         taskCanceled={taskCanceled}
                         timeLabel={timeLabel}

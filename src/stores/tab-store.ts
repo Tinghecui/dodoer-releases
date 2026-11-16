@@ -3076,7 +3076,12 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         const cur = prev.get(change.id)
         if (!cur || cur.status === change.status) return
         const next = new Map(prev)
-        next.set(change.id, { ...cur, status: change.status })
+        // 状态一变就不再算被打断（#369）。
+        next.set(change.id, {
+          ...cur,
+          status: change.status,
+          interrupted_at: null,
+        })
         set({ childSummaries: next })
         recomputeTabs()
       } else {

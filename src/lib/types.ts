@@ -818,6 +818,10 @@ export interface DbConversationSummary {
    *  for a `codeg-cli` run. Absent on every other row; another value (from a
    *  newer build) is shown as nothing. */
   source?: string | null
+  /** 这一轮没跑完程序就关了、崩了或被杀了时，服务器标上的时间（ISO 字符串）；
+   *  这时 `status` 是 `cancelled`。用户自己点「停止」的、老服务器发来的行都
+   *  没有它。下一次状态写入就清掉（#369）。 */
+  interrupted_at?: string | null
   /**
    * Ids of the {@link ConversationTagDetail tags} on this conversation,
    * ascending. Absent when it has none (the backend omits an empty list). May

@@ -1,6 +1,7 @@
 "use client"
 
 import {
+  CirclePause,
   Hourglass,
   ListTodo,
   Loader2,
@@ -57,6 +58,7 @@ export function ConversationActivityBadge({
   running,
   waiting,
   cancelled,
+  interrupted = false,
   unread = false,
   taskCanceled = false,
   timeLabel,
@@ -70,6 +72,10 @@ export function ConversationActivityBadge({
    *  `useBackgroundPending`); ignored while `running`. */
   waiting?: { count: number; names: string[] } | null
   cancelled: boolean
+  /** 这次取消是程序停机、崩溃打断的（`isInterruptedTurn`，#369）：只和
+   *  `cancelled` 一起用，画暂停圈不画红叉；排在 awaiting / running / waiting
+   *  后面。 */
+  interrupted?: boolean
   /** Unread, shown on the cancelled cross only (see above); the other marks
    *  leave unread to the caller. */
   unread?: boolean
@@ -134,6 +140,30 @@ export function ConversationActivityBadge({
         <span className="inline-flex animate-pulse" aria-hidden>
           <Hourglass className="h-3.5 w-3.5 text-[var(--st-run)]" />
         </span>
+        <span className="sr-only">{title}</span>
+      </span>
+    )
+  }
+  if (cancelled && interrupted) {
+    // 程序停了、这一轮没跑完（#369）：暂停圈代替红叉，未读点照红叉的贴法。
+    const title = t("statusInterruptedBadge")
+    return (
+      <span
+        className="relative inline-flex shrink-0 items-center justify-center"
+        title={title}
+        data-turn-interrupted=""
+        data-unread={unread ? "" : undefined}
+      >
+        <CirclePause
+          className="h-3.5 w-3.5 text-[var(--st-unread)]"
+          aria-hidden
+        />
+        {unread && (
+          <span
+            aria-hidden
+            className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-[var(--st-unread)] ring-1 ring-sidebar"
+          />
+        )}
         <span className="sr-only">{title}</span>
       </span>
     )

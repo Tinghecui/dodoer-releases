@@ -77,6 +77,8 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
           } else {
             store.updateConversationLocal(change.id, {
               status: change.status,
+              // 状态一变就不再算被打断（#369）。
+              interrupted_at: null,
             })
             syncOpenViewerDetail(change.id)
           }
@@ -270,6 +272,7 @@ export function ConversationStatusEventBridge() {
       .getState()
       .updateConversationLocal(envelope.conversation_id, {
         status: envelope.status,
+        interrupted_at: null,
       })
   })
   return null

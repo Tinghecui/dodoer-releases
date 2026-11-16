@@ -73,6 +73,31 @@ beforeEach(() => {
   resetAppWorkspaceStore()
 })
 
+// #369：状态一变，这一行就不再算被打断。
+describe("updateConversationLocal — interrupted_at", () => {
+  const AT = "2026-11-16T08:00:00Z"
+  const row = (id: number) =>
+    useAppWorkspaceStore.getState().conversations.find((c) => c.id === id)
+
+  it("clears interrupted_at on a status patch", () => {
+    const store = useAppWorkspaceStore.getState()
+    store.applyConversationUpsert(
+      makeSummary({ id: 1, status: "cancelled", interrupted_at: AT })
+    )
+    store.updateConversationLocal(1, { status: "in_progress" })
+    expect(row(1)?.interrupted_at ?? null).toBeNull()
+  })
+
+  it("keeps it on a patch that does not touch the status", () => {
+    const store = useAppWorkspaceStore.getState()
+    store.applyConversationUpsert(
+      makeSummary({ id: 1, status: "cancelled", interrupted_at: AT })
+    )
+    store.updateConversationLocal(1, { title: "Renamed" })
+    expect(row(1)?.interrupted_at).toBe(AT)
+  })
+})
+
 describe("updateConversationLocal — stats reference stability", () => {
   function seedTwo() {
     const store = useAppWorkspaceStore.getState()

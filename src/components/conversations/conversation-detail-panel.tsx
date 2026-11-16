@@ -87,6 +87,10 @@ import { useAdvertisedGoalActions } from "@/hooks/use-goal-actions"
 import { ConversationShell } from "@/components/chat/conversation-shell"
 import { LoopConversationView } from "@/components/loop/loop-conversation-view"
 import { SessionConfigStaleBanner } from "@/components/chat/session-config-stale-banner"
+import {
+  InterruptedTurnBar,
+  isInterruptedTurn,
+} from "@/components/conversations/interrupted-turn-bar"
 import { PiProjectTrustBanner } from "@/components/chat/pi-project-trust-banner"
 import { FeedbackNotesDisplay } from "@/components/chat/feedback-notes-display"
 import { FeedbackDialog } from "@/components/chat/feedback-dialog"
@@ -1043,6 +1047,13 @@ const ConversationTabView = memo(function ConversationTabView({
       : (s.conversations.find((c) => c.id === dbConversationId)?.updated_at ??
         null)
   )
+  // #369：上一轮被程序停机、崩溃打断时，这一行的 `interrupted_at`（只认
+  // 侧栏那张表里的行，委派出去的子对话不在里面，不出提示）。
+  const rowInterruptedAt = useAppWorkspaceStore((s) => {
+    if (dbConversationId == null) return null
+    const row = s.conversations.find((c) => c.id === dbConversationId)
+    return row && isInterruptedTurn(row) ? (row.interrupted_at ?? null) : null
+  })
   const rowUpdatedAtRef = useRef(rowUpdatedAt)
   useEffect(() => {
     rowUpdatedAtRef.current = rowUpdatedAt
@@ -1916,6 +1927,24 @@ const ConversationTabView = memo(function ConversationTabView({
     },
     [conn.connectionId, tAsyncTasks]
   )
+
+  // #369：点过「继续」的那次打断（记 `interrupted_at`），提示马上收起，不等
+  // 服务器回状态；以后又被打断一次（时间不同）照样再出。
+  const tInterruptedTurn = useTranslations("Folder.chat.interruptedTurn")
+  const [continuedInterruptedAt, setContinuedInterruptedAt] = useState<
+    string | null
+  >(null)
+  const showInterruptedTurn =
+    rowInterruptedAt != null && rowInterruptedAt !== continuedInterruptedAt
+  /** 「继续」就是一次普通发送：发一句固定的话，让智能体先检查再接着做。 */
+  const handleContinueInterrupted = useCallback(() => {
+    setContinuedInterruptedAt(rowInterruptedAt)
+    const text = tInterruptedTurn("prompt")
+    handleSend({
+      blocks: [{ type: "text", text }],
+      displayText: text,
+    })
+  }, [handleSend, rowInterruptedAt, tInterruptedTurn])
 
   /** Turn Claude Code's Remote Control off the way the user would: by sending
    *  `/remote-control off`, which the adapter answers itself. */
@@ -2849,6 +2878,10 @@ const ConversationTabView = memo(function ConversationTabView({
       getSentHistory={getSentHistory}
       topBanner={
         <>
+          <InterruptedTurnBar
+            interrupted={showInterruptedTurn}
+            onContinue={handleContinueInterrupted}
+          />
           <SessionConfigStaleBanner contextKey={tabId} />
           <PiProjectTrustBanner
             contextKey={tabId}

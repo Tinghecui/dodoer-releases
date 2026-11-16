@@ -2336,6 +2336,7 @@
       "statusUnreadBadge": "Terminée — pas encore consultée",
       "statusUnreadCancelledBadge": "Annulée — pas encore consultée",
       "statusCancelledBadge": "Tour non terminé",
+      "statusInterruptedBadge": "Interrompu : ce tour ne s'est pas terminé",
       "statusCancelledUnreadBadge": "Tour non terminé — pas encore consulté",
       "goalActiveBadge": "Objectif en cours",
       "goalPausedBadge": "Objectif en pause",
@@ -3553,6 +3554,11 @@
       "diffDescriptionConflict": "{path} · disque vs non enregistré"
     },
     "chat": {
+      "interruptedTurn": {
+        "notice": "Le dernier tour a été interrompu : l'application ou le serveur s'est fermé, a planté ou a redémarré avant la fin.",
+        "continue": "Continuer",
+        "prompt": "Le dernier tour a été interrompu avant la fin. Vérifie d'abord ce qui a déjà été fait, puis reprends à partir de là."
+      },
       "acpConnections": {
         "actions": {
           "openAgentsSettings": "Ouvrir les paramètres des agents",

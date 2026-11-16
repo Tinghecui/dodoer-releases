@@ -2336,6 +2336,7 @@
       "statusUnreadBadge": "完了・未確認",
       "statusUnreadCancelledBadge": "キャンセル済み・未確認",
       "statusCancelledBadge": "このターンは完了していません",
+      "statusInterruptedBadge": "中断：このターンは完了していません",
       "statusCancelledUnreadBadge": "このターンは完了していません・未確認",
       "goalActiveBadge": "ゴール進行中",
       "goalPausedBadge": "ゴール一時停止中",
@@ -3553,6 +3554,11 @@
       "diffDescriptionConflict": "{path} · ディスク vs 未保存"
     },
     "chat": {
+      "interruptedTurn": {
+        "notice": "前回のターンは中断されました：完了する前に、アプリまたはサーバーが終了、クラッシュ、または再起動しました。",
+        "continue": "続ける",
+        "prompt": "前回のターンは完了する前に中断されました。まず、すでに完了した作業を確認し、そこから続けてください。"
+      },
       "acpConnections": {
         "actions": {
           "openAgentsSettings": "エージェント設定を開く",

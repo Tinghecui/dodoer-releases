@@ -100,7 +100,10 @@ export interface AppWorkspaceStoreState {
   updateConversationLocal: (
     id: number,
     patch: Partial<
-      Pick<DbConversationSummary, "status" | "title" | "pinned_at" | "tag_ids">
+      Pick<
+        DbConversationSummary,
+        "status" | "title" | "pinned_at" | "tag_ids" | "interrupted_at"
+      >
     >
   ) => void
   applyConversationUpsert: (summary: DbConversationSummary) => void
@@ -433,6 +436,9 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
       const bumpUpdatedAt = !("pinned_at" in patch) && !("tag_ids" in patch)
       next[idx] = {
         ...next[idx],
+        // 状态一变就不再算被打断（#369）：服务器写状态时也清掉
+        // `interrupted_at`，这里本地先清，手动改状态的不用等它回来。
+        ...("status" in patch ? { interrupted_at: null } : {}),
         ...patch,
         ...(bumpUpdatedAt ? { updated_at: new Date().toISOString() } : {}),
       }

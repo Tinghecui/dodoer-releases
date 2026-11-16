@@ -2336,6 +2336,7 @@
       "statusUnreadBadge": "اكتملت — لم تُعرض بعد",
       "statusUnreadCancelledBadge": "أُلغيت — لم تُعرض بعد",
       "statusCancelledBadge": "لم يكتمل هذا الدور",
+      "statusInterruptedBadge": "مُقاطَع: لم يكتمل هذا الدور",
       "statusCancelledUnreadBadge": "لم يكتمل هذا الدور — لم يُعرض بعد",
       "goalActiveBadge": "الهدف قيد التنفيذ",
       "goalPausedBadge": "الهدف متوقف مؤقتًا",
@@ -3553,6 +3554,11 @@
       "diffDescriptionConflict": "{path} · القرص مقابل غير المحفوظ"
     },
     "chat": {
+      "interruptedTurn": {
+        "notice": "تمت مقاطعة الدور الأخير: أُغلق التطبيق أو الخادم أو تعطّل أو أُعيد تشغيله قبل أن يكتمل.",
+        "continue": "متابعة",
+        "prompt": "تمت مقاطعة الدور الأخير قبل أن يكتمل. تحقّق أولًا مما تم إنجازه بالفعل، ثم تابع من هناك."
+      },
       "acpConnections": {
         "actions": {
           "openAgentsSettings": "فتح إعدادات الوكلاء",

@@ -109,6 +109,8 @@ export function useSubsessionSync(params: {
           nextArr[idx] = {
             ...kids[idx],
             status,
+            // 状态一变就不再算被打断（#369）。
+            interrupted_at: null,
             updated_at: new Date().toISOString(),
           }
           const next = new Map(prev)

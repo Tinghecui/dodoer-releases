@@ -2336,6 +2336,7 @@
       "statusUnreadBadge": "Finished — not viewed yet",
       "statusUnreadCancelledBadge": "Cancelled — not viewed yet",
       "statusCancelledBadge": "Turn didn't finish",
+      "statusInterruptedBadge": "Interrupted: this turn did not finish",
       "statusCancelledUnreadBadge": "Turn didn't finish — not viewed yet",
       "goalActiveBadge": "Goal in progress",
       "goalPausedBadge": "Goal paused",
@@ -3553,6 +3554,11 @@
       "diffDescriptionConflict": "{path} · disk vs unsaved"
     },
     "chat": {
+      "interruptedTurn": {
+        "notice": "The last turn was interrupted: the app or server closed, crashed or restarted before it finished.",
+        "continue": "Continue",
+        "prompt": "The last turn was interrupted before it finished. First check what was already done, then continue from there."
+      },
       "acpConnections": {
         "actions": {
           "openAgentsSettings": "Open Agents settings",

@@ -1505,6 +1505,19 @@ describe("SidebarConversationCard turn that did not finish", () => {
     )
   })
 
+  // #369：程序停了、这一轮没跑完的，画暂停圈，不画红叉。
+  it("marks a turn interrupted by a shutdown with the pause mark", () => {
+    const { container } = renderCard({
+      ...ended("cancelled"),
+      interrupted_at: "2026-11-16T08:00:00Z",
+    })
+    const mark = container.querySelector("[data-turn-interrupted]")
+    expect(mark).not.toBeNull()
+    expect(mark?.hasAttribute("data-unread")).toBe(true)
+    expect(unfinished(container)).toBeNull()
+    expect(container.querySelector("[data-jenny-unread-dot]")).toBeNull()
+  })
+
   it("reads plainly unfinished once accepted, canceled task or not", () => {
     act(() => publishCanceledTasks([canceledTask(41)]))
     const { container, getByText } = renderCard(ended("cancelled"))

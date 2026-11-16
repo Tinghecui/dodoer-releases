@@ -21,6 +21,7 @@ import {
 import { useLocale, useTranslations } from "next-intl"
 import { AgentIcon } from "@/components/agent-icon"
 import { ConversationActivityBadge } from "@/components/conversations/conversation-activity-badge"
+import { isInterruptedTurn } from "@/components/conversations/interrupted-turn-bar"
 import { formatRelative } from "@/components/conversations/sidebar-conversation-grouping"
 import {
   UnreadDot,
@@ -331,6 +332,7 @@ export const MindMapLeaf = memo(function MindMapLeaf({
                 awaiting={awaiting}
                 running={running}
                 cancelled={cancelled}
+                interrupted={isInterruptedTurn(conversation)}
                 unread={isUnread}
                 taskCanceled={taskCanceled}
                 timeLabel={timeLabel}

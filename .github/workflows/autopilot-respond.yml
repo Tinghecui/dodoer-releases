@@ -1,0 +1,99 @@
+# 公开镜像 Tinghecui/dodoer-releases：自动驾驶的应答员和规则员（源仓库 .cowork/autopilot/design.md 第 3 步；文件在源仓库 .github/public/workflows/ 里维护）。
+# 仓库所有者在源仓库的收件箱条目（issue「待你决定」）或等人看的 PR（「需看图」「需你定」）下回了一句话：读懂它、落成动作（写「定了」、换标签、放行或关 PR、派返工），
+# 再看这次的回答能不能写成规则（攒进源仓库分支 autopilot/rules 的一个 PR，3 级，人合）。回答是一个字母时不调 Claude。
+# 谁派：源仓库的 autopilot-answer.yml（issue_comment，用 AIQA_PRIVATE_TOKEN 派过来）；派丢了的，调度台（autopilot-tick.yml）在回答后 10～70 分钟补派。
+# 这里只是个壳：取源仓库代码（默认分支），装 node，然后 exec .cowork/autopilot/sealed.sh respond；日志里只有每个阶段一行的进度，
+# 最后的 seal job 派 ai-qa-seal 核对（调度台用 GITHUB_TOKEN 派的运行不触发 workflow_run）。
+# 凭证在 Environment「ai-qa」里，只有 main 分支用得到；放行 PR 的 commit status 用仓库级的 SOURCE_STATUS_TOKEN。
+# **输入会原样出现在公开日志里**：只有条目号和评论 id（都是数字），回答的内容由脚本自己去源仓库读。
+# 仓库变量：AUTOPILOT（off / record / on，默认 record：只在条目上留「本来会做什么」的回执）、AUTOPILOT_CLAUDE_AUTH（api / oauth，默认 api）、
+# AUTOPILOT_RESPOND_MODEL（默认 claude-opus-5-5，应答员和规则员都用）、AUTOPILOT_DAILY_USD（默认 15，和别的角色共用）。
+name: autopilot-respond
+run-name: "autopilot-respond #${{ inputs.item }} comment ${{ inputs.comment }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      item:
+        description: "源仓库的条目号或 PR 号（0 = 探针：只试派活和令牌通不通）"
+        required: true
+      comment:
+        description: "那条回答的评论 id（探针填 0）"
+        required: true
+
+permissions:
+  contents: read
+
+# 同一个条目一次只处理一条回答（不取消：做到一半取消，可能「定了」写了、回执没写）
+concurrency:
+  group: autopilot-respond-${{ inputs.item }}
+  cancel-in-progress: false
+
+jobs:
+  respond:
+    if: vars.AUTOPILOT != 'off'
+    runs-on: ubuntu-24.04
+    environment: ai-qa
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write # 返工要派 autopilot-fix
+    env:
+      SOURCE_REPO: Tinghecui/cowork-codeg
+      ITEM: ${{ inputs.item }}
+      COMMENT: ${{ inputs.comment }}
+      AUTOPILOT: ${{ vars.AUTOPILOT || 'record' }}
+      CLAUDE_AUTH: ${{ vars.AUTOPILOT_CLAUDE_AUTH || 'api' }}
+      MODEL: ${{ vars.AUTOPILOT_RESPOND_MODEL || 'claude-opus-5-5' }}
+      DAILY_USD: ${{ vars.AUTOPILOT_DAILY_USD || '15' }}
+      W: /home/runner/autopilot-work
+    steps:
+      - name: 取源码
+        env:
+          PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$ITEM" =~ ^[0-9]+$ && "$COMMENT" =~ ^[0-9]+$ ]] || { echo "item、comment 要是数字"; exit 1; }
+          git init -q .
+          # 默认分支上的脚本；令牌只在 git 这个进程的环境里，不进命令行、不进 .git/config
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PRIVATE_TOKEN" | base64 -w0)" \
+            git fetch -q --depth 1 "https://github.com/${SOURCE_REPO}.git" HEAD 2>/dev/null || { echo "fetch failed"; exit 1; }
+          git checkout -q --detach FETCH_HEAD
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: run
+        env:
+          PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+          STATUS_TOKEN: ${{ secrets.SOURCE_STATUS_TOKEN }}
+          PUBLIC_TOKEN: ${{ github.token }}
+          # 一次只给一种 Claude 凭证（AUTOPILOT_CLAUDE_AUTH），同 autopilot-fix.yml
+          ANTHROPIC_KEY: ${{ vars.AUTOPILOT_CLAUDE_AUTH != 'oauth' && secrets.CODEG_AGENT_ANTHROPIC_KEY || '' }}
+          OAUTH_TOKEN: ${{ vars.AUTOPILOT_CLAUDE_AUTH == 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: |
+          set -euo pipefail
+          # 凭证写进只有本用户能读的文件、从环境里拿掉再 exec（同 autopilot-fix.yml）
+          d="$RUNNER_TEMP/autopilot-secrets"; rm -rf "$d"; mkdir -m 700 "$d"
+          printf '%s' "$PRIVATE_TOKEN" > "$d/gh"; printf '%s' "$ANTHROPIC_KEY" > "$d/anthropic"; printf '%s' "$OAUTH_TOKEN" > "$d/oauth"
+          printf '%s' "$STATUS_TOKEN" > "$d/status"; printf '%s' "$PUBLIC_TOKEN" > "$d/public"
+          unset PRIVATE_TOKEN ANTHROPIC_KEY OAUTH_TOKEN STATUS_TOKEN PUBLIC_TOKEN
+          export AUTOPILOT_SECRETS="$d"
+          exec bash .cowork/autopilot/sealed.sh respond
+
+  # 调度台用 GITHUB_TOKEN 补派的运行，结束时不触发 ai-qa-seal 的 workflow_run：自己派一次日志核对（同 autopilot-review.yml）
+  seal:
+    name: 派日志核对
+    needs: respond
+    if: always() && vars.AUTOPILOT != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: 派 ai-qa-seal
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ai-qa-seal.yml -R "$GITHUB_REPOSITORY" --ref main -f run="$GITHUB_RUN_ID"

@@ -13,7 +13,9 @@ use crate::app_error::AppCommandError;
 use crate::browser::agent::GrantLevel;
 use crate::browser::chrome::activity::ActivityEntry;
 use crate::browser::chrome::sensitive::{self, SiteEdits, DEFAULT_SITES};
-use crate::browser::chrome::{ChromeLending, ChromeLink, ChromeStatus, ChromeTab, STATUS_EVENT, TABS_EVENT};
+use crate::browser::chrome::{
+    ChromeLending, ChromeLink, ChromeStatus, ChromeTab, SITES_EVENT, STATUS_EVENT, TABS_EVENT,
+};
 use crate::browser::{chrome_share, BrowserRegistry};
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
@@ -151,14 +153,26 @@ pub async fn browser_chrome_set_eval(
 }
 
 /// The sites agents are kept off in the person's Chrome, for the settings
-/// page: the default list, and the person's edits to it
-/// (`chrome::sensitive`).
+/// page: the default list (flat, and in its groups), the person's edits to
+/// it, and whether they have paused it (`chrome::sensitive`).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChromeSites {
     pub defaults: Vec<String>,
     pub blocked: Vec<String>,
     pub allowed: Vec<String>,
+    pub paused: bool,
+    /// `defaults` by kind — mail, accounts, payments, banks, exchanges, in
+    /// that order — so the page needs no table of its own.
+    pub groups: Vec<ChromeSiteGroup>,
+}
+
+/// One kind of site in the default list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChromeSiteGroup {
+    pub id: String,
+    pub sites: Vec<String>,
 }
 
 impl From<SiteEdits> for ChromeSites {
@@ -167,6 +181,14 @@ impl From<SiteEdits> for ChromeSites {
             defaults: DEFAULT_SITES.iter().map(|site| site.to_string()).collect(),
             blocked: edits.blocked,
             allowed: edits.allowed,
+            paused: edits.paused,
+            groups: sensitive::site_groups()
+                .into_iter()
+                .map(|(id, sites)| ChromeSiteGroup {
+                    id: id.to_string(),
+                    sites: sites.iter().map(|site| site.to_string()).collect(),
+                })
+                .collect(),
         }
     }
 }
@@ -179,20 +201,24 @@ pub async fn browser_chrome_sites() -> Result<ChromeSites, AppCommandError> {
     Ok(sensitive::current().into())
 }
 
-/// The person's edits: sites added (`blocked`) and default entries let go of
-/// (`allowed`). Kept in the data directory and in force at once; a Chrome tab
-/// agents have on a site now kept off is let go of. The settings page asks
-/// the person before it lets go of a default entry; an agent cannot reach
-/// this.
+/// The person's edits: sites added (`blocked`), default entries let go of
+/// (`allowed`) and, when given, the pause (`paused`; left out — as an older
+/// page does — it stays as it is). Kept in the data directory and in force at
+/// once; a Chrome tab agents have on a site now kept off is let go of. Every
+/// window hears of it (`browser://chrome-sites`). Only the app's own shell
+/// reaches this: no server route, no agent tool.
 #[tauri::command]
 pub async fn browser_chrome_set_sites(
     app: AppHandle,
     registry: State<'_, BrowserRegistry>,
     blocked: Vec<String>,
     allowed: Vec<String>,
+    paused: Option<bool>,
 ) -> Result<ChromeSites, AppCommandError> {
-    let edits = SiteEdits { blocked, allowed };
-    Ok(chrome_share::set_sites(&app, &registry, &edits)?.into())
+    let kept: ChromeSites =
+        chrome_share::set_sites(&app, &registry, blocked, allowed, paused)?.into();
+    emit_event(&EventEmitter::Tauri(app.clone()), SITES_EVENT, &kept);
+    Ok(kept)
 }
 
 /// Bring the Chrome tab `tab_id` (an id from the tab list) to the front.
@@ -241,4 +267,44 @@ pub async fn browser_chrome_open_privacy_settings(app: AppHandle) -> Result<(), 
     app.opener()
         .open_url(FILES_AND_FOLDERS_PANE, None::<&str>)
         .map_err(|e| AppCommandError::configuration_invalid(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_answer_carries_the_pause_and_the_groups() {
+        let edits = SiteEdits {
+            blocked: vec!["example.com".into()],
+            allowed: vec!["paypal.com".into()],
+            paused: true,
+        }
+        .normalized();
+        let sites = ChromeSites::from(edits);
+        assert!(sites.paused);
+        assert_eq!(sites.blocked, vec!["example.com".to_string()]);
+        assert_eq!(sites.allowed, vec!["paypal.com".to_string()]);
+        let ids: Vec<&str> = sites.groups.iter().map(|g| g.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["mail", "accounts", "payments", "banks", "exchanges"]
+        );
+        // 五组合起来就是平铺的默认名单，不重不漏。
+        let mut grouped: Vec<String> = sites.groups.iter().flat_map(|g| g.sites.clone()).collect();
+        let mut defaults = sites.defaults.clone();
+        assert_eq!(defaults.len(), 52);
+        assert_eq!(grouped.len(), defaults.len());
+        grouped.sort();
+        defaults.sort();
+        assert_eq!(grouped, defaults);
+        let json = serde_json::to_value(&sites).unwrap();
+        assert_eq!(json["paused"], true);
+        assert_eq!(json["groups"][0]["id"], "mail");
+        assert!(json["groups"][0]["sites"]
+            .as_array()
+            .unwrap()
+            .contains(&"mail.google.com".into()));
+        assert!(!ChromeSites::from(SiteEdits::default()).paused);
+    }
 }

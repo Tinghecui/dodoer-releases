@@ -18,6 +18,10 @@
 //! computer, whichever window or server an agent works for, and it holds from
 //! the moment the app starts.
 //!
+//! 同一个文件里还有总开关 `paused`（暂停拦截）：暂停时智能体可以用所有网站，
+//! 名单留着不动，重新打开就恢复。只有用户在 app 自己的窗口里能拨它，没有
+//! 服务器路由、没有智能体工具能改。缺了、文件坏了都按没暂停算。
+//!
 //! Pure rules and a file, compiled in both runtimes for the sake of their
 //! tests; the desktop app is their only user.
 
@@ -102,6 +106,10 @@ pub struct SiteEdits {
     pub blocked: Vec<String>,
     /// Entries of [`DEFAULT_SITES`] the person lets agents use after all.
     pub allowed: Vec<String>,
+    /// 用户在界面上拨的总开关：暂停拦截。暂停时什么都不拦，`blocked`、
+    /// `allowed` 原样留着，重新打开就和暂停前一样。老文件里没有这一项，
+    /// 读出来是没暂停。
+    pub paused: bool,
 }
 
 impl SiteEdits {
@@ -120,13 +128,37 @@ impl SiteEdits {
             .into_iter()
             .filter(|site| !is_default(site))
             .collect();
-        SiteEdits { blocked, allowed }
+        SiteEdits {
+            blocked,
+            allowed,
+            paused: self.paused,
+        }
+    }
+
+    /// 界面发来的新名单：`blocked`、`allowed` 换成新的；`paused` 没带
+    /// （老界面只发两份名单）时保持现在的暂停状态，带了就按它。
+    pub fn edited(
+        &self,
+        blocked: Vec<String>,
+        allowed: Vec<String>,
+        paused: Option<bool>,
+    ) -> SiteEdits {
+        SiteEdits {
+            blocked,
+            allowed,
+            paused: paused.unwrap_or(self.paused),
+        }
+        .normalized()
     }
 
     /// Whether agents are kept off `host`: on a default entry the person did
     /// not let go of, or on one they added — the site itself or any of its
-    /// subdomains.
+    /// subdomains. Never while the person has paused the list.
     pub fn blocks_host(&self, host: &str) -> bool {
+        // 暂停拦截：名单留着，但什么都不拦。
+        if self.paused {
+            return false;
+        }
         let host = host.trim_end_matches('.').to_ascii_lowercase();
         let kept_default = DEFAULT_SITES
             .iter()
@@ -228,6 +260,27 @@ fn covers(site: &str, host: &str) -> bool {
             .is_some_and(|rest| rest.ends_with('.'))
 }
 
+/// 默认名单按类别分组，界面按这个顺序显示：邮箱、密码和账号、支付、银行、
+/// 交易所。每组是 [`DEFAULT_SITES`] 里连着的一段（见那边的注释），
+/// 合起来正好是整份默认名单。
+pub fn site_groups() -> Vec<(&'static str, &'static [&'static str])> {
+    SITE_GROUPS
+        .iter()
+        .map(|(id, start, end)| (*id, &DEFAULT_SITES[*start..*end]))
+        .collect()
+}
+
+/// 每组在 [`DEFAULT_SITES`] 里的起止位置（含头不含尾），按界面的顺序。
+/// 往默认名单里加网站时跟着改这里；`the_groups_are_the_default_list_in_order`
+/// 查五组合起来不重不漏。
+const SITE_GROUPS: &[(&str, usize, usize)] = &[
+    ("mail", 0, 15),
+    ("accounts", 20, 28),
+    ("payments", 15, 20),
+    ("banks", 28, 49),
+    ("exchanges", 49, 52),
+];
+
 /// The edits in force, read from the data directory on first use.
 static CURRENT: RwLock<Option<SiteEdits>> = RwLock::new(None);
 
@@ -241,12 +294,20 @@ pub fn current() -> SiteEdits {
         .clone()
 }
 
-/// Keep `edits` (normalized) in the data directory and put them in force at
-/// once. Answers with what was kept.
-pub fn set_current(edits: &SiteEdits) -> std::io::Result<SiteEdits> {
-    let edits = edits.normalized();
+/// Keep the new lists (and the pause, when `paused` is given; otherwise the
+/// one in force — [`SiteEdits::edited`]) in the data directory and put them
+/// in force at once. Answers with what was kept.
+pub fn set_current(
+    blocked: Vec<String>,
+    allowed: Vec<String>,
+    paused: Option<bool>,
+) -> std::io::Result<SiteEdits> {
+    let path = crate::paths::codeg_chrome_sites_path();
     let mut slot = CURRENT.write().unwrap_or_else(|p| p.into_inner());
-    edits.save_to(&crate::paths::codeg_chrome_sites_path())?;
+    let edits = slot
+        .get_or_insert_with(|| SiteEdits::load_from(&path))
+        .edited(blocked, allowed, paused);
+    edits.save_to(&path)?;
     *slot = Some(edits.clone());
     Ok(edits)
 }
@@ -270,8 +331,117 @@ mod tests {
         SiteEdits {
             blocked: blocked.iter().map(|s| s.to_string()).collect(),
             allowed: allowed.iter().map(|s| s.to_string()).collect(),
+            paused: false,
         }
         .normalized()
+    }
+
+    fn strings(sites: &[&str]) -> Vec<String> {
+        sites.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn paused_blocks_nothing_and_keeps_the_lists() {
+        let mut list = edits(&["example.com"], &["mail.163.com"]);
+        list.paused = true;
+        let list = list.normalized();
+        assert!(list.paused);
+        assert!(!list.blocks_host("mail.google.com"));
+        assert!(!list.blocks_host("example.com"));
+        assert!(!list.blocks_host("shop.example.com"));
+        assert!(!list.blocks_url(&Url::parse("https://www.paypal.com/").unwrap()));
+        assert_eq!(list.blocked, strings(&["example.com"]));
+        assert_eq!(list.allowed, strings(&["mail.163.com"]));
+        // 重新打开：和暂停前一样。
+        let resumed = SiteEdits {
+            paused: false,
+            ..list
+        };
+        assert!(resumed.blocks_host("mail.google.com"));
+        assert!(resumed.blocks_host("example.com"));
+        assert!(!resumed.blocks_host("mail.163.com"));
+    }
+
+    #[test]
+    fn paused_survives_a_save_and_a_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SITES_FILE);
+        let mut list = edits(&["example.com"], &["mail.163.com"]);
+        list.paused = true;
+        list.save_to(&path).unwrap();
+        let back = SiteEdits::load_from(&path);
+        assert!(back.paused);
+        assert_eq!(back.blocked, strings(&["example.com"]));
+        assert_eq!(back.allowed, strings(&["mail.163.com"]));
+        assert_eq!(back, list);
+    }
+
+    #[test]
+    fn an_old_file_without_paused_is_not_paused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SITES_FILE);
+        std::fs::write(
+            &path,
+            r#"{"blocked": ["example.com"], "allowed": ["paypal.com"]}"#,
+        )
+        .unwrap();
+        let back = SiteEdits::load_from(&path);
+        assert!(!back.paused);
+        assert!(back.blocks_host("mail.google.com"));
+        assert!(back.blocks_host("example.com"));
+        // 暂停那一项写坏了，整份按读不出来算：默认名单、没暂停。
+        std::fs::write(&path, r#"{"paused": "yes"}"#).unwrap();
+        assert!(!SiteEdits::load_from(&path).paused);
+    }
+
+    #[test]
+    fn edited_keeps_the_pause_unless_told() {
+        let mut paused = edits(&[], &[]);
+        paused.paused = true;
+        // 老界面只发两份名单：暂停状态不变。
+        let kept = paused.edited(strings(&["example.com"]), strings(&["paypal.com"]), None);
+        assert!(kept.paused);
+        assert_eq!(kept.blocked, strings(&["example.com"]));
+        assert_eq!(kept.allowed, strings(&["paypal.com"]));
+        let running = edits(&[], &[]);
+        assert!(!running.edited(Vec::new(), Vec::new(), None).paused);
+        // 带了就按它存。
+        assert!(running.edited(Vec::new(), Vec::new(), Some(true)).paused);
+        assert!(!paused.edited(Vec::new(), Vec::new(), Some(false)).paused);
+    }
+
+    #[test]
+    fn the_groups_are_the_default_list_in_order() {
+        let groups = site_groups();
+        let ids: Vec<&str> = groups.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            ids,
+            vec!["mail", "accounts", "payments", "banks", "exchanges"]
+        );
+        let mut all: Vec<&str> = groups
+            .iter()
+            .flat_map(|(_, sites)| sites.iter().copied())
+            .collect();
+        assert_eq!(all.len(), DEFAULT_SITES.len());
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), DEFAULT_SITES.len(), "a site is in two groups");
+        let mut defaults = DEFAULT_SITES.to_vec();
+        defaults.sort_unstable();
+        assert_eq!(all, defaults);
+        let group = |id: &str| groups.iter().find(|(g, _)| *g == id).unwrap().1;
+        assert!(group("mail").contains(&"mail.google.com"));
+        assert_eq!(group("mail").len(), 15);
+        assert!(group("accounts").contains(&"1password.com"));
+        assert_eq!(group("accounts").len(), 8);
+        assert!(group("payments").contains(&"paypal.com"));
+        assert_eq!(group("payments").len(), 5);
+        assert!(group("banks").contains(&"icbc.com.cn"));
+        assert_eq!(group("banks").len(), 21);
+        assert_eq!(
+            group("exchanges"),
+            &["binance.com", "okx.com", "coinbase.com"]
+        );
     }
 
     #[test]

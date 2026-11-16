@@ -50,3 +50,7 @@ pub const STATUS_EVENT: &str = "browser://chrome";
 /// Backend → frontend: the connected Chrome's tabs changed (`Vec<ChromeTab>`,
 /// empty when not connected).
 pub const TABS_EVENT: &str = "browser://chrome-tabs";
+
+/// Backend → frontend: the sensitive-site list or its pause changed (the
+/// same answer as `browser_chrome_sites`), so every window shows it.
+pub const SITES_EVENT: &str = "browser://chrome-sites";

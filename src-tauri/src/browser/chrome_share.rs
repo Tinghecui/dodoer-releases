@@ -635,24 +635,35 @@ fn release(app: &AppHandle, registry: &BrowserRegistry, tab_id: &str, generation
 /// Put the person's edits to the sensitive sites in force (and in the data
 /// directory), then let go of every Chrome tab agents have — handed over or
 /// their own — that is on a site now kept off: the way a tab that goes to
-/// such a site is let go of. The tabs stay open in Chrome. Answers with the
-/// edits as kept.
+/// such a site is let go of. The tabs stay open in Chrome. `paused` left out
+/// keeps the pause as it is. Pausing lets go of nothing (nothing is kept
+/// off); ending the pause lets go of what is on the list again. Answers with
+/// the edits as kept.
 pub fn set_sites(
     app: &AppHandle,
     registry: &BrowserRegistry,
-    edits: &sensitive::SiteEdits,
+    blocked: Vec<String>,
+    allowed: Vec<String>,
+    paused: Option<bool>,
 ) -> Result<sensitive::SiteEdits, AppCommandError> {
-    let kept = sensitive::set_current(edits).map_err(AppCommandError::io)?;
-    for state in registry.list() {
-        if state.surface != SurfaceKind::External {
-            continue;
-        }
-        let url = Url::parse(&state.url).ok();
-        if url.as_ref().is_some_and(|url| kept.blocks_url(url)) {
-            release(app, registry, &state.tab_id, None);
-        }
+    let kept = sensitive::set_current(blocked, allowed, paused).map_err(AppCommandError::io)?;
+    for tab_id in kept_off_tabs(&registry.list(), &kept) {
+        release(app, registry, &tab_id, None);
     }
     Ok(kept)
+}
+
+/// The Chrome tabs among `tabs` that `edits` keeps agents off.
+fn kept_off_tabs(tabs: &[BrowserTabState], edits: &sensitive::SiteEdits) -> Vec<String> {
+    tabs.iter()
+        .filter(|state| state.surface == SurfaceKind::External)
+        .filter(|state| {
+            Url::parse(&state.url)
+                .ok()
+                .is_some_and(|url| edits.blocks_url(&url))
+        })
+        .map(|state| state.tab_id.clone())
+        .collect()
 }
 
 /// Whether `url` is one agents may not open in the person's Chrome; the
@@ -675,4 +686,76 @@ fn sensitive_refusal(host: &str) -> AppCommandError {
 
 fn not_found(tab_id: &str) -> AppCommandError {
     AppCommandError::not_found(format!("Chrome tab {tab_id} not found"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tab(tab_id: &str, url: &str, surface: SurfaceKind) -> BrowserTabState {
+        BrowserTabState {
+            tab_id: tab_id.into(),
+            owner_window: "main".into(),
+            kind: TabKind::Page,
+            surface,
+            channel: ChannelKind::Native,
+            channel_error: None,
+            url: url.into(),
+            requested_url: url.into(),
+            title: String::new(),
+            favicon: None,
+            loading: false,
+            can_go_back: false,
+            can_go_forward: false,
+            origin: None,
+            zoom: 1.0,
+            error: None,
+            remote_host: None,
+            opener_tab_id: None,
+            profile: None,
+            agent_grant: None,
+        }
+    }
+
+    fn tabs() -> Vec<BrowserTabState> {
+        vec![
+            tab(
+                "mail",
+                "https://mail.google.com/mail/u/0/",
+                SurfaceKind::External,
+            ),
+            tab(
+                "added",
+                "https://shop.example.com/cart",
+                SurfaceKind::External,
+            ),
+            tab("docs", "https://docs.example.org/", SurfaceKind::External),
+            // 内置浏览器的标签不归这份名单管。
+            tab("inside", "https://mail.google.com/", SurfaceKind::Child),
+        ]
+    }
+
+    fn edits(paused: bool) -> sensitive::SiteEdits {
+        sensitive::SiteEdits {
+            blocked: vec!["example.com".into()],
+            allowed: Vec::new(),
+            paused,
+        }
+        .normalized()
+    }
+
+    #[test]
+    fn pausing_lets_go_of_no_tab() {
+        assert!(kept_off_tabs(&tabs(), &edits(true)).is_empty());
+    }
+
+    #[test]
+    fn ending_the_pause_lets_go_of_the_chrome_tabs_on_the_list() {
+        let running = edits(true).edited(vec!["example.com".into()], Vec::new(), Some(false));
+        assert!(!running.paused);
+        assert_eq!(
+            kept_off_tabs(&tabs(), &running),
+            vec!["mail".to_string(), "added".to_string()]
+        );
+    }
 }

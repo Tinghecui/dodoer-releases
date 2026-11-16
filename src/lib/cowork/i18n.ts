@@ -240,6 +240,7 @@ const en = {
   conversationDeviceBuiltInBrowser: "Built-in browser",
   conversationDevicePartOn: "{part} on {name}",
   conversationDevicePartIs: "{part}: {name}",
+  conversationDevicePartInUse: "{part}: {name}, in use by the agent now",
   conversationDevicePartNotPicked: "{part}: no computer picked",
   conversationDeviceShellWaiting:
     "The agent is waiting for you to pick a computer for the command line.",
@@ -479,6 +480,7 @@ const zhCN: Record<CoworkTextKey, string> = {
   conversationDeviceBuiltInBrowser: "内置浏览器",
   conversationDevicePartOn: "{name} 的{part}",
   conversationDevicePartIs: "{part}：{name}",
+  conversationDevicePartInUse: "{part}：{name}，智能体正在用",
   conversationDevicePartNotPicked: "{part}：没选电脑",
   conversationDeviceShellWaiting: "智能体在等你给命令行选一台电脑。",
   conversationDeviceBrowserWaiting: "智能体在等你给浏览器选一台电脑。",
@@ -708,6 +710,7 @@ const zhTW: Record<CoworkTextKey, string> = {
   conversationDeviceBuiltInBrowser: "內建瀏覽器",
   conversationDevicePartOn: "{name} 的{part}",
   conversationDevicePartIs: "{part}：{name}",
+  conversationDevicePartInUse: "{part}：{name}，智能體正在用",
   conversationDevicePartNotPicked: "{part}：沒選電腦",
   conversationDeviceShellWaiting: "智慧體在等你給命令列選一台電腦。",
   conversationDeviceBrowserWaiting: "智慧體在等你給瀏覽器選一台電腦。",

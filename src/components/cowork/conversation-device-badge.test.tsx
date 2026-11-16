@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { act, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest"
@@ -24,6 +24,10 @@ import {
   type ConversationDeviceAnswer,
 } from "@/lib/cowork/conversation-device"
 import { useHostDevices } from "@/lib/cowork/host-devices"
+import {
+  useSessionUsageStore,
+  type SessionUse,
+} from "@/lib/cowork/session-usage"
 
 const mockTabs = useTabStore as unknown as Mock
 const mockState = useConversationDeviceState as unknown as Mock
@@ -104,6 +108,7 @@ beforeEach(() => {
     select(tabs)
   )
   mockState.mockReset()
+  useSessionUsageStore.setState({ byConversation: new Map() })
   pick.mockReset().mockResolvedValue(undefined)
   mockBook.mockReset().mockReturnValue({
     list: { devices: [DESKTOP, LAPTOP], unnamedHosts: 0 },
@@ -436,5 +441,66 @@ describe("ConversationDeviceBadge, command line and browser apart", () => {
     expect(
       document.querySelector('[data-pick-device="air-0123456789"]')
     ).toHaveAttribute("aria-pressed", "true")
+  })
+})
+
+/** 对话 7（标签页里的那个）正在用的东西。 */
+function using(uses: SessionUse[]) {
+  useSessionUsageStore.setState({ byConversation: new Map([[7, uses]]) })
+}
+
+describe("ConversationDeviceBadge, in use", () => {
+  beforeEach(() => {
+    mockBook.mockReturnValue({
+      list: { devices: [AIR, MINI, LAPTOP], unnamedHosts: 0 },
+      thisDeviceId: "mini-0123456789",
+      adopt: vi.fn(),
+      canStop: true,
+    })
+  })
+
+  it("turns the browser half blue with a dot while the agent uses that browser", () => {
+    using([{ kind: "browser", device: "mini", chrome: true, since: 1 }])
+    mountSplit({ device: AIR, browserDevice: MINI, deviceCount: 2 })
+    expect(half("browser")).toHaveAttribute("data-in-use")
+    expect(half("browser")?.className).toContain("sky")
+    expect(half("browser")?.querySelector("[data-in-use-dot]")).not.toBeNull()
+    expect(half("shell")).not.toHaveAttribute("data-in-use")
+    expect(half("shell")?.className).not.toContain("sky")
+    expect(badge()?.title).toContain("Browser: mini, in use by the agent now")
+  })
+
+  it("is not in use for a use on another device", () => {
+    using([{ kind: "browser", device: "air", since: 1 }])
+    mountSplit({ device: AIR, browserDevice: MINI, deviceCount: 2 })
+    expect(half("browser")).not.toHaveAttribute("data-in-use")
+    expect(half("shell")).not.toHaveAttribute("data-in-use")
+  })
+
+  it("marks the command line in use and goes grey again once it ends", () => {
+    using([{ kind: "shell", device: "air", since: 1 }])
+    mountSplit({ device: AIR, browserDevice: MINI, deviceCount: 2 })
+    expect(half("shell")).toHaveAttribute("data-in-use")
+    expect(half("browser")).not.toHaveAttribute("data-in-use")
+    act(() => using([]))
+    expect(half("shell")).not.toHaveAttribute("data-in-use")
+  })
+
+  it("shows cannot-use over in-use", () => {
+    using([{ kind: "browser", device: "air", since: 1 }])
+    mountSplit({ device: AIR, browserDevice: AIR, deviceCount: 2 })
+    expect(half("browser")?.dataset.trouble).toBe("notLent")
+    expect(half("browser")).not.toHaveAttribute("data-in-use")
+    expect(half("browser")?.className).toContain("amber")
+    expect(half("browser")?.className).not.toContain("sky")
+  })
+
+  it("marks the part in use on one device named once", () => {
+    using([{ kind: "browser", device: "mini", chrome: true, since: 1 }])
+    mountSplit({ device: MINI, browserDevice: MINI, deviceCount: 2 })
+    expect(badge()?.textContent).toBe("mini")
+    const inUse = badge()?.querySelectorAll("[data-in-use]")
+    expect(inUse?.length).toBe(1)
+    expect(inUse?.[0]?.getAttribute("data-in-use")).toBe("browser")
   })
 })

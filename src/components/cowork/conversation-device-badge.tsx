@@ -7,7 +7,8 @@
 // the agent does not ask. On a server from before the picker it only shows
 // the device; to switch, the person tells the agent. 服务器能分开选时
 // （`conversation_device_split`），命令行和浏览器各选一台，标记上两样都写，
-// 哪一样用不了就那一半变琥珀色。
+// 哪一样用不了就那一半变琥珀色，智能体正在用哪一样就那一半变蓝、带一个
+// 闪的点（和 `SessionUsageMark` 同一个颜色）。
 
 import { useState } from "react"
 import {
@@ -42,9 +43,12 @@ import {
   type HostDevice,
 } from "@/lib/cowork/host-devices"
 import { useCoworkText, type CoworkTextKey } from "@/lib/cowork/i18n"
+import { useSessionUsage, type SessionUse } from "@/lib/cowork/session-usage"
 import { cn } from "@/lib/utils"
 
 const TROUBLE_TONE = "text-amber-600 dark:text-amber-400"
+/** 「正在用」的颜色，和 `session-usage-mark.tsx` 的 `TONE` 一样。 */
+const IN_USE_TONE = "text-sky-600 dark:text-sky-400"
 
 function KindIcon({ kind }: { kind: string | null }) {
   const Icon = kind === "laptop" ? Laptop : Monitor
@@ -67,7 +71,13 @@ export function ConversationDeviceBadge({ tabId }: { tabId: string | null }) {
   if (!state) return null
   const { answer, canPick, canSplit, pick } = state
   if (canPick && canSplit) {
-    return <SplitDeviceBadge answer={answer} pick={pick} />
+    return (
+      <SplitDeviceBadge
+        conversationId={conversationId}
+        answer={answer}
+        pick={pick}
+      />
+    )
   }
   const device = answer.device
   if (!canPick && !device) return null
@@ -327,6 +337,24 @@ const DOT = (
   <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />
 )
 
+const IN_USE_DOT = (
+  <span
+    data-in-use-dot=""
+    className="size-1.5 shrink-0 animate-pulse rounded-full bg-sky-500"
+  />
+)
+
+/** 智能体正在用 `device` 的这一样：使用记录按设备名字记，没名字的
+ *  （这个服务器所在的那台、或者老的 app）认不出是哪台，不算。 */
+function partInUse(
+  uses: SessionUse[],
+  part: DevicePart,
+  device: HostDevice | null
+): boolean {
+  if (!device) return false
+  return uses.some((use) => use.kind === part && use.device === device.name)
+}
+
 const PART_LABEL: Record<DevicePart, CoworkTextKey> = {
   shell: "devicesLendsShell",
   browser: "devicesLendsBrowser",
@@ -357,7 +385,8 @@ function partLine(
   locale: string,
   part: DevicePart,
   device: HostDevice | null,
-  waiting: boolean
+  waiting: boolean,
+  inUse: boolean
 ): string {
   const label = t(PART_LABEL[part])
   if (!device) {
@@ -390,7 +419,10 @@ function partLine(
         { name: device.name }
       )
     default:
-      return t("conversationDevicePartIs", { part: label, name: device.name })
+      return t(
+        inUse ? "conversationDevicePartInUse" : "conversationDevicePartIs",
+        { part: label, name: device.name }
+      )
   }
 }
 
@@ -399,13 +431,17 @@ function PartHalf({
   part,
   device,
   waiting,
+  using,
 }: {
   part: DevicePart
   device: HostDevice | null
   waiting: boolean
+  using: boolean
 }) {
   const t = useCoworkText()
   const trouble = device ? partTrouble(device, part) : null
+  // 「正在用」和「用不了」同时成立时显示「用不了」
+  const inUse = using && !trouble
   const text = trouble
     ? t(SHORT_TROUBLE[trouble])
     : device
@@ -416,16 +452,19 @@ function PartHalf({
       data-device-part={part}
       data-trouble={trouble ?? undefined}
       data-needs-pick={waiting ? "true" : undefined}
+      data-in-use={inUse ? part : undefined}
       className={cn(
         "flex min-w-0 items-center gap-1",
         !device && !waiting && "text-muted-foreground",
         (trouble || waiting) && TROUBLE_TONE,
+        inUse && IN_USE_TONE,
         waiting && "font-medium"
       )}
     >
       <PartIcon part={part} device={device} />
       <span className="truncate">{text}</span>
       {waiting && DOT}
+      {inUse && IN_USE_DOT}
     </span>
   )
 }
@@ -433,15 +472,20 @@ function PartHalf({
 /** 能分开选的服务器上的标记：两样同一台时写一个名字带两个小图标，
  *  不同台时一样一半。点开是分两列的菜单。 */
 function SplitDeviceBadge({
+  conversationId,
   answer,
   pick,
 }: {
+  conversationId: number | null
   answer: ConversationDeviceAnswer
   pick: (deviceId: string | null, part?: DevicePart) => Promise<void>
 }) {
   const t = useCoworkText()
   const locale = useLocale()
   const [open, setOpen] = useState(false)
+  // 实时的「正在用」（`conversation://device-usage`），委派出去的子对话
+  // 服务器已经算在最上面这个对话上
+  const uses = useSessionUsage(conversationId)
   if (!offersPick(answer)) return null
 
   const shell = answer.device ?? null
@@ -450,6 +494,8 @@ function SplitDeviceBadge({
   const browserWaiting = !browser && !!answer.needsBrowserPick
   const shellTrouble = shell ? partTrouble(shell, "shell") : null
   const browserTrouble = browser ? partTrouble(browser, "browser") : null
+  const shellInUse = partInUse(uses, "shell", shell)
+  const browserInUse = partInUse(uses, "browser", browser)
   // 同一台、两样的状况也一样时才合起来写一个名字
   const together =
     !!shell &&
@@ -460,8 +506,8 @@ function SplitDeviceBadge({
   const waiting = shellWaiting || browserWaiting
 
   const title = [
-    partLine(t, locale, "shell", shell, shellWaiting),
-    partLine(t, locale, "browser", browser, browserWaiting),
+    partLine(t, locale, "shell", shell, shellWaiting, shellInUse),
+    partLine(t, locale, "browser", browser, browserWaiting, browserInUse),
     t("conversationDeviceSplitPickHint"),
   ].join("\n")
 
@@ -479,15 +525,38 @@ function SplitDeviceBadge({
       <>
         <KindIcon kind={shell.kind} />
         <span className="truncate">{shell.name}</span>
-        <PartIcon part="shell" device={shell} />
-        <PartIcon part="browser" device={browser} />
+        {(["shell", "browser"] as const).map((part) => {
+          // 两样同一台时没有两半，正在用的那一样的小图标变蓝
+          const inUse =
+            !shellTrouble && (part === "shell" ? shellInUse : browserInUse)
+          return (
+            <span
+              key={part}
+              data-in-use={inUse ? part : undefined}
+              className={cn("flex shrink-0", inUse && IN_USE_TONE)}
+            >
+              <PartIcon part={part} device={shell} />
+            </span>
+          )
+        })}
+        {!shellTrouble && (shellInUse || browserInUse) && IN_USE_DOT}
       </>
     )
   } else {
     content = (
       <>
-        <PartHalf part="shell" device={shell} waiting={shellWaiting} />
-        <PartHalf part="browser" device={browser} waiting={browserWaiting} />
+        <PartHalf
+          part="shell"
+          device={shell}
+          waiting={shellWaiting}
+          using={shellInUse}
+        />
+        <PartHalf
+          part="browser"
+          device={browser}
+          waiting={browserWaiting}
+          using={browserInUse}
+        />
       </>
     )
   }

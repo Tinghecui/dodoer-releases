@@ -26,7 +26,7 @@ use axum::{Json, Router};
 use tokio::sync::Mutex;
 
 use super::discovery::{self, DiscoveryRecord};
-use super::http::{public_routes, routes, HelloKey};
+use super::http::{hello_routes, routes, HelloKey};
 use super::service::CliRunService;
 use super::wire::{self, BuildKind};
 
@@ -267,7 +267,7 @@ pub fn loopback_router(service: Arc<CliRunService>, token: String, port: u16) ->
             "/api",
             Router::new()
                 .route("/health", post(health))
-                .merge(public_routes(service, hello))
+                .merge(hello_routes(service, hello))
                 .merge(guarded),
         )
         .layer(middleware::from_fn(move |req: Request, next: Next| {

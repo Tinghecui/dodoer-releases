@@ -65,8 +65,10 @@ pub fn session_link(conversation_id: i32) -> String {
 
 // ── hello ────────────────────────────────────────────────────────────────────
 
-/// `POST /api/cli_hello` — sent WITHOUT a token: the CLI proves who it talks to
-/// before it hands over the token or a prompt.
+/// `POST /api/cli_hello` — the CLI proves who it talks to before it hands over
+/// a prompt. Sent WITHOUT a token to the loopback listener (before the token
+/// goes out); with the main token over `--url`, where the main router answers
+/// nothing else.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HelloRequest {

@@ -93,14 +93,39 @@ async fn the_cli_routes_take_the_main_token() {
     assert_eq!(body["error"]["code"], "run_not_found");
 }
 
-/// Over `--url` the challenge is keyed by the main token and binds no port: a
-/// proxy in front of the server may hide it.
+/// On the main router a hello without the main token, or with a wrong one, is
+/// refused like any other request there: no proof, no version, no
+/// capabilities.
 #[tokio::test]
-async fn hello_answers_without_a_token_and_proves_the_main_token() {
+async fn a_hello_without_the_main_token_gets_no_proof() {
+    let (server, _data, _static) = server().await;
+    let nonce = hello::random_hex(16);
+    let hello_body = json!({ "nonce": nonce, "clientVersion": "test", "apiVersion": API_VERSION });
+    let missing = server.post("/api/cli_hello").json(&hello_body).await;
+    assert_eq!(missing.status_code(), 401);
+    let wrong = server
+        .post("/api/cli_hello")
+        .add_header("authorization", "Bearer nope")
+        .json(&hello_body)
+        .await;
+    assert_eq!(wrong.status_code(), 401);
+    for resp in [missing, wrong] {
+        let text = resp.text();
+        assert!(!text.contains("proof"), "{text}");
+        assert!(!text.contains("capabilities"), "{text}");
+        assert!(!text.contains(env!("CARGO_PKG_VERSION")), "{text}");
+    }
+}
+
+/// Over `--url` the hello carries the main token; the challenge is keyed by it
+/// and binds no port: a proxy in front of the server may hide it.
+#[tokio::test]
+async fn hello_with_the_main_token_proves_it() {
     let (server, _data, _static) = server().await;
     let nonce = hello::random_hex(16);
     let resp = server
         .post("/api/cli_hello")
+        .add_header("authorization", format!("Bearer {TOKEN}"))
         .json(&json!({ "nonce": nonce, "clientVersion": "test", "apiVersion": API_VERSION }))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -124,6 +149,7 @@ async fn hello_answers_without_a_token_and_proves_the_main_token() {
 
     let old = server
         .post("/api/cli_hello")
+        .add_header("authorization", format!("Bearer {TOKEN}"))
         .json(&json!({ "nonce": nonce, "clientVersion": "test", "apiVersion": 999 }))
         .await;
     assert_eq!(old.status_code(), 409);

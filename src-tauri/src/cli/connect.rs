@@ -406,8 +406,10 @@ async fn examine_record(path: &Path, record: DiscoveryRecord) -> Candidate {
     candidate
 }
 
-/// The challenge: a nonce out, WITHOUT the token; the proof back, checked
-/// against the token we hold and the port we connected to.
+/// The challenge: a nonce out; the proof back, checked against the token we
+/// hold and the port we connected to. To a discovery file's runtime the nonce
+/// goes WITHOUT the token; over `--url` it carries it, since the main router
+/// answers no token-less hello.
 async fn probe(
     url: String,
     token: String,
@@ -426,8 +428,11 @@ async fn probe(
     };
     let client = client_for(&url);
     let nonce = hello::random_hex(16);
-    let resp = client
-        .post(format!("{url}/api/cli_hello"))
+    let mut request = client.post(format!("{url}/api/cli_hello"));
+    if remote {
+        request = request.bearer_auth(&token);
+    }
+    let resp = request
         .timeout(HELLO_TIMEOUT)
         .json(&HelloRequest {
             nonce: nonce.clone(),
@@ -458,6 +463,11 @@ async fn probe(
                 .map(|b| b.error.message)
                 .unwrap_or_else(|_| text.trim().to_string()),
         );
+        return candidate;
+    }
+    if remote && status == StatusCode::UNAUTHORIZED {
+        candidate.state = CandidateState::Unverified;
+        candidate.detail = Some("the server refused the token (HTTP 401)".into());
         return candidate;
     }
     let Ok(answer) = serde_json::from_str::<HelloResponse>(&text) else {
@@ -707,6 +717,8 @@ pub fn access_denied(source: &str) -> Failure {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
 
     fn global() -> GlobalArgs {
@@ -960,6 +972,79 @@ mod tests {
         let ready = ready(RuntimeKind::Desktop, BuildKind::Release, "1");
         let kept = bounded(Some(deadline), "x".into(), None, async { ready.clone() }).await;
         assert_eq!(kept.state, CandidateState::Ready);
+    }
+
+    /// A stand-in for the main router's `cli_hello`: it answers only a hello
+    /// that carries `token`, and keeps the `Authorization` each one came with.
+    async fn main_router_hello(token: &'static str) -> (String, Arc<Mutex<Vec<Option<String>>>>) {
+        use axum::http::HeaderMap;
+        use axum::response::IntoResponse;
+        let seen: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+        let log = Arc::clone(&seen);
+        let app = axum::Router::new().route(
+            "/api/cli_hello",
+            axum::routing::post(move |headers: HeaderMap, body: axum::Json<HelloRequest>| {
+                let log = Arc::clone(&log);
+                async move {
+                    let auth = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    log.lock().unwrap().push(auth.clone());
+                    if auth.as_deref() != Some(&format!("Bearer {token}")) {
+                        return axum::http::StatusCode::UNAUTHORIZED.into_response();
+                    }
+                    axum::Json(HelloResponse {
+                        proof: hello::proof(token, &body.nonce, None),
+                        runtime: RuntimeKind::Server,
+                        build: BuildKind::current(),
+                        version: "test".into(),
+                        api_version: wire::API_VERSION,
+                        capabilities: vec!["run".into()],
+                    })
+                    .into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        (url, seen)
+    }
+
+    /// Over `--url` the hello carries the token, since the main router answers
+    /// no token-less one; a refused token says so. To a discovery file's
+    /// runtime the token still never goes out before the proof.
+    #[tokio::test]
+    async fn over_url_the_hello_carries_the_token_and_a_discovery_probe_does_not() {
+        let (url, seen) = main_router_hello("main-tok").await;
+
+        let ok = probe(url.clone(), "main-tok".into(), None, "remote".into(), true).await;
+        assert_eq!(ok.state, CandidateState::Ready, "{:?}", ok.detail);
+
+        let wrong = probe(url.clone(), "guess".into(), None, "remote".into(), true).await;
+        assert_eq!(wrong.state, CandidateState::Unverified);
+        assert!(
+            wrong
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("refused the token"),
+            "{:?}",
+            wrong.detail
+        );
+
+        let local = probe(url, "main-tok".into(), None, "file".into(), false).await;
+        assert_eq!(local.state, CandidateState::Unverified);
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                Some("Bearer main-tok".to_string()),
+                Some("Bearer guess".to_string()),
+                None
+            ]
+        );
     }
 
     #[tokio::test]

@@ -3,7 +3,9 @@
 //! Mounted twice, on the same handlers: under the main `/api` router (main
 //! token; how CI reaches a remote `codeg-server`), and on the loopback-only
 //! listener a runtime opens for the CLIs of its own machine (per-launch CLI
-//! token; see `listener.rs`).
+//! token; see `listener.rs`). Only the loopback listener answers `cli_hello`
+//! without a token; on the main router it is behind the main token, like
+//! every other route.
 
 use std::sync::Arc;
 
@@ -77,8 +79,10 @@ pub fn routes(service: Arc<CliRunService>) -> Router {
         .layer(Extension(service))
 }
 
-/// `cli_hello`, which must answer WITHOUT a token.
-pub fn public_routes(service: Arc<CliRunService>, key: HelloKey) -> Router {
+/// `cli_hello`. The loopback listener mounts it WITHOUT a token, so a CLI can
+/// check a discovery file's runtime before handing that token over; the main
+/// router mounts it behind the token, like every other route.
+pub fn hello_routes(service: Arc<CliRunService>, key: HelloKey) -> Router {
     Router::new()
         .route("/cli_hello", post(hello))
         .layer(Extension(key))

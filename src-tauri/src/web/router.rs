@@ -2199,6 +2199,16 @@ pub fn build_router_with_proxy_auth(
         // `codeg-cli` against this runtime with the main token (how CI reaches
         // a remote server); the loopback listener serves the same handlers.
         .merge(crate::cli_run::http::routes(state.cli_runs.clone()))
+        // The CLI's challenge, behind the token like every route here (only
+        // the loopback listener answers it without one). Signed with the main
+        // token, no port (a proxy may hide it).
+        .merge(crate::cli_run::http::hello_routes(
+            state.cli_runs.clone(),
+            crate::cli_run::http::HelloKey {
+                token: token_for_cli_hello,
+                port: None,
+            },
+        ))
         // Catch-all
         .fallback(api_not_found)
         .layer(middleware::from_fn(move |req, next| {
@@ -2213,15 +2223,6 @@ pub fn build_router_with_proxy_auth(
             "/get_system_language_settings",
             post(handlers::system_settings::get_system_language_settings),
         )
-        // The CLI's challenge, answered before any token is sent; signed with
-        // the main token here (no port: a proxy may hide it).
-        .merge(crate::cli_run::http::public_routes(
-            state.cli_runs.clone(),
-            crate::cli_run::http::HelloKey {
-                token: token_for_cli_hello,
-                port: None,
-            },
-        ))
         // Forge webhooks for the repository panel's auto-processing. No forge
         // can send codeg's bearer token, so the delivery authenticates itself:
         // its HMAC signature (GitHub / Gitea) or secret token (GitLab) is

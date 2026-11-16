@@ -1,5 +1,5 @@
 //! `cli_hello`: the CLI proves which runtime it is talking to before it sends
-//! a token or a prompt.
+//! a prompt (and, to a discovery file's runtime, before it sends the token).
 //!
 //! A discovery file left by a crashed runtime names a pid that may have been
 //! reused and a port that may now belong to anything — another local user's
@@ -9,7 +9,9 @@
 //! process the file's token was minted for can compute that; binding the port
 //! in keeps an impostor from relaying the challenge to another live runtime.
 //! Over `--url` (a remote server, perhaps behind a proxy that hides its port)
-//! the port is left out and the proof is keyed by the main token.
+//! the port is left out and the proof is keyed by the main token. There the
+//! hello carries the main token, as every request to the main router does:
+//! the main router answers no hello without it.
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;

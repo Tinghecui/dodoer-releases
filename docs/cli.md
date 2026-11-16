@@ -850,10 +850,14 @@ have it hand in a verdict with `--output-schema`: see
   endpoint file, and so run agents as you. It could as well read Codeg's
   database or start an agent itself: the boundary is your user account.
 - **Remote.** `--url` uses the server's own token, as the web interface does,
-  and is allowed nothing the web interface is not. Prefer HTTPS. A `--url` to
-  this machine (`127.0.0.1`, `localhost`) never goes through a proxy, and a
-  user name or password in the URL is never printed. Switching Command-line
-  access off closes the local port; it does not change what the token allows.
+  and is allowed nothing the web interface is not. Its proof request carries
+  the token too: the server answers it, like every other request, only to a
+  caller that holds the token. A `codeg-cli` older than that change cannot
+  reach such a server over `--url` (`not a codeg answer (HTTP 401)`); use one
+  from the same release. Prefer HTTPS. A `--url` to this machine
+  (`127.0.0.1`, `localhost`) never goes through a proxy, and a user name or
+  password in the URL is never printed. Switching Command-line access off
+  closes the local port; it does not change what the token allows.
 - **Nested runs** are kept to one level and to their parent's policy (see
   [Permissions](#permissions)) — against accidents, not as a security
   boundary.

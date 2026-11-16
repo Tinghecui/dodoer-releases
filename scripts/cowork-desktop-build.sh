@@ -1,21 +1,23 @@
 #!/bin/bash
-# 编桌面版 dodoer.app（Apple Silicon，固定的自签名证书签名），冒烟，打成发布用的文件。跑在 GitHub 托管的 macOS 机器上（公开镜像的 desktop-macos.yml）。
+# 编桌面版 dodoer.app（Apple Silicon 和 Intel 各一个包，固定的自签名证书签名），冒烟，打成发布用的文件。跑在公开镜像 desktop-macos.yml 的 macOS 机器上
+# （GitHub 托管的，或者黑苹果自托管 runner）。
 # 只有一种包：完整版，自带 codeg-server 子进程做本机 daemon；主窗口是开始页，本机工作区和服务器上的工作区都从那里开
 # （COWORK.md「桌面端：一种包、开始页」）。2026-11-09 以前还有一种纯客户端版，已经去掉。
 #
 #   用法：scripts/cowork-desktop-build.sh [full]（参数可省）
-#        scripts/cowork-desktop-build.sh smoke：只做冒烟（不编），对象是 dist/ 里已经打好的 dodoer-$VERSION-*-macos-arm64.zip。
+#        scripts/cowork-desktop-build.sh smoke：只做冒烟（不编），对象是 dist/ 里已经打好的、本机架构的 dodoer-$VERSION-*-macos-<arm64|x64>.zip。
 #          黑苹果（Intel）上交叉编的 arm64 包在那台机器上跑不起来，desktop-macos.yml 把它交给 GitHub 的 macos-15 用这个模式冒烟
 #   环境：VERSION（桌面版本号 1.Y.Z）、TAURI_SIGNING_PRIVATE_KEY（+ _PASSWORD）；
 #        DODOER_SIGNING_IDENTITY：签 app 的证书（钥匙串里的 SHA-1，desktop-macos.yml 从 Secret DODOER_CODESIGN_P12 导入）。
 #        不给就 ad-hoc 签名，只在自己的 Mac 上试编时这样：ad-hoc 的包每一版签名都不同，macOS 的屏幕录制、辅助功能等授权
 #        装了新版就失效，所以 CI 里（CI 非空）不给就报错；
 #        GITHUB_OUTPUT 有就写 full_name / full_updater
-#        DODOER_TARGET：交叉编译的目标（只认 aarch64-apple-darwin），不给就编本机架构。给了就 tauri build --target，
+#        DODOER_TARGET：交叉编译的目标（aarch64-apple-darwin 或 x86_64-apple-darwin），不给就编本机架构。给了就 tauri build --target，
 #        sidecar 也按它编（TAURI_TARGET_TRIPLE），产物在 src-tauri/target/<目标>/release/bundle
 #        DODOER_SKIP_SMOKE=1：不运行包里的程序（交叉编出来的跑不了），只做静态检查；冒烟另用 smoke 模式在 arm64 机器上补
 #
 # 经 beforeBuildCommand 编前端（out/）和 sidecar（src-tauri/binaries/）。清空 dist/，产物都在 dist/：
+# 文件名里的架构：arm64（Apple Silicon）或 x64（Intel，2026-11-16 起）。下面按 arm64 写，x64 一样，只是没有 dodoer-client-* 那个别名
 #   dodoer-<ver>-<sha8>-macos-arm64.zip(.sha256)             安装包
 #   dodoer-macos-arm64.zip(.sha256)                          同一个文件、名字不带版本（releases/latest/download/… 直接指它）
 #   dodoer-client-macos-arm64.zip(.sha256)                   还是同一个文件：门户「桌面版」的下载链接（以前给纯客户端版）指这个名字，留着不让它 404
@@ -38,7 +40,11 @@ configs=(--config src-tauri/tauri.jenny.conf.json --config src-tauri/tauri.cowor
 prefix=dodoer
 expect_endpoint="$releases/latest.json"
 target="${DODOER_TARGET:-}"
-[[ -z "$target" || "$target" == aarch64-apple-darwin ]] || fail "DODOER_TARGET 只认 aarch64-apple-darwin，现在是 $target"
+case "${target:-$(uname -m)}" in
+  aarch64-apple-darwin|arm64) arch=arm64; lipo_arch=arm64 ;;
+  x86_64-apple-darwin|x86_64) arch=x64; lipo_arch=x86_64 ;;
+  *) fail "DODOER_TARGET 只认 aarch64-apple-darwin、x86_64-apple-darwin，现在是 ${target:-本机 $(uname -m)}" ;;
+esac
 if [[ -n "$target" ]]; then
   bundle="$root/src-tauri/target/$target/release/bundle/macos"
 else
@@ -71,8 +77,8 @@ smoke_app() {
 }
 
 if [[ "$mode" == smoke ]]; then
-  zip=$(cd dist && ls "$prefix-$VERSION"-*-macos-arm64.zip 2>/dev/null) || true
-  [[ $(printf '%s\n' "$zip" | grep -c .) == 1 ]] || { ls -la dist >&2 || true; fail "dist/ 里 $prefix-$VERSION-*-macos-arm64.zip 要正好一个，现在：${zip:-没有}"; }
+  zip=$(cd dist && ls "$prefix-$VERSION"-*-macos-$arch.zip 2>/dev/null) || true
+  [[ $(printf '%s\n' "$zip" | grep -c .) == 1 ]] || { ls -la dist >&2 || true; fail "dist/ 里 $prefix-$VERSION-*-macos-$arch.zip 要正好一个，现在：${zip:-没有}"; }
   tmp=$(mktemp -d)
   ditto -x -k "dist/$zip" "$tmp"
   test -d "$tmp/dodoer.app" || fail "$zip 里没有 dodoer.app"
@@ -102,10 +108,10 @@ fi
 pnpm tauri build --bundles app ${target_args[@]+"${target_args[@]}"} "${configs[@]}" \
   --config "{\"version\":\"$VERSION\",\"bundle\":{\"macOS\":{\"signingIdentity\":\"$identity\"}}}"
 test -d "$app" || fail "没编出 $app"
-# 包里每个程序都得是 arm64（交叉编译时 sidecar 编错架构就在这里拦下）
+# 包里每个程序都得是这个架构（交叉编译时 sidecar 编错架构就在这里拦下）
 for bin in "$app"/Contents/MacOS/*; do
   archs=$(lipo -archs "$bin")
-  [[ "$archs" == arm64 ]] || fail "$(basename "$bin") 的架构是 ${archs}，要的是 arm64"
+  [[ "$archs" == "$lipo_arch" ]] || fail "$(basename "$bin") 的架构是 ${archs}，要的是 $lipo_arch"
 done
 
 echo "==> [$edition] 签名"
@@ -145,25 +151,28 @@ else
 fi
 
 echo "==> [$edition] 打成 zip，自动更新包重签（绑定版本号）"
-name="$prefix-$ver-$(git rev-parse --short=8 HEAD)-macos-arm64"
+name="$prefix-$ver-$(git rev-parse --short=8 HEAD)-macos-$arch"
 # clean: false 下 dist/ 不会被清，先删掉，不然 artifact 里夹着以前每次的 zip
 rm -rf dist && mkdir dist
 ditto -c -k --keepParent "$app" "dist/$name.zip"
 # 在 dist 里算，.sha256 里只写文件名，下载解压后直接 `shasum -a 256 -c` 就能核对
 (cd dist && shasum -a 256 "$name.zip" | tee "$name.zip.sha256")
 # 自动更新包：bundle 自己签的那份不带版本号，app 开着 requireSignedVersion 会拒，用 --app-version 重签
-upd="$prefix-$ver-macos-arm64.app.tar.gz"
+upd="$prefix-$ver-macos-$arch.app.tar.gz"
 cp "$bundle/dodoer.app.tar.gz" "dist/$upd"
 pnpm tauri signer sign --app-version "$ver" "dist/$upd" >/dev/null
 base64 -d < "dist/$upd.sig" | grep -q "version:$ver" || fail "$upd.sig 里没有 version:$ver"
-# 不带版本号的两个名字：dodoer-macos-arm64.zip，和门户下载链接用的 dodoer-client-macos-arm64.zip，内容都是这个安装包
-for alias in "$prefix-macos-arm64.zip" "$prefix-client-macos-arm64.zip"; do
+# 不带版本号的名字：dodoer-macos-<架构>.zip；arm64 另有门户下载链接用的 dodoer-client-macos-arm64.zip，内容都是这个安装包
+aliases=("$prefix-macos-$arch.zip")
+[[ "$arch" == arm64 ]] && aliases+=("$prefix-client-macos-arm64.zip")
+for alias in "${aliases[@]}"; do
   cp "dist/$name.zip" "dist/$alias"
   (cd dist && shasum -a 256 "$alias" | tee "$alias.sha256")
 done
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   echo "${edition}_name=$name" >> "$GITHUB_OUTPUT"
   echo "${edition}_updater=$upd" >> "$GITHUB_OUTPUT"
+  echo "arch=$arch" >> "$GITHUB_OUTPUT"
 fi
 rm -f "$bundle"/dodoer.app.tar.gz*
 # 打完包把 bundle 里的 .app 删掉并从 LaunchServices 注销：在自己的 Mac 上跑时，留着的话 Spotlight /

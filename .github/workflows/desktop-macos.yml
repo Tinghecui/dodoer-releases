@@ -297,6 +297,9 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # 和下面 build 一样：要发布的包编进 Sentry 的 DSN（2026-11-16 以前这里漏了，黑苹果编的 v1.6.27、v1.6.28 本机工作区不上报）
+          CODEG_TELEMETRY_BUILTIN_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_DSN || '' }}
+          CODEG_TELEMETRY_BUILTIN_WEB_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_WEB_DSN || '' }}
           VERSION: ${{ needs.prepare.outputs.version }}
         # 第一次失败在本机重试一次（下载依赖走代理，偶尔断）：代码错了重试也是增量编译，一两分钟就再失败
         run: |

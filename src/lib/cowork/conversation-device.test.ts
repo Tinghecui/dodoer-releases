@@ -26,8 +26,10 @@ import {
   CONVERSATION_DEVICE_FEATURE,
   CONVERSATION_DEVICE_PICK_FEATURE,
   CONVERSATION_DEVICE_POLL_MS,
+  CONVERSATION_DEVICE_SPLIT_FEATURE,
   deviceTrouble,
   offersPick,
+  partTrouble,
   useConversationDevice,
   useConversationDeviceState,
 } from "./conversation-device"
@@ -81,6 +83,29 @@ describe("deviceTrouble", () => {
       "offline"
     )
     expect(deviceTrouble({ ...DESKTOP, shell: false })).toBe("lendsNothing")
+  })
+})
+
+describe("partTrouble", () => {
+  it("is nothing while the device is online and lends that part", () => {
+    expect(partTrouble(DESKTOP, "shell")).toBeNull()
+  })
+
+  it("says one part is not lent while the other is", () => {
+    // 命令行借出了、浏览器没借出：只有浏览器那一样用不了
+    expect(partTrouble(DESKTOP, "browser")).toBe("notLent")
+    expect(
+      partTrouble({ ...DESKTOP, shell: false, browser: true }, "shell")
+    ).toBe("notLent")
+  })
+
+  it("says stopped before offline before not lent", () => {
+    expect(
+      partTrouble({ ...DESKTOP, online: false, stopped: true }, "shell")
+    ).toBe("stopped")
+    expect(partTrouble({ ...DESKTOP, online: false }, "browser")).toBe(
+      "offline"
+    )
   })
 })
 
@@ -175,6 +200,15 @@ describe("offersPick", () => {
     expect(offersPick({ device: null, needsPick: true })).toBe(true)
     expect(offersPick({ device: DESKTOP, deviceCount: 1 })).toBe(true)
   })
+
+  it("offers it for a browser device or a wait for one too", () => {
+    expect(
+      offersPick({ device: null, browserDevice: DESKTOP, deviceCount: 1 })
+    ).toBe(true)
+    expect(
+      offersPick({ device: null, needsBrowserPick: true, deviceCount: 1 })
+    ).toBe(true)
+  })
 })
 
 describe("useConversationDeviceState", () => {
@@ -233,5 +267,67 @@ describe("useConversationDeviceState", () => {
       "No such device"
     )
     expect(result.current?.answer.device?.name).toBe("desktop")
+  })
+})
+
+describe("useConversationDeviceState, one part at a time", () => {
+  it("splits only where the server says so, and sends the part picked", async () => {
+    env.call.mockResolvedValue({
+      device: DESKTOP,
+      browserDevice: null,
+      needsBrowserPick: true,
+      deviceCount: 2,
+    })
+    const { result } = renderHook(() => useConversationDeviceState(7))
+    act(() =>
+      env.serverInfo?.({
+        features: [
+          CONVERSATION_DEVICE_FEATURE,
+          CONVERSATION_DEVICE_PICK_FEATURE,
+        ],
+      })
+    )
+    await settle()
+    expect(result.current?.canSplit).toBe(false)
+
+    act(() =>
+      env.serverInfo?.({
+        features: [
+          CONVERSATION_DEVICE_FEATURE,
+          CONVERSATION_DEVICE_PICK_FEATURE,
+          CONVERSATION_DEVICE_SPLIT_FEATURE,
+        ],
+      })
+    )
+    await settle()
+    expect(result.current?.canSplit).toBe(true)
+    expect(result.current?.answer.needsBrowserPick).toBe(true)
+    expect(result.current?.answer.browserDevice).toBeNull()
+
+    const laptop = { ...DESKTOP, id: "book-0123456789", name: "laptop" }
+    env.call.mockResolvedValue({
+      device: DESKTOP,
+      browserDevice: laptop,
+      needsBrowserPick: false,
+      deviceCount: 2,
+    })
+    await act(async () => {
+      await result.current?.pick("book-0123456789", "browser")
+    })
+    expect(env.call).toHaveBeenLastCalledWith("set_conversation_device", {
+      conversationId: 7,
+      deviceId: "book-0123456789",
+      part: "browser",
+    })
+    expect(result.current?.answer.browserDevice?.name).toBe("laptop")
+    expect(result.current?.answer.device?.name).toBe("desktop")
+  })
+
+  it("reads an answer without browserDevice as having none", async () => {
+    env.call.mockResolvedValue({ device: DESKTOP })
+    const { result } = renderHook(() => useConversationDeviceState(7))
+    act(() => env.serverInfo?.({ features: [CONVERSATION_DEVICE_FEATURE] }))
+    await settle()
+    expect(result.current?.answer.browserDevice).toBeNull()
   })
 })

@@ -230,6 +230,31 @@ const en = {
   conversationDevicePickNone: "Use no computer",
   conversationDevicePickLoading: "Loading…",
   conversationDevicePickFailed: "Could not pick it: {message}",
+  // 命令行和浏览器分开选（服务器有 `conversation_device_split` 时）。
+  conversationDeviceSplitIntro:
+    "The command line and the browser can be on different computers.",
+  conversationDeviceNotPicked: "Not picked",
+  conversationDeviceNotLent: "Not lent",
+  conversationDeviceOfflineShort: "Offline",
+  conversationDeviceStoppedShort: "Stopped",
+  conversationDeviceBuiltInBrowser: "Built-in browser",
+  conversationDevicePartOn: "{part} on {name}",
+  conversationDevicePartIs: "{part}: {name}",
+  conversationDevicePartNotPicked: "{part}: no computer picked",
+  conversationDeviceShellWaiting:
+    "The agent is waiting for you to pick a computer for the command line.",
+  conversationDeviceBrowserWaiting:
+    "The agent is waiting for you to pick a computer for the browser.",
+  conversationDeviceShellNotLent:
+    "{name} does not lend its command line now. Turn lending on there for the agent to go on.",
+  conversationDeviceBrowserNotLent:
+    "{name} does not lend its browser now. Turn lending on there for the agent to go on.",
+  conversationDevicePartOffline:
+    "{part}: {name} is offline (last online {when}). Open this workspace in dodoer on it for the agent to go on.",
+  conversationDevicePartStopped:
+    "{part}: lending on {name} was stopped from elsewhere. Lend it again on that computer for the agent to go on.",
+  conversationDeviceSplitPickHint:
+    "Click to pick computers for the command line and the browser.",
   // The mark on a conversation's row and tab while its agent uses one of
   // the person's computers (`session-usage-mark.tsx`).
   usageChromeOn: "Using Chrome on {name}",
@@ -446,6 +471,26 @@ const zhCN: Record<CoworkTextKey, string> = {
   conversationDevicePickNone: "不用电脑",
   conversationDevicePickLoading: "正在读取…",
   conversationDevicePickFailed: "没选上：{message}",
+  conversationDeviceSplitIntro: "命令行和浏览器可以选不同的电脑。",
+  conversationDeviceNotPicked: "没选",
+  conversationDeviceNotLent: "没借出",
+  conversationDeviceOfflineShort: "不在线",
+  conversationDeviceStoppedShort: "已停止",
+  conversationDeviceBuiltInBrowser: "内置浏览器",
+  conversationDevicePartOn: "{name} 的{part}",
+  conversationDevicePartIs: "{part}：{name}",
+  conversationDevicePartNotPicked: "{part}：没选电脑",
+  conversationDeviceShellWaiting: "智能体在等你给命令行选一台电脑。",
+  conversationDeviceBrowserWaiting: "智能体在等你给浏览器选一台电脑。",
+  conversationDeviceShellNotLent:
+    "{name} 现在没借出命令行。在那台电脑上打开借出，智能体才能接着用。",
+  conversationDeviceBrowserNotLent:
+    "{name} 现在没借出浏览器。在那台电脑上打开借出，智能体才能接着用。",
+  conversationDevicePartOffline:
+    "{part}：{name} 不在线（上次在线：{when}）。在那台电脑的 dodoer 里打开这个工作区，智能体才能接着用。",
+  conversationDevicePartStopped:
+    "{part}：{name} 的借出已从别处停止。在那台电脑上重新借出，智能体才能接着用。",
+  conversationDeviceSplitPickHint: "点一下给命令行和浏览器选电脑。",
   usageChromeOn: "正在用 {name} 上的 Chrome",
   usageChromeHere: "正在用你电脑上的 Chrome",
   usageBrowserOn: "正在用 {name} 上的浏览器",
@@ -655,6 +700,26 @@ const zhTW: Record<CoworkTextKey, string> = {
   conversationDevicePickNone: "不用電腦",
   conversationDevicePickLoading: "正在讀取…",
   conversationDevicePickFailed: "沒選上：{message}",
+  conversationDeviceSplitIntro: "命令列和瀏覽器可以選不同的電腦。",
+  conversationDeviceNotPicked: "沒選",
+  conversationDeviceNotLent: "沒借出",
+  conversationDeviceOfflineShort: "不在線",
+  conversationDeviceStoppedShort: "已停止",
+  conversationDeviceBuiltInBrowser: "內建瀏覽器",
+  conversationDevicePartOn: "{name} 的{part}",
+  conversationDevicePartIs: "{part}：{name}",
+  conversationDevicePartNotPicked: "{part}：沒選電腦",
+  conversationDeviceShellWaiting: "智慧體在等你給命令列選一台電腦。",
+  conversationDeviceBrowserWaiting: "智慧體在等你給瀏覽器選一台電腦。",
+  conversationDeviceShellNotLent:
+    "{name} 現在沒借出命令列。在那台電腦上開啟借出，智慧體才能接著用。",
+  conversationDeviceBrowserNotLent:
+    "{name} 現在沒借出瀏覽器。在那台電腦上開啟借出，智慧體才能接著用。",
+  conversationDevicePartOffline:
+    "{part}：{name} 不在線（上次在線：{when}）。在那台電腦的 dodoer 裡開啟這個工作區，智慧體才能接著用。",
+  conversationDevicePartStopped:
+    "{part}：{name} 的借出已從別處停止。在那台電腦上重新借出，智慧體才能接著用。",
+  conversationDeviceSplitPickHint: "點一下給命令列和瀏覽器選電腦。",
   usageChromeOn: "正在用 {name} 上的 Chrome",
   usageChromeHere: "正在用你電腦上的 Chrome",
   usageBrowserOn: "正在用 {name} 上的瀏覽器",

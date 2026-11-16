@@ -46,9 +46,28 @@ pub struct ArchiveBuilder {
     processed: u64,
 }
 
+/// A backup file readable by its owner only: one made without a passphrase
+/// holds every stored key in plain text.
+pub fn create_private(path: &Path) -> std::io::Result<File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(0o600);
+        let file = options.open(path)?;
+        // `mode` applies only to a new file; an existing one keeps its own.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        Ok(file)
+    }
+
+    #[cfg(not(unix))]
+    options.open(path)
+}
+
 impl ArchiveBuilder {
     pub fn create(dest_zip: &Path) -> Result<Self, AppCommandError> {
-        let file = File::create(dest_zip).map_err(AppCommandError::io)?;
+        let file = create_private(dest_zip).map_err(AppCommandError::io)?;
         Ok(Self {
             writer: ZipWriter::new(BufWriter::new(file)),
             entries: Vec::new(),
@@ -249,7 +268,8 @@ pub fn extract_all(
         if cancel.is_cancelled() {
             return Err(cancelled_error());
         }
-        let mut entry = ar.by_index(i).map_err(zip_err)?;
+        // A damaged entry header is a damaged backup, not a server fault.
+        let mut entry = ar.by_index(i).map_err(|_| corrupted_error())?;
         let Some(rel) = entry.enclosed_name() else {
             return Err(AppCommandError::invalid_input(
                 "Backup archive contains an unsafe path entry",
@@ -277,8 +297,19 @@ pub fn extract_all(
         let mut w = BufWriter::new(File::create(&out).map_err(AppCommandError::io)?);
         // Bound the decompressed output to the declared size (+1 to detect
         // overflow); `verify_checksums` then confirms the exact size + digest.
+        // Read and write apart: bytes that don't inflate or fail the entry's
+        // CRC mean a damaged backup, while a write that fails is this disk's.
         let mut limited = entry.by_ref().take(expected + 1);
-        let n = std::io::copy(&mut limited, &mut w).map_err(map_disk_full)?;
+        let mut buf = vec![0u8; COPY_BUF];
+        let mut n = 0u64;
+        loop {
+            let got = limited.read(&mut buf).map_err(|_| corrupted_error())?;
+            if got == 0 {
+                break;
+            }
+            w.write_all(&buf[..got]).map_err(map_disk_full)?;
+            n += got as u64;
+        }
         w.flush().map_err(map_disk_full)?;
         if n > expected {
             return Err(corrupted_error());
@@ -353,6 +384,19 @@ mod tests {
     use super::*;
     use crate::commands::backup::manifest::{BACKUP_FORMAT_VERSION, BACKUP_KIND};
 
+    // A backup holds stored keys; other users of this machine must not read it.
+    #[cfg(unix)]
+    #[test]
+    fn a_backup_file_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("b.zip");
+        let builder = ArchiveBuilder::create(&dest).unwrap();
+        drop(builder);
+        let mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{mode:o}");
+    }
+
     fn sample_manifest() -> BackupManifest {
         BackupManifest {
             format_version: BACKUP_FORMAT_VERSION,
@@ -417,6 +461,36 @@ mod tests {
         // Corrupt a file → verify must fail.
         std::fs::write(out.join("uploads/a.txt"), b"tampered").unwrap();
         assert!(verify_checksums(&out, &reread, &cancel).is_err());
+    }
+
+    // Damaged bytes in a backup (a bad copy, a cut download) are the file's
+    // fault: the restore says "corrupted", not a server error.
+    #[test]
+    fn a_damaged_backup_is_reported_as_corrupted() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("db.bin");
+        let body: Vec<u8> = (0..50_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        std::fs::write(&src, &body).unwrap();
+        let zip_path = dir.path().join("backup.zip");
+        let cancel = CancellationToken::new();
+        let mut b = ArchiveBuilder::create(&zip_path).unwrap();
+        b.add_file("db/codeg.db", &src, &cancel, &mut null_progress())
+            .unwrap();
+        let manifest = b.finish(sample_manifest()).unwrap();
+        let good = std::fs::read(&zip_path).unwrap();
+        // The entry's header, then bytes inside its data.
+        for (name, at) in [("header", 0..4), ("data", 200..400)] {
+            let mut bad = good.clone();
+            bad[at].iter_mut().for_each(|b| *b ^= 0x5a);
+            std::fs::write(&zip_path, &bad).unwrap();
+            let out = dir.path().join(format!("out-{name}"));
+            let err =
+                extract_all(&zip_path, &out, &manifest, &cancel, &mut null_progress()).unwrap_err();
+            assert!(
+                matches!(err.code, crate::app_error::AppErrorCode::InvalidInput),
+                "{name}: {err:?}"
+            );
+        }
     }
 
     #[test]

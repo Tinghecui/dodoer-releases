@@ -100,7 +100,7 @@ async fn prepare_remote_git_cmd_for_url(
 
 /// Classify a git remote command error, detecting authentication failures.
 pub(crate) fn classify_remote_git_error(operation: &str, stderr: &[u8]) -> AppCommandError {
-    let msg = String::from_utf8_lossy(stderr).trim().to_string();
+    let msg = crate::git_credential::without_handed_tokens(String::from_utf8_lossy(stderr).trim());
     tracing::error!("[GIT_CMD] {} failed, stderr: {}", operation, msg);
     let lower = msg.to_lowercase();
 
@@ -1367,6 +1367,7 @@ pub async fn clone_repository(
 }
 
 fn classify_git_clone_error(stderr: &str) -> AppCommandError {
+    let stderr = &crate::git_credential::without_handed_tokens(stderr);
     let normalized = stderr.to_lowercase();
 
     if normalized.contains("already exists and is not an empty directory") {
@@ -1717,6 +1718,13 @@ pub async fn git_has_merge_head(path: String) -> Result<bool, AppCommandError> {
     Ok(output.status.success())
 }
 
+/// What a remote git command that succeeded printed. Hooks run then too
+/// (`pre-push` on a delete, `reference-transaction` on a fetch), and one
+/// printing its environment would hand on the token codeg gave git.
+fn remote_git_output(stderr: &[u8]) -> String {
+    crate::git_credential::without_handed_tokens(String::from_utf8_lossy(stderr).trim())
+}
+
 pub(crate) async fn git_fetch_core(
     path: &str,
     credentials: Option<&GitCredentials>,
@@ -1732,7 +1740,7 @@ pub(crate) async fn git_fetch_core(
     if !output.status.success() {
         return Err(classify_remote_git_error("fetch --all", &output.stderr));
     }
-    Ok(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    Ok(remote_git_output(&output.stderr))
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -3762,7 +3770,7 @@ pub(crate) async fn git_fetch_remote_core(
     if !output.status.success() {
         return Err(classify_remote_git_error("fetch", &output.stderr));
     }
-    Ok(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    Ok(remote_git_output(&output.stderr))
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -3959,7 +3967,7 @@ pub(crate) async fn git_delete_remote_branch_core(
     if !output.status.success() {
         return Err(classify_remote_git_error("push --delete", &output.stderr));
     }
-    Ok(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    Ok(remote_git_output(&output.stderr))
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -7106,6 +7114,38 @@ pub async fn create_conversation_worktree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A pre-push hook that prints its environment puts the token git was
+    // given in git's output: it must not reach the log or the error's detail.
+    #[test]
+    fn a_hook_printing_the_git_token_does_not_carry_it_out() {
+        let token = "gitea-0f9e8d7c6b5a49382716";
+        let mut cmd = tokio::process::Command::new("git");
+        crate::git_credential::inject_credentials(&mut cmd, "alice", token, Path::new("/x"));
+        let hook =
+            format!("husky - pre-push failed\nCODEG_GIT_PASSWORD={token}\n{{ token: '{token}' }}");
+        let push = classify_remote_git_error("push", hook.as_bytes());
+        let clone = classify_git_clone_error(&hook);
+        for err in [push, clone] {
+            let shown = format!("{} {:?}", err.message, err.detail);
+            assert!(!shown.contains(token), "{shown}");
+        }
+    }
+
+    // A fetch or a branch delete that succeeds returns what git printed, a
+    // hook's output included: the token must not ride along there either.
+    #[test]
+    fn a_hook_on_a_git_command_that_succeeds_does_not_carry_the_token_out() {
+        let token = "gitea-a1b2c3d4e5f6a7b8c9d0";
+        let mut cmd = tokio::process::Command::new("git");
+        crate::git_credential::inject_credentials(&mut cmd, "alice", token, Path::new("/x"));
+        let printed =
+            format!("CODEG_GIT_PASSWORD={token}\nTo https://example.test/r.git\n - [deleted] old");
+        let shown = remote_git_output(printed.as_bytes());
+        assert!(!shown.contains(token), "{shown}");
+        assert!(shown.contains("[deleted] old"), "{shown}");
+    }
+
     use crate::db::test_helpers::fresh_in_memory_db;
     use crate::models::agent::AgentType;
 

@@ -255,6 +255,19 @@ pub(crate) async fn stage_restore_core(
     .map_err(spawn_err)??;
     emit(emitter, op_id, BackupPhase::Verifying);
 
+    let staged_db = staging_root.join(DB_STAGING_DIR).join(DB_STAGING_NAME);
+    let unknown = tokio::task::spawn_blocking(move || unknown_migration_in(&staged_db))
+        .await
+        .map_err(spawn_err)?;
+    if let Some(unknown) = unknown {
+        tracing::warn!("[backup] refusing a restore whose database has migration {unknown}");
+        let _ = tokio::fs::remove_dir_all(&staging_root).await;
+        return Err(reject_to_error(
+            &manifest,
+            Some(crate::app_error::BACKUP_I18N_KEY_NEWER_VERSION),
+        ));
+    }
+
     // Force-create the staged directory of every `AlwaysReplace` section this
     // archive DECLARES, so "the backup had nothing here" is representable and
     // the swap replaces the live tree wholesale instead of merging into it.
@@ -1086,6 +1099,50 @@ fn already_pending_error() -> AppCommandError {
     .with_i18n(BACKUP_I18N_KEY_ALREADY_PENDING, Default::default())
 }
 
+/// A migration in the staged database that this build does not know. The
+/// manifest names only the last one, and a build that merged upstream can end
+/// on a shared name with an extra one in between: the app would then refuse
+/// to start on the restored database. A file that is not a codeg database
+/// says nothing here; startup has its own check.
+fn unknown_migration_in(db: &Path) -> Option<String> {
+    // A WAL-mode database opened even read-only gets a `-shm` and an empty
+    // `-wal`; the swap would carry them into place beside the restored one.
+    let sidecars: Vec<PathBuf> = ["-wal", "-shm"]
+        .iter()
+        .map(|suffix| {
+            let mut name = db.as_os_str().to_os_string();
+            name.push(suffix);
+            PathBuf::from(name)
+        })
+        .filter(|path| !path.exists())
+        .collect();
+    let unknown = read_unknown_migration(db);
+    for made in sidecars {
+        let _ = std::fs::remove_file(made);
+    }
+    unknown
+}
+
+// The binding before the return is needed: see the end of the function.
+#[allow(clippy::let_and_return)]
+fn read_unknown_migration(db: &Path) -> Option<String> {
+    use sea_orm_migration::MigratorTrait;
+    let conn =
+        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+    let mut statement = conn.prepare("SELECT version FROM seaql_migrations").ok()?;
+    let known: std::collections::HashSet<String> = crate::db::migration::Migrator::migrations()
+        .iter()
+        .map(|m| m.name().to_string())
+        .collect();
+    let versions = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .ok()?;
+    // Bound first: the iterator borrows `statement`, which must outlive it.
+    let unknown = versions.flatten().find(|version| !known.contains(version));
+    unknown
+}
+
 fn reject_to_error(manifest: &BackupManifest, reason: Option<&str>) -> AppCommandError {
     use crate::app_error::BACKUP_I18N_KEY_NEWER_VERSION;
     match reason {
@@ -1176,6 +1233,84 @@ mod tests {
             entries: Vec::new(),
         })
         .unwrap();
+    }
+
+    // A backup from a build with an extra migration in the middle ends on a
+    // name this build knows. Staging it would leave the app unable to start.
+    #[tokio::test]
+    async fn a_backup_with_a_migration_this_build_lacks_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let db = dir.path().join("other.db");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE seaql_migrations (version TEXT PRIMARY KEY, applied_at INTEGER);",
+            )
+            .unwrap();
+            for version in [known_migration(), "m20991231_000001_parallel_build".into()] {
+                conn.execute("INSERT INTO seaql_migrations VALUES (?1, 0)", [version])
+                    .unwrap();
+            }
+        }
+        let src = dir.path().join("other.zip");
+        write_archive(&src, None, &[("db/codeg.db", &std::fs::read(&db).unwrap())]);
+        let err = stage_restore_core(
+            &src,
+            &data_dir,
+            &EventEmitter::Noop,
+            "pb",
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("a database this build cannot open is not staged");
+        assert_eq!(
+            err.i18n_key.as_deref(),
+            Some(crate::app_error::BACKUP_I18N_KEY_NEWER_VERSION)
+        );
+        assert!(!data_dir.join(PENDING_MARKER).exists());
+    }
+
+    // An archive whose database is in WAL mode: checking its migrations
+    // leaves no `-wal` or `-shm` beside it to be restored with it.
+    #[tokio::test]
+    async fn checking_a_wal_database_leaves_nothing_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let db = dir.path().join("wal.db");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE seaql_migrations (version TEXT PRIMARY KEY, applied_at INTEGER);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO seaql_migrations VALUES (?1, 0)",
+                [known_migration()],
+            )
+            .unwrap();
+        }
+        let src = dir.path().join("wal.zip");
+        write_archive(&src, None, &[("db/codeg.db", &std::fs::read(&db).unwrap())]);
+        let staged = stage_restore_core(
+            &src,
+            &data_dir,
+            &EventEmitter::Noop,
+            "pw",
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("staged");
+        let db_dir = std::path::Path::new(&staged.staging_dir).join(DB_STAGING_DIR);
+        let mut left: Vec<_> = std::fs::read_dir(&db_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["codeg.db"]);
     }
 
     /// Restoring a pre-`managedSections` archive must not touch a section that

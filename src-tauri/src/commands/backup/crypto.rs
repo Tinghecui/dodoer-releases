@@ -146,7 +146,7 @@ pub fn encrypt_file(
 
     let reader = File::open(src).map_err(AppCommandError::io)?;
     let mut reader = BufReader::new(reader);
-    let out = File::create(dest).map_err(AppCommandError::io)?;
+    let out = super::archive::create_private(dest).map_err(AppCommandError::io)?;
     let mut out = BufWriter::new(out);
 
     // Write the cleartext header.
@@ -222,7 +222,7 @@ pub fn decrypt_file(
     let nonce = GenericArray::from_slice(&nonce_prefix);
     let mut dec = DecryptorBE32::from_aead(cipher, nonce);
 
-    let out = File::create(dest).map_err(AppCommandError::io)?;
+    let out = super::archive::create_private(dest).map_err(AppCommandError::io)?;
     let mut out = BufWriter::new(out);
 
     let block = header.chunk_size + GCM_TAG_LEN;
@@ -262,6 +262,7 @@ fn validate_header(h: &EnvelopeHeader) -> Result<(), AppCommandError> {
     if !(8..=MAX_M_COST).contains(&p.m_cost)
         || !(1..=MAX_T_COST).contains(&p.t_cost)
         || !(1..=MAX_P_COST).contains(&p.p_cost)
+        || p.m_cost < 8 * p.p_cost
     {
         return Err(corrupt_header_error());
     }
@@ -392,6 +393,23 @@ mod tests {
         let mut bad_algo = base.clone();
         bad_algo.algo = "rot13".to_string();
         assert!(validate_header(&bad_algo).is_err());
+    }
+
+    // Argon2 also wants 8 KiB per lane; a header asking for less is corrupt,
+    // not a KDF failure on this machine.
+    #[test]
+    fn a_header_with_too_little_memory_per_lane_is_corrupt() {
+        let mut header = EnvelopeHeader {
+            algo: "AES-256-GCM".to_string(),
+            kdf: "Argon2id".to_string(),
+            kdf_params: KdfParams::default(),
+            salt_b64: B64.encode([0u8; SALT_LEN]),
+            nonce_prefix_b64: B64.encode([0u8; NONCE_PREFIX_LEN]),
+            chunk_size: DEFAULT_CHUNK_SIZE,
+        };
+        header.kdf_params.m_cost = 8;
+        header.kdf_params.p_cost = 2;
+        assert!(validate_header(&header).is_err());
     }
 
     #[test]

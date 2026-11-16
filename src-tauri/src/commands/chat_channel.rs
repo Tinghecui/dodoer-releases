@@ -436,18 +436,14 @@ pub async fn weixin_check_qrcode_core(
 
     // On confirmed: save token + update config with base_url
     if result.status == "confirmed" {
-        tracing::error!(
+        // Whether a token came, never any of it: logs are exported.
+        tracing::info!(
             "[Weixin] QR confirmed for channel {channel_id}, bot_token={}, base_url={}",
-            result
-                .bot_token
-                .as_deref()
-                .map(|t| {
-                    // Char-boundary-safe prefix: `&t[..8]` panics if a multibyte
-                    // char straddles byte 8.
-                    let end = t.char_indices().nth(8).map_or(t.len(), |(i, _)| i);
-                    &t[..end]
-                })
-                .unwrap_or("None"),
+            if result.bot_token.is_some() {
+                "present"
+            } else {
+                "None"
+            },
             result.base_url.as_deref().unwrap_or("None"),
         );
         if let Some(ref token) = result.bot_token {

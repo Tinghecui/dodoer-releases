@@ -791,7 +791,15 @@ fn with_credentials(cmd: &mut tokio::process::Command, ctx: &DeliveryCtx<'_>, au
             } else {
                 auth.username.trim()
             };
-            crate::git_credential::inject_credentials(cmd, username, &auth.token, &askpass);
+            // Only the forge itself gets the token, not a host a redirect
+            // or a submodule asks for.
+            crate::git_credential::inject_credentials_for(
+                cmd,
+                &crate::forge::web_origin(auth),
+                username,
+                &auth.token,
+                &askpass,
+            );
         }
         Err(e) => {
             tracing::warn!("[forge] no askpass helper for the delivery: {e}");

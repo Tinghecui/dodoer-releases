@@ -59,6 +59,22 @@ pub fn absolutize(p: &Path) -> PathBuf {
         .unwrap_or_else(|_| p.to_path_buf())
 }
 
+/// Replace an executable script in one step (a staging file, then a rename),
+/// so a git command running it never reads half of it.
+#[cfg(unix)]
+fn write_script(path: &Path, content: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let staging = path.with_file_name(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    let written = std::fs::write(&staging, content)
+        .and_then(|()| std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)))
+        .and_then(|()| std::fs::rename(&staging, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&staging);
+    }
+    written
+}
+
 /// Create a credential helper that calls the app binary directly with
 /// `--credential-helper` flag. The app binary opens the DB, looks up
 /// the matching account, and outputs credentials to stdout.
@@ -94,9 +110,8 @@ exec {binary} --credential-helper --data-dir {data_dir} < /dev/stdin
             binary = sh_single_quote(&binary_str),
             data_dir = sh_single_quote(&data_dir_str),
         );
-        std::fs::write(&script_path, content)?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
+        // Other terminals' git may be running it right now.
+        write_script(&script_path, &content)?;
         Ok(script_path)
     }
 
@@ -182,11 +197,13 @@ pub fn run_credential_helper() {
     }
 }
 
-/// Read host from git's credential protocol on stdin. Returns empty string
-/// on EOF or if no `host=` line was provided.
+/// Read `protocol://host` from git's credential protocol on stdin (`https`
+/// when no protocol is given). Returns an empty string on EOF or if no
+/// `host=` line was provided.
 fn read_host_from_stdin() -> String {
     use std::io::BufRead;
     let mut host = String::new();
+    let mut protocol = String::from("https");
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
         let line = match line {
@@ -198,9 +215,14 @@ fn read_host_from_stdin() -> String {
         }
         if let Some(value) = line.strip_prefix("host=") {
             host = value.to_string();
+        } else if let Some(value) = line.strip_prefix("protocol=") {
+            protocol = value.to_string();
         }
     }
-    host
+    if host.is_empty() {
+        return host;
+    }
+    format!("{protocol}://{host}")
 }
 
 /// Look up a (username, token) pair for the given host using the codeg
@@ -247,7 +269,12 @@ pub(crate) async fn lookup_credential(
         None => return Ok(None),
     };
 
-    let remote_url = format!("https://{host}");
+    // `host` is `protocol://host` from the helper; a bare host is https.
+    let remote_url = if host.contains("://") {
+        host.to_string()
+    } else {
+        format!("https://{host}")
+    };
     let account = match find_matching_account(&settings.accounts, &remote_url) {
         Some(a) => a,
         None => return Ok(None),
@@ -299,18 +326,37 @@ fn resolve_app_data_dir() -> Option<std::path::PathBuf> {
 pub fn ensure_askpass_script(app_data_dir: &Path) -> std::io::Result<PathBuf> {
     #[cfg(unix)]
     {
+        fn is_executable(path: &Path) -> bool {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o100 != 0)
+        }
         let script_path = app_data_dir.join("git-askpass.sh");
-        if !script_path.exists() {
-            let content = r#"#!/bin/sh
+        // git asks "Password for 'https://user@host': ", the host as the
+        // remote spells it. With CODEG_GIT_ORIGIN set (lower case, no default
+        // port), only that scheme and host get an answer: `fetch --all`, another
+        // upstream or a submodule asking for a password must not be handed a
+        // token stored for the first remote's host.
+        let content = r#"#!/bin/sh
+if [ -n "$CODEG_GIT_ORIGIN" ]; then
+  url=${1#*\'}; url=${url%\'*}
+  scheme=${url%%://*}; rest=${url#*://}; rest=${rest%%/*}
+  case "$rest" in *@*) rest=${rest##*@} ;; esac
+  asked=$(printf '%s://%s' "$scheme" "$rest" | tr 'A-Z' 'a-z')
+  case "$asked" in https://*:443) asked=${asked%:443} ;; http://*:80) asked=${asked%:80} ;; esac
+  [ "$asked" = "$CODEG_GIT_ORIGIN" ] || exit 0
+fi
 case "$1" in
 *[Uu]sername*) echo "$CODEG_GIT_USERNAME" ;;
 *[Pp]assword*) echo "$CODEG_GIT_PASSWORD" ;;
 esac
 "#;
-            std::fs::write(&script_path, content)?;
-            // Make executable
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
+        // Rewritten when it differs, so an older script (or one a crash left
+        // empty or not executable) is replaced; in one step, as other git
+        // commands may be running it.
+        if std::fs::read_to_string(&script_path).ok().as_deref() != Some(content)
+            || !is_executable(&script_path)
+        {
+            write_script(&script_path, content)?;
         }
         Ok(script_path)
     }
@@ -337,6 +383,26 @@ if %errorlevel% equ 0 (
     }
 }
 
+/// Every token handed to git by this process. git passes its environment to
+/// the repository's hooks, and a hook that prints it (a failing `pre-push`
+/// test dumping `process.env`) puts the token in git's output, which goes to
+/// the log and, as the error's detail, to the client that asked.
+fn handed_tokens() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static TOKENS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    TOKENS.get_or_init(Default::default)
+}
+
+/// `text` (git's output) with every token handed to git masked.
+pub fn without_handed_tokens(text: &str) -> String {
+    let tokens = handed_tokens()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    tokens.iter().fold(text.to_string(), |text, token| {
+        text.replace(token.as_str(), "***")
+    })
+}
+
 /// Inject GitHub credentials into a git command via GIT_ASKPASS.
 pub fn inject_credentials(
     cmd: &mut tokio::process::Command,
@@ -344,6 +410,15 @@ pub fn inject_credentials(
     token: &str,
     askpass_path: &Path,
 ) {
+    cmd.env_remove("CODEG_GIT_ORIGIN");
+    // Short ones would mask ordinary words; no real token is that short.
+    if token.len() >= 8 {
+        handed_tokens()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(token.to_string());
+    }
+
     // Clear all system credential helpers (e.g. macOS Keychain `osxkeychain`)
     // so git falls through to GIT_ASKPASS. Without this, a system credential
     // helper may return stale/wrong credentials and GIT_ASKPASS is never called.
@@ -355,6 +430,34 @@ pub fn inject_credentials(
         .env("CODEG_GIT_USERNAME", username)
         .env("CODEG_GIT_PASSWORD", token)
         .env("GIT_TERMINAL_PROMPT", "0");
+}
+
+/// Like [`inject_credentials`], for a token stored for `url`'s host: git gets
+/// it only when that scheme and host ask (see [`ensure_askpass_script`]).
+pub fn inject_credentials_for(
+    cmd: &mut tokio::process::Command,
+    url: &str,
+    username: &str,
+    token: &str,
+    askpass_path: &Path,
+) {
+    inject_credentials(cmd, username, token, askpass_path);
+    // An address that doesn't parse limits the token to no host at all,
+    // rather than leaving it to any host that asks.
+    cmd.env(
+        "CODEG_GIT_ORIGIN",
+        origin_of(url).unwrap_or_else(|| "invalid://".to_string()),
+    );
+}
+
+/// `scheme://host[:port]` of a URL, as git names it in its prompt.
+fn origin_of(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    Some(match parsed.port() {
+        Some(port) => format!("{}://{host}:{port}", parsed.scheme()),
+        None => format!("{}://{host}", parsed.scheme()),
+    })
 }
 
 /// The username git should send for a stored account.
@@ -413,16 +516,21 @@ fn extract_host(remote_url: &str) -> Option<String> {
     let url = remote_url.trim();
 
     // HTTPS: https://github.com/...
-    if let Some(after_scheme) = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-    {
-        // Strip optional user@ prefix (e.g. https://user@github.com/...)
-        let after_at = after_scheme
-            .find('@')
-            .map(|i| &after_scheme[i + 1..])
-            .unwrap_or(after_scheme);
-        return after_at.split('/').next().map(|h| h.to_lowercase());
+    if url.starts_with("https://") || url.starts_with("http://") {
+        // A backslash is a path separator to the URL standard but part of
+        // the user name to git: the two would name different hosts.
+        if url.contains('\\') {
+            return None;
+        }
+        // Parsed, not cut at the first `@`: in
+        // `https://evil.test/@github.com/r.git` the `@` is in the path and
+        // the host git connects to is evil.test, not github.com.
+        let parsed = reqwest::Url::parse(url).ok()?;
+        let host = parsed.host_str()?.to_lowercase();
+        return Some(match parsed.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host,
+        });
     }
 
     // SSH: git@github.com:user/repo.git
@@ -449,13 +557,18 @@ pub fn find_matching_account<'a>(
     }
 
     let remote_host = extract_host(remote_url)?;
+    // A token for an https server is never sent over plain http, where anyone
+    // on the way reads it: an `http://` remote, or a 401 on the way to the
+    // redirect, would otherwise get it.
+    let plain = |url: &str| url.trim().to_ascii_lowercase().starts_with("http://");
+    let remote_plain = plain(remote_url);
 
     let matching: Vec<&GitHubAccount> = accounts
         .iter()
         .filter(|a| {
             let account_host = extract_host(&a.server_url)
                 .unwrap_or_else(|| a.server_url.trim().trim_end_matches('/').to_lowercase());
-            account_host == remote_host
+            account_host == remote_host && (!remote_plain || plain(&a.server_url))
         })
         .collect();
 
@@ -501,6 +614,19 @@ pub async fn resolve_commit_author(
     };
 
     Some((account.username.clone(), email))
+}
+
+/// A remote URL as it may appear in the log: without the `user:token@` a
+/// remote can be added with.
+fn shown(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(mut parsed) if !parsed.username().is_empty() || parsed.password().is_some() => {
+            let _ = parsed.set_username("");
+            let _ = parsed.set_password(None);
+            parsed.to_string()
+        }
+        _ => url.to_string(),
+    }
 }
 
 /// Resolve credentials for a git repository and inject them into the command.
@@ -549,7 +675,7 @@ pub async fn try_inject_for_repo_remote(
 
     // Only inject for HTTPS URLs (SSH uses keys, not tokens)
     if !remote_url.starts_with("https://") && !remote_url.starts_with("http://") {
-        tracing::warn!("[GIT_CRED] skipping non-HTTPS URL: {}", remote_url);
+        tracing::warn!("[GIT_CRED] skipping non-HTTPS URL: {}", shown(&remote_url));
         return false;
     }
 
@@ -558,7 +684,7 @@ pub async fn try_inject_for_repo_remote(
         None => {
             tracing::info!(
                 "[GIT_CRED] no matching account for remote {}. Available hosts: {}",
-                remote_url,
+                shown(&remote_url),
                 settings
                     .accounts
                     .iter()
@@ -588,9 +714,16 @@ pub async fn try_inject_for_repo_remote(
 
     tracing::info!(
         "[GIT_CRED] injecting credentials for {} (user: {})",
-        remote_url, account.username
+        shown(&remote_url),
+        account.username
     );
-    inject_credentials(cmd, git_username_for(account), &token, &askpass);
+    inject_credentials_for(
+        cmd,
+        &remote_url,
+        git_username_for(account),
+        &token,
+        &askpass,
+    );
     true
 }
 
@@ -632,13 +765,249 @@ pub async fn try_inject_for_url(
         }
     };
 
-    inject_credentials(cmd, git_username_for(account), &token, &askpass);
+    inject_credentials_for(cmd, clone_url, git_username_for(account), &token, &askpass);
     true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A stored token goes only to the host it was stored for: `fetch --all`,
+    // another upstream or a submodule asking for a password gets nothing.
+    // An older script already on disk is replaced.
+    #[cfg(unix)]
+    #[test]
+    fn the_askpass_script_answers_only_the_token_host() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("git-askpass.sh"),
+            "#!/bin/sh\necho \"$CODEG_GIT_PASSWORD\"\n",
+        )
+        .unwrap();
+        let script = ensure_askpass_script(dir.path()).unwrap();
+        let ask = |prompt: &str| {
+            let out = std::process::Command::new("/bin/sh")
+                .arg(&script)
+                .arg(prompt)
+                .env("CODEG_GIT_ORIGIN", "https://github.com")
+                .env("CODEG_GIT_USERNAME", "alice")
+                .env("CODEG_GIT_PASSWORD", "ghp_STORED")
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        assert_eq!(
+            ask("Password for 'https://alice@github.com': "),
+            "ghp_STORED"
+        );
+        assert_eq!(ask("Username for 'https://github.com': "), "alice");
+        assert_eq!(ask("Password for 'https://alice@gitlab.example': "), "");
+        assert_eq!(ask("Password for 'http://alice@github.com': "), "");
+        assert_eq!(ask("Password for 'https://github.com.evil.test': "), "");
+    }
+
+    // git names the host as the remote spells it: capitals, a written-out
+    // default port. That is still the token's host.
+    #[test]
+    fn the_askpass_script_matches_the_host_however_it_is_spelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = ensure_askpass_script(dir.path()).unwrap();
+        let ask = |origin: &str, prompt: &str| {
+            let out = std::process::Command::new("/bin/sh")
+                .arg(&script)
+                .arg(prompt)
+                .env("CODEG_GIT_ORIGIN", origin)
+                .env("CODEG_GIT_PASSWORD", "ghp_STORED")
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        let github = origin_of("https://GitHub.com/o/r").unwrap();
+        assert_eq!(
+            ask(&github, "Password for 'https://alice@GitHub.com': "),
+            "ghp_STORED"
+        );
+        let port = origin_of("https://github.com:443/o/r").unwrap();
+        assert_eq!(
+            ask(&port, "Password for 'https://github.com:443': "),
+            "ghp_STORED"
+        );
+        let plain = origin_of("http://LocalHost:8080/r").unwrap();
+        assert_eq!(
+            ask(&plain, "Password for 'http://LocalHost:8080': "),
+            "ghp_STORED"
+        );
+    }
+
+    // A git user name may itself hold an `@` (`alice@corp.com`): the host is
+    // what follows the last `@` before the path.
+    #[test]
+    fn the_askpass_script_answers_a_user_name_with_an_at_sign() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = ensure_askpass_script(dir.path()).unwrap();
+        let out = std::process::Command::new("/bin/sh")
+            .arg(&script)
+            .arg("Password for 'https://alice@corp.com@git.corp.test': ")
+            .env("CODEG_GIT_ORIGIN", "https://git.corp.test")
+            .env("CODEG_GIT_PASSWORD", "ghp_STORED")
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "ghp_STORED");
+    }
+
+    // A forge address that doesn't parse must not leave the token to any
+    // host that asks.
+    #[test]
+    fn an_unparsable_address_limits_the_token_to_no_host() {
+        let mut cmd = tokio::process::Command::new("git");
+        inject_credentials_for(&mut cmd, "https://", "u", "t", Path::new("/x"));
+        let origin = cmd
+            .as_std()
+            .get_envs()
+            .find(|(k, _)| *k == "CODEG_GIT_ORIGIN")
+            .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()));
+        assert!(origin.is_some_and(|o| !o.is_empty()), "no host limit set");
+    }
+
+    // An `@` in the path is not a user name: the host git connects to is the
+    // one before the path, and a token stored for github.com is not for it.
+    #[test]
+    fn an_at_sign_in_the_path_does_not_change_the_host() {
+        let account = GitHubAccount {
+            id: "1".into(),
+            server_url: "https://github.com".into(),
+            username: "alice".into(),
+            scopes: vec![],
+            avatar_url: None,
+            is_default: true,
+            created_at: String::new(),
+            provider: None,
+        };
+        let accounts = [account];
+        for remote in [
+            "https://evil.test/@github.com/r.git",
+            "https://user@evil.test/x/@github.com/r.git",
+        ] {
+            assert!(
+                find_matching_account(&accounts, remote).is_none(),
+                "{remote}"
+            );
+        }
+        assert!(find_matching_account(&accounts, "https://alice@github.com/o/r.git").is_some());
+        // git reads user `github.com\` at evil.test here.
+        assert!(find_matching_account(&accounts, "https://github.com\\@evil.test/r").is_none());
+        assert_eq!(
+            extract_host("https://git.corp:8443/r").as_deref(),
+            Some("git.corp:8443")
+        );
+    }
+
+    // A token saved for an https server never goes to the same host over
+    // plain http; an account saved for an http server still works there.
+    #[test]
+    fn an_https_token_is_not_sent_over_plain_http() {
+        let account = |url: &str| GitHubAccount {
+            id: "1".into(),
+            server_url: url.into(),
+            username: "alice".into(),
+            scopes: vec![],
+            avatar_url: None,
+            is_default: true,
+            created_at: String::new(),
+            provider: None,
+        };
+        let https = [account("https://github.com")];
+        assert!(find_matching_account(&https, "http://github.com/o/r.git").is_none());
+        assert!(find_matching_account(&https, "https://github.com/o/r.git").is_some());
+        let plain = [account("http://git.local")];
+        assert!(find_matching_account(&plain, "http://git.local/o/r.git").is_some());
+    }
+
+    #[test]
+    fn the_token_host_is_named_as_git_names_it() {
+        assert_eq!(
+            origin_of("https://u:p@github.com/o/r.git").as_deref(),
+            Some("https://github.com")
+        );
+        assert_eq!(
+            origin_of("http://h.test:8080/r").as_deref(),
+            Some("http://h.test:8080")
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    // A remote added as `https://user:token@host/...` keeps the token in
+    // `.git/config`; the log (shown in the app, readable over the web API,
+    // attached to bug reports) must not repeat it.
+    #[tokio::test]
+    async fn a_token_in_a_remote_url_is_not_logged() {
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://alice:ghp_LOGSECRET0123456789@git.example.test/o/r.git",
+        ]);
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let accounts = GitHubAccountsSettings {
+            accounts: vec![GitHubAccount {
+                id: "1".into(),
+                server_url: "https://github.com".into(),
+                username: "alice".into(),
+                scopes: vec![],
+                avatar_url: None,
+                is_default: true,
+                created_at: String::new(),
+                provider: None,
+            }],
+        };
+        app_metadata_service::upsert_value(
+            &db.conn,
+            GITHUB_ACCOUNTS_KEY,
+            &serde_json::to_string(&accounts).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let log = Captured::default();
+        let sink = log.clone();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(move || sink.clone())
+                .with_ansi(false)
+                .finish(),
+        );
+        let mut cmd = tokio::process::Command::new("git");
+        let path = repo.path().to_string_lossy().to_string();
+        assert!(!try_inject_for_repo(&mut cmd, &path, &db.conn, repo.path()).await);
+
+        let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert!(text.contains("git.example.test"), "{text}");
+        assert!(!text.contains("ghp_LOGSECRET"), "{text}");
+    }
 
     #[test]
     fn test_extract_host_https() {

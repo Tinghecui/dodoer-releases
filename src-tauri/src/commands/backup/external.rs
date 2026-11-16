@@ -66,22 +66,6 @@ fn sidecar_of(db: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Honor a source's `include_top` allowlist, so a mixed base dir (e.g.
-/// Gemini's, which holds credentials next to transcripts) only contributes its
-/// transcript/session subtrees.
-fn top_excluded(include_top: Option<&'static [&'static str]>, rel: &Path) -> bool {
-    match include_top {
-        None => false,
-        Some(allow) => match rel.components().next() {
-            Some(std::path::Component::Normal(first)) => {
-                let first = first.to_string_lossy();
-                !allow.iter().any(|a| *a == first)
-            }
-            _ => true,
-        },
-    }
-}
-
 /// Pack external transcript trees into the archive. `scratch` is a private
 /// working directory (under the data dir) used to stage SQLite snapshots.
 pub fn add_external_sources(
@@ -125,7 +109,7 @@ fn add_external_sources_with(
             if src.sqlite && is_sqlite_main(name) {
                 pack_sqlite_store(
                     builder,
-                    src.agent,
+                    src,
                     &entry,
                     &src.root,
                     scratch,
@@ -147,8 +131,7 @@ fn add_external_sources_with(
                 &mut out.degraded,
             )?;
         } else {
-            let include_top = src.include_top;
-            let exclude = move |rel: &Path| top_excluded(include_top, rel);
+            let exclude = |rel: &Path| !src.archives(rel);
             builder.add_dir(&prefix, &src.root, &exclude, cancel, progress)?;
         }
         out.packed = true;
@@ -180,7 +163,7 @@ pub fn estimated_source_bytes() -> u64 {
             let Ok(rel) = entry.path().strip_prefix(&src.root) else {
                 continue;
             };
-            if top_excluded(src.include_top, rel) {
+            if !src.archives(rel) {
                 continue;
             }
             if src.sqlite && is_sqlite_sidecar(&entry.file_name().to_string_lossy()) {
@@ -218,7 +201,7 @@ fn add_sqlite_dir(
         let Ok(rel) = entry.path().strip_prefix(&src.root) else {
             continue;
         };
-        if top_excluded(src.include_top, rel) {
+        if !src.archives(rel) {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -232,7 +215,7 @@ fn add_sqlite_dir(
         if is_sqlite_main(&name) {
             pack_sqlite_store(
                 builder,
-                src.agent,
+                src,
                 &entry_name,
                 entry.path(),
                 scratch,
@@ -251,7 +234,7 @@ fn add_sqlite_dir(
 #[allow(clippy::too_many_arguments)]
 fn pack_sqlite_store(
     builder: &mut ArchiveBuilder,
-    agent: &str,
+    src: &ExternalSource,
     entry_name: &str,
     live_db: &Path,
     scratch: &Path,
@@ -265,6 +248,7 @@ fn pack_sqlite_store(
         return builder.add_file(entry_name, live_db, cancel, progress);
     }
 
+    let agent = src.agent;
     let snap = scratch.join(format!("{}.db", uuid::Uuid::new_v4().simple()));
 
     // (a) The normal path: a read-only page copy. Page copy, not `VACUUM` —
@@ -275,6 +259,9 @@ fn pack_sqlite_store(
     //     inside it.
     match page_copy_readonly(live_db, &snap) {
         Ok(()) => {
+            if let Err(e) = scrub_secret_tables(&snap, src.secret_tables) {
+                return not_archived(live_db, &snap, agent, entry_name, degraded, e);
+            }
             let r = builder.add_file(entry_name, &snap, cancel, progress);
             let _ = std::fs::remove_file(&snap);
             return r;
@@ -294,6 +281,9 @@ fn pack_sqlite_store(
     //     coherent, and let SQLite recover it THERE.
     match recover_on_private_copy(live_db, &snap, scratch) {
         Ok(level) => {
+            if let Err(e) = scrub_secret_tables(&snap, src.secret_tables) {
+                return not_archived(live_db, &snap, agent, entry_name, degraded, e);
+            }
             let r = builder.add_file(entry_name, &snap, cancel, progress);
             let _ = std::fs::remove_file(&snap);
             degraded.push(DegradedSqlite {
@@ -303,20 +293,49 @@ fn pack_sqlite_store(
             });
             r
         }
-        Err(reason) => {
-            let _ = std::fs::remove_file(&snap);
-            tracing::error!(
-                "[BACKUP] {} not archived: {reason}",
-                live_db.display()
-            );
-            degraded.push(DegradedSqlite {
-                agent: agent.to_string(),
-                archive_path: entry_name.to_string(),
-                level: SqliteDegradation::NotArchived,
-            });
-            Ok(())
+        Err(reason) => not_archived(live_db, &snap, agent, entry_name, degraded, reason),
+    }
+}
+
+/// Leave a store out of the archive, and say so in the manifest.
+fn not_archived(
+    live_db: &Path,
+    snap: &Path,
+    agent: &str,
+    entry_name: &str,
+    degraded: &mut Vec<DegradedSqlite>,
+    reason: impl std::fmt::Display,
+) -> Result<(), AppCommandError> {
+    let _ = std::fs::remove_file(snap);
+    tracing::error!("[BACKUP] {} not archived: {reason}", live_db.display());
+    degraded.push(DegradedSqlite {
+        agent: agent.to_string(),
+        archive_path: entry_name.to_string(),
+        level: SqliteDegradation::NotArchived,
+    });
+    Ok(())
+}
+
+/// Empty `tables` in our own snapshot, with the freed pages zeroed so the
+/// tokens are not left in the file's free space. Tables this store does not
+/// have are skipped. The snapshot is closed before it is archived.
+fn scrub_secret_tables(snap: &Path, tables: &[&str]) -> Result<(), rusqlite::Error> {
+    if tables.is_empty() {
+        return Ok(());
+    }
+    let conn = Connection::open(snap)?;
+    conn.pragma_update(None, "secure_delete", "ON")?;
+    for table in tables {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [table],
+            |r| r.get(0),
+        )?;
+        if exists {
+            conn.execute(&format!("DELETE FROM \"{table}\""), [])?;
         }
     }
+    conn.close().map_err(|(_, e)| e)
 }
 
 /// Page-copy `src` into `dest` through a read-only connection.
@@ -627,6 +646,31 @@ enum FileOutcome {
     Failed,
 }
 
+/// Folders a restore creates are the owner's only: the agents keep their
+/// transcripts (command output, pasted keys) in 0700 folders.
+fn private_dirs(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
+/// A restored file is 0600, as the agents write their own.
+fn new_private_file(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
 /// Place one staged file at `target` (which must live under `base`), never
 /// leaving a partial file at the final path, never clobbering an existing file
 /// under `SkipExisting`, and never following a symlinked parent component out
@@ -654,7 +698,7 @@ fn restore_one(
         tracing::warn!("[RESTORE] external: symlinked parent under {}, skipping {}", base.display(), target.display());
         return FileOutcome::Failed;
     }
-    if let Err(e) = std::fs::create_dir_all(parent) {
+    if let Err(e) = private_dirs(parent) {
         tracing::error!("[RESTORE] external: mkdir {} failed: {e}", parent.display());
         return FileOutcome::Failed;
     }
@@ -675,7 +719,7 @@ fn restore_one(
             // Atomic no-clobber: `create_new` fails if the path appeared in a
             // race. On a copy failure, remove the partial file we just created
             // so no half-written transcript is left at the live path.
-            match OpenOptions::new().write(true).create_new(true).open(target) {
+            match new_private_file(target) {
                 Ok(mut out) => match File::open(src).and_then(|mut i| std::io::copy(&mut i, &mut out)) {
                     Ok(_) => FileOutcome::Written,
                     Err(e) => {
@@ -697,7 +741,7 @@ fn restore_one(
             // on any failure.
             let tmp = parent.join(format!(".codeg-ext-{}.part", uuid::Uuid::new_v4().simple()));
             let write = (|| -> std::io::Result<()> {
-                let mut out = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+                let mut out = new_private_file(&tmp)?;
                 let mut input = File::open(src)?;
                 std::io::copy(&mut input, &mut out)?;
                 Ok(())
@@ -866,7 +910,7 @@ fn publish_sqlite(src: &Path, target: &Path, parent: &Path) -> FileOutcome {
     let tmp = parent.join(format!(".codeg-ext-{}.part", uuid::Uuid::new_v4().simple()));
     // 1. The replacement is fully on disk before anything live is touched.
     let staged = (|| -> std::io::Result<()> {
-        let mut out = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        let mut out = new_private_file(&tmp)?;
         let mut input = File::open(src)?;
         std::io::copy(&mut input, &mut out)?;
         out.sync_all()
@@ -1065,6 +1109,8 @@ mod tests {
             is_file: false,
             sqlite: false,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         }
     }
@@ -1149,6 +1195,8 @@ mod tests {
             is_file: false,
             sqlite: false,
             include_top: Some(&["objects"]),
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         }];
         let report = restore_external_with_sources(
@@ -1220,6 +1268,43 @@ mod tests {
         assert!(!leftover_temp, "no temp file should remain after publish");
     }
 
+    // Restoring to a new machine: the agent's folders are created here, and
+    // must not be readable by the other accounts on it.
+    #[cfg(unix)]
+    #[test]
+    fn restored_transcripts_are_readable_only_by_their_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let staged = dir.path().join("external");
+        std::fs::create_dir_all(staged.join("claude/projects/p")).unwrap();
+        std::fs::write(staged.join("claude/projects/p/a.jsonl"), b"A").unwrap();
+        std::fs::write(staged.join("claude/projects/p/b.jsonl"), b"B").unwrap();
+        let target_base = dir.path().join("live-claude");
+        std::fs::create_dir_all(&target_base).unwrap();
+        std::fs::create_dir_all(target_base.join("projects/p")).unwrap();
+        std::fs::write(target_base.join("projects/p/b.jsonl"), b"OLD").unwrap();
+        let sources = vec![dir_source("claude", target_base.clone())];
+        let cancel = CancellationToken::new();
+        let fresh = dir.path().join("fresh-claude");
+        // `~/.claude` is there, its `projects/` not yet.
+        std::fs::create_dir_all(&fresh).unwrap();
+        let fresh_sources = vec![dir_source("claude", fresh.clone())];
+        restore_external_with_sources(
+            &staged,
+            &fresh_sources,
+            ConflictPolicy::SkipExisting,
+            &cancel,
+        )
+        .unwrap();
+        restore_external_with_sources(&staged, &sources, ConflictPolicy::Overwrite, &cancel)
+            .unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&fresh.join("projects/p/a.jsonl")), 0o600);
+        assert_eq!(mode(&fresh.join("projects/p")), 0o700);
+        assert_eq!(mode(&fresh.join("projects")), 0o700);
+        assert_eq!(mode(&target_base.join("projects/p/b.jsonl")), 0o600);
+    }
+
     #[cfg(unix)]
     #[test]
     fn scan_reports_dangling_symlink_conflict() {
@@ -1278,6 +1363,8 @@ mod tests {
             is_file: false,
             sqlite: false,
             include_top: Some(&["tmp", "history"]),
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         };
         // A crafted credential path is rejected.
@@ -1292,6 +1379,8 @@ mod tests {
             is_file: true,
             sqlite: true,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         };
         let opencode = std::slice::from_ref(&opencode);
@@ -1321,6 +1410,8 @@ mod tests {
             is_file: true,
             sqlite: false,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[AppendOnlyIndex {
                 path: "session_index.jsonl",
                 key: "id",
@@ -1652,6 +1743,8 @@ mod tests {
             is_file: false,
             sqlite: false,
             include_top: kimi.include_top,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: kimi.indexes,
         };
         let report = restore_external_with_sources(
@@ -1672,7 +1765,85 @@ mod tests {
         );
     }
 
+    // A backup can be unencrypted and is meant to leave the machine: Grok's
+    // full-file snapshots and command logs stay out, the transcript goes in.
+    #[test]
+    fn grok_backup_leaves_out_file_snapshots_and_command_logs() {
+        let grok = crate::parsers::external_transcript_sources()
+            .into_iter()
+            .find(|s| s.agent == "grok")
+            .expect("grok source");
+        for kept in ["updates.jsonl", "summary.json", "chat_history.jsonl"] {
+            assert!(grok.archives(&Path::new("cwd/sess").join(kept)), "{kept}");
+        }
+        for left_out in ["rewind_points.jsonl", "terminal/call-1.log"] {
+            assert!(
+                !grok.archives(&Path::new("cwd/sess").join(left_out)),
+                "{left_out}"
+            );
+        }
+    }
+
+    // What was typed at Grok's prompt, shell commands too, stays out: the
+    // conversation is in the session's own files.
+    #[test]
+    fn grok_backup_leaves_out_typed_input_history() {
+        let grok = crate::parsers::external_transcript_sources()
+            .into_iter()
+            .find(|s| s.agent == "grok")
+            .expect("grok source");
+        assert!(!grok.archives(Path::new("cwd/prompt_history.jsonl")));
+        assert!(grok.archives(Path::new("cwd/sess/chat_history.jsonl")));
+    }
+
     // ── third-party SQLite stores ────────────────────────────────────────
+
+    /// OpenCode keeps its logins in the store whose history we archive. The
+    /// backup's copy has the conversations and not the tokens, not even in
+    /// the file's free pages; the agent's own store keeps both.
+    #[test]
+    fn opencode_logins_stay_out_of_the_backup_copy() {
+        let opencode = crate::parsers::external_transcript_sources()
+            .into_iter()
+            .find(|s| s.agent == "opencode")
+            .expect("opencode source");
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("opencode.db");
+        let conn = Connection::open(&live).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session(id TEXT PRIMARY KEY, title TEXT);
+             INSERT INTO session VALUES('s1', 'kept conversation');
+             CREATE TABLE account(id TEXT, access_token TEXT, refresh_token TEXT);
+             INSERT INTO account VALUES('a', 'oc-access-SECRET-0001', 'oc-refresh-SECRET-0002');
+             CREATE TABLE credential(id TEXT, value TEXT);
+             INSERT INTO credential VALUES('c', 'oc-connector-SECRET-0003');",
+        )
+        .unwrap();
+        let snap = dir.path().join("snap.db");
+        page_copy_readonly(&live, &snap).unwrap();
+        scrub_secret_tables(&snap, opencode.secret_tables).unwrap();
+
+        let copy = Connection::open(&snap).unwrap();
+        let title: String = copy
+            .query_row("SELECT title FROM session", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "kept conversation");
+        let logins: i64 = copy
+            .query_row("SELECT COUNT(*) FROM account", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(logins, 0);
+        drop(copy);
+        let bytes = std::fs::read(&snap).unwrap();
+        assert!(
+            !bytes.windows(6).any(|w| w == b"SECRET"),
+            "a token is still in the copy's bytes"
+        );
+        let live_logins: i64 = conn
+            .query_row("SELECT COUNT(*) FROM account", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(live_logins, 1, "the agent's own store is untouched");
+    }
 
     fn sqlite_file_source(agent: &'static str, db: PathBuf) -> ExternalSource {
         ExternalSource {
@@ -1681,6 +1852,8 @@ mod tests {
             is_file: true,
             sqlite: true,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         }
     }
@@ -1692,6 +1865,8 @@ mod tests {
             is_file: false,
             sqlite: true,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         }
     }

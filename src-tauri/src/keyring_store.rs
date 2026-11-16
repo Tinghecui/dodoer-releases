@@ -86,6 +86,13 @@ fn tokens_file_path_for(env_value: Option<&str>) -> std::path::PathBuf {
     crate::git_credential::absolutize(&dir).join("tokens.json")
 }
 
+/// The read, with an unreadable store taken as empty. Tests only: every caller
+/// that writes back goes through [`update_at`], which must tell them apart.
+#[cfg(all(test, any(not(feature = "tauri-runtime"), target_os = "macos")))]
+fn read_tokens_at(path: &std::path::Path) -> std::collections::HashMap<String, String> {
+    read_tokens_at_checked(path).unwrap_or_default()
+}
+
 /// Read the token map, first tightening a pre-existing file to `0600`.
 /// Stores written before the permission hardening landed sit at the umask
 /// default (usually 0644) inside a bind-mounted `/data` volume; tightening on
@@ -93,16 +100,12 @@ fn tokens_file_path_for(env_value: Option<&str>) -> std::path::PathBuf {
 /// code path ever handles token bytes from a world-readable file it could have
 /// fixed. Best-effort: if chmod fails the read will usually fail too, and a
 /// read-only mount is not made worse by proceeding.
-#[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
-fn read_tokens_at(path: &std::path::Path) -> std::collections::HashMap<String, String> {
-    read_tokens_at_checked(path).unwrap_or_default()
-}
-
-/// The same read, but an unreadable or corrupt store is an error rather than an
-/// empty map. Callers that WRITE secrets back need the distinction: "there is no
-/// entry" and "the file would not open" lead to opposite decisions on the way
-/// out — write nothing, versus refuse to write at all — and collapsing them
-/// turns a transient read failure into a permanent deletion.
+///
+/// An unreadable or corrupt store is an error rather than an empty map.
+/// Callers that WRITE secrets back need the distinction: "there is no entry"
+/// and "the file would not open" lead to opposite decisions on the way out —
+/// write nothing, versus refuse to write at all — and collapsing them turns a
+/// transient read failure into a permanent deletion.
 #[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
 fn read_tokens_at_checked(
     path: &std::path::Path,
@@ -122,14 +125,123 @@ fn read_tokens_at_checked(
         }
     }
     match std::fs::read_to_string(path) {
-        Ok(raw) => serde_json::from_str(&raw)
-            .map_err(|e| format!("token store is not readable JSON: {e}")),
+        // An empty file (an older version wrote in place) holds nothing to
+        // lose; refusing it would refuse every save from then on.
+        Ok(raw) if raw.trim().is_empty() => Ok(std::collections::HashMap::new()),
+        Ok(raw) => serde_json::from_str(&raw).map_err(|e| {
+            format!(
+                "token store {} is not readable JSON: {e}; fix or remove it",
+                path.display()
+            )
+        }),
         // A store that was never written is legitimately empty.
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             Ok(std::collections::HashMap::new())
         }
         Err(err) => Err(format!("token store read error: {err}")),
     }
+}
+
+/// How long a save waits for another process to finish with the store.
+#[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
+const STORE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The store held for one read → change → write: a lock in this process, and
+/// one on `tokens.json.lock` beside the store for the other processes that
+/// write the same file. On the macOS desktop those are the app (remote
+/// workspace tokens, entries taken over from the keychain), its own daemon —
+/// a `codeg-server` child on the same data directory (accounts, channel
+/// tokens, config-sync secrets) — and the git credential helper the app
+/// binary runs, which takes keychain entries over too. Without the locks two
+/// saves at once each write back the map they read, without the other's
+/// entry. Not `tokens.json` itself: every write renames a new file over it.
+#[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
+struct StoreLock {
+    // Declared first, so the file lock goes before the thread lock.
+    _file: Option<std::fs::File>,
+    _held: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
+impl StoreLock {
+    fn acquire(path: &std::path::Path) -> Result<Self, String> {
+        use std::fs::TryLockError;
+        use std::time::{Duration, Instant};
+        static STORE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let held = STORE.lock().unwrap_or_else(|e| e.into_inner());
+        let file = match open_lock_file(path) {
+            Ok(file) => file,
+            Err(err) => {
+                // A directory that takes no file fails the write that follows
+                // too, which says why; this process is still serialised.
+                tracing::warn!("[tokens] could not open the store's lock file: {err}");
+                return Ok(Self {
+                    _file: None,
+                    _held: held,
+                });
+            }
+        };
+        let deadline = Instant::now() + STORE_LOCK_WAIT;
+        loop {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(TryLockError::WouldBlock) => {
+                    return Err("another codeg process holds the token store".to_string());
+                }
+                Err(TryLockError::Error(err)) => {
+                    // A file system without locks: this process is still
+                    // serialised, as before there was a file lock at all.
+                    tracing::warn!("[tokens] could not lock the store: {err}");
+                    return Ok(Self {
+                        _file: None,
+                        _held: held,
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            _file: Some(file),
+            _held: held,
+        })
+    }
+}
+
+#[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
+fn open_lock_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut name = path
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_else(|| "tokens.json".into());
+    name.push(".lock");
+    let lock_path = path.with_file_name(name);
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(lock_path)
+}
+
+/// Read, change and write the store as one step, under [`StoreLock`]. The
+/// read is the checked one: a corrupt or unreadable store read as empty would
+/// be written back holding only this change, deleting every other token.
+#[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
+fn update_at(
+    path: &std::path::Path,
+    change: impl FnOnce(&mut std::collections::HashMap<String, String>),
+) -> Result<(), String> {
+    let _store = StoreLock::acquire(path)?;
+    let mut tokens = read_tokens_at_checked(path)?;
+    change(&mut tokens);
+    write_tokens_at(path, &tokens)
 }
 
 /// Persist the token map without ever exposing a wide-permission file, even
@@ -220,47 +332,65 @@ fn get_or_migrate_at(
     let Some(legacy) = legacy else {
         return Ok(None);
     };
-    let marker = keychain_migrated_key(key);
-    // What the file already says about `key`, if anything: its value, or that
-    // it was migrated (or set, or deleted) and is absent.
-    let settled = |tokens: &std::collections::HashMap<String, String>| match tokens.get(key) {
-        Some(value) => Some(Some(value.clone())),
-        None => tokens.contains_key(&marker).then_some(None),
-    };
-    if let Some(known) = settled(&tokens) {
+    if let Some(known) = settled(&tokens, key) {
         return Ok(known);
     }
     // One keychain prompt at a time in this process: a thread that waited here
     // finds the other's result in the file instead of prompting again.
     static MIGRATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = MIGRATING.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(known) = settled(&read_tokens_at_checked(path)?) {
+    if let Some(known) = settled(&read_tokens_at_checked(path)?, key) {
         return Ok(known);
     }
     let found = legacy(key)?;
-    // The prompt may have waited minutes for the user. Start again from the
-    // file as it is now, so that what other threads and the git credential
-    // helper wrote meanwhile survives, and a set or delete of this very key
-    // made meanwhile wins over the keychain copy.
-    let mut tokens = match read_tokens_at_checked(path) {
-        Ok(tokens) => tokens,
+    match save_migrated(path, key, found.as_deref()) {
+        Ok(Some(known)) => Ok(known),
+        Ok(None) => Ok(found),
         Err(err) => {
+            // The value is still good for this call; the next read asks again.
             tracing::warn!("[tokens] could not save {key} taken from the keychain: {err}");
-            return Ok(found);
+            Ok(found)
         }
-    };
-    if let Some(known) = settled(&tokens) {
-        return Ok(known);
     }
-    if let Some(value) = &found {
-        tokens.insert(key.to_string(), value.clone());
+}
+
+/// What the file already says about `key`, if anything: its value, or that
+/// it was migrated (or set, or deleted) and is absent.
+#[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
+fn settled(
+    tokens: &std::collections::HashMap<String, String>,
+    key: &str,
+) -> Option<Option<String>> {
+    let marker = keychain_migrated_key(key);
+    match tokens.get(key) {
+        Some(value) => Some(Some(value.clone())),
+        None => tokens.contains_key(&marker).then_some(None),
     }
-    tokens.insert(marker, "1".to_string());
-    if let Err(err) = write_tokens_at(path, &tokens) {
-        // The value is still good for this call; the next read asks again.
-        tracing::warn!("[tokens] could not save {key} taken from the keychain: {err}");
+}
+
+/// Save what the keychain returned for `key` (`found`), with its marker.
+/// The prompt may have waited minutes for the user, so this starts again from
+/// the file as it is now, under [`StoreLock`]: what other threads, processes
+/// and the git credential helper wrote meanwhile survives, and a set or delete
+/// of this very key made meanwhile wins over the keychain copy — `Ok(Some(_))`
+/// is what the file says now, and nothing is written.
+#[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
+fn save_migrated(
+    path: &std::path::Path,
+    key: &str,
+    found: Option<&str>,
+) -> Result<Option<Option<String>>, String> {
+    let _store = StoreLock::acquire(path)?;
+    let mut tokens = read_tokens_at_checked(path)?;
+    if let Some(known) = settled(&tokens, key) {
+        return Ok(Some(known));
     }
-    Ok(found)
+    if let Some(value) = found {
+        tokens.insert(key.to_string(), value.to_string());
+    }
+    tokens.insert(keychain_migrated_key(key), "1".to_string());
+    write_tokens_at(path, &tokens)?;
+    Ok(None)
 }
 
 #[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
@@ -270,22 +400,22 @@ fn set_at(
     value: &str,
     from_keychain: bool,
 ) -> Result<(), String> {
-    let mut tokens = read_tokens_at(path);
-    tokens.insert(key.to_string(), value.to_string());
-    if from_keychain {
-        tokens.insert(keychain_migrated_key(key), "1".to_string());
-    }
-    write_tokens_at(path, &tokens)
+    update_at(path, |tokens| {
+        tokens.insert(key.to_string(), value.to_string());
+        if from_keychain {
+            tokens.insert(keychain_migrated_key(key), "1".to_string());
+        }
+    })
 }
 
 #[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
 fn delete_at(path: &std::path::Path, key: &str, from_keychain: bool) -> Result<(), String> {
-    let mut tokens = read_tokens_at(path);
-    tokens.remove(key);
-    if from_keychain {
-        tokens.insert(keychain_migrated_key(key), "1".to_string());
-    }
-    write_tokens_at(path, &tokens)
+    update_at(path, |tokens| {
+        tokens.remove(key);
+        if from_keychain {
+            tokens.insert(keychain_migrated_key(key), "1".to_string());
+        }
+    })
 }
 
 /// The keychain item an older macOS build wrote under `key`.
@@ -625,6 +755,67 @@ mod tests {
         );
         delete_at(&path, "github-token:a", false).expect("delete");
         assert!(read_tokens_at(&path).is_empty());
+    }
+
+    /// A store that does not read is refused, not replaced by one holding only
+    /// the new entry: every other token in it would be gone.
+    #[test]
+    fn a_save_into_a_store_that_does_not_read_writes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tokens.json");
+        let broken = "{\"github-token:a\": \"s1\"";
+        std::fs::write(&path, broken).expect("seed");
+        assert!(set_at(&path, "github-token:b", "s2", false).is_err());
+        assert!(delete_at(&path, "github-token:a", true).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+    }
+
+    /// An empty store (an older version wrote in place) holds nothing to lose:
+    /// a save into it works.
+    #[test]
+    fn an_empty_store_takes_a_save() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tokens.json");
+        std::fs::write(&path, b"").expect("seed");
+        set_at(&path, "github-token:a", "t", false).expect("set");
+        assert_eq!(read_tokens_at(&path).get("github-token:a").unwrap(), "t");
+    }
+
+    /// Saves at once keep every entry: each one reads what the last one wrote.
+    #[test]
+    fn concurrent_saves_lose_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tokens.json");
+        std::thread::scope(|scope| {
+            for i in 0..8 {
+                let path = &path;
+                scope.spawn(move || {
+                    for j in 0..50 {
+                        let key = format!("github-token:{i}-{j}");
+                        set_at(path, &key, "v", false).expect("set");
+                    }
+                });
+            }
+        });
+        assert_eq!(read_tokens_at_checked(&path).unwrap().len(), 400);
+    }
+
+    /// Another process holding the store (here another handle on its lock
+    /// file, which the OS treats the same) holds a save back until it lets go.
+    #[test]
+    fn a_save_waits_for_another_process_holding_the_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tokens.json");
+        let other = open_lock_file(&path).expect("lock file");
+        other.lock().expect("lock");
+        std::thread::scope(|scope| {
+            let saving = scope.spawn(|| set_at(&path, "github-token:a", "t", false));
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            assert!(!path.exists(), "saved while another process held the store");
+            other.unlock().expect("unlock");
+            saving.join().unwrap().expect("set");
+        });
+        assert_eq!(read_tokens_at(&path).get("github-token:a").unwrap(), "t");
     }
 
     /// Reading an existing legacy store tightens it to 0600 before the bytes

@@ -25,7 +25,7 @@ mod summary_cache;
 mod trae_usage;
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub use agent_env::{AgentEnv, AgentEnvs};
@@ -57,6 +57,16 @@ pub struct ExternalSource {
     /// files in shared base dirs (e.g. `~/.gemini/oauth_creds.json`). `None`
     /// means the whole root is already transcript-scoped.
     pub include_top: Option<&'static [&'static str]>,
+    /// File or directory names never archived, at any depth: data the agent
+    /// keeps next to its transcripts that resuming a conversation does not
+    /// need and that holds what the transcript does not — full file contents,
+    /// full command output. A backup can be unencrypted and is meant to be
+    /// carried off the machine.
+    pub exclude_names: &'static [&'static str],
+    /// Tables of a `sqlite` store whose rows are credentials (login tokens,
+    /// connector secrets). They are emptied in the backup's own copy, never in
+    /// the agent's store: a restore means signing in again.
+    pub secret_tables: &'static [&'static str],
     /// The append-only JSONL indexes among this source's files. Restore
     /// merges one into the live copy instead of skipping or replacing it —
     /// see [`AppendOnlyIndex`].
@@ -88,6 +98,31 @@ pub struct AppendOnlyIndex {
 }
 
 impl ExternalSource {
+    /// Whether the entry at `rel` (relative to `root`) goes into a backup:
+    /// its first component is in `include_top` when that is set, and no
+    /// component is in `exclude_names`.
+    pub fn archives(&self, rel: &Path) -> bool {
+        let mut components = rel.components();
+        if let Some(allow) = self.include_top {
+            match components.next() {
+                Some(std::path::Component::Normal(first)) => {
+                    let first = first.to_string_lossy();
+                    if !allow.iter().any(|a| *a == first) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        !rel.components().any(|c| match c {
+            std::path::Component::Normal(name) => {
+                let name = name.to_string_lossy();
+                self.exclude_names.iter().any(|x| *x == name)
+            }
+            _ => false,
+        })
+    }
+
     /// The base directory a `external/<agent>/<rest>` entry restores under.
     /// For file sources that is the file's parent; for dir sources, the root.
     pub fn restore_base(&self) -> PathBuf {
@@ -113,6 +148,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: false,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         },
         ExternalSource {
@@ -131,6 +168,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: true,
             sqlite: false,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[AppendOnlyIndex {
                 path: "session_index.jsonl",
                 key: "id",
@@ -146,6 +185,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: false,
             include_top: Some(&["tmp", "history", "projects.json"]),
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         },
         ExternalSource {
@@ -164,6 +205,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: true,
             include_top: Some(&["sessions", "db", "state", "tasks"]),
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         },
         ExternalSource {
@@ -175,6 +218,10 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: true,
             sqlite: true,
             include_top: None,
+            exclude_names: &[],
+            // Present in OpenCode's schema: its own and connector logins, and
+            // the secret that controls a shared session.
+            secret_tables: &["account", "control_account", "credential", "session_share"],
             indexes: &[],
         },
         ExternalSource {
@@ -188,6 +235,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: true,
             sqlite: true,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         },
         ExternalSource {
@@ -199,6 +248,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: false,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         },
         ExternalSource {
@@ -212,6 +263,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: false,
             include_top: Some(&["sessions", "session_index.jsonl"]),
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[AppendOnlyIndex {
                 path: "session_index.jsonl",
                 key: "sessionId",
@@ -225,11 +278,23 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             // `GROK_HOME`). `resolve_grok_home_dir()` points at `~/.grok`, so
             // scope the archive to the `sessions/` subtree — never the sibling
             // `auth.json` / `config.toml` / `bin/` under the same home.
+            //
+            // `rewind_points.jsonl` holds every file an agent edited, in full,
+            // before and after each change (old secrets included); `terminal/`
+            // the full output of every command it ran. Neither is needed to
+            // resume or read a conversation; undoing a turn from before a
+            // restore is what is lost. Measured 2026-11-13 on one Mac: 205 MB
+            // in 4436 rewind files, 155 MB in 1279 terminal dirs.
+            // `prompt_history.jsonl` (one per project) is what was typed at
+            // the prompt, shell-mode commands too; the conversation itself
+            // is in `chat_history.jsonl`. Only up-arrow recall is lost.
             agent: "grok",
             root: grok::resolve_grok_home_dir().join("sessions"),
             is_file: false,
             sqlite: false,
             include_top: None,
+            exclude_names: &["rewind_points.jsonl", "terminal", "prompt_history.jsonl"],
+            secret_tables: &[],
             indexes: &[],
         },
         ExternalSource {
@@ -244,6 +309,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: true,
             include_top: Some(&["chats", "acp-sessions"]),
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         },
         ExternalSource {
@@ -257,6 +324,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: false,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         },
         ExternalSource {
@@ -270,6 +339,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: false,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         },
         ExternalSource {
@@ -298,6 +369,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: false,
             include_top: Some(&["objects"]),
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         },
         ExternalSource {
@@ -311,6 +384,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: false,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         },
         ExternalSource {
@@ -325,6 +400,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: true,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         },
         ExternalSource {
@@ -338,6 +415,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: false,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         },
     ];
@@ -350,6 +429,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: false,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         });
     }
@@ -360,6 +441,8 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: false,
             sqlite: false,
             include_top: None,
+            exclude_names: &[],
+            secret_tables: &[],
             indexes: &[],
         });
     }

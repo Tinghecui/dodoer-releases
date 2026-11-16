@@ -21,6 +21,15 @@
 //!   the root only. **Dynamic mode** is a per-file, per-session decision by
 //!   the user: scripts run, but still only from the root, and the only
 //!   endpoint they can reach is the root (`connect-src 'self'`).
+//! - **No WebRTC out.** CSP does not cover WebRTC, and a script that can
+//!   read the root could put what it read into a STUN or TURN request to
+//!   any address. Removing `RTCPeerConnection` from the page would not hold
+//!   (a fresh `about:blank` frame has its own), so the engine is set up for
+//!   it: macOS turns peer connections off for the guest's page
+//!   (`shim::macos::document_configuration`), and a WebKit that cannot do
+//!   that gets no guest. Cowork fork: Windows guests are not fenced this way
+//!   (dodoer gives them a WebView2 environment of their own); this fork
+//!   ships no Windows desktop.
 //! - **What was approved is what runs.** Dynamic mode records when it was
 //!   granted; a file whose timestamps (its own, or the symlink's it was
 //!   requested through) are newer than that, or whose content differs from
@@ -848,7 +857,9 @@ const CSP_SAFE: &str = "default-src 'none'; style-src 'self' 'unsafe-inline' dat
 /// Dynamic mode: the document's own scripts run and may fetch from the root;
 /// nothing points outside it. Inline scripts and `eval` are allowed because a
 /// generated report is exactly the kind of file that has them, and they add
-/// no reach: the only endpoint remains the root.
+/// no reach: the only endpoint remains the root — as far as CSP reaches.
+/// WebRTC is outside it; the guest's engine settings fence that (see the
+/// module docs).
 const CSP_DYNAMIC: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; connect-src 'self' data: blob:; frame-src 'self' data: blob:; worker-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'";
 
 pub fn csp_for(mode: DocMode) -> &'static str {

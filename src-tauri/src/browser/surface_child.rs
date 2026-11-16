@@ -1106,7 +1106,7 @@ fn configure_child<'a>(
         let configuration = match (configuration, kind) {
             (Some(configuration), _) => configuration,
             (None, ChildKind::Page) => super::shim::macos::profile_configuration(mtm, profile)?,
-            (None, ChildKind::Document(_)) => super::shim::macos::document_configuration(mtm),
+            (None, ChildKind::Document(_)) => super::shim::macos::document_configuration(mtm)?,
         };
         builder = builder.with_webview_configuration(configuration);
     }

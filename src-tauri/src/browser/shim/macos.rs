@@ -1124,13 +1124,46 @@ pub fn profile_configuration(
 /// and dies with the webview, so nothing a document stores outlives it or is
 /// shared with browser tabs or the app. Nothing here depends on the macOS
 /// version — non-persistent stores predate identifier-based ones.
-pub fn document_configuration(mtm: MainThreadMarker) -> Retained<WKWebViewConfiguration> {
+///
+/// And no WebRTC. A document in dynamic mode runs scripts that can read the
+/// whole root, and CSP does not cover WebRTC: an `RTCPeerConnection` given a
+/// STUN or TURN server sends whatever the script puts in it to any address.
+/// Removing the constructor from the page is not enough — a fresh
+/// `about:blank` or `data:` frame hands out a new one — so it goes at the
+/// level of the page's settings, which every frame of the page shares:
+/// WebKit's private `_peerConnectionEnabled` preference, the switch behind
+/// `RTCPeerConnection` itself. Private, so it is checked, set and read back;
+/// a WebKit without it gets no document guest at all rather than one that
+/// can reach out.
+pub fn document_configuration(
+    mtm: MainThreadMarker,
+) -> Result<Retained<WKWebViewConfiguration>, String> {
     // SAFETY: main thread; both objects are live.
-    unsafe {
+    let configuration = unsafe {
         let configuration = WKWebViewConfiguration::new(mtm);
         configuration.setWebsiteDataStore(&WKWebsiteDataStore::nonPersistentDataStore(mtm));
         configuration
+    };
+    // SAFETY: main thread; `preferences` is the configuration's own (sent
+    // as a message: the crate's `WKPreferences` feature is off), and the
+    // private selectors are only sent once `respondsToSelector:` says they
+    // exist (`_peerConnectionEnabled` is a BOOL property).
+    unsafe {
+        let preferences: Retained<AnyObject> = msg_send![&*configuration, preferences];
+        let can_set: bool =
+            msg_send![&*preferences, respondsToSelector: sel!(_setPeerConnectionEnabled:)];
+        let can_get: bool =
+            msg_send![&*preferences, respondsToSelector: sel!(_peerConnectionEnabled)];
+        if !(can_set && can_get) {
+            return Err("this WebKit cannot turn WebRTC off for document previews".to_string());
+        }
+        let _: () = msg_send![&*preferences, _setPeerConnectionEnabled: false];
+        let enabled: bool = msg_send![&*preferences, _peerConnectionEnabled];
+        if enabled {
+            return Err("WebKit kept WebRTC on for a document preview".to_string());
+        }
     }
+    Ok(configuration)
 }
 
 // ---------------------------------------------------------------------------

@@ -3187,9 +3187,12 @@ impl ConnectionManager {
             txs
         };
 
+        // Never waits on a full queue: a closing window holds the main thread
+        // for this. The sender drops with the entry, so a loop that misses
+        // the command still ends when its queue closes.
         let disconnected = cmd_txs.len();
         for cmd_tx in cmd_txs {
-            let _ = cmd_tx.send(ConnectionCommand::Disconnect).await;
+            let _ = cmd_tx.try_send(ConnectionCommand::Disconnect);
         }
         tracing::info!(
             "[ACP] disconnect by owner window owner_window={} count={}",
@@ -5600,6 +5603,32 @@ mod tests {
             mgr.live_or_draining_agent_names().await,
             vec!["Codex CLI".to_string()]
         );
+    }
+
+    /// A connection whose command queue is full (its loop stuck on something
+    /// else) must not hold a closing window: the main window's close handler
+    /// waits for this on the main thread (`block_on` in `lib.rs`). The
+    /// `Disconnect` that did not fit is not needed — the entry, and with it
+    /// the last sender, is gone, so the loop still ends once it has drained
+    /// the queue (a closed queue is a disconnect to it).
+    #[tokio::test]
+    async fn a_full_command_queue_does_not_hold_a_disconnect() {
+        let mgr = ConnectionManager::new();
+        let win_rx = insert_live_connection(&mgr, "win", AgentType::Codex, None).await;
+        let tx = mgr.connections.lock().await["win"].cmd_tx.clone();
+        while tx.try_send(ConnectionCommand::Disconnect).is_ok() {}
+        drop(tx);
+        let by_window = tokio::time::timeout(
+            Duration::from_secs(5),
+            mgr.disconnect_by_owner_window("test-window"),
+        )
+        .await;
+        assert_eq!(
+            by_window.ok(),
+            Some(1),
+            "disconnect_by_owner_window waited on a full queue"
+        );
+        assert!(win_rx.is_closed(), "the window's queue stayed open");
     }
 
     /// The Antigravity sign-out ends that agent's connections and nobody

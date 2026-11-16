@@ -181,7 +181,9 @@ function render() {
     const h = lastHost, load = h.load || [];
     const card = (k, v, d, pct) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d}</div>` +
       (pct == null ? "" : `<div class="bar"><i style="width:${Math.min(100, pct).toFixed(0)}%;background:${pct > 85 ? "var(--bad)" : pct > 60 ? "var(--busy)" : "var(--ok)"}"></i></div>`) + `</div>`;
-    if (h.cpu != null) c.push(card("CPU", `${h.cpu}%`, `负载 ${load.map((x) => x.toFixed(1)).join(" / ")}（1/5/15 分钟，${h.cpus} 线程）`, h.cpu));
+    // CPU 是采的那 10 秒的平均；负载是 1/5/15 分钟的，除以线程数就是大概几成满
+    if (h.cpu != null) c.push(card("CPU（10 秒平均）", `${h.cpu}%`,
+      `负载 ${load.map((x) => x.toFixed(1)).join(" / ")}（1/5/15 分钟），1 分钟约 ${Math.round((load[0] / h.cpus) * 100)}% 满（${h.cpus} 线程）`, h.cpu));
     if (h.mem_used != null) c.push(card("内存", `${gb(h.mem_used)} / ${gb(h.mem_total)} GB`,
       `系统报告可用 ${h.mem_free_pct ?? "?"}%${h.swap_used ? `，swap ${gb(h.swap_used)} GB` : "，没用 swap"}`, (h.mem_used / h.mem_total) * 100));
     if (h.disk_free != null) c.push(card("磁盘", `剩 ${gb(h.disk_free)} GB`, `共 ${gb(h.disk_total)} GB`, (1 - h.disk_free / h.disk_total) * 100));

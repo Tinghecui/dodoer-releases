@@ -4,8 +4,9 @@
 set -uo pipefail
 num() { case "$1" in ''|*[!0-9.]*) echo null ;; *) echo "$1" ;; esac; }
 load=$(sysctl -n vm.loadavg | tr -d '{}')
-# 第二次采样才是这一秒的（第一次是开机以来的平均）
-idle=$(top -l 2 -n 0 -s 1 | awk '/CPU usage/ {v=$7} END {sub("%", "", v); print v}')
+# 第二次采样才是这 10 秒的（第一次是开机以来的平均）。1 秒太短：编译在下载、链接、两步之间的那一下会采成 15%，
+# 实际一分钟负载 20（2026-11-16 状态页上就这样）
+idle=$(top -l 2 -n 0 -s 10 | awk '/CPU usage/ {v=$7} END {sub("%", "", v); print v}')
 mem_used=$(vm_stat | awk '/page size of/ {ps=$8} /^Pages active/ {a=$3+0} /^Pages wired down/ {w=$4+0}
                 /occupied by compressor/ {c=$5+0} END {printf "%d", (a+w+c)*ps}')
 mem_free_pct=$(memory_pressure -Q 2>/dev/null | awk -F': ' '/free percentage/ {sub("%", "", $2); print $2}')

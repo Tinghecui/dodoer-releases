@@ -6,7 +6,8 @@
 # 这里只是个壳：取源仓库代码（默认分支），装 node，然后 exec .cowork/autopilot/sealed.sh tick；日志里只有每个阶段一行的进度，
 # 运行结束后 ai-qa-seal.yml 核对（定时触发的运行会触发 workflow_run；手动派的也会）。
 # 凭证在 Environment「ai-qa」里，只有 main 分支用得到；commit status 用仓库级的 SOURCE_STATUS_TOKEN；派 workflow 用这次运行的 github.token（actions: write）。
-# 仓库变量：AUTOPILOT（off / record / on，默认 record）、AUTOPILOT_DAILY_USD（默认 15）、AUTOPILOT_MAX_FIX（同时最多几个执行员，默认 2）。
+# 仓库变量：AUTOPILOT（off / record / on，默认 record）、AUTOPILOT_DAILY_USD（默认 15）、AUTOPILOT_MAX_FIX（同时最多几个执行员，默认 2）、
+# AUTOPILOT_MERGE_PRODUCT（执行员的 PR 冲突、调度台解得开时推不推：on / record / off，默认 on）。
 name: autopilot-tick
 
 on:
@@ -38,6 +39,8 @@ jobs:
       DAILY_USD: ${{ vars.AUTOPILOT_DAILY_USD || '15' }}
       CLAUDE_AUTH: ${{ vars.AUTOPILOT_CLAUDE_AUTH || 'oauth' }}
       MAX_FIX: ${{ vars.AUTOPILOT_MAX_FIX || '2' }}
+      # 执行员的 PR 和 product 冲突、调度台自己解得开时推不推（源仓库 .cowork/autopilot/conflict.mjs）：on / record / off
+      MERGE_PRODUCT: ${{ vars.AUTOPILOT_MERGE_PRODUCT || 'on' }}
       # 定时触发的是备份：生产机上的调度台最近跑过就让开（tick.mjs）
       TICK_FALLBACK: ${{ github.event_name == 'schedule' && '1' || '' }}
       W: /home/runner/autopilot-work

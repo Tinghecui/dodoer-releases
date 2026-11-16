@@ -316,11 +316,28 @@ jobs:
             lockf -k -t 60 /tmp/dodoer-keychain-list.lock security delete-keychain "$DODOER_SIGNING_KEYCHAIN" || true
           fi
           rm -f "$RUNNER_TEMP/codesign.p12"
-      - uses: actions/upload-artifact@v4
+      # 上传可能卡死：经小火箭的本机代理连 GitHub，连接断了却不报错，程序一直干等（2026-11-16 卡过 10 分钟，没有超时
+      # 要等到 job 的 75 分钟）。正常几分钟传完，15 分钟没完就停下、再传一次（overwrite），还不行这个 job 才失败
+      - id: upload
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 15
+        continue-on-error: true
         with:
           name: dodoer-hack-dist
           # 不传别名副本（同一个安装包换个名字，arm64 两份、Intel 一份，每份一百多 MB）：黑苹果上传只有几百 KB/s，
           # 一次多传 140–280 MB 要多等十几分钟（2026-11-16）。publish 从带版本号的那份复制出来
+          path: |
+            dist/
+            !dist/dodoer-macos-*.zip*
+            !dist/dodoer-client-macos-*.zip*
+          retention-days: 7
+          if-no-files-found: error
+      - if: steps.upload.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 20
+        with:
+          name: dodoer-hack-dist
+          overwrite: true
           path: |
             dist/
             !dist/dodoer-macos-*.zip*

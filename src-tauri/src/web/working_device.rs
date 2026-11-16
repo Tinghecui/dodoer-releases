@@ -305,6 +305,22 @@ pub async fn root_of(db: &DatabaseConnection, conversation_id: i32) -> i32 {
     at
 }
 
+/// `conversation_id` 的顶层对话；数据库里没有这条对话（比如新对话标签的
+/// 虚拟负数编号）时是 not found，选择不存在这种编号上（#332）。
+async fn stored_root_of(
+    db: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<i32, AppCommandError> {
+    match crate::db::entities::conversation::Entity::find_by_id(conversation_id)
+        .one(db)
+        .await
+    {
+        Ok(Some(_)) => Ok(root_of(db, conversation_id).await),
+        Ok(None) => Err(AppCommandError::not_found("No such conversation")),
+        Err(e) => Err(AppCommandError::database_error(e.to_string())),
+    }
+}
+
 /// The device `headers` say a message came from: an id, as an app sends it.
 pub fn device_in(headers: &HeaderMap) -> Option<&str> {
     headers
@@ -366,9 +382,9 @@ pub fn answer_for(registry: &HostRegistry, conversation: i32) -> ConversationDev
 pub async fn get_conversation_device(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<GetConversationDeviceParams>,
-) -> Json<ConversationDeviceAnswer> {
-    let root = root_of(&state.db.conn, params.conversation_id).await;
-    Json(answer_for(&state.host_registry, root))
+) -> Result<Json<ConversationDeviceAnswer>, AppCommandError> {
+    let root = stored_root_of(&state.db.conn, params.conversation_id).await?;
+    Ok(Json(answer_for(&state.host_registry, root)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -397,7 +413,7 @@ pub async fn set_conversation_device(
             return Err(AppCommandError::not_found("No such device"));
         }
     }
-    let root = root_of(&state.db.conn, params.conversation_id).await;
+    let root = stored_root_of(&state.db.conn, params.conversation_id).await?;
     state.host_registry.working().pick(root, device);
     Ok(Json(answer_for(&state.host_registry, root)))
 }
@@ -1648,5 +1664,68 @@ mod tests {
         assert_eq!(device_in(&headers), Some("imac-0123456789"));
         headers.insert(HEADER, "not one!".parse().unwrap());
         assert_eq!(device_in(&headers), None);
+    }
+
+    /// #332：新对话的标签拿虚拟的负数编号来选设备。数据库里没有这条对话，
+    /// 服务器回 not found，不把选择存在这个编号上，也不当成已选。
+    #[tokio::test]
+    async fn a_pick_for_a_conversation_not_in_the_database_is_not_found() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState::new_for_test(db, dir.path().to_path_buf()));
+        let _imac = connect(&state.host_registry, "imac", "Study iMac");
+        let _book = connect(&state.host_registry, "book", "MacBook");
+        let params: SetConversationDeviceParams = serde_json::from_value(serde_json::json!({
+            "conversationId": -384636256,
+            "deviceId": "imac-0123456789",
+        }))
+        .unwrap();
+        let err = set_conversation_device(Extension(Arc::clone(&state)), Json(params))
+            .await
+            .expect_err("no such conversation");
+        assert!(
+            matches!(err.code, crate::app_error::AppErrorCode::NotFound),
+            "{err:?}"
+        );
+        assert!(state.host_registry.working().records().is_empty());
+
+        let params: GetConversationDeviceParams =
+            serde_json::from_value(serde_json::json!({ "conversationId": -384636256 })).unwrap();
+        let err = get_conversation_device(Extension(Arc::clone(&state)), Json(params))
+            .await
+            .expect_err("no such conversation");
+        assert!(
+            matches!(err.code, crate::app_error::AppErrorCode::NotFound),
+            "{err:?}"
+        );
+    }
+
+    /// 数据库里有的对话照常选上。
+    #[tokio::test]
+    async fn a_pick_for_a_stored_conversation_is_kept() {
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/pick-folder").await;
+        let conversation =
+            seed_conversation(&db, folder, crate::models::agent::AgentType::ClaudeCode).await;
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState::new_for_test(db, dir.path().to_path_buf()));
+        let _imac = connect(&state.host_registry, "imac", "Study iMac");
+        let _book = connect(&state.host_registry, "book", "MacBook");
+        let params: SetConversationDeviceParams = serde_json::from_value(serde_json::json!({
+            "conversationId": conversation,
+            "deviceId": "imac-0123456789",
+        }))
+        .unwrap();
+        let answer = set_conversation_device(Extension(Arc::clone(&state)), Json(params))
+            .await
+            .expect("picked");
+        assert_eq!(
+            answer.0.device.map(|d| d.id).as_deref(),
+            Some("imac-0123456789")
+        );
+        let records = state.host_registry.working().records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].conversation_id, conversation);
     }
 }

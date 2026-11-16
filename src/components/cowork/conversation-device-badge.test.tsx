@@ -119,9 +119,43 @@ describe("ConversationDeviceBadge", () => {
     expect(badge()).toBeNull()
   })
 
-  it("asks for the tab's own conversation", () => {
+  it("asks for the tab's stored conversation, not its runtime id", () => {
+    // #332：新对话的 runtimeConversationId 是虚拟的负数，服务器只认数据库里的编号
+    const tabs = {
+      tabs: [
+        {
+          id: "tab-1",
+          kind: "conversation",
+          conversationId: 113,
+          runtimeConversationId: -384636256,
+        },
+      ],
+    }
+    mockTabs.mockImplementation((select: (s: typeof tabs) => unknown) =>
+      select(tabs)
+    )
     mount(null)
-    expect(mockState).toHaveBeenCalledWith(9)
+    expect(mockState).toHaveBeenCalledWith(113)
+    expect(mockState).not.toHaveBeenCalledWith(-384636256)
+  })
+
+  it("asks for nothing while the conversation is not stored yet", () => {
+    const tabs = {
+      tabs: [
+        {
+          id: "tab-1",
+          kind: "conversation",
+          conversationId: null,
+          runtimeConversationId: -384636256,
+        },
+      ],
+    }
+    mockTabs.mockImplementation((select: (s: typeof tabs) => unknown) =>
+      select(tabs)
+    )
+    mount(DESKTOP)
+    expect(mockState).toHaveBeenCalledWith(null)
+    expect(mockState).not.toHaveBeenCalledWith(-384636256)
   })
 
   it("names the device and says how to switch", () => {

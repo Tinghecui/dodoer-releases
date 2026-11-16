@@ -42,11 +42,13 @@ export function ConversationDeviceBadge({ tabId }: { tabId: string | null }) {
   const t = useCoworkText()
   const locale = useLocale()
   const [open, setOpen] = useState(false)
-  // The tab's conversation, as `ComposerContextUsage` resolves it.
+  // 数据库里的对话编号：服务器和智能体都按它记设备。新对话的
+  // `runtimeConversationId` 是虚拟的负数，不能发给服务器（#332）；
+  // 对话还没存进数据库时没有编号，这时不显示按钮。
   const conversationId = useTabStore((s) => {
     const tab = s.tabs.find((x) => x.id === tabId)
     if (!tab || tab.kind !== "conversation") return null
-    return tab.runtimeConversationId ?? tab.conversationId ?? null
+    return tab.conversationId ?? null
   })
   const state = useConversationDeviceState(conversationId)
   if (!state) return null

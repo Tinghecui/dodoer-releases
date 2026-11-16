@@ -1,3 +1,4 @@
+mod downgrade;
 pub mod entities;
 pub mod error;
 pub mod migration;
@@ -66,6 +67,9 @@ pub async fn init_database(
         Err(e) => return Err(DbError::Io(e)),
     }
     crate::commands::backup::restore::cleanup_transient_dirs(app_data_dir);
+    // A copy put back by an older start that was cut off half-way: finish it
+    // before anything creates an empty database where it goes.
+    downgrade::finish_interrupted_restore(app_data_dir)?;
 
     let db_path = app_data_dir.join(database_file_name());
     let db_url = format!(
@@ -86,14 +90,17 @@ pub async fn init_database(
     }
     // SQLite gives its -wal and -shm the main file's mode.
     restrict_to_owner(&db_path, 0o600);
-    let mut migrate_opts = ConnectOptions::new(db_url.clone());
-    migrate_opts
-        .max_connections(1)
-        .min_connections(1)
-        .connect_timeout(Duration::from_secs(10))
-        .sqlx_logging(false);
-    let migrate_conn = Database::connect(migrate_opts).await?;
-    apply_sqlite_pragmas(&migrate_conn).await?;
+    let mut migrate_conn = connect_for_migration(&db_url).await?;
+    // A database a newer version upgraded: put back the copy it left right
+    // before that upgrade, or refuse, before anything touches it. The
+    // connection is closed first, so the -wal is folded into the file that
+    // gets moved aside.
+    let applied = applied_migrations(&migrate_conn).await?;
+    if let Some(unknown) = first_unknown_migration(&applied, &known_migrations()) {
+        migrate_conn.close().await?;
+        downgrade::restore_copy_before_upgrade(app_data_dir, &unknown).await?;
+        migrate_conn = connect_for_migration(&db_url).await?;
+    }
     let snapshot = snapshot_before_migrations(&migrate_conn, app_data_dir).await?;
     migrate_one_at_a_time(&migrate_conn).await.map_err(|e| {
         DbError::Migration(match &snapshot {
@@ -177,19 +184,29 @@ async fn migrate_one_at_a_time(conn: &DatabaseConnection) -> Result<(), sea_orm:
     Ok(())
 }
 
-/// Before migrations change an existing database, keep a copy of it as it
-/// was: SQLite runs a migration without a transaction, so one that fails
-/// half-way leaves a schema neither version opens, and a migrated database is
-/// one the previous version refuses. Returns the copy's path, or `None` when
-/// nothing is pending or the database is new.
-///
-/// A database that already has migrations this binary does not know was
-/// written by a newer version: refuse it with a message that says so, before
-/// anything touches it.
-async fn snapshot_before_migrations(
-    conn: &DatabaseConnection,
-    app_data_dir: &Path,
-) -> Result<Option<PathBuf>, DbError> {
+/// The single connection migrations run on (see the note in
+/// [`init_database`]).
+async fn connect_for_migration(db_url: &str) -> Result<DatabaseConnection, DbError> {
+    let mut opts = ConnectOptions::new(db_url.to_owned());
+    opts.max_connections(1)
+        .min_connections(1)
+        .connect_timeout(Duration::from_secs(10))
+        .sqlx_logging(false);
+    let conn = Database::connect(opts).await?;
+    apply_sqlite_pragmas(&conn).await?;
+    Ok(conn)
+}
+
+/// The migrations this binary has, by name.
+fn known_migrations() -> Vec<String> {
+    Migrator::migrations()
+        .iter()
+        .map(|m| m.name().to_string())
+        .collect()
+}
+
+/// The migrations a database has had applied, by name; none for a new one.
+async fn applied_migrations(conn: &DatabaseConnection) -> Result<Vec<String>, sea_orm::DbErr> {
     let has_table = conn
         .query_one(Statement::from_string(
             DbBackend::Sqlite,
@@ -198,9 +215,9 @@ async fn snapshot_before_migrations(
         .await?
         .is_some();
     if !has_table {
-        return Ok(None);
+        return Ok(Vec::new());
     }
-    let applied: Vec<String> = conn
+    Ok(conn
         .query_all(Statement::from_string(
             DbBackend::Sqlite,
             "SELECT version FROM seaql_migrations ORDER BY version",
@@ -208,20 +225,29 @@ async fn snapshot_before_migrations(
         .await?
         .iter()
         .filter_map(|row| row.try_get::<String>("", "version").ok())
-        .collect();
-    let known: Vec<String> = Migrator::migrations()
-        .iter()
-        .map(|m| m.name().to_string())
-        .collect();
-    if let Some(unknown) = applied.iter().find(|v| !known.contains(v)) {
-        // Cowork fork: the product name, not jenny's.
-        let product = crate::cowork::PRODUCT_NAME;
-        return Err(DbError::Migration(format!(
-            "this database was upgraded by another version of {product}, most likely a newer \
-             one (it has migration {unknown}, which this version does not know). Run that \
-             version again, or restore a backup made with this one"
-        )));
-    }
+        .collect())
+}
+
+/// A migration the database has that this binary does not: another version,
+/// most likely a newer one, upgraded it.
+fn first_unknown_migration(applied: &[String], known: &[String]) -> Option<String> {
+    applied.iter().find(|v| !known.contains(v)).cloned()
+}
+
+/// Before migrations change an existing database, keep a copy of it as it
+/// was: SQLite runs a migration without a transaction, so one that fails
+/// half-way leaves a schema neither version opens, and a migrated database is
+/// one the previous version refuses. Returns the copy's path, or `None` when
+/// nothing is pending or the database is new.
+///
+/// A database a newer version upgraded never gets here: `init_database` puts
+/// back the copy from before that upgrade, or refuses (see `downgrade`).
+async fn snapshot_before_migrations(
+    conn: &DatabaseConnection,
+    app_data_dir: &Path,
+) -> Result<Option<PathBuf>, DbError> {
+    let applied = applied_migrations(conn).await?;
+    let known = known_migrations();
     if applied.is_empty() {
         return Ok(None);
     }

@@ -2422,3 +2422,92 @@ async fn api_not_found(uri: axum::http::Uri) -> impl IntoResponse {
         })),
     )
 }
+
+/// The routes `web/api-contract.json` lists, asked of the router this module
+/// really builds. `scripts/api-contract.mjs` reads them out of the source and
+/// `src/lib/transport/api-contract.test.ts` holds the frontend to them; this
+/// turns red when a listed route is renamed, removed or compiled out, or the
+/// script misread the source.
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use axum_test::TestServer;
+    use serde_json::Value;
+
+    const TOKEN: &str = "contract-test-token";
+
+    async fn contract_server() -> (TestServer, tempfile::TempDir, tempfile::TempDir) {
+        let data_dir = tempfile::tempdir().expect("data dir");
+        let static_dir = tempfile::tempdir().expect("static dir");
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let state = Arc::new(AppState::new_for_test(db, data_dir.path().to_path_buf()));
+        let router = build_router(
+            state,
+            TOKEN.to_string(),
+            static_dir.path().to_path_buf(),
+            Arc::new(ShutdownSignal::new()),
+        );
+        let server = TestServer::new(router).expect("test server");
+        (server, data_dir, static_dir)
+    }
+
+    /// `/api/workspace_download/{ticket}` → `/api/workspace_download/x`.
+    fn concrete(path: &str) -> String {
+        path.split('/')
+            .map(|segment| {
+                if segment.starts_with('{') && segment.ends_with('}') {
+                    "x"
+                } else {
+                    segment
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    /// Whether the router serves `path`, without running its handler. Under
+    /// `/api` a PUT, which no route takes: a route's method router answers 405,
+    /// the API fallback 501. Elsewhere the static files answer every path, so a
+    /// GET: 404 when nothing but them is there (the static dir is empty); a
+    /// WebSocket route refuses the GET that asks no upgrade with a 400.
+    async fn routed(server: &TestServer, path: &str) -> bool {
+        let path = concrete(path);
+        if path.starts_with("/api/") {
+            let response = server.put(&path).authorization_bearer(TOKEN).await;
+            response.status_code() != StatusCode::NOT_IMPLEMENTED
+        } else {
+            let response = server.get(&path).authorization_bearer(TOKEN).await;
+            response.status_code() != StatusCode::NOT_FOUND
+        }
+    }
+
+    #[tokio::test]
+    async fn every_route_the_api_contract_lists_is_served() {
+        let contract: Value =
+            serde_json::from_str(include_str!("api-contract.json")).expect("api-contract.json");
+        let routes = contract["routes"].as_object().expect("routes");
+        assert!(routes.len() > 500, "the contract lists the whole router");
+        let (server, _data, _static) = contract_server().await;
+
+        // What a path nobody serves gets, so a served one is told apart.
+        let off = server
+            .put("/api/no_such_route_in_the_contract")
+            .authorization_bearer(TOKEN)
+            .await;
+        assert_eq!(off.status_code(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(off.json::<Value>()["code"], "not_implemented");
+        assert!(!routed(&server, "/ws/no-such-socket-in-the-contract").await);
+
+        let mut missing = Vec::new();
+        for route in routes.keys() {
+            let (_, path) = route.split_once(' ').expect("\"METHOD /path\"");
+            if !routed(&server, path).await {
+                missing.push(route.as_str());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "listed in web/api-contract.json but not served: {missing:?}"
+        );
+    }
+}

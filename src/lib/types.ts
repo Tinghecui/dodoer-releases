@@ -65,6 +65,7 @@ export type AppErrorCode =
   | "external_command_failed"
   | "window_operation_failed"
   | "task_execution_failed"
+  | "turn_in_progress"
   | (string & {})
 
 export interface AppCommandError {

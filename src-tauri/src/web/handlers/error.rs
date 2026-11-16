@@ -92,4 +92,75 @@ mod tests {
             StatusCode::INTERNAL_SERVER_ERROR
         );
     }
+
+    /// Every code, in declaration order. `index` has no catch-all, so a new
+    /// code does not compile until it is given a place there, and then here.
+    fn every_code() -> Vec<AppErrorCode> {
+        fn index(code: AppErrorCode) -> usize {
+            match code {
+                AppErrorCode::InvalidInput => 0,
+                AppErrorCode::ConfigurationMissing => 1,
+                AppErrorCode::ConfigurationInvalid => 2,
+                AppErrorCode::NotFound => 3,
+                AppErrorCode::NotAGitRepository => 4,
+                AppErrorCode::AlreadyExists => 5,
+                AppErrorCode::PermissionDenied => 6,
+                AppErrorCode::DependencyMissing => 7,
+                AppErrorCode::NetworkError => 8,
+                AppErrorCode::AuthenticationFailed => 9,
+                AppErrorCode::DatabaseError => 10,
+                AppErrorCode::IoError => 11,
+                AppErrorCode::ExternalCommandFailed => 12,
+                AppErrorCode::WindowOperationFailed => 13,
+                AppErrorCode::TaskExecutionFailed => 14,
+                AppErrorCode::TurnInProgress => 15,
+            }
+        }
+        let every = vec![
+            AppErrorCode::InvalidInput,
+            AppErrorCode::ConfigurationMissing,
+            AppErrorCode::ConfigurationInvalid,
+            AppErrorCode::NotFound,
+            AppErrorCode::NotAGitRepository,
+            AppErrorCode::AlreadyExists,
+            AppErrorCode::PermissionDenied,
+            AppErrorCode::DependencyMissing,
+            AppErrorCode::NetworkError,
+            AppErrorCode::AuthenticationFailed,
+            AppErrorCode::DatabaseError,
+            AppErrorCode::IoError,
+            AppErrorCode::ExternalCommandFailed,
+            AppErrorCode::WindowOperationFailed,
+            AppErrorCode::TaskExecutionFailed,
+            AppErrorCode::TurnInProgress,
+        ];
+        let order: Vec<usize> = every.iter().copied().map(index).collect();
+        assert_eq!(order, (0..every.len()).collect::<Vec<_>>());
+        every
+    }
+
+    /// The codes the web client reads and their statuses, as
+    /// `web/api-contract.json` lists them; `src/lib/transport/api-contract.test.ts`
+    /// holds `AppErrorCode` in `types.ts` to the same list.
+    #[test]
+    fn every_code_answers_the_status_the_api_contract_lists() {
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../api-contract.json")).expect("api-contract.json");
+        let listed = contract["errorCodes"].as_object().expect("errorCodes");
+        let every = every_code();
+        assert_eq!(listed.len(), every.len(), "one entry per code");
+        for code in every {
+            let name = serde_json::to_value(code).expect("serialize the code");
+            let name = name.as_str().expect("a code is a string");
+            let status = listed
+                .get(name)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_else(|| panic!("errorCodes in web/api-contract.json has no {name}"));
+            assert_eq!(
+                u64::from(status_for_app_error_code(code).as_u16()),
+                status,
+                "{name}"
+            );
+        }
+    }
 }

@@ -36,6 +36,7 @@ jobs:
       actions: read
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
+      vitest: ${{ steps.filter.outputs.vitest }}
       rust: ${{ steps.filter.outputs.rust }}
       install: ${{ steps.filter.outputs.install }}
       editions: ${{ steps.filter.outputs.editions }}
@@ -68,7 +69,7 @@ jobs:
             workflows:
               - ".github/workflows/**"
               - "scripts/ci/**"
-            frontend:
+            frontend: &frontend
               - "src/**"
               - "browser-agent/**"
               - "public/**"
@@ -78,8 +79,14 @@ jobs:
               - "*.config.*"
               - "tsconfig.json"
               - "components.json"
+              - "scripts/api-contract.mjs"
               - ".github/workflows/test.yml"
               - "scripts/ci/rerun-failed.mjs"
+            # vitest 里有十几个测试读 Rust 源码、两边对着查（接口约定 api-contract.test.ts、WS 协议常量、API 版本……）：
+            # 只改了 Rust 的 PR 也跑 vitest，不然改坏了要等下一个改前端的 PR 才红，红在别人头上
+            vitest:
+              - *frontend
+              - "src-tauri/src/**"
             rust:
               - "src-tauri/**"
               - "rust-toolchain.toml"
@@ -176,7 +183,7 @@ jobs:
   vitest:
     name: Frontend vitest (${{ matrix.shard }}/6)
     needs: changes
-    if: needs.changes.outputs.frontend == 'true'
+    if: needs.changes.outputs.vitest == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     strategy:

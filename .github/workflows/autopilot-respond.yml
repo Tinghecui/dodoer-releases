@@ -68,6 +68,9 @@ jobs:
       - name: run
         env:
           PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+          # bot 身份（.cowork/journal/2026-11-16-autopilot-bot.md）：没配就是空的，sealed.sh 用上面那个所有者的令牌
+          APP_KEY: ${{ secrets.AUTOPILOT_APP_KEY }}
+          APP_ID: ${{ vars.AUTOPILOT_APP_ID }}
           STATUS_TOKEN: ${{ secrets.SOURCE_STATUS_TOKEN }}
           PUBLIC_TOKEN: ${{ github.token }}
           # 一次只给一种 Claude 凭证（AUTOPILOT_CLAUDE_AUTH），同 autopilot-fix.yml
@@ -78,8 +81,9 @@ jobs:
           # 凭证写进只有本用户能读的文件、从环境里拿掉再 exec（同 autopilot-fix.yml）
           d="$RUNNER_TEMP/autopilot-secrets"; rm -rf "$d"; mkdir -m 700 "$d"
           printf '%s' "$PRIVATE_TOKEN" > "$d/gh"; printf '%s' "$ANTHROPIC_KEY" > "$d/anthropic"; printf '%s' "$OAUTH_TOKEN" > "$d/oauth"
+          printf '%s' "$APP_KEY" > "$d/app_key"; printf '%s' "$APP_ID" > "$d/app_id"
           printf '%s' "$STATUS_TOKEN" > "$d/status"; printf '%s' "$PUBLIC_TOKEN" > "$d/public"
-          unset PRIVATE_TOKEN ANTHROPIC_KEY OAUTH_TOKEN STATUS_TOKEN PUBLIC_TOKEN
+          unset PRIVATE_TOKEN APP_KEY APP_ID ANTHROPIC_KEY OAUTH_TOKEN STATUS_TOKEN PUBLIC_TOKEN
           export AUTOPILOT_SECRETS="$d"
           exec bash .cowork/autopilot/sealed.sh respond
 

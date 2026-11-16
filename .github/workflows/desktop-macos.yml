@@ -24,7 +24,7 @@
 #
 # 黑苹果（2026-11-16 起）：用户家里的黑苹果（Intel i7-12700KF 20 线程 / 64GB）挂成自托管 runner（标签 hackintosh），在线就在它上面
 # 交叉编 arm64（build-hack，target 目录留在机器上，增量编），再交给 GitHub 的 macos-15 只做冒烟（smoke，几分钟）；实测编译
-# 从托管机器上的 ~56 分钟降到十几分钟。在不在线看 hackintosh-heartbeat.yml 最近一次成功的时间（30 分钟内算在线）；
+# 从托管机器上的 ~56 分钟降到十几分钟。在不在线看 hackintosh-heartbeat.yml 最近一次成功的时间（45 分钟内算在线）；
 # 仓库变量 HACKINTOSH_BUILD=off 强制不用它，=force 不看心跳直接用（试流程用）。兜底：黑苹果不在线 → 跟以前一样全在 macos-15 上编（build）；黑苹果编挂了
 # 或冒烟没过 → build 接着在 macos-15 上重编；判定在线之后它又掉线、活一直排着 → watchdog 15 分钟后取消这次 run
 # （自动发版的号由 release-train 的 untag 退回，下一班心跳过期就走 macos-15）。
@@ -166,7 +166,7 @@ jobs:
           fi
           echo "build=$build" >> "$GITHUB_OUTPUT"
 
-      # 黑苹果在不在线：hackintosh-heartbeat.yml 每 10 分钟在它上面跑一次，最近一次成功在 30 分钟内就算在线
+      # 黑苹果在不在线：hackintosh-heartbeat.yml 每 10 分钟在它上面跑一次，最近一次成功在 45 分钟内就算在线
       - id: hack
         name: 黑苹果在不在线
         env:
@@ -183,7 +183,7 @@ jobs:
           else
             last=$(gh run list -R "$GITHUB_REPOSITORY" -w hackintosh-heartbeat.yml -s success -L 1 \
               --json updatedAt -q '.[0].updatedAt // empty' 2>/dev/null || true)
-            if [[ -n "$last" ]] && (( $(date +%s) - $(date -d "$last" +%s) < 1800 )); then
+            if [[ -n "$last" ]] && (( $(date +%s) - $(date -d "$last" +%s) < 2700 )); then
               hack=true
             fi
             echo "黑苹果最近一次心跳：${last:-没有}；hack=$hack"
@@ -229,7 +229,7 @@ jobs:
           kc_pw=$(openssl rand -hex 16)
           echo "::add-mask::$kc_pw"
           printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/codesign.p12"
-          security create-keychain -p "$kc_pw" "$kc"
+          lockf -k -t 60 /tmp/dodoer-keychain-list.lock security create-keychain -p "$kc_pw" "$kc"
           security set-keychain-settings -lut 21600 "$kc"
           security unlock-keychain -p "$kc_pw" "$kc"
           security import "$RUNNER_TEMP/codesign.p12" -k "$kc" -f pkcs12 -P "$P12_PASSWORD" -T /usr/bin/codesign
@@ -251,12 +251,17 @@ jobs:
         run: |
           set -euo pipefail
           security unlock-keychain -p "$DODOER_KEYCHAIN_PASSWORD" "$DODOER_SIGNING_KEYCHAIN"
-          keep=()
-          while IFS= read -r k; do
-            k=$(echo "$k" | tr -d '" ')
-            [[ -f "$k" && "$k" != */dodoer-codesign.keychain-db ]] && keep+=("$k")
-          done < <(security list-keychains -d user)
-          security list-keychains -d user -s "$DODOER_SIGNING_KEYCHAIN" ${keep[@]+"${keep[@]}"}
+          # 这台机器上有几个 runner，同一个用户、同一份搜索列表：读改写要加锁，别的 runner 正在用的钥匙串
+          # （文件还在）要留着，只去掉已经删掉的和自己的重复项
+          # shellcheck disable=SC2016
+          lockf -k -t 60 /tmp/dodoer-keychain-list.lock bash -c '
+            keep=()
+            while IFS= read -r k; do
+              k=$(echo "$k" | tr -d "\" ")
+              [[ -f "$k" && "$k" != "$1" ]] && keep+=("$k")
+            done < <(security list-keychains -d user)
+            security list-keychains -d user -s "$1" ${keep[@]+"${keep[@]}"}
+          ' _ "$DODOER_SIGNING_KEYCHAIN"
           security list-keychains -d user
           security show-keychain-info "$DODOER_SIGNING_KEYCHAIN"
           security find-identity -p codesigning "$DODOER_SIGNING_KEYCHAIN"
@@ -276,7 +281,7 @@ jobs:
         if: always()
         run: |
           if [[ -n "${DODOER_SIGNING_KEYCHAIN:-}" ]]; then
-            security delete-keychain "$DODOER_SIGNING_KEYCHAIN" || true
+            lockf -k -t 60 /tmp/dodoer-keychain-list.lock security delete-keychain "$DODOER_SIGNING_KEYCHAIN" || true
           fi
           rm -f "$RUNNER_TEMP/codesign.p12"
       - uses: actions/upload-artifact@v4

@@ -1,0 +1,268 @@
+<!doctype html>
+<!--
+  黑苹果编译机的状态页（GitHub Pages，hackintosh-status-pages.yml 发布；源文件在私有仓库 cowork-codeg 的 .github/status-page/）。
+  数据：hackintosh-heartbeat.yml 每 10 分钟往本仓库 hackintosh-status 分支记的 host/、queue/（scripts/hackintosh-status-record.sh），
+  从 raw.githubusercontent.com 读；3 个 runner 现在在跑什么、几个在排队，另外直接问 GitHub 的公开 API（不带令牌，每个 IP 每小时 60 次，
+  所以 5 分钟才刷新一次，限流了就用最近一次快照）。页面是公开的：只放负载、内存、在线时长、job 名，不放 IP、用户名、主机名。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>黑苹果编译机 · 状态</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --fg: #1f2328; --mute: #656d76; --line: #d0d7de;
+          --ok: #1a7f37; --ok2: #7fd18f; --busy: #bf8700; --bad: #cf222e; --none: #eaeef2; --pre: #f6f8fa; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d1117; --card: #161b22; --fg: #e6edf3; --mute: #8d96a0; --line: #30363d;
+            --ok: #3fb950; --ok2: #2ea043; --busy: #d29922; --bad: #f85149; --none: #21262d; --pre: #1c2128; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--fg); }
+  main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 28px 0 10px; }
+  .sub { color: var(--mute); }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: 600; color: #fff; }
+  .pill.ok { background: var(--ok); } .pill.busy { background: var(--busy); } .pill.bad { background: var(--bad); }
+  .pill.unk { background: var(--mute); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .card .k { color: var(--mute); font-size: 12px; }
+  .card .v { font-size: 22px; font-weight: 600; margin-top: 2px; }
+  .card .d { color: var(--mute); font-size: 12px; }
+  .bar { height: 6px; background: var(--none); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--ok); }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--mute); font-weight: 500; font-size: 12px; background: var(--pre); }
+  tr:last-child td { border-bottom: 0; }
+  a { color: inherit; }
+  .idle { color: var(--mute); }
+  .week { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .day { display: grid; grid-template-columns: 92px 1fr 56px; align-items: center; gap: 10px; margin: 3px 0; }
+  .slots { display: grid; grid-template-columns: repeat(144, 1fr); gap: 1px; height: 16px; }
+  .slots i { background: var(--none); border-radius: 1px; }
+  .slots i.s2 { background: var(--ok); } .slots i.s1 { background: var(--ok2); } .slots i.s0 { background: var(--bad); opacity: .55; }
+  .slots i.fut { background: transparent; } .slots i.pre { background: var(--none); opacity: .5; }
+  .axis { display: grid; grid-template-columns: 92px 1fr 56px; gap: 10px; color: var(--mute); font-size: 11px; }
+  .axis div:nth-child(2) { display: flex; justify-content: space-between; }
+  .legend { color: var(--mute); font-size: 12px; margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 12px; vertical-align: -1px; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .chart svg { width: 100%; height: 110px; display: block; margin-top: 6px; }
+  .chart .k { display: flex; justify-content: space-between; }
+  footer { color: var(--mute); font-size: 12px; margin-top: 32px; }
+  .err { color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <h1>黑苹果编译机</h1>
+  <div class="sub">i7-12700KF · 20 线程 · 64 GB · 3 个 GitHub Actions runner（dodoer 桌面版的编译机）</div>
+  <p id="status"><span class="pill unk">读取中…</span></p>
+
+  <div class="cards" id="cards"></div>
+
+  <h2>3 个 worker</h2>
+  <table><thead><tr><th style="width:130px">worker</th><th>在干什么</th><th style="width:110px">已经跑了</th></tr></thead>
+    <tbody id="workers"></tbody></table>
+  <div class="sub" id="workers-src" style="margin-top:6px"></div>
+
+  <h2>排队 <span id="queue-n" class="sub"></span></h2>
+  <table><thead><tr><th>工作流</th><th>job</th></tr></thead><tbody id="queue"></tbody></table>
+
+  <h2>最近 7 天在线 <span class="sub">（北京时间，每格 10 分钟）</span></h2>
+  <div class="week">
+    <div id="week"></div>
+    <div class="axis"><div></div><div><span>0 点</span><span>6 点</span><span>12 点</span><span>18 点</span><span>24 点</span></div><div></div></div>
+    <div class="legend">
+      <i style="background:var(--ok)"></i>在线（心跳到了）
+      <i style="background:var(--ok2)"></i>在线，worker 都忙、心跳排着
+      <i style="background:var(--bad);opacity:.55"></i>没联系上
+      <i style="background:var(--none);opacity:.5"></i>还没开始记
+    </div>
+  </div>
+
+  <h2>最近 7 天</h2>
+  <div class="charts" id="charts"></div>
+
+  <footer id="foot"></footer>
+</main>
+<script>
+"use strict";
+const RUNNERS = ["hackintosh", "hackintosh-2", "hackintosh-3"];
+const SLOT = 10 * 60e3, DAY = 864e5, TZ8 = 8 * 3600e3;
+// 本页在 <owner>.github.io/<repo>/ 下：仓库从地址里取，打开本地文件时用默认的
+const REPO = location.hostname.endsWith(".github.io") && location.pathname.split("/")[1]
+  ? `${location.hostname.split(".")[0]}/${location.pathname.split("/")[1]}` : "Tinghecui/dodoer-releases";
+const RAW = `https://raw.githubusercontent.com/${REPO}/hackintosh-status/`;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const gb = (b) => (b / 2 ** 30).toFixed(b >= 100 * 2 ** 30 ? 0 : 1);
+const bj = (t, opt) => new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour12: false, ...opt }).format(new Date(t));
+const hm = (t) => bj(t, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+function ago(ms) {
+  const m = Math.round(ms / 60e3);
+  if (m < 1) return "刚刚";
+  if (m < 60) return `${m} 分钟前`;
+  if (m < 48 * 60) return `${Math.floor(m / 60)} 小时 ${m % 60} 分钟前`;
+  return `${Math.floor(m / 1440)} 天前`;
+}
+function dur(ms) {
+  const m = Math.max(0, Math.round(ms / 60e3));
+  if (m < 60) return `${m} 分钟`;
+  if (m < 1440) return `${Math.floor(m / 60)} 小时 ${m % 60} 分`;
+  return `${Math.floor(m / 1440)} 天 ${Math.floor((m % 1440) / 60)} 小时`;
+}
+
+let host = [], queue = [], live = null, liveErr = "";
+
+async function loadData() {
+  const days = [];
+  for (let i = 8; i >= 0; i--) days.push(new Date(Date.now() - i * DAY).toISOString().slice(0, 10));
+  const get = async (kind) => {
+    const parts = await Promise.all(days.map((d) =>
+      fetch(`${RAW}${kind}/${d}.jsonl`, { cache: "no-cache" }).then((r) => (r.ok ? r.text() : "")).catch(() => "")));
+    const rows = [];
+    for (const line of parts.join("\n").split("\n")) {
+      if (!line.trim()) continue;
+      try { const o = JSON.parse(line); o.ms = Date.parse(o.t); if (!isNaN(o.ms)) rows.push(o); } catch (e) { /* 坏行跳过 */ }
+    }
+    return rows.sort((a, b) => a.ms - b.ms);
+  };
+  [host, queue] = await Promise.all([get("host"), get("queue")]);
+}
+
+// GitHub 公开 API：现在在跑、在排队的 run 里要 hackintosh 标签的 job
+async function loadLive() {
+  const api = async (path) => {
+    const r = await fetch(`https://api.github.com/repos/${REPO}${path}`, { headers: { Accept: "application/vnd.github+json" } });
+    if (!r.ok) throw new Error(r.status === 403 || r.status === 429 ? "GitHub API 限流（每小时 60 次）" : `GitHub API ${r.status}`);
+    return r.json();
+  };
+  try {
+    const runs = [];
+    for (const s of ["in_progress", "queued"]) runs.push(...(await api(`/actions/runs?status=${s}&per_page=20`)).workflow_runs);
+    const jobs = [];
+    // 只看会用黑苹果的工作流，省 API 次数
+    const uses = /\/(desktop-macos|desktop-macos-intel|release-train|hackintosh-heartbeat)\.yml$/;
+    for (const run of runs.filter((r) => uses.test(r.path || "")).slice(0, 8)) {
+      for (const j of (await api(`/actions/runs/${run.id}/jobs?per_page=100`)).jobs) {
+        if (j.status !== "completed" && (j.labels || []).includes("hackintosh"))
+          jobs.push({ wf: run.name, run: run.id, job: j.name, status: j.status, runner: j.runner_name, started: j.started_at, url: j.html_url });
+      }
+    }
+    live = { ms: Date.now(), running: jobs.filter((j) => j.status === "in_progress"), queued: jobs.filter((j) => j.status !== "in_progress") };
+    liveErr = "";
+  } catch (e) { liveErr = e.message; }
+}
+
+function render() {
+  const now = Date.now();
+  const lastHost = host[host.length - 1], lastQueue = queue[queue.length - 1];
+  const snap = live || (lastQueue && { ...lastQueue, snapshot: true });
+  const fresh = (o) => o && now - o.ms < 25 * 60e3;
+  const busyNow = snap && (snap.running || []).length > 0 && (live || fresh(lastQueue));
+
+  // 在不在线
+  let pill;
+  if (fresh(lastHost)) pill = `<span class="pill ok">在线</span> 最近一次心跳 ${ago(now - lastHost.ms)}`;
+  else if (busyNow) pill = `<span class="pill busy">在线，忙</span> worker 都在干活，心跳排着（最近一次心跳 ${lastHost ? ago(now - lastHost.ms) : "没有"}）`;
+  else if (lastHost) pill = `<span class="pill bad">离线</span> 最近一次心跳 ${ago(now - lastHost.ms)}（${hm(lastHost.ms)}）`;
+  else pill = `<span class="pill unk">还没有数据</span>`;
+  $("status").innerHTML = pill;
+
+  // 资源
+  const c = [];
+  if (lastHost) {
+    const h = lastHost, load = h.load || [];
+    const card = (k, v, d, pct) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d}</div>` +
+      (pct == null ? "" : `<div class="bar"><i style="width:${Math.min(100, pct).toFixed(0)}%;background:${pct > 85 ? "var(--bad)" : pct > 60 ? "var(--busy)" : "var(--ok)"}"></i></div>`) + `</div>`;
+    if (h.cpu != null) c.push(card("CPU", `${h.cpu}%`, `负载 ${load.map((x) => x.toFixed(1)).join(" / ")}（1/5/15 分钟，${h.cpus} 线程）`, h.cpu));
+    if (h.mem_used != null) c.push(card("内存", `${gb(h.mem_used)} / ${gb(h.mem_total)} GB`,
+      `系统报告可用 ${h.mem_free_pct ?? "?"}%${h.swap_used ? `，swap ${gb(h.swap_used)} GB` : "，没用 swap"}`, (h.mem_used / h.mem_total) * 100));
+    if (h.disk_free != null) c.push(card("磁盘", `剩 ${gb(h.disk_free)} GB`, `共 ${gb(h.disk_total)} GB`, (1 - h.disk_free / h.disk_total) * 100));
+    if (h.boot) c.push(card("开机", dur(h.ms - h.boot * 1000), `${hm(h.boot * 1000)} 开的机`));
+    c.push(card("数据时间", ago(now - h.ms), hm(h.ms)));
+  }
+  $("cards").innerHTML = c.join("");
+
+  // worker
+  const running = (snap && snap.running) || [];
+  $("workers").innerHTML = RUNNERS.map((r) => {
+    const j = running.find((x) => x.runner === r);
+    const link = j && (j.url || `https://github.com/${REPO}/actions/runs/${j.run}`);
+    return j ? `<tr><td><b>${r}</b></td><td><a href="${esc(link)}">${esc(j.job)}</a><div class="sub">${esc(j.wf)}</div></td><td>${j.started ? dur(now - Date.parse(j.started)) : ""}</td></tr>`
+             : `<tr><td><b>${r}</b></td><td class="idle">空闲</td><td></td></tr>`;
+  }).join("");
+  $("workers-src").innerHTML = live ? `刚问过 GitHub（${hm(live.ms)}）`
+    : (lastQueue ? `<span class="err">${esc(liveErr || "实时数据没取到")}</span>，显示 ${hm(lastQueue.ms)} 的快照` : esc(liveErr));
+
+  const queued = (snap && snap.queued) || [];
+  $("queue-n").textContent = `${queued.length} 个在等`;
+  $("queue").innerHTML = queued.length
+    ? queued.map((j) => `<tr><td>${esc(j.wf)}</td><td><a href="${esc(j.url || `https://github.com/${REPO}/actions/runs/${j.run}`)}">${esc(j.job)}</a></td></tr>`).join("")
+    : `<tr><td colspan="2" class="idle">没有排队的</td></tr>`;
+
+  // 7 天在线：按北京时间的日子，每格 10 分钟。2 = 心跳到了，1 = 心跳没到但 queue 快照里有 job 在黑苹果上跑，0 = 都没有
+  const first = Math.min(host[0]?.ms ?? Infinity, queue[0]?.ms ?? Infinity);
+  const state = new Map();
+  for (const q of queue) if ((q.running || []).length) state.set(Math.floor(q.ms / SLOT), 1);
+  for (const h of host) state.set(Math.floor(h.ms / SLOT), 2);
+  const today0 = Math.floor((now + TZ8) / DAY) * DAY - TZ8;
+  const rows = [];
+  for (let d = 6; d >= 0; d--) {
+    const start = today0 - d * DAY;
+    let on = 0, seen = 0, cells = "";
+    for (let i = 0; i < 144; i++) {
+      const t = start + i * SLOT, k = Math.floor(t / SLOT);
+      if (t > now) { cells += `<i class="fut"></i>`; continue; }
+      if (t + SLOT < first) { cells += `<i class="pre"></i>`; continue; }
+      // 心跳 10 分钟一次、会晚几分钟：这一格或上一格有就算
+      const s = Math.max(state.get(k) ?? -1, state.get(k - 1) ?? -1);
+      seen++; if (s > 0) on++;
+      cells += `<i class="s${Math.max(s, 0)}" title="${hm(t)}"></i>`;
+    }
+    const label = bj(start + 1, { month: "numeric", day: "numeric", weekday: "short" });
+    rows.push(`<div class="day"><div class="sub">${label}</div><div class="slots">${cells}</div><div>${seen ? Math.round((on / seen) * 100) + "%" : ""}</div></div>`);
+  }
+  $("week").innerHTML = rows.join("");
+
+  // 走势图
+  const from = now - 7 * DAY;
+  const chart = (title, pts, max, fmt) => {
+    pts = pts.filter((p) => p[0] >= from && p[1] != null);
+    const W = 700, H = 100, x = (t) => ((t - from) / (now - from)) * W, y = (v) => H - (Math.min(v, max) / max) * (H - 4) - 2;
+    let d = "", prev = null;
+    for (const [t, v] of pts) { d += `${prev == null || t - prev > 25 * 60e3 ? "M" : "L"}${x(t).toFixed(1)},${y(v).toFixed(1)}`; prev = t; }
+    const last = pts[pts.length - 1];
+    const grid = [0.25, 0.5, 0.75].map((f) => `<line x1="0" x2="${W}" y1="${y(max * f)}" y2="${y(max * f)}" stroke="var(--line)" stroke-dasharray="2 4"/>`).join("");
+    return `<div class="card chart"><div class="k"><span>${title}</span><span>${last ? "现在 " + fmt(last[1]) : ""} · 最高 ${fmt(max)}</span></div>
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${grid}<path d="${d}" fill="none" stroke="var(--ok)" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg></div>`;
+  };
+  const cpus = lastHost?.cpus || 20, memMax = (lastHost?.mem_total || 64 * 2 ** 30) / 2 ** 30;
+  $("charts").innerHTML = [
+    chart("CPU 使用率", host.map((h) => [h.ms, h.cpu]), 100, (v) => `${Math.round(v)}%`),
+    chart("负载（1 分钟）", host.map((h) => [h.ms, h.load?.[0]]), cpus * 1.5, (v) => v.toFixed(1)),
+    chart("内存已用", host.map((h) => [h.ms, h.mem_used != null ? h.mem_used / 2 ** 30 : null]), memMax, (v) => `${v.toFixed(0)} GB`),
+    chart("在干活的 worker", queue.map((q) => [q.ms, (q.running || []).length]), 3, (v) => `${v}`),
+    chart("排队的 job", queue.map((q) => [q.ms, (q.queued || []).length]), Math.max(3, ...queue.map((q) => (q.queued || []).length)), (v) => `${v}`),
+  ].join("");
+
+  $("foot").innerHTML = `数据每 10 分钟记一次（<a href="https://github.com/${REPO}/tree/hackintosh-status">hackintosh-status 分支</a>），` +
+    `本页 5 分钟刷新一次。共 ${host.length} 条负载、${queue.length} 条队列记录。`;
+}
+
+async function refresh(withData) {
+  if (withData) await loadData();
+  await loadLive();
+  render();
+}
+let tick = 0;
+refresh(true);
+setInterval(() => { if (!document.hidden) refresh(++tick % 2 === 0); }, 5 * 60e3);
+</script>
+</body>
+</html>

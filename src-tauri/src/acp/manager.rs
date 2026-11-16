@@ -3384,6 +3384,11 @@ impl ConnectionManager {
     /// So: fire every `Disconnect`, give the graceful path a short grace window,
     /// then synchronously `kill_tree` whatever is still running.
     ///
+    /// 兜底用 [`kill_tree_and_wait`]：先 SIGTERM，不理的半秒后补 SIGKILL，连
+    /// 子进程一起。兜底的对象也包括 `draining` 里还活着的（之前关掉、还没退干净
+    /// 的智能体）；连接表是空的但 `draining` 里有活的时候照样等宽限期再清，两样
+    /// 都没有才直接返回。返回值仍是这次从连接表里断开了几个连接。
+    ///
     /// What the window actually buys is NOT a gentler death for the agent — the
     /// graceful path ends in the same `kill_tree` — it is time for the driver
     /// thread's own post-loop cleanup (delegation-token revoke, `cancel_by_parent`
@@ -3434,40 +3439,47 @@ impl ConnectionManager {
         }
         tracing::info!("[ACP] disconnect_all count={}", disconnected);
 
-        if disconnected == 0 {
-            return 0;
+        // 兜底的对象：刚断开的这些，加上早一步被 `disconnect` 掉（比如关了
+        // 标签）、还在 `draining` 里没退干净的——连接表里已经看不到它们了。
+        let mut pid_cells: Vec<Arc<std::sync::atomic::AtomicU32>> =
+            handles.into_iter().map(|(_, pid)| pid).collect();
+        {
+            let mut draining = self.draining.lock().await;
+            prune_reaped(&mut draining);
+            pid_cells.extend(
+                draining
+                    .iter()
+                    .filter(|c| c.pid.load(std::sync::atomic::Ordering::SeqCst) != 0)
+                    .map(|c| c.pid.clone()),
+            );
+        }
+        if pid_cells.is_empty() {
+            return disconnected;
         }
 
         // Grace window: let the drivers unwind and run their own cleanup.
         tokio::time::sleep(DISCONNECT_ALL_GRACE).await;
 
-        // Backstop: hard-kill whatever is still running. Runs on a blocking
-        // thread so the synchronous `kill_tree` doesn't stall the async runtime
-        // while a `block_on(disconnect_all())` shutdown caller waits on it.
-        let pid_cells: Vec<Arc<std::sync::atomic::AtomicU32>> =
-            handles.into_iter().map(|(_, pid)| pid).collect();
-        let _ = tokio::task::spawn_blocking(move || {
-            for cell in pid_cells {
-                // Load here, not before the window — see the doc comment.
-                let pid = cell.load(std::sync::atomic::Ordering::SeqCst);
-                if pid == 0 {
-                    continue;
-                }
-                match kill_tree::blocking::kill_tree(pid) {
-                    Ok(_) => {
-                        tracing::info!(
-                            "[ACP] disconnect_all backstop killed process tree pid={pid}"
-                        );
-                    }
-                    Err(e) => {
-                        // The process can still exit between the load and the
-                        // kill; that error is expected, not a failure.
-                        tracing::debug!("[ACP] disconnect_all backstop kill_tree pid={pid}: {e}");
-                    }
-                }
-            }
+        // Backstop: hard-kill whatever is still running — SIGTERM, then SIGKILL
+        // for a tree that ignores it (`kill_tree_and_wait`), one at a time.
+        // Runs on a blocking thread so the synchronous kills don't stall the
+        // async runtime while a `block_on(disconnect_all())` shutdown caller
+        // waits on it. The pid is loaded inside, after the window — see the
+        // doc comment.
+        match tokio::task::spawn_blocking(move || {
+            pid_cells
+                .iter()
+                .filter(|cell| !kill_tree_and_wait(cell))
+                .count()
         })
-        .await;
+        .await
+        {
+            Ok(0) => {}
+            Ok(unconfirmed) => tracing::warn!(
+                "[ACP] disconnect_all: {unconfirmed} process(es) could not be confirmed gone"
+            ),
+            Err(e) => tracing::warn!("[ACP] disconnect_all: sweep did not finish: {e}"),
+        }
 
         disconnected
     }
@@ -6017,6 +6029,85 @@ mod tests {
         assert!(
             wait_until_dead(gpid).await,
             "grandchild {gpid} survived — the escalation reached the target but not its tree"
+        );
+    }
+
+    /// 停机时的兜底也得升级到 SIGKILL：不理 SIGTERM 的智能体和它的子进程，
+    /// 只发一个 SIGTERM 的话在 server 退出以后一直活着。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disconnect_all_escalates_to_sigkill_for_a_tree_that_ignores_sigterm() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut child, gpid) = spawn_sigterm_proof_tree(&dir.path().join("g.pid")).await;
+
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection("conn-stubborn", None);
+        conn.child_pid
+            .store(child.id(), std::sync::atomic::Ordering::SeqCst);
+        mgr.connections
+            .lock()
+            .await
+            .insert("conn-stubborn".to_string(), conn);
+
+        assert_eq!(mgr.disconnect_all().await, 1);
+
+        // 和 disconnect_by_agent_type 那个测试一样：`try_wait` 有结果，说明
+        // disconnect_all 返回时目标已经死了；信号 9 说明是升级收掉的。
+        use std::os::unix::process::ExitStatusExt;
+        let status = match child.try_wait().expect("read the target's status") {
+            Some(s) => s,
+            None => {
+                let config = kill_tree::Config {
+                    signal: "SIGKILL".to_string(),
+                    ..Default::default()
+                };
+                let _ = kill_tree::blocking::kill_tree_with_config(child.id(), &config);
+                let _ = child.wait();
+                panic!("target was still running when disconnect_all returned");
+            }
+        };
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGKILL),
+            "target survived SIGTERM and was never SIGKILLed"
+        );
+        assert!(
+            wait_until_dead(gpid).await,
+            "grandchild {gpid} survived — the escalation reached the target but not its tree"
+        );
+    }
+
+    /// 早一步被 `disconnect` 掉（比如关了标签）、还在 `draining` 里的子进程，
+    /// 连接表里已经看不到了；停机时也得把它清掉。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disconnect_all_sweeps_a_child_left_draining_by_an_earlier_teardown() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut child, gpid) = spawn_process_tree(&dir.path().join("g.pid")).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("closed-tab", AgentType::Codex, None, EventEmitter::Noop)
+            .await;
+        mgr.connections
+            .lock()
+            .await
+            .get("closed-tab")
+            .unwrap()
+            .child_pid
+            .store(child.id(), std::sync::atomic::Ordering::SeqCst);
+
+        mgr.disconnect("closed-tab").await.unwrap();
+        assert!(mgr.list_connections().await.is_empty());
+
+        assert_eq!(mgr.disconnect_all().await, 0);
+        let dead = wait_until_dead(gpid).await;
+        if !dead {
+            let _ = kill_tree::blocking::kill_tree(child.id());
+        }
+        let _ = child.wait();
+        assert!(
+            dead,
+            "grandchild {gpid} survived — a draining child was never swept on shutdown"
         );
     }
 

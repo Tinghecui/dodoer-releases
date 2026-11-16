@@ -218,9 +218,15 @@ fn main() -> ExitCode {
 
     // A `codeg-cli --standalone` server ends with the codeg-cli that started
     // it: its stdin closes when that process is gone, a crash included.
-    if std::env::var(codeg_lib::runtime_lock::EXIT_ON_STDIN_EOF_ENV).is_ok_and(|v| v == "1") {
+    // 桌面版的本地 daemon 也是这样（app 被强杀、崩溃，Windows 上正常退出也是）。
+    // 读到 EOF 后不直接退出：通知 `cowork::graceful_shutdown` 走和收到停机信号
+    // 同一条路（取消回合、关终端、断开智能体），自己等 STDIN_EOF_EXIT_AFTER 兜底。
+    let stdin_closed = if std::env::var(codeg_lib::runtime_lock::EXIT_ON_STDIN_EOF_ENV)
+        .is_ok_and(|v| v == "1")
+    {
         let endpoint =
             codeg_lib::cli_run::discovery::file_for(&resolved_data_dir, std::process::id());
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
         std::thread::spawn(move || {
             use std::io::Read;
             let mut stdin = std::io::stdin();
@@ -233,9 +239,15 @@ fn main() -> ExitCode {
             let _ = std::fs::remove_file(
                 codeg_lib::acp::delegation::listener::default_socket_path(&std::env::temp_dir()),
             );
+            let _ = closed_tx.send(());
+            // 兜底：正常情况下 `graceful_shutdown` 先走完、`main` 先返回。
+            std::thread::sleep(STDIN_EOF_EXIT_AFTER);
             std::process::exit(0);
         });
-    }
+        Some(closed_rx)
+    } else {
+        None
+    };
 
     // `main` returns the worker's exit code so `_log_guard` drops here — after
     // the runtime finishes — flushing any buffered file logs on a clean exit.
@@ -243,11 +255,16 @@ fn main() -> ExitCode {
         .enable_all()
         .build()
         .expect("Failed to build tokio runtime")
-        .block_on(async_main(proxy_auth_config))
+        .block_on(async_main(proxy_auth_config, stdin_closed))
 }
+
+/// stdin 关闭以后最多等这么久就退出：停机要先取消回合（最多 5 秒）、断开智能体
+/// （不理 SIGTERM 的每个约 0.7 秒），10 秒可能不够。
+const STDIN_EOF_EXIT_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
 
 async fn async_main(
     proxy_auth_config: Option<codeg_lib::web::proxy_auth::ProxyAuthConfig>,
+    stdin_closed: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> ExitCode {
     let port: u16 = std::env::var("CODEG_PORT")
         .ok()
@@ -663,11 +680,12 @@ async fn async_main(
         tracing::info!("  {}", addr);
     }
 
-    // Start serving. Cowork fork: SIGTERM / SIGINT → cancel running turns, disconnect agents,
+    // Start serving. Cowork fork: SIGTERM / SIGINT / stdin closed → cancel running turns, disconnect agents,
     // then stop accepting (`cowork::graceful_shutdown`); systemd's TimeoutStopSec is the backstop.
     let stop_signal = state.web_server_state.shutdown_signal();
-    let serve = axum::serve(listener, router)
-        .with_graceful_shutdown(codeg_lib::cowork::graceful_shutdown(state.clone(), stop_signal));
+    let serve = axum::serve(listener, router).with_graceful_shutdown(
+        codeg_lib::cowork::graceful_shutdown(state.clone(), stop_signal, stdin_closed),
+    );
     if let Err(e) = serve.await {
         tracing::error!("[SERVER] Server error: {}", e);
         state.cli_access.stop().await;

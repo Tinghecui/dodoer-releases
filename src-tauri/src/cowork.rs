@@ -512,9 +512,23 @@ async fn prompting_connections(cm: &crate::acp::manager::ConnectionManager) -> V
 /// 等 agent 应答最多 5 秒，再 `disconnect_all`（它自带 500ms 宽限和兜底 kill 进程树），最后触发 WebSocket 任务退出、
 /// axum 停收新连接。给 `axum::serve(...).with_graceful_shutdown`。
 /// 兜底：触发后 8 秒还没退就 `process::exit(0)`（systemd 单元那边另有 TimeoutStopSec）。
-pub async fn graceful_shutdown(state: Arc<AppState>, shutdown: Arc<ShutdownSignal>) {
-    wait_for_stop_signal().await;
-    tracing::info!("[cowork] stop signal: cancelling running turns, disconnecting agents");
+///
+/// `stdin_closed`：`CODEG_EXIT_ON_STDIN_EOF=1` 的 server（桌面版的本地 daemon、`codeg-cli --standalone`）
+/// 读到 stdin EOF 时由读 stdin 的线程发来；和停机信号哪个先来都走下面同一条停机路。没设那个变量时是 `None`。
+/// 停机时也关掉终端（和桌面 app 退出时一样），免得终端里起的东西在 server 退出后留下来。
+pub async fn graceful_shutdown(
+    state: Arc<AppState>,
+    shutdown: Arc<ShutdownSignal>,
+    stdin_closed: Option<tokio::sync::oneshot::Receiver<()>>,
+) {
+    tokio::select! {
+        _ = wait_for_stop_signal() => {
+            tracing::info!("[cowork] stop signal: cancelling running turns, disconnecting agents");
+        }
+        _ = crate::web::shutdown::stdin_closed(stdin_closed) => {
+            tracing::info!("[cowork] stdin closed: cancelling running turns, disconnecting agents");
+        }
+    }
     let cm = &state.connection_manager;
     let prompting = prompting_connections(cm).await;
     for id in &prompting {
@@ -531,9 +545,10 @@ pub async fn graceful_shutdown(state: Arc<AppState>, shutdown: Arc<ShutdownSigna
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
     }
+    let terminals = state.terminal_manager.kill_all();
     let n = cm.disconnect_all().await;
     tracing::info!(
-        "[cowork] stop: cancelled {} turn(s), disconnected {n} agent connection(s)",
+        "[cowork] stop: cancelled {} turn(s), closed {terminals} terminal(s), disconnected {n} agent connection(s)",
         prompting.len()
     );
     shutdown.trigger();

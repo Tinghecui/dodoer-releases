@@ -65,3 +65,55 @@ impl ShutdownSignal {
         notified.await;
     }
 }
+
+/// 等 stdin 关闭的通知（`CODEG_EXIT_ON_STDIN_EOF=1` 时读 stdin 的线程发来）。
+/// 收到发来的值就返回；`None`（没设这个变量），或者发送端没发就被丢掉了，
+/// 就永远不返回——那样只剩停机信号能让 server 停下。
+pub async fn stdin_closed(rx: Option<tokio::sync::oneshot::Receiver<()>>) {
+    if let Some(rx) = rx {
+        if rx.await.is_ok() {
+            return;
+        }
+    }
+    std::future::pending::<()>().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn stdin_closed_returns_once_notified() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(()).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), stdin_closed(Some(rx)))
+                .await
+                .is_ok(),
+            "stdin_closed did not return after the notification"
+        );
+    }
+
+    #[tokio::test]
+    async fn stdin_closed_never_returns_without_a_receiver() {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stdin_closed(None))
+                .await
+                .is_err(),
+            "stdin_closed returned with no receiver"
+        );
+    }
+
+    #[tokio::test]
+    async fn stdin_closed_never_returns_when_the_sender_is_dropped() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        drop(tx);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stdin_closed(Some(rx)))
+                .await
+                .is_err(),
+            "stdin_closed returned although nothing was sent"
+        );
+    }
+}

@@ -10,6 +10,8 @@
 
 import type { Editor } from "@tiptap/core"
 
+import { detectPlatform } from "@/hooks/use-platform"
+
 const MIME_BY_EXT: Record<string, string> = {
   txt: "text/plain",
   md: "text/markdown",
@@ -57,22 +59,42 @@ export function hasDragFiles(dataTransfer: DataTransfer | null): boolean {
   return Array.from(dataTransfer.types).includes("Files")
 }
 
+/** 对话区（`ConversationShell` 的根）的标记。 */
+export const CONVERSATION_DROP_ZONE_SELECTOR = "[data-conversation-shell]"
+
 /**
- * Whether an OS drag position (Tauri reports window coordinates, sometimes in
- * physical pixels) lands on `element` **and** `element` is what the user would
- * actually hit there.
+ * 把 Tauri 给的拖放坐标换算成 CSS 像素（`elementFromPoint` 用的那种），只换一次，
+ * 和文件树的拖放一样：macOS 上 wry 给的是窗口点，本来就等于 CSS 像素（Tauri 标成
+ * physical 是标错了），原样用；别的系统给的是真的物理像素，除以 DPR。
+ */
+export function osDropPointToCss(position: { x: number; y: number }): {
+  x: number
+  y: number
+} {
+  const scale = detectPlatform() === "macos" ? 1 : window.devicePixelRatio || 1
+  return { x: position.x / scale, y: position.y / scale }
+}
+
+/**
+ * Whether an OS drag position (Tauri reports window coordinates) lands on
+ * `element` **and** `element` is what the user would actually hit there.
+ * `element` 是对话区的根，或者没有对话区的输入框（待办任务的）自己的外框。
  *
- * Two guards, both needed because a Tauri drag-drop event is delivered to every
+ * Guards, all needed because a Tauri drag-drop event is delivered to every
  * listener in the window:
  *
  * - Hidden/detached hosts are rejected outright. Inactive conversation tabs stay
  *   mounted at `absolute inset-0` with `visibility: hidden`, so their bounding
  *   rect overlaps the active tab's — without this, one OS drop would fan out
- *   across every open conversation.
+ *   across every open conversation. 这条查的是对话区：收起的输入框外框本来就是
+ *   hidden，不能拿它判。
+ * - The point is converted once ({@link osDropPointToCss}). 原样和除以 DPR 两种
+ *   都试的话，分栏时一个文件会进两个对话。
  * - The topmost element at the point must be inside the host. A composer sitting
  *   behind a modal (the to-do task editor dialog, the detail drawer) still has
  *   its full rect at the same coordinates; `elementFromPoint` is what tells the
- *   two apart, so the drop lands only in the composer the user can see.
+ *   two apart, so the drop lands only in the composer the user can see. 对话区
+ *   套着对话区时，只算离落点最近的那个。
  */
 export function pointWithinElement(
   position: { x: number; y: number },
@@ -91,26 +113,24 @@ export function pointWithinElement(
   }
   const rect = element.getBoundingClientRect()
   if (rect.width === 0 || rect.height === 0) return false
-  const dpr = window.devicePixelRatio || 1
-  const candidates = [
-    { x: position.x, y: position.y },
-    { x: position.x / dpr, y: position.y / dpr },
-  ]
-  return candidates.some((point) => {
-    if (
-      point.x < rect.left ||
-      point.x > rect.right ||
-      point.y < rect.top ||
-      point.y > rect.bottom
-    ) {
-      return false
-    }
-    // `elementFromPoint` is unavailable in some test DOMs — fall back to the
-    // rect result there rather than dropping the event on the floor.
-    if (typeof doc?.elementFromPoint !== "function") return true
-    const top = doc.elementFromPoint(point.x, point.y)
-    return top !== null && element.contains(top)
-  })
+  const point = osDropPointToCss(position)
+  if (
+    point.x < rect.left ||
+    point.x > rect.right ||
+    point.y < rect.top ||
+    point.y > rect.bottom
+  ) {
+    return false
+  }
+  // `elementFromPoint` is unavailable in some test DOMs — fall back to the
+  // rect result there rather than dropping the event on the floor.
+  if (typeof doc?.elementFromPoint !== "function") return true
+  const top = doc.elementFromPoint(point.x, point.y)
+  if (top === null || !element.contains(top)) return false
+  if (element.matches(CONVERSATION_DROP_ZONE_SELECTOR)) {
+    return top.closest(CONVERSATION_DROP_ZONE_SELECTOR) === element
+  }
+  return true
 }
 
 export function blobToBase64(blob: Blob): Promise<string> {

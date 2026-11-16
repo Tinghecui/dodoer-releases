@@ -3676,6 +3676,7 @@
         "liveFeedback": "即時回饋",
         "liveFeedbackDisabledHint": "智能體工作時可傳送",
         "dropFilesToAttach": "拖曳檔案到此處附加",
+        "dropRejectedNotReady": "這個對話現在還收不了檔案，等連上以後再拖一次。",
         "loadingSettings": "正在載入設定...",
         "loadingMode": "正在載入模式...",
         "modeLabel": "模式",

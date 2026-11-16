@@ -3676,6 +3676,7 @@
         "liveFeedback": "ملاحظات مباشرة",
         "liveFeedbackDisabledHint": "متاح أثناء عمل الوكيل",
         "dropFilesToAttach": "أسقط الملفات لإرفاقها",
+        "dropRejectedNotReady": "لا يمكن لهذه المحادثة استقبال الملفات بعد. اسحبها مرة أخرى بعد اتصالها.",
         "loadingSettings": "جارٍ تحميل الإعدادات...",
         "loadingMode": "جارٍ تحميل الوضع...",
         "modeLabel": "الوضع",

@@ -1,13 +1,41 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import type { ComponentProps } from "react"
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
+vi.mock("next-intl", () => ({ useTranslations: () => (key: string) => key }))
+
 // The shell's own children are not under test: stand each in with a marker.
-vi.mock("@/components/chat/chat-input", () => ({
-  ChatInput: () => <div data-testid="composer" />,
-}))
+// 输入框的替身能报「系统拖动正经过这个对话区」，就像 `MessageInput` 那样。
+vi.mock("@/components/chat/chat-input", async () => {
+  const { useComposerDropZone } =
+    await import("@/components/chat/composer/composer-drop-zone")
+  return {
+    ChatInput: function ChatInput() {
+      const zone = useComposerDropZone()
+      return (
+        <div data-testid="composer" data-has-zone={String(zone !== null)}>
+          <button
+            onClick={(e) => {
+              // 对话区的元素就是包着它的那个对话区根
+              e.currentTarget.dataset.zoneIsShell = String(
+                zone?.zoneRef.current ===
+                  e.currentTarget.closest("[data-conversation-shell]")
+              )
+              zone?.reportDragOver("composer", true)
+            }}
+          >
+            over
+          </button>
+          <button onClick={() => zone?.reportDragOver("composer", false)}>
+            off
+          </button>
+        </div>
+      )
+    },
+  }
+})
 vi.mock("@/components/chat/chat-width-handles", () => ({
   ChatWidthHandles: () => <div data-testid="width-handles" />,
 }))
@@ -173,5 +201,27 @@ describe("ConversationShell cards below the transcript", () => {
       "data-root",
       "/repo"
     )
+  })
+})
+
+describe("ConversationShell OS drop zone", () => {
+  it("hands its root to the composer as the drop zone", () => {
+    renderShell()
+    expect(screen.getByTestId("composer").dataset.hasZone).toBe("true")
+    fireEvent.click(screen.getByText("over"))
+    expect(screen.getByText("over").dataset.zoneIsShell).toBe("true")
+  })
+
+  it("highlights the whole area while a drag is over it, and clears after", () => {
+    renderShell()
+    expect(screen.queryByText("dropFilesToAttach")).toBeNull()
+    fireEvent.click(screen.getByText("over"))
+    const overlay = screen.getByText("dropFilesToAttach")
+    // 画在对话区的根上，盖住 dock，不挡 `elementFromPoint`。
+    expect(overlay.parentElement).toBe(shellRoot())
+    expect(overlay).toHaveClass("pointer-events-none")
+    expect(overlay).toHaveClass("z-30")
+    fireEvent.click(screen.getByText("off"))
+    expect(screen.queryByText("dropFilesToAttach")).toBeNull()
   })
 })

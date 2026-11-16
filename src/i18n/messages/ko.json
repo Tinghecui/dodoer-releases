@@ -3676,6 +3676,7 @@
         "liveFeedback": "라이브 피드백",
         "liveFeedbackDisabledHint": "에이전트가 작업 중일 때 보낼 수 있습니다",
         "dropFilesToAttach": "파일을 놓아 첨부",
+        "dropRejectedNotReady": "이 대화는 아직 파일을 받을 수 없습니다. 연결된 후 다시 끌어다 놓으세요.",
         "loadingSettings": "설정 불러오는 중...",
         "loadingMode": "모드 불러오는 중...",
         "modeLabel": "모드",

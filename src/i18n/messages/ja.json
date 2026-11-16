@@ -3676,6 +3676,7 @@
         "liveFeedback": "ライブフィードバック",
         "liveFeedbackDisabledHint": "エージェントの作業中に送信できます",
         "dropFilesToAttach": "ファイルをドロップして添付",
+        "dropRejectedNotReady": "この会話はまだファイルを受け取れません。接続されてからもう一度ドラッグしてください。",
         "loadingSettings": "設定を読み込み中...",
         "loadingMode": "モードを読み込み中...",
         "modeLabel": "モード",

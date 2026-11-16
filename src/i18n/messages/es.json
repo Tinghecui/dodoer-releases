@@ -3676,6 +3676,7 @@
         "liveFeedback": "Comentarios en vivo",
         "liveFeedbackDisabledHint": "Disponible mientras el agente trabaja",
         "dropFilesToAttach": "Suelta archivos para adjuntar",
+        "dropRejectedNotReady": "Esta conversación aún no puede recibir archivos. Vuelve a arrastrarlos cuando esté conectada.",
         "loadingSettings": "Cargando ajustes...",
         "loadingMode": "Cargando modo...",
         "modeLabel": "Modo",

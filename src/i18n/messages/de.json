@@ -3676,6 +3676,7 @@
         "liveFeedback": "Live-Feedback",
         "liveFeedbackDisabledHint": "Verfügbar, während der Agent arbeitet",
         "dropFilesToAttach": "Dateien zum Anhängen ablegen",
+        "dropRejectedNotReady": "Diese Unterhaltung kann noch keine Dateien annehmen. Ziehe sie erneut hinein, sobald sie verbunden ist.",
         "loadingSettings": "Einstellungen werden geladen...",
         "loadingMode": "Modus wird geladen...",
         "modeLabel": "Modus",

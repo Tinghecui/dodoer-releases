@@ -3678,6 +3678,7 @@
         "liveFeedback": "Live feedback",
         "liveFeedbackDisabledHint": "Available while the agent is working",
         "dropFilesToAttach": "Drop files to attach",
+        "dropRejectedNotReady": "This conversation can't take files yet. Drag them in again once it's connected.",
         "loadingSettings": "Loading settings...",
         "loadingMode": "Loading mode...",
         "modeLabel": "Mode",

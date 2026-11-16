@@ -1,5 +1,6 @@
 import { Editor } from "@tiptap/core"
 import { act, renderHook, waitFor } from "@testing-library/react"
+import { toast } from "sonner"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { ClipboardFile } from "@/lib/clipboard-files"
@@ -45,9 +46,54 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
   readFileBase64: api.readFileBase64,
   uploadAttachment: api.uploadAttachment,
+  uploadLocalPathToRemote: remoteUpload.uploadLocalPathToRemote,
 }))
 vi.mock("next-intl", () => ({ useTranslations: () => (key: string) => key }))
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }))
+
+// 系统拖放：Tauri 的窗口事件，每个挂着的输入框都听到同一个。测试里自己发。
+const tauri = vi.hoisted(() => ({
+  listeners: new Map<string, Array<(event: { payload: unknown }) => void>>(),
+}))
+vi.mock("@tauri-apps/api/event", () => ({
+  TauriEvent: {
+    DRAG_ENTER: "tauri://drag-enter",
+    DRAG_OVER: "tauri://drag-over",
+    DRAG_DROP: "tauri://drag-drop",
+    DRAG_LEAVE: "tauri://drag-leave",
+  },
+}))
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({
+    listen: async (name: string, cb: (event: { payload: unknown }) => void) => {
+      const list = tauri.listeners.get(name) ?? []
+      list.push(cb)
+      tauri.listeners.set(name, list)
+      return () => {
+        const cur = tauri.listeners.get(name) ?? []
+        tauri.listeners.set(
+          name,
+          cur.filter((fn) => fn !== cb)
+        )
+      }
+    },
+  }),
+}))
+const platform = vi.hoisted(() => ({ os: "linux" as string }))
+vi.mock("@/hooks/use-platform", () => ({
+  detectPlatform: () => platform.os,
+}))
+const remoteUpload = vi.hoisted(() => ({
+  uploadLocalPathToRemote: vi.fn(async (path: string) => ({
+    path: `/remote-uploads/${path.split("/").pop()}`,
+    name: path.split("/").pop() ?? path,
+    size: 4,
+    mimeType: null,
+  })),
+}))
+vi.mock("@/lib/tauri", () => ({
+  readFileBase64: vi.fn(async () => "aW1hZ2U="),
+}))
 
 let editor: Editor
 
@@ -288,5 +334,350 @@ describe("appendClipboardFiles (a paste with no files of its own)", () => {
       expect(await result.current.appendClipboardFiles()).toBe(false)
     })
     expect(fileBadgeUris()).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 系统拖放（Tauri 的 drag-drop 窗口事件）落在对话区里
+
+type Hit = (x: number, y: number) => Element | null
+
+let hit: Hit = () => null
+
+function emit(name: string, payload: unknown) {
+  for (const cb of tauri.listeners.get(name) ?? []) cb({ payload })
+}
+
+/** jsdom 的矩形全是 0；给一个够大的，落点都在里面，归谁由 `elementFromPoint` 定。 */
+function withRect<T extends HTMLElement>(el: T): T {
+  el.getBoundingClientRect = () =>
+    ({
+      left: 0,
+      top: 0,
+      right: 2000,
+      bottom: 2000,
+      width: 2000,
+      height: 2000,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    }) as DOMRect
+  return el
+}
+
+/** 一个对话区：聊天记录、收起的那一条、输入框外框。 */
+function mountZone() {
+  const zone = withRect(document.createElement("div"))
+  zone.setAttribute("data-conversation-shell", "")
+  const transcript = document.createElement("div")
+  const collapsedBar = document.createElement("button")
+  const body = document.createElement("div")
+  const host = withRect(document.createElement("div"))
+  body.append(host)
+  zone.append(transcript, collapsedBar, body)
+  document.body.append(zone)
+  return { zone, transcript, collapsedBar, body, host }
+}
+
+function renderDropTarget(opts: {
+  host: HTMLElement
+  zone?: HTMLElement
+  disabled?: boolean
+  target?: Editor
+}) {
+  const ed = opts.target ?? editor
+  const editorRef = {
+    current: { getEditor: () => ed } as unknown as RichComposerHandle,
+  }
+  const containerRef = { current: opts.host }
+  const dropZoneRef = opts.zone ? { current: opts.zone } : undefined
+  return renderHook(
+    ({ disabled }: { disabled: boolean }) =>
+      useComposerAttachments({
+        editorRef,
+        containerRef,
+        dropZoneRef,
+        disabled,
+        promptCapabilities: { image: true, embedded_context: true },
+        attachmentTabId: "tab-1",
+      }),
+    { initialProps: { disabled: opts.disabled ?? false } }
+  )
+}
+
+async function listening(count = 1) {
+  await waitFor(() =>
+    expect(tauri.listeners.get("tauri://drag-drop")?.length ?? 0).toBe(count)
+  )
+}
+
+function drop(paths: string[], position = { x: 40, y: 40 }) {
+  act(() => emit("tauri://drag-drop", { paths, position }))
+}
+
+function badgesIn(target: Editor): string[] {
+  const uris: string[] = []
+  target.state.doc.descendants((node) => {
+    if (node.type.name === "reference" && node.attrs.refType === "file") {
+      uris.push(node.attrs.uri)
+    }
+  })
+  return uris
+}
+
+describe("an OS drop anywhere in the conversation area", () => {
+  let mounted: HTMLElement[] = []
+  const track = <T extends { zone: HTMLElement }>(z: T): T => {
+    mounted.push(z.zone)
+    return z
+  }
+
+  beforeEach(() => {
+    tauri.listeners.clear()
+    platform.os = "linux"
+    hit = () => null
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: (x: number, y: number) => hit(x, y),
+    })
+    Object.defineProperty(window, "devicePixelRatio", {
+      configurable: true,
+      value: 1,
+    })
+    vi.mocked(toast.error).mockClear()
+    remoteUpload.uploadLocalPathToRemote.mockClear()
+  })
+
+  afterEach(() => {
+    for (const el of mounted) el.remove()
+    mounted = []
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (document as any).elementFromPoint
+  })
+
+  it("lands in the composer when released over the transcript", async () => {
+    const { zone, transcript, host } = track(mountZone())
+    hit = () => transcript
+    const { result } = renderDropTarget({ host, zone })
+    await listening()
+    drop(["/work/shot.png", "/work/notes.md"])
+    await waitFor(() => expect(result.current.imageAttachments).toHaveLength(1))
+    expect(fileBadgeUris()).toEqual([buildFileUri("/work/notes.md")])
+  })
+
+  it("lands in a collapsed composer (hidden body, the collapsed bar on top)", async () => {
+    const { zone, collapsedBar, body, host } = track(mountZone())
+    body.style.visibility = "hidden"
+    hit = () => collapsedBar
+    const { result } = renderDropTarget({ host, zone })
+    await listening()
+    drop(["/work/shot.png"])
+    await waitFor(() => expect(result.current.imageAttachments).toHaveLength(1))
+  })
+
+  it("goes only to the conversation area under the point", async () => {
+    const a = track(mountZone())
+    const b = track(mountZone())
+    hit = () => b.transcript
+    const second = new Editor({ extensions: buildComposerExtensions() })
+    // 一个一个挂：两个输入框同时动态 import 被 mock 的模块时，vitest 给后到的
+    // 那个真模块。
+    const first = renderDropTarget({ host: a.host, zone: a.zone })
+    await listening(1)
+    const other = renderDropTarget({
+      host: b.host,
+      zone: b.zone,
+      target: second,
+    })
+    await listening(2)
+    drop(["/work/notes.md"])
+    await waitFor(() =>
+      expect(badgesIn(second)).toEqual([buildFileUri("/work/notes.md")])
+    )
+    expect(fileBadgeUris()).toEqual([])
+    expect(first.result.current.attachments).toEqual([])
+    expect(other.result.current.attachments).toEqual([])
+    second.destroy()
+  })
+
+  it("converts the point once on macOS: no second guess divided by the DPR", async () => {
+    platform.os = "macos"
+    Object.defineProperty(window, "devicePixelRatio", {
+      configurable: true,
+      value: 2,
+    })
+    const a = track(mountZone())
+    const b = track(mountZone())
+    // (800, 400) 原样是第二个对话区；除以 2 的 (400, 200) 是第一个。
+    hit = (x) => (x >= 600 ? b.transcript : a.transcript)
+    const second = new Editor({ extensions: buildComposerExtensions() })
+    renderDropTarget({ host: a.host, zone: a.zone })
+    await listening(1)
+    renderDropTarget({ host: b.host, zone: b.zone, target: second })
+    await listening(2)
+    drop(["/work/notes.md"], { x: 800, y: 400 })
+    await waitFor(() =>
+      expect(badgesIn(second)).toEqual([buildFileUri("/work/notes.md")])
+    )
+    expect(fileBadgeUris()).toEqual([])
+    second.destroy()
+  })
+
+  it("divides by the DPR elsewhere", async () => {
+    Object.defineProperty(window, "devicePixelRatio", {
+      configurable: true,
+      value: 2,
+    })
+    const { zone, transcript, host } = track(mountZone())
+    const seen: Array<[number, number]> = []
+    hit = (x, y) => {
+      seen.push([x, y])
+      return transcript
+    }
+    renderDropTarget({ host, zone })
+    await listening()
+    drop(["/work/notes.md"], { x: 800, y: 400 })
+    await waitFor(() =>
+      expect(fileBadgeUris()).toEqual([buildFileUri("/work/notes.md")])
+    )
+    expect(seen).toEqual([[400, 200]])
+  })
+
+  it("ignores a drop outside every conversation area (sidebar, file panel)", async () => {
+    const { zone, host } = track(mountZone())
+    const sidebar = document.createElement("nav")
+    document.body.append(sidebar)
+    hit = () => sidebar
+    const { result } = renderDropTarget({ host, zone })
+    await listening()
+    act(() => emit("tauri://drag-over", { position: { x: 40, y: 40 } }))
+    expect(result.current.isZoneDragActive).toBe(false)
+    drop(["/work/notes.md"])
+    await new Promise((r) => setTimeout(r, 20))
+    expect(fileBadgeUris()).toEqual([])
+    sidebar.remove()
+  })
+
+  it("ignores a drop on a dialog covering the conversation area", async () => {
+    const { zone, host } = track(mountZone())
+    const dialog = document.createElement("div")
+    dialog.setAttribute("role", "dialog")
+    document.body.append(dialog)
+    hit = () => dialog
+    renderDropTarget({ host, zone })
+    await listening()
+    drop(["/work/notes.md"])
+    await new Promise((r) => setTimeout(r, 20))
+    expect(fileBadgeUris()).toEqual([])
+    dialog.remove()
+  })
+
+  it("ignores a drop on a hidden conversation tab", async () => {
+    const tab = document.createElement("div")
+    tab.style.visibility = "hidden"
+    document.body.append(tab)
+    const z = mountZone()
+    tab.append(z.zone)
+    mounted.push(tab)
+    hit = () => z.transcript
+    renderDropTarget({ host: z.host, zone: z.zone })
+    await listening()
+    drop(["/work/notes.md"])
+    await new Promise((r) => setTimeout(r, 20))
+    expect(fileBadgeUris()).toEqual([])
+  })
+
+  it("reports the drag over the area until it leaves or drops", async () => {
+    const { zone, transcript, host } = track(mountZone())
+    const outside = document.createElement("nav")
+    document.body.append(outside)
+    hit = () => transcript
+    const { result } = renderDropTarget({ host, zone })
+    await listening()
+    act(() =>
+      emit("tauri://drag-enter", {
+        paths: ["/work/notes.md"],
+        position: { x: 40, y: 40 },
+      })
+    )
+    expect(result.current.isZoneDragActive).toBe(true)
+    // 区里经过时输入框自己那块小高亮不亮
+    expect(result.current.isDragActive).toBe(false)
+    hit = () => outside
+    act(() => emit("tauri://drag-over", { position: { x: 1, y: 1 } }))
+    expect(result.current.isZoneDragActive).toBe(false)
+    hit = () => transcript
+    act(() => emit("tauri://drag-over", { position: { x: 40, y: 40 } }))
+    expect(result.current.isZoneDragActive).toBe(true)
+    act(() => emit("tauri://drag-leave", {}))
+    expect(result.current.isZoneDragActive).toBe(false)
+    act(() => emit("tauri://drag-over", { position: { x: 40, y: 40 } }))
+    expect(result.current.isZoneDragActive).toBe(true)
+    drop(["/work/notes.md"])
+    expect(result.current.isZoneDragActive).toBe(false)
+    outside.remove()
+  })
+
+  it("explains instead of dropping silently while the composer is disabled", async () => {
+    const { zone, transcript, host } = track(mountZone())
+    hit = () => transcript
+    const { result } = renderDropTarget({ host, zone, disabled: true })
+    await listening()
+    act(() => emit("tauri://drag-over", { position: { x: 40, y: 40 } }))
+    expect(result.current.isZoneDragActive).toBe(false)
+    drop(["/work/notes.md", "/work/shot.png"])
+    await new Promise((r) => setTimeout(r, 20))
+    expect(toast.error).toHaveBeenCalledTimes(1)
+    expect(toast.error).toHaveBeenCalledWith("dropRejectedNotReady")
+    expect(result.current.attachments).toEqual([])
+    expect(fileBadgeUris()).toEqual([])
+  })
+
+  it("uploads what lands in the area of a remote-workspace window", async () => {
+    env.remoteId = 7
+    const { zone, transcript, host } = track(mountZone())
+    hit = () => transcript
+    renderDropTarget({ host, zone })
+    await listening()
+    drop(["/work/notes.md"])
+    await waitFor(() =>
+      expect(remoteUpload.uploadLocalPathToRemote).toHaveBeenCalledWith(
+        "/work/notes.md",
+        "tab-1"
+      )
+    )
+    await waitFor(() =>
+      expect(fileBadgeUris()).toEqual([
+        buildFileUri("/remote-uploads/notes.md"),
+      ])
+    )
+  })
+
+  describe("a composer outside any conversation area (to-do tasks)", () => {
+    it("takes only drops on its own frame", async () => {
+      const dialog = document.createElement("div")
+      const host = withRect(document.createElement("div"))
+      const elsewhere = document.createElement("div")
+      dialog.append(host, elsewhere)
+      document.body.append(dialog)
+      mounted.push(dialog)
+      hit = () => elsewhere
+      const { result } = renderDropTarget({ host })
+      await listening()
+      act(() => emit("tauri://drag-over", { position: { x: 40, y: 40 } }))
+      expect(result.current.isDragActive).toBe(false)
+      drop(["/work/notes.md"])
+      await new Promise((r) => setTimeout(r, 20))
+      expect(fileBadgeUris()).toEqual([])
+
+      hit = () => host
+      act(() => emit("tauri://drag-over", { position: { x: 40, y: 40 } }))
+      expect(result.current.isDragActive).toBe(true)
+      expect(result.current.isZoneDragActive).toBe(false)
+      drop(["/work/notes.md"])
+      await waitFor(() =>
+        expect(fileBadgeUris()).toEqual([buildFileUri("/work/notes.md")])
+      )
+    })
   })
 })

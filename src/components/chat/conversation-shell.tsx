@@ -35,6 +35,11 @@ import { QuestionDialog } from "@/components/chat/question-dialog"
 import { AskQuestionCard } from "@/components/chat/ask-question-card"
 import { PlanApprovalCard } from "@/components/chat/plan-approval-card"
 import { MarkdownImageProvider } from "@/components/ai-elements/markdown-local-image"
+import {
+  ComposerDropZoneOverlay,
+  ComposerDropZoneProvider,
+  useComposerDropZoneProvider,
+} from "@/components/chat/composer/composer-drop-zone"
 
 interface ConversationShellProps {
   hasMessages?: boolean
@@ -239,8 +244,11 @@ export function ConversationShell({
   const shellRef = useRef<HTMLDivElement>(null)
   const dockRef = useRef<HTMLDivElement>(null)
   useGlassDockInset(shellRef, dockRef)
+  // 整个对话区是里面输入框的系统拖放范围：拖到聊天记录上、收起的那一条上松手
+  // 都交给它（见 `useComposerAttachments`）。高亮画在这里，盖住整个对话区。
+  const dropZone = useComposerDropZoneProvider(shellRef)
 
-  return (
+  const shell = (
     // The gutter keeps the chat column (transcript and composer alike) off
     // the window edge, so its width handles stay grabbable at any width.
     <div
@@ -411,7 +419,14 @@ export function ConversationShell({
           </div>
         )}
       </div>
+      {dropZone.dragOver && <ComposerDropZoneOverlay />}
     </div>
+  )
+
+  return (
+    <ComposerDropZoneProvider value={dropZone.value}>
+      {shell}
+    </ComposerDropZoneProvider>
   )
 }
 

@@ -106,6 +106,9 @@ export interface ComposerAttachmentsOptions {
   /** Drop target for OS drags (Tauri reports window coordinates, not events on
    *  the element). Omit to leave OS drag-drop off for this composer. */
   containerRef?: RefObject<HTMLElement | null>
+  /** 所在对话区的根元素（`ComposerDropZone` 给的）。给了，系统拖放就按整个对话区
+   *  判断落点，拖动经过报在 `isZoneDragActive` 上；不给只认 `containerRef`。 */
+  dropZoneRef?: RefObject<HTMLElement | null>
   /** While true, drops/pastes/picks are ignored (the editor stays editable). */
   disabled?: boolean
   /** Decides whether images may be attached at all, and how they are encoded. */
@@ -132,6 +135,9 @@ export interface ComposerAttachments {
   hasUploadingImage: boolean
   /** An OS/browser drag is hovering the composer. */
   isDragActive: boolean
+  /** 系统拖动正经过这个输入框所在的对话区（只在给了 `dropZoneRef` 时会变 true）。
+   *  这时 `isDragActive` 不跟着变，高亮由对话区画。 */
+  isZoneDragActive: boolean
   /** A file intake (read, upload, picker) is still in flight. */
   intakePending: boolean
   /** Bumped whenever an intake starts or the last one settles — even when
@@ -211,6 +217,7 @@ export interface ComposerAttachments {
 export function useComposerAttachments({
   editorRef,
   containerRef,
+  dropZoneRef,
   disabled = false,
   promptCapabilities,
   attachmentTabId = null,
@@ -244,6 +251,8 @@ export function useComposerAttachments({
   const [attachments, setAttachments] = useState<InputAttachment[]>([])
   const embeddedPayloadsRef = useRef<Map<string, PromptInputBlock>>(new Map())
   const [isDragActive, setIsDragActive] = useState(false)
+  const [isZoneDragActive, setIsZoneDragActive] = useState(false)
+  const zoneDragActiveRef = useRef(false)
   const dragActiveRef = useRef(false)
   const lastDomDropAtRef = useRef(0)
   const disabledRef = useRef(disabled)
@@ -1155,9 +1164,26 @@ export function useComposerAttachments({
     ]
   )
 
+  // 对话区和提示文案在 Tauri 回调里当场读：不进下面 effect 的依赖，免得解绑重绑
+  // 的空当丢事件。
+  const dropZoneRefRef = useRef(dropZoneRef)
+  useEffect(() => {
+    dropZoneRefRef.current = dropZoneRef
+  }, [dropZoneRef])
+  const tAttachRef = useRef(tAttach)
+  useEffect(() => {
+    tAttachRef.current = tAttach
+  }, [tAttach])
+  const setZoneDragActiveIfChanged = useCallback((next: boolean) => {
+    if (zoneDragActiveRef.current === next) return
+    zoneDragActiveRef.current = next
+    setIsZoneDragActive(next)
+  }, [])
+
   // OS-level drag-drop. Tauri delivers these as window events (not DOM events on
   // the element), so every mounted composer hears every drop — `pointWithinElement`
-  // is what decides whose it was.
+  // is what decides whose it was. 在对话区里的输入框按整个对话区判断（落在聊天
+  // 记录上、收起的那一条上都算），不在对话区里的只认自己的外框。
   useEffect(() => {
     if (!containerRef) return
     let cancelled = false
@@ -1182,17 +1208,30 @@ export function useComposerAttachments({
       | { type: "leave" }
 
     const handlePayload = (payload: DragDropPayload) => {
-      const host = containerRef.current
+      const zone = dropZoneRefRef.current?.current ?? null
+      const host = zone ?? containerRef.current
       if (!host) return
+      // 对话区里的高亮由对话区画，输入框自己那块不亮。
+      const setActive = zone
+        ? setZoneDragActiveIfChanged
+        : setDragActiveIfChanged
       if (payload.type === "leave") {
         setDragActiveIfChanged(false)
+        setZoneDragActiveIfChanged(false)
         return
       }
       const inside = pointWithinElement(payload.position, host)
       if (payload.type === "drop") {
         setDragActiveIfChanged(false)
+        setZoneDragActiveIfChanged(false)
         if (Date.now() - lastDomDropAtRef.current < 250) return
-        if (!inside || disabledRef.current) return
+        if (!inside) return
+        if (disabledRef.current) {
+          // 落在自己的对话区里却收不了（画布卡片还没连上、选项还在加载）：
+          // 说一声，不再悄悄丢掉。
+          toast.error(tAttachRef.current("dropRejectedNotReady"))
+          return
+        }
         const settle = beginIntake()
         if (getActiveRemoteConnectionId() !== null) {
           // Remote workspace: local OS paths are unreachable from the
@@ -1217,7 +1256,7 @@ export function useComposerAttachments({
           .finally(settle)
         return
       }
-      setDragActiveIfChanged(inside && !disabledRef.current)
+      setActive(inside && !disabledRef.current)
     }
 
     const setup = async () => {
@@ -1286,7 +1325,13 @@ export function useComposerAttachments({
       cancelled = true
       cleanupListeners()
     }
-  }, [beginIntake, containerRef, logLabel, setDragActiveIfChanged])
+  }, [
+    beginIntake,
+    containerRef,
+    logLabel,
+    setDragActiveIfChanged,
+    setZoneDragActiveIfChanged,
+  ])
 
   const handlePickFiles = useCallback(async () => {
     if (disabled) return
@@ -1447,6 +1492,7 @@ export function useComposerAttachments({
     imageAttachments,
     hasUploadingImage,
     isDragActive,
+    isZoneDragActive,
     intakePending: intake.pending,
     intakeRevision: intake.revision,
     beginIntake,

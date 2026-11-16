@@ -3678,6 +3678,7 @@
         "liveFeedback": "实时反馈",
         "liveFeedbackDisabledHint": "智能体工作时可发送",
         "dropFilesToAttach": "拖拽文件到此处附加",
+        "dropRejectedNotReady": "这个对话现在还收不了文件，等连上以后再拖一次。",
         "loadingSettings": "正在加载设置...",
         "loadingMode": "正在加载模式...",
         "modeLabel": "模式",

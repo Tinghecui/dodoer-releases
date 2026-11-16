@@ -140,6 +140,7 @@ import { useComposerMentionLabels } from "@/components/chat/composer/use-compose
 import { ComposerAddMenu } from "@/components/chat/composer/composer-add-menu"
 import { ComposerImageThumbnails } from "@/components/chat/composer/composer-image-thumbnails"
 import { useComposerAttachments } from "@/components/chat/composer/use-composer-attachments"
+import { useComposerDropZone } from "@/components/chat/composer/composer-drop-zone"
 import { useComposerShortcuts } from "@/components/chat/composer/use-composer-shortcuts"
 import {
   GLASS_CARD_CLASS,
@@ -502,6 +503,10 @@ export function MessageInput({
     )
   }, [composerId, effectiveDraftStorageKey])
 
+  // 所在的对话区（`ConversationShell` 给的）：系统拖放按整个对话区判断落点，
+  // 经过时报上去，由对话区画高亮。不在对话区里时只认自己的外框。
+  const dropZone = useComposerDropZone()
+
   // Attachments (images → thumbnail strip, files → inline badges) and the "+"
   // menu's insertable shortcuts. Both are shared with the to-do task composers,
   // so paste/drop/pick and the skill/quick-message entries behave identically
@@ -509,6 +514,7 @@ export function MessageInput({
   const attach = useComposerAttachments({
     editorRef,
     containerRef,
+    dropZoneRef: dropZone?.zoneRef,
     disabled,
     promptCapabilities,
     attachmentTabId,
@@ -1890,6 +1896,13 @@ export function MessageInput({
 
   const hasImageAttachments = imageAttachments.length > 0
   const showDragActive = attach.isDragActive && !disabled
+  const zoneDragOver = attach.isZoneDragActive && !disabled
+  const reportZoneDragOver = dropZone?.reportDragOver
+  useEffect(() => {
+    if (!reportZoneDragOver) return
+    reportZoneDragOver(composerId, zoneDragOver)
+    return () => reportZoneDragOver(composerId, false)
+  }, [composerId, reportZoneDragOver, zoneDragOver])
 
   // The box's floor and the editable area's are two halves of one number — see
   // composer-sizing.ts for the arithmetic and for why stating both is what

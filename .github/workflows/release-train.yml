@@ -93,7 +93,8 @@ jobs:
           # 占号：两个 tag 现在就建在这个提交上，server 包、桌面包编完把 Release 挂到已有的 tag 上（--target 不起作用，不再建 ref）。
           # GITHUB_TOKEN 不能把 tag 建在 .github/workflows 跟 main 不一样的提交上（403）。以前编完 45 分钟才建，编的时候 main 上
           # 合进改 workflow 的提交，server 包就发不出去（2026-11-15 v0.6.9、v0.6.10）。排队的那一班开始时它的提交就是 main 最新的
-          # （更新的推送会顶掉排队的），现在建基本都成。GITHUB_TOKEN 推的 tag 不会再触发 cowork-release、desktop-macos
+          # （更新的推送会顶掉排队的），现在建基本都成。GITHUB_TOKEN 推的 tag 不会再触发 cowork-release、desktop-macos。
+          # 编完挂 Release 时 GitHub 也按 --target 查同样的权限（tag 已经在也一样），所以那时 --target 给 main（2026-11-16 v0.6.35）
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

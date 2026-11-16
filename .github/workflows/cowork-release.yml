@@ -258,13 +258,19 @@ jobs:
             if [[ -n "$NOTES" ]]; then body=$(printf '%s\n\n%s' "$body" "$NOTES"); fi
             # release-train.yml 按这个标记删老的自动版本
             if [[ "$TRAIN" == true ]]; then body=$(printf '%s\n\n%s' "$body" "<!-- release-train -->"); fi
-            # 自动发版的 tag release-train 的 plan 一开始就建好了，--target 不起作用。还要建的只有重跑：那个 tag 没发出来、已经删了
-            if ! gh release create "$VERSION" --latest=false "${pre[@]}" --target "$(git rev-parse HEAD)" --title "$VERSION" --notes "$body" \
+            # 自动发版的 tag release-train 的 plan 一开始就建好了，Release 挂到它上面，--target 不起作用；但 GitHub 照样按 --target
+            # 查权限：编的时候 main 上合进了改 .github/workflows 的提交，--target 给编的这个提交就 403（2026-11-16 v0.6.35 没发出来，
+            # tag 已经在也一样）。所以 tag 已经指着这个提交的时候 --target 给 main，tag 还是在这个提交上（同天 v1.6.35 就这样发的）。
+            # 还要新建 tag 的只有重跑（占的 tag 没发出来、已经删了）和手动 tag，--target 还是编的这个提交
+            head=$(git rev-parse HEAD) target=$(git rev-parse HEAD)
+            tagged=$(git ls-remote --tags origin | awk -v r="refs/tags/$VERSION" '$2 == r { p = $1 } $2 == r "^{}" { d = $1 } END { print (d ? d : p) }')
+            if [[ "$tagged" == "$head" ]]; then target=$(git ls-remote origin refs/heads/main | cut -f1); fi
+            if ! gh release create "$VERSION" --latest=false "${pre[@]}" --target "$target" --title "$VERSION" --notes "$body" \
                    2>"$RUNNER_TEMP/create.err"; then
               cat "$RUNNER_TEMP/create.err" >&2
               # 不改建在 main 上（桌面包那边会）：release-train 按这个 tag 算「上次发到哪」，建在 main 上就把没编进这个包的提交也算成发过了
               if grep -q 'HTTP 403' "$RUNNER_TEMP/create.err"; then
-                echo "::error::tag $VERSION 建不到编的这个提交（$(git rev-parse HEAD)）上：GITHUB_TOKEN 不能把 tag 建在 .github/workflows 跟 main 不一样的提交上（自动发版的 tag 本来一开始就占好了，重跑时那个 tag 已经删了才会走到这里）。这一班的 server 包没发，下一次合并到 product 会用同一个版本号连这些改动一起发"
+                echo "::error::tag $VERSION 建不到编的这个提交（$(git rev-parse HEAD)）上：GITHUB_TOKEN 不能把 tag 建在 .github/workflows 跟 main 不一样的提交上（自动发版的 tag 本来一开始就占好了，Release 挂上去用 main 查权限；重跑时那个 tag 已经删了才会走到这里）。这一班的 server 包没发，下一次合并到 product 会用同一个版本号连这些改动一起发"
               fi
               exit 1
             fi

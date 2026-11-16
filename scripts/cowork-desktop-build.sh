@@ -111,6 +111,15 @@ if [[ -n "$target" ]]; then
   # beforeBuildCommand 里的 prepare-sidecars 按它编 sidecar，不然编成本机架构
   export TAURI_TARGET_TRIPLE="$target"
 fi
+# 签名排队：黑苹果上几个 runner 同时签名会报 errSecInternalComponent（2026-11-16 Intel 包撞上两班 arm64）。tauri 按 PATH
+# 找 codesign（tauri-macos-sign 的 Command::new("codesign")），前面垫一个拿锁再调 /usr/bin/codesign 的，一次只签一个。
+# 锁和改钥匙串搜索列表的是同一个（desktop-macos.yml），签名时别的 job 也改不了列表。每次几秒，排队几乎不耽误
+if [[ "$identity" != - ]] && command -v lockf >/dev/null; then
+  signlock=$(mktemp -d)
+  printf '#!/bin/bash\nexec lockf -k -t 600 /tmp/dodoer-keychain-list.lock /usr/bin/codesign "$@"\n' > "$signlock/codesign"
+  chmod +x "$signlock/codesign"
+  export PATH="$signlock:$PATH"
+fi
 pnpm tauri build --bundles app ${target_args[@]+"${target_args[@]}"} "${configs[@]}" \
   --config "{\"version\":\"$VERSION\",\"bundle\":{\"macOS\":{\"signingIdentity\":\"$identity\"}}}"
 test -d "$app" || fail "没编出 $app"

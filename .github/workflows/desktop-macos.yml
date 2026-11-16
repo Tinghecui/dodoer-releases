@@ -699,7 +699,13 @@ jobs:
             # --latest：本仓库也放 server 包的 Release，Latest 要明确给桌面版（app 从 releases/latest/download/ 查更新）
             create() { gh release create "$rel" -R "$RELEASE_REPO" --target "$1" --latest \
                          --title "dodoer ${VERSION}（${TAG}）" --notes "$body" "${files[@]}"; }
-            if ! create "$target" 2>"$RUNNER_TEMP/create.err"; then
+            # 自动发版的 tag release-train 的 plan 一开始就建在编的这个提交上，Release 挂到它上面，--target 不起作用；但 GitHub
+            # 照样按 --target 查权限：编的时候 main 上合进了改 .github/workflows 的提交就 403。tag 已经指着这个提交，--target 直接给 main
+            # （tag 不动、还在这个提交上），不用走下面 403 的路（2026-11-16 v1.6.35 就是走那条路发的）
+            tagged=$(git ls-remote --tags origin | awk -v r="refs/tags/$rel" '$2 == r { p = $1 } $2 == r "^{}" { d = $1 } END { print (d ? d : p) }')
+            api_target="$target"
+            if [[ "$tagged" == "$target" ]]; then api_target=$(git ls-remote origin refs/heads/main | cut -f1); fi
+            if ! create "$api_target" 2>"$RUNNER_TEMP/create.err"; then
               cat "$RUNNER_TEMP/create.err" >&2
               grep -q 'HTTP 403' "$RUNNER_TEMP/create.err" || exit 1
               # 403：编的时候 main 上又合了改 .github/workflows 的提交，GITHUB_TOKEN 不能把 tag 建在 workflow 跟 main 不一样的提交上。

@@ -73,6 +73,7 @@
 
   <h2>排队 <span id="queue-n" class="sub"></span></h2>
   <table><thead><tr><th>工作流</th><th>job</th></tr></thead><tbody id="queue"></tbody></table>
+  <div class="sub" style="margin-top:6px">release-train 一次只发一班，排着的只留最新一个：前一班编的时候合进来的几个 PR 都攒在下一班里，不会一个 PR 排一个</div>
 
   <h2>最近 7 天在线 <span class="sub">（北京时间，每格 10 分钟）</span></h2>
   <div class="week">
@@ -146,6 +147,10 @@ async function loadLive() {
   try {
     const runs = [];
     for (const s of ["in_progress", "queued"]) runs.push(...(await api(`/actions/runs?status=${s}&per_page=20`)).workflow_runs);
+    // 整班在等前一班的 run（concurrency，status=pending）还没建 job：release-train 排着的只留最新一个，合进来的 PR 攒在里面
+    const pending = (await api(`/actions/runs?status=pending&per_page=20`)).workflow_runs
+      .filter((r) => /\/(desktop-macos|desktop-macos-intel|release-train)\.yml$/.test(r.path || ""))
+      .map((r) => ({ wf: r.name, run: r.id, job: "整班在等前一班跑完", status: "pending", title: (r.display_title || "").slice(0, 80), url: r.html_url }));
     const jobs = [];
     // 只看会用黑苹果的工作流，省 API 次数
     const uses = /\/(desktop-macos|desktop-macos-intel|release-train|hackintosh-heartbeat)\.yml$/;
@@ -155,7 +160,7 @@ async function loadLive() {
           jobs.push({ wf: run.name, run: run.id, job: j.name, status: j.status, runner: j.runner_name, started: j.started_at, url: j.html_url });
       }
     }
-    live = { ms: Date.now(), running: jobs.filter((j) => j.status === "in_progress"), queued: jobs.filter((j) => j.status !== "in_progress") };
+    live = { ms: Date.now(), running: jobs.filter((j) => j.status === "in_progress"), queued: [...jobs.filter((j) => j.status !== "in_progress"), ...pending] };
     liveErr = "";
   } catch (e) { liveErr = e.message; }
 }
@@ -206,7 +211,8 @@ function render() {
   const queued = (snap && snap.queued) || [];
   $("queue-n").textContent = `${queued.length} 个在等`;
   $("queue").innerHTML = queued.length
-    ? queued.map((j) => `<tr><td>${esc(j.wf)}</td><td><a href="${esc(j.url || `https://github.com/${REPO}/actions/runs/${j.run}`)}">${esc(j.job)}</a></td></tr>`).join("")
+    ? queued.map((j) => `<tr><td>${esc(j.wf)}</td><td><a href="${esc(j.url || `https://github.com/${REPO}/actions/runs/${j.run}`)}">${esc(j.job)}</a>` +
+        (j.title ? `<div class="sub">${esc(j.title)}</div>` : "") + `</td></tr>`).join("")
     : `<tr><td colspan="2" class="idle">没有排队的</td></tr>`;
 
   // 7 天在线：按北京时间的日子，每格 10 分钟。2 = 采到了负载，1 = 没采到但 queue 快照里有 job 在黑苹果上跑，0 = 都没有

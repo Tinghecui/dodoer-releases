@@ -302,6 +302,19 @@ describe("DelegationSettingsSection", () => {
     expect(enableSwitch).toHaveAttribute("data-state", "unchecked")
     expect(depthInput).toBeDisabled()
   })
+
+  it("locks the form when the settings could not be read", async () => {
+    // The form would show defaults, and Save writes the whole record.
+    mockGetDelegationSettings.mockRejectedValue(new Error("database is locked"))
+
+    renderWithIntl()
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "database is locked"
+    )
+    expect(screen.getByLabelText("Enable delegation")).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+  })
 })
 
 describe("DelegationSettingsSection — tabs and the saved record", () => {

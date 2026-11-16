@@ -121,6 +121,9 @@ export function DelegationSettingsSection() {
    * land after a newer broadcast (the load read "off", another window switched
    * it on and broadcast, then the late reply would switch it back). */
   const [persisted, setPersisted] = useState<DelegationSettings | null>(null)
+  // A failed load leaves the form at its defaults; saving it would write
+  // them over every stored value, so nothing here can be edited or saved.
+  const locked = loading || loadError !== null
   const [tab, setTab] = useState<DelegationTab>("general")
 
   useEffect(() => {
@@ -326,7 +329,7 @@ export function DelegationSettingsSection() {
                   id="delegation-enabled"
                   checked={enabled}
                   onCheckedChange={setEnabled}
-                  disabled={loading}
+                  disabled={locked}
                 />
               }
             />
@@ -356,7 +359,7 @@ export function DelegationSettingsSection() {
                   max={DEPTH_MAX}
                   value={depth}
                   onChange={(e) => setDepth(Number(e.target.value))}
-                  disabled={loading || !enabled}
+                  disabled={locked || !enabled}
                   className="h-8 w-24 bg-background text-xs"
                 />
               }
@@ -381,7 +384,7 @@ export function DelegationSettingsSection() {
                     // unlimited.
                     setCacheMb(raw === "" ? NaN : Number(raw))
                   }}
-                  disabled={loading || !enabled}
+                  disabled={locked || !enabled}
                   className="h-8 w-24 bg-background text-xs"
                 />
               }
@@ -393,7 +396,7 @@ export function DelegationSettingsSection() {
           <DelegationAgentDefaultsPanel
             value={agentDefaults}
             onChange={setAgentDefaults}
-            disabled={loading || !enabled}
+            disabled={locked || !enabled}
             delegationEnabled={loading ? null : enabled}
             onShowGeneral={() => setTab("general")}
           />
@@ -415,7 +418,7 @@ export function DelegationSettingsSection() {
         <SettingsSaveBar
           onSave={() => void save()}
           saving={saving}
-          disabled={loading}
+          disabled={locked}
           label={t("save")}
           savingLabel={t("saving")}
         />

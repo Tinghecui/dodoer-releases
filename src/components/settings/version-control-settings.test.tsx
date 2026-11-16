@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -29,12 +29,18 @@ vi.mock("./worktree-location-settings", () => ({
 
 import { VersionControlSettings } from "./version-control-settings"
 import enMessages from "@/i18n/messages/en.json"
-import { detectGit, getGitSettings, getGitHubAccounts } from "@/lib/api"
+import {
+  detectGit,
+  getGitSettings,
+  getGitHubAccounts,
+  updateGitHubAccounts,
+} from "@/lib/api"
 import type { GitHubAccount } from "@/lib/types"
 
 const mockDetectGit = vi.mocked(detectGit)
 const mockGetGitSettings = vi.mocked(getGitSettings)
 const mockGetGitHubAccounts = vi.mocked(getGitHubAccounts)
+const mockUpdateGitHubAccounts = vi.mocked(updateGitHubAccounts)
 
 function account(overrides: Partial<GitHubAccount> = {}): GitHubAccount {
   return {
@@ -198,5 +204,49 @@ describe("VersionControlSettings worktree section", () => {
     await waitFor(() =>
       expect(screen.getByTestId("worktree-location")).toBeInTheDocument()
     )
+  })
+})
+
+describe("VersionControlSettings account changes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDetectGit.mockResolvedValue({
+      installed: true,
+      version: "git version 2.39.0",
+      path: "/usr/bin/git",
+    })
+    mockGetGitSettings.mockResolvedValue({ custom_path: null })
+  })
+
+  // An account the credential prompt (or another window) added after the
+  // page loaded is not dropped by a change made on the page.
+  it("keeps an account added since the page loaded", async () => {
+    const first = account({ id: "acc-1", username: "feitao" })
+    const added = account({ id: "acc-2", username: "later" })
+    mockGetGitHubAccounts.mockResolvedValueOnce({ accounts: [first] })
+    mockGetGitHubAccounts.mockResolvedValue({ accounts: [first, added] })
+    mockUpdateGitHubAccounts.mockImplementation(async (s) => s)
+
+    renderWithIntl()
+    const button = await screen.findByText("Set Default")
+    fireEvent.click(button)
+
+    await waitFor(() => expect(mockUpdateGitHubAccounts).toHaveBeenCalled())
+    const sent = mockUpdateGitHubAccounts.mock.calls[0][0]
+    expect(sent.accounts.map((a) => a.id)).toEqual(["acc-1", "acc-2"])
+  })
+
+  // A list that cannot be read is not written over with the page's copy.
+  it("does not save over a list it could not read", async () => {
+    mockGetGitHubAccounts.mockResolvedValueOnce({
+      accounts: [account({ id: "acc-1" })],
+    })
+    mockGetGitHubAccounts.mockRejectedValue(new Error("database is locked"))
+
+    renderWithIntl()
+    fireEvent.click(await screen.findByText("Set Default"))
+
+    await waitFor(() => expect(mockGetGitHubAccounts).toHaveBeenCalledTimes(2))
+    expect(mockUpdateGitHubAccounts).not.toHaveBeenCalled()
   })
 })

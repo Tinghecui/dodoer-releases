@@ -132,6 +132,12 @@ const TOOL_ROWS = [
 const FIELD_OF_SLUG: Record<string, keyof AgentToolValues | undefined> =
   Object.fromEntries(TOOL_ROWS.map((row) => [row.slug, row.key]))
 
+/** Drop `keys` from the switches whose stored value is unknown. */
+const known =
+  (keys: Array<keyof AgentToolValues>) =>
+  (prev: ReadonlySet<keyof AgentToolValues>) =>
+    new Set([...prev].filter((key) => !keys.includes(key)))
+
 export function AgentToolsSettingsSection() {
   const t = useTranslations("AgentToolsSettings")
   const tools = useTranslations(AGENT_TOOLS_NAMESPACE)
@@ -142,6 +148,13 @@ export function AgentToolsSettingsSection() {
   // successful write. The diff against `values` is what Save acts on.
   const [baseline, setBaseline] = useState<AgentToolValues>(DEFAULTS)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // Switches whose group failed to load and no broadcast has told us since:
+  // they show a default, not what is stored, and their group is written whole
+  // — so they stay untouchable rather than be saved over the other switch. A
+  // group of one switch writes only what the user moves, and stays usable.
+  const [unread, setUnread] = useState<ReadonlySet<keyof AgentToolValues>>(
+    () => new Set()
+  )
   // Read through refs so the subscription below can compare `values` against
   // `baseline` without re-subscribing on every state change.
   const valuesRef = useRef(values)
@@ -176,26 +189,41 @@ export function AgentToolsSettingsSection() {
       // each group lands on its own and only the failures are reported.
       const next = { ...DEFAULTS }
       const failures: string[] = []
+      const failed: Array<keyof AgentToolValues> = []
       if (feedback.status === "fulfilled")
         next.feedback = feedback.value.enabled
-      else failures.push(toErrorMessage(feedback.reason))
+      else {
+        failures.push(toErrorMessage(feedback.reason))
+      }
       if (question.status === "fulfilled")
         next.question = question.value.enabled
-      else failures.push(toErrorMessage(question.reason))
+      else {
+        failures.push(toErrorMessage(question.reason))
+      }
       if (sessionInfo.status === "fulfilled")
         next.sessionInfo = sessionInfo.value.enabled
-      else failures.push(toErrorMessage(sessionInfo.reason))
+      else {
+        failures.push(toErrorMessage(sessionInfo.reason))
+      }
       if (browserTools.status === "fulfilled") {
         next.browserTools = browserTools.value.enabled
         next.browserEval = browserTools.value.eval
-      } else failures.push(toErrorMessage(browserTools.reason))
+      } else {
+        failures.push(toErrorMessage(browserTools.reason))
+        failed.push("browserTools", "browserEval")
+      }
       if (computer.status === "fulfilled")
         next.computer = computer.value.enabled
-      else failures.push(toErrorMessage(computer.reason))
+      else {
+        failures.push(toErrorMessage(computer.reason))
+      }
       if (chat.status === "fulfilled") {
         next.automations = chat.value.automations_enabled
         next.workTasks = chat.value.work_tasks_enabled
-      } else failures.push(toErrorMessage(chat.reason))
+      } else {
+        failures.push(toErrorMessage(chat.reason))
+        failed.push("automations", "workTasks")
+      }
 
       const moved = remoteGenRef.current
       // `prev` already holds the broadcast's value for the fields a broadcast
@@ -214,6 +242,17 @@ export function AgentToolsSettingsSection() {
       })
       setValues(keepBroadcast)
       setBaseline(keepBroadcast)
+      // A broadcast that landed meanwhile told us what its group holds.
+      const told: Array<keyof AgentToolValues> = [
+        ...(moved.chat !== gen.chat
+          ? (["automations", "workTasks"] as const)
+          : []),
+        ...(moved.browser !== gen.browser
+          ? (["browserTools", "browserEval"] as const)
+          : []),
+        ...(moved.computer !== gen.computer ? (["computer"] as const) : []),
+      ]
+      setUnread(new Set(failed.filter((key) => !told.includes(key))))
       setLoadError(failures.length > 0 ? failures.join("; ") : null)
       setLoading(false)
     })()
@@ -241,6 +280,7 @@ export function AgentToolsSettingsSection() {
       CHAT_AUTHORING_SETTINGS_CHANGED_EVENT,
       (remote) => {
         remoteGenRef.current.chat += 1
+        setUnread(known(["automations", "workTasks"]))
         const incoming = {
           automations: remote.automations_enabled,
           workTasks: remote.work_tasks_enabled,
@@ -286,6 +326,7 @@ export function AgentToolsSettingsSection() {
       BROWSER_TOOLS_SETTINGS_CHANGED_EVENT,
       (remote) => {
         remoteGenRef.current.browser += 1
+        setUnread(known(["browserTools", "browserEval"]))
         const incoming = {
           browserTools: remote.enabled,
           browserEval: remote.eval,
@@ -327,6 +368,7 @@ export function AgentToolsSettingsSection() {
       COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
       (remote) => {
         remoteGenRef.current.computer += 1
+        setUnread(known(["computer"]))
         const current = valuesRef.current
         const base = baselineRef.current
         setValues((prev) =>
@@ -491,7 +533,9 @@ export function AgentToolsSettingsSection() {
                   // Not while a save is on its way: its answer replaces the
                   // switches it wrote, and a flip made meanwhile would be
                   // overwritten without a trace.
-                  disabled={loading || saving || !available}
+                  disabled={
+                    loading || saving || !available || unread.has(row.key)
+                  }
                 />
               }
             />

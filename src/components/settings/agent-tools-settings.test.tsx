@@ -525,6 +525,34 @@ describe("AgentToolsSettingsSection", () => {
     expect(mockSetQuestion).not.toHaveBeenCalled()
   })
 
+  it("locks a two-switch group whose load failed, so its default is never saved", async () => {
+    primeBackend({ feedback: true })
+    mockGetChat.mockRejectedValue(new Error("database is locked"))
+
+    renderWithIntl()
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "database is locked"
+    )
+    // Turning one on would save the other, unread, as off.
+    expect(screen.getByLabelText(LABELS.automations)).toBeDisabled()
+    expect(screen.getByLabelText(LABELS.workTasks)).toBeDisabled()
+    expect(screen.getByLabelText(LABELS.feedback)).toBeEnabled()
+  })
+
+  it("leaves a one-switch group whose load failed usable", async () => {
+    primeBackend({ feedback: true })
+    mockGetQuestion.mockRejectedValue(new Error("database is locked"))
+
+    renderWithIntl()
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "database is locked"
+    )
+    // Saving it writes that one switch, nothing it has not read.
+    expect(screen.getByLabelText(LABELS.question)).toBeEnabled()
+  })
+
   /** The computer switch rides its own narrow endpoint: saving it moves the
    * switch alone, never the grant timeout or blocklist stored beside it. */
   it("saves the computer switch through the switch-only writer", async () => {

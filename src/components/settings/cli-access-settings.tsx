@@ -78,7 +78,8 @@ export function CliAccessSettings() {
         />
       }
     >
-      {status.enabled && status.error && (
+      {/* Shown on or off: with the setting unread, "off" is not the user's. */}
+      {status.error && (
         <p className="text-2xs text-amber-500">
           {t("cliAccessUnavailable", { message: status.error })}
         </p>
@@ -95,7 +96,7 @@ export function CliAccessSettings() {
           </p>
         </div>
       )}
-      {!status.enabled && (
+      {!status.enabled && !status.error && (
         <p className="text-2xs text-muted-foreground">{t("cliAccessOff")}</p>
       )}
       {isDesktop() && !isRemoteDesktopMode() && <CliToolInstall />}

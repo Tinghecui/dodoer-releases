@@ -336,31 +336,45 @@ export function VersionControlSettings() {
 
   // --- Shared account handlers ---
 
+  // Every change is made to the list as stored now, not as this page last
+  // read it: the credential prompt or another window may have added an
+  // account since, and a page whose load failed holds an empty list. A list
+  // that cannot be read fails the change instead of being written over.
+  const saveAccounts = useCallback(
+    async (change: (list: GitHubAccount[]) => GitHubAccount[]) => {
+      const current = await getGitHubAccounts()
+      const saved = await updateGitHubAccounts({
+        accounts: change(current.accounts),
+      })
+      setAccounts(saved)
+    },
+    []
+  )
+
   const handleAccountAdded = useCallback(
     async (account: GitHubAccount) => {
       // Replace in place when the id is already known: that is a token
       // rotation, and appending would leave two rows claiming one identity.
-      const known = accounts.accounts.some((a) => a.id === account.id)
-      const others = accounts.accounts.map((a) =>
-        account.is_default && a.id !== account.id
-          ? { ...a, is_default: false }
-          : a
-      )
-      const updated: GitHubAccountsSettings = {
-        accounts: known
+      const add = (list: GitHubAccount[]) => {
+        const known = list.some((a) => a.id === account.id)
+        const others = list.map((a) =>
+          account.is_default && a.id !== account.id
+            ? { ...a, is_default: false }
+            : a
+        )
+        return known
           ? others.map((a) => (a.id === account.id ? account : a))
-          : [...others, account],
+          : [...others, account]
       }
       try {
-        const saved = await updateGitHubAccounts(updated)
-        setAccounts(saved)
+        await saveAccounts(add)
         toast.success(t("addSuccess", { username: account.username }))
       } catch (err) {
         const message = toErrorMessage(err)
         toast.error(t("addFailed", { message }))
       }
     },
-    [accounts, t]
+    [saveAccounts, t]
   )
 
   const handleTestConnection = useCallback(
@@ -401,33 +415,24 @@ export function VersionControlSettings() {
 
   const handleSetDefault = useCallback(
     async (accountId: string) => {
-      const updated: GitHubAccountsSettings = {
-        accounts: accounts.accounts.map((a) => ({
-          ...a,
-          is_default: a.id === accountId,
-        })),
-      }
       try {
-        const saved = await updateGitHubAccounts(updated)
-        setAccounts(saved)
+        await saveAccounts((list) =>
+          list.map((a) => ({ ...a, is_default: a.id === accountId }))
+        )
         toast.success(t("defaultSet"))
       } catch (err) {
         const message = toErrorMessage(err)
         toast.error(message)
       }
     },
-    [accounts, t]
+    [saveAccounts, t]
   )
 
   const handleRemoveAccount = useCallback(async () => {
     if (!removeTarget) return
-    const updated: GitHubAccountsSettings = {
-      accounts: accounts.accounts.filter((a) => a.id !== removeTarget.id),
-    }
     try {
       await deleteAccountToken(removeTarget.id)
-      const saved = await updateGitHubAccounts(updated)
-      setAccounts(saved)
+      await saveAccounts((list) => list.filter((a) => a.id !== removeTarget.id))
       toast.success(t("removeSuccess"))
     } catch (err) {
       const message = toErrorMessage(err)
@@ -435,7 +440,7 @@ export function VersionControlSettings() {
     } finally {
       setRemoveTarget(null)
     }
-  }, [accounts, removeTarget, t])
+  }, [removeTarget, saveAccounts, t])
 
   // --- Render ---
 

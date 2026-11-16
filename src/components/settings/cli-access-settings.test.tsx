@@ -89,6 +89,19 @@ describe("CliAccessSettings", () => {
     ).toBeInTheDocument()
   })
 
+  it("says the setting could not be read rather than that it is off", async () => {
+    getStatus.mockResolvedValue({
+      enabled: false,
+      running: false,
+      endpointFile: FILE,
+      error:
+        "could not read the command-line access setting: database is locked",
+    })
+    renderSection()
+    expect(await screen.findByText(/database is locked/)).toBeInTheDocument()
+    expect(screen.queryByText(/cannot reach dodoer/)).not.toBeInTheDocument()
+  })
+
   it("keeps the switch where it was when saving fails", async () => {
     const user = userEvent.setup()
     setEnabled.mockRejectedValue(new Error("db locked"))

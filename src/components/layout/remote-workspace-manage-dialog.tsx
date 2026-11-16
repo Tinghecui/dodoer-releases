@@ -19,6 +19,7 @@ import {
 } from "lucide-react"
 import { Reorder, useDragControls } from "motion/react"
 import { useTranslations } from "next-intl"
+import { toast } from "sonner"
 import {
   createRemoteWorkspaceConnection,
   deleteRemoteWorkspaceConnection,
@@ -385,12 +386,15 @@ export function RemoteWorkspaceManageDialog({
         headers: saved.headers ?? [],
       })
       onChanged()
+      // 存上了就收起窗口，并提示一句，让用户知道保存成功
+      toast.success(t("saved"))
+      onOpenChange(false)
     } catch (err) {
       setFormError(`${t("saveFailed")}: ${toErrorMessage(err)}`)
     } finally {
       setSaving(false)
     }
-  }, [draft, onChanged, t])
+  }, [draft, onChanged, onOpenChange, t])
 
   const handleDelete = useCallback(async () => {
     if (deleteTargetId === null) return

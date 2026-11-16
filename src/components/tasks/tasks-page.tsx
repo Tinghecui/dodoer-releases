@@ -12,7 +12,17 @@ import { createPortal } from "react-dom"
 import { Reorder, type PanInfo } from "motion/react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { Funnel, Play, Plus, ListTodo, Search, Tag, X } from "lucide-react"
+import {
+  CircleAlert,
+  Funnel,
+  Play,
+  Plus,
+  ListTodo,
+  RotateCw,
+  Search,
+  Tag,
+  X,
+} from "lucide-react"
 import { useTasksView } from "@/contexts/tasks-view-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { workTaskArchive, workTaskReorder, workTaskStart } from "@/lib/api"
@@ -111,7 +121,7 @@ export function TasksPageTitle() {
  */
 export function TasksPage() {
   const t = useTranslations("Tasks")
-  const { tasks, loading, refetch, viewMode } = useTasksView()
+  const { tasks, loading, error, refetch, viewMode } = useTasksView()
   const folders = useAppWorkspaceStore((s) => s.folders)
   const projectFolders = useMemo(
     () => folders.filter((f) => f.parent_id == null && f.kind === "regular"),
@@ -655,6 +665,33 @@ export function TasksPage() {
       {/* Board / list */}
       {showSkeleton ? (
         <TasksSkeleton mode={viewMode} />
+      ) : error != null && !hasAnyTask ? (
+        // 列表没加载出来：说清楚，给「重试」，别让人以为任务没了（#339）。
+        <div
+          role="alert"
+          className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center"
+        >
+          <CircleAlert
+            className="size-10 text-destructive/70"
+            aria-hidden="true"
+          />
+          <div className="flex flex-col gap-1">
+            <p className="text-sm font-medium">{t("loadFailed")}</p>
+            <p className="max-w-sm break-words text-xs text-muted-foreground">
+              {error}
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            onClick={() => void refetch()}
+          >
+            <RotateCw className="size-3.5" aria-hidden="true" />
+            {t("retry")}
+          </Button>
+        </div>
       ) : !hasAnyTask ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
           <ListTodo

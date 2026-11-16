@@ -92,6 +92,20 @@ function Probe() {
   )
 }
 
+function ErrorProbe() {
+  const { tasks, loading, error, refetch } = useTasksView()
+  return (
+    <div>
+      <span data-testid="count">{tasks.length}</span>
+      <span data-testid="loading">{String(loading)}</span>
+      <span data-testid="error">{error ?? ""}</span>
+      <button type="button" onClick={() => void refetch()}>
+        retry
+      </button>
+    </div>
+  )
+}
+
 beforeEach(() => {
   listMock.mockReset()
   notifyMock.mockReset()
@@ -350,5 +364,36 @@ describe("TasksViewProvider", () => {
       "work_task",
       expect.objectContaining({ body: expect.stringContaining("notifyReview") })
     )
+  })
+  it("reports a failed first fetch instead of passing it off as empty (#339)", async () => {
+    listMock.mockRejectedValueOnce(new Error("HTTP 500"))
+    render(
+      <TasksViewProvider>
+        <ErrorProbe />
+      </TasksViewProvider>
+    )
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false")
+    )
+    expect(screen.getByTestId("error").textContent).toBe("HTTP 500")
+    expect(screen.getByTestId("count").textContent).toBe("0")
+
+    // 重试成功：错误清掉，列表出来。
+    listMock.mockResolvedValueOnce([sample(1, "done")])
+    await act(async () => {
+      screen.getByRole("button", { name: "retry" }).click()
+    })
+    await waitFor(() =>
+      expect(screen.getByTestId("count").textContent).toBe("1")
+    )
+    expect(screen.getByTestId("error").textContent).toBe("")
+
+    // 已有列表时的瞬时失败：保留旧列表，不报错。
+    listMock.mockRejectedValueOnce(new Error("HTTP 502"))
+    await act(async () => {
+      changedHandler?.()
+    })
+    expect(screen.getByTestId("count").textContent).toBe("1")
+    expect(screen.getByTestId("error").textContent).toBe("")
   })
 })

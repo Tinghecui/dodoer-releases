@@ -28,9 +28,15 @@ import {
 // ── Context + side-effect mocks ────────────────────────────────────────────
 const refetch = vi.fn().mockResolvedValue(undefined)
 let automations: Automation[] = []
+let loadError: string | null = null
 
 vi.mock("@/contexts/automations-view-context", () => ({
-  useAutomationsView: () => ({ automations, unseenFailures: 0, refetch }),
+  useAutomationsView: () => ({
+    automations,
+    unseenFailures: 0,
+    error: loadError,
+    refetch,
+  }),
 }))
 vi.mock("@/contexts/workbench-route-context", () => ({
   useWorkbenchRoute: () => ({ openConversations: vi.fn() }),
@@ -87,6 +93,7 @@ import { AutomationsPage, pickCreateFolder } from "./automations-page"
 // Components select `folders` from the real zustand store — seed it with the
 // same data the old context mock provided.
 beforeEach(() => {
+  loadError = null
   resetAppWorkspaceStore()
   useAppWorkspaceStore.setState({
     folders: [{ id: 1, name: "repo" }] as never,
@@ -104,7 +111,24 @@ function renderPage() {
 describe("AutomationsPage (empty + template flow)", () => {
   beforeEach(() => {
     automations = []
+    loadError = null
     vi.clearAllMocks()
+  })
+
+  it("says the list failed to load and offers a retry instead of onboarding (#339)", () => {
+    loadError = "HTTP 500"
+    renderPage()
+    expect(
+      screen.getByText(enMessages.Automations.loadFailed)
+    ).toBeInTheDocument()
+    expect(screen.getByText("HTTP 500")).toBeInTheDocument()
+    expect(
+      screen.queryByText(enMessages.Automations.onboardTitle)
+    ).not.toBeInTheDocument()
+    fireEvent.click(
+      screen.getByRole("button", { name: enMessages.Automations.retry })
+    )
+    expect(refetch).toHaveBeenCalledTimes(1)
   })
 
   it("shows the onboarding gallery when there are no automations", () => {

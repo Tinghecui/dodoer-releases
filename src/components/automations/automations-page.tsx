@@ -13,6 +13,7 @@ import { toast } from "sonner"
 import {
   CalendarClock,
   Clock,
+  CircleAlert,
   CirclePlay,
   Folder,
   GitBranch,
@@ -224,7 +225,7 @@ export function AutomationsPageTitle() {
 export function AutomationsPage() {
   const t = useTranslations("Automations")
   const errorMessage = useAutomationErrorMessage()
-  const { automations, unseenFailures, refetch } = useAutomationsView()
+  const { automations, unseenFailures, error, refetch } = useAutomationsView()
   const folders = useAppWorkspaceStore((s) => s.folders)
   // Every folder codeg knows, open or closed — for naming a folder the list is
   // filtered by that the sidebar no longer shows.
@@ -601,7 +602,39 @@ export function AutomationsPage() {
                 with a dead gutter on the right — and `mx-auto` inside it has no
                 free space left to center in. */}
             <div className="min-w-0 flex-1">
-              {mode === "editor" && editing ? editorPane : picker(true)}
+              {mode === "editor" && editing ? (
+                editorPane
+              ) : error != null ? (
+                // 列表没加载出来：说清楚、给「重试」，不进 onboarding，
+                // 免得看着像一个自动化都没有（#339）。
+                <div
+                  role="alert"
+                  className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center"
+                >
+                  <CircleAlert
+                    className="size-10 text-destructive/70"
+                    aria-hidden="true"
+                  />
+                  <div className="flex flex-col gap-1">
+                    <p className="text-sm font-medium">{t("loadFailed")}</p>
+                    <p className="max-w-sm break-words text-xs text-muted-foreground">
+                      {error}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5"
+                    onClick={() => void refetch()}
+                  >
+                    <RotateCw className="size-3.5" aria-hidden="true" />
+                    {t("retry")}
+                  </Button>
+                </div>
+              ) : (
+                picker(true)
+              )}
             </div>
           </div>
         </div>

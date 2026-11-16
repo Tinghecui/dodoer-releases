@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react"
 import { automationList } from "@/lib/api"
+import { toErrorMessage } from "@/lib/app-error"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
 import type { Automation } from "@/lib/types"
 
@@ -20,6 +21,9 @@ interface AutomationsViewContextValue {
   automations: Automation[]
   /** Sum of unseen failed runs — drives the sidebar badge. */
   unseenFailures: number
+  /** 还没成功拉到过列表、而上一次请求失败时的错误原文；其余时候是 null。
+   *  页面靠它把「加载失败」和「还没有自动化」分开（#339）。 */
+  error: string | null
   refetch: () => Promise<void>
 }
 
@@ -47,7 +51,10 @@ export function useAutomationsView() {
 
 export function AutomationsViewProvider({ children }: { children: ReactNode }) {
   const [automations, setAutomations] = useState<Automation[]>([])
+  const [error, setError] = useState<string | null>(null)
   const reqRef = useRef(0)
+  // 成功拉到过一次列表以后，瞬时失败只保留旧列表、不报错。
+  const loadedRef = useRef(false)
 
   const refetch = useCallback(async () => {
     const id = ++reqRef.current
@@ -55,9 +62,16 @@ export function AutomationsViewProvider({ children }: { children: ReactNode }) {
       const list = await automationList()
       // Drop stale responses; keep the previous list on transient error rather
       // than blanking the view (matches CONVERSATION_CHANGED_EVENT consumers).
-      if (id === reqRef.current) setAutomations(list)
-    } catch {
-      // ignore — a later event/refetch recovers
+      if (id !== reqRef.current) return
+      loadedRef.current = true
+      setAutomations(list)
+      setError(null)
+    } catch (err) {
+      // 已经有列表时忽略，后面的事件或重连会补上；还没成功过就记下错误，
+      // 页面显示「加载失败」和「重试」，不再进 onboarding（#339）。
+      if (id === reqRef.current && !loadedRef.current) {
+        setError(toErrorMessage(err))
+      }
     }
   }, [])
 
@@ -97,8 +111,8 @@ export function AutomationsViewProvider({ children }: { children: ReactNode }) {
   )
 
   const value = useMemo<AutomationsViewContextValue>(
-    () => ({ automations, unseenFailures, refetch }),
-    [automations, unseenFailures, refetch]
+    () => ({ automations, unseenFailures, error, refetch }),
+    [automations, unseenFailures, error, refetch]
   )
 
   return (

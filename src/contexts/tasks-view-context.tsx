@@ -12,6 +12,7 @@ import {
 } from "react"
 import { useTranslations } from "next-intl"
 import { workTaskList } from "@/lib/api"
+import { toErrorMessage } from "@/lib/app-error"
 import { notifyDesktop } from "@/lib/desktop-notification"
 import { requestWindowAttention } from "@/lib/window-attention"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
@@ -47,6 +48,10 @@ interface TasksViewContextValue {
    *  flashing the empty state. Never flips back on later refetches — those
    *  update an already-painted board. */
   loading: boolean
+  /** 还没成功拉到过列表、而上一次请求失败时的错误原文；其余时候是 null。
+   *  页面靠它把「加载失败」和「真的没有任务」分开（#339）。已经有列表时的
+   *  瞬时失败不设它：旧列表照常显示，后面的事件或重连会补上。 */
+  error: string | null
   refetch: () => Promise<void>
   /** Board ⇄ list. Lifted here rather than owned by TasksPage because the
    *  switch renders in the window-chrome strip (TasksPageTitle) — a different
@@ -84,6 +89,7 @@ export function TasksViewProvider({ children }: { children: ReactNode }) {
   }, [t])
   const [tasks, setTasks] = useState<WorkTask[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   // Restored synchronously from localStorage: the Tasks route mounts only after
   // a client-side route switch (never prerendered), so there is no SSR markup to
   // mismatch — and the page paints in the remembered mode right away.
@@ -108,12 +114,15 @@ export function TasksViewProvider({ children }: { children: ReactNode }) {
         list.map((task) => [task.id, task.status])
       )
       setTasks(list)
+      setError(null)
       setLoading(false)
-    } catch {
-      // ignore — a later event/refetch recovers. A failed FIRST fetch still
-      // ends the loading state (unless a newer one is already in flight): the
-      // board falls back to its empty state rather than pulsing forever.
-      if (id === reqRef.current) setLoading(false)
+    } catch (err) {
+      // 已经有列表时忽略：保留旧看板，后面的事件或重连会补上。还没成功过
+      // （prevStatusRef 仍是 null）就记下错误，页面显示「加载失败」和「重试」，
+      // 不再当成空列表（#339）。失败同样结束 loading，除非已有更新的请求在路上。
+      if (id !== reqRef.current) return
+      if (prevStatusRef.current === null) setError(toErrorMessage(err))
+      setLoading(false)
     }
   }, [])
 
@@ -174,8 +183,16 @@ export function TasksViewProvider({ children }: { children: ReactNode }) {
   )
 
   const value = useMemo<TasksViewContextValue>(
-    () => ({ tasks, attentionCount, loading, refetch, viewMode, setViewMode }),
-    [tasks, attentionCount, loading, refetch, viewMode]
+    () => ({
+      tasks,
+      attentionCount,
+      loading,
+      error,
+      refetch,
+      viewMode,
+      setViewMode,
+    }),
+    [tasks, attentionCount, loading, error, refetch, viewMode]
   )
 
   return (

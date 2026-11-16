@@ -319,7 +319,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: dodoer-hack-dist
-          path: dist/
+          # 不传别名副本（同一个安装包换个名字，arm64 两份、Intel 一份，每份一百多 MB）：黑苹果上传只有几百 KB/s，
+          # 一次多传 140–280 MB 要多等十几分钟（2026-11-16）。publish 从带版本号的那份复制出来
+          path: |
+            dist/
+            !dist/dodoer-macos-*.zip*
+            !dist/dodoer-client-macos-*.zip*
           retention-days: 7
           if-no-files-found: error
 
@@ -474,7 +479,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.build.outputs.full_name }}
-          path: dist/
+          # 不传别名副本（同一个安装包换个名字，arm64 两份、Intel 一份，每份一百多 MB）：黑苹果上传只有几百 KB/s，
+          # 一次多传 140–280 MB 要多等十几分钟（2026-11-16）。publish 从带版本号的那份复制出来
+          path: |
+            dist/
+            !dist/dodoer-macos-*.zip*
+            !dist/dodoer-client-macos-*.zip*
           retention-days: 7
           if-no-files-found: error
 
@@ -529,8 +539,12 @@ jobs:
                   printf '%s' "$f"; }
           NAME=$(one "dodoer-$VERSION-*-macos-arm64.zip"); NAME="${NAME%.zip}"
           UPDATER=$(one "dodoer-$VERSION-macos-arm64.app.tar.gz")
-          ALIAS=$(one "dodoer-macos-arm64.zip")
-          CLIENT_ALIAS=$(one "dodoer-client-macos-arm64.zip")
+          # 别名副本 artifact 里没有（见上面 upload-artifact），在这里复制；.sha256 和构建脚本一样只写文件名
+          ALIAS=dodoer-macos-arm64.zip CLIENT_ALIAS=dodoer-client-macos-arm64.zip
+          for a in "$ALIAS" "$CLIENT_ALIAS"; do
+            cp "dist/$NAME.zip" "dist/$a"
+            (cd dist && shasum -a 256 "$a" > "$a.sha256")
+          done
           # Intel 包每天单独编、挂到当时最新的 Release 上（desktop-macos-intel.yml），自动更新查 latest-x64.json。
           # Intel 的 app 查的是 releases/latest/download/latest-x64.json，所以每一版都要带一份：原样带上上一个 Release 里的
           X64_MANIFEST=""

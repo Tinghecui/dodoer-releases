@@ -235,7 +235,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: dodoer-x64-hack-dist
-          path: dist/
+          # 不传别名副本（同一个安装包换个名字，arm64 两份、Intel 一份，每份一百多 MB）：黑苹果上传只有几百 KB/s，
+          # 一次多传 140–280 MB 要多等十几分钟（2026-11-16）。publish 从带版本号的那份复制出来
+          path: |
+            dist/
+            !dist/dodoer-macos-*.zip*
+            !dist/dodoer-client-macos-*.zip*
           retention-days: 7
           if-no-files-found: error
 
@@ -366,7 +371,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.build.outputs.full_name }}
-          path: dist/
+          # 不传别名副本（同一个安装包换个名字，arm64 两份、Intel 一份，每份一百多 MB）：黑苹果上传只有几百 KB/s，
+          # 一次多传 140–280 MB 要多等十几分钟（2026-11-16）。publish 从带版本号的那份复制出来
+          path: |
+            dist/
+            !dist/dodoer-macos-*.zip*
+            !dist/dodoer-client-macos-*.zip*
           retention-days: 7
           if-no-files-found: error
 
@@ -399,7 +409,10 @@ jobs:
                   printf '%s' "$f"; }
           NAME=$(one "dodoer-$VERSION-*-macos-x64.zip"); NAME="${NAME%.zip}"
           UPDATER=$(one "dodoer-$VERSION-macos-x64.app.tar.gz")
-          ALIAS=$(one "dodoer-macos-x64.zip")
+          # 别名副本 artifact 里没有（见上面 upload-artifact），在这里复制；.sha256 和构建脚本一样只写文件名
+          ALIAS=dodoer-macos-x64.zip
+          cp "dist/$NAME.zip" "dist/$ALIAS"
+          (cd dist && shasum -a 256 "$ALIAS" > "$ALIAS.sha256")
           # 说明沿用这个 Release 的 latest.json（arm64 那一版的改动清单）
           notes=$(gh release download "$REL" -R "$RELEASE_REPO" -p latest.json -O - | jq -r '.notes // empty' || true)
           jq -n --arg version "$VERSION" --arg notes "${notes:-dodoer $VERSION}" \

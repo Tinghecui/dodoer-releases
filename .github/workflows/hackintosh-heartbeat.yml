@@ -1,13 +1,15 @@
 # 黑苹果自托管 runner（标签 hackintosh）的心跳：每 10 分钟在它上面跑一次小任务。desktop-macos.yml 看最近一次成功的时间
 # 判断它在不在线（45 分钟内算在线），不在线就全在 GitHub 托管机器上编。
 # 黑苹果离线时这里的 run 会排着；同一组新排的会把旧的顶掉，最多积一个。GitHub 的定时任务常被压着（几个小时才跑一次），
-# 所以另有机器每 10 分钟用 workflow_dispatch 派一次，下面的 schedule 只是备用；3 个 runner 都忙时心跳也要排队，阈值放宽到 45 分钟。
+# 所以另有机器每 10 分钟用 workflow_dispatch 派一次，下面的 schedule 只是备用。
+# beat 跑在单独的第 4 个 runner hackintosh-beat 上（2026-11-16 起，只有 hackintosh-beat 标签，不接编译的活）：以前和编译共用
+# 3 个 runner，3 个都在编时心跳排着、被下一次顶掉，超过阈值发版就当黑苹果离线、去 GitHub 上慢慢编。代价是心跳只说明
+# 这台机器和 runner 服务活着，不保证那 3 个编译 runner 都在；它们真挂了，desktop-macos 的 watchdog 15 分钟后取消。
 #
-# 顺便给状态页（hackintosh-status-pages.yml，2026-11-16 起）记数：queue 在 GitHub 机器上记这一刻 3 个 runner 各在跑什么、
-# 几个活在排队（不等 beat：runner 都忙时 beat 排着，这份快照照样能说明机器在线），记在本仓库的 hackintosh-status 分支
+# 顺便给状态页（hackintosh-status-pages.yml，2026-11-16 起）记数：queue 在 GitHub 机器上记这一刻 3 个编译 runner 各在跑什么、
+# 几个活在排队，记在本仓库的 hackintosh-status 分支
 # （scripts/hackintosh-status-record.sh）；记失败不算心跳失败（continue-on-error），在线判断只看 beat。
-# 负载、内存、磁盘不在这里采：runner 都忙时 beat 排着，最该看负载的时候反而没数。改由派心跳的那台机器每 10 分钟 ssh 过去采
-# （scripts/hackintosh-status-host.sh）
+# 负载、内存、磁盘由派心跳的那台机器每 10 分钟 ssh 过去采（scripts/hackintosh-status-host.sh）
 name: hackintosh-heartbeat
 
 on:
@@ -25,7 +27,7 @@ concurrency:
 jobs:
   beat:
     name: 心跳
-    runs-on: [self-hosted, hackintosh]
+    runs-on: [self-hosted, hackintosh-beat]
     timeout-minutes: 5
     steps:
       - run: |

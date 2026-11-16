@@ -1,7 +1,8 @@
 <!doctype html>
 <!--
   黑苹果编译机的状态页（GitHub Pages，hackintosh-status-pages.yml 发布；源文件在私有仓库 cowork-codeg 的 .github/status-page/）。
-  数据：hackintosh-heartbeat.yml 每 10 分钟往本仓库 hackintosh-status 分支记的 host/、queue/（scripts/hackintosh-status-record.sh），
+  数据：本仓库 hackintosh-status 分支的 host/（派心跳的机器每 10 分钟 ssh 过去采，scripts/hackintosh-status-host.sh）和
+  queue/（hackintosh-heartbeat.yml 每 10 分钟记；都经 scripts/hackintosh-status-record.sh），
   从 raw.githubusercontent.com 读；3 个 runner 现在在跑什么、几个在排队，另外直接问 GitHub 的公开 API（不带令牌，每个 IP 每小时 60 次，
   所以 5 分钟才刷新一次，限流了就用最近一次快照）。页面是公开的：只放负载、内存、在线时长、job 名，不放 IP、用户名、主机名。
 -->
@@ -78,8 +79,8 @@
     <div id="week"></div>
     <div class="axis"><div></div><div><span>0 点</span><span>6 点</span><span>12 点</span><span>18 点</span><span>24 点</span></div><div></div></div>
     <div class="legend">
-      <i style="background:var(--ok)"></i>在线（心跳到了）
-      <i style="background:var(--ok2)"></i>在线，worker 都忙、心跳排着
+      <i style="background:var(--ok)"></i>在线（采到了负载）
+      <i style="background:var(--ok2)"></i>在线（只有 runner 快照）
       <i style="background:var(--bad);opacity:.55"></i>没联系上
       <i style="background:var(--none);opacity:.5"></i>还没开始记
     </div>
@@ -168,9 +169,9 @@ function render() {
 
   // 在不在线
   let pill;
-  if (fresh(lastHost)) pill = `<span class="pill ok">在线</span> 最近一次心跳 ${ago(now - lastHost.ms)}`;
-  else if (busyNow) pill = `<span class="pill busy">在线，忙</span> worker 都在干活，心跳排着（最近一次心跳 ${lastHost ? ago(now - lastHost.ms) : "没有"}）`;
-  else if (lastHost) pill = `<span class="pill bad">离线</span> 最近一次心跳 ${ago(now - lastHost.ms)}（${hm(lastHost.ms)}）`;
+  if (fresh(lastHost)) pill = `<span class="pill ok">在线</span> 最近一次采到数据 ${ago(now - lastHost.ms)}`;
+  else if (busyNow) pill = `<span class="pill busy">在线</span> worker 在干活（负载数据最近一次 ${lastHost ? ago(now - lastHost.ms) : "还没有"}）`;
+  else if (lastHost) pill = `<span class="pill bad">离线</span> 最近一次联系上是 ${ago(now - lastHost.ms)}（${hm(lastHost.ms)}）`;
   else pill = `<span class="pill unk">还没有数据</span>`;
   $("status").innerHTML = pill;
 
@@ -187,7 +188,7 @@ function render() {
     if (h.boot) c.push(card("开机", dur(h.ms - h.boot * 1000), `${hm(h.boot * 1000)} 开的机`));
     c.push(card("数据时间", ago(now - h.ms), hm(h.ms)));
   }
-  $("cards").innerHTML = c.join("");
+  $("cards").innerHTML = c.join("") || `<div class="card"><div class="k">资源</div><div class="d">还没有负载数据</div></div>`;
 
   // worker
   const running = (snap && snap.running) || [];
@@ -206,7 +207,7 @@ function render() {
     ? queued.map((j) => `<tr><td>${esc(j.wf)}</td><td><a href="${esc(j.url || `https://github.com/${REPO}/actions/runs/${j.run}`)}">${esc(j.job)}</a></td></tr>`).join("")
     : `<tr><td colspan="2" class="idle">没有排队的</td></tr>`;
 
-  // 7 天在线：按北京时间的日子，每格 10 分钟。2 = 心跳到了，1 = 心跳没到但 queue 快照里有 job 在黑苹果上跑，0 = 都没有
+  // 7 天在线：按北京时间的日子，每格 10 分钟。2 = 采到了负载，1 = 没采到但 queue 快照里有 job 在黑苹果上跑，0 = 都没有
   const first = Math.min(host[0]?.ms ?? Infinity, queue[0]?.ms ?? Infinity);
   const state = new Map();
   for (const q of queue) if ((q.running || []).length) state.set(Math.floor(q.ms / SLOT), 1);
@@ -220,7 +221,7 @@ function render() {
       const t = start + i * SLOT, k = Math.floor(t / SLOT);
       if (t > now) { cells += `<i class="fut"></i>`; continue; }
       if (t + SLOT < first) { cells += `<i class="pre"></i>`; continue; }
-      // 心跳 10 分钟一次、会晚几分钟：这一格或上一格有就算
+      // 10 分钟采一次、会晚几分钟：这一格或上一格有就算
       const s = Math.max(state.get(k) ?? -1, state.get(k - 1) ?? -1);
       seen++; if (s > 0) on++;
       cells += `<i class="s${Math.max(s, 0)}" title="${hm(t)}"></i>`;

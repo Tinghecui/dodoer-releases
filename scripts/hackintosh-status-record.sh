@@ -1,7 +1,7 @@
 #!/bin/bash
 # 给黑苹果状态页记一条数：往公开仓库 hackintosh-status 分支的 <种类>/<UTC 日期>.jsonl 末尾加一行，只留最近 8 天。
-# hackintosh-heartbeat.yml 每 10 分钟调两次（host：beat 在黑苹果上采的负载、内存、磁盘；queue：3 个 runner 各在跑什么、
-# 几个活在排队），状态页（.github/status-page/，hackintosh-status-pages.yml 发布）从 raw.githubusercontent.com 读。
+# 每 10 分钟两种（host：scripts/hackintosh-status-host.sh ssh 到黑苹果采的负载、内存、磁盘；queue：hackintosh-heartbeat.yml
+# 记的 3 个 runner 各在跑什么、几个活在排队），状态页（.github/status-page/，hackintosh-status-pages.yml 发布）从 raw.githubusercontent.com 读。
 #
 #   用法：scripts/hackintosh-status-record.sh <host|queue> '<一行 JSON>'
 #   环境：GH_TOKEN（contents: write）、GITHUB_REPOSITORY

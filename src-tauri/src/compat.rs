@@ -74,6 +74,10 @@ pub const FEATURES: &[&str] = &[
     // `/api/set_conversation_device` 的 `part`：一个对话的命令行和浏览器
     // 各选一台电脑（`web::working_device`，`docs/devices.md` 6.7）。
     "conversation_device_split",
+    // `/api/cowork_reload_web`: the web files of a release with the same
+    // server code (`SERVER-REV`) are taken without a restart
+    // (`web::static_assets`).
+    "reload_web",
 ];
 
 /// The contract as one value: the `server_info` frame carries it as is
@@ -129,7 +133,8 @@ mod tests {
                 "conversation_device",
                 "stop_host_device",
                 "conversation_device_pick",
-                "conversation_device_split"
+                "conversation_device_split",
+                "reload_web"
             ])
         );
     }

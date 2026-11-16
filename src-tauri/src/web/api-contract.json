@@ -221,6 +221,7 @@
     "POST /api/conversation_unopenable_list": "web",
     "POST /api/cowork_create_project": "web",
     "POST /api/cowork_info": "web",
+    "POST /api/cowork_reload_web": "cowork-root",
     "POST /api/create_chat_channel": "web",
     "POST /api/create_chat_conversation": "web",
     "POST /api/create_chat_dir": "web",

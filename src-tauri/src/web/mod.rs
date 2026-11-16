@@ -14,6 +14,7 @@ pub mod router;
 pub mod session_usage;
 pub mod shutdown;
 pub mod socket_inherit;
+pub mod static_assets;
 pub mod working_device;
 pub mod ws;
 pub mod ws_attach;

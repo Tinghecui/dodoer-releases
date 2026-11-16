@@ -11,9 +11,9 @@ use axum::{
 
 use crate::web::handlers::files::UPLOAD_MAX_BYTES;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::{ServeDir, ServeFile};
 
 use super::shutdown::ShutdownSignal;
+use super::static_assets::StaticAssets;
 use super::{auth, handlers, ws};
 use crate::app_state::AppState;
 use tracing::Instrument;
@@ -25,7 +25,13 @@ pub fn build_router(
     static_dir: std::path::PathBuf,
     shutdown_signal: Arc<ShutdownSignal>,
 ) -> Router {
-    build_router_with_proxy_auth(state, token, None, static_dir, shutdown_signal)
+    build_router_with_proxy_auth(
+        state,
+        token,
+        None,
+        Arc::new(StaticAssets::fixed(static_dir)),
+        shutdown_signal,
+    )
 }
 
 /// `proxy_auth` turns on the opt-in proxy-JWT authentication beside the
@@ -35,7 +41,7 @@ pub fn build_router_with_proxy_auth(
     state: Arc<AppState>,
     token: String,
     proxy_auth: Option<Arc<super::proxy_auth::ProxyJwtAuth>>,
-    static_dir: std::path::PathBuf,
+    static_assets: Arc<StaticAssets>,
     shutdown_signal: Arc<ShutdownSignal>,
 ) -> Router {
     // Cowork fork: behind the portal, same-origin only (no CORS grants; a
@@ -58,6 +64,9 @@ pub fn build_router_with_proxy_auth(
 
     let api = Router::new()
         .route("/health", post(health_check))
+        // Cowork fork: swap the web files for a release with the same server
+        // code, without a restart (`web::static_assets`).
+        .route("/cowork_reload_web", post(cowork_reload_web))
         // Cowork fork: /cowork_info, /cowork_create_project (authenticated).
         .merge(crate::cowork::api_routes())
         // Debug endpoint: operator-facing snapshot of `EventBusMetrics`
@@ -2306,15 +2315,19 @@ pub fn build_router_with_proxy_auth(
     // Static file serving.
     // Next.js static export produces "folder.html" for "/folder" route.
     // We use a middleware to rewrite "/folder" → "/folder.html" before ServeDir.
-    let fallback =
-        ServeDir::new(&static_dir).fallback(ServeFile::new(static_dir.join("index.html")));
+    // Cowork fork: the directory is pinned at startup and can be swapped by
+    // `cowork_reload_web`; every request reads the current one.
+    let assets_for_files = Arc::clone(&static_assets);
     let static_files: Router = Router::new()
-        .fallback_service(fallback)
+        .fallback(move |req: axum::extract::Request| {
+            let assets = Arc::clone(&assets_for_files);
+            async move { super::static_assets::serve(&assets, req).await }
+        })
         .layer(middleware::from_fn(static_cache_control));
 
-    let static_dir_for_mw = static_dir.clone();
+    let assets_for_mw = Arc::clone(&static_assets);
     let html_rewrite = middleware::from_fn(move |req: axum::extract::Request, next: Next| {
-        let dir = static_dir_for_mw.clone();
+        let dir = assets_for_mw.current();
         async move {
             let path = req.uri().path();
             // If path has no extension (not a file) and a .html version exists, rewrite
@@ -2352,6 +2365,7 @@ pub fn build_router_with_proxy_auth(
         .layer(middleware::from_fn(crate::cowork::origin_guard))
         .layer(cors)
         .layer(Extension(state))
+        .layer(Extension(static_assets))
         .layer(Extension(shutdown_signal))
         // Compress API JSON and static text assets. Allowlist predicate —
         // binary downloads keep their exact Content-Length (the remote
@@ -2397,7 +2411,7 @@ async fn static_cache_control(
     response
 }
 
-async fn health_check() -> impl IntoResponse {
+async fn health_check(Extension(assets): Extension<Arc<StaticAssets>>) -> impl IntoResponse {
     // Include the running version so the upgrade UI can confirm — using only a
     // local signal — that a restart actually landed on the new version (and
     // wasn't auto-rolled-back by the supervisor) without depending on the
@@ -2408,7 +2422,30 @@ async fn health_check() -> impl IntoResponse {
     // Cowork fork: API version, minimum desktop app and features, read once by
     // a connecting client (`crate::compat`).
     body.extend(crate::compat::health_fields());
+    // Cowork fork: the server code fingerprint (`SERVER-REV` beside the
+    // binary), left out when there is none.
+    if let Some(rev) = assets.server_rev() {
+        body.insert("server_rev".into(), rev.into());
+    }
     Json(serde_json::Value::Object(body))
+}
+
+/// Cowork fork: `cowork_reload_web` — switch to the web files of the release
+/// `CODEG_STATIC_DIR` now points at, when its server code is this process's
+/// (`StaticAssets::reload`). Open pages are told with `web_assets_changed`.
+async fn cowork_reload_web(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(assets): Extension<Arc<StaticAssets>>,
+) -> impl IntoResponse {
+    let outcome = assets.reload();
+    if outcome["changed"] == serde_json::Value::Bool(true) {
+        crate::web::event_bridge::emit_event(
+            &state.emitter,
+            super::static_assets::WEB_ASSETS_CHANGED_EVENT,
+            serde_json::json!({ "release": outcome["release"].clone() }),
+        );
+    }
+    Json(outcome)
 }
 
 async fn api_not_found(uri: axum::http::Uri) -> impl IntoResponse {

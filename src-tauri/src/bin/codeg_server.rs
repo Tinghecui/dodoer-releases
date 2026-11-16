@@ -5,8 +5,7 @@ use std::sync::Arc;
 use codeg_lib::app_state::AppState;
 use codeg_lib::web::event_bridge::{EventEmitter, WebEventBroadcaster};
 use codeg_lib::web::{
-    addresses_for_bind, advertise_host, find_static_dir_standalone, resolve_persisted_server_token,
-    WebServerState,
+    addresses_for_bind, advertise_host, resolve_persisted_server_token, WebServerState,
 };
 
 fn main() -> ExitCode {
@@ -288,7 +287,11 @@ async fn async_main(
         PathBuf::from(std::env::var("CODEG_DATA_DIR").expect("CODEG_DATA_DIR set by main()"));
     let static_dir_env = std::env::var("CODEG_STATIC_DIR").ok();
 
-    let static_dir = find_static_dir_standalone(static_dir_env.as_deref());
+    // Cowork fork: pinned to its real path for the life of the process, until
+    // `cowork_reload_web` swaps it (`web::static_assets`).
+    let static_assets = Arc::new(codeg_lib::web::static_assets::StaticAssets::pin_standalone(
+        static_dir_env,
+    ));
     let app_version = env!("CARGO_PKG_VERSION");
 
     // Staged-upgrade marker lifecycle. The marker is a proof token: it stays on
@@ -321,7 +324,10 @@ async fn async_main(
 
     tracing::info!("[SERVER] codeg-server v{}", app_version);
     tracing::info!("[SERVER] Data directory: {}", data_dir.display());
-    tracing::info!("[SERVER] Static directory: {}", static_dir.display());
+    tracing::info!(
+        "[SERVER] Static directory: {}",
+        static_assets.current().display()
+    );
 
     // Initialize database
     codeg_lib::cowork::secure_db_files(&data_dir);
@@ -630,7 +636,7 @@ async fn async_main(
         state.clone(),
         token.clone(),
         proxy_auth,
-        static_dir,
+        static_assets,
         shutdown_signal,
     );
 

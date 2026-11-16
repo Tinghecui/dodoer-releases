@@ -6,8 +6,8 @@
 # （最后的 seal job 派它：GITHUB_TOKEN 派出来的运行不触发 workflow_run）。
 # 凭证在 Environment「ai-qa」里，只有 main 分支用得到；commit status 用仓库级的 SOURCE_STATUS_TOKEN。
 # **手动触发时填的输入会原样出现在公开日志里**，只填数字和模型名。
-# 仓库变量：AUTOPILOT（off / record / on，默认 record）、AUTOPILOT_CLAUDE_AUTH（api / oauth，默认 api）、
-# AUTOPILOT_REVIEW_MODEL（默认 claude-fable-5-2，要和执行员的模型不一样）、AUTOPILOT_DAILY_USD（默认 15，和执行员共用）。
+# 仓库变量：AUTOPILOT（off / record / on，默认 record）、AUTOPILOT_CLAUDE_AUTH（oauth / api，默认 oauth：订阅令牌；api = 组织的 API key，按 AUTOPILOT_DAILY_USD 限额）、
+# AUTOPILOT_REVIEW_MODEL（默认 claude-opus-5-5，和执行员同一个模型；独立靠的是不同的提示词、看不到执行员的推理）、AUTOPILOT_DAILY_USD（默认 15，和执行员共用）。
 name: autopilot-review
 # 整个值要加引号：里面的「 #」不加引号会被 YAML 当成注释截掉
 run-name: "autopilot-review #${{ inputs.pr }}"
@@ -23,7 +23,7 @@ on:
         type: boolean
         default: false
       model:
-        description: "模型（空 = 仓库变量 AUTOPILOT_REVIEW_MODEL，再没有 claude-fable-5-2）"
+        description: "模型（空 = 仓库变量 AUTOPILOT_REVIEW_MODEL，再没有 claude-opus-5-5）"
         default: ""
 
 permissions:
@@ -45,8 +45,8 @@ jobs:
       PR: ${{ inputs.pr }}
       FORCE: ${{ inputs.force && '1' || '' }}
       AUTOPILOT: ${{ vars.AUTOPILOT || 'record' }}
-      CLAUDE_AUTH: ${{ vars.AUTOPILOT_CLAUDE_AUTH || 'api' }}
-      MODEL: ${{ inputs.model || vars.AUTOPILOT_REVIEW_MODEL || 'claude-fable-5-2' }}
+      CLAUDE_AUTH: ${{ vars.AUTOPILOT_CLAUDE_AUTH || 'oauth' }}
+      MODEL: ${{ inputs.model || vars.AUTOPILOT_REVIEW_MODEL || 'claude-opus-5-5' }}
       DAILY_USD: ${{ vars.AUTOPILOT_DAILY_USD || '15' }}
       W: /home/runner/autopilot-work
     steps:
@@ -73,8 +73,8 @@ jobs:
           PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
           STATUS_TOKEN: ${{ secrets.SOURCE_STATUS_TOKEN }}
           # 一次只给一种 Claude 凭证（AUTOPILOT_CLAUDE_AUTH），同 autopilot-fix.yml
-          ANTHROPIC_KEY: ${{ vars.AUTOPILOT_CLAUDE_AUTH != 'oauth' && secrets.CODEG_AGENT_ANTHROPIC_KEY || '' }}
-          OAUTH_TOKEN: ${{ vars.AUTOPILOT_CLAUDE_AUTH == 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          ANTHROPIC_KEY: ${{ vars.AUTOPILOT_CLAUDE_AUTH == 'api' && secrets.CODEG_AGENT_ANTHROPIC_KEY || '' }}
+          OAUTH_TOKEN: ${{ vars.AUTOPILOT_CLAUDE_AUTH != 'api' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
         run: |
           set -euo pipefail
           # 凭证写进只有本用户能读的文件、从环境里拿掉再 exec（同 autopilot-fix.yml）

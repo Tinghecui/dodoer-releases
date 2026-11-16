@@ -4,7 +4,7 @@
 # 这里只是个壳：取源仓库代码、装工具链，然后 exec .cowork/autopilot/sealed.sh fix。脚本的输出全部进文件、产物传回源仓库
 # Release「autopilot-artifacts」，这份日志里只有每个阶段一行的进度；运行结束后 ai-qa-seal.yml 会核对这一点。
 # 凭证在 Environment「ai-qa」里，只有 main 分支用得到。**手动触发时填的输入会原样出现在公开日志里**，只填数字和模型名。
-# 仓库变量：AUTOPILOT（off / record / on，默认 record）、AUTOPILOT_CLAUDE_AUTH（api / oauth，默认 api）、
+# 仓库变量：AUTOPILOT（off / record / on，默认 record）、AUTOPILOT_CLAUDE_AUTH（oauth / api，默认 oauth：订阅令牌；api = 组织的 API key，按 AUTOPILOT_DAILY_USD 限额）、
 # AUTOPILOT_FIX_MODEL（默认 claude-opus-5-5）、AUTOPILOT_DAILY_USD（默认 15）。
 name: autopilot-fix
 # 整个值要加引号：里面的「 #」不加引号会被 YAML 当成注释截掉
@@ -49,7 +49,7 @@ jobs:
       ISSUE: ${{ inputs.issue }}
       PR: ${{ inputs.pr }}
       AUTOPILOT: ${{ vars.AUTOPILOT || 'record' }}
-      CLAUDE_AUTH: ${{ vars.AUTOPILOT_CLAUDE_AUTH || 'api' }}
+      CLAUDE_AUTH: ${{ vars.AUTOPILOT_CLAUDE_AUTH || 'oauth' }}
       MODEL: ${{ inputs.model || vars.AUTOPILOT_FIX_MODEL || 'claude-opus-5-5' }}
       MAX_TURNS: ${{ inputs.max_turns || '400' }}
       DAILY_USD: ${{ vars.AUTOPILOT_DAILY_USD || '15' }}
@@ -94,9 +94,9 @@ jobs:
       - name: run
         env:
           PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
-          # 一次只给一种 Claude 凭证（AUTOPILOT_CLAUDE_AUTH）。api = 组织的赠送额度（claude -p 能用），不和用户自己的订阅窗口抢
-          ANTHROPIC_KEY: ${{ vars.AUTOPILOT_CLAUDE_AUTH != 'oauth' && secrets.CODEG_AGENT_ANTHROPIC_KEY || '' }}
-          OAUTH_TOKEN: ${{ vars.AUTOPILOT_CLAUDE_AUTH == 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          # 一次只给一种 Claude 凭证（AUTOPILOT_CLAUDE_AUTH）。默认 oauth = 订阅令牌（2026-11-16 用户：订阅的量够）；api = 组织的 API key
+          ANTHROPIC_KEY: ${{ vars.AUTOPILOT_CLAUDE_AUTH == 'api' && secrets.CODEG_AGENT_ANTHROPIC_KEY || '' }}
+          OAUTH_TOKEN: ${{ vars.AUTOPILOT_CLAUDE_AUTH != 'api' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PUBLIC_TOKEN: ${{ github.token }}
         run: |

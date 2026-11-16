@@ -35,6 +35,7 @@ jobs:
       SOURCE_REPO: Tinghecui/cowork-codeg
       AUTOPILOT: ${{ vars.AUTOPILOT || 'record' }}
       DAILY_USD: ${{ vars.AUTOPILOT_DAILY_USD || '15' }}
+      CLAUDE_AUTH: ${{ vars.AUTOPILOT_CLAUDE_AUTH || 'oauth' }}
       MAX_FIX: ${{ vars.AUTOPILOT_MAX_FIX || '2' }}
       INBOX_BUDGET: ${{ vars.AUTOPILOT_INBOX_BUDGET || '10' }}
       W: /home/runner/autopilot-work

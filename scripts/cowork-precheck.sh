@@ -44,6 +44,9 @@ mapfile -t workflows < <(pick '^\.github/public/workflows/.*\.ya?ml$')
 if [[ ${#workflows[@]} -gt 0 ]]; then
   # 照公开仓库的布局放一份（含没提交的改动），本地的 uses: ./.github/workflows/x.yml 才找得到
   mkdir -p "$tmp/wf/.github/workflows" && cp .github/public/workflows/*.yml "$tmp/wf/.github/workflows/"
+  # 自建 runner 的标签（hackintosh…）在 .github/actionlint.yaml 里。CI 在 git 检出目录里跑，actionlint 自己找得到；
+  # 这里的临时目录没有 .git，要明说，不然本地每次都报 unknown label
+  al_cfg=(); [[ -f .github/actionlint.yaml ]] && al_cfg=(-config-file "$PWD/.github/actionlint.yaml")
   version=$(sed -n 's#.*rhysd/actionlint/v\([0-9.]*\)/.*#\1#p' .github/public/workflows/test.yml | head -1)
   bin="${XDG_CACHE_HOME:-$HOME/.cache}/cowork-precheck/actionlint-$version"
   if [[ ! -x "$bin" && -n "$version" ]]; then
@@ -52,7 +55,7 @@ if [[ ${#workflows[@]} -gt 0 ]]; then
       mv actionlint "$bin") || true
   fi
   if [[ -x "$bin" ]]; then
-    if (cd "$tmp/wf" && "$bin" -shellcheck= -pyflakes= -ignore 'string should not be empty' .github/workflows/*.yml) > "$tmp/al.log" 2>&1; then
+    if (cd "$tmp/wf" && "$bin" "${al_cfg[@]}" -shellcheck= -pyflakes= -ignore 'string should not be empty' .github/workflows/*.yml) > "$tmp/al.log" 2>&1; then
       ok "actionlint"
     else
       bad "actionlint："; sed 's/^/    /' "$tmp/al.log" | head -30

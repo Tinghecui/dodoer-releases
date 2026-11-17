@@ -43,6 +43,11 @@ on:
       real_agent:
         type: boolean
         default: false
+      # 预发（源仓库 .cowork/ai-qa/design.md「预发环境」）：每晚那轮默认就用；手动的勾了才用。用不用还要看 secret AIQA_STAGING 的自检结果
+      staging:
+        description: "也在预发上走要 agent 回话的 P0 故事和升级留存（每晚那轮默认用）"
+        type: boolean
+        default: false
       # 三个模型空着时用这个仓库的变量 AIQA_AGENT_MODEL、AIQA_MODEL、AIQA_PM_MODEL，再没有用下面 env 里写的默认
       agent_model:
         default: ""
@@ -101,6 +106,8 @@ jobs:
       SEGMENTS: ${{ vars.AIQA_SEGMENTS || '3' }}
       TRIAGE: ${{ vars.AIQA_TRIAGE || '12' }}
       AIQA_ADAPTER_VERSION: ${{ vars.AIQA_ADAPTER_VERSION }}
+      STAGING: ${{ (github.event_name == 'schedule' || inputs.nightly || inputs.staging) && 'true' || 'false' }}
+      STAGING_AGENT: ${{ vars.AIQA_STAGING_AGENT || 'p0' }}
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -115,6 +122,9 @@ jobs:
           AIQA_ANTHROPIC_API_KEY: ${{ secrets.AIQA_ANTHROPIC_API_KEY }}
           COWORK_RELEASE_TOKEN: ${{ secrets.COWORK_RELEASE_TOKEN }}
           PUBLIC_SYNC_DEPLOY_KEY: ${{ secrets.PUBLIC_SYNC_DEPLOY_KEY }}
+          # 预发的自检结果（生产机的 aiqa-staging check 写）。放 secret 不放变量：变量的值会原样打进公开的运行日志
+          AIQA_STAGING: ${{ secrets.AIQA_STAGING }}
+          AIQA_STAGING_ACCOUNTS: ${{ secrets.AIQA_STAGING_ACCOUNTS }}
         run: |
           set -euo pipefail
           src="${PR:+refs/pull/$PR/merge}"; src="${src:-${REF:-HEAD}}"

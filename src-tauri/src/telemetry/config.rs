@@ -81,6 +81,8 @@ pub const INFO_LOG_TARGETS: &[&str] = &[
     "codeg_lib::acp::session_state",
     "codeg_lib::acp::manager",
     "codeg_lib::acp::idle_sweep",
+    // 计划内重启以后自动接上对话：每次一条汇总、每个跳过的一条。
+    "codeg_lib::restart_resume",
 ];
 
 /// The DSNs a build carries ([`BUILTIN_DSN`], [`BUILTIN_WEB_DSN`]); empty

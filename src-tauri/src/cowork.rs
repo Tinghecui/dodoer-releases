@@ -532,7 +532,8 @@ pub async fn graceful_shutdown(
     }
     let cm = &state.connection_manager;
     // 第一件事：本进程还在跑的回合先标成被打断，再发 cancel（cancel 的 CAS 这时落空，不会再写成普通的「已取消」）。
-    crate::commands::conversations::interrupt_running_turns_core(&state.db.conn, cm).await;
+    // 有有效的重启意图时顺便记下这次打断了哪些对话，起来以后自己接上（`restart_resume`）。
+    crate::restart_resume::interrupt_turns_for_shutdown(&state.data_dir, &state.db.conn, cm).await;
     let prompting = prompting_connections(cm).await;
     for id in &prompting {
         if let Err(e) = cm.cancel(&state.db.conn, id).await {

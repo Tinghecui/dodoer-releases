@@ -89,6 +89,8 @@ pub mod preferences;
 pub mod process;
 #[cfg(all(feature = "tauri-runtime", target_os = "macos"))]
 mod relaunch;
+// Cowork fork: planned restarts pick up the turns they interrupted.
+pub mod restart_resume;
 pub mod runtime_lock;
 pub mod supervise;
 // Cowork fork: CPU / memory / disk of this machine, for the resource meter.
@@ -223,10 +225,29 @@ mod tauri_app {
         }
         if let Some(cm) = app.try_state::<ConnectionManager>() {
             // 断开之前：本进程还在跑的回合先标成被打断，断开时的 CAS 就不会把它写成普通的「已取消」。
+            // 内嵌 daemon 时，有有效的重启意图就顺便记下要接上的对话（`restart_resume`）；
+            // 子进程模式下意图留给子进程自己读，这里不碰。
             if let Some(db) = app.try_state::<db::AppDatabase>() {
-                tauri::async_runtime::block_on(
-                    crate::commands::conversations::interrupt_running_turns_core(&db.conn, &cm),
-                );
+                let embedded = app
+                    .try_state::<crate::commands::local_daemon::DaemonModeState>()
+                    .is_some_and(|m| m.0 == crate::local_daemon::Mode::Embedded);
+                let data_dir = app
+                    .path()
+                    .app_data_dir()
+                    .ok()
+                    .map(|dir| crate::paths::resolve_effective_data_dir(&dir));
+                match data_dir.filter(|_| embedded) {
+                    Some(dir) => tauri::async_runtime::block_on(
+                        crate::restart_resume::interrupt_turns_for_shutdown(&dir, &db.conn, &cm),
+                    ),
+                    None => {
+                        tauri::async_runtime::block_on(
+                            crate::commands::conversations::interrupt_running_turns_core(
+                                &db.conn, &cm,
+                            ),
+                        );
+                    }
+                }
             }
             tauri::async_runtime::block_on(cm.disconnect_all());
         }
@@ -1281,6 +1302,18 @@ mod tauri_app {
                         })
                     };
                     app.manage(daemon_services);
+
+                    // 计划内重启以后：停机时记下的对话一个一个接上（`restart_resume`）。
+                    tauri::async_runtime::spawn(crate::restart_resume::run_live(
+                        crate::restart_resume::LiveResumer {
+                            db: db::AppDatabase {
+                                conn: db.conn.clone(),
+                            },
+                            manager: app.state::<ConnectionManager>().inner().clone_ref(),
+                            emitter: emitter.clone(),
+                            data_dir: effective_data_dir.clone(),
+                        },
+                    ));
 
                     // The pet panel's active-session aggregator: rebuilds the
                     // `PetSessionsPayload` (running/waiting/error counts + per-

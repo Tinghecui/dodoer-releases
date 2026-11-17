@@ -78,6 +78,9 @@ pub const FEATURES: &[&str] = &[
     // server code (`SERVER-REV`) are taken without a restart
     // (`web::static_assets`).
     "reload_web",
+    // `restart-intent.json` 写了再重启的，起来以后自己接上被打断的对话
+    // （`restart_resume`）：Cowork 据此决定敢不敢到点强制重启。
+    "resume_after_restart",
 ];
 
 /// The contract as one value: the `server_info` frame carries it as is
@@ -134,7 +137,8 @@ mod tests {
                 "stop_host_device",
                 "conversation_device_pick",
                 "conversation_device_split",
-                "reload_web"
+                "reload_web",
+                "resume_after_restart"
             ])
         );
     }

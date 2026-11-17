@@ -44,16 +44,23 @@ pub async fn interrupt_stranded_turns_core(conn: &sea_orm::DatabaseConnection) {
 /// 退出时：本进程连接上还在跑的回合先标成被打断，再去 cancel 智能体。
 /// 先标再 cancel：cancel 的写库是 `in_progress → cancelled` 的 CAS，先 cancel 的话就成了普通的
 /// 「已取消」；先标了 CAS 就落空，不会再写、也不发事件。只标本进程绑定的对话，
-/// 同一个数据目录别的进程在跑的不碰。只打日志、不返回错误，标完不发事件（服务一停网页重连会整表重拉）。
+/// 同一个数据目录别的进程在跑的不碰。不返回错误，标完不发事件（服务一停网页重连会整表重拉）。
+/// 回这次标了的对话 id（出错时是空的），计划内重启要记下来（`restart_resume`）。
 pub async fn interrupt_running_turns_core(
     conn: &sea_orm::DatabaseConnection,
     manager: &crate::acp::manager::ConnectionManager,
-) {
+) -> Vec<i32> {
     let bound = manager.bound_conversation_ids().await;
     match conversation_service::interrupt_in_progress(conn, Some(&bound)).await {
-        Ok(ids) if ids.is_empty() => {}
-        Ok(ids) => tracing::info!("[quit] turns still running marked interrupted: {ids:?}"),
-        Err(e) => tracing::warn!("[quit] marking running turns as interrupted: {e}"),
+        Ok(ids) if ids.is_empty() => ids,
+        Ok(ids) => {
+            tracing::info!("[quit] turns still running marked interrupted: {ids:?}");
+            ids
+        }
+        Err(e) => {
+            tracing::warn!("[quit] marking running turns as interrupted: {e}");
+            Vec::new()
+        }
     }
 }
 

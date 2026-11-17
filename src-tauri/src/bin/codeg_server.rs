@@ -707,6 +707,18 @@ async fn async_main(
     let serve = axum::serve(listener, router).with_graceful_shutdown(
         codeg_lib::cowork::graceful_shutdown(state.clone(), stop_signal, stdin_closed),
     );
+    // 计划内重启以后：停机时记下的对话一个一个接上（`restart_resume`）。监听已经开好，
+    // 这个任务和接请求一起跑。
+    tokio::spawn(codeg_lib::restart_resume::run_live(
+        codeg_lib::restart_resume::LiveResumer {
+            db: codeg_lib::db::AppDatabase {
+                conn: state.db.conn.clone(),
+            },
+            manager: state.connection_manager.clone_ref(),
+            emitter: state.emitter.clone(),
+            data_dir: state.data_dir.clone(),
+        },
+    ));
     if let Err(e) = serve.await {
         tracing::error!("[SERVER] Server error: {}", e);
         state.cli_access.stop().await;

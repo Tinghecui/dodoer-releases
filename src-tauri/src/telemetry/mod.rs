@@ -120,6 +120,21 @@ pub fn api_error_detail(error: &ApiError) -> Option<String> {
     (!detail.is_empty()).then(|| scrub::scrub_db_detail(detail))
 }
 
+/// 数据库层故意的拒绝：`DbError::Validation` 和
+/// `DbError::Conflict` 变来的 `database_error`（app_error.rs 故意把它们留在
+/// `database_error` 下，前端按 detail 里的标记读）。比如删任务时工作区还有没
+/// 提交的文件（CODEG-SERVER-7）。这类 5xx 不是故障，遥测只记 WARN 日志。
+/// 按清洗之前的原文前缀判断。
+pub fn is_db_refusal(error: &ApiError) -> bool {
+    if error.code != "database_error" {
+        return false;
+    }
+    // 前缀必须在原文最开头，不去空白（开头带空白的不是 DbError 的 Display）。
+    error.detail.as_deref().is_some_and(|detail| {
+        detail.starts_with("validation error:") || detail.starts_with("conflict:")
+    })
+}
+
 /// Holds the Sentry client; dropping it sends what is queued (up to 2 s).
 #[must_use = "telemetry stops when the guard is dropped"]
 pub struct TelemetryGuard {
@@ -461,6 +476,34 @@ mod tests {
         assert_eq!(api_error_detail(&ApiError::of(&err)), None);
         let bare = AppCommandError::database_error("Database operation failed");
         assert_eq!(api_error_detail(&ApiError::of(&bare)), None);
+    }
+
+    #[test]
+    fn database_refusals_are_told_from_failures() {
+        let db = |detail: &str| {
+            ApiError::of(
+                &AppCommandError::database_error("Database operation failed").with_detail(detail),
+            )
+        };
+        assert!(is_db_refusal(&db(
+            "validation error: the worktree was kept: it still holds uncommitted files"
+        )));
+        assert!(is_db_refusal(&db("validation error: task is merging")));
+        assert!(is_db_refusal(&db("conflict: branch already claimed")));
+        // 前缀必须在原文最开头，开头带空白的不算。
+        assert!(!is_db_refusal(&db("  conflict: x")));
+        assert!(!is_db_refusal(&db(" validation error: x")));
+
+        assert!(!is_db_refusal(&db("database error: disk I/O error")));
+        assert!(!is_db_refusal(&db("migration error: unknown migration")));
+        assert!(!is_db_refusal(&db("io error: permission denied")));
+        assert!(!is_db_refusal(&db("not found: task 7")));
+        assert!(!is_db_refusal(&db("")));
+        let bare = AppCommandError::database_error("Database operation failed");
+        assert!(!is_db_refusal(&ApiError::of(&bare)));
+        // 别的错误码带同样的前缀也不算。
+        let other = AppCommandError::io_error("Write failed").with_detail("validation error: x");
+        assert!(!is_db_refusal(&ApiError::of(&other)));
     }
 
     #[cfg(not(feature = "telemetry"))]

@@ -574,7 +574,7 @@ where
     if status == StatusCode::NOT_IMPLEMENTED {
         report_unimplemented(&hub, &command);
     } else if status.is_server_error() {
-        report_server_error(
+        report_5xx(
             &hub,
             &method,
             &command,
@@ -602,6 +602,49 @@ fn span_status(status: u16) -> SpanStatus {
         _ if status < 500 => SpanStatus::FailedPrecondition,
         _ => SpanStatus::InternalError,
     }
+}
+
+/// 一个 5xx：数据库层故意的拒绝（[`super::is_db_refusal`]）只记 WARN 日志，
+/// 不开问题、不发邮件；其余照旧上报错误事件。
+fn report_5xx(hub: &Hub, method: &str, command: &str, status: u16, error: Option<&ApiError>) {
+    match error {
+        Some(error) if super::is_db_refusal(error) => {
+            report_refusal(hub, method, command, status, error)
+        }
+        _ => report_server_error(hub, method, command, status, error),
+    }
+}
+
+/// 数据库拒绝记成一条 WARN 日志，以后还能统计哪些拒绝最常见。说明只放清洗过的
+/// （[`super::api_error_detail`]），原文里可能有路径、分支名。
+fn report_refusal(hub: &Hub, method: &str, command: &str, status: u16, error: &ApiError) {
+    let command: String = command.chars().take(64).collect();
+    let mut body = format!(
+        "{method} /api/{command} → {status} {} (refused): {}",
+        error.code, error.message
+    );
+    if let Some(detail) = super::api_error_detail(error) {
+        body.push_str(" — ");
+        body.push_str(&detail);
+    }
+    let mut attributes = BTreeMap::new();
+    attributes.insert("command".to_string(), LogAttribute(command.into()));
+    attributes.insert(
+        "status".to_string(),
+        LogAttribute(status.to_string().into()),
+    );
+    attributes.insert(
+        "error_code".to_string(),
+        LogAttribute(error.code.clone().into()),
+    );
+    hub.capture_log(Log {
+        level: LogLevel::Warn,
+        body,
+        trace_id: None,
+        timestamp: SystemTime::now(),
+        severity_number: None,
+        attributes,
+    });
 }
 
 /// A 5xx is an error, grouped by command and error code — whether or not
@@ -935,6 +978,101 @@ mod tests {
         assert_eq!(log.body, "token=<redacted> closed");
         assert_eq!(log.attributes.len(), 1);
         assert!(log.attributes.contains_key("code.module.name"));
+    }
+
+    /// 测试用的传输：把发出去的信封留下来。
+    #[derive(Default)]
+    struct Captured(Mutex<Vec<Envelope>>);
+
+    impl Transport for Captured {
+        fn send_envelope(&self, envelope: Envelope) {
+            self.0.lock().unwrap().push(envelope);
+        }
+    }
+
+    /// 在一个只连着 [`Captured`] 的 hub 上报一个 5xx，返回发出去的事件和日志。
+    fn reported_5xx(status: u16, error: &ApiError) -> (Vec<Event<'static>>, Vec<Log>) {
+        let transport = Arc::new(Captured::default());
+        let mut options = ClientOptions::new().transport(transport.clone());
+        options.dsn = Some("https://key@sentry.invalid/1".parse().unwrap());
+        let client = Arc::new(Client::with_options(options));
+        let hub = Hub::new(Some(client.clone()), Arc::new(Default::default()));
+        report_5xx(&hub, "POST", "work_task_delete", status, Some(error));
+        client.flush(Some(Duration::from_secs(2)));
+        let mut events = Vec::new();
+        let mut logs = Vec::new();
+        for envelope in transport.0.lock().unwrap().iter() {
+            for item in envelope.items() {
+                match item {
+                    sentry_core::protocol::EnvelopeItem::Event(event) => {
+                        events.push(*event.clone())
+                    }
+                    sentry_core::protocol::EnvelopeItem::ItemContainer(
+                        sentry_core::protocol::ItemContainer::Logs(items),
+                    ) => logs.extend(items.iter().cloned()),
+                    _ => {}
+                }
+            }
+        }
+        (events, logs)
+    }
+
+    fn attribute(log: &Log, key: &str) -> String {
+        match &log.attributes.get(key).unwrap().0 {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        }
+    }
+
+    #[test]
+    fn database_refusals_are_logged_not_reported() {
+        for detail in [
+            "validation error: the worktree was kept: it still holds uncommitted files in /srv/wt/feat-x",
+            "conflict: branch already claimed",
+        ] {
+            let error = ApiError::of(
+                &AppCommandError::database_error("Database operation failed").with_detail(detail),
+            );
+            let (events, logs) = reported_5xx(500, &error);
+            assert!(events.is_empty(), "{detail}: no error event");
+            assert_eq!(logs.len(), 1, "{detail}: one log");
+            let log = &logs[0];
+            assert_eq!(log.level, LogLevel::Warn);
+            assert_eq!(attribute(log, "command"), "work_task_delete");
+            assert_eq!(attribute(log, "status"), "500");
+            assert_eq!(attribute(log, "error_code"), "database_error");
+            let scrubbed = super::super::api_error_detail(&error).unwrap();
+            assert!(log.body.contains(&scrubbed), "{}", log.body);
+            assert!(!log.body.contains("/srv/wt"), "{}", log.body);
+            assert!(log
+                .attributes
+                .values()
+                .all(|v| !v.0.to_string().contains("/srv/wt")));
+        }
+    }
+
+    #[test]
+    fn other_5xx_are_still_reported_as_errors() {
+        for error in [
+            AppCommandError::database_error("Database operation failed")
+                .with_detail("database error: disk I/O error"),
+            AppCommandError::task_execution_failed("agent crashed"),
+        ] {
+            let error = ApiError::of(&error);
+            let (events, logs) = reported_5xx(500, &error);
+            assert!(logs.is_empty());
+            assert_eq!(events.len(), 1);
+            let event = &events[0];
+            assert_eq!(event.level, SentryLevel::Error);
+            assert_eq!(
+                event
+                    .fingerprint
+                    .iter()
+                    .map(|f| f.as_ref())
+                    .collect::<Vec<_>>(),
+                vec!["api-5xx", "work_task_delete", error.code.as_str()]
+            );
+        }
     }
 
     /// Nothing is reported, and requests pass straight through, while no

@@ -739,8 +739,7 @@ impl TerminalManager {
                 let (mut child, input) = lock_completed(&self.completed)
                     .insert_ending(terminal_id.to_string(), instance);
                 drop(terminals);
-                let _ = child.kill();
-                let _ = child.wait();
+                end_shells(vec![child.as_mut()]);
                 // Only now: closed earlier, the input hands a live program an
                 // Enter and an end-of-input before it dies (a prompt would
                 // take its default), and the echoed "^D" ends up in the
@@ -939,9 +938,7 @@ impl TerminalManager {
                 completed.remove(&id);
             }
         }
-        for instance in &mut instances {
-            terminate_terminal(instance);
-        }
+        terminate_terminals(&mut instances);
         killed
     }
 
@@ -972,18 +969,111 @@ impl TerminalManager {
                 completed.remove(&id);
             }
         }
-        for instance in &mut instances {
-            terminate_terminal(instance);
-        }
+        terminate_terminals(&mut instances);
         tracing::info!("[TERM] kill_all killed_terminals={}", killed);
         killed
     }
 }
 
 fn terminate_terminal(instance: &mut TerminalInstance) {
-    let _ = instance._child.kill();
-    let _ = instance._child.wait();
-    cleanup_temp_files(&mut instance.temp_files);
+    terminate_terminals(std::slice::from_mut(instance));
+}
+
+/// 结束一批终端：整棵进程树一起结束（见 [`end_shells`]），再清临时文件。
+/// 一批一起结束，宽限期只等一次，全部关闭时不会一个终端等半秒。
+fn terminate_terminals(instances: &mut [TerminalInstance]) {
+    end_shells(
+        instances
+            .iter_mut()
+            .map(|instance| instance._child.as_mut())
+            .collect(),
+    );
+    for instance in instances.iter_mut() {
+        cleanup_temp_files(&mut instance.temp_files);
+    }
+}
+
+/// 外壳下面的进程收到 SIGTERM 以后，等它们自己退出的最长时间；过了还在的强制结束。
+const TREE_GRACE: Duration = Duration::from_millis(500);
+
+/// 结束外壳和挂在它进程树上的所有程序。
+///
+/// 伪终端库的 `kill` 只结束外壳一个进程，靠外壳把挂断转告给它起的程序：
+/// 不理挂断的（`nohup`、`trap '' HUP`）就留下来，继续占着端口。所以先趁外壳还在、
+/// 从它出发找得到整棵树的时候，给子树发 SIGTERM（子进程先于父进程），等
+/// [`TREE_GRACE`]，还在的补 SIGKILL，最后才结束外壳本身。外壳先没了，子进程会被
+/// 系统收养，从外壳出发就再也找不到了。
+///
+/// 只收还挂在外壳树上的；已经脱离出去（守护进程、另开会话）的不追。Windows 上
+/// `kill_tree` 不看信号名、直接结束，所以那边不用等。会阻塞约半秒，不要在终端表的
+/// 锁里、也不要在异步运行时的工作线程上调用。
+fn end_shells(mut shells: Vec<&mut (dyn portable_pty::Child + Send + 'static)>) {
+    let roots: Vec<u32> = shells
+        .iter()
+        .filter_map(|shell| shell.process_id())
+        .collect();
+    let mut signalled = Vec::new();
+    for &root in &roots {
+        signalled.extend(signal_tree(root, "SIGTERM", false));
+    }
+    if !signalled.is_empty() {
+        let deadline = Instant::now() + TREE_GRACE;
+        while signalled.iter().any(|&pid| process_alive(pid)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // 宽限期里新起的子进程从外壳再找一遍；忽略 SIGTERM、已经被收养走的按记下的进程号补。
+        for &root in &roots {
+            signal_tree(root, "SIGKILL", false);
+        }
+        for &pid in &signalled {
+            if process_alive(pid) {
+                signal_tree(pid, "SIGKILL", true);
+            }
+        }
+    }
+    for shell in shells.iter_mut() {
+        let _ = shell.kill();
+        let _ = shell.wait();
+    }
+}
+
+/// 给以 `pid` 为根的进程树发 `signal`（`include_target` 决定根自己收不收），
+/// 返回真的发出去了的进程号。
+fn signal_tree(pid: u32, signal: &str, include_target: bool) -> Vec<u32> {
+    let config = kill_tree::Config {
+        signal: signal.to_string(),
+        include_target,
+    };
+    match kill_tree::blocking::kill_tree_with_config(pid, &config) {
+        Ok(outputs) => outputs
+            .into_iter()
+            .filter_map(|output| match output {
+                kill_tree::Output::Killed { process_id, .. } => Some(process_id),
+                kill_tree::Output::MaybeAlreadyTerminated { .. } => None,
+            })
+            .collect(),
+        Err(err) => {
+            tracing::debug!("[TERM] kill_tree({signal}) pid={pid}: {err}");
+            Vec::new()
+        }
+    }
+}
+
+/// 进程号是不是还在（发探测信号 0）。Windows 上 `kill_tree` 已经直接结束了，
+/// 当作不在。
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: 信号 0 只做存在和权限检查，不发信号。
+    let r = unsafe { libc::kill(pid, 0) };
+    r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    false
 }
 
 fn cleanup_temp_files(files: &mut Vec<std::path::PathBuf>) {
@@ -1414,6 +1504,146 @@ mod tests {
 
         manager.kill(id).expect("close");
         assert!(!manager.snapshot(id).exists);
+    }
+
+    /// 测试里起的子进程：不管测试成败，结束时都强制结束它，不在机器上留进程。
+    #[cfg(not(target_os = "windows"))]
+    struct KillOnDrop(libc::pid_t);
+
+    #[cfg(not(target_os = "windows"))]
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(self.0, libc::SIGKILL);
+            }
+        }
+    }
+
+    /// 起一个终端，外壳在后台起一个忽略 `traps` 里信号的长时间子进程，
+    /// 把它的进程号写进固定的临时文件，外壳自己 `wait` 着不退出。
+    /// 返回外壳下面那个子进程的进程号。
+    #[cfg(not(target_os = "windows"))]
+    async fn spawn_with_grandchild(manager: &TerminalManager, id: &str, traps: &str) -> KillOnDrop {
+        use std::time::{Duration, Instant};
+
+        let pid_file =
+            std::env::temp_dir().join(format!("codeg-term-tree-{}-{id}.pid", std::process::id()));
+        let _ = std::fs::remove_file(&pid_file);
+        let command = format!(
+            "trap '' {traps}; sleep 300 & echo $! > '{}'; wait",
+            pid_file.display()
+        );
+        manager
+            .spawn_with_id(sleeping_shell(id, &command), EventEmitter::Noop)
+            .expect("spawn");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let pid = loop {
+            if let Some(pid) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+            {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "no pid from the shell");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let _ = std::fs::remove_file(&pid_file);
+        assert!(process_exists(pid), "the child is not running");
+        KillOnDrop(pid)
+    }
+
+    /// 发探测信号（0）：进程号还在返回 true，返回不存在（ESRCH）返回 false。
+    #[cfg(not(target_os = "windows"))]
+    fn process_exists(pid: libc::pid_t) -> bool {
+        let r = unsafe { libc::kill(pid, 0) };
+        !(r == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH))
+    }
+
+    /// 在 `budget` 内等进程号消失；消失了返回 true。
+    #[cfg(not(target_os = "windows"))]
+    async fn gone_within(pid: libc::pid_t, budget: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            if !process_exists(pid) {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn closing_a_terminal_ends_a_child_that_ignores_hangup() {
+        let manager = TerminalManager::new();
+        let id = "tree-close-hup";
+        let child = spawn_with_grandchild(&manager, id, "HUP").await;
+
+        manager.kill(id).expect("close");
+        assert!(
+            gone_within(child.0, std::time::Duration::from_secs(1)).await,
+            "closing the terminal left its child {} running",
+            child.0
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn closing_a_terminal_force_ends_a_child_that_ignores_sigterm() {
+        let manager = TerminalManager::new();
+        let id = "tree-close-term";
+        let child = spawn_with_grandchild(&manager, id, "HUP TERM").await;
+
+        let started = std::time::Instant::now();
+        manager.kill(id).expect("close");
+        assert!(
+            gone_within(child.0, std::time::Duration::from_millis(500)).await,
+            "closing the terminal left its SIGTERM-ignoring child {} running",
+            child.0
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(1500),
+            "escalation took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn stopping_a_terminal_ends_its_tree_and_keeps_the_output() {
+        let manager = TerminalManager::new();
+        let id = "tree-stop";
+        let child = spawn_with_grandchild(&manager, id, "HUP").await;
+
+        manager.stop(id).expect("stop");
+        assert!(
+            gone_within(child.0, std::time::Duration::from_secs(1)).await,
+            "stopping the terminal left its child {} running",
+            child.0
+        );
+        let stopped = manager.snapshot(id);
+        assert!(stopped.exists, "the stop forgot the terminal");
+        assert!(!stopped.alive);
+        manager.kill(id).expect("close");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn kill_all_ends_every_terminals_tree() {
+        let manager = TerminalManager::new();
+        let first = spawn_with_grandchild(&manager, "tree-all-1", "HUP").await;
+        let second = spawn_with_grandchild(&manager, "tree-all-2", "HUP TERM").await;
+
+        assert_eq!(manager.kill_all(), 2);
+        for child in [&first, &second] {
+            assert!(
+                gone_within(child.0, std::time::Duration::from_secs(1)).await,
+                "kill_all left child {} running",
+                child.0
+            );
+        }
     }
 
     #[cfg(not(target_os = "windows"))]

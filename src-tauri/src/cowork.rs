@@ -549,7 +549,16 @@ pub async fn graceful_shutdown(
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
     }
-    let terminals = state.terminal_manager.kill_all();
+    // 关终端要结束每个终端的整棵进程树、等约半秒宽限，放进阻塞任务，不占异步运行时的工作线程。
+    let terminals = {
+        let state = state.clone();
+        tokio::task::spawn_blocking(move || state.terminal_manager.kill_all())
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("[cowork] close terminals on shutdown: {e}");
+                0
+            })
+    };
     let n = cm.disconnect_all().await;
     tracing::info!(
         "[cowork] stop: cancelled {} turn(s), closed {terminals} terminal(s), disconnected {n} agent connection(s)",

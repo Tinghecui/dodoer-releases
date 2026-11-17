@@ -219,6 +219,44 @@ describe("extractLiveEditStats", () => {
     expect(stats).toEqual({ files: 1, additions: 4, deletions: 0 })
   })
 
+  it("counts the blank line a one-file changes edit adds to a new file", () => {
+    // 只改一个文件的 changes 编辑也要把替换内容带上：3 行变 4 行
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(writeInput("a\nb\nc\n", "c2.md")),
+        toolBlock(
+          JSON.stringify({
+            changes: { "c2.md": { old_string: "b", new_string: "b\n" } },
+          })
+        ),
+      ])
+    )
+    expect(stats).toEqual({ files: 1, additions: 4, deletions: 0 })
+  })
+
+  it("counts a write that overwrote an existing file by the patch it reported", () => {
+    // 结果里带了改动补丁（不是从 /dev/null 新建）：文件原来就在，按修改算
+    const block = toolBlock(writeInput("a\nB\nc\n", "notes.md"))
+    if (block.type !== "tool_call") throw new Error("not a tool call")
+    block.info.raw_output_chunks = [
+      "--- a/notes.md\n+++ b/notes.md\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c",
+    ]
+    const stats = extractLiveEditStats(msg([block]))
+    expect(stats).toEqual({ files: 1, additions: 1, deletions: 1 })
+  })
+
+  it("keeps a file created this turn new when a later write overwrites it", () => {
+    const overwrite = toolBlock(writeInput("a\nB\nc\n", "notes.md"))
+    if (overwrite.type !== "tool_call") throw new Error("not a tool call")
+    overwrite.info.raw_output_chunks = [
+      "--- a/notes.md\n+++ b/notes.md\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c",
+    ]
+    const stats = extractLiveEditStats(
+      msg([toolBlock(writeInput("a\nb\nc\n", "notes.md")), overwrite])
+    )
+    expect(stats).toEqual({ files: 1, additions: 3, deletions: 0 })
+  })
+
   it("ignores non-edit blocks", () => {
     const stats = extractLiveEditStats(
       msg([textBlock("hello"), toolBlock('{"command":"ls"}')])

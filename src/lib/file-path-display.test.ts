@@ -72,6 +72,49 @@ describe("isRemovedFileDiff / isAddedFileDiff precedence", () => {
   })
 })
 
+describe("hunk body lines that read like /dev/null headers", () => {
+  it("does not treat a deleted `-- /dev/null` body line as a new-file header", () => {
+    const diff = [
+      "--- a/notes.md",
+      "+++ b/notes.md",
+      "@@ -1,3 +1,3 @@",
+      " a",
+      "--- /dev/null",
+      "+B",
+      " c",
+    ].join("\n")
+    expect(isAddedFileDiff(diff)).toBe(false)
+  })
+
+  it("does not treat an added `++ /dev/null` body line as a deletion header", () => {
+    const diff = [
+      "--- a/notes.md",
+      "+++ b/notes.md",
+      "@@ -1,2 +1,2 @@",
+      "-b",
+      "+++ /dev/null",
+      " c",
+    ].join("\n")
+    expect(isRemovedFileDiff(diff)).toBe(false)
+  })
+
+  it("still sees a real /dev/null header after an earlier chunk", () => {
+    const joined = [
+      "--- a/notes.md",
+      "+++ b/notes.md",
+      "@@ -1 +1 @@",
+      "-a",
+      "+b",
+      "",
+      "--- /dev/null",
+      "+++ b/notes.md",
+      "@@ -0,0 +1,1 @@",
+      "+x",
+    ].join("\n")
+    expect(isAddedFileDiff(joined)).toBe(true)
+  })
+})
+
 describe("isAbsoluteFilePath", () => {
   it("treats POSIX and Windows drive paths as absolute", () => {
     expect(isAbsoluteFilePath("/repo/src/a.ts")).toBe(true)

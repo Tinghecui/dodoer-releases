@@ -7,7 +7,10 @@ import type {
   LiveMessage,
 } from "@/contexts/acp-connections-context"
 import { inferLiveToolName } from "@/lib/tool-call-normalization"
-import { toolCallFailedOrRejected } from "@/lib/session-files"
+import {
+  toolCallFailedOrRejected,
+  writeOverwritePatch,
+} from "@/lib/session-files"
 import { countLines } from "@/lib/activity/format"
 import { formatElapsedLabel } from "@/lib/format-elapsed"
 import {
@@ -159,6 +162,9 @@ interface FileLineChange {
   deletions: number
   // 这次新建了它（write 整篇写入、补丁 Add File）：写入的内容
   created?: string
+  // write 覆盖的是已经存在的文件（结果里带了改动补丁）：本轮没新建过它的话
+  // 算修改，增删是补丁的
+  overwritesExisting?: boolean
   // 这次是字符串替换式的编辑：能套到已知内容上
   edits?: TextEdit[]
   // 这次是补丁的 Update File 段：段里的正文，能套到已知内容上
@@ -424,6 +430,7 @@ function computeBlockEditContribution(
   // 只动一个文件时，这次对它做了什么（新建的内容 / 字符串编辑）
   let created: string | undefined
   let edits: TextEdit[] | undefined
+  let overwritesExisting = false
 
   const parsed = parseInputObject(block.info.raw_input)
   for (const path of collectParsedPaths(parsed)) files.add(path)
@@ -446,9 +453,15 @@ function computeBlockEditContribution(
       edits = stats.edits ?? undefined
     } else {
       const stats = extractWriteStats(parsed)
-      additions += stats.additions
-      deletions += stats.deletions
+      // 结果里带了改动补丁：覆盖的是原来就有的文件，增删按补丁算
+      const overwrite = writeOverwritePatch(
+        block.info.raw_output_chunks.join("") || block.info.content
+      )
+      const counted = overwrite ? countUnifiedDiffLineChanges(overwrite) : stats
+      additions += counted.additions
+      deletions += counted.deletions
       created = stats.content
+      overwritesExisting = overwrite !== null
     }
   }
 
@@ -458,7 +471,8 @@ function computeBlockEditContribution(
   if (files.size === 1) {
     const [path] = files
     const fromPatch = perFile?.get(path)
-    // 补丁里只有这一个文件的段时，它是 Add 还是 Update 看补丁；段外还有零散行就不算
+    // 补丁 / changes 编辑里只有这一个文件时，它是 Add 还是 Update、改了什么看
+    // perFile；补丁段外还有零散行就不算
     const patchEntry =
       fromPatch &&
       fromPatch.additions === additions &&
@@ -466,6 +480,8 @@ function computeBlockEditContribution(
         ? fromPatch
         : undefined
     const patchCreated = patchEntry?.created
+    // 只改一个文件的 `changes` 编辑，替换内容记在 perFile 里
+    const fileEdits = edits ?? patchEntry?.edits
     entries.push({
       path,
       additions,
@@ -473,7 +489,8 @@ function computeBlockEditContribution(
       ...(created !== undefined || patchCreated !== undefined
         ? { created: created ?? patchCreated }
         : {}),
-      ...(edits ? { edits } : {}),
+      ...(overwritesExisting ? { overwritesExisting } : {}),
+      ...(fileEdits ? { edits: fileEdits } : {}),
       ...(patchEntry?.patchHunks ? { patchHunks: patchEntry.patchHunks } : {}),
     })
     additions = 0
@@ -531,7 +548,12 @@ export function extractLiveEditStats(message: LiveMessage): LiveEditStats {
         written: false,
         content: null,
       }
-      if (change.created !== undefined) {
+      // 覆盖原来就有的文件（本轮没新建过它）按修改记补丁的增删；本轮新建过
+      // 的，覆盖了还是新文件，按新内容重新数
+      const createsFile =
+        change.created !== undefined &&
+        !(change.overwritesExisting && !entry.written)
+      if (createsFile && change.created !== undefined) {
         entry.additions = countLines(change.created)
         entry.deletions = 0
         entry.written = true

@@ -3,7 +3,9 @@ import { normalizeToolName } from "./tool-call-normalization"
 import {
   applyPatchHunks,
   applyTextEdits,
+  countUnifiedDiffLineChanges,
   estimateChangedLineStats,
+  splitNormalizedLines,
   textEditsLineDelta,
   type TextEdit,
 } from "./line-change-stats"
@@ -259,17 +261,13 @@ function isDiffDeletedLine(line: string): boolean {
   return line.startsWith("-") && !line.startsWith("---")
 }
 
+// 有 @@ 头时按头里声明的行数逐行算：正文里「--- x」「+++ x」这种内容行
+// （删「-- x」、加「++ x」）不会被当成文件头跳过
 function countDiffLines(text: string): DiffStat {
-  let additions = 0
-  let deletions = 0
-
-  for (const line of text.split("\n")) {
-    if (isDiffAddedLine(line)) additions += 1
-    if (isDiffDeletedLine(line)) deletions += 1
-  }
-
-  return { additions, deletions }
+  return countUnifiedDiffLineChanges(text)
 }
+
+const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/
 
 function buildUnifiedDiff(
   filePath: string,
@@ -497,7 +495,36 @@ function parseUnifiedDiffSections(diffText: string): Map<string, DiffSection> {
     })
   }
 
+  // 当前 @@ 块还剩几行旧文、几行新文没读：没读完时每一行都是正文，
+  // 「--- x」「+++ x」也不是文件头
+  let oldRemaining = 0
+  let newRemaining = 0
+
   for (const line of diffText.split("\n")) {
+    // 正文行只会以空格、+、-、\ 开头（空行是省了空格的上下文）；别的开头
+    // 说明 @@ 头写的行数不对，这块提前结束
+    const inHunk =
+      currentPath !== null &&
+      (oldRemaining > 0 || newRemaining > 0) &&
+      (line === "" || /^[ +\-\\]/.test(line))
+    if (inHunk) {
+      currentLines.push(line)
+      if (line.startsWith("\\")) continue // "\ No newline at end of file"
+      if (line.startsWith("+")) {
+        additions += 1
+        newRemaining -= 1
+      } else if (line.startsWith("-")) {
+        deletions += 1
+        oldRemaining -= 1
+      } else {
+        oldRemaining -= 1
+        newRemaining -= 1
+      }
+      continue
+    }
+    oldRemaining = 0
+    newRemaining = 0
+
     if (line.startsWith("diff --git ")) {
       flush()
 
@@ -540,6 +567,13 @@ function parseUnifiedDiffSections(diffText: string): Map<string, DiffSection> {
     if (!currentPath) continue
 
     currentLines.push(line)
+    const hunk = HUNK_HEADER.exec(line)
+    if (hunk) {
+      // 省略行数时是 1（`@@ -a +c @@`）
+      oldRemaining = hunk[1] === undefined ? 1 : Number(hunk[1])
+      newRemaining = hunk[2] === undefined ? 1 : Number(hunk[2])
+      continue
+    }
     if (isDiffAddedLine(line)) additions += 1
     if (isDiffDeletedLine(line)) deletions += 1
   }
@@ -868,6 +902,66 @@ function parseApplyPatchFileBodies(patchText: string): {
   return { added: result, updated }
 }
 
+type FileOpDescriptor = ReturnType<typeof describeFileOp>
+
+/** 一个文件到目前为止的增删，回复卡片和消息导航按同一种算法累计。 */
+interface FileLineState {
+  additions: number
+  deletions: number
+  // 新建过（write / 补丁 Add File）：additions 记的是文件现在的行数
+  created: boolean
+  // 新建过的文件现在的内容，套不上编辑以后就不知道了（null）
+  content: string | null
+}
+
+/**
+ * 把一次操作记到文件的累计上。新建（write 整篇写入、补丁 Add File）是把整个
+ * 文件写成这次的内容：之前的增删都被覆盖，从这次写入的行数重新算起。新建过
+ * 的文件之后再改，记的是文件现在有几行（新文件卡片显示的就是它）：能套到已知
+ * 内容上的编辑照着改一遍再数，套不上的按换行符 / 补丁的净增减算。
+ */
+function applyFileOp(
+  acc: FileLineState,
+  toolName: string,
+  op: FileOpDescriptor,
+  diff: DiffStat | null,
+  overwritesExisting = false
+): void {
+  // 覆盖的是原来就有的文件（不是这次回复里新建的）：算一次修改，diff 是工具
+  // 报的补丁的增删；这次回复里新建过的，覆盖了还是新文件，按新内容重新算
+  const createsFile =
+    (toolName === "write" || op.created !== null) &&
+    !(overwritesExisting && !acc.created)
+  if (createsFile) {
+    acc.created = true
+    acc.content = op.created
+    acc.additions =
+      op.created !== null ? countLines(op.created) : (diff?.additions ?? 0)
+    acc.deletions = 0
+  } else if (acc.created) {
+    const edited =
+      acc.content === null
+        ? null
+        : op.edits
+          ? applyTextEdits(acc.content, op.edits)
+          : op.patchHunks
+            ? applyPatchHunks(acc.content, op.patchHunks)
+            : null
+    if (edited !== null) {
+      acc.additions = countLines(edited)
+    } else {
+      const delta = op.edits
+        ? textEditsLineDelta(op.edits)
+        : (diff?.additions ?? 0) - (diff?.deletions ?? 0)
+      acc.additions = Math.max(0, acc.additions + delta)
+    }
+    acc.content = edited
+  } else {
+    acc.additions += diff?.additions ?? 0
+    acc.deletions += diff?.deletions ?? 0
+  }
+}
+
 function extractUserMessage(turn: MessageTurn): string {
   for (const block of turn.blocks) {
     if (block.type === "text" && block.text) {
@@ -888,6 +982,11 @@ interface TurnFileChange {
   additions: number
   deletions: number
   diff: string | null
+  /** 归一化后的工具名和这次对文件做了什么，分组时按回复卡片的算法累计行数 */
+  toolName: string
+  op: FileOpDescriptor
+  /** write 覆盖的是已经存在的文件（见 writeOverwritePatch） */
+  overwritesExisting: boolean
 }
 
 /**
@@ -917,12 +1016,12 @@ function turnFileChanges(turn: MessageTurn): TurnFileChange[] {
 
     for (const [fileIndex, filePath] of filePaths.entries()) {
       const normalizedPath = normalizePath(filePath)
-      const diff = computeLineDiff(
-        normalized,
-        block.input_preview,
-        normalizedPath
-      )
       const toolOutput = findToolResultOutput(turn.blocks, block.tool_use_id)
+      const overwrite =
+        normalized === "write" ? writeOverwritePatch(toolOutput) : null
+      const diff = overwrite
+        ? countDiffLines(overwrite)
+        : computeLineDiff(normalized, block.input_preview, normalizedPath)
       const diffChunk = buildDiffChunk(
         normalized,
         block.input_preview,
@@ -936,6 +1035,9 @@ function turnFileChanges(turn: MessageTurn): TurnFileChange[] {
         additions: diff?.additions ?? 0,
         deletions: diff?.deletions ?? 0,
         diff: diffChunk?.trim() ? diffChunk.trim() : null,
+        toolName: normalized,
+        op: describeFileOp(normalized, block.input_preview, normalizedPath),
+        overwritesExisting: overwrite !== null,
       })
     }
   }
@@ -998,6 +1100,12 @@ export function extractSessionFilesGrouped(
   const groups: UserMessageGroup[] = []
   let currentUserTurn: MessageTurn | null = null
   let currentFiles: FileChangeStat[] = []
+  // 这一组里每个文件的累计和它的各条记录：新建过的文件按现在的行数算，
+  // 整个数记在最近一条上、之前几条清零，各条相加和回复卡片对得上
+  let currentByPath = new Map<
+    string,
+    { state: FileLineState; entries: FileChangeStat[] }
+  >()
 
   const flushGroup = () => {
     if (!currentUserTurn) return
@@ -1018,19 +1126,45 @@ export function extractSessionFilesGrouped(
       flushGroup()
       currentUserTurn = turn
       currentFiles = []
+      currentByPath = new Map()
       continue
     }
 
     if (turn.role !== "assistant") continue
 
     for (const change of turnFileChanges(turn)) {
-      currentFiles.push({
+      const entry: FileChangeStat = {
         id: `${change.idPrefix}:${currentFiles.length}`,
         path: change.path,
         additions: change.additions,
         deletions: change.deletions,
         diff: change.diff,
-      })
+      }
+      currentFiles.push(entry)
+
+      let file = currentByPath.get(change.path)
+      if (!file) {
+        file = {
+          state: { additions: 0, deletions: 0, created: false, content: null },
+          entries: [],
+        }
+        currentByPath.set(change.path, file)
+      }
+      file.entries.push(entry)
+      applyFileOp(
+        file.state,
+        change.toolName,
+        change.op,
+        { additions: change.additions, deletions: change.deletions },
+        change.overwritesExisting
+      )
+      if (file.state.created) {
+        for (const earlier of file.entries) {
+          earlier.additions = 0
+          earlier.deletions = 0
+        }
+        entry.additions = file.state.additions
+      }
     }
   }
 
@@ -1113,15 +1247,9 @@ function writeDidNotLand(
 export function extractReplyFileChanges(
   turns: MessageTurn[]
 ): FileChangeStat[] {
-  interface Acc {
+  interface Acc extends FileLineState {
     path: string
-    additions: number
-    deletions: number
     diffs: string[]
-    // 这次回复里新建过（write / 补丁 Add File）：additions 记的是文件现在的行数
-    created: boolean
-    // 新建过的文件现在的内容，套不上编辑以后就不知道了（null）
-    content: string | null
   }
   const byPath = new Map<string, Acc>()
   const order: string[] = []
@@ -1143,14 +1271,14 @@ export function extractReplyFileChanges(
       if (filePaths.length === 0) continue
 
       const toolOutput = findToolResultOutput(turn.blocks, block.tool_use_id)
+      const overwrite =
+        normalized === "write" ? writeOverwritePatch(toolOutput) : null
 
       for (const filePath of filePaths) {
         const normalizedPath = normalizePath(filePath)
-        const diff = computeLineDiff(
-          normalized,
-          block.input_preview,
-          normalizedPath
-        )
+        const diff = overwrite
+          ? countDiffLines(overwrite)
+          : computeLineDiff(normalized, block.input_preview, normalizedPath)
         const diffChunk = buildDiffChunk(
           normalized,
           block.input_preview,
@@ -1176,40 +1304,7 @@ export function extractReplyFileChanges(
           block.input_preview,
           normalizedPath
         )
-        // 新建（write 整篇写入、补丁 Add File）是把整个文件写成这次的内容：
-        // 之前的增删都被覆盖，从这次写入的行数重新算起。新建过的文件之后再改，
-        // 记的是文件现在有几行（新文件卡片显示的就是它）：能套到已知内容上的
-        // 编辑照着改一遍再数，套不上的按换行符 / 补丁的净增减算。
-        if (normalized === "write" || op.created !== null) {
-          acc.created = true
-          acc.content = op.created
-          acc.additions =
-            op.created !== null
-              ? countLines(op.created)
-              : (diff?.additions ?? 0)
-          acc.deletions = 0
-        } else if (acc.created) {
-          const edited =
-            acc.content === null
-              ? null
-              : op.edits
-                ? applyTextEdits(acc.content, op.edits)
-                : op.patchHunks
-                  ? applyPatchHunks(acc.content, op.patchHunks)
-                  : null
-          if (edited !== null) {
-            acc.additions = countLines(edited)
-          } else {
-            const delta = op.edits
-              ? textEditsLineDelta(op.edits)
-              : (diff?.additions ?? 0) - (diff?.deletions ?? 0)
-            acc.additions = Math.max(0, acc.additions + delta)
-          }
-          acc.content = edited
-        } else {
-          acc.additions += diff?.additions ?? 0
-          acc.deletions += diff?.deletions ?? 0
-        }
+        applyFileOp(acc, normalized, op, diff, overwrite !== null)
         if (diffChunk?.trim()) acc.diffs.push(diffChunk.trim())
       }
     }
@@ -1286,6 +1381,23 @@ export function buildSessionFileDiff(
   return chunks.join("\n\n")
 }
 
+/**
+ * 整篇写入（write）覆盖的是已经存在的文件时，工具结果里带的改动补丁；新建的
+ * 文件返回 null。只看工具输入分不出文件原来在不在，靠的是工具自己报的结果：
+ * Claude Code 覆盖已有文件时历史里记着按 structuredPatch 重建的补丁（有 @@ 头、
+ * 旧文件那一边不是 /dev/null），新建时结果只有一句「File created …」。
+ */
+export function writeOverwritePatch(toolOutput: string | null): string | null {
+  if (!toolOutput) return null
+  const firstHunk = toolOutput.search(/^@@ /m)
+  if (firstHunk < 0) return null
+  // 只看第一个 @@ 头之前的文件头：正文里删掉的「-- /dev/null」也写成
+  // 「--- /dev/null」，不能当成新建文件的标记
+  const header = toolOutput.slice(0, firstHunk)
+  if (/^--- \/dev\/null\s*$/m.test(header)) return null
+  return toolOutput.trim()
+}
+
 /** Find the tool_result output matching a tool_use_id within the same turn. */
 function findToolResultOutput(
   blocks: ContentBlock[],
@@ -1355,12 +1467,17 @@ function buildDiffChunk(
   }
 
   if (op === "write") {
+    // 覆盖已有文件：用工具报的改动补丁，显示成修改而不是整篇新增
+    const overwrite = writeOverwritePatch(toolOutput ?? null)
+    if (overwrite) return overwrite
+
     if (!parsed) return null
 
     const content = typeof parsed.content === "string" ? parsed.content : ""
     if (!content) return null
 
-    const newLines = content.split("\n")
+    // 结尾的换行不另算一行，和行数统计同一种数法
+    const newLines = splitNormalizedLines(content)
     const lines: string[] = [
       "--- /dev/null",
       `+++ b/${filePath}`,

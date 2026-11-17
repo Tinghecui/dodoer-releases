@@ -5,6 +5,7 @@ import {
   extractReplyFileChanges,
   extractSessionFilesGrouped,
   warmTurnFileChanges,
+  writeOverwritePatch,
 } from "./session-files"
 import { isAddedFileDiff, isRemovedFileDiff } from "./file-path-display"
 import type { MessageTurn } from "./types"
@@ -756,5 +757,177 @@ describe("extractReplyFileChanges: declined and failed writes", () => {
     ])
 
     expect(files.map((f) => f.path)).toEqual(["/repo/kept.txt"])
+  })
+})
+
+describe("新建文件的行数在各处对得上", () => {
+  const sumOf = (files: { additions: number; deletions: number }[]) =>
+    files.reduce(
+      (acc, f) => ({
+        additions: acc.additions + f.additions,
+        deletions: acc.deletions + f.deletions,
+      }),
+      { additions: 0, deletions: 0 }
+    )
+
+  it("a write's diff has no extra empty line for the trailing newline", () => {
+    const [file] = extractReplyFileChanges([
+      writeTurn("a1", "t1", "/repo/c2.md", "a\nb\nc\n"),
+    ])
+    expect(file.diff).toBe(
+      "--- /dev/null\n+++ b//repo/c2.md\n@@ -0,0 +1,3 @@\n+a\n+b\n+c"
+    )
+  })
+
+  it("the navigator's groups count a second write to the same file as replacing the first", () => {
+    const [group] = extractSessionFilesGrouped([
+      userTurn("u1", "go"),
+      writeTurn("a1", "t1", "/repo/c2.md", "a\nb\nc\n"),
+      writeTurn("a2", "t2", "/repo/c2.md", "x\ny\n"),
+    ])
+    expect(sumOf(group.files)).toEqual({ additions: 2, deletions: 0 })
+  })
+
+  it("the navigator's groups count a new file edited afterwards by its current lines", () => {
+    const turns = [
+      userTurn("u1", "go"),
+      writeTurn("a1", "t1", "/repo/c2.md", "a\nb\nc\n"),
+      editTurn("a2", "t2", "/repo/c2.md", "b", "b\n"),
+    ]
+    const [group] = extractSessionFilesGrouped(turns)
+    const [reply] = extractReplyFileChanges(turns.slice(1))
+    expect(sumOf(group.files)).toEqual({ additions: 4, deletions: 0 })
+    expect(sumOf(group.files)).toEqual({
+      additions: reply.additions,
+      deletions: reply.deletions,
+    })
+  })
+
+  it("counts unified diff body lines that look like file headers", () => {
+    // 删「-- x」、加「++ y」：正文写成「--- x」「+++ y」
+    const patch =
+      "--- a/a.lua\n+++ b/a.lua\n@@ -1,2 +1,2 @@\n ctx\n--- x\n+++ y"
+    const [file] = extractReplyFileChanges([applyPatchTurn("a1", "t1", patch)])
+    expect(file.path).toBe("a.lua")
+    expect({ additions: file.additions, deletions: file.deletions }).toEqual({
+      additions: 1,
+      deletions: 1,
+    })
+  })
+
+  it("counts header-like lines in an edit change's unified diff", () => {
+    const turn: MessageTurn = {
+      id: "a1",
+      role: "assistant",
+      blocks: [
+        {
+          type: "tool_use",
+          tool_use_id: "t1",
+          tool_name: "Edit",
+          input_preview: JSON.stringify({
+            changes: {
+              "/repo/a.lua": {
+                diff: "--- a/a.lua\n+++ b/a.lua\n@@ -1 +1 @@\n--- x\n+++ y",
+              },
+            },
+          }),
+        },
+      ],
+      timestamp: "2024-01-01T00:00:01Z",
+    }
+    const [file] = extractReplyFileChanges([turn])
+    expect({ additions: file.additions, deletions: file.deletions }).toEqual({
+      additions: 1,
+      deletions: 1,
+    })
+  })
+})
+
+describe("整篇写入已经存在的文件算修改", () => {
+  // Claude Code 覆盖已有文件时，历史里的结果是按 structuredPatch 重建的补丁；
+  // 新建文件的结果没有补丁（「File created successfully at: …」）
+  const OVERWRITE_PATCH =
+    "--- a//repo/notes.md\n+++ b//repo/notes.md\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c"
+
+  function writeWithOutput(
+    id: string,
+    toolId: string,
+    content: string,
+    output: string
+  ): MessageTurn {
+    const turn = writeTurn(id, toolId, "/repo/notes.md", content)
+    return {
+      ...turn,
+      blocks: [
+        ...turn.blocks,
+        {
+          type: "tool_result",
+          tool_use_id: toolId,
+          output_preview: output,
+          is_error: false,
+        },
+      ],
+    }
+  }
+
+  it("shows an overwrite of an existing file as a modification with the patch's counts", () => {
+    const [file] = extractReplyFileChanges([
+      writeWithOutput("a1", "t1", "a\nB\nc\n", OVERWRITE_PATCH),
+    ])
+    expect(isAddedFileDiff(file.diff)).toBe(false)
+    expect(file.diff).toBe(OVERWRITE_PATCH)
+    expect({ additions: file.additions, deletions: file.deletions }).toEqual({
+      additions: 1,
+      deletions: 1,
+    })
+  })
+
+  it("a deleted body line that reads like a /dev/null header still counts as an overwrite", () => {
+    // 被删的正文是「-- /dev/null」，补丁里写成「--- /dev/null」，不是文件头
+    const patch =
+      "--- a//repo/notes.md\n+++ b//repo/notes.md\n@@ -1,3 +1,3 @@\n a\n--- /dev/null\n+B\n c"
+    expect(writeOverwritePatch(patch)).toBe(patch)
+    const [file] = extractReplyFileChanges([
+      writeWithOutput("a1", "t1", "a\nB\nc\n", patch),
+    ])
+    expect(isAddedFileDiff(file.diff)).toBe(false)
+    expect(file.diff).toBe(patch)
+    expect({ additions: file.additions, deletions: file.deletions }).toEqual({
+      additions: 1,
+      deletions: 1,
+    })
+  })
+
+  it("the navigator counts an overwrite like the reply card", () => {
+    const [group] = extractSessionFilesGrouped([
+      userTurn("u1", "go"),
+      writeWithOutput("a1", "t1", "a\nB\nc\n", OVERWRITE_PATCH),
+    ])
+    expect(group.files).toHaveLength(1)
+    expect(isAddedFileDiff(group.files[0].diff)).toBe(false)
+    expect({
+      additions: group.files[0].additions,
+      deletions: group.files[0].deletions,
+    }).toEqual({ additions: 1, deletions: 1 })
+  })
+
+  it("a file created in the reply and then overwritten stays new with its current lines", () => {
+    const turns = [
+      writeWithOutput(
+        "a1",
+        "t1",
+        "a\nb\nc\n",
+        "File created successfully at: /repo/notes.md"
+      ),
+      writeWithOutput("a2", "t2", "a\nB\nc\n", OVERWRITE_PATCH),
+    ]
+    const [file] = extractReplyFileChanges(turns)
+    expect(isAddedFileDiff(file.diff)).toBe(true)
+    expect({ additions: file.additions, deletions: file.deletions }).toEqual({
+      additions: 3,
+      deletions: 0,
+    })
+    const [group] = extractSessionFilesGrouped([userTurn("u1", "go"), ...turns])
+    expect(group.files.reduce((sum, f) => sum + f.additions, 0)).toBe(3)
   })
 })

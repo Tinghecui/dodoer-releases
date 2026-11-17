@@ -4,9 +4,49 @@
  * card). Extracted so both call sites stay in sync.
  */
 
+const UNIFIED_HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/
+
+/**
+ * 去掉 unified diff 里 @@ 块的正文，只留文件头那些行。正文按 @@ 头写的行数
+ * 逐行吃掉：删掉的「-- /dev/null」在补丁里写成「--- /dev/null」，加上的
+ * 「++ /dev/null」写成「+++ /dev/null」，只按前缀分不清是正文还是文件头。
+ */
+function diffHeaderText(diff: string): string {
+  if (!/^@@ /m.test(diff)) return diff
+  const lines = diff.split("\n")
+  const kept: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    i += 1
+    kept.push(line)
+    const header = UNIFIED_HUNK_HEADER.exec(line)
+    if (!header) continue
+    // 省略行数时就是 1（`@@ -a +c @@`）
+    let oldRemaining = header[1] === undefined ? 1 : Number(header[1])
+    let newRemaining = header[2] === undefined ? 1 : Number(header[2])
+    while (i < lines.length && (oldRemaining > 0 || newRemaining > 0)) {
+      const body = lines[i]
+      if (body.startsWith("\\")) {
+        i += 1
+        continue
+      }
+      if (body.startsWith("-")) oldRemaining -= 1
+      else if (body.startsWith("+")) newRemaining -= 1
+      else if (body.startsWith(" ") || body === "") {
+        oldRemaining -= 1
+        newRemaining -= 1
+      } else break // 不是正文（行数写多了），这一块提前结束
+      i += 1
+    }
+  }
+  return kept.join("\n")
+}
+
 /** True when a unified diff represents a file deletion. */
 export function isRemovedFileDiff(diff: string | null): boolean {
   if (!diff) return false
+  diff = diffHeaderText(diff)
   return (
     /^\*\*\* Delete File:\s+/m.test(diff) ||
     /^deleted file mode\b/m.test(diff) ||
@@ -23,6 +63,7 @@ export function isRemovedFileDiff(diff: string | null): boolean {
  */
 export function isAddedFileDiff(diff: string | null): boolean {
   if (!diff) return false
+  diff = diffHeaderText(diff)
   return (
     /^\*\*\* Add File:\s+/m.test(diff) ||
     /^new file mode\b/m.test(diff) ||

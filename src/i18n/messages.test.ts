@@ -146,3 +146,43 @@ describe("the Done column reads as ended, not finished (#178)", () => {
     )
   })
 })
+
+// #412：静默升级每次都会上报一条升级记录，「发送诊断数据」的「会发什么」
+// 先写上它（每个语言都要有），「不会发什么」不变。
+describe("the diagnostics note lists the software update records (#412)", () => {
+  it.each([
+    [
+      "en",
+      en,
+      "the outcome of each software update (from which version to which, whether it succeeded, how long each step took, automatic or manual)",
+    ],
+    [
+      "zh-CN",
+      zhCN,
+      "每次软件更新的结果（从哪个版本到哪个版本、成功还是失败、各步花了多久、是自动还是手动）",
+    ],
+    [
+      "zh-TW",
+      zhTW,
+      "每次軟體更新的結果（從哪個版本到哪個版本、成功還是失敗、各步驟花了多久、是自動還是手動）",
+    ],
+    ["ja", ja, "ソフトウェア更新ごとの結果"],
+    ["ko", ko, "각 소프트웨어 업데이트의 결과"],
+    ["es", es, "el resultado de cada actualización de software"],
+    ["de", de, "das Ergebnis jedes Software-Updates"],
+    ["fr", fr, "le résultat de chaque mise à jour du logiciel"],
+    ["pt", pt, "o resultado de cada atualização do software"],
+    ["ar", ar, "نتيجة كل تحديث للبرنامج"],
+  ] as const)("%s", (_, messages, phrase) => {
+    expect(messages.CrashReportSettings.whatIsSent).toContain(phrase)
+  })
+
+  it("leaves what is not sent unchanged", () => {
+    expect(zhCN.CrashReportSettings.whatIsNotSent).toBe(
+      "不会发送：对话内容、代码和文件内容、文件路径、网址、终端输出、你的用户名。"
+    )
+    expect(en.CrashReportSettings.whatIsNotSent).toBe(
+      "Not sent: conversation content, code and file contents, file paths, web addresses, terminal output, your user name."
+    )
+  })
+})

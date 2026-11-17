@@ -20,14 +20,15 @@ use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, Query};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 
 use super::host_devices::{ago, now_ms, stopped_note};
-use super::host_registry::{HostRegistry, ShellTarget, TunnelError};
+use super::host_registry::{DialedSocket, HostRegistry, ShellTarget, TunnelError};
+use super::portal_device;
 use super::shutdown::ShutdownSignal;
 use crate::cli_run::CliRunService;
 use crate::host_ssh::client::ClientFiles;
@@ -35,6 +36,10 @@ use crate::host_ssh::tunnel::{NO_DESKTOP_NOTE, TUNNELS_PER_MINUTE, TUNNEL_PROTOC
 
 /// How long the desktop app has to dial back.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Cowork fork（#387）：门户吊销了的设备来拨隧道时，命令行那一端听到的原因。
+const PORTAL_DISCONNECTED_NOTE: &str =
+    "this device was disconnected (its access was revoked in the portal)";
 
 /// How long the keys outlast the last shell lent: an app between two event
 /// sockets registers again at once, and should find the same key let in.
@@ -109,7 +114,7 @@ impl HostTunnels {
         &self,
         device: Option<&str>,
         caller: Option<&str>,
-    ) -> Result<WebSocket, (StatusCode, String)> {
+    ) -> Result<DialedSocket, (StatusCode, String)> {
         let target = match device {
             Some(id) => ShellTarget::Device(id),
             None => ShellTarget::Default,
@@ -308,15 +313,26 @@ pub struct TunnelQuery {
 /// event socket — and good once.
 pub async fn desktop_end(
     ws: WebSocketUpgrade,
+    headers: HeaderMap,
     Query(query): Query<TunnelQuery>,
     Extension(registry): Extension<Arc<HostRegistry>>,
 ) -> Response {
     let Some(reply) = registry.claim_tunnel(&query.id) else {
         return (StatusCode::NOT_FOUND, "No tunnel waits on that id.").into_response();
     };
+    // Cowork fork（#387）：拨回来的是门户的哪台设备（`web::portal_device`），
+    // 在这里登记，标记跟着 socket 交给等着的命令行那一端。断开过的设备回 401，
+    // 并马上告诉命令行那一端，不让它等满 `DIAL_TIMEOUT`。
+    let lease = match portal_device::global().admit(&headers) {
+        Ok(lease) => lease,
+        Err(refused) => {
+            let _ = reply.send(Err(PORTAL_DISCONNECTED_NOTE.to_string()));
+            return refused.into_response();
+        }
+    };
     ws.protocols([TUNNEL_PROTOCOL])
         .on_upgrade(move |socket| async move {
-            let _ = reply.send(Ok(socket));
+            let _ = reply.send(Ok(DialedSocket { socket, lease }));
         })
         .into_response()
 }
@@ -324,10 +340,14 @@ pub async fn desktop_end(
 /// Carry each side's binary messages to the other until one closes.
 async fn join(
     cli: WebSocket,
-    desktop: WebSocket,
+    desktop: DialedSocket,
     shutdown: Option<Arc<ShutdownSignal>>,
     stop: Option<(Arc<HostRegistry>, String)>,
 ) {
+    let DialedSocket {
+        socket: desktop,
+        lease,
+    } = desktop;
     let (cli_out, cli_in) = cli.split();
     let (desktop_out, desktop_in) = desktop.split();
     let stopping = async {
@@ -348,6 +368,10 @@ async fn join(
         _ = stopping => {}
         _ = stopped => {
             tracing::info!("[host-tunnel] a tunnel ended: its device was stopped");
+        }
+        // Cowork fork（#387）：门户吊销了拨回来的那台设备。两头的 socket 随之丢掉、关上。
+        _ = lease.disconnected() => {
+            tracing::info!("[host-tunnel] a tunnel ended: its portal device was disconnected");
         }
     }
     tracing::debug!("[host-tunnel] a tunnel closed");
@@ -506,6 +530,237 @@ mod tests {
         request.headers_mut().insert(
             "sec-websocket-protocol",
             HeaderValue::from_static(TUNNEL_PROTOCOL),
+        );
+        match tokio_tungstenite::connect_async(request).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(response.status(), 404)
+            }
+            other => panic!("refused with 404, not {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// Cowork fork（#387）：只有两个端点的服务器，命令行那一端不准备 `ssh` 的
+    /// 文件（不需要 `ssh-keygen`）：照 `serve_cli_end` 那样向登记表要隧道、接上。
+    async fn serve_without_files(registry: Arc<HostRegistry>) -> String {
+        let asked = Arc::clone(&registry);
+        let cli_end = move |ws: WebSocketUpgrade, Query(query): Query<CliTunnelQuery>| {
+            let registry = Arc::clone(&asked);
+            async move {
+                let target = match query.device.as_deref() {
+                    Some(id) => ShellTarget::Device(id),
+                    None => ShellTarget::Default,
+                };
+                match registry
+                    .open_tunnel("ssh-ed25519 KEY", target, DIAL_TIMEOUT)
+                    .await
+                {
+                    Ok(desktop) => ws
+                        .protocols([TUNNEL_PROTOCOL])
+                        .on_upgrade(move |cli| join(cli, desktop, None, None))
+                        .into_response(),
+                    Err(error) => refusal(error).into_response(),
+                }
+            }
+        };
+        let app = Router::new()
+            .route(
+                TUNNEL_PATH,
+                get(desktop_end).layer(Extension(Arc::clone(&registry))),
+            )
+            .route("/api/cli_host_tunnel", get(cli_end));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{address}")
+    }
+
+    /// 桌面版拨回来时握手的结果：接上了，或者被回的状态码。
+    #[derive(Debug, PartialEq)]
+    enum Dialed {
+        Joined,
+        Refused(u16),
+    }
+
+    /// 一台借出命令行的假桌面版（设备簿编号 `device_id`），每个隧道指令都带着
+    /// 门户设备编号 `portal` 拨桌面那一端，把收到的二进制消息原样送回。
+    /// `dialed` 报每次握手的结果，`ended` 报每条接上的 socket 结束了。
+    fn fake_desktop(
+        registry: &Arc<HostRegistry>,
+        base: &str,
+        device_id: &str,
+        portal: &'static str,
+    ) -> (
+        crate::web::host_registry::HostRegistration,
+        mpsc::UnboundedReceiver<Dialed>,
+        mpsc::UnboundedReceiver<()>,
+    ) {
+        let (tx, mut orders) = mpsc::channel(8);
+        let registration = registry.register_on(
+            tx,
+            vec![CAPABILITY.to_string()],
+            None,
+            Some(ShellHost {
+                host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAA".to_string(),
+                user: "me".to_string(),
+                platform: None,
+            }),
+            Some(crate::host_device::HostDevice {
+                id: device_id.to_string(),
+                name: format!("Mac {}", &device_id[..4]),
+                model: "MacBook".into(),
+                kind: Some("laptop".into()),
+            }),
+            None,
+        );
+        let (dialed_tx, dialed) = mpsc::unbounded_channel();
+        let (ended_tx, ended) = mpsc::unbounded_channel();
+        let base = base.to_string();
+        tokio::spawn(async move {
+            while let Some(order) = orders.recv().await {
+                let ServerMsg::HostTunnel { tunnel_id, .. } = order else {
+                    continue;
+                };
+                let mut request = tunnel::ws_url(&base, &format!("{TUNNEL_PATH}?id={tunnel_id}"))
+                    .into_client_request()
+                    .unwrap();
+                let headers = request.headers_mut();
+                headers.insert(
+                    "sec-websocket-protocol",
+                    HeaderValue::from_static(TUNNEL_PROTOCOL),
+                );
+                headers.insert(
+                    portal_device::DEVICE_HEADER,
+                    HeaderValue::from_static(portal),
+                );
+                let mut socket = match tokio_tungstenite::connect_async(request).await {
+                    Ok((socket, _)) => socket,
+                    Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                        let _ = dialed_tx.send(Dialed::Refused(response.status().as_u16()));
+                        continue;
+                    }
+                    Err(e) => panic!("dial: {e}"),
+                };
+                let _ = dialed_tx.send(Dialed::Joined);
+                let ended_tx = ended_tx.clone();
+                tokio::spawn(async move {
+                    use tokio_tungstenite::tungstenite::Message as WsMessage;
+                    while let Some(Ok(message)) = socket.next().await {
+                        match message {
+                            WsMessage::Binary(bytes) => {
+                                if socket.send(WsMessage::Binary(bytes)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            WsMessage::Close(_) => break,
+                            _ => {}
+                        }
+                    }
+                    let _ = ended_tx.send(());
+                });
+            }
+        });
+        (registration, dialed, ended)
+    }
+
+    /// 命令行那一端发一条消息，经隧道送回来。
+    async fn echoes(cli: &mut tunnel::DialedTunnel) -> bool {
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+        if cli
+            .send(WsMessage::Binary(b"ping".to_vec().into()))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        matches!(
+            tokio::time::timeout(Duration::from_secs(3), cli.next()).await,
+            Ok(Some(Ok(WsMessage::Binary(bytes)))) if bytes.as_ref() == b"ping"
+        )
+    }
+
+    /// 等到命令行那一端的连接关了（3 秒内）。
+    async fn cli_ends(cli: &mut tunnel::DialedTunnel) {
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match cli.next().await {
+                    None | Some(Err(_)) | Some(Ok(WsMessage::Close(_))) => return,
+                    Some(Ok(_)) => {}
+                }
+            }
+        })
+        .await
+        .expect("the CLI end closed within 3 s");
+    }
+
+    /// Cowork fork（#387）：门户吊销一台设备，它拨回来的 `ssh` 隧道两头都在
+    /// 3 秒内结束，算进断开的条数；别的设备的隧道照常。
+    #[tokio::test]
+    async fn disconnecting_a_portal_device_ends_its_tunnels_only() {
+        const PORTAL_A: &str = "4a7e00000a01";
+        const PORTAL_B: &str = "4a7e00000b02";
+        let registry = Arc::new(HostRegistry::new());
+        let base = serve_without_files(Arc::clone(&registry)).await;
+        let mac_a = "aaaa0000000000000000000000000001";
+        let mac_b = "bbbb0000000000000000000000000002";
+        let (_reg_a, _dialed_a, mut ended_a) = fake_desktop(&registry, &base, mac_a, PORTAL_A);
+        let (_reg_b, _dialed_b, mut ended_b) = fake_desktop(&registry, &base, mac_b, PORTAL_B);
+
+        let mut cli_a = tunnel::dial_cli_end(&base, "t", Some(mac_a), None)
+            .await
+            .expect("tunnel to A");
+        let mut cli_b = tunnel::dial_cli_end(&base, "t", Some(mac_b), None)
+            .await
+            .expect("tunnel to B");
+        assert!(echoes(&mut cli_a).await);
+        assert!(echoes(&mut cli_b).await);
+
+        assert_eq!(portal_device::global().disconnect(PORTAL_A), 1);
+        cli_ends(&mut cli_a).await;
+        tokio::time::timeout(Duration::from_secs(3), ended_a.recv())
+            .await
+            .expect("the desktop end closed within 3 s");
+
+        assert!(echoes(&mut cli_b).await, "B's tunnel is still there");
+        assert!(ended_b.try_recv().is_err());
+    }
+
+    /// Cowork fork（#387）：断开过的门户设备来拨：没人等的 `id` 仍是 404；
+    /// 认到了回 401，等着的命令行那一端马上听到这台设备已被断开。
+    #[tokio::test]
+    async fn a_disconnected_portal_device_cannot_dial_back() {
+        const PORTAL_C: &str = "4a7e00000c03";
+        portal_device::global().disconnect(PORTAL_C);
+        let registry = Arc::new(HostRegistry::new());
+        let base = serve_without_files(Arc::clone(&registry)).await;
+        let mac_c = "cccc0000000000000000000000000003";
+        let (_reg, mut dialed, _ended) = fake_desktop(&registry, &base, mac_c, PORTAL_C);
+
+        let Err(refused) = tokio::time::timeout(
+            Duration::from_secs(3),
+            tunnel::dial_cli_end(&base, "t", Some(mac_c), None),
+        )
+        .await
+        .expect("told well before the dial timeout") else {
+            panic!("no tunnel");
+        };
+        assert!(refused.contains("disconnected"), "{refused}");
+        assert_eq!(dialed.recv().await, Some(Dialed::Refused(401)));
+        assert_eq!(portal_device::global().disconnect(PORTAL_C), 0);
+
+        // 没人等的 `id`：照旧 404，不管带不带编号。
+        let mut request = tunnel::ws_url(&base, &format!("{TUNNEL_PATH}?id=made-up"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            "sec-websocket-protocol",
+            HeaderValue::from_static(TUNNEL_PROTOCOL),
+        );
+        request.headers_mut().insert(
+            portal_device::DEVICE_HEADER,
+            HeaderValue::from_static(PORTAL_C),
         );
         match tokio_tungstenite::connect_async(request).await {
             Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {

@@ -37,6 +37,7 @@ use super::host_devices::{
     now_ms, DeviceBook, DeviceList, DeviceRecord, DeviceView, ForgetError, NameError, Presence,
     Seen, StopError,
 };
+use super::portal_device::ConnectionLease;
 use super::working_device::WorkingDevices;
 use super::ws_attach::ServerMsg;
 use crate::host_bridge::BridgeCall;
@@ -141,9 +142,19 @@ pub enum BrowserRouteError {
     UnknownTab,
 }
 
+/// The socket a host dialed for a tunnel, with the mark of the portal device
+/// that dialed it.
+///
+/// Cowork fork（#387）：标记是桌面版拨 `/ws/host-tunnel` 握手时登记的
+/// （`web::portal_device`）；门户吊销这台设备时，接好的隧道跟着结束。
+pub struct DialedSocket {
+    pub socket: WebSocket,
+    pub lease: ConnectionLease,
+}
+
 /// What a tunnel's waiting end gets: the socket the host dialed, or the
 /// host's reason for not dialing.
-pub type TunnelReply = oneshot::Sender<Result<WebSocket, String>>;
+pub type TunnelReply = oneshot::Sender<Result<DialedSocket, String>>;
 
 struct Host {
     id: u64,
@@ -978,7 +989,7 @@ impl HostRegistry {
         client_key: &str,
         target: ShellTarget<'_>,
         timeout: Duration,
-    ) -> Result<WebSocket, TunnelError> {
+    ) -> Result<DialedSocket, TunnelError> {
         let (tunnel_id, tx, rx) = {
             let mut inner = self.lock();
             let (host_id, tx, device) = {

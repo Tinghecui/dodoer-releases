@@ -143,6 +143,14 @@ export function toErrorMessage(error: unknown): string {
     return error.trim()
   }
 
+  // Cowork fork: 网页模式下非 2xx 时 throw 的是解析出来的错误体。门户、代理
+  // 回的常是 `{ error: "..." }`，没有 code 的也可能只有 message；取其中的文字，
+  // 不把整段 JSON 给用户看。
+  const body = asObject(error)
+  const bodyText =
+    normalizeString(body?.error) ?? normalizeString(body?.message)
+  if (bodyText) return bodyText
+
   try {
     const serialized = JSON.stringify(error)
     return serialized ? serialized.trim() : String(error)

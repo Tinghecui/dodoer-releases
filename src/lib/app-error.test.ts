@@ -49,6 +49,18 @@ describe("toErrorMessage for a request that got no response", () => {
 })
 
 // #366: 窗口口令被拒（代理打了标记）和命令自己登录失败要分得开。
+describe("toErrorMessage for a plain error body", () => {
+  it("takes the error field of { error } bodies instead of printing JSON", () => {
+    expect(toErrorMessage({ error: "qa injected 500" })).toBe("qa injected 500")
+  })
+
+  it("takes the message field when there is no code", () => {
+    expect(toErrorMessage({ message: "something broke" })).toBe(
+      "something broke"
+    )
+  })
+})
+
 describe("isRemoteTokenRejected", () => {
   it("is true only for authentication_failed carrying the proxy's marker", () => {
     expect(REMOTE_TOKEN_REJECTED_REASON).toBe("remote_token_rejected")

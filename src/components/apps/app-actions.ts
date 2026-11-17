@@ -7,6 +7,7 @@ import {
   startWorkbenchApp,
   stopWorkbenchApp,
 } from "@/lib/api"
+import { toErrorMessage } from "@/lib/app-error"
 import {
   getBrowserTabState,
   releaseBrowserTab,
@@ -36,9 +37,7 @@ export async function refreshApps(): Promise<void> {
   try {
     applyAppsSnapshot(await listWorkbenchApps())
   } catch (error) {
-    useWorkbenchAppsStore
-      .getState()
-      .setLoadError(error instanceof Error ? error.message : String(error))
+    useWorkbenchAppsStore.getState().setLoadError(toErrorMessage(error))
     throw error
   }
 }

@@ -5,14 +5,21 @@ import type { WorkbenchApp } from "@/lib/types"
 import { appSurfaceId } from "@/lib/workbench-apps"
 import { useWorkbenchAppsStore } from "@/stores/workbench-apps-store"
 
-import { applyAppsSnapshot, movedApp, withApp, withoutApp } from "./app-actions"
+import {
+  applyAppsSnapshot,
+  movedApp,
+  refreshApps,
+  withApp,
+  withoutApp,
+} from "./app-actions"
 
 const mocks = vi.hoisted(() => ({
   open: new Set<string>(),
   release: vi.fn(),
+  list: vi.fn(),
 }))
 
-vi.mock("@/lib/api", () => ({}))
+vi.mock("@/lib/api", () => ({ listWorkbenchApps: mocks.list }))
 vi.mock("@/lib/browser/browser-tab-store", () => ({
   getBrowserTabState: (key: string) => (mocks.open.has(key) ? {} : null),
   releaseBrowserTab: mocks.release,
@@ -92,5 +99,21 @@ describe("applyAppsSnapshot", () => {
       .applySnapshot({ apps: [app("a")], statuses: [] })
     applyAppsSnapshot({ apps: [], statuses: [] })
     expect(mocks.release).not.toHaveBeenCalled()
+  })
+})
+
+describe("refreshApps", () => {
+  it("keeps a readable reason when the request rejects with a plain object", async () => {
+    // web transport 非 2xx 时 throw 的是解析出来的错误体，不是 Error
+    const body = { error: "boom" }
+    mocks.list.mockRejectedValueOnce(body)
+    await expect(refreshApps()).rejects.toBe(body)
+    expect(useWorkbenchAppsStore.getState().loadError).toBe("boom")
+  })
+
+  it("shows the backend's message for an app error body", async () => {
+    mocks.list.mockRejectedValueOnce({ code: "internal", message: "disk full" })
+    await expect(refreshApps()).rejects.toBeTruthy()
+    expect(useWorkbenchAppsStore.getState().loadError).toBe("disk full")
   })
 })

@@ -38,6 +38,10 @@ c() { curl -s -o /tmp/body -w '%{http_code}' -X POST -H 'content-type: applicati
 FAIL=0
 chk() { if [ "$2" = "$3" ]; then echo "CHECK ok   $1: $2"; else echo "CHECK FAIL $1: got '$2' want '$3'"; FAIL=$((FAIL+1)); fi; }
 code() { curl -s -o /tmp/body -w '%{http_code}' -X POST -H 'content-type: application/json' "$@"; }
+# 服务端代码指纹（cowork-release-build.sh 的 server_rev）：包里有，codeg-server 从程序旁边读到、health 里报出来
+REV=$(cat $L/SERVER-REV 2>/dev/null)
+chk "SERVER-REV in the package" "$(printf '%s\n' "$REV" | grep -cE '^v1-[0-9a-f]{40}$')" 1
+chk "health reports SERVER-REV" "$(curl -s -X POST -H 'content-type: application/json' -H "$A" -d '{}' http://127.0.0.1:$P/api/health | grep -o '"server_rev":"[^"]*"')" "\"server_rev\":\"$REV\""
 echo "GET / title:        $(curl -s http://127.0.0.1:$P/ | grep -o '<title>[^<]*</title>' | head -1)"
 echo "GET /login:         $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$P/login)"
 echo "health no auth:     $(c -d '{}' http://127.0.0.1:$P/api/health)"

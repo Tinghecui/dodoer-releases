@@ -4,7 +4,8 @@
 #
 # - 一次只发一班：前一班还在编，新的推送排队，排队的只留最新的一个（concurrency），编的时候合进来的几个 PR 攒到下一班
 # - 编包和这个提交的 Test 同时开始，Test 过了才发（scripts/cowork-wait-test.sh）；Test 没过先重跑一次没过的 job，还没过或被更新的推送顶掉，这一班不发
-# - 不发：这个提交已经有 tag（手动发过）、上一版以来只改了文档（*.md、docs/）
+# - 不发：这个提交已经有 tag（手动发过）、上一版以来只改了文档（*.md、docs/）和 CI（.github/）。只改 CI 的那几班产品一个字节没变，
+#   每台 Mac 却要再下一遍桌面包（cowork-codeg #410）。改编包的 workflow 修发版的，要马上发就在 Actions 里手动跑这个 workflow（force）
 # - 一开始就占号：两个 tag 在 plan 里先建在这个提交上，编完的 Release 挂到已有的 tag 上；没发出来的 tag 最后删掉（untag），号留给下一班
 # - 更新说明：上一版以来公开 main 上各个提交说明里的「- 标题（#号）」行（public-sync.sh 推 main 时写进去，标题过了 denylist）
 # - 不给 cowork 开 runtime.lock 的 PR（那个只有手动 tag 才开）；员工的服务器从门户升级 codeg
@@ -16,6 +17,13 @@ name: release-train
 on:
   push:
     branches: [main]
+  # 手动发一班：上一版以来只改了文档和 CI 也照发（比如修好了编包的 workflow，要马上出一版）
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "只改了文档和 CI 也发"
+        type: boolean
+        default: true
 
 # cowork-release.yml、desktop-macos.yml 的发布 job 要 contents: write（发 Release）和 actions: write（查 Test、重跑没过的 job）；调用方给的不能比它们小
 permissions:
@@ -46,6 +54,7 @@ jobs:
         name: 发不发、发哪个号
         env:
           GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
         run: |
           set -euo pipefail
           tag_re='^cowork-codeg-v0\.([0-9]+)\.([0-9]+)$'
@@ -70,8 +79,11 @@ jobs:
           [[ -z "$here" ]] || skip "这个提交已经发过（$here）"
           last=$(git tag -l 'cowork-codeg-v*' | grep -E "$tag_re" | sort -V | tail -1 || true)
           [[ -n "$last" ]] || { echo "::error::没有 cowork-codeg-v0.Y.Z 的 tag，不知道从哪个号往上数"; exit 1; }
-          changed=$(git diff --name-only "$last" HEAD | grep -vE '(\.md$|^docs/)' || true)
-          [[ -n "$changed" ]] || skip "$last 以来只改了文档"
+          changed=$(git diff --name-only "$last" HEAD | grep -vE '(\.md$|^docs/|^\.github/)' || true)
+          if [[ -z "$changed" && "$FORCE" != "true" ]]; then
+            skip "$last 以来只改了文档和 CI（.github/）；要发就手动跑这个 workflow"
+          fi
+          [[ -n "$(git diff --name-only "$last" HEAD)" ]] || skip "$last 以来什么都没改"
 
           [[ "$last" =~ $tag_re ]]
           minor="${BASH_REMATCH[1]}"; patch=$(( BASH_REMATCH[2] + 1 ))
@@ -183,7 +195,7 @@ jobs:
     steps:
       # Intel 包一天才编一次（desktop-macos-intel.yml），挂在当天的某个版本上；一天十几个版本，30 个只够两天多，
       # 所以带 Intel 包的版本另外留最近 3 个（Intel 用户回退到上一版要用）
-      - name: server 包、桌面包各留最近 30 个，带 Intel 包的再多留 3 个
+      - name: server 包、桌面包各留最近 30 个，带 Intel 包的再多留 3 个，稳定版用得着的不删
         env:
           GH_TOKEN: ${{ github.token }}
           KEEP: "30"
@@ -195,10 +207,22 @@ jobs:
                   | "\(.created_at) \(.tag_name) \(any(.assets[]; .name | endswith("-macos-x64.app.tar.gz")))"' \
             | sort -r > "$RUNNER_TEMP/auto.txt"
           awk '$3 == "true" { print $2 }' "$RUNNER_TEMP/auto.txt" | head -n "$KEEP_X64" > "$RUNNER_TEMP/keep-x64.txt"
+          # 稳定版（stable 这个 Release，promote-stable.yml）用得着的也留着：清单里的下载地址指向的版本、最近 3 个稳定版
+          # （桌面包和配对的 server 包；稳定通道上的「回退到上一版」从 history.json 里挑）。读不到稳定版就整步失败、什么都不删
+          mkdir -p "$RUNNER_TEMP/stable"
+          if gh release view stable -R "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
+            gh release download stable -R "$GITHUB_REPOSITORY" -D "$RUNNER_TEMP/stable" -p '*.json'
+            { cat "$RUNNER_TEMP"/stable/latest*.json | grep -oE '/releases/download/[^/"]+/' | cut -d/ -f4
+              jq -r '.versions[:3][] | .tag, .server_tag' "$RUNNER_TEMP/stable/history.json"
+            } | sort -u > "$RUNNER_TEMP/keep-stable.txt"
+          else
+            : > "$RUNNER_TEMP/keep-stable.txt"
+          fi
           for prefix in cowork-codeg-v v1.; do
             awk -v p="$prefix" 'index($2, p) == 1 { print $2 }' "$RUNNER_TEMP/auto.txt" | tail -n "+$((KEEP + 1))" \
               | while read -r t; do
                   if grep -qxF "$t" "$RUNNER_TEMP/keep-x64.txt"; then echo "留着 $t（带 Intel 包）"; continue; fi
+                  if grep -qxF "$t" "$RUNNER_TEMP/keep-stable.txt"; then echo "留着 $t（稳定版用得着）"; continue; fi
                   gh release delete "$t" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag && echo "删了 $t"
                 done
           done

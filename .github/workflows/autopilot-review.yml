@@ -8,6 +8,8 @@
 # **手动触发时填的输入会原样出现在公开日志里**，只填数字和模型名。
 # 仓库变量：AUTOPILOT（off / record / on，默认 record）、AUTOPILOT_CLAUDE_AUTH（oauth / api，默认 oauth：订阅令牌；api = 组织的 API key，按 AUTOPILOT_DAILY_USD 限额）、
 # AUTOPILOT_REVIEW_MODEL（默认 claude-opus-5-5，和执行员同一个模型；独立靠的是不同的提示词、看不到执行员的推理）、AUTOPILOT_DAILY_USD（默认 15，和执行员共用）。
+# Codex 试审（2026-11-17）：审查员审完再让 Codex 审一遍，结论只贴评论、不挡合并。AUTOPILOT_CODEX（off / shadow，默认 shadow）、
+# AUTOPILOT_CODEX_MODEL（默认 gpt-6.1-sol）；key 是 Environment「ai-qa」的 CODEX_RELAY_KEY，没配就不跑。
 name: autopilot-review
 # 整个值要加引号：里面的「 #」不加引号会被 YAML 当成注释截掉
 run-name: "autopilot-review #${{ inputs.pr }}"
@@ -48,6 +50,8 @@ jobs:
       CLAUDE_AUTH: ${{ vars.AUTOPILOT_CLAUDE_AUTH || 'oauth' }}
       MODEL: ${{ inputs.model || vars.AUTOPILOT_REVIEW_MODEL || 'claude-opus-5-5' }}
       DAILY_USD: ${{ vars.AUTOPILOT_DAILY_USD || '15' }}
+      CODEX: ${{ vars.AUTOPILOT_CODEX || 'shadow' }}
+      CODEX_MODEL: ${{ vars.AUTOPILOT_CODEX_MODEL || 'gpt-6.1-sol' }}
       W: /home/runner/autopilot-work
     steps:
       - name: 取源码
@@ -78,14 +82,16 @@ jobs:
           # 一次只给一种 Claude 凭证（AUTOPILOT_CLAUDE_AUTH），同 autopilot-fix.yml
           ANTHROPIC_KEY: ${{ vars.AUTOPILOT_CLAUDE_AUTH == 'api' && secrets.CODEG_AGENT_ANTHROPIC_KEY || '' }}
           OAUTH_TOKEN: ${{ vars.AUTOPILOT_CLAUDE_AUTH != 'api' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          # Codex 试审走的中继（review.sh 末尾那一节）
+          CODEX_KEY: ${{ secrets.CODEX_RELAY_KEY }}
         run: |
           set -euo pipefail
           # 凭证写进只有本用户能读的文件、从环境里拿掉再 exec（同 autopilot-fix.yml）
           d="$RUNNER_TEMP/autopilot-secrets"; rm -rf "$d"; mkdir -m 700 "$d"
           printf '%s' "$PRIVATE_TOKEN" > "$d/gh"; printf '%s' "$ANTHROPIC_KEY" > "$d/anthropic"; printf '%s' "$OAUTH_TOKEN" > "$d/oauth"
           printf '%s' "$APP_KEY" > "$d/app_key"; printf '%s' "$APP_ID" > "$d/app_id"
-          printf '%s' "$STATUS_TOKEN" > "$d/status"
-          unset PRIVATE_TOKEN APP_KEY APP_ID ANTHROPIC_KEY OAUTH_TOKEN STATUS_TOKEN
+          printf '%s' "$STATUS_TOKEN" > "$d/status"; printf '%s' "$CODEX_KEY" > "$d/codex"
+          unset PRIVATE_TOKEN APP_KEY APP_ID ANTHROPIC_KEY OAUTH_TOKEN STATUS_TOKEN CODEX_KEY
           export AUTOPILOT_SECRETS="$d"
           exec bash .cowork/autopilot/sealed.sh review
 

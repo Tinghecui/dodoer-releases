@@ -1004,6 +1004,10 @@ export function SidebarConversationList({
   const branches = useAppWorkspaceStore((s) => s.branches)
   const ensureGitHead = useAppWorkspaceStore((s) => s.ensureGitHead)
   const loading = useAppWorkspaceStore((s) => s.conversationsLoading)
+  const conversationsLoaded = useAppWorkspaceStore((s) => s.conversationsLoaded)
+  // #538: 会话列表第一次还没取回来。这时各处「暂无…」提示换成「加载中…」，
+  // 不然看起来像会话全没了；取到过以后的后台刷新照旧显示列表。
+  const initialLoading = loading && !conversationsLoaded
   const error = useAppWorkspaceStore((s) => s.conversationsError)
   // #540: 项目列表一次都没取到时的原因（取到过的瞬时失败 store 不记）。
   const foldersError = useAppWorkspaceStore((s) => s.foldersError)
@@ -3284,6 +3288,14 @@ export function SidebarConversationList({
     )
   }
 
+  // #538: 第一次取会话时替代「暂无会话」「暂无最近会话」这些提示。
+  const firstLoadHint = (
+    <span className="relative flex items-center gap-1.5">
+      <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden />
+      {tCommon("loading")}
+    </span>
+  )
+
   const renderRow = (row: SidebarRow) => {
     if (row.kind === "section") {
       // Section headers are not folder-scoped, so they skip themeWrap.
@@ -3424,11 +3436,15 @@ export function SidebarConversationList({
           }}
         >
           <SubsessionAncestorRails depth={depth} />
-          <span className="relative truncate">
-            {row.totalConversationCount === 0
-              ? t("emptyFolderHint")
-              : t("noUnfinishedConversations")}
-          </span>
+          {initialLoading ? (
+            firstLoadHint
+          ) : (
+            <span className="relative truncate">
+              {row.totalConversationCount === 0
+                ? t("emptyFolderHint")
+                : t("noUnfinishedConversations")}
+            </span>
+          )}
         </div>
       )
     }
@@ -3437,7 +3453,11 @@ export function SidebarConversationList({
       // section header's text inset (px-[0.5rem]) rather than the folder rail.
       return (
         <div className="px-[0.5rem] py-[0.375rem] text-[0.75rem] text-muted-foreground/70">
-          {tagFilterActive ? tTags("filter.noMatches") : t("noChats")}
+          {initialLoading
+            ? firstLoadHint
+            : tagFilterActive
+              ? tTags("filter.noMatches")
+              : t("noChats")}
         </div>
       )
     }
@@ -3473,15 +3493,17 @@ export function SidebarConversationList({
       // filter so the user knows what to undo.
       return (
         <div className="px-[0.5rem] py-[0.375rem] text-[0.75rem] text-muted-foreground/70">
-          {tagFilterActive
-            ? tTags("filter.noMatches")
-            : recentFilter === "chats"
-              ? t("noRecentChats")
-              : recentFilter === "folders"
-                ? t("noRecentFolders")
-                : recentFilter === "cli"
-                  ? t("noRecentCli")
-                  : t("noRecent")}
+          {initialLoading
+            ? firstLoadHint
+            : tagFilterActive
+              ? tTags("filter.noMatches")
+              : recentFilter === "chats"
+                ? t("noRecentChats")
+                : recentFilter === "folders"
+                  ? t("noRecentFolders")
+                  : recentFilter === "cli"
+                    ? t("noRecentCli")
+                    : t("noRecent")}
         </div>
       )
     }

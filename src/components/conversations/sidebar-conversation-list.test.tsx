@@ -484,6 +484,59 @@ describe("SidebarConversationList — load failure offers a retry", () => {
   })
 })
 
+// #538: 会话列表第一次还没取回来时，项目照常显示，「暂无…」换成「加载中…」，
+// 不能看起来像会话全没了。
+describe("SidebarConversationList — first conversations load", () => {
+  const sidebar = enMessages.Folder.sidebar
+  const loadingText = enMessages.Folder.common.loading
+
+  it("shows loading instead of the empty hints before the first load lands", () => {
+    const folders = [folder(1, "demo"), folder(2, "docs-site")]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: [],
+      conversationsLoading: true,
+      conversationsLoaded: false,
+    })
+    const { getByText, queryAllByText, getAllByText } = render(tree())
+    expect(getByText("demo")).not.toBeNull()
+    expect(getByText("docs-site")).not.toBeNull()
+    expect(queryAllByText(sidebar.emptyFolderHint)).toHaveLength(0)
+    expect(queryAllByText(sidebar.noRecent)).toHaveLength(0)
+    expect(queryAllByText(sidebar.noChats)).toHaveLength(0)
+    expect(getAllByText(loadingText).length).toBeGreaterThan(0)
+  })
+
+  it("still says empty once the load finished with nothing", () => {
+    const folders = [folder(1, "demo")]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: [],
+      conversationsLoading: false,
+      conversationsLoaded: true,
+    })
+    const { getAllByText, queryByText } = render(tree())
+    expect(getAllByText(sidebar.emptyFolderHint).length).toBeGreaterThan(0)
+    expect(queryByText(loadingText)).toBeNull()
+  })
+
+  it("keeps the list while a later refresh is in flight", () => {
+    const folders = [folder(1, "demo")]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: [conv(11, 1)],
+      conversationsLoading: true,
+      conversationsLoaded: true,
+    })
+    const { getAllByText, queryByText } = render(tree())
+    expect(getAllByText("conv-11").length).toBeGreaterThan(0)
+    expect(queryByText(loadingText)).toBeNull()
+  })
+})
+
 // Cowork (AI QA #93): a newcomer's first step has a button of its own, not
 // only the Folders header's hover actions.
 describe("SidebarConversationList — Cowork first project button", () => {

@@ -6,6 +6,8 @@ import { ArrowUpCircle, Check, Sparkles } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 import { useAppUpdate } from "@/components/providers/update-provider"
 import { Button } from "@/components/ui/button"
+import { useIsMac } from "@/hooks/use-is-mac"
+import { compareVersions } from "@/lib/cowork/compat"
 import {
   Popover,
   PopoverContent,
@@ -117,6 +119,7 @@ export function StatusBarUpdate() {
   const locale = useLocale()
   const [open, setOpen] = useState(false)
   const update = useAppUpdate()
+  const isMac = useIsMac()
 
   if (!update) return null
 
@@ -136,6 +139,8 @@ export function StatusBarUpdate() {
     dismissAvailable,
     startUpdate,
     restart,
+    updateMode,
+    restartsWhenIdle,
   } = update
 
   // A relaunch is in progress: the countdown, the backend `restarting` event,
@@ -144,6 +149,20 @@ export function StatusBarUpdate() {
     restartCountdown !== null || state.status === "restarting" || isRestarting
   const ready = state.status === "ready_to_restart"
   const failed = state.status === "error"
+  // Cowork fork：macOS 桌面「自动更新」是自动安装时，下好的新版会在空闲时
+  // 自己重启换上，弹层里说一句。回退（下好的比现在的旧）不会自己重启；
+  // 同一版自动重启试满了也不会（桌面主程序说了算：restartsWhenIdle）。
+  const autoRestarts =
+    ready &&
+    isMac &&
+    usesTauriUpdater() &&
+    updateMode === "auto" &&
+    restartsWhenIdle === true &&
+    !(
+      state.version &&
+      currentVersion &&
+      compareVersions(state.version, currentVersion) < 0
+    )
   // A release the user could act on right now. An update they already started
   // outranks it, so this only holds while the lifecycle is settled.
   const offering = !!available && !restarting && !ready && !isUpdating
@@ -413,6 +432,11 @@ export function StatusBarUpdate() {
             )
           ) : null}
         </div>
+        {autoRestarts && (
+          <p className="text-right text-2xs leading-5 text-muted-foreground">
+            {t("autoRestartHint")}
+          </p>
+        )}
       </PopoverContent>
     </Popover>
   )

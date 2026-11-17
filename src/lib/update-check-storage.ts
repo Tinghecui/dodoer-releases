@@ -27,6 +27,9 @@ import type { AppUpdateInfo } from "@/lib/updater"
 
 const LAST_CHECK_KEY = "codeg.updateCheck.last"
 const DISMISSED_VERSION_KEY = "codeg.updateCheck.dismissedVersion"
+// Cowork fork：上一次**自动**开始下载的时间（epoch 毫秒）。自动下载 6 小时
+// 最多一次，手动点的不记、不看它。只有桌面窗口会自动下载，桌面上不分连接。
+const LAST_AUTO_DOWNLOAD_KEY = "codeg.updateCheck.lastAutoDownloadAt"
 
 export interface CachedUpdateCheck {
   /** Epoch ms when the check completed. */
@@ -133,6 +136,29 @@ export function writeDismissedVersion(version: string | null): void {
     const key = scoped(DISMISSED_VERSION_KEY)
     if (version) localStorage.setItem(key, version)
     else localStorage.removeItem(key)
+  } catch {
+    /* ignore */
+  }
+}
+
+/** When the window last started a download on its own, or null (never, or a
+ * value that is not a sane timestamp). */
+export function readLastAutoDownloadAt(): number | null {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = localStorage.getItem(scoped(LAST_AUTO_DOWNLOAD_KEY))
+    if (!raw) return null
+    const at = Number(raw)
+    return Number.isFinite(at) && at > 0 ? at : null
+  } catch {
+    return null
+  }
+}
+
+export function writeLastAutoDownloadAt(at: number): void {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(scoped(LAST_AUTO_DOWNLOAD_KEY), String(at))
   } catch {
     /* ignore */
   }

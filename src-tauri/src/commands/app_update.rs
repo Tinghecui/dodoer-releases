@@ -1127,6 +1127,28 @@ pub async fn take_update_announcement() -> Result<Option<Announcement>, AppComma
     .flatten())
 }
 
+/// Wait until this run's start confirmation is over (at most
+/// [`ANNOUNCE_WAIT`]; at once when nothing is awaited), without taking the
+/// "Updated to …" announcement. Windows call this first and only then
+/// [`take_update_announcement`], so a window closed during the minutes of
+/// waiting leaves the announcement for another one.
+#[tauri::command]
+pub async fn await_update_confirmation() -> Result<(), AppCommandError> {
+    let _ = tauri::async_runtime::spawn_blocking(|| {
+        if let Some(home) = JOURNAL_HOME.get() {
+            journal::await_confirmation(
+                &home.path,
+                &home.running,
+                &JOURNAL_LOCK,
+                &CONFIRM_GATE,
+                ANNOUNCE_WAIT,
+            );
+        }
+    })
+    .await;
+    Ok(())
+}
+
 /// How long to wait for each of the local daemon's answers.
 const IDLE_QUERY_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(idle::QUERY_TIMEOUT_SECS);
@@ -1160,7 +1182,6 @@ pub fn start_idle_restart(app: &tauri::AppHandle) {
             app.state::<AppUpdateStateHandle>().inner().clone()
         };
         let mut streak = IdleStreak::default();
-        let mut tried_here = IdleTries::default();
         let mut every_minute =
             tokio::time::interval(std::time::Duration::from_secs(idle::CHECK_EVERY_SECS));
         // The first tick is at once.
@@ -1174,20 +1195,7 @@ pub fn start_idle_restart(app: &tauri::AppHandle) {
                 continue;
             };
             let mode = crate::preferences::load().update_mode();
-            let journal = with_journal(|j, _| {
-                let rollback = j
-                    .attempt
-                    .as_ref()
-                    .is_some_and(|a| a.trigger == Trigger::Rollback);
-                (rollback, j.idle_tries(&version))
-            });
-            // 升级日志丢了、坏了也不把回退当成普通升级，次数也照样数：内存里
-            // 那份和日志里的合起来看。
-            let (rollback, tries) = idle::watch_facts(
-                READY_IS_ROLLBACK.load(Ordering::SeqCst),
-                journal,
-                tried_here.count(&version),
-            );
+            let (rollback, tries) = idle_watch_facts(&version);
             if !idle::should_watch(mode, ready, rollback, tries) {
                 streak.reset();
                 continue;
@@ -1204,7 +1212,7 @@ pub fn start_idle_restart(app: &tauri::AppHandle) {
             if !streak.observe(verdict) {
                 continue;
             }
-            tried_here.note(&version, tries);
+            idle_tried_here(|here| here.note(&version, tries));
             journal_event(|j, _| {
                 j.note_idle_try(&version);
                 None
@@ -1222,6 +1230,62 @@ pub fn start_idle_restart(app: &tauri::AppHandle) {
             }
         }
     });
+}
+
+/// 本进程里记的、这一版自动重启试过几次（[`IdleTries`]）：空闲检查记，
+/// [`update_restarts_when_idle`] 也要看。
+static IDLE_TRIED_HERE: std::sync::Mutex<IdleTries> = std::sync::Mutex::new(IdleTries::new());
+
+fn idle_tried_here<R>(f: impl FnOnce(&mut IdleTries) -> R) -> R {
+    let mut here = IDLE_TRIED_HERE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(&mut here)
+}
+
+/// 下好的 `version` 是不是回退下的、自动重启试过几次（[`idle::watch_facts`]）。
+/// 升级日志丢了、坏了也不把回退当成普通升级，次数也照样数：内存里那份和日志
+/// 里的合起来看。
+fn idle_watch_facts(version: &str) -> (bool, u32) {
+    let journal = with_journal(|j, _| {
+        let rollback = j
+            .attempt
+            .as_ref()
+            .is_some_and(|a| a.trigger == Trigger::Rollback);
+        (rollback, j.idle_tries(version))
+    });
+    idle::watch_facts(
+        READY_IS_ROLLBACK.load(Ordering::SeqCst),
+        journal,
+        idle_tried_here(|here| here.count(version)),
+    )
+}
+
+/// Will the downloaded update still be put in place on its own when the Mac
+/// is idle: the same test the idle check makes each minute
+/// ([`idle::should_watch`]: macOS, "Install automatically", `ReadyToRestart`,
+/// not a rollback, this version not yet tried [`idle::MAX_IDLE_TRIES`] times).
+/// The status bar only says "It restarts by itself when idle" when this is
+/// true; after two failed tries the button is the user's to press.
+#[tauri::command]
+pub async fn update_restarts_when_idle(
+    state: tauri::State<'_, AppUpdateStateHandle>,
+) -> Result<bool, AppCommandError> {
+    if !idle::restarts_when_idle_on(restart_install::CURRENT_PLATFORM) {
+        return Ok(false);
+    }
+    let snapshot = update_state::snapshot(state.inner());
+    let ready = snapshot.status == AppUpdateLifecycle::ReadyToRestart;
+    let Some(version) = snapshot.version.filter(|_| ready) else {
+        return Ok(false);
+    };
+    Ok(tauri::async_runtime::spawn_blocking(move || {
+        let mode = crate::preferences::load().update_mode();
+        let (rollback, tries) = idle_watch_facts(&version);
+        idle::should_watch(mode, ready, rollback, tries)
+    })
+    .await
+    .unwrap_or(false))
 }
 
 /// What [`idle::idle_verdict`] looks at, now. The local daemon's turns,

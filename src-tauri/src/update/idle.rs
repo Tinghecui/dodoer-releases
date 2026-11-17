@@ -195,6 +195,14 @@ pub struct IdleTries {
 }
 
 impl IdleTries {
+    /// 还没试过。
+    pub const fn new() -> Self {
+        Self {
+            version: String::new(),
+            tries: 0,
+        }
+    }
+
     /// 给 `version` 记一次自动重启。`tried_before` 是这次决定重启时合起来
     /// 数的次数（[`watch_facts`]，含升级日志里以前几次运行记下的）。
     pub fn note(&mut self, version: &str, tried_before: u32) {
@@ -482,6 +490,13 @@ mod tests {
         assert!(restarts_when_idle_on(DesktopPlatform::MacOs));
         assert!(!restarts_when_idle_on(DesktopPlatform::Windows));
         assert!(!restarts_when_idle_on(DesktopPlatform::Linux));
+    }
+
+    #[test]
+    fn a_fresh_count_has_tried_nothing() {
+        // 进程里共用的那一份（`IDLE_TRIED_HERE`）从这里开始。
+        assert_eq!(IdleTries::new(), IdleTries::default());
+        assert_eq!(IdleTries::new().count("1.6.41"), 0);
     }
 
     #[test]

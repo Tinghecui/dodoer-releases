@@ -2420,6 +2420,8 @@ mod tauri_app {
                 app_update_commands::get_update_preferences,
                 app_update_commands::update_update_preferences,
                 app_update_commands::take_update_announcement,
+                app_update_commands::await_update_confirmation,
+                app_update_commands::update_restarts_when_idle,
             ])
             .build(context)
             .expect("error while building tauri application")

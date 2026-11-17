@@ -21,6 +21,10 @@ vi.mock("@/lib/updater", async (importOriginal) => ({
   usesTauriUpdater: () => tauriUpdater,
 }))
 
+// Cowork fork: the idle restart, and so its hint, is macOS only.
+let mac = false
+vi.mock("@/hooks/use-is-mac", () => ({ useIsMac: () => mac }))
+
 // The popover pulls the markdown stack in lazily; keep the test off the ESM
 // markdown pipeline (its rendering is the settings page's concern).
 vi.mock("@/components/settings/release-notes", () => ({
@@ -62,6 +66,8 @@ function makeCtx(overrides: Partial<UpdateContextValue>): UpdateContextValue {
     selfUpdateBlocker: null,
     canInstallInPlace: true,
     dismissedVersion: null,
+    updateMode: null,
+    restartsWhenIdle: null,
     checkNow: vi.fn(async () => {}),
     dismissAvailable,
     refreshLocalStatus: vi.fn(async () => {}),
@@ -95,6 +101,7 @@ const UNWRITABLE_BIN = {
 
 beforeEach(() => {
   tauriUpdater = false
+  mac = false
   startUpdate.mockClear()
   restart.mockClear()
   dismissAvailable.mockClear()
@@ -358,5 +365,65 @@ describe("StatusBarUpdate — popover", () => {
     })
     fireEvent.click(screen.getByRole("button", { name: /25%/ }))
     expect(await screen.findByText("1.0 MB / 4.0 MB")).toBeVisible()
+  })
+})
+
+describe("StatusBarUpdate — idle restart hint (macOS desktop)", () => {
+  const HINT = "It restarts by itself when idle. You can also restart now."
+  const openReady = async (
+    overrides: Partial<UpdateContextValue>,
+    version = "0.21.9"
+  ) => {
+    renderWith({
+      state: { seq: 4, status: "ready_to_restart", version },
+      ...overrides,
+    })
+    fireEvent.click(screen.getByRole("button", { name: /Restart to update/ }))
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: /Restart to update/ })
+      ).toHaveLength(2)
+    )
+  }
+
+  beforeEach(() => {
+    tauriUpdater = true
+    mac = true
+  })
+
+  it("says it restarts by itself when automatic updates are on", async () => {
+    await openReady({ updateMode: "auto", restartsWhenIdle: true })
+    expect(screen.getByText(HINT)).toBeVisible()
+  })
+
+  it("says nothing of it once the idle tries for this version ran out", async () => {
+    await openReady({ updateMode: "auto", restartsWhenIdle: false })
+    expect(screen.queryByText(HINT)).toBeNull()
+  })
+
+  it("says nothing of it before the desktop app answered", async () => {
+    await openReady({ updateMode: "auto", restartsWhenIdle: null })
+    expect(screen.queryByText(HINT)).toBeNull()
+  })
+
+  it("says nothing of it for download only", async () => {
+    await openReady({ updateMode: "download" })
+    expect(screen.queryByText(HINT)).toBeNull()
+  })
+
+  it("says nothing of it before the setting is read", async () => {
+    await openReady({ updateMode: null })
+    expect(screen.queryByText(HINT)).toBeNull()
+  })
+
+  it("says nothing of it for a staged rollback, which waits for a click", async () => {
+    await openReady({ updateMode: "auto", restartsWhenIdle: true }, "0.21.6")
+    expect(screen.queryByText(HINT)).toBeNull()
+  })
+
+  it("says nothing of it off macOS", async () => {
+    mac = false
+    await openReady({ updateMode: "auto", restartsWhenIdle: true })
+    expect(screen.queryByText(HINT)).toBeNull()
   })
 })

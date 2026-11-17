@@ -61,8 +61,19 @@ let desktopRelease: {
   date: string | null
 } | null = null
 
+// Cowork fork: the "Automatic updates" setting and the "Updated to …"
+// announcement the desktop app answers.
+let updateModeResult: () => unknown = () => ({ mode: "auto" })
+let announcementResult: () => unknown = () => null
+let confirmationResult: () => unknown = () => null
+let restartsWhenIdleResult: () => unknown = () => true
+
 const call = vi.fn(async (endpoint: string) => {
   if (endpoint === "cowork_info") return coworkInfoResult()
+  if (endpoint === "get_update_preferences") return updateModeResult()
+  if (endpoint === "await_update_confirmation") return confirmationResult()
+  if (endpoint === "take_update_announcement") return announcementResult()
+  if (endpoint === "update_restarts_when_idle") return restartsWhenIdleResult()
   if (callImpl) return callImpl(endpoint)
   if (endpoint === "perform_app_update") return performResult()
   if (endpoint === "restart_app") return undefined
@@ -166,6 +177,10 @@ beforeEach(() => {
     runtime: "standalone",
     rollbackAvailable: false,
   })
+  updateModeResult = () => ({ mode: "auto" })
+  announcementResult = () => null
+  confirmationResult = () => null
+  restartsWhenIdleResult = () => true
   availableIdentities = 0
   offers = []
   // The availability cache lives in localStorage, which jsdom keeps across
@@ -1577,5 +1592,308 @@ describe("UpdateProvider — automatic download (desktop)", () => {
     expect(screen.getByTestId("available").textContent).toBe("1.1.24")
     expect(checkCalls()).toBe(0)
     expect(performCalls()).toBe(0)
+  })
+})
+
+describe("UpdateProvider — automatic download limits (desktop)", () => {
+  const release = (version: string) => ({ version, body: "notes", date: null })
+  const performCalls = () =>
+    call.mock.calls.filter(([e]) => e === "perform_app_update").length
+  const AUTO_KEY = "codeg.updateCheck.lastAutoDownloadAt"
+  const HOUR = 60 * 60 * 1000
+  const onPlatform = (platform: string) =>
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform)
+
+  beforeEach(() => {
+    desktop = true
+    desktopVersion = "1.1.23"
+    desktopRelease = release("1.1.24")
+    // 这两条限制只在 macOS 桌面版上算。
+    onPlatform("MacIntel")
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  const settle = async () => {
+    render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    await waitFor(() =>
+      expect(screen.getByTestId("lifecycle").textContent).toBe("idle")
+    )
+  }
+
+  it("does not download when automatic updates are off", async () => {
+    updateModeResult = () => ({ mode: "off" })
+    await settle()
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(screen.getByTestId("available").textContent).toBe("1.1.24")
+    expect(performCalls()).toBe(0)
+  })
+
+  it("stops downloading once the settings page switches to off", async () => {
+    await settle()
+    await waitFor(() => expect(ctx?.updateMode).toBe("auto"))
+    // The page saved "off"; the re-read before the download cannot get
+    // through, so the event's value is what holds.
+    updateModeResult = () => {
+      throw new Error("shell unreachable")
+    }
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("codeg:update-mode-changed", { detail: "off" })
+      )
+    })
+    expect(ctx?.updateMode).toBe("off")
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(performCalls()).toBe(0)
+  })
+
+  it("downloads as automatic when the setting cannot be read", async () => {
+    updateModeResult = () => {
+      throw new Error("shell unreachable")
+    }
+    await settle()
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    await waitFor(() => expect(performCalls()).toBe(1))
+  })
+
+  it("does not download again within 6 hours of the last automatic one", async () => {
+    localStorage.setItem(AUTO_KEY, String(Date.now() - 5 * HOUR))
+    await settle()
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(performCalls()).toBe(0)
+  })
+
+  it("downloads again after 6 hours and records the time", async () => {
+    const before = Date.now() - 7 * HOUR
+    localStorage.setItem(AUTO_KEY, String(before))
+    await settle()
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    await waitFor(() => expect(performCalls()).toBe(1))
+    expect(Number(localStorage.getItem(AUTO_KEY))).toBeGreaterThan(before)
+  })
+
+  it("records the time of the first automatic download", async () => {
+    await settle()
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    await waitFor(() => expect(performCalls()).toBe(1))
+    expect(Number(localStorage.getItem(AUTO_KEY))).toBeGreaterThan(0)
+  })
+
+  it("a click on upgrade ignores both limits", async () => {
+    updateModeResult = () => ({ mode: "off" })
+    localStorage.setItem(AUTO_KEY, String(Date.now() - HOUR))
+    await settle()
+    await act(async () => {
+      await ctx!.startUpdate()
+    })
+    expect(performCalls()).toBe(1)
+    const perform = call.mock.calls.find(
+      ([e]) => e === "perform_app_update"
+    ) as unknown[] | undefined
+    expect(perform?.[1]).toBeUndefined()
+    expect(Number(localStorage.getItem(AUTO_KEY))).toBeLessThan(
+      Date.now() - HOUR / 2
+    )
+  })
+
+  it.each(["Win32", "Linux x86_64"])(
+    "leaves %s downloading as before",
+    async (platform) => {
+      onPlatform(platform)
+      updateModeResult = () => ({ mode: "off" })
+      localStorage.setItem(AUTO_KEY, String(Date.now() - HOUR))
+      await settle()
+      await act(async () => {
+        await ctx!.checkNow()
+      })
+      await waitFor(() => expect(performCalls()).toBe(1))
+    }
+  )
+
+  it("exposes the setting to the status bar", async () => {
+    updateModeResult = () => ({ mode: "download" })
+    render(availabilityTree())
+    await waitFor(() => expect(ctx?.updateMode).toBe("download"))
+  })
+})
+
+describe("UpdateProvider — idle restart still to come (desktop)", () => {
+  const restartsCalls = () =>
+    call.mock.calls.filter(([e]) => e === "update_restarts_when_idle").length
+  const onPlatform = (platform: string) =>
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform)
+
+  beforeEach(() => {
+    desktop = true
+    desktopVersion = "1.1.23"
+    desktopRelease = null
+    snapshot = { seq: 3, status: "ready_to_restart", version: "1.1.24" }
+    onPlatform("MacIntel")
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("asks the desktop app once the update is ready", async () => {
+    render(availabilityTree())
+    await waitFor(() => expect(ctx?.restartsWhenIdle).toBe(true))
+    expect(restartsCalls()).toBeGreaterThan(0)
+  })
+
+  it("passes on that it will not, after the tries ran out", async () => {
+    restartsWhenIdleResult = () => false
+    render(availabilityTree())
+    await waitFor(() => expect(restartsCalls()).toBeGreaterThan(0))
+    await waitFor(() => expect(ctx?.restartsWhenIdle).toBe(false))
+  })
+
+  it("asks again when the same version is ready once more", async () => {
+    render(availabilityTree())
+    await waitFor(() => expect(ctx?.restartsWhenIdle).toBe(true))
+    // 自动重启装失败了，人又下了一次同一版：试满了，后端回 false。
+    restartsWhenIdleResult = () => false
+    await act(async () => {
+      liveHandler?.({ seq: 4, status: "error", error: "install failed" })
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(ctx?.restartsWhenIdle).toBeNull())
+    await act(async () => {
+      liveHandler?.({ seq: 5, status: "ready_to_restart", version: "1.1.24" })
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(ctx?.restartsWhenIdle).toBe(false))
+  })
+
+  it("does not ask off macOS", async () => {
+    vi.restoreAllMocks()
+    onPlatform("Win32")
+    render(availabilityTree())
+    await waitFor(() =>
+      expect(screen.getByTestId("lifecycle").textContent).toBe(
+        "ready_to_restart"
+      )
+    )
+    expect(restartsCalls()).toBe(0)
+    expect(ctx?.restartsWhenIdle).toBeNull()
+  })
+})
+
+describe("UpdateProvider — updated-to announcement (desktop)", () => {
+  const announcementCalls = () =>
+    call.mock.calls.filter(([e]) => e === "take_update_announcement").length
+
+  beforeEach(() => {
+    desktop = true
+    desktopVersion = "1.1.24"
+    desktopRelease = null
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it("shows one lasting toast for the version just put in place", async () => {
+    const { toast } = await import("sonner")
+    vi.mocked(toast.success).mockClear()
+    vi.useFakeTimers()
+    announcementResult = () => ({ version: "1.1.24" })
+    render(availabilityTree())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(announcementCalls()).toBe(0)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500)
+    })
+    expect(announcementCalls()).toBe(1)
+    expect(toast.success).toHaveBeenCalledTimes(1)
+    const [title, opts] = vi.mocked(toast.success).mock.calls[0] as [
+      string,
+      { duration?: number; action?: { label: string } },
+    ]
+    expect(title).toBe("Updated to 1.1.24")
+    expect(opts.duration).toBe(Infinity)
+    expect(opts.action?.label).toBe("Release notes")
+  })
+
+  it("takes the announcement only once the wait for the confirmation is over", async () => {
+    const { toast } = await import("sonner")
+    vi.mocked(toast.success).mockClear()
+    vi.useFakeTimers()
+    let confirmed: () => void = () => {}
+    confirmationResult = () =>
+      new Promise<null>((resolve) => {
+        confirmed = () => resolve(null)
+      })
+    announcementResult = () => ({ version: "1.1.24" })
+    render(availabilityTree())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3500)
+    })
+    // 还在等确认：这时窗口关了，提示没被拿走，留给别的窗口。
+    expect(announcementCalls()).toBe(0)
+    await act(async () => {
+      confirmed()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(announcementCalls()).toBe(1)
+    expect(toast.success).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not take the announcement when the window closes while waiting", async () => {
+    vi.useFakeTimers()
+    let confirmed: () => void = () => {}
+    confirmationResult = () =>
+      new Promise<null>((resolve) => {
+        confirmed = () => resolve(null)
+      })
+    announcementResult = () => ({ version: "1.1.24" })
+    const { unmount } = render(availabilityTree())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3500)
+    })
+    unmount()
+    await act(async () => {
+      confirmed()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(announcementCalls()).toBe(0)
+  })
+
+  it("shows nothing when there is nothing to announce", async () => {
+    const { toast } = await import("sonner")
+    vi.mocked(toast.success).mockClear()
+    vi.useFakeTimers()
+    render(availabilityTree())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4000)
+    })
+    expect(announcementCalls()).toBe(1)
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it("does not ask in a browser", async () => {
+    desktop = false
+    vi.useFakeTimers()
+    render(availabilityTree())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4000)
+    })
+    expect(announcementCalls()).toBe(0)
   })
 })

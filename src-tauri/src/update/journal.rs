@@ -749,6 +749,26 @@ impl ConfirmGate {
     }
 }
 
+/// 这次启动还在等启动确认（正在换上的就是正在运行的版本）时，等 `gate`
+/// 放行（最多 `wait`）；不在等就立刻回。只等、不拿提示：窗口先等完再拿，
+/// 等的几分钟里窗口关了，提示还留给别的窗口（`await_update_confirmation`）。
+/// 等的时候不占着 `lock`，确认要写日志。
+pub fn await_confirmation(
+    path: &Path,
+    running: &str,
+    lock: &std::sync::Mutex<()>,
+    gate: &ConfirmGate,
+    wait: std::time::Duration,
+) {
+    let awaiting = {
+        let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+        load(path, running).awaiting_confirmation(running)
+    };
+    if awaiting {
+        gate.wait(wait);
+    }
+}
+
 /// 「已更新到…」：这次启动还在等启动确认（正在换上的就是正在运行的
 /// 版本）时，先等 `gate` 放行（最多 `wait`），再在 `lock` 下照
 /// [`take_announcement_at`] 拿。等的时候不占着 `lock`，确认要写日志。
@@ -759,13 +779,7 @@ pub fn take_announcement_once_confirmed(
     gate: &ConfirmGate,
     wait: std::time::Duration,
 ) -> Option<Announcement> {
-    let awaiting = {
-        let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
-        load(path, running).awaiting_confirmation(running)
-    };
-    if awaiting {
-        gate.wait(wait);
-    }
+    await_confirmation(path, running, lock, gate, wait);
     let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
     take_announcement_at(path, running)
 }
@@ -1255,6 +1269,60 @@ mod tests {
             })
         );
         assert!(load(&file, "1.6.41").last.unwrap().announced);
+    }
+
+    #[test]
+    fn waiting_for_the_confirmation_leaves_the_announcement_to_be_taken() {
+        // 窗口先只等确认：等完提示还在，谁来拿都拿得到一次。
+        let mut j = ready(Trigger::Auto);
+        j.apply_started(ApplyHow::Idle, at(100));
+        j.on_boot("1.6.41", at(110));
+        let dir = tempfile::tempdir().unwrap();
+        let file = path(dir.path());
+        save(&file, &j).unwrap();
+        let lock = std::sync::Mutex::new(());
+        let gate = ConfirmGate::new();
+
+        // 等完回来的那一刻（另一个线程还没收尾之前）就已经确认了。
+        let last = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let _guard = lock.lock().unwrap();
+                let mut j = load(&file, "1.6.41");
+                j.confirm("1.6.41", at(170)).unwrap();
+                save(&file, &j).unwrap();
+                drop(_guard);
+                gate.settle();
+            });
+            await_confirmation(
+                &file,
+                "1.6.41",
+                &lock,
+                &gate,
+                std::time::Duration::from_secs(30),
+            );
+            load(&file, "1.6.41").last
+        })
+        .expect("confirmed before the wait returned");
+        assert_eq!(last.result, UpdateResult::Applied);
+        assert!(!last.announced);
+        assert_eq!(
+            take_announcement_at(&file, "1.6.41"),
+            Some(Announcement {
+                version: "1.6.41".to_string()
+            })
+        );
+
+        // 不在等确认：立刻回。
+        let started = std::time::Instant::now();
+        await_confirmation(
+            &file,
+            "1.6.41",
+            &lock,
+            &ConfirmGate::new(),
+            std::time::Duration::from_secs(30),
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]

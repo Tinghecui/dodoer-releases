@@ -188,6 +188,63 @@ export function startAppRollback(version: string): Promise<AppUpdateState> {
   })
 }
 
+/**
+ * Cowork fork：设置 → 系统 →「自动更新」三档。`auto` 空闲时自己重启换上，
+ * `download` 只在后台下好、等人点重启，`off` 不自动下载。不认识的值算 `auto`
+ * （和后端 `UpdateMode::parse` 一样）。
+ */
+export type UpdateMode = "auto" | "download" | "off"
+
+export function parseUpdateMode(value: unknown): UpdateMode {
+  return value === "download" || value === "off" ? value : "auto"
+}
+
+/** 设置页存了新的一档以后在本窗口发的事件（`detail` 是新的一档），
+ * 让 provider 不用再问一次桌面主程序。 */
+export const UPDATE_MODE_CHANGED_EVENT = "codeg:update-mode-changed"
+
+/** 桌面主程序存着的「自动更新」一档。读不到时调用方自己按 `auto` 算。 */
+export async function getUpdateMode(): Promise<UpdateMode> {
+  const prefs = await getShellTransport().call<{ mode?: unknown } | null>(
+    "get_update_preferences"
+  )
+  return parseUpdateMode(prefs?.mode)
+}
+
+/** 存「自动更新」一档，回的是后端实际存下的那一档。 */
+export async function setUpdateMode(mode: UpdateMode): Promise<UpdateMode> {
+  const saved = await getShellTransport().call<{ mode?: unknown } | null>(
+    "update_update_preferences",
+    { settings: { mode } }
+  )
+  return parseUpdateMode(saved?.mode ?? mode)
+}
+
+/** 下好的这一版空闲时还会不会自己重启换上（macOS 桌面主程序回答：自动安装、
+ * 不是回退、这一版自动重启还没试满）。 */
+export async function restartsWhenIdle(): Promise<boolean> {
+  const got = await getShellTransport().call<unknown>(
+    "update_restarts_when_idle"
+  )
+  return got === true
+}
+
+/** 等这次启动的启动确认有了结果（不用等时立刻回），不拿「已更新到…」。
+ * 窗口先等完再拿：等的几分钟里窗口关了，提示还留给别的窗口。 */
+export async function awaitUpdateConfirmation(): Promise<void> {
+  await getShellTransport().call("await_update_confirmation")
+}
+
+/** 「已更新到…」：上一次升级换上的版本，第一次问时回给一个窗口，之后是 null。 */
+export async function takeUpdateAnnouncement(): Promise<string | null> {
+  const got = await getShellTransport().call<{ version?: unknown } | null>(
+    "take_update_announcement"
+  )
+  return got && typeof got.version === "string" && got.version
+    ? got.version
+    : null
+}
+
 /** Relaunch into the freshly-installed bytes. Desktop relaunches the app;
  * server triggers the supervised/re-exec restart (the caller then drives the
  * countdown + health poll using the `ReadyToRestart` snapshot's metadata). */

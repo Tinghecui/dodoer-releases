@@ -22,6 +22,7 @@ import { toast } from "sonner"
 import { useAppI18n } from "@/components/i18n-provider"
 import { CliAccessSettings } from "@/components/settings/cli-access-settings"
 import { DataSyncSettings } from "@/components/settings/data-sync-settings"
+import { AutoUpdateModeSetting } from "@/components/settings/auto-update-mode"
 import { DesktopRollback } from "@/components/settings/desktop-rollback"
 import { ReleaseNotes } from "@/components/settings/release-notes"
 import { SettingsSection } from "@/components/shared/settings-section"
@@ -700,6 +701,9 @@ export function SystemNetworkSettings() {
             )}
 
             <DesktopRollback />
+
+            {/* Cowork fork：「自动更新」三档，只在 macOS 桌面窗口显示。 */}
+            <AutoUpdateModeSetting />
 
             {blockerHint && (
               <p className="text-2xs leading-5 text-amber-500">{blockerHint}</p>

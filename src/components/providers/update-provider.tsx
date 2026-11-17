@@ -22,6 +22,7 @@ import {
   getCurrentAppVersion,
   getRunningServerVersion,
   getServerUpdateStatus,
+  getUpdateMode,
   normalizeAppUpdateError,
   readServerVersionStrict,
   restartApp,
@@ -29,6 +30,12 @@ import {
   startAppRollback,
   startAppUpdate,
   subscribeAppUpdateState,
+  takeUpdateAnnouncement,
+  awaitUpdateConfirmation,
+  restartsWhenIdle as askRestartsWhenIdle,
+  UPDATE_MODE_CHANGED_EVENT,
+  type UpdateMode,
+  parseUpdateMode,
   usesTauriUpdater,
   waitForServerHealthy,
 } from "@/lib/updater"
@@ -38,11 +45,14 @@ import {
   dismissedVersionStorageKey,
   lastCheckStorageKey,
   readDismissedVersion,
+  readLastAutoDownloadAt,
   readLastCheck,
   writeDismissedVersion,
+  writeLastAutoDownloadAt,
   writeLastCheck,
 } from "@/lib/update-check-storage"
 import { getTransport } from "@/lib/transport"
+import { detectPlatform } from "@/hooks/use-platform"
 import { isCoworkInfoLoaded, loadCoworkInfo } from "@/lib/cowork/info"
 import { extractAppCommandError } from "@/lib/app-error"
 import { compareVersions } from "@/lib/cowork/compat"
@@ -63,6 +73,11 @@ const FIRST_CHECK_DELAY_MS = 8000
  * succeeded. Only completions are persisted, so without this an offline window
  * would re-fetch on every tab focus. */
 const AUTO_RETRY_FLOOR_MS = 10 * 60 * 1000
+/** Cowork fork：自动下载最少隔这么久一次（一天发十来班、一个包一百多 MB，
+ * 不限的话每台 Mac 每天要下一个多 G）。手动点「升级到 vX」不受它限制。 */
+const AUTO_DOWNLOAD_FLOOR_MS = 6 * 60 * 60 * 1000
+/** Cowork fork：窗口起来多久以后问一次「已更新到…」，不和启动抢。 */
+const ANNOUNCEMENT_DELAY_MS = 3000
 
 const LIFECYCLES = new Set([
   "idle",
@@ -138,6 +153,14 @@ export interface UpdateContextValue {
   canInstallInPlace: boolean
   /** Version the user dismissed the badge for, if any. */
   dismissedVersion: string | null
+  /** Cowork fork: the desktop app's "Automatic updates" setting, null in a
+   * browser and until it has been read. */
+  updateMode: UpdateMode | null
+  /** Cowork fork, macOS desktop: whether the downloaded update will still be
+   * put in place on its own when the Mac is idle (the desktop app's answer:
+   * "Install automatically", not a rollback, this version's idle tries not
+   * used up). Null until asked, and whenever no update is ready. */
+  restartsWhenIdle: boolean | null
   /** Ask the release source now. De-duplicated: a second call while one is in
    * flight attaches to it. `silent` (the default) reports failures only through
    * {@link checkError}; pass false for a user-initiated check that should toast. */
@@ -369,6 +392,73 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     setHydrated(true)
   }, [])
 
+  // Cowork fork：「自动更新」一档。挂载时读一次；本窗口的设置页存了以后经
+  // UPDATE_MODE_CHANGED_EVENT 同步；设置在别的窗口改的，回到这个窗口时再读，
+  // 自动下载之前也再读一次。读不到时沿用已知的一档（一开始是 auto）。
+  const [updateMode, setUpdateMode] = useState<UpdateMode | null>(null)
+  const updateModeRef = useRef<UpdateMode>("auto")
+  // 每次读或收到事件加 1：晚到的旧读数不盖掉更新的一档。
+  const modeEpochRef = useRef(0)
+  const adoptMode = useCallback((mode: UpdateMode) => {
+    updateModeRef.current = mode
+    setUpdateMode(mode)
+  }, [])
+  const readMode = useCallback(async (): Promise<UpdateMode> => {
+    const epoch = ++modeEpochRef.current
+    try {
+      const mode = await getUpdateMode()
+      if (epoch === modeEpochRef.current) adoptMode(mode)
+    } catch (err) {
+      console.debug("[Update] could not read the update setting:", err)
+    }
+    return updateModeRef.current
+  }, [adoptMode])
+  useEffect(() => {
+    if (!usesTauriUpdater()) return
+    void readMode()
+    const onChanged = (event: Event) => {
+      modeEpochRef.current += 1
+      adoptMode(parseUpdateMode((event as CustomEvent<unknown>).detail))
+    }
+    const onFocus = () => {
+      if (!document.hidden) void readMode()
+    }
+    window.addEventListener(UPDATE_MODE_CHANGED_EVENT, onChanged)
+    window.addEventListener("focus", onFocus)
+    return () => {
+      window.removeEventListener(UPDATE_MODE_CHANGED_EVENT, onChanged)
+      window.removeEventListener("focus", onFocus)
+    }
+  }, [adoptMode, readMode])
+
+  // Cowork fork：下好的新版空闲时还会不会自己重启换上，问桌面主程序（同一版
+  // 自动重启试满了、回退下的，它回 false）。每次下好（同一版又下好一次也算）、
+  // 切了档都再问；没在等重启时是 null。只在 macOS 桌面版上问。
+  const [restartsWhenIdle, setRestartsWhenIdle] = useState<boolean | null>(null)
+  const readyToRestart = state.status === "ready_to_restart"
+  useEffect(() => {
+    if (
+      !readyToRestart ||
+      !usesTauriUpdater() ||
+      detectPlatform() !== "macos"
+    ) {
+      setRestartsWhenIdle(null)
+      return
+    }
+    let live = true
+    askRestartsWhenIdle()
+      .then((will) => {
+        if (live) setRestartsWhenIdle(will)
+      })
+      .catch((err) => {
+        console.debug("[Update] could not ask about the idle restart:", err)
+        if (live) setRestartsWhenIdle(null)
+      })
+    return () => {
+      live = false
+    }
+  }, [readyToRestart, state.seq, updateMode])
+
   /**
    * Desktop: once this window's own check finds release `version`, start
    * downloading it in the background, so the status bar goes straight to
@@ -383,20 +473,40 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
    * fine: the backend's `try_begin` starts one download and the others attach.
    * A failed kickoff stays quiet and isn't retried; the next successful check
    * tries again.
+   *
+   * Cowork fork, macOS only (Windows and Linux download as before): also
+   * skipped when "Automatic updates" is off, and within
+   * {@link AUTO_DOWNLOAD_FLOOR_MS} of the last download a window started on
+   * its own (shared across windows through localStorage). A click on
+   * "Upgrade to vX" goes through `startUpdate` and checks neither.
    */
   const autoStartUpdate = useCallback(
     async (version: string) => {
       if (!usesTauriUpdater() || !hydratedRef.current) return
-      const status = latestStatusRef.current
-      if (status !== "idle" && status !== "error") return
+      const settled = () => {
+        const status = latestStatusRef.current
+        return status === "idle" || status === "error"
+      }
+      if (!settled()) return
       if (readDismissedVersion() === version) return
+      // 「自动更新」一档和 6 小时限频只在 macOS 桌面版上算，
+      // Windows、Linux 的更新方式不变。
+      const macOnly = detectPlatform() === "macos"
+      if (macOnly) {
+        const last = readLastAutoDownloadAt()
+        if (last !== null && Date.now() - last < AUTO_DOWNLOAD_FLOOR_MS) return
+        // 设置可能在别的窗口刚改过，下载之前再读一次。
+        if ((await readMode()) === "off") return
+        if (!mountedRef.current || !settled()) return
+      }
       try {
         applyState(await startAppUpdate("auto"))
+        if (macOnly) writeLastAutoDownloadAt(Date.now())
       } catch (err) {
         console.debug("[Update] background download did not start:", err)
       }
     },
-    [applyState]
+    [applyState, readMode]
   )
 
   // Arm the subscription BEFORE fetching the snapshot so no transition is
@@ -469,6 +579,46 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     return () => {
       mountedRef.current = false
     }
+  }, [])
+
+  // Cowork fork：上一次升级换上的新版本，窗口起来 3 秒后问一次桌面主程序；
+  // 几个窗口同时问只有一个拿到，弹一条不自动消失的「已更新到…」。
+  useEffect(() => {
+    if (!usesTauriUpdater()) return
+    const timer = setTimeout(() => {
+      // 先只等启动确认（新版本刚起来时要几分钟），等完窗口还在才拿：
+      // 拿了就算提示过，等的时候窗口关了不能把提示拿走。
+      awaitUpdateConfirmation()
+        .catch((err) =>
+          console.debug("[Update] update confirmation wait failed:", err)
+        )
+        .then(() => {
+          if (!mountedRef.current) return null
+          return takeUpdateAnnouncement()
+        })
+        .then((version) => {
+          if (!version) return
+          toast.success(t("updatedToTitle", { version }), {
+            duration: Infinity,
+            action: {
+              label: t("updatedToNotes"),
+              onClick: () => {
+                void import("@/lib/api")
+                  .then((api) => api.openSettingsWindow("system"))
+                  .catch((err) =>
+                    console.error("[Update] open settings failed:", err)
+                  )
+              },
+            },
+          })
+        })
+        .catch((err) =>
+          console.debug("[Update] update announcement unavailable:", err)
+        )
+    }, ANNOUNCEMENT_DELAY_MS)
+    return () => clearTimeout(timer)
+    // 只在挂载时问一次：`t` 换了（切语言）不再问。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // The in-flight check, so a manual click and the scheduler share one fetch
@@ -1054,6 +1204,8 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       selfUpdateBlocker,
       canInstallInPlace,
       dismissedVersion,
+      updateMode,
+      restartsWhenIdle,
       checkNow,
       dismissAvailable,
       refreshLocalStatus,
@@ -1082,6 +1234,8 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       selfUpdateBlocker,
       canInstallInPlace,
       dismissedVersion,
+      updateMode,
+      restartsWhenIdle,
       checkNow,
       dismissAvailable,
       refreshLocalStatus,

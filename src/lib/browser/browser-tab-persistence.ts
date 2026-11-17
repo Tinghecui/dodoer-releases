@@ -1,9 +1,9 @@
 // What survives a restart of a browser tab: its page, its title and the
 // device it shows the page as, per window.
 //
-// File tabs are session-only, browser tabs are not: a page is cheap to bring
-// back (one URL), and the dev-server page next to the chat is exactly what a
-// user expects to find again after relaunching. Records come back "not
+// A page is cheap to bring back (one URL), and the dev-server page next to
+// the chat is exactly what a user expects to find again after relaunching.
+// (File tabs come back too, by path: `lib/files/file-tab-persistence`.) Records come back "not
 // loaded" — a native surface is created for one when it is first shown — so
 // restoring twenty tabs costs twenty small records and nothing else.
 //

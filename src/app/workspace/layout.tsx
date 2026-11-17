@@ -6,6 +6,7 @@ import { BrowserEventsBridge } from "@/components/browser/browser-events-bridge"
 import { BrowserScreenshotMarkupHost } from "@/components/browser/browser-screenshot-markup"
 import { BrowserServiceBridge } from "@/components/browser/browser-service-bridge"
 import { BrowserTabsPersistence } from "@/components/browser/browser-tabs-persistence"
+import { FileTabsPersistence } from "@/components/files/file-tabs-persistence"
 import { BrowserTabsSuspender } from "@/components/browser/browser-tabs-suspender"
 import {
   Suspense,
@@ -1610,6 +1611,7 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                           on its own would take the marks with it. */}
                       <BrowserScreenshotMarkupHost />
                       <BrowserTabsPersistence />
+                      <FileTabsPersistence />
                       <BrowserTabsSuspender />
                       <HeavyPluginsWarmup />
                       <DeepLinkBootstrap />

@@ -3354,6 +3354,7 @@
     "fileTreeTab": {
       "workspace": "ワークスペース",
       "retry": "再試行",
+      "loadFailed": "ファイル一覧を読み込めませんでした",
       "git": "Git",
       "openInFileManager": "ファイルマネージャー",
       "openInFinder": "Finder",

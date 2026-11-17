@@ -235,3 +235,21 @@ describe("workspace state store full/paths token machine", () => {
     await vi.advanceTimersByTimeAsync(700)
   })
 })
+
+describe("workspace state store error text", () => {
+  // 网页模式下非 2xx 时 throw 的是解析好的错误体（如 `{ error: "..." }`），
+  // 不能 String() 成「[object Object]」给文件树、Git 变更页签看（#543）。
+  it("takes the text out of an error body when the catch-up snapshot fails", async () => {
+    mockedApi.getWorkspaceSnapshot.mockRejectedValue({ error: "boom" })
+    const store = getWorkspaceStateStore("/machine/err1")
+    const token = store.acquire("full")
+    await drain()
+
+    const state = store.getSnapshot()
+    expect(state.health).toBe("degraded")
+    expect(state.error).toBe("boom")
+
+    store.release(token)
+    await vi.advanceTimersByTimeAsync(700)
+  })
+})

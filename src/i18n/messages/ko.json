@@ -3354,6 +3354,7 @@
     "fileTreeTab": {
       "workspace": "작업 공간",
       "retry": "다시 시도",
+      "loadFailed": "파일 목록을 불러오지 못했습니다",
       "git": "Git",
       "openInFileManager": "파일 관리자",
       "openInFinder": "Finder",

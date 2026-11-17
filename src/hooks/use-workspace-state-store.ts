@@ -6,6 +6,7 @@ import {
   startWorkspaceStateStream,
   stopWorkspaceStateStream,
 } from "@/lib/api"
+import { toErrorMessage } from "@/lib/app-error"
 import { subscribe } from "@/lib/platform"
 import type {
   FileTreeNode,
@@ -77,11 +78,6 @@ const EMPTY_STATE: WorkspaceStateView = {
 
 function normalizeComparePath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "")
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message
-  return String(error)
 }
 
 function applyDeltaToState(

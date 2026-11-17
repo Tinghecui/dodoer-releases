@@ -3354,6 +3354,7 @@
     "fileTreeTab": {
       "workspace": "Workspace",
       "retry": "Retry",
+      "loadFailed": "Failed to load the file list",
       "git": "Git",
       "openInFileManager": "File manager",
       "openInFinder": "Finder",

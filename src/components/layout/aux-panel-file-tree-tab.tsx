@@ -2878,8 +2878,9 @@ export function FileTreeTab() {
 
   if (error) {
     return (
-      <div className="p-3 text-xs text-destructive">
-        <p>{error}</p>
+      <div className="p-3 text-xs">
+        <p className="font-medium text-destructive">{t("loadFailed")}</p>
+        <p className="mt-1 break-words text-muted-foreground">{error}</p>
         <Button
           variant="ghost"
           size="xs"

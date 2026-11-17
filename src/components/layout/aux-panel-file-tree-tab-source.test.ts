@@ -414,3 +414,13 @@ describe("aux file tree greys out Commit for unchanged entries", () => {
     )
   })
 })
+
+describe("aux file tree load error state", () => {
+  // #543: the error state used to show only the raw reason (which came out as
+  // "[object Object]") and a Retry button, with no heading saying what failed.
+  it("shows a 'failed to load' heading above the reason and keeps Retry", () => {
+    expect(auxSource).toMatch(
+      /\{t\("loadFailed"\)\}<\/p>\s*<p[^>]*>\{error\}<\/p>[\s\S]{0,300}\{t\("retry"\)\}/
+    )
+  })
+})

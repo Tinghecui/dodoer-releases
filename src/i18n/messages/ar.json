@@ -3354,6 +3354,7 @@
     "fileTreeTab": {
       "workspace": "مساحة العمل",
       "retry": "إعادة المحاولة",
+      "loadFailed": "تعذّر تحميل قائمة الملفات",
       "git": "Git",
       "openInFileManager": "مدير الملفات",
       "openInFinder": "Finder",

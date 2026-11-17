@@ -243,10 +243,20 @@ jobs:
           CODEG_TELEMETRY_BUILTIN_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_DSN || '' }}
           CODEG_TELEMETRY_BUILTIN_WEB_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_WEB_DSN || '' }}
           VERSION: ${{ needs.prepare.outputs.version }}
-        # 第一次失败在本机重试一次（下载依赖走代理，偶尔断）：代码错了重试也是增量编译，一两分钟就再失败
+        # 第一次失败在本机重试一次（下载依赖走代理，偶尔断）：代码错了重试也是增量编译，一两分钟就再失败。
+        # 两次都套着 scripts/stall-watchdog.sh：20 分钟一行输出都没有就当卡死、停掉（2026-11-17 next build 空等了 110 分钟，
+        # .cowork/journal/2026-11-17-hackintosh-stall-watchdog.md；正常编译最长一段没输出约 8 分钟）
         run: |
-          scripts/cowork-desktop-build.sh full && exit 0
-          echo "::warning::黑苹果上第一次编译失败，重试一次"
+          rc=0
+          scripts/stall-watchdog.sh 20 -- scripts/cowork-desktop-build.sh full || rc=$?
+          if [[ $rc == 0 ]]; then exit 0; fi
+          if [[ $rc == 124 ]]; then
+            # 卡死过一次的 Turbopack 缓存不留着：清掉再编（前端多编两三分钟）
+            echo "::warning::黑苹果上编译 20 分钟没有输出，当它卡死了：清掉 Turbopack 的缓存，重编一次"
+            rm -rf .next/cache/turbopack
+          else
+            echo "::warning::黑苹果上第一次编译失败，重试一次"
+          fi
           # 失败多半是下载依赖时断了网：先等网络恢复（最多 10 分钟）再重试，不然重试也失败，会被当成代码的问题
           ok=0
           for i in $(seq 1 40); do
@@ -257,7 +267,7 @@ jobs:
             fi
             sleep 15
           done
-          scripts/cowork-desktop-build.sh full
+          scripts/stall-watchdog.sh 20 -- scripts/cowork-desktop-build.sh full
       # 自托管机器上钥匙串不会随机器销毁，搜索列表也要还原
       - name: 删掉临时钥匙串
         if: always()

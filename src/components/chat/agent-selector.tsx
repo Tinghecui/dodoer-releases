@@ -81,7 +81,7 @@ export function AgentSelector({
 }: AgentSelectorProps) {
   const t = useTranslations("Folder.chat.agentSelector")
   const coworkT = useCoworkText()
-  const { agents: rawAgents, fresh } = useAcpAgents()
+  const { agents: rawAgents, fresh, error, refresh } = useAcpAgents()
   const agents = useMemo<AcpAgentInfo[]>(
     () => rawAgents.filter((a) => a.enabled),
     [rawAgents]
@@ -332,6 +332,22 @@ export function AgentSelector({
   // Cowork fork (#336): 列表还没成功取回来过（刚打开、被限流正在重试），空
   // 列表只是还不知道，不能说成「没有启用的 Agent」叫人去设置里开。
   if (agents.length === 0 && !fresh) {
+    // Cowork fork (#539): 读取失败（不是限流）时说清楚、给重试，不然一直写
+    // 「正在加载」，接口恢复了也不会自己好。
+    if (error) {
+      return (
+        <div className="rounded-lg border border-dashed bg-muted/30 px-4 py-3 text-center text-sm text-muted-foreground">
+          <div>{coworkT("agentListLoadFailed")}</div>
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            className="mt-2 inline-flex items-center rounded-md border px-2 py-1 text-xs text-foreground transition-colors hover:bg-accent cursor-pointer"
+          >
+            {coworkT("agentListRetry")}
+          </button>
+        </div>
+      )
+    }
     return (
       <div className="rounded-lg border border-dashed bg-muted/30 px-4 py-3 text-center text-sm text-muted-foreground">
         {coworkT("agentListLoading")}

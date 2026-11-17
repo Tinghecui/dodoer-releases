@@ -6394,6 +6394,7 @@
     "empty": "Noch keine Automatisierungen",
     "emptyHint": "Erstelle eine, um eine Agentenaufgabe geplant oder manuell auszuführen.",
     "loadFailed": "Automatisierungen konnten nicht geladen werden",
+    "loading": "Automatisierungen werden geladen…",
     "name": "Name",
     "namePlaceholder": "z. B. Nächtliche PR-Prüfung",
     "prompt": "Eingabe",

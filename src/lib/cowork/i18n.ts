@@ -93,6 +93,9 @@ const en = {
   // The agent list has not come back yet (or failed once and is retrying), so
   // "no enabled agents" would be a guess (`agent-selector.tsx`, #336).
   agentListLoading: "Loading agents…",
+  // Loading the agent list failed for a reason other than throttling (#539).
+  agentListLoadFailed: "Couldn't load the agent list.",
+  agentListRetry: "Retry",
   // First steps on an empty workspace (`getting-started-card.tsx`), and the
   // sidebar's button for the same first step.
   newOrOpenProject: "New or open project",
@@ -365,6 +368,8 @@ const zhCN: Record<CoworkTextKey, string> = {
   networkUnreachable: "连不上服务器，请检查网络。网络恢复后会自动重连。",
   rateLimited: "请求太频繁，稍后自动重试。",
   agentListLoading: "正在加载 Agent 列表…",
+  agentListLoadFailed: "读取智能体列表失败。",
+  agentListRetry: "重试",
   newOrOpenProject: "新建或打开项目",
   gettingStartedTitle: "从这里开始",
   gettingStartedProject: "新建或打开一个项目",
@@ -600,6 +605,8 @@ const zhTW: Record<CoworkTextKey, string> = {
   networkUnreachable: "連不上伺服器，請檢查網路。網路恢復後會自動重新連線。",
   rateLimited: "請求太頻繁，稍後自動重試。",
   agentListLoading: "正在載入 Agent 列表…",
+  agentListLoadFailed: "讀取智慧體列表失敗。",
+  agentListRetry: "重試",
   newOrOpenProject: "新增或開啟專案",
   gettingStartedTitle: "從這裡開始",
   gettingStartedProject: "新增或開啟一個專案",

@@ -26,10 +26,11 @@ import {
 const sample = (id: number) => ({ id, unseen_failures: 0 }) as Automation
 
 function Probe() {
-  const { automations, error, refetch } = useAutomationsView()
+  const { automations, error, loaded, refetch } = useAutomationsView()
   return (
     <div>
       <span data-testid="count">{automations.length}</span>
+      <span data-testid="loaded">{String(loaded)}</span>
       <span data-testid="error">{error ?? ""}</span>
       <button type="button" onClick={() => void refetch()}>
         retry
@@ -72,5 +73,25 @@ describe("AutomationsViewProvider", () => {
     })
     expect(screen.getByTestId("count").textContent).toBe("2")
     expect(screen.getByTestId("error").textContent).toBe("")
+  })
+
+  it("reports not-loaded until the first list arrives, then loaded (#541)", async () => {
+    let resolve: (list: Automation[]) => void = () => {}
+    listMock.mockReturnValueOnce(
+      new Promise<Automation[]>((r) => {
+        resolve = r
+      })
+    )
+    render(
+      <AutomationsViewProvider>
+        <Probe />
+      </AutomationsViewProvider>
+    )
+    expect(screen.getByTestId("loaded").textContent).toBe("false")
+    await act(async () => {
+      resolve([sample(1)])
+    })
+    expect(screen.getByTestId("loaded").textContent).toBe("true")
+    expect(screen.getByTestId("count").textContent).toBe("1")
   })
 })

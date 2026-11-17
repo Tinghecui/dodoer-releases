@@ -29,12 +29,14 @@ import {
 const refetch = vi.fn().mockResolvedValue(undefined)
 let automations: Automation[] = []
 let loadError: string | null = null
+let loaded = true
 
 vi.mock("@/contexts/automations-view-context", () => ({
   useAutomationsView: () => ({
     automations,
     unseenFailures: 0,
     error: loadError,
+    loaded,
     refetch,
   }),
 }))
@@ -94,6 +96,7 @@ import { AutomationsPage, pickCreateFolder } from "./automations-page"
 // same data the old context mock provided.
 beforeEach(() => {
   loadError = null
+  loaded = true
   resetAppWorkspaceStore()
   useAppWorkspaceStore.setState({
     folders: [{ id: 1, name: "repo" }] as never,
@@ -129,6 +132,18 @@ describe("AutomationsPage (empty + template flow)", () => {
       screen.getByRole("button", { name: enMessages.Automations.retry })
     )
     expect(refetch).toHaveBeenCalledTimes(1)
+  })
+
+  it("shows a loading indicator, not the onboarding gallery, before the first list arrives (#541)", () => {
+    loaded = false
+    renderPage()
+    expect(
+      screen.getByRole("status", { name: enMessages.Automations.loading })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(enMessages.Automations.onboardTitle)
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText("Blank automation")).not.toBeInTheDocument()
   })
 
   it("shows the onboarding gallery when there are no automations", () => {

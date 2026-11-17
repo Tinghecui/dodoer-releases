@@ -296,3 +296,45 @@ describe("useAcpAgents — rate limited", () => {
     h.unmount()
   })
 })
+
+// Cowork fork (#539): 不是限流的失败（比如 500）要记下来，界面才能说「读取失败」、
+// 给重试；点重试成功后错误清掉、列表回来。
+describe("useAcpAgents — failed load", () => {
+  it("exposes the error on a non-rate-limited failure and clears it on refresh", async () => {
+    mockAcpListAgents
+      .mockRejectedValueOnce({ code: "internal", message: "boom" })
+      .mockResolvedValue([makeAgent("codex", 0)])
+
+    const h = renderHook(() => useAcpAgents())
+    await waitFor(() => expect(h.result.current.error).toBeTruthy())
+    expect(h.result.current.fresh).toBe(false)
+    expect(h.result.current.agents).toEqual([])
+
+    await act(async () => {
+      await h.result.current.refresh()
+    })
+    expect(h.result.current.error).toBeNull()
+    expect(h.result.current.fresh).toBe(true)
+    expect(h.result.current.agents.map((a) => a.agent_type)).toEqual(["codex"])
+    h.unmount()
+  })
+
+  it("does not report a rate_limited failure as an error", async () => {
+    vi.useFakeTimers()
+    try {
+      mockAcpListAgents.mockRejectedValueOnce({
+        code: "rate_limited",
+        message: "slow down",
+      })
+      const h = renderHook(() => useAcpAgents())
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(mockAcpListAgents).toHaveBeenCalledTimes(1)
+      expect(h.result.current.error).toBeNull()
+      h.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

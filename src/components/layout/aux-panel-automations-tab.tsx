@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import {
   ArrowLeft,
   Folder,
+  Loader2,
   Plus,
   SquareArrowOutUpRight,
   Zap,
@@ -65,7 +66,7 @@ export function automationInProject(
 export function AutomationsAuxTab() {
   const t = useTranslations("Automations")
   const tAux = useTranslations("Folder.auxPanel")
-  const { automations, refetch } = useAutomationsView()
+  const { automations, error, loaded, refetch } = useAutomationsView()
   const projectFolderId = useActiveProjectFolderId()
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const { setRoute } = useWorkbenchRoute()
@@ -227,7 +228,19 @@ export function AutomationsAuxTab() {
         </Button>
       </div>
 
-      {projectAutomations.length === 0 ? (
+      {!loaded && error == null ? (
+        // 列表还没回来，先转圈，不显示「还没有自动化」（#541）。
+        <div
+          role="status"
+          aria-label={t("loading")}
+          className="flex min-h-0 flex-1 items-center justify-center p-6"
+        >
+          <Loader2
+            className="size-5 animate-spin text-muted-foreground"
+            aria-hidden="true"
+          />
+        </div>
+      ) : projectAutomations.length === 0 ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
           <Zap className="size-8 text-muted-foreground/40" aria-hidden="true" />
           <div className="flex flex-col gap-1">

@@ -6394,6 +6394,7 @@
     "empty": "暂无自动化",
     "emptyHint": "创建一个，让智能体按计划或手动执行任务。",
     "loadFailed": "自动化列表加载失败",
+    "loading": "正在加载自动化…",
     "name": "名称",
     "namePlaceholder": "例如：每晚 PR 审查",
     "prompt": "提示词",

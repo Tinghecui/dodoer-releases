@@ -6394,6 +6394,7 @@
     "empty": "No automations yet",
     "emptyHint": "Create one to run an agent task on a schedule or on demand.",
     "loadFailed": "Couldn't load automations",
+    "loading": "Loading automations…",
     "name": "Name",
     "namePlaceholder": "e.g. Nightly PR review",
     "prompt": "Prompt",

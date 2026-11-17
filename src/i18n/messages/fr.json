@@ -6394,6 +6394,7 @@
     "empty": "Aucune automatisation pour l'instant",
     "emptyHint": "Créez-en une pour exécuter une tâche d'agent planifiée ou à la demande.",
     "loadFailed": "Impossible de charger les automatisations",
+    "loading": "Chargement des automatisations…",
     "name": "Nom",
     "namePlaceholder": "ex. Revue de PR nocturne",
     "prompt": "Instruction",

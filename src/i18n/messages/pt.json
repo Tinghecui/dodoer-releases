@@ -6394,6 +6394,7 @@
     "empty": "Ainda não há automações",
     "emptyHint": "Crie uma para executar uma tarefa do agente de forma agendada ou manual.",
     "loadFailed": "Não foi possível carregar as automações",
+    "loading": "Carregando automações…",
     "name": "Nome",
     "namePlaceholder": "ex.: Revisão de PR noturna",
     "prompt": "Instrução",

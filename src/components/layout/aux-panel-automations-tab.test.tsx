@@ -15,6 +15,7 @@ import { peekAutomationsFocus } from "@/lib/workbench-focus"
 const scene = vi.hoisted(() => ({
   projectFolderId: 1 as number | null,
   automations: [] as Automation[],
+  loaded: true,
   refetch: vi.fn(async () => {}),
   setRoute: vi.fn(),
   setOpen: vi.fn(),
@@ -25,6 +26,8 @@ vi.mock("@/contexts/automations-view-context", () => ({
   useAutomationsView: () => ({
     automations: scene.automations,
     unseenFailures: 0,
+    error: null,
+    loaded: scene.loaded,
     refetch: scene.refetch,
   }),
 }))
@@ -147,6 +150,7 @@ function Tab() {
 beforeEach(() => {
   scene.projectFolderId = 1
   scene.mobile = false
+  scene.loaded = true
   scene.setRoute.mockClear()
   scene.setOpen.mockClear()
   scene.refetch.mockClear()
@@ -256,6 +260,18 @@ describe("AutomationsAuxTab", () => {
     await user.click(screen.getByRole("button", { name: "Nightly sweep" }))
     await user.click(screen.getByRole("button", { name: "open-run" }))
     expect(scene.setOpen).toHaveBeenCalledWith(false)
+  })
+
+  it("shows a loading indicator, not the empty state, before the first list arrives (#541)", () => {
+    scene.automations = []
+    scene.loaded = false
+    render(<Tab />)
+    expect(
+      screen.getByRole("status", { name: enMessages.Automations.loading })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(enMessages.Folder.auxPanel.noAutomations)
+    ).not.toBeInTheDocument()
   })
 
   it("offers the first automation on a project that has none", async () => {

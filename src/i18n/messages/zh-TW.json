@@ -6394,6 +6394,7 @@
     "empty": "尚無自動化",
     "emptyHint": "建立一個，讓代理程式按排程或手動執行任務。",
     "loadFailed": "自動化清單載入失敗",
+    "loading": "正在載入自動化…",
     "name": "名稱",
     "namePlaceholder": "例如：每晚 PR 審查",
     "prompt": "提示詞",

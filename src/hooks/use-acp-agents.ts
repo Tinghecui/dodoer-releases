@@ -3,7 +3,7 @@
 import { useEffect } from "react"
 import { create } from "zustand"
 import { acpListAgents } from "@/lib/api"
-import { isRateLimitedError } from "@/lib/app-error"
+import { isRateLimitedError, toErrorMessage } from "@/lib/app-error"
 import { setCustomAgentDisplay } from "@/lib/custom-agents"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
 import type { UnsubscribeFn } from "@/lib/transport/types"
@@ -22,6 +22,12 @@ export interface UseAcpAgentsResult {
    * when "best-guess" defaults can be replaced with the real list.
    */
   fresh: boolean
+  /**
+   * Cowork fork (#539): 最近一次读取失败（不是限流）的说明；成功或点重试时清掉。
+   * 列表还空着时界面靠它分辨「还在加载」和「读取失败、给重试」。限流不算，那种
+   * 会自己过 5 秒再取。
+   */
+  error?: string | null
   /** Manual refresh — useful for explicit user-driven retries. */
   refresh: () => Promise<void>
 }
@@ -29,6 +35,7 @@ export interface UseAcpAgentsResult {
 interface AcpAgentsStore {
   agents: AcpAgentInfo[]
   fresh: boolean
+  error: string | null
   reload: () => Promise<void>
 }
 
@@ -66,6 +73,7 @@ function clearRateLimitRetry(): void {
 const useAcpAgentsStore = create<AcpAgentsStore>((set) => ({
   agents: [],
   fresh: false,
+  error: null,
   reload: async () => {
     const requestId = latestRequestId + 1
     latestRequestId = requestId
@@ -91,11 +99,18 @@ const useAcpAgentsStore = create<AcpAgentsStore>((set) => ({
           iconUrl: agent.icon_url,
         }))
       )
-      set({ agents: sorted, fresh: true })
+      set({ agents: sorted, fresh: true, error: null })
     } catch (err) {
       // Keep the previous list — clearing on transient failure would silently
       // regress downstream defaults to AGENT_DISPLAY_ORDER[0].
-      if (isRateLimitedError(err)) scheduleRateLimitRetry()
+      if (isRateLimitedError(err)) {
+        scheduleRateLimitRetry()
+        return
+      }
+      // Cowork fork (#539): 别的失败（比如 500）记下来，界面才能说读取失败、给
+      // 重试，不然一直显示「正在加载」。已经被更新的请求覆盖过的旧请求不记。
+      if (requestId <= latestSuccessId) return
+      set({ error: toErrorMessage(err) })
     }
   },
 }))
@@ -203,7 +218,7 @@ function acquireSharedSubscription(): () => void {
       // SidebarConversationList keep the refcount ≥ 1 for the whole session, so
       // this only fires on full teardown.
       latestSuccessId = latestRequestId
-      useAcpAgentsStore.setState({ agents: [], fresh: false })
+      useAcpAgentsStore.setState({ agents: [], fresh: false, error: null })
     }
   }
 }
@@ -223,8 +238,14 @@ export function useAcpAgents(): UseAcpAgentsResult {
   useEffect(() => acquireSharedSubscription(), [])
   const agents = useAcpAgentsStore((s) => s.agents)
   const fresh = useAcpAgentsStore((s) => s.fresh)
-  const refresh = useAcpAgentsStore((s) => s.reload)
-  return { agents, fresh, refresh }
+  const error = useAcpAgentsStore((s) => s.error)
+  return { agents, fresh, error, refresh: retryAcpAgents }
+}
+
+// 手动重试（#539）：先清掉错误，界面回到「正在加载」，再取一次。
+async function retryAcpAgents(): Promise<void> {
+  useAcpAgentsStore.setState({ error: null })
+  await useAcpAgentsStore.getState().reload()
 }
 
 /** Test-only: reset the shared store + module race/refcount state to a clean
@@ -236,5 +257,5 @@ export function resetAcpAgentsStore(): void {
   refCount = 0
   latestRequestId = 0
   latestSuccessId = 0
-  useAcpAgentsStore.setState({ agents: [], fresh: false })
+  useAcpAgentsStore.setState({ agents: [], fresh: false, error: null })
 }

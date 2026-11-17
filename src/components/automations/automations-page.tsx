@@ -225,7 +225,8 @@ export function AutomationsPageTitle() {
 export function AutomationsPage() {
   const t = useTranslations("Automations")
   const errorMessage = useAutomationErrorMessage()
-  const { automations, unseenFailures, error, refetch } = useAutomationsView()
+  const { automations, unseenFailures, error, loaded, refetch } =
+    useAutomationsView()
   const folders = useAppWorkspaceStore((s) => s.folders)
   // Every folder codeg knows, open or closed — for naming a folder the list is
   // filtered by that the sidebar no longer shows.
@@ -604,6 +605,19 @@ export function AutomationsPage() {
             <div className="min-w-0 flex-1">
               {mode === "editor" && editing ? (
                 editorPane
+              ) : !loaded && error == null ? (
+                // 列表还没回来：空列表不等于没有自动化，先转圈，
+                // 不然加载慢时会闪出新手引导，看着像自动化丢了（#541）。
+                <div
+                  role="status"
+                  aria-label={t("loading")}
+                  className="flex h-full items-center justify-center p-8"
+                >
+                  <Loader2
+                    className="size-5 animate-spin text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                </div>
               ) : error != null ? (
                 // 列表没加载出来：说清楚、给「重试」，不进 onboarding，
                 // 免得看着像一个自动化都没有（#339）。

@@ -24,6 +24,9 @@ interface AutomationsViewContextValue {
   /** 还没成功拉到过列表、而上一次请求失败时的错误原文；其余时候是 null。
    *  页面靠它把「加载失败」和「还没有自动化」分开（#339）。 */
   error: string | null
+  /** 成功拉到过一次列表以后是 true。之前列表是空的只说明还在加载，
+   *  页面靠它把「加载中」和「还没有自动化」分开（#541）。 */
+  loaded: boolean
   refetch: () => Promise<void>
 }
 
@@ -52,6 +55,7 @@ export function useAutomationsView() {
 export function AutomationsViewProvider({ children }: { children: ReactNode }) {
   const [automations, setAutomations] = useState<Automation[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false)
   const reqRef = useRef(0)
   // 成功拉到过一次列表以后，瞬时失败只保留旧列表、不报错。
   const loadedRef = useRef(false)
@@ -66,6 +70,7 @@ export function AutomationsViewProvider({ children }: { children: ReactNode }) {
       loadedRef.current = true
       setAutomations(list)
       setError(null)
+      setLoaded(true)
     } catch (err) {
       // 已经有列表时忽略，后面的事件或重连会补上；还没成功过就记下错误，
       // 页面显示「加载失败」和「重试」，不再进 onboarding（#339）。
@@ -111,8 +116,8 @@ export function AutomationsViewProvider({ children }: { children: ReactNode }) {
   )
 
   const value = useMemo<AutomationsViewContextValue>(
-    () => ({ automations, unseenFailures, error, refetch }),
-    [automations, unseenFailures, error, refetch]
+    () => ({ automations, unseenFailures, error, loaded, refetch }),
+    [automations, unseenFailures, error, loaded, refetch]
   )
 
   return (

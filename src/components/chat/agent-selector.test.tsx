@@ -516,6 +516,35 @@ describe("AgentSelector before the agent list has loaded", () => {
     expect(screen.getByText("Loading agents…")).toBeTruthy()
   })
 
+  // Cowork fork (#539): 读列表失败（不是限流）时说清楚失败了、给重试，不能一直
+  // 「正在加载」。
+  it("shows a load-failed message with a retry button when loading failed", () => {
+    const refresh = vi.fn(async () => {})
+    mockUseAcpAgents.mockReturnValue({
+      agents: [],
+      fresh: false,
+      error: "boom",
+      refresh,
+    })
+    renderWithIntl(<AgentSelector onSelect={() => {}} />)
+    expect(screen.queryByText("Loading agents…")).toBeNull()
+    expect(screen.getByText("Couldn't load the agent list.")).toBeTruthy()
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps showing loading while there is no error", () => {
+    mockUseAcpAgents.mockReturnValue({
+      agents: [],
+      fresh: false,
+      error: null,
+      refresh: async () => {},
+    })
+    renderWithIntl(<AgentSelector onSelect={() => {}} />)
+    expect(screen.getByText("Loading agents…")).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull()
+  })
+
   it("still says 'no enabled agents' once a loaded list has none", () => {
     mockUseAcpAgents.mockReturnValue({
       agents: [agent("codex", { enabled: false })],

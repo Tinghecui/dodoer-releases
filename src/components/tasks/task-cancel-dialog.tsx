@@ -18,6 +18,10 @@ import {
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { isWorktreeGone } from "./task-acceptance"
+import {
+  useWorktreeDirtyCount,
+  WorktreeDiscardOption,
+} from "./worktree-discard"
 import type { WorkTask } from "@/lib/types"
 
 interface TaskCancelDialogProps {
@@ -55,10 +59,17 @@ export function TaskCancelDialog({
   const t = useTranslations("Tasks")
   const [reason, setReason] = useState("")
   const [deleteWorktree, setDeleteWorktree] = useState(false)
+  // 「同时丢弃这些改动」：只有 worktree 里真有未提交文件、用户也勾了它，
+  // 才让后端连这些文件一起删；不勾时后端照旧保留 worktree。
+  const [discardUncommitted, setDiscardUncommitted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   // Recorded AND still on disk. One already gone has nothing to remove, and the
   // backend's cleanup would only converge leftovers the card reports itself.
   const hasWorktree = task != null && !isWorktreeGone(task)
+  const dirtyCount = useWorktreeDirtyCount(
+    task?.id ?? null,
+    open && hasWorktree && deleteWorktree
+  )
 
   useEffect(() => {
     if (!open) return
@@ -67,6 +78,7 @@ export function TaskCancelDialog({
     /* eslint-disable react-hooks/set-state-in-effect */
     setReason("")
     setDeleteWorktree(false)
+    setDiscardUncommitted(false)
     setSubmitting(false)
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [open, task])
@@ -75,10 +87,12 @@ export function TaskCancelDialog({
     if (!task) return
     setSubmitting(true)
     try {
+      const removing = hasWorktree && deleteWorktree
       await workTaskCancel(
         task.id,
         reason.trim() || null,
-        hasWorktree && deleteWorktree
+        removing,
+        removing && (dirtyCount ?? 0) > 0 && discardUncommitted
       )
       onOpenChange(false)
     } catch (e) {
@@ -115,6 +129,13 @@ export function TaskCancelDialog({
             />
             {t("cancelDeleteWorktree")}
           </Label>
+        ) : null}
+        {hasWorktree && deleteWorktree ? (
+          <WorktreeDiscardOption
+            count={dirtyCount}
+            checked={discardUncommitted}
+            onCheckedChange={setDiscardUncommitted}
+          />
         ) : null}
 
         <DialogFooter>

@@ -3798,6 +3798,35 @@ impl TaskEngine {
         path_holds_uncommitted(&wt.path).await
     }
 
+    /// 删除 worktree 会丢掉几个没提交的文件，给取消、删除弹窗和清理失败的
+    /// 卡片提前告诉用户。0 = 没有可丢的（没有 worktree、目录已经没了、干净）。
+    ///
+    /// 和 [`Self::cleanup_task`] 的拦截用同一个判断（[`path_holds_uncommitted`]，
+    /// 读不出来按「有」算），所以这里说 0 的，清理时也不会被拦；判断为有、
+    /// 但 git 数不出个数的（比如 `.git` 坏了），至少报 1，不让提示消失。
+    pub async fn worktree_uncommitted_files(&self, task_id: i32) -> Result<usize, String> {
+        let task = work_task_service::get_model(&self.db.conn, task_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !self.worktree_holds_uncommitted(&task).await {
+            return Ok(0);
+        }
+        let Some(wt_id) = task.worktree_folder_id else {
+            return Ok(0);
+        };
+        let Ok(wt) = get_folder_core(&self.db, wt_id).await else {
+            return Ok(0);
+        };
+        let counted = if Path::new(&wt.path).join(".git").exists() {
+            task_git::uncommitted_file_count(&wt.path)
+                .await
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        Ok(counted.max(1))
+    }
+
     /// Live git truth for "would an acceptance still have something to take
     /// from this task?" — work committed on the branch after the run settled
     /// (which `git status` reports as a clean worktree) as well as work the
@@ -6041,7 +6070,8 @@ impl TaskEngine {
     ///
     /// Refuses — with the reason both returned and flagged on the row — while
     /// the worktree still holds uncommitted files. See the check itself for why
-    /// that line is drawn here and not at the confirmation.
+    /// that line is drawn here and not at the confirmation. `discard_uncommitted`
+    /// 为 true（用户确认过丢弃这些改动）时不拦，直接删。
     ///
     /// The TASK lock is what makes this safe against a launch, and the folder
     /// lock cannot stand in for it: [`Self::launch`] holds the task lock across
@@ -6063,7 +6093,11 @@ impl TaskEngine {
     /// taken here, in [`Self::cancel`], and in [`Self::launch`], and none of
     /// those three is reachable while a folder lock is held (`launch` runs in
     /// its own spawned task, and `cancel`'s only nested wait is the pump lock).
-    pub async fn cleanup_task(&self, task_id: i32) -> Result<(), CleanupBlocked> {
+    pub async fn cleanup_task(
+        &self,
+        task_id: i32,
+        discard_uncommitted: bool,
+    ) -> Result<(), CleanupBlocked> {
         /// Statuses whose worktree is either in use or about to be — the launch
         /// path owns it, not the user.
         fn in_use(status: &WorkTaskStatus) -> bool {
@@ -6118,7 +6152,11 @@ impl TaskEngine {
         // swallows it and reads `cleanup_state` off the card instead, and the
         // delete path — which would otherwise tombstone that card and the reason
         // with it — stops on `holds_work` rather than swallowing.
-        if self.worktree_holds_uncommitted(&task).await {
+        //
+        // `discard_uncommitted` 是唯一的放行：用户在弹窗或卡片上看到「有 N 个
+        // 未提交文件」并明确选了丢弃。任务的正常产出往往就是没提交的文件，
+        // 没有这条路，「重试清理」永远失败。
+        if !discard_uncommitted && self.worktree_holds_uncommitted(&task).await {
             let _ = work_task_service::set_cleanup_state(
                 &self.db.conn,
                 task_id,
@@ -13637,7 +13675,10 @@ mod tests {
             .await
             .insert(ZOMBIE.into(), (f.task_id, run_seq));
 
-        f.engine.cleanup_task(f.task_id).await.expect("cleanup");
+        f.engine
+            .cleanup_task(f.task_id, false)
+            .await
+            .expect("cleanup");
 
         let task = row(&f.engine, f.task_id).await;
         assert_eq!(task.cleanup_state, None, "not a live agent");
@@ -13667,7 +13708,7 @@ mod tests {
         .expect("flag failed cleanup");
 
         f.engine
-            .cleanup_task(f.task_id)
+            .cleanup_task(f.task_id, false)
             .await
             .expect("retry cleanup");
 
@@ -13700,7 +13741,7 @@ mod tests {
 
         let err = f
             .engine
-            .cleanup_task(f.task_id)
+            .cleanup_task(f.task_id, false)
             .await
             .expect_err("a non-empty shell is not removable");
 
@@ -13847,7 +13888,7 @@ mod tests {
 
         let err = f
             .engine
-            .cleanup_task(f.task_id)
+            .cleanup_task(f.task_id, false)
             .await
             .expect_err("must not take uncommitted work");
         assert!(err.holds_work, "declined to protect work, not a failure");
@@ -13876,6 +13917,49 @@ mod tests {
         );
     }
 
+    /// 任务的正常产出就是没提交的文件：拦下以后，用户明确选了「丢弃改动」
+    /// 时必须真的删掉，否则界面上只剩一个永远失败的「重试」。没选时照旧拦。
+    #[tokio::test]
+    async fn discarding_uncommitted_work_removes_a_dirty_worktree() {
+        let f = delivery_fixture(FakeForge::default()).await;
+        assert_eq!(
+            f.engine.worktree_uncommitted_files(f.task_id).await,
+            Ok(0),
+            "a fresh checkout has nothing to lose"
+        );
+        std::fs::write(f.worktree.join("a.txt"), "one\ntwo\nthree\n").expect("write");
+        std::fs::create_dir_all(f.worktree.join("aiqa-scratch")).expect("mkdir");
+        std::fs::write(f.worktree.join("aiqa-scratch/e2.md"), "hello e2\n").expect("write");
+        assert_eq!(
+            f.engine.worktree_uncommitted_files(f.task_id).await,
+            Ok(2),
+            "the edit and the new file, counted one by one"
+        );
+
+        let err = f
+            .engine
+            .cleanup_task(f.task_id, false)
+            .await
+            .expect_err("without the opt-in the work is still protected");
+        assert!(err.holds_work);
+        assert!(f.worktree.exists());
+
+        f.engine
+            .cleanup_task(f.task_id, true)
+            .await
+            .expect("the user chose to discard the changes");
+
+        let task = row(&f.engine, f.task_id).await;
+        assert_eq!(task.cleanup_state, None, "the failed flag is cleared");
+        assert_eq!(task.worktree_folder_id, None, "detached");
+        assert!(!f.worktree.exists(), "and really gone from disk");
+        assert_eq!(
+            f.engine.worktree_uncommitted_files(f.task_id).await,
+            Ok(0),
+            "nothing left to warn about"
+        );
+    }
+
     /// The probe fails CLOSED. `git status` can stop answering for reasons that
     /// have nothing to do with the checkout being gone — a corrupt index, a
     /// permission error — and the operation waiting on that answer is
@@ -13892,7 +13976,7 @@ mod tests {
 
         let err = f
             .engine
-            .cleanup_task(f.task_id)
+            .cleanup_task(f.task_id, false)
             .await
             .expect_err("must not force-remove a checkout it could not read");
         assert!(err.holds_work, "unprovable is treated as unsafe");
@@ -13930,7 +14014,7 @@ mod tests {
 
         let removal = tokio::spawn({
             let engine = engine.clone();
-            async move { engine.cleanup_task(task_id).await }
+            async move { engine.cleanup_task(task_id, false).await }
         });
 
         // Long enough that an unserialized removal — a few DB reads and a

@@ -90,6 +90,19 @@ pub async fn has_changes(path: &str) -> Result<bool, AppCommandError> {
     Ok(!out.stdout.iter().all(|b| b.is_ascii_whitespace()))
 }
 
+/// 工作区里有几个没提交的文件（改过的已跟踪文件加上没跟踪的新文件，新目录
+/// 按里面的文件逐个算）。给删除 worktree 前的提示用，只是个数，不做判断。
+pub async fn uncommitted_file_count(path: &str) -> Result<usize, AppCommandError> {
+    let out = run_git(path, &["status", "--porcelain=v1", "-uall"]).await?;
+    if !out.status.success() {
+        return Err(git_command_error("status", &out.stderr));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count())
+}
+
 /// Stage everything and commit with the user's resolved author. Returns
 /// `false` when there was nothing to commit.
 pub async fn commit_all(

@@ -95,6 +95,11 @@ import {
 } from "./task-message-composer"
 import { TaskTranscriptDialog } from "./task-transcript-dialog"
 import {
+  TaskDiscardCleanupButton,
+  useWorktreeDirtyCount,
+  WorktreeDiscardOption,
+} from "./worktree-discard"
+import {
   duplicateActiveSource,
   duplicateActiveSourceLabel,
   type DuplicateActiveSource,
@@ -253,6 +258,8 @@ export function TaskDetailSheet({
   const [intent, setIntent] = useState<FollowUpIntent>(DEFAULT_FOLLOW_UP_INTENT)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteWorktree, setDeleteWorktree] = useState(false)
+  /** 删除确认里的「同时丢弃这些改动」，每次打开都从不勾开始。 */
+  const [deleteDiscard, setDeleteDiscard] = useState(false)
   /** Confirm for the footer's standalone worktree removal (`canRemoveWorktree`
    *  decides who is offered it). */
   const [cleanupOpen, setCleanupOpen] = useState(false)
@@ -282,6 +289,11 @@ export function TaskDetailSheet({
   // cleanup / delete entries below stay on `hasWorktree`: converging the
   // leftovers of a vanished worktree is exactly what they are for.
   const worktreeUsable = hasWorktree && task?.worktree_missing !== true
+  // 删除确认里勾了「同时删除 worktree」才去问有几个未提交文件。
+  const deleteDirtyCount = useWorktreeDirtyCount(
+    taskId,
+    deleteOpen && hasWorktree && deleteWorktree
+  )
   const conversationId = task?.conversation_id ?? null
   const taskStatus = task?.status ?? null
   // Total token usage of the task's conversation — parsed from the agent's own
@@ -1499,6 +1511,14 @@ export function TaskDetailSheet({
                   onClick={() => run(() => workTaskCleanup(task.id))}
                 />
               ) : null}
+              {/* 被未提交文件拦下的清理，重试永远过不去：给「丢弃改动并删除」，
+                  自带二次确认；没有未提交文件时它不显示。 */}
+              {hasWorktree && task.cleanup_state === "failed" ? (
+                <TaskDiscardCleanupButton
+                  key={`discard-${task.id}-${task.updated_at}`}
+                  taskId={task.id}
+                />
+              ) : null}
               <div className="flex-1" />
               {/* Beside "delete", because that is the other way to be rid of
                   this worktree — and glyph-only, because a settled task's
@@ -1518,7 +1538,10 @@ export function TaskDetailSheet({
                   label={t("actionDelete")}
                   busy={busy}
                   destructive
-                  onClick={() => setDeleteOpen(true)}
+                  onClick={() => {
+                    setDeleteDiscard(false)
+                    setDeleteOpen(true)
+                  }}
                 />
               ) : null}
             </div>
@@ -1600,12 +1623,24 @@ export function TaskDetailSheet({
               {t("deleteWithWorktree")}
             </Label>
           ) : null}
+          {hasWorktree && deleteWorktree ? (
+            <WorktreeDiscardOption
+              count={deleteDirtyCount}
+              checked={deleteDiscard}
+              onCheckedChange={setDeleteDiscard}
+            />
+          ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={() =>
                 run(async () => {
-                  await workTaskDelete(task.id, hasWorktree && deleteWorktree)
+                  const removing = hasWorktree && deleteWorktree
+                  await workTaskDelete(
+                    task.id,
+                    removing,
+                    removing && (deleteDirtyCount ?? 0) > 0 && deleteDiscard
+                  )
                   setDeleteOpen(false)
                   onOpenChange(false)
                 })

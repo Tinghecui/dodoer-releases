@@ -62,6 +62,18 @@ pub struct DeleteParams {
     pub id: i32,
     #[serde(default)]
     pub delete_worktree: bool,
+    /// 删 worktree 时连没提交的文件一起丢掉（用户在弹窗里勾了才有）。
+    #[serde(default)]
+    pub discard_uncommitted: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupParams {
+    pub id: i32,
+    /// 用户确认过丢弃 worktree 里没提交的文件。
+    #[serde(default)]
+    pub discard_uncommitted: bool,
 }
 
 #[derive(Deserialize)]
@@ -123,6 +135,9 @@ pub struct CancelParams {
     /// Take the worktree (and its work branch) along with the stop.
     #[serde(default)]
     pub delete_worktree: bool,
+    /// 删 worktree 时连没提交的文件一起丢掉（用户在弹窗里勾了才有）。
+    #[serde(default)]
+    pub discard_uncommitted: bool,
 }
 
 #[derive(Deserialize)]
@@ -308,9 +323,15 @@ pub async fn work_task_delete(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<DeleteParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    core::work_task_delete_core(&state.emitter, &state.db, params.id, params.delete_worktree)
-        .await
-        .map_err(AppCommandError::from)?;
+    core::work_task_delete_core(
+        &state.emitter,
+        &state.db,
+        params.id,
+        params.delete_worktree,
+        params.discard_uncommitted,
+    )
+    .await
+    .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -380,8 +401,13 @@ pub async fn work_task_return(
 pub async fn work_task_cancel(
     Json(params): Json<CancelParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    core::work_task_cancel_core(params.id, params.reason, params.delete_worktree)
-        .await
+    core::work_task_cancel_core(
+        params.id,
+        params.reason,
+        params.delete_worktree,
+        params.discard_uncommitted,
+    )
+    .await
         .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
@@ -477,12 +503,22 @@ pub async fn work_task_defer(
 }
 
 pub async fn work_task_cleanup(
-    Json(params): Json<IdParams>,
+    Json(params): Json<CleanupParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    core::work_task_cleanup_core(params.id)
+    core::work_task_cleanup_core(params.id, params.discard_uncommitted)
         .await
         .map_err(AppCommandError::from)?;
     Ok(Json(()))
+}
+
+/// 删除 worktree 会丢掉几个没提交的文件（0 = 没有）。
+pub async fn work_task_worktree_dirty(
+    Json(params): Json<IdParams>,
+) -> Result<Json<u32>, AppCommandError> {
+    let count = core::work_task_worktree_dirty_core(params.id)
+        .await
+        .map_err(AppCommandError::from)?;
+    Ok(Json(count))
 }
 
 pub async fn work_task_diff(

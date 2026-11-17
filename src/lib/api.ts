@@ -4389,11 +4389,18 @@ export async function workTaskReorder(
   return getTransport().call("work_task_reorder", { folderId, orderedIds })
 }
 
+/** `discardUncommitted`：删 worktree 时连没提交的文件一起丢掉（用户在
+ *  弹窗里勾了「同时丢弃这些改动」才传 true；不传时有未提交文件会被拦下）。 */
 export async function workTaskDelete(
   id: number,
-  deleteWorktree = false
+  deleteWorktree = false,
+  discardUncommitted = false
 ): Promise<void> {
-  return getTransport().call("work_task_delete", { id, deleteWorktree })
+  return getTransport().call("work_task_delete", {
+    id,
+    deleteWorktree,
+    discardUncommitted,
+  })
 }
 
 export async function workTaskStart(id: number): Promise<void> {
@@ -4480,12 +4487,14 @@ export async function workTaskReturn(
 export async function workTaskCancel(
   id: number,
   reason?: string | null,
-  deleteWorktree = false
+  deleteWorktree = false,
+  discardUncommitted = false
 ): Promise<void> {
   return getTransport().call("work_task_cancel", {
     id,
     reason: reason ?? null,
     deleteWorktree,
+    discardUncommitted,
   })
 }
 
@@ -4600,9 +4609,22 @@ export async function workTaskSetWriteback(
   })
 }
 
-/** Remove the task's worktree + branch (also retries a failed cleanup). */
-export async function workTaskCleanup(id: number): Promise<void> {
-  return getTransport().call("work_task_cleanup", { id })
+/** Remove the task's worktree + branch (also retries a failed cleanup).
+ *  `discardUncommitted = true` 是用户确认过的「丢弃改动并删除」：没提交的
+ *  文件一起删掉，否则有未提交文件时会被拒绝。 */
+export async function workTaskCleanup(
+  id: number,
+  discardUncommitted?: boolean
+): Promise<void> {
+  return getTransport().call(
+    "work_task_cleanup",
+    discardUncommitted ? { id, discardUncommitted } : { id }
+  )
+}
+
+/** 删除这个任务的 worktree 会丢掉几个没提交的文件（0 = 没有）。 */
+export async function workTaskWorktreeDirty(id: number): Promise<number> {
+  return getTransport().call("work_task_worktree_dirty", { id })
 }
 
 /** Unified diff of the worktree vs the task's recorded base. */

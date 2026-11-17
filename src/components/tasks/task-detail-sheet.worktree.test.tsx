@@ -19,6 +19,8 @@ import type { WorkTask } from "@/lib/types"
 import { TaskDetailSheet } from "./task-detail-sheet"
 
 const workTaskCleanup = vi.fn().mockResolvedValue(undefined)
+const workTaskDelete = vi.fn().mockResolvedValue(undefined)
+const workTaskWorktreeDirty = vi.fn().mockResolvedValue(0)
 
 vi.mock("@/lib/api", () => ({
   workTaskArchive: vi.fn().mockResolvedValue(undefined),
@@ -26,7 +28,8 @@ vi.mock("@/lib/api", () => ({
   getFolderConversation: vi.fn().mockRejectedValue(new Error("no transcript")),
   workTaskChangedFiles: vi.fn().mockResolvedValue([]),
   workTaskCleanup: (...args: unknown[]) => workTaskCleanup(...args),
-  workTaskDelete: vi.fn().mockResolvedValue(undefined),
+  workTaskDelete: (...args: unknown[]) => workTaskDelete(...args),
+  workTaskWorktreeDirty: (...args: unknown[]) => workTaskWorktreeDirty(...args),
   workTaskDiff: vi.fn().mockResolvedValue(""),
   workTaskEvents: vi.fn().mockResolvedValue([]),
   workTaskMergeUnqueue: vi.fn().mockResolvedValue(undefined),
@@ -108,6 +111,7 @@ const removeButton = () =>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  workTaskWorktreeDirty.mockResolvedValue(0)
 })
 
 describe("task drawer worktree removal", () => {
@@ -203,5 +207,45 @@ describe("task drawer worktree removal", () => {
     expect(
       screen.getByRole("button", { name: "Retry cleanup" })
     ).toBeInTheDocument()
+  })
+})
+
+describe("task drawer uncommitted files", () => {
+  it("warns in the delete confirm and passes the discard choice", async () => {
+    const user = userEvent.setup()
+    workTaskWorktreeDirty.mockResolvedValue(3)
+    mount(task({ status: "canceled" }))
+
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+    const confirm = await screen.findByRole("alertdialog")
+    await user.click(within(confirm).getByLabelText(/Also delete its worktree/))
+    expect(
+      await within(confirm).findByText(/3 uncommitted files/)
+    ).toBeInTheDocument()
+    await user.click(
+      within(confirm).getByLabelText(/Also discard these changes/)
+    )
+    await user.click(within(confirm).getByRole("button", { name: "Delete" }))
+    await waitFor(() =>
+      expect(workTaskDelete).toHaveBeenCalledWith(7, true, true)
+    )
+  })
+
+  it("offers discard-and-delete beside the failed cleanup's retry", async () => {
+    const user = userEvent.setup()
+    workTaskWorktreeDirty.mockResolvedValue(1)
+    mount(task({ status: "canceled", cleanup_state: "failed" }))
+
+    await user.click(
+      await screen.findByRole("button", { name: "Discard changes and delete" })
+    )
+    expect(workTaskCleanup).not.toHaveBeenCalled()
+    const confirm = await screen.findByRole("alertdialog")
+    await user.click(
+      within(confirm).getByRole("button", {
+        name: "Discard changes and delete",
+      })
+    )
+    await waitFor(() => expect(workTaskCleanup).toHaveBeenCalledWith(7, true))
   })
 })

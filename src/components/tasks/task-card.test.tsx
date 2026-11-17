@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { describe, expect, it, vi } from "vitest"
@@ -12,6 +12,15 @@ import { TaskCard } from "./task-card"
 vi.mock("@/lib/platform", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/platform")>()),
   openUrl: vi.fn(async () => {}),
+}))
+
+const cleanupMock = vi.fn().mockResolvedValue(undefined)
+const dirtyMock = vi.fn().mockResolvedValue(0)
+// 只替换清理用到的两个，其余照旧。
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  workTaskCleanup: (...args: unknown[]) => cleanupMock(...args),
+  workTaskWorktreeDirty: (...args: unknown[]) => dirtyMock(...args),
 }))
 
 function task(overrides?: Partial<WorkTask>): WorkTask {
@@ -479,5 +488,46 @@ describe("TaskCard handle later", () => {
     for (const name of ["Edit", "Handle later", "Archive", "View session"]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument()
     }
+  })
+})
+
+describe("TaskCard failed cleanup", () => {
+  it("offers to discard the uncommitted files and delete, behind a confirm", async () => {
+    // 清理被未提交的文件拦下以后，「重试」永远失败；卡片上要给一条出路，
+    // 而且点了先确认，不能一下就删。
+    cleanupMock.mockClear()
+    dirtyMock.mockResolvedValue(1)
+    const onOpen = vi.fn()
+    renderCard(task({ status: "canceled", cleanup_state: "failed" }), {
+      onOpen,
+    })
+
+    const button = await screen.findByRole("button", {
+      name: "Discard changes and delete",
+    })
+    expect(dirtyMock).toHaveBeenCalledWith(7)
+    await userEvent.click(button)
+    expect(cleanupMock).not.toHaveBeenCalled()
+
+    const confirm = await screen.findByRole("alertdialog")
+    expect(within(confirm).getByText(/1 uncommitted file/)).toBeInTheDocument()
+    await userEvent.click(
+      within(confirm).getByRole("button", {
+        name: "Discard changes and delete",
+      })
+    )
+    await waitFor(() => expect(cleanupMock).toHaveBeenCalledWith(7, true))
+    // 卡片本身点了会打开详情，按钮和确认框里的点击不能冒上去。
+    expect(onOpen).not.toHaveBeenCalled()
+  })
+
+  it("stays out of the way when nothing uncommitted is in the worktree", async () => {
+    dirtyMock.mockClear()
+    dirtyMock.mockResolvedValue(0)
+    renderCard(task({ status: "canceled", cleanup_state: "failed" }))
+    await waitFor(() => expect(dirtyMock).toHaveBeenCalledWith(7))
+    expect(
+      screen.queryByRole("button", { name: "Discard changes and delete" })
+    ).toBeNull()
   })
 })

@@ -2071,6 +2071,10 @@ pub fn build_router_with_proxy_auth(
             "/work_task_cleanup",
             post(handlers::work_task::work_task_cleanup),
         )
+        .route(
+            "/work_task_worktree_dirty",
+            post(handlers::work_task::work_task_worktree_dirty),
+        )
         .route("/work_task_diff", post(handlers::work_task::work_task_diff))
         .route(
             "/work_task_changed_files",

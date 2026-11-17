@@ -644,6 +644,7 @@
     "POST /api/work_task_template_list": "web",
     "POST /api/work_task_template_save": "web",
     "POST /api/work_task_update": "web",
+    "POST /api/work_task_worktree_dirty": "web",
     "GET /api/workspace_download/{ticket}": "浏览器下载（workspace_download_ticket 给的地址）",
     "POST /api/workspace_download_ticket": "web",
     "GET /ws/browser-tunnel": "桌面 app 的内置浏览器（远端 profile 的隧道，browser/remote.rs）",

@@ -380,6 +380,7 @@ pub async fn work_task_delete_core(
     db: &AppDatabase,
     id: i32,
     delete_worktree: bool,
+    discard_uncommitted: bool,
 ) -> Result<(), DbError> {
     // Kept only to report the reason if we run out of attempts.
     let mut last_conflict: Option<String> = None;
@@ -410,7 +411,7 @@ pub async fn work_task_delete_core(
         // Read from THIS pass, not from a stale first look: a run that started
         // and was cancelled above has a worktree the first snapshot never saw.
         if delete_worktree && task.worktree_folder_id.is_some() {
-            if let Err(blocked) = engine()?.cleanup_task(id).await {
+            if let Err(blocked) = engine()?.cleanup_task(id, discard_uncommitted).await {
                 if blocked.holds_work {
                     // STOP, rather than the `warn!` a mere failure gets. The
                     // tombstone below is what makes this different from every
@@ -420,8 +421,8 @@ pub async fn work_task_delete_core(
                     // on disk with nothing anywhere left to say why. Refusing
                     // the delete keeps both the files and the way out.
                     return Err(DbError::Validation(crate::work_task::worktree_kept(
-                        "Remove them, or clear \"also delete its worktree\" to delete just the \
-                         task.",
+                        "Check \"also discard these changes\" to delete them with it, or clear \
+                         \"also delete its worktree\" to delete just the task.",
                     )));
                 }
                 tracing::warn!(
@@ -604,11 +605,12 @@ pub async fn work_task_cancel_core(
     id: i32,
     reason: Option<String>,
     delete_worktree: bool,
+    discard_uncommitted: bool,
 ) -> Result<(), DbError> {
     let engine = engine()?;
     engine.cancel(id, reason).await.map_err(DbError::Validation)?;
     if delete_worktree {
-        if let Err(blocked) = engine.cleanup_task(id).await {
+        if let Err(blocked) = engine.cleanup_task(id, discard_uncommitted).await {
             tracing::warn!(
                 "[work_task] cleanup during cancel of task {id}: {}",
                 blocked.message
@@ -824,11 +826,23 @@ pub async fn work_task_defer_core(
     Ok(())
 }
 
-pub async fn work_task_cleanup_core(id: i32) -> Result<(), DbError> {
+/// `discard_uncommitted`：用户确认过丢弃 worktree 里没提交的文件（卡片上的
+/// 「丢弃改动并删除」）。不带它时照旧拦下有未提交文件的 worktree。
+pub async fn work_task_cleanup_core(id: i32, discard_uncommitted: bool) -> Result<(), DbError> {
     engine()?
-        .cleanup_task(id)
+        .cleanup_task(id, discard_uncommitted)
         .await
         .map_err(|blocked| DbError::Validation(blocked.message))
+}
+
+/// 删除这个任务的 worktree 会丢掉几个没提交的文件（0 = 没有）。取消、删除
+/// 弹窗勾上「同时删除 worktree」时先问它，有的话提示并给「同时丢弃」的选项。
+pub async fn work_task_worktree_dirty_core(id: i32) -> Result<u32, DbError> {
+    engine()?
+        .worktree_uncommitted_files(id)
+        .await
+        .map(|n| u32::try_from(n).unwrap_or(u32::MAX))
+        .map_err(DbError::Validation)
 }
 
 /// Diff of the task worktree vs. the base its branch sits on
@@ -1052,12 +1066,14 @@ pub async fn work_task_delete(
     db: tauri::State<'_, AppDatabase>,
     id: i32,
     delete_worktree: Option<bool>,
+    discard_uncommitted: Option<bool>,
 ) -> Result<(), DbError> {
     work_task_delete_core(
         &EventEmitter::Tauri(app),
         &db,
         id,
         delete_worktree.unwrap_or(false),
+        discard_uncommitted.unwrap_or(false),
     )
     .await
 }
@@ -1140,8 +1156,15 @@ pub async fn work_task_cancel(
     id: i32,
     reason: Option<String>,
     delete_worktree: Option<bool>,
+    discard_uncommitted: Option<bool>,
 ) -> Result<(), DbError> {
-    work_task_cancel_core(id, reason, delete_worktree.unwrap_or(false)).await
+    work_task_cancel_core(
+        id,
+        reason,
+        delete_worktree.unwrap_or(false),
+        discard_uncommitted.unwrap_or(false),
+    )
+    .await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -1222,8 +1245,14 @@ pub async fn work_task_defer(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn work_task_cleanup(id: i32) -> Result<(), DbError> {
-    work_task_cleanup_core(id).await
+pub async fn work_task_cleanup(id: i32, discard_uncommitted: Option<bool>) -> Result<(), DbError> {
+    work_task_cleanup_core(id, discard_uncommitted.unwrap_or(false)).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn work_task_worktree_dirty(id: i32) -> Result<u32, DbError> {
+    work_task_worktree_dirty_core(id).await
 }
 
 #[cfg(feature = "tauri-runtime")]

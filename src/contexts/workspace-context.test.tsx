@@ -1,5 +1,5 @@
 import { act, render, screen } from "@testing-library/react"
-import { useEffect } from "react"
+import { useEffect, type ReactNode } from "react"
 import type { Monaco } from "@monaco-editor/react"
 import { useTrackMonacoModel } from "@/contexts/monaco-model-context"
 import { buildMonacoModelPath } from "@/lib/monaco-model-path"
@@ -35,6 +35,10 @@ import {
   type FileWorkspaceTab,
 } from "@/contexts/workspace-context"
 import * as api from "@/lib/api"
+import {
+  resetFileTabEvictionsForTests,
+  takeFileTabEvictedByCap,
+} from "@/lib/files/file-tab-evictions"
 import { FilePanelToggle } from "@/components/files/file-panel-toggle"
 import {
   claimSurfaceCreation,
@@ -5198,6 +5202,31 @@ describe("reopening a closed file tab", () => {
     expect(peekClosedTab()).toMatchObject({ kind: "file", path: "/repo/a.ts" })
   })
 
+  it("记下上限关掉的是哪个，用户自己关的不记", async () => {
+    resetFileTabEvictionsForTests()
+    mount()
+    await click("open-a")
+    await click("open-b")
+    await click("open-c")
+    await click("open-d")
+    await click("close-b")
+    expect(takeFileTabEvictedByCap("/repo/a.ts")).toBe(true)
+    // 问过一次就划掉
+    expect(takeFileTabEvictedByCap("/repo/a.ts")).toBe(false)
+    expect(takeFileTabEvictedByCap("/repo/b.ts")).toBe(false)
+  })
+
+  it("上限关过的标签又开出来，上次的记号作废", async () => {
+    resetFileTabEvictionsForTests()
+    mount()
+    await click("open-a")
+    await click("open-b")
+    await click("open-c")
+    await click("open-d")
+    await click("open-a")
+    expect(takeFileTabEvictedByCap("/repo/a.ts")).toBe(false)
+  })
+
   it("keeps a tab the user went back to", async () => {
     const ids = mount()
     await click("open-a")
@@ -6041,5 +6070,147 @@ describe("Folder-tabs file closes, restores and selection", () => {
       "Three",
     ])
     expect(renderPhaseWrites()).toBe(0)
+  })
+})
+
+describe("Office file tabs", () => {
+  const mockedReadBase64 = api.readFileBase64 as unknown as ReturnType<
+    typeof vi.fn
+  >
+
+  beforeEach(() => {
+    mockedApi.readFileForEdit.mockReset()
+    mockedApi.gitIsTracked.mockReset()
+    mockedApi.gitShowFile.mockReset()
+    mockedReadBase64.mockReset()
+    mockedApi.readFileForEdit.mockResolvedValue({
+      content: "a",
+      etag: "e1",
+      mtime_ms: 1,
+      readonly: false,
+      line_ending: "lf",
+    })
+    mockedApi.gitIsTracked.mockResolvedValue(false)
+    mockedApi.gitShowFile.mockResolvedValue("")
+    mockedReadBase64.mockResolvedValue("UEsDBA==")
+  })
+
+  function OfficeProbe({
+    onCapture,
+  }: {
+    onCapture: (tabs: FileWorkspaceTab[], activeId: string | null) => void
+  }) {
+    const { openFilePreview, fileTabs, activeFileTabId } = useWorkspaceContext()
+    onCapture(fileTabs, activeFileTabId)
+    return (
+      <div>
+        <button onClick={() => void openFilePreview("a.ts")}>open-text</button>
+        <button onClick={() => void openFilePreview("report.docx")}>
+          open-docx
+        </button>
+      </div>
+    )
+  }
+
+  function renderOfficeProbe(extra?: ReactNode) {
+    const state: { tabs: FileWorkspaceTab[]; active: string | null } = {
+      tabs: [],
+      active: null,
+    }
+    render(
+      <WorkspaceProvider>
+        <OfficeProbe
+          onCapture={(tabs, active) => {
+            state.tabs = tabs
+            state.active = active
+          }}
+        />
+        {extra}
+      </WorkspaceProvider>
+    )
+    return state
+  }
+
+  it("已经不存在的办公文档打开成出错的标签，不当成正常的预览", async () => {
+    mockedReadBase64.mockRejectedValue(
+      new Error(JSON.stringify({ code: "not_found", message: "not found" }))
+    )
+    const state = renderOfficeProbe()
+
+    await act(async () => {
+      screen.getByText("open-docx").click()
+    })
+
+    expect(state.tabs).toHaveLength(1)
+    expect(state.tabs[0]).toMatchObject({
+      id: fileTabId("/repo/report.docx"),
+      loading: false,
+      saveState: "error",
+    })
+  })
+
+  it("办公文档只探一下在不在：太大、读失败都照常开成预览", async () => {
+    mockedReadBase64.mockRejectedValue(
+      new Error(JSON.stringify({ code: "file_too_large", message: "big" }))
+    )
+    const state = renderOfficeProbe()
+
+    await act(async () => {
+      screen.getByText("open-docx").click()
+    })
+
+    expect(mockedApi.readFileForEdit).not.toHaveBeenCalled()
+    expect(state.tabs[0]).toMatchObject({
+      id: fileTabId("/repo/report.docx"),
+      loading: false,
+      saveState: "idle",
+      readonly: true,
+    })
+  })
+
+  type Workspace = ReturnType<typeof useWorkspaceContext>
+
+  function Capture({ onCapture }: { onCapture: (w: Workspace) => void }) {
+    onCapture(useWorkspaceContext())
+    return null
+  }
+
+  // 和真实的调用方一样在 act 外面调：等打开返回就马上切，中间不专门等渲染。
+  // act 里 React 会在每次 await 之间把渲染做掉，测不出「还没提交」。
+  async function openThenSwitch(rawPath: string): Promise<string | null> {
+    let workspace: Workspace | null = null
+    const state = renderOfficeProbe(
+      <Capture onCapture={(w) => (workspace = w)} />
+    )
+    await act(async () => {
+      screen.getByText("open-text").click()
+    })
+    expect(state.active).toBe(fileTabId("/repo/a.ts"))
+
+    const env = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    const previous = env.IS_REACT_ACT_ENVIRONMENT
+    env.IS_REACT_ACT_ENVIRONMENT = false
+    try {
+      const path = await workspace!.openFilePreview(rawPath, {
+        background: true,
+      })
+      if (path) workspace!.switchFileTab(fileTabId(path))
+    } finally {
+      env.IS_REACT_ACT_ENVIRONMENT = previous
+    }
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    return state.active
+  }
+
+  it("打开办公文档后立刻切过去，不会因为标签还没提交被忽略", async () => {
+    expect(await openThenSwitch("report.docx")).toBe(
+      fileTabId("/repo/report.docx")
+    )
+  })
+
+  it("打开普通文件后立刻切过去，同样不被忽略", async () => {
+    expect(await openThenSwitch("b.ts")).toBe(fileTabId("/repo/b.ts"))
   })
 })

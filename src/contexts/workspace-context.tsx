@@ -56,6 +56,10 @@ import {
 } from "@/lib/closed-tab-stack"
 import { MAX_FILE_TABS, TabRecency, pickTabsToEvict } from "@/lib/tab-limit"
 import {
+  clearFileTabEvictionMarks,
+  markFileTabsEvictedByCap,
+} from "@/lib/files/file-tab-evictions"
+import {
   isBinaryImageFile,
   isHiddenPath,
   isHtmlPreviewable,
@@ -70,7 +74,7 @@ import {
   type ImageDiffSides,
   type ImageDiffSource,
 } from "@/lib/image-diff"
-import { toErrorMessage } from "@/lib/app-error"
+import { isNotFoundError, toErrorMessage } from "@/lib/app-error"
 import {
   HIDDEN_TAB_CONTENT_BUDGET_CHARS,
   selectTabsToUnload,
@@ -585,6 +589,9 @@ function binaryPreviewKind(absPath: string): BinaryPreviewKind | null {
   if (isPdfFile(absPath)) return "pdf"
   return null
 }
+
+/** 办公文档打开前探一下在不在：只要这么多字节，大的直接报「太大」，不读内容。 */
+const OFFICE_PROBE_MAX_BYTES = 4096
 
 async function readBinaryPreview(
   absPath: string,
@@ -2194,6 +2201,18 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           // text. The OfficePreview component renders them via the OfficeCLI
           // backend on its own, so just settle the tab as a ready preview shell.
           if (office) {
+            // 预览自己去渲染、不读内容，文件不在了也会开成正常的标签。先探一下：
+            // 后端明确回「不存在」才当出错的标签（交给下面的 catch）；太大、超时、
+            // 读失败这些说明文件还在，照样开成预览。
+            try {
+              await withTimeout(
+                readFileBase64(absPath, OFFICE_PROBE_MAX_BYTES),
+                15_000,
+                t("previewRequestTimedOut")
+              )
+            } catch (error) {
+              if (isNotFoundError(error)) throw error
+            }
             if (!settleFetch(tabId, gen)) return
             setFileTabs((prev) =>
               prev.map((tab) =>
@@ -3459,6 +3478,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       fileTabs.map((tab) => tab.id),
       activeFileTabId
     )
+    // 又开着的标签，上次被上限关的记号不再算数。
+    clearFileTabEvictionMarks(
+      fileTabs.flatMap((tab) => (tab.path ? [tab.path] : []))
+    )
     if (fileTabs.length <= MAX_FILE_TABS) return
     const byId = new Map(fileTabs.map((tab) => [tab.id, tab]))
     const victims = pickTabsToEvict(
@@ -3469,6 +3492,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const tab = byId.get(id)
         return id === activeFileTabId || (tab != null && isDirtyFileTab(tab))
       }
+    )
+    // 记下是上限关的，文件标签的持久化靠它分清上限挤掉的和用户自己关的。
+    markFileTabsEvictedByCap(
+      victims.flatMap((id) => {
+        const path = byId.get(id)?.path
+        return path ? [path] : []
+      })
     )
     // Victims are never dirty, so nothing to ask. The cap counts buffers, so
     // an evicted one closes for every folder that references it.

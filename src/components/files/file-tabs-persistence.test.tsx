@@ -90,6 +90,11 @@ import {
   readPersistedFileTabs,
   writePersistedFileTabs,
 } from "@/lib/files/file-tab-persistence"
+import {
+  clearFileTabEvictionMarks,
+  markFileTabsEvictedByCap,
+  resetFileTabEvictionsForTests,
+} from "@/lib/files/file-tab-evictions"
 import { pickTabsToEvict, TabRecency } from "@/lib/tab-limit"
 import {
   resetFolderTabsStore,
@@ -220,20 +225,27 @@ function useScopedTabs(
       (id) => [...scopes.values()].flat().find((tab) => tab.id === id)!
     )
   }
+  const fileTabsById = () =>
+    new Map([...scopes.values()].flat().map((tab) => [tab.id, tab]))
   // 和真实工作区的 layout effect 一样：每次变了都同步一下最近使用，超了就关。
   const evict = () => {
     show()
     const keep = actives.get(mocks.folderId ?? -1) ?? null
     recency.sync(buffers, keep)
+    // 和真实工作区一样：开着的不再算上限关过的，关之前记下这次关的是哪几个。
+    const pathOf = (id: string) => fileTabsById().get(id)?.path ?? ""
+    clearFileTabEvictionMarks(buffers.map(pathOf))
     if (buffers.length <= cap) return
-    if (lazy) mocks.rerender?.()
     const dirtyIds = new Set([...dirty].map((path) => fileTab(path).id))
-    for (const victim of pickTabsToEvict(
+    const victims = pickTabsToEvict(
       buffers,
       cap,
       recency,
       (id) => id === keep || dirtyIds.has(id)
-    )) {
+    )
+    markFileTabsEvictedByCap(victims.map(pathOf))
+    if (lazy) mocks.rerender?.()
+    for (const victim of victims) {
       for (const [folder, list] of scopes) {
         const next = list.filter((tab) => tab.id !== victim)
         scopes.set(folder, next)
@@ -287,6 +299,14 @@ function useScopedTabs(
       evict()
       mocks.rerender?.()
     },
+    /** 用户在当前项目里关掉一个标签，不重新渲染（和下一次变化落在同一次渲染里） */
+    drop(path: string) {
+      const folder = mocks.folderId ?? -1
+      const next = (scopes.get(folder) ?? []).filter((tab) => tab.path !== path)
+      scopes.set(folder, next)
+      if (actives.get(folder) === fileTab(path).id)
+        actives.set(folder, next[0]?.id ?? null)
+    },
     /** 换项目：项目、可见的标签栏和范围一起变 */
     async switchTo(folderId: number) {
       mocks.folderId = folderId
@@ -310,6 +330,7 @@ describe("FileTabsPersistence", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     localStorage.clear()
     resetFileTabsPersistenceForTests()
+    resetFileTabEvictionsForTests()
     resetFolderTabsStore()
     mocks.folderId = 7
     mocks.remoteId = null
@@ -788,12 +809,11 @@ describe("FileTabsPersistence", () => {
     await act(async () => {
       vi.advanceTimersByTime(1000)
     })
-    // 恢复还没完：先不写
-    expect(readPersistedFileTabs(7).paths).toEqual([
-      "/repo/a.ts",
-      "/repo/b.ts",
-      "/repo/c.ts",
-    ])
+    // 恢复还没完：先按用户拖的顺序写下，还没开出来的 c 接在后面，刷新也不丢
+    expect(readPersistedFileTabs(7)).toEqual({
+      paths: ["/repo/b.ts", "/repo/a.ts", "/repo/c.ts"],
+      active: "/repo/a.ts",
+    })
     await act(async () => {
       releaseLast()
     })
@@ -804,6 +824,70 @@ describe("FileTabsPersistence", () => {
     })
     expect(readPersistedFileTabs(7)).toEqual({
       paths: ["/repo/b.ts", "/repo/a.ts", "/repo/c.ts"],
+      active: "/repo/a.ts",
+    })
+  })
+
+  // 标签跟随项目，项目 7 记下 a、b、c，c 读得慢：a、b 开出来以后用户关掉 b。
+  async function closeDuringRestore(tabs: ReturnType<typeof useScopedTabs>) {
+    useFolderTabsStore.setState({ enabled: true, scope: 7 })
+    writePersistedFileTabs(7, {
+      paths: ["/repo/a.ts", "/repo/b.ts", "/repo/c.ts"],
+      active: "/repo/a.ts",
+    })
+    writePersistedFileTabs(8, { paths: ["/other/x.ts"], active: null })
+    let releaseLast: () => void = () => {}
+    const base = mocks.openFilePreview.getMockImplementation()!
+    mocks.openFilePreview.mockImplementation(
+      (path: string, options?: unknown) =>
+        path === "/repo/c.ts"
+          ? new Promise((resolve) => {
+              releaseLast = () => resolve(base(path, options))
+            })
+          : base(path, options)
+    )
+    const view = mount()
+    await flush()
+    expect(tabs.paths(7)).toEqual(["/repo/a.ts", "/repo/b.ts"])
+    const [a] = mocks.fileTabs
+    await act(async () => {
+      tabs.edit([a], a.id)
+    })
+    await flush()
+    return { view, release: () => releaseLast() }
+  }
+
+  it("恢复过程中关掉的标签，切到别的项目再切回来不会被补开", async () => {
+    const tabs = useScopedTabs()
+    const { release } = await closeDuringRestore(tabs)
+    await tabs.switchTo(8)
+    await flush()
+    await act(async () => {
+      release()
+    })
+    await flush()
+    await flush()
+    await tabs.switchTo(7)
+    await flush()
+    await flush()
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(tabs.paths(7)).toEqual(["/repo/a.ts", "/repo/c.ts"])
+    expect(readPersistedFileTabs(7)).toEqual({
+      paths: ["/repo/a.ts", "/repo/c.ts"],
+      active: "/repo/a.ts",
+    })
+  })
+
+  it("恢复过程中关掉了标签、恢复完之前就刷新：关掉的不丢，还没开出来的也还在", async () => {
+    const { view } = await closeDuringRestore(useScopedTabs())
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    view.unmount()
+    expect(readPersistedFileTabs(7)).toEqual({
+      paths: ["/repo/a.ts", "/repo/c.ts"],
       active: "/repo/a.ts",
     })
   })
@@ -933,6 +1017,140 @@ describe("FileTabsPersistence", () => {
       })
     }
   )
+
+  it("标签跟随项目：恢复补开标签的同一次渲染里用户关掉一个，不当成上限挤掉的，不再补开", async () => {
+    // 项目 8 先开着两个，合计已经快到上限
+    mocks.folderId = 8
+    useFolderTabsStore.setState({ enabled: true, scope: 8 })
+    writePersistedFileTabs(8, {
+      paths: ["/other/b1.ts", "/other/b2.ts"],
+      active: "/other/b1.ts",
+    })
+    writePersistedFileTabs(7, {
+      paths: ["/repo/a1.ts", "/repo/a2.ts", "/repo/a3.ts"],
+      active: "/repo/a3.ts",
+    })
+    const tabs = useScopedTabs(3)
+    const base = mocks.openFilePreview.getMockImplementation()!
+    // 恢复补开 a2 的同一次渲染里，用户关掉了已经出来的 a1（合计没超，上限什么都没关）
+    mocks.openFilePreview.mockImplementation(
+      async (path: string, options?: { folderId?: number }) => {
+        if (path === "/repo/a2.ts") tabs.drop("/repo/a1.ts")
+        return base(path, options)
+      }
+    )
+    mount()
+    await flush()
+    await flush()
+    expect(tabs.paths(8)).toEqual(["/other/b1.ts", "/other/b2.ts"])
+
+    await tabs.switchTo(7)
+    await flush()
+    await flush()
+    await flush()
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(tabs.paths(7)).toEqual(["/repo/a2.ts", "/repo/a3.ts"])
+    expect(readPersistedFileTabs(7).paths).toEqual([
+      "/repo/a2.ts",
+      "/repo/a3.ts",
+    ])
+  })
+
+  it("标签不跟随项目：在项目 B 里关掉从 A 恢复出来的标签，切回 A 不再补开", async () => {
+    writePersistedFileTabs(7, { paths: ["/repo/a.ts"], active: "/repo/a.ts" })
+    writePersistedFileTabs(8, {
+      paths: ["/other/x.ts"],
+      active: "/other/x.ts",
+    })
+    mount()
+    await flush()
+    await flush()
+    mocks.folderId = 8
+    mocks.rerender?.()
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/repo/a.ts",
+      "/other/x.ts",
+    ])
+
+    // 在 8 里关掉 A 的标签
+    await act(async () => {
+      mocks.fileTabs = mocks.fileTabs.filter((tab) => tab.path !== "/repo/a.ts")
+      mocks.rerender?.()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    // 切回 7：关掉的不再出现，7 的记录里也没有它了
+    mocks.folderId = 7
+    mocks.rerender?.()
+    await flush()
+    await flush()
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual(["/other/x.ts"])
+    expect(readPersistedFileTabs(7).paths).toEqual([])
+    expect(readPersistedFileTabs(8).paths).toEqual(["/other/x.ts"])
+  })
+
+  it("标签不跟随项目：在 B 里划掉了 A 记录里的标签，回 A 重新打开、和划掉前一模一样时也照写，刷新还在", async () => {
+    writePersistedFileTabs(7, { paths: ["/repo/a.ts"], active: "/repo/a.ts" })
+    writePersistedFileTabs(8, {
+      paths: ["/other/x.ts"],
+      active: "/other/x.ts",
+    })
+    const first = mount()
+    await flush()
+    await flush()
+    mocks.folderId = 8
+    mocks.rerender?.()
+    await flush()
+    await flush()
+
+    // 在 8 里关掉 A 的标签：7 的记录里划掉了
+    await act(async () => {
+      mocks.fileTabs = mocks.fileTabs.filter((tab) => tab.path !== "/repo/a.ts")
+      mocks.rerender?.()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(readPersistedFileTabs(7).paths).toEqual([])
+
+    // 回 7：关掉 x、重新打开 a 并选中，标签栏和 7 原来记下的一模一样
+    mocks.folderId = 7
+    mocks.rerender?.()
+    await flush()
+    await flush()
+    await act(async () => {
+      const a = fileTab("/repo/a.ts")
+      mocks.fileTabs = [a]
+      mocks.activeFileTabId = a.id
+      mocks.rerender?.()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(readPersistedFileTabs(7)).toEqual({
+      paths: ["/repo/a.ts"],
+      active: "/repo/a.ts",
+    })
+
+    // 刷新：a 回来
+    first.unmount()
+    resetFileTabsPersistenceForTests()
+    mocks.fileTabs = []
+    mocks.activeFileTabId = null
+    mount()
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual(["/repo/a.ts"])
+  })
 
   it("有没保存的标签让合计一直超过三个：用户自己关掉的标签不当成上限挤掉的，不再冒出来", async () => {
     useFolderTabsStore.setState({ enabled: true, scope: 7 })

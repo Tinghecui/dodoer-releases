@@ -10,6 +10,7 @@ vi.mock("@/lib/transport", () => ({
 
 import {
   fileTabsStorageKey,
+  forgetPersistedFileTabPaths,
   readPersistedFileTabs,
   samePersistedFileTabs,
   snapshotFileTabs,
@@ -149,5 +150,48 @@ describe("file-tab-persistence", () => {
         active: "/r/b.ts",
       })
     ).toBe(false)
+  })
+
+  it("从同一个服务器上别的项目的记录里划掉关掉的路径，自己的和别的服务器的不动", () => {
+    localStorage.clear()
+    writePersistedFileTabs(
+      1,
+      { paths: ["/r/a.ts", "/r/b.ts"], active: "/r/a.ts" },
+      "local"
+    )
+    writePersistedFileTabs(
+      2,
+      { paths: ["/r/a.ts"], active: "/r/a.ts" },
+      "local"
+    )
+    writePersistedFileTabs(
+      3,
+      { paths: ["/r/a.ts"], active: "/r/a.ts" },
+      "local"
+    )
+    writePersistedFileTabs(
+      1,
+      { paths: ["/r/a.ts"], active: "/r/a.ts" },
+      "remote-9"
+    )
+
+    const rewritten = forgetPersistedFileTabPaths(["/r/a.ts"], "local", 3)
+
+    // 返回改写过的项目和改写后的记录，调用方拿去更新自己的缓存
+    expect([...rewritten].sort((x, y) => x.folderId - y.folderId)).toEqual([
+      { folderId: 1, entries: { paths: ["/r/b.ts"], active: null } },
+      { folderId: 2, entries: { paths: [], active: null } },
+    ])
+    expect(readPersistedFileTabs(1, "local")).toEqual({
+      paths: ["/r/b.ts"],
+      active: null,
+    })
+    expect(readPersistedFileTabs(2, "local")).toEqual({
+      paths: [],
+      active: null,
+    })
+    expect(localStorage.getItem(fileTabsStorageKey(2, "local"))).toBeNull()
+    expect(readPersistedFileTabs(3, "local").paths).toEqual(["/r/a.ts"])
+    expect(readPersistedFileTabs(1, "remote-9").paths).toEqual(["/r/a.ts"])
   })
 })

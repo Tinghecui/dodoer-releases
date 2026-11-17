@@ -110,6 +110,51 @@ export function writePersistedFileTabs(
   }
 }
 
+/**
+ * 把这几个路径从这个服务器上别的项目的记录里划掉（exceptFolderId 那个项目自己的
+ * 记录不动，由调用方按标签栏写）。标签不跟随项目时标签栏是共用的，用户在一个项目
+ * 里关掉了从别的项目恢复出来的标签，那个项目的记录里也不能再有它。选中的被划掉
+ * 了就不留选中项。返回改写过的那几个项目和改写后的记录，调用方据此更新自己的
+ * 「最后写下的样子」，免得以后写同样的内容时以为没变、跳过不写。
+ */
+export function forgetPersistedFileTabPaths(
+  paths: readonly string[],
+  server: string,
+  exceptFolderId: number
+): { folderId: number; entries: PersistedFileTabs }[] {
+  const rewritten: { folderId: number; entries: PersistedFileTabs }[] = []
+  if (typeof window === "undefined" || paths.length === 0) return rewritten
+  const prefix = `${KEY_PREFIX}${server}:`
+  const folderIds: number[] = []
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (!key?.startsWith(prefix)) continue
+      const folderId = Number(key.slice(prefix.length))
+      if (Number.isInteger(folderId) && folderId !== exceptFolderId) {
+        folderIds.push(folderId)
+      }
+    }
+  } catch {
+    return rewritten
+  }
+  const gone = new Set(paths)
+  for (const folderId of folderIds) {
+    const recorded = readPersistedFileTabs(folderId, server)
+    if (!recorded.paths.some((path) => gone.has(path))) continue
+    const entries: PersistedFileTabs = {
+      paths: recorded.paths.filter((path) => !gone.has(path)),
+      active:
+        recorded.active != null && gone.has(recorded.active)
+          ? null
+          : recorded.active,
+    }
+    writePersistedFileTabs(folderId, entries, server)
+    rewritten.push({ folderId, entries })
+  }
+  return rewritten
+}
+
 /** 标签栏在持久化眼里的样子：文件标签的路径（按顺序）和选中的那个。 */
 export function snapshotFileTabs(
   fileTabs: readonly FileWorkspaceTab[],

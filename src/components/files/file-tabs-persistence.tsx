@@ -11,9 +11,11 @@ import { readFileBase64 } from "@/lib/api"
 import { isNotFoundError } from "@/lib/app-error"
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
 import { buildFileTabId } from "@/lib/file-tab-id"
+import { takeFileTabEvictedByCap } from "@/lib/files/file-tab-evictions"
 import {
   fileTabsServerKey,
   fileTabsStorageKey,
+  forgetPersistedFileTabPaths,
   readPersistedFileTabs,
   samePersistedFileTabs,
   snapshotFileTabs,
@@ -76,6 +78,33 @@ interface RestoreLedger {
   adding: Set<string>
   /** 恢复打开的所有路径：没有选中项时工作区会自己选上其中一个。 */
   all: Set<string>
+  /** 这次恢复开始时读到的记录。 */
+  entries: PersistedFileTabs
+}
+
+/**
+ * 恢复还没做完时用户动过标签，要记下的样子：用户眼下的标签栏，后面接着还没开出来
+ * 的（以及被上限挤掉、还要补开的），按记下的顺序；用户没自己选过就留着记下的选中
+ * 项。关掉的不在里面，切回来、刷新都不会再开出来；还没开出来的也不丢。
+ */
+function mergeWithRemainder(
+  current: PersistedFileTabs,
+  ledger: RestoreLedger,
+  evicted: Set<string> | undefined,
+  userPicked: boolean
+): PersistedFileTabs {
+  const open = new Set(current.paths)
+  const rest = ledger.entries.paths.filter(
+    (path) =>
+      !open.has(path) && (ledger.adding.has(path) || !!evicted?.has(path))
+  )
+  const paths = [...current.paths, ...rest]
+  const recorded = ledger.entries.active
+  const active =
+    !userPicked && recorded != null && paths.includes(recorded)
+      ? recorded
+      : current.active
+  return { paths, active }
 }
 
 /**
@@ -89,8 +118,9 @@ interface RestoreLedger {
  * 什么时候写：恢复完成之前不写，不然新文档的空标签栏会把上次记下的冲掉。标签栏
  * 每变一次都对一下账：恢复自己加的标签、关掉的出错标签、选中记下的那个都不算；
  * 别的变化（用户开、关、拖、选中，恢复期间做的也算）说明用户动过这个项目的标签，
- * 从这以后这个项目的标签栏一变就写，恢复期间动过的等恢复完写。只换项目、换范围
- * 不算变化。
+ * 从这以后这个项目的标签栏一变就写。恢复期间动过的当时就写，写的是用户眼下的
+ * 标签栏接上还没开出来的那几个（切走再回来、刷新都不丢），恢复完再按实际的写一次。只换项目、换范围
+ * 不算变化。标签不跟随项目时，用户关掉的标签同时从别的项目的记录里划掉。
  */
 export function FileTabsPersistence() {
   const { activeFolderId } = useActiveFolder()
@@ -253,6 +283,7 @@ export function FileTabsPersistence() {
       const ledger: RestoreLedger = {
         adding: new Set(missing),
         all: new Set(entries.paths),
+        entries,
       }
       ledgersRef.current.set(key, ledger)
       // 用户换到了别的项目：标签不跟随项目时标签栏是全局的，原项目剩下的不再
@@ -428,6 +459,19 @@ export function FileTabsPersistence() {
         restoreCredit: previous.restoreCredit,
       })
       seenRef.current.restoreCredit = verdict.restoreCredit
+      // 标签不跟随项目时标签栏是大家共用的，里面有从别的项目记录恢复出来的标签：
+      // 用户在这里关掉的，别的项目的记录里也划掉，切过去才不会又被补开。
+      if (!tabsFollowFolder && verdict.userClosed.length > 0) {
+        // 划掉后的样子也记成那几个项目最后写下的：不然回去重新打开、标签栏恰好和
+        // 划掉前一样时，会以为没变跳过不写，刷新就丢了。
+        for (const { folderId: other, entries } of forgetPersistedFileTabPaths(
+          verdict.userClosed,
+          server,
+          folderId
+        )) {
+          lastWrittenRef.current.set(fileTabsStorageKey(other, server), entries)
+        }
+      }
       if (verdict.evicted.length > 0) {
         let evicted = evictedRef.current.get(storageKey)
         if (!evicted) {
@@ -448,23 +492,42 @@ export function FileTabsPersistence() {
         pendingActiveRef.current.delete(storageKey)
       }
     }
-    if (restores.has(storageKey)) return
+    const schedule = (snapshot: PersistedFileTabs) => {
+      pendingRef.current = { key: storageKey, folderId, server, snapshot }
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
+      timerRef.current = window.setTimeout(() => {
+        timerRef.current = null
+        flushRef.current()
+      }, SAVE_DEBOUNCE_MS)
+    }
+    if (restores.has(storageKey)) {
+      // 恢复期间用户开、关、拖、选过：不等恢复做完，连同还没开出来的一起写下。
+      // 不然用户切到别的项目再回来，会照旧的记录把关掉的补开、把顺序和选中项摆
+      // 回去；恢复完之前刷新也会丢。
+      const ledger = ledgersRef.current.get(storageKey)
+      const picked = userPickedRef.current.has(storageKey)
+      if (
+        changed &&
+        ledger &&
+        (picked || userEditedRef.current.has(storageKey))
+      ) {
+        schedule(
+          mergeWithRemainder(
+            current,
+            ledger,
+            evictedRef.current.get(storageKey),
+            picked
+          )
+        )
+      }
+      return
+    }
     const settled = settledRef.current.delete(storageKey)
     if (!restoredKeys.has(storageKey) || !liveRef.current.has(storageKey)) {
       return
     }
     if (!changed && !settled) return
-    pendingRef.current = {
-      key: storageKey,
-      folderId,
-      server,
-      snapshot: current,
-    }
-    if (timerRef.current !== null) window.clearTimeout(timerRef.current)
-    timerRef.current = window.setTimeout(() => {
-      timerRef.current = null
-      flushRef.current()
-    }, SAVE_DEBOUNCE_MS)
+    schedule(current)
   }, [
     storageKey,
     view,
@@ -474,6 +537,7 @@ export function FileTabsPersistence() {
     server,
     activeFileTabId,
     bufferCount,
+    tabsFollowFolder,
     restoredTick,
   ])
 
@@ -553,6 +617,8 @@ function explainChange(
   active: boolean
   evicted: string[]
   restoreCredit: number
+  /** 用户自己关掉的路径（不是自己关的出错标签，也不是上限关的）。 */
+  userClosed: string[]
 } {
   const prevSet = new Set(prev.paths)
   const nextSet = new Set(next.paths)
@@ -571,21 +637,31 @@ function explainChange(
   }
   const closedByUs = new Set<string>()
   // 标签上限挤掉的：恢复补开标签让所有项目合计超过上限时，工作区自己关掉的（同一
-  // 次渲染里，或者紧接着的下一次）。只认恢复刚加进来的那几个能挤掉几个：没保存的
-  // 标签上限不关，合计可能一直超着，这时用户自己关的不能当成上限挤掉的。
+  // 次渲染里，或者紧接着的下一次）。是不是上限关的由工作区记下（见
+  // lib/files/file-tab-evictions），这里只问它，不靠数个数猜：同一次渲染里上限挤掉
+  // 的是别的项目的、用户又关了一个，用户关的那个不能当成挤掉的。另外只认恢复刚加
+  // 进来的那几个能挤掉几个：用户自己开标签引起的上限关闭算用户改的。
   const credit = books.restoreCredit + restoredNow
   let evictable = Math.min(
     credit,
     Math.max(0, books.prevBufferCount + added.length - MAX_FILE_TABS)
   )
   const evicted: string[] = []
+  const userClosed: string[] = []
   for (const path of removed) {
-    if (books.closing.delete(path)) closedByUs.add(path)
-    else if (evictable > 0) {
+    if (books.closing.delete(path)) {
+      closedByUs.add(path)
+      continue
+    }
+    const capped = takeFileTabEvictedByCap(path)
+    if (capped && evictable > 0) {
       evictable -= 1
       evicted.push(path)
       closedByUs.add(path)
-    } else paths = false
+    } else {
+      paths = false
+      if (!capped) userClosed.push(path)
+    }
   }
   const keptPrev = prev.paths.filter((path) => nextSet.has(path))
   const keptNext = next.paths.filter((path) => prevSet.has(path))
@@ -625,5 +701,5 @@ function explainChange(
     0,
     restoredNow - Math.max(0, evicted.length - books.restoreCredit)
   )
-  return { paths, active, evicted, restoreCredit }
+  return { paths, active, evicted, restoreCredit, userClosed }
 }

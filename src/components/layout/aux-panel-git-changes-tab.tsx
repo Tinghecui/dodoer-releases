@@ -89,6 +89,7 @@ import { joinFsPath } from "@/lib/path-utils"
 import { emitAttachFileToSession } from "@/lib/session-attachment-events"
 import type { GitStatusEntry } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
+import { type CommitScope } from "@/lib/commit-window-paths"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -382,13 +383,6 @@ function buildChangeFileTree(changes: WorkingTreeChange[]): ChangeTreeNode[] {
     if (node.kind === "file") return node
     return compressAndAnnotateDir(node)
   })
-}
-
-/** `paths` 里在目录 `dir` 下面的那些。从整份改动列表里取，不从（可能
- *  被行数上限截掉一部分的）树节点里收。 */
-function changePathsUnder(paths: readonly string[], dir: string): string[] {
-  const prefix = `${dir.replace(/\/+$/, "")}/`
-  return paths.filter((path) => path.startsWith(prefix))
 }
 
 function collectExpandedDirectoryPaths(
@@ -789,10 +783,18 @@ export function GitChangesTab() {
 
   // 右键某个文件、目录点「提交代码」时带上它的路径，提交窗口只勾这些
   // （#427）；工具栏和已跟踪分组的根不带，照旧勾全部已跟踪改动。
+  // 目录只带目录本身和它所在的分组，「未跟踪」分组的根只带分组，不再
+  // 逐个列文件：网页版的地址太长会被门户前面的代理拒掉（#528）。
   const handleOpenCommitWindow = useCallback(
-    (paths?: readonly string[]) => {
+    (paths?: readonly string[], scope?: CommitScope) => {
       if (!folder) return
-      openCommitWindow(folder.id, { paths }).catch((error) => {
+      // 兜底：网页版还是太长（比如路径本身极长）时 openCommitWindow 不带
+      // 路径打开，这里提示自己勾。桌面版的窗口地址不经过网络，没有这个限制。
+      openCommitWindow(folder.id, {
+        paths,
+        scope,
+        onPathsDropped: () => toast.warning(t("toasts.commitPathsTooLong")),
+      }).catch((error) => {
         const message = toErrorMessage(error)
         toast.error(t("toasts.openCommitWindowFailed"), {
           description: message,
@@ -1300,9 +1302,7 @@ export function GitChangesTab() {
             <ContextMenuContent>
               <ContextMenuItem
                 onSelect={() => {
-                  handleOpenCommitWindow(
-                    changePathsUnder(trackedPaths, node.path)
-                  )
+                  handleOpenCommitWindow([node.path], "tracked")
                 }}
               >
                 {t("actions.commitCode")}
@@ -1450,7 +1450,6 @@ export function GitChangesTab() {
       t,
       tCommon,
       tFileTree,
-      trackedPaths,
     ]
   )
 
@@ -1485,9 +1484,7 @@ export function GitChangesTab() {
             <ContextMenuContent>
               <ContextMenuItem
                 onSelect={() => {
-                  handleOpenCommitWindow(
-                    changePathsUnder(untrackedPaths, node.path)
-                  )
+                  handleOpenCommitWindow([node.path], "untracked")
                 }}
               >
                 {t("actions.commitCode")}
@@ -1635,7 +1632,6 @@ export function GitChangesTab() {
       t,
       tCommon,
       tFileTree,
-      untrackedPaths,
     ]
   )
 
@@ -2067,7 +2063,7 @@ export function GitChangesTab() {
                     <ContextMenuContent>
                       <ContextMenuItem
                         onSelect={() => {
-                          handleOpenCommitWindow(untrackedPaths)
+                          handleOpenCommitWindow(undefined, "untracked")
                         }}
                       >
                         {t("actions.commitCode")}

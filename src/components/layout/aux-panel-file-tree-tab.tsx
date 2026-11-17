@@ -1137,6 +1137,8 @@ function RenderNode({
 
 export function FileTreeTab() {
   const t = useTranslations("Folder.fileTreeTab")
+  // 提交窗口超长兜底的提示和「变更」面板共用一条文案（#528）。
+  const tGit = useTranslations("Folder.gitChangesTab")
   const tCommon = useTranslations("Folder.common")
   const {
     pendingRevealPath,
@@ -2137,14 +2139,18 @@ export function FileTreeTab() {
   const handleOpenCommitWindow = useCallback(
     (paths?: readonly string[]) => {
       if (!folder) return
-      openCommitWindow(folder.id, { paths }).catch((error) => {
+      // 网页版路径编进地址太长时不带路径打开，提示自己勾（#528）。
+      openCommitWindow(folder.id, {
+        paths,
+        onPathsDropped: () => toast.warning(tGit("toasts.commitPathsTooLong")),
+      }).catch((error) => {
         const message = toErrorMessage(error)
         toast.error(t("toasts.openCommitWindowFailed"), {
           description: message,
         })
       })
     },
-    [folder, t]
+    [folder, t, tGit]
   )
 
   const handleRequestCreate = useCallback(

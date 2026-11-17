@@ -455,20 +455,24 @@ fn append_query_param(route: String, key: &str, value: &str) -> String {
 }
 
 /// 提交窗口的地址。带了 `paths`（右键某个文件、目录点「提交代码」）时
-/// 拼成 `paths=<URL 编码的 JSON 数组>`，提交窗口只勾这些（#427），
+/// 拼成 `paths=<URL 编码的 JSON 数组>`，提交窗口只勾这些（#427）；
+/// 带了 `scope`（`tracked` / `untracked`，#528）时再拼 `scope=…`，只勾这一组。
 /// 和前端 `src/lib/commit-window-paths.ts` 的格式一致。
-fn commit_window_route(folder_id: i32, paths: Option<&[String]>) -> String {
-    let route = format!("commit?folderId={folder_id}");
+fn commit_window_route(folder_id: i32, paths: Option<&[String]>, scope: Option<&str>) -> String {
+    let mut route = format!("commit?folderId={folder_id}");
     let paths: Vec<&String> = paths
         .unwrap_or_default()
         .iter()
         .filter(|path| !path.is_empty())
         .collect();
-    if paths.is_empty() {
-        return route;
+    if !paths.is_empty() {
+        let json = serde_json::to_string(&paths).unwrap_or_else(|_| "[]".to_string());
+        route = append_query_param(route, "paths", &urlencoding::encode(&json));
     }
-    let json = serde_json::to_string(&paths).unwrap_or_else(|_| "[]".to_string());
-    append_query_param(route, "paths", &urlencoding::encode(&json))
+    match scope {
+        Some(scope @ ("tracked" | "untracked")) => append_query_param(route, "scope", scope),
+        _ => route,
+    }
 }
 
 fn append_remote_context(
@@ -700,6 +704,7 @@ pub async fn open_commit_window(
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
     paths: Option<Vec<String>>,
+    scope: Option<String>,
 ) -> Result<(), AppCommandError> {
     let owner_label = window.label().to_string();
     let label = match remote_connection_id {
@@ -707,14 +712,15 @@ pub async fn open_commit_window(
         None => format!("commit-{folder_id}"),
     };
     let paths = paths.filter(|list| !list.is_empty());
+    let scope = scope.filter(|scope| !scope.is_empty());
 
     if let Some(existing) = app.get_webview_window(&label) {
-        // 已经开着的窗口：这次右键带了路径，就把它导航到新地址，
+        // 已经开着的窗口：这次右键带了路径（或范围），就把它导航到新地址，
         // 勾选跟着这次走，而不是还停在上一次的。
-        if paths.is_some() {
+        if paths.is_some() || scope.is_some() {
             let remote_window_id = remote_window_id_from_window(&existing);
             let target_route = append_remote_context(
-                commit_window_route(folder_id, paths.as_deref()),
+                commit_window_route(folder_id, paths.as_deref(), scope.as_deref()),
                 remote_connection_id,
                 remote_window_id.as_deref(),
             );
@@ -748,7 +754,7 @@ pub async fn open_commit_window(
         format!("{} - {}", titles.commit, folder.name)
     };
     let (url_str, remote_window_id) = route_with_new_remote_window(
-        commit_window_route(folder_id, paths.as_deref()),
+        commit_window_route(folder_id, paths.as_deref(), scope.as_deref()),
         remote_connection_id,
     );
     let url = WebviewUrl::App(url_str.into());
@@ -3017,16 +3023,38 @@ mod commit_window_route_tests {
 
     #[test]
     fn without_paths_is_the_plain_route() {
-        assert_eq!(commit_window_route(7, None), "commit?folderId=7");
-        assert_eq!(commit_window_route(7, Some(&[])), "commit?folderId=7");
+        assert_eq!(commit_window_route(7, None, None), "commit?folderId=7");
+        assert_eq!(commit_window_route(7, Some(&[]), None), "commit?folderId=7");
     }
 
     #[test]
     fn carries_the_paths_as_an_encoded_json_list() {
         let paths = vec!["README.md".to_string(), "docs/a&b.md".to_string()];
         assert_eq!(
-            commit_window_route(7, Some(&paths)),
+            commit_window_route(7, Some(&paths), None),
             "commit?folderId=7&paths=%5B%22README.md%22%2C%22docs%2Fa%26b.md%22%5D"
+        );
+    }
+
+    // #528：右键「未跟踪」分组的根只带范围，不列文件。
+    #[test]
+    fn carries_the_untracked_scope_without_paths() {
+        assert_eq!(
+            commit_window_route(7, None, Some("untracked")),
+            "commit?folderId=7&scope=untracked"
+        );
+    }
+
+    #[test]
+    fn carries_a_directory_with_its_scope_and_drops_unknown_scopes() {
+        let paths = vec!["docs".to_string()];
+        assert_eq!(
+            commit_window_route(7, Some(&paths), Some("tracked")),
+            "commit?folderId=7&paths=%5B%22docs%22%5D&scope=tracked"
+        );
+        assert_eq!(
+            commit_window_route(7, None, Some("everything")),
+            "commit?folderId=7"
         );
     }
 }

@@ -53,11 +53,17 @@ vi.mock("@/components/layout/commit-dialog", () => ({
   CommitWorkspace: ({
     onCommitted,
     initialPaths,
+    initialScope,
   }: {
     onCommitted: () => void
     initialPaths?: string[] | null
+    initialScope?: string | null
   }) => (
-    <button onClick={onCommitted} data-paths={JSON.stringify(initialPaths)}>
+    <button
+      onClick={onCommitted}
+      data-paths={JSON.stringify(initialPaths)}
+      data-scope={JSON.stringify(initialScope ?? null)}
+    >
       commit
     </button>
   ),
@@ -115,5 +121,31 @@ describe("commit page", () => {
     renderPage()
     const button = await screen.findByRole("button", { name: "commit" })
     expect(button).toHaveAttribute("data-paths", "null")
+  })
+
+  // #528: the untracked group's root opens with a scope flag, not a file list.
+  it("hands the untracked scope to the workspace", async () => {
+    mocks.search = "folderId=1&scope=untracked"
+    renderPage()
+    const button = await screen.findByRole("button", { name: "commit" })
+    expect(button).toHaveAttribute("data-scope", '"untracked"')
+    expect(button).toHaveAttribute("data-paths", "null")
+  })
+
+  it("hands a directory with its group's scope to the workspace", async () => {
+    mocks.search = `folderId=1&paths=${encodeURIComponent(
+      JSON.stringify(["docs"])
+    )}&scope=tracked`
+    renderPage()
+    const button = await screen.findByRole("button", { name: "commit" })
+    expect(button).toHaveAttribute("data-paths", '["docs"]')
+    expect(button).toHaveAttribute("data-scope", '"tracked"')
+  })
+
+  it("hands no scope for an unknown value", async () => {
+    mocks.search = "folderId=1&scope=everything"
+    renderPage()
+    const button = await screen.findByRole("button", { name: "commit" })
+    expect(button).toHaveAttribute("data-scope", "null")
   })
 })

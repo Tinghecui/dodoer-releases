@@ -3307,6 +3307,7 @@
         "addedToVcs": "تمت إضافة {name} إلى VCS",
         "addToVcsFailed": "فشلت الإضافة إلى VCS",
         "openCommitWindowFailed": "فشل فتح نافذة الالتزام",
+        "commitPathsTooLong": "تم تحديد ملفات كثيرة جدًا. تم فتح نافذة الالتزام: حدد الملفات هناك وتحقق من التحديد قبل الالتزام.",
         "rolledBack": "تم التراجع عن {name}",
         "rollbackFailed": "فشل التراجع",
         "addedFilesToVcs": "تمت إضافة {count, plural, one {# ملف} other {# ملفات}} إلى VCS",

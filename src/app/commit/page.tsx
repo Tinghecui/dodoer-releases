@@ -16,7 +16,9 @@ import { brandTitle } from "@/lib/cowork/brand"
 import { closeAppWindow } from "@/lib/platform"
 import {
   COMMIT_PATHS_PARAM,
+  COMMIT_SCOPE_PARAM,
   parseCommitPathsParam,
+  parseCommitScopeParam,
 } from "@/lib/commit-window-paths"
 
 const TOAST_DURATION_MS = 6000
@@ -46,6 +48,10 @@ function CommitPageInner() {
   const initialPaths = useMemo(
     () => parseCommitPathsParam(rawPaths),
     [rawPaths]
+  )
+  // 右键「未跟踪」分组的根、或某一组里的目录时带的范围（#528）。
+  const initialScope = parseCommitScopeParam(
+    searchParams.get(COMMIT_SCOPE_PARAM)
   )
   const error = state.loadedId === normalizedFolderId ? state.error : null
 
@@ -123,6 +129,7 @@ function CommitPageInner() {
               folderId={folder.id}
               projectFolderId={folder.parent_id ?? folder.id}
               initialPaths={initialPaths}
+              initialScope={initialScope}
               onCommitted={closeWindow}
               onCancel={closeWindow}
             />

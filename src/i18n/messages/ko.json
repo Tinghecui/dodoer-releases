@@ -3307,6 +3307,7 @@
         "addedToVcs": "{name}을(를) VCS에 추가했습니다",
         "addToVcsFailed": "VCS에 추가하지 못했습니다",
         "openCommitWindowFailed": "커밋 창을 열지 못했습니다",
+        "commitPathsTooLong": "선택한 파일이 너무 많습니다. 커밋 창을 열었으니 그곳에서 파일을 선택하고 커밋 전에 선택 내용을 확인하세요.",
         "rolledBack": "{name}을(를) 롤백했습니다",
         "rollbackFailed": "롤백에 실패했습니다",
         "addedFilesToVcs": "{count, plural, one {#개 파일을 VCS에 추가} other {#개 파일을 VCS에 추가}}",

@@ -203,6 +203,55 @@ describe("web-mode app popup windows", () => {
     expect(open).not.toHaveBeenCalled()
   })
 
+  // #528: every caller (changes panel, file tree) gets the same fallback —
+  // paths that would make the web address too long are dropped here, the
+  // window opens without them and the caller is told so it can say so.
+  it("drops paths that would make the web address too long and says so", async () => {
+    const popup = fakePopup()
+    vi.spyOn(window, "open").mockReturnValue(popup as never)
+    mocks.call.mockResolvedValue({ path: "/commit?folderId=7" })
+    const dropped = vi.fn()
+    const long = `${"深层目录/".repeat(200)}leaf.txt`
+
+    await openCommitWindow(7, {
+      paths: [long],
+      scope: "tracked",
+      onPathsDropped: dropped,
+    })
+
+    expect(dropped).toHaveBeenCalledTimes(1)
+    expect(popup.location.href).toBe("/commit?folderId=7")
+  })
+
+  it("keeps paths that fit and does not report a drop", async () => {
+    const popup = fakePopup()
+    vi.spyOn(window, "open").mockReturnValue(popup as never)
+    mocks.call.mockResolvedValue({ path: "/commit?folderId=7" })
+    const dropped = vi.fn()
+
+    await openCommitWindow(7, { paths: ["docs"], onPathsDropped: dropped })
+
+    expect(dropped).not.toHaveBeenCalled()
+    expect(popup.location.href).toBe(
+      "/commit?folderId=7&paths=%5B%22docs%22%5D"
+    )
+  })
+
+  it("passes long paths through on desktop, where the address never hits the network", async () => {
+    mocks.isDesktop.mockReturnValue(true)
+    mocks.shellCall.mockResolvedValue(undefined)
+    const dropped = vi.fn()
+    const long = `${"深层目录/".repeat(200)}leaf.txt`
+
+    await openCommitWindow(7, { paths: [long], onPathsDropped: dropped })
+
+    expect(dropped).not.toHaveBeenCalled()
+    expect(mocks.shellCall).toHaveBeenCalledWith(
+      "open_commit_window",
+      expect.objectContaining({ paths: [long] })
+    )
+  })
+
   it("opens the local workspace even when the remote desktop is offline", async () => {
     mocks.isDesktop.mockReturnValue(true)
     mocks.isRemoteDesktopMode.mockReturnValue(true)

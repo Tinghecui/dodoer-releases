@@ -3307,6 +3307,7 @@
         "addedToVcs": "已添加 {name} 到 VCS",
         "addToVcsFailed": "添加到 VCS 失败",
         "openCommitWindowFailed": "打开提交窗口失败",
+        "commitPathsTooLong": "选的文件太多，已打开提交窗口，请在里面勾选，提交前核对一下勾选。",
         "rolledBack": "已回滚 {name}",
         "rollbackFailed": "回滚失败",
         "addedFilesToVcs": "已添加 {count} 个文件到 VCS",

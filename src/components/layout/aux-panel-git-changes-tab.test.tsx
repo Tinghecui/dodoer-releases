@@ -905,20 +905,28 @@ describe("GitChangesTab commit code from a row's menu", () => {
   it("passes a tracked file's path", () => {
     setup()
     fireEvent.click(commitCodeFor("README.md"))
-    expect(openCommitWindowMock).toHaveBeenCalledWith(expect.anything(), {
-      paths: ["README.md"],
-    })
+    expect(openCommitWindowMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        paths: ["README.md"],
+      })
+    )
   })
 
   it("passes an untracked file's path", () => {
     setup()
     fireEvent.click(commitCodeFor("draft.txt"))
-    expect(openCommitWindowMock).toHaveBeenCalledWith(expect.anything(), {
-      paths: ["draft.txt"],
-    })
+    expect(openCommitWindowMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        paths: ["draft.txt"],
+      })
+    )
   })
 
-  it("passes a tracked directory's tracked changes only", () => {
+  // #528: a directory travels as itself plus its group, not file by file —
+  // hundreds of files used to overflow the address (414 from the proxy).
+  it("passes a tracked directory as one path scoped to tracked changes", () => {
     menus.render = true
     openCommitWindowMock.mockClear()
     store.git = [
@@ -933,8 +941,89 @@ describe("GitChangesTab commit code from a row's menu", () => {
     const box = screen.getAllByText("docs")[0].closest('[data-testid="ctx"]')
     const own = box?.lastElementChild as HTMLElement
     fireEvent.click(within(own).getByRole("button", { name: "Commit code" }))
-    expect(openCommitWindowMock).toHaveBeenCalledWith(expect.anything(), {
-      paths: ["docs/a.md", "docs/b.md"],
-    })
+    expect(openCommitWindowMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        paths: ["docs"],
+        scope: "tracked",
+      })
+    )
+  })
+
+  it("passes an untracked directory as one path scoped to untracked files", () => {
+    menus.render = true
+    openCommitWindowMock.mockClear()
+    store.git = [
+      change("gen/a.json", "??"),
+      change("gen/b.json", "??"),
+      change("gen/c.json", "??"),
+      change("README.md"),
+    ]
+    renderTab()
+    const box = screen.getByText("gen").closest('[data-testid="ctx"]')
+    const own = box?.lastElementChild as HTMLElement
+    fireEvent.click(within(own).getByRole("button", { name: "Commit code" }))
+    expect(openCommitWindowMock).toHaveBeenCalledTimes(1)
+    expect(openCommitWindowMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        paths: ["gen"],
+        scope: "untracked",
+      })
+    )
+  })
+
+  it("passes only the untracked scope from the untracked group's root", () => {
+    menus.render = true
+    openCommitWindowMock.mockClear()
+    store.git = [
+      change("draft.txt", "??"),
+      change("notes.txt", "??"),
+      change("README.md"),
+    ]
+    renderTab()
+    // Both group roots are named after the folder; the untracked one holds
+    // the untracked files.
+    const root = screen
+      .getAllByText("repo")
+      .map((el) => el.closest('[data-testid="ctx"]') as HTMLElement | null)
+      .find((el) => el?.textContent?.includes("draft.txt"))
+    const own = root?.lastElementChild as HTMLElement
+    fireEvent.click(within(own).getByRole("button", { name: "Commit code" }))
+    expect(openCommitWindowMock).toHaveBeenCalledTimes(1)
+    expect(openCommitWindowMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        paths: undefined,
+        scope: "untracked",
+      })
+    )
+  })
+
+  // #528: paths that would still make the address too long are dropped; the
+  // window opens without them and the user is told to tick files there.
+  it("says so when openCommitWindow drops paths that would not fit the address", () => {
+    menus.render = true
+    openCommitWindowMock.mockClear()
+    const warning = vi.spyOn(toast, "warning")
+    const long = `${"deep/".repeat(1300)}leaf.txt`
+    store.git = [change(long), change("README.md")]
+    renderTab()
+    fireEvent.click(commitCodeFor("leaf.txt"))
+    // The drop itself happens in openCommitWindow (api-popup-windows.test.ts);
+    // the panel hands it a callback that shows the warning.
+    expect(openCommitWindowMock).toHaveBeenCalledTimes(1)
+    const calls = openCommitWindowMock.mock.calls as unknown as [
+      number,
+      { paths?: string[]; onPathsDropped?: () => void },
+    ][]
+    const options = calls[0][1]
+    expect(options.paths).toEqual([long])
+    expect(warning).not.toHaveBeenCalled()
+    options.onPathsDropped?.()
+    expect(warning).toHaveBeenCalledWith(
+      "Too many files selected. The commit window is open: tick the files there and check the selection before committing."
+    )
+    warning.mockRestore()
   })
 })

@@ -3307,6 +3307,7 @@
         "addedToVcs": "{name} を VCS に追加しました",
         "addToVcsFailed": "VCS への追加に失敗しました",
         "openCommitWindowFailed": "コミットウィンドウを開けませんでした",
+        "commitPathsTooLong": "選択したファイルが多すぎます。コミットウィンドウを開いたので、そこでファイルを選び、コミット前に選択内容を確認してください。",
         "rolledBack": "{name} をロールバックしました",
         "rollbackFailed": "ロールバックに失敗しました",
         "addedFilesToVcs": "{count, plural, one {# 個のファイルを VCS に追加} other {# 個のファイルを VCS に追加}}",

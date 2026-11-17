@@ -25,7 +25,11 @@ import type { ConversationTaxonomy } from "./conversation-taxonomy"
 import { asConversationMovedError } from "./conversation-moved"
 import type { FolderThemeColor } from "./theme-presets"
 import type { FollowUpIntent } from "./task-follow-up"
-import { appendCommitPathsParam } from "./commit-window-paths"
+import {
+  appendCommitPathsParam,
+  commitPathsTooLong,
+  type CommitScope,
+} from "./commit-window-paths"
 import type {
   JennyLoopConversation,
   JennyLoopSessionPage,
@@ -3840,6 +3844,13 @@ export async function resolveWorktreeFolder(
 export interface OpenCommitWindowOptions {
   /** 只勾这些文件（目录算它下面的改动）；不给就勾全部已跟踪改动。 */
   paths?: readonly string[] | null
+  /** 只勾这一组改动（#528）；只给它不给路径时勾这一组全部。 */
+  scope?: CommitScope | null
+  /**
+   * 网页版路径编进地址会太长时（#528），不带路径和范围打开窗口，并调这个
+   * 让调用方提示用户在窗口里自己勾。桌面版的窗口地址不经过网络，不会调。
+   */
+  onPathsDropped?: () => void
 }
 
 export async function openCommitWindow(
@@ -3848,14 +3859,20 @@ export async function openCommitWindow(
 ): Promise<void> {
   const locale = getCurrentEffectiveAppLocale()
   const paths = options.paths?.length ? [...options.paths] : null
+  const scope = options.scope ?? null
   if (isDesktop()) {
     return getShellTransport().call("open_commit_window", {
       folderId,
       locale,
       remoteConnectionId: getActiveRemoteConnectionId(),
       paths,
+      scope,
     })
   }
+  // 兜底放在这里，所有入口（变更面板、文件树）都一样：太长就不带路径，
+  // 不然门户前面的代理回 414，窗口打不开、主窗口也不知道（#528）。
+  const tooLong = commitPathsTooLong(paths)
+  if (tooLong) options.onPathsDropped?.()
   // 路径只在前端拼到地址后面，不改后端接口。同名窗口已经开着时，
   // openAppWindow 也会把它导航到新地址，勾选跟着这次右键走。
   return openAppWindow(`commit-${folderId}`, async () => {
@@ -3863,7 +3880,9 @@ export async function openCommitWindow(
       "open_commit_window",
       { folderId, locale }
     )
-    return { path: appendCommitPathsParam(path, paths) }
+    return {
+      path: tooLong ? path : appendCommitPathsParam(path, paths, scope),
+    }
   })
 }
 

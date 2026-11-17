@@ -1067,12 +1067,16 @@ export async function openFolder(path: string): Promise<FolderDetail> {
 
 export async function openCommitWindow(
   folderId: number,
-  options: { paths?: readonly string[] | null } = {}
+  options: {
+    paths?: readonly string[] | null
+    scope?: "tracked" | "untracked" | null
+  } = {}
 ): Promise<void> {
   return invoke("open_commit_window", {
     folderId,
     locale: getCurrentEffectiveAppLocale(),
     paths: options.paths?.length ? [...options.paths] : null,
+    scope: options.scope ?? null,
   })
 }
 

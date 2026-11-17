@@ -3307,6 +3307,7 @@
         "addedToVcs": "{name} zu VCS hinzugefügt",
         "addToVcsFailed": "Hinzufügen zu VCS fehlgeschlagen",
         "openCommitWindowFailed": "Commit-Fenster konnte nicht geöffnet werden",
+        "commitPathsTooLong": "Zu viele Dateien ausgewählt. Das Commit-Fenster ist geöffnet: Wähle die Dateien dort aus und prüfe die Auswahl vor dem Commit.",
         "rolledBack": "{name} zurückgesetzt",
         "rollbackFailed": "Rollback fehlgeschlagen",
         "addedFilesToVcs": "{count, plural, one {# Datei} other {# Dateien}} zu VCS hinzugefügt",

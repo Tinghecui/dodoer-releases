@@ -292,3 +292,76 @@ describe("CommitWorkspace opened for some paths", () => {
     expect(screen.queryByText(/have no changes|has no changes/)).toBeNull()
   })
 })
+
+// #528: a directory travels as itself (not every file under it), and the
+// untracked group's root as a scope flag, so the address stays short.
+describe("CommitWorkspace opened for a directory or a scope", () => {
+  const STATUS: GitStatusEntry[] = [
+    { status: "M", file: "docs/a.md" },
+    { status: "M", file: "docs/b.md" },
+    { status: "??", file: "docs/c.md" },
+    { status: "M", file: "README.md" },
+    { status: "??", file: "notes.txt" },
+  ]
+
+  function renderWorkspace(
+    initialPaths: string[] | null,
+    initialScope: "tracked" | "untracked" | null,
+    status: GitStatusEntry[] = STATUS
+  ) {
+    api.gitStatus.mockResolvedValue(status)
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <CommitWorkspace
+          folderPath="/repo"
+          folderId={1}
+          initialPaths={initialPaths}
+          initialScope={initialScope}
+        />
+      </NextIntlClientProvider>
+    )
+  }
+
+  it("ticks every change under the directory, tracked and untracked", async () => {
+    renderWorkspace(["docs"], null)
+
+    await screen.findByRole("button", { name: "Commit (3)" })
+    expect(screen.getByText("3 / 5 files")).toBeInTheDocument()
+  })
+
+  it("ticks only the tracked changes under a tracked-group directory", async () => {
+    renderWorkspace(["docs/"], "tracked")
+
+    await screen.findByRole("button", { name: "Commit (2)" })
+    expect(screen.queryByText(/have no changes|has no changes/)).toBeNull()
+  })
+
+  it("ticks only the untracked files under an untracked-group directory", async () => {
+    renderWorkspace(["docs"], "untracked")
+
+    await screen.findByRole("button", { name: "Commit (1)" })
+    // The untracked group opens so the ticked file is in sight.
+    expect(screen.getByText("c.md")).toBeInTheDocument()
+  })
+
+  it("ticks every untracked file and nothing else for the untracked scope", async () => {
+    renderWorkspace(null, "untracked")
+
+    await screen.findByRole("button", { name: "Commit (2)" })
+    expect(screen.getByText("2 / 5 files")).toBeInTheDocument()
+    expect(screen.queryByText(/have no changes|has no changes/)).toBeNull()
+  })
+
+  it("ticks hundreds of new files under one directory", async () => {
+    const many: GitStatusEntry[] = Array.from({ length: 200 }, (_, i) => ({
+      status: "??",
+      file: `gen/out-${i}.json`,
+    }))
+    renderWorkspace(["gen"], "untracked", [
+      ...many,
+      { status: "M", file: "README.md" },
+    ])
+
+    await screen.findByRole("button", { name: "Commit (200)" })
+  })
+})

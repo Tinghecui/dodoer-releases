@@ -69,6 +69,7 @@ import { ImageDiffView } from "@/components/diff/image-diff-view"
 import { loadImageDiffSides, type ImageDiffSides } from "@/lib/image-diff"
 import { isBinaryImageFile, languageFromPath } from "@/lib/language-detect"
 import { toErrorMessage } from "@/lib/app-error"
+import type { CommitScope } from "@/lib/commit-window-paths"
 import {
   sameFiles,
   useCommitMessageGeneration,
@@ -86,6 +87,9 @@ interface CommitWorkspaceProps {
    *  只勾这些路径（目录算它下面的所有改动），预览其中第一个。没给、
    *  或者一个都不在改动里时，照旧勾上全部已跟踪改动。 */
   initialPaths?: readonly string[] | null
+  /** 只勾这一组改动（#528）：「未跟踪」分组的根只带它、不带路径时勾全部
+   *  未跟踪文件；和 `initialPaths` 一起给时只勾路径下这一组的改动。 */
+  initialScope?: CommitScope | null
   onCommitted?: () => void
   onCancel?: () => void
 }
@@ -256,6 +260,7 @@ export function CommitWorkspace({
   folderId,
   projectFolderId,
   initialPaths,
+  initialScope,
   onCommitted,
   onCancel,
 }: CommitWorkspaceProps) {
@@ -417,20 +422,28 @@ export function CommitWorkspace({
       )
       // 带了路径（哪怕读不出来、一个都没对上）就只勾对上的；只有完全没带
       // 路径时才勾全部已跟踪改动。对不上时全勾会让人误提交别的文件（#442）。
-      const withPaths = initialPaths != null
+      // 带了范围（#528）就只在这一组里挑；只带范围不带路径时勾这一组全部。
+      const scoped = initialScope
+        ? initialScope === "untracked"
+          ? untracked
+          : tracked
+        : result
+      const withPaths = initialPaths != null || initialScope != null
       const picked = withPaths
-        ? result.filter((entry) =>
-            matchesInitialPaths(entry.file, initialPaths)
-          )
+        ? initialPaths != null
+          ? scoped.filter((entry) =>
+              matchesInitialPaths(entry.file, initialPaths)
+            )
+          : scoped
         : []
       const pickedFiles = new Set(picked.map((entry) => entry.file))
       setSelected(
         withPaths ? pickedFiles : new Set(tracked.map((entry) => entry.file))
       )
-      if (withPaths) {
+      if (initialPaths != null) {
         const missing = initialPaths.filter(
           (path) =>
-            !result.some((entry) => matchesInitialPaths(entry.file, [path]))
+            !scoped.some((entry) => matchesInitialPaths(entry.file, [path]))
         )
         setUnmatchedPaths(
           initialPaths.length === 0 || missing.length > 0 ? missing : null
@@ -471,7 +484,7 @@ export function CommitWorkspace({
     } finally {
       setLoadingStatus(false)
     }
-  }, [folderPath, folderName, initialPaths, loadDiff])
+  }, [folderPath, folderName, initialPaths, initialScope, loadDiff])
 
   // Start over from the repository as it is now: no diff, no message, the
   // file list (and its selection) re-read. On a new folder, and after a

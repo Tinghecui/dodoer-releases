@@ -415,6 +415,21 @@ describe("aux file tree greys out Commit for unchanged entries", () => {
   })
 })
 
+describe("aux file tree opens the commit window with the too-long fallback", () => {
+  // #528: openCommitWindow drops paths that would make the web address too
+  // long; the file tree has to listen for that and tell the user to tick the
+  // files in the window, the same as the changes panel does.
+  it("passes onPathsDropped and shows the shared warning", () => {
+    const start = auxSource.indexOf("const handleOpenCommitWindow")
+    expect(start).toBeGreaterThan(-1)
+    const handler = auxSource.slice(start, start + 800)
+    expect(handler).toMatch(/onPathsDropped/)
+    expect(handler).toMatch(
+      /toast\.warning\(\s*tGit\("toasts\.commitPathsTooLong"\)/
+    )
+  })
+})
+
 describe("aux file tree load error state", () => {
   // #543: the error state used to show only the raw reason (which came out as
   // "[object Object]") and a Retry button, with no heading saying what failed.

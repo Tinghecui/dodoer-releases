@@ -193,6 +193,7 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             .map_err(err_string)?;

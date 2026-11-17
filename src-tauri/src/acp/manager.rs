@@ -3518,16 +3518,19 @@ impl ConnectionManager {
 
     /// Cowork fork: every conversation with background work still out on a
     /// live connection — what a client's sidebar starts from, before
-    /// `conversation://background` keeps it current. Several connections bound
-    /// to one conversation report the busiest, like the frontend's own
-    /// `publishBackgroundPending`. Lock discipline mirrors
-    /// [`Self::list_active_sessions`].
+    /// `conversation://background` keeps it current. 同一个对话绑着几条活着的连接时，
+    /// 较新的连接（`SessionState::generation` 大的）说了算，不看谁的后台任务多，和
+    /// `conversation://background` 的推送同一个规矩（#530）；它没有后台任务、也没有「?」，
+    /// 这个对话就不在列表里。Lock discipline mirrors [`Self::list_active_sessions`].
     pub async fn list_background_pending(
         &self,
     ) -> Vec<crate::acp::types::BackgroundPendingEntry> {
         let connections = self.connections.lock().await;
-        let mut by_conversation: HashMap<i32, crate::acp::types::BackgroundPendingEntry> =
-            HashMap::new();
+        // 每个对话最新那条活连接的编号和它的条目（没有后台任务、也没有「?」就是 `None`）。
+        let mut by_conversation: HashMap<
+            i32,
+            (u64, Option<crate::acp::types::BackgroundPendingEntry>),
+        > = HashMap::new();
         for conn in connections.values() {
             let state = conn.state.read().await;
             if state.status == ConnectionStatus::Disconnected {
@@ -3536,16 +3539,16 @@ impl ConnectionManager {
             let Some(conversation_id) = state.conversation_id else {
                 continue;
             };
+            let newer = by_conversation
+                .get(&conversation_id)
+                .is_none_or(|(have, _)| state.generation > *have);
+            if !newer {
+                continue;
+            }
             let (count, names) = state.background_pending();
             // Cowork 加的：进程观察标了「?」的连接即使 `count` 是 0 也列出来。
             let uncertain = state.process_watch.uncertain;
-            if count == 0 && uncertain.is_none() {
-                continue;
-            }
-            let busier = by_conversation
-                .get(&conversation_id)
-                .is_none_or(|have| count > have.count);
-            if busier {
+            let entry = (count > 0 || uncertain.is_some()).then(|| {
                 let tasks = state.background_pending_tasks();
                 let mut entry = crate::acp::types::BackgroundPendingEntry::reading(
                     conversation_id,
@@ -3558,12 +3561,40 @@ impl ConnectionManager {
                     entry.reason = Some(reason);
                     entry.tasks = tasks;
                 }
-                by_conversation.insert(conversation_id, entry);
-            }
+                entry
+            });
+            by_conversation.insert(conversation_id, (state.generation, entry));
         }
-        let mut entries: Vec<_> = by_conversation.into_values().collect();
+        let mut entries: Vec<_> = by_conversation
+            .into_values()
+            .filter_map(|(_, entry)| entry)
+            .collect();
         entries.sort_by_key(|e| e.conversation_id);
         entries
+    }
+
+    /// Cowork 加的：计划内重启停机时记「后台任务会被杀」的对话（`restart_resume`）。
+    /// 和侧栏的 [`Self::list_background_pending`] 不同：任何一条活着的连接上还有后台任务，
+    /// 这个对话就算，不管它是不是最新那条（#530 侧栏改成较新的连接说了算以后，
+    /// 旧连接的任务照样会随停机被杀，要接着记）。按对话 id 排序、不重复。
+    pub async fn conversations_with_background_work(&self) -> Vec<i32> {
+        let connections = self.connections.lock().await;
+        let mut ids = Vec::new();
+        for conn in connections.values() {
+            let state = conn.state.read().await;
+            if state.status == ConnectionStatus::Disconnected {
+                continue;
+            }
+            let Some(conversation_id) = state.conversation_id else {
+                continue;
+            };
+            if state.background_pending().0 > 0 {
+                ids.push(conversation_id);
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        ids
     }
 
     /// Cowork 加的：15 秒一次的进程观察（`lifecycle_subscriber_task` 调）。只看在跑或在等
@@ -8441,7 +8472,7 @@ mod tests {
     }
 
     /// Cowork fork: the sidebar's seed lists bound, live connections with work
-    /// out — the busiest one per conversation.
+    /// out — per conversation, the newest connection's reading (#530).
     #[tokio::test]
     async fn list_background_pending_reports_bound_live_connections_with_work() {
         let mgr = ConnectionManager::new();
@@ -8454,8 +8485,12 @@ mod tests {
         };
         {
             let mut map = mgr.connections.lock().await;
-            map.insert("c1".to_string(), with_work("c1", Some(42), 1));
-            map.insert("c2".to_string(), with_work("c2", Some(42), 3));
+            // #530：同一个对话两条活连接，较新的（c2，编号大）说了算，不看谁的任务多。
+            map.insert("c1".to_string(), with_work("c1", Some(42), 3));
+            map.insert("c2".to_string(), with_work("c2", Some(42), 1));
+            // 较旧的有任务、较新的没有：这个对话不出现在列表里。
+            map.insert("c6".to_string(), with_work("c6", Some(45), 2));
+            map.insert("c7".to_string(), with_work("c7", Some(45), 0));
             map.insert("c3".to_string(), with_work("c3", Some(43), 0));
             map.insert("c4".to_string(), with_work("c4", None, 2));
             let gone = with_work("c5", Some(44), 2);
@@ -8470,7 +8505,47 @@ mod tests {
                 .iter()
                 .map(|e| (e.conversation_id, e.count))
                 .collect::<Vec<_>>(),
-            vec![(42, 3)]
+            vec![(42, 1)]
+        );
+    }
+
+    /// #530 返工：停机恢复名单不跟侧栏的「较新的连接说了算」，任何一条活连接上有后台任务
+    /// 的对话都要记（旧连接的任务也会随停机被杀）。
+    #[tokio::test]
+    async fn conversations_with_background_work_counts_any_live_connection() {
+        let mgr = ConnectionManager::new();
+        let with_work = |id: &str, conv_id: Option<i32>, outstanding: u32| {
+            let conn = fake_connection(id, conv_id);
+            if let Ok(mut state) = conn.state.try_write() {
+                state.background_outstanding = outstanding;
+            }
+            conn
+        };
+        {
+            let mut map = mgr.connections.lock().await;
+            // 旧连接有任务、新连接空闲：侧栏不显示，但停机名单要有。
+            map.insert("c6".to_string(), with_work("c6", Some(45), 2));
+            map.insert("c7".to_string(), with_work("c7", Some(45), 0));
+            // 两条都有任务：只记一次。
+            map.insert("c1".to_string(), with_work("c1", Some(42), 3));
+            map.insert("c2".to_string(), with_work("c2", Some(42), 1));
+            map.insert("c3".to_string(), with_work("c3", Some(43), 0));
+            map.insert("c4".to_string(), with_work("c4", None, 2));
+            let gone = with_work("c5", Some(44), 2);
+            if let Ok(mut state) = gone.state.try_write() {
+                state.status = ConnectionStatus::Disconnected;
+            }
+            map.insert("c5".to_string(), gone);
+        }
+        assert_eq!(mgr.conversations_with_background_work().await, vec![42, 45]);
+        // 侧栏列表照旧只有较新的连接的读数。
+        assert_eq!(
+            mgr.list_background_pending()
+                .await
+                .iter()
+                .map(|e| (e.conversation_id, e.count))
+                .collect::<Vec<_>>(),
+            vec![(42, 1)]
         );
     }
 

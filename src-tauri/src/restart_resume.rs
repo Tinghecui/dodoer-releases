@@ -127,13 +127,7 @@ pub async fn interrupt_turns_for_shutdown(
     let intent = read_intent(data_dir, Utc::now());
     let turns = crate::commands::conversations::interrupt_running_turns_core(conn, manager).await;
     let background = if intent.is_some() {
-        manager
-            .list_background_pending()
-            .await
-            .into_iter()
-            .filter(|e| e.count > 0)
-            .map(|e| e.conversation_id)
-            .collect()
+        manager.conversations_with_background_work().await
     } else {
         Vec::new()
     };

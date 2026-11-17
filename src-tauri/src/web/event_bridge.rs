@@ -1061,6 +1061,8 @@ fn admit_background_reading(
 /// Cowork 加的：一次读数变化要发的 [`BACKGROUND_PENDING_EVENT`]，顺带改表：
 /// - 编号比表里小的连接，什么都不发、不记；
 /// - 活着的连接报读数（包括绑到这个对话上，即使 `count` 是 0），删掉留下来的「?」并发 `idle`；
+/// - 较新的连接从较旧的连接手里接过一个对话，即使 `count` 是 0 也发它自己的读数（`idle`），
+///   清掉旧连接留在客户端上的沙漏或「?」；
 /// - 断开前 `count > 0`，发 `agent_exited` 的「?」并留在表里；
 /// - 其余和原来一样（[`background_pending_changes`]）。
 fn background_pending_broadcasts(
@@ -1144,6 +1146,12 @@ fn background_pending_broadcasts(
 
     // 换了对话：旧的那一行照原来的规矩清，但旧行上更新的连接说了算。
     let relinked = *before_id != after_id;
+    // #530：这条连接从另一条（更旧的）连接手里接过新对话那一行。表里那一行显示的是旧连接
+    // 最后的样子，接手后要把自己的状态推一次（没有后台任务就推 `idle`）。
+    let took_over = relinked
+        && after_id
+            .and_then(|id| slots.get(&id))
+            .is_some_and(|slot| slot.generation != 0 && slot.generation < generation);
     let old_row_admitted = !relinked
         || before_id
             .filter(|_| before_shown)
@@ -1169,7 +1177,9 @@ fn background_pending_broadcasts(
         if let Some(old) = before_id.filter(|_| *before_count == 0 && before_reason.is_some()) {
             changes.insert(0, BackgroundPendingEntry::idle(old));
         }
-        if let Some(new) = after_id.filter(|_| after_count == 0 && after_reason.is_some()) {
+        if let Some(new) =
+            after_id.filter(|_| after_count == 0 && (after_reason.is_some() || took_over))
+        {
             changes.push(BackgroundPendingEntry::idle(new));
         }
     } else if let Some(conversation_id) = after_id {
@@ -1804,6 +1814,63 @@ mod tests {
         emit_with_state(&a, &emitter, disconnected()).await;
         assert!(background_events(&mut rx).is_empty());
         assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// #530 完成标准 1：A 绑 7、有 1 个后台任务（沙漏），B 再绑 7、没有后台任务：推一条 7 的
+    /// `idle` 把 A 的沙漏清掉；之后 A 的读数、断开都不再推。
+    #[tokio::test]
+    async fn a_newer_connection_linking_clears_an_older_connections_hourglass() {
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        let a = fresh_state();
+        let b = fresh_state();
+        emit_with_state(&a, &emitter, linked(7)).await;
+        emit_with_state(&a, &emitter, watcher_activity(&[("b1", "Watch CI")], 1)).await;
+        let shown = background_events(&mut rx);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0]["count"], 1);
+
+        emit_with_state(&b, &emitter, linked(7)).await;
+        assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
+
+        emit_with_state(&a, &emitter, watcher_activity(&[], 2)).await;
+        emit_with_state(&a, &emitter, disconnected()).await;
+        assert!(background_events(&mut rx).is_empty());
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// #530 完成标准 2：B 接手时自己有后台任务，推的是 B 的读数。
+    #[tokio::test]
+    async fn a_newer_connection_linking_with_work_publishes_its_own_reading() {
+        let (_broadcaster, emitter, mut rx) = web_emitter();
+        let a = fresh_state();
+        let b = fresh_state();
+        emit_with_state(&a, &emitter, linked(7)).await;
+        emit_with_state(
+            &a,
+            &emitter,
+            watcher_activity(&[("a1", "Watch CI"), ("a2", "Tail log")], 1),
+        )
+        .await;
+        emit_with_state(&b, &emitter, watcher_activity(&[("b1", "Build")], 1)).await;
+        let _ = background_events(&mut rx);
+
+        emit_with_state(&b, &emitter, linked(7)).await;
+        let pushed = background_events(&mut rx);
+        assert_eq!(pushed.len(), 1);
+        assert_eq!(pushed[0]["conversation_id"], 7);
+        assert_eq!(pushed[0]["count"], 1);
+        assert_eq!(pushed[0]["names"], serde_json::json!(["Build"]));
+        assert_eq!(pushed[0]["state"], "waiting");
+    }
+
+    /// #530：同一条连接重报自己的对话、或第一条连接绑上空对话，照旧什么都不推。
+    #[tokio::test]
+    async fn linking_an_unowned_conversation_without_work_stays_quiet() {
+        let (_broadcaster, emitter, mut rx) = web_emitter();
+        let a = fresh_state();
+        emit_with_state(&a, &emitter, linked(7)).await;
+        emit_with_state(&a, &emitter, linked(7)).await;
+        assert!(background_events(&mut rx).is_empty());
     }
 
     /// 完成标准 3：同一个对话又有一条活连接报着 `count > 0` 时，列表以活连接为准。

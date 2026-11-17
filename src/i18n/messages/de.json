@@ -373,7 +373,7 @@
     "updateErrors": {
       "permissionDenied": "In {path} kann nicht geschrieben werden, daher lassen sich Updates nicht direkt installieren. Aktualisiere manuell mit Administratorrechten oder prüfe die Berechtigungen der Installation.",
       "targetWriteFailed": "In {path} kann nicht geschrieben werden, daher lassen sich Updates nicht direkt installieren: {reason}",
-      "sourceUnavailable": "Die Update-Quelle ist nicht erreichbar. Prüfe Netzwerk oder Proxy und versuche es erneut.",
+      "sourceUnavailable": "Die Download-Quelle für Updates ist nicht erreichbar oder hat gerade keine Versionsinformationen. Prüfe Netzwerk oder Proxy; die App sucht später automatisch erneut.",
       "network": "Netzwerkverbindung fehlgeschlagen. Prüfe Netzwerk oder Proxy und versuche es erneut.",
       "downloadFailed": "Das Update-Paket konnte nicht heruntergeladen werden. Bitte später erneut versuchen.",
       "installFailed": "Das Update konnte nicht installiert werden. Bitte App schließen und erneut versuchen.",

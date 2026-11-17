@@ -361,6 +361,23 @@ describe("appUpdateErrorMessageKey", () => {
     )
   })
 
+  it("treats a missing release JSON as the download source being unreachable", () => {
+    // What tauri-plugin-updater reports when the release host answers 404/5xx.
+    const { kind } = normalizeAppUpdateError(
+      "Could not fetch a valid release JSON from the remote"
+    )
+    expect(kind).toBe("source_unreachable")
+    expect(appUpdateErrorMessageKey(kind, "check")).toBe(
+      "updateErrors.sourceUnavailable"
+    )
+    // Offline: the request for latest.json itself fails — same bucket.
+    expect(
+      normalizeAppUpdateError(
+        "error sending request for url (https://example.test/latest.json)"
+      ).kind
+    ).toBe("source_unreachable")
+  })
+
   it("keeps permission failures distinct from network and install failures", () => {
     expect(
       normalizeAppUpdateError("Update target is not writable: /mnt/network/bin")

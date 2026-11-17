@@ -41,9 +41,31 @@ let coworkInfoResult: () => unknown = () => {
   throw { code: "not_implemented", message: "not implemented" }
 }
 
+// What `perform_app_update` answers: the backend moves to `downloading` with
+// the next seq. A function so a test can make the kickoff throw.
+let performResult: () => unknown = () => ({
+  seq: snapshot.seq + 1,
+  status: "downloading",
+  downloaded: 0,
+})
+
+// Desktop mode (`usesTauriUpdater()`): off everywhere except the tests that
+// turn it on, so the other describes keep driving the server path.
+let desktop = false
+// What the desktop app reports as its own version, and what the updater
+// plugin's `check()` resolves to (null = up to date).
+let desktopVersion = "1.1.23"
+let desktopRelease: {
+  version: string
+  body: string
+  date: string | null
+} | null = null
+
 const call = vi.fn(async (endpoint: string) => {
   if (endpoint === "cowork_info") return coworkInfoResult()
   if (callImpl) return callImpl(endpoint)
+  if (endpoint === "perform_app_update") return performResult()
+  if (endpoint === "restart_app") return undefined
   if (endpoint === "app_update_state") {
     return callQueue.length ? callQueue.shift()! : snapshot
   }
@@ -76,9 +98,18 @@ const onReconnect = vi.fn((cb: () => void) => {
 
 vi.mock("@/lib/transport", () => ({
   getTransport: () => ({ call, subscribe, onReconnect }),
-  isDesktop: () => false,
+  // Desktop windows send update commands to the local shell; same mock.
+  getShellTransport: () => ({ call, subscribe, onReconnect }),
+  isDesktop: () => desktop,
   isRemoteDesktopMode: () => false,
   getActiveRemoteConnectionId: () => null,
+}))
+
+vi.mock("@tauri-apps/api/app", () => ({
+  getVersion: async () => desktopVersion,
+}))
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: async () => desktopRelease,
 }))
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -119,6 +150,14 @@ beforeEach(() => {
   }
   resetCoworkInfoForTests(undefined)
   snapshot = { seq: 0, status: "idle" }
+  performResult = () => ({
+    seq: snapshot.seq + 1,
+    status: "downloading",
+    downloaded: 0,
+  })
+  desktop = false
+  desktopVersion = "1.1.23"
+  desktopRelease = null
   checkResult = () => ({
     currentVersion: "0.21.7",
     update: null,
@@ -1345,5 +1384,193 @@ describe("UpdateProvider — cross-window dismissal", () => {
     // Still the old version, which no longer matches the offer — so the badge
     // is loud again (status-bar-update.tsx compares the two).
     expect(screen.getByTestId("dismissed").textContent).toBe("0.21.9")
+  })
+})
+
+// ─── Automatic download (desktop) ─────────────────────────────────────────
+
+describe("UpdateProvider — automatic download (desktop)", () => {
+  const release = (version: string) => ({ version, body: "notes", date: null })
+  const performCalls = () =>
+    call.mock.calls.filter(([e]) => e === "perform_app_update").length
+
+  beforeEach(() => {
+    desktop = true
+    desktopVersion = "1.1.23"
+    desktopRelease = release("1.1.24")
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it("starts the download once the first scheduled check finds a release", async () => {
+    vi.useFakeTimers()
+    render(availabilityTree())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(performCalls()).toBe(0)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9000)
+    })
+    expect(performCalls()).toBe(1)
+    expect(screen.getByTestId("lifecycle").textContent).toBe("downloading")
+    expect(screen.getByTestId("available").textContent).toBe("1.1.24")
+  })
+
+  it("does not download the release the user put off", async () => {
+    localStorage.setItem(DISMISSED_KEY, "1.1.24")
+    render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    await waitFor(() =>
+      expect(screen.getByTestId("lifecycle").textContent).toBe("idle")
+    )
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(performCalls()).toBe(0)
+    expect(screen.getByTestId("available").textContent).toBe("1.1.24")
+  })
+
+  it("does not download again the release a rollback just left", async () => {
+    // Staged rollback to 1.1.22 while 1.1.23 runs.
+    snapshot = { seq: 4, status: "ready_to_restart", version: "1.1.22" }
+    const first = render(availabilityTree())
+    await waitFor(() =>
+      expect(screen.getByTestId("current").textContent).toBe("1.1.23")
+    )
+    await waitFor(() =>
+      expect(screen.getByTestId("lifecycle").textContent).toBe(
+        "ready_to_restart"
+      )
+    )
+    await act(async () => {
+      await ctx!.restart()
+    })
+    expect(localStorage.getItem(DISMISSED_KEY)).toBe("1.1.23")
+    first.unmount()
+
+    // Relaunched into 1.1.22; the check offers the release just left.
+    ctx = null
+    desktopVersion = "1.1.22"
+    desktopRelease = release("1.1.23")
+    snapshot = { seq: 0, status: "idle" }
+    render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    await waitFor(() =>
+      expect(screen.getByTestId("current").textContent).toBe("1.1.22")
+    )
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(screen.getByTestId("available").textContent).toBe("1.1.23")
+    expect(performCalls()).toBe(0)
+  })
+
+  it("does not start while an update is already staged", async () => {
+    snapshot = { seq: 7, status: "ready_to_restart", version: "1.1.24" }
+    render(availabilityTree())
+    await waitFor(() =>
+      expect(screen.getByTestId("lifecycle").textContent).toBe(
+        "ready_to_restart"
+      )
+    )
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(performCalls()).toBe(0)
+  })
+
+  it("does not start before the backend state has been read", async () => {
+    // The snapshot never answers: `idle` is only the placeholder.
+    callQueue = [new Promise<AppUpdateState>(() => {})]
+    render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(screen.getByTestId("available").textContent).toBe("1.1.24")
+    expect(performCalls()).toBe(0)
+  })
+
+  it("does not download in a browser (server in-place update)", async () => {
+    desktop = false
+    checkResult = () => ({
+      currentVersion: "0.21.7",
+      update: { version: "0.21.9", body: "", date: null },
+      selfUpdateSupported: true,
+      liveProgress: true,
+      runtime: "standalone",
+      rollbackAvailable: false,
+    })
+    render(availabilityTree())
+    await waitFor(() =>
+      expect(screen.getByTestId("lifecycle").textContent).toBe("idle")
+    )
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(screen.getByTestId("available").textContent).toBe("0.21.9")
+    expect(performCalls()).toBe(0)
+  })
+
+  it("does nothing when already up to date", async () => {
+    desktopRelease = null
+    render(availabilityTree())
+    await waitFor(() =>
+      expect(screen.getByTestId("lifecycle").textContent).toBe("idle")
+    )
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(screen.getByTestId("available").textContent).toBe("none")
+    expect(performCalls()).toBe(0)
+  })
+
+  it("stays quiet when the download cannot start", async () => {
+    const { toast } = await import("sonner")
+    vi.mocked(toast.error).mockClear()
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {})
+    const failure = new Error("backend unreachable")
+    performResult = () => {
+      throw failure
+    }
+    render(availabilityTree())
+    await waitFor(() =>
+      expect(screen.getByTestId("lifecycle").textContent).toBe("idle")
+    )
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    await waitFor(() =>
+      expect(debug).toHaveBeenCalledWith(
+        "[Update] background download did not start:",
+        failure
+      )
+    )
+    expect(performCalls()).toBe(1)
+    expect(toast.error).not.toHaveBeenCalled()
+    expect(screen.getByTestId("lifecycle").textContent).toBe("idle")
+  })
+
+  it("does not download on an answer restored from storage", async () => {
+    vi.useFakeTimers()
+    localStorage.setItem(
+      LAST_CHECK_KEY,
+      JSON.stringify({
+        at: Date.now() - 60 * 60 * 1000,
+        currentVersion: "1.1.23",
+        info: release("1.1.24"),
+      })
+    )
+    render(availabilityTree())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+    expect(screen.getByTestId("available").textContent).toBe("1.1.24")
+    expect(checkCalls()).toBe(0)
+    expect(performCalls()).toBe(0)
   })
 })

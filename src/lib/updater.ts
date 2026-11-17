@@ -591,9 +591,14 @@ export function normalizeAppUpdateError(error: unknown): AppUpdateErrorInfo {
     return { kind: "permission_denied", rawMessage }
   }
 
+  // The manifest request failed (offline: "error sending request for url
+  // (…/latest.json)"), or the host answered but with no usable manifest —
+  // tauri-plugin-updater's "Could not fetch a valid release JSON from the
+  // remote" for a 404 / 5xx. Either way the download source is the problem.
   if (
     normalized.includes("latest.json") ||
-    normalized.includes("/releases/latest/download/")
+    normalized.includes("/releases/latest/download/") ||
+    normalized.includes("valid release json")
   ) {
     return { kind: "source_unreachable", rawMessage }
   }

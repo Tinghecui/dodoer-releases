@@ -373,7 +373,7 @@
     "updateErrors": {
       "permissionDenied": "Impossible d’écrire dans {path} : les mises à jour ne peuvent pas être installées sur place. Effectuez la mise à jour manuellement avec les droits d’administrateur ou vérifiez les autorisations d’installation.",
       "targetWriteFailed": "Impossible d’écrire dans {path} : les mises à jour ne peuvent pas être installées sur place ({reason}).",
-      "sourceUnavailable": "Impossible d’atteindre la source de mise à jour. Vérifiez votre réseau ou proxy et réessayez.",
+      "sourceUnavailable": "Impossible d’atteindre la source de téléchargement des mises à jour, ou elle n’a pas d’informations de version pour le moment. Vérifiez votre réseau ou proxy ; l’application revérifiera automatiquement plus tard.",
       "network": "La connexion réseau a échoué. Vérifiez votre réseau ou proxy et réessayez.",
       "downloadFailed": "Impossible de télécharger le paquet de mise à jour. Veuillez réessayer plus tard.",
       "installFailed": "Impossible d’installer la mise à jour. Fermez l’app puis réessayez.",

@@ -373,7 +373,7 @@
     "updateErrors": {
       "permissionDenied": "Cannot write to {path}, so updates can't be installed in place. Update manually with administrator privileges or check installation permissions.",
       "targetWriteFailed": "Cannot write to {path}, so updates can't be installed in place: {reason}",
-      "sourceUnavailable": "Cannot reach the update source. Check your network or proxy and try again.",
+      "sourceUnavailable": "Cannot reach the update download source, or it has no release information right now. Check your network or proxy; the app checks again automatically later.",
       "network": "Network connection failed. Check your network or proxy and try again.",
       "downloadFailed": "Failed to download update package. Please try again later.",
       "installFailed": "Failed to install update. Please close the app and try again.",

@@ -426,6 +426,41 @@ describe("SystemNetworkSettings — update source outage", () => {
     expect(screen.queryByText(/Load failed/)).not.toBeInTheDocument()
   })
 
+  it("says the download source is unreachable when it has no release JSON", async () => {
+    // A 404 / 5xx from the release host: the updater plugin reports that it
+    // could not fetch a valid release JSON. That is the source being down,
+    // not a generic failure.
+    mockGetProxy.mockResolvedValue({ enabled: false, proxy_url: null })
+    call.mockImplementation(async (endpoint: string) => {
+      if (endpoint === "check_app_update") {
+        throw new Error("Could not fetch a valid release JSON from the remote")
+      }
+      if (endpoint === "app_update_status") {
+        return {
+          currentVersion: "0.14.11",
+          selfUpdateSupported: true,
+          capability: "supervised",
+          runtime: "standalone",
+          restartDelayMs: 2000,
+          rollbackAvailable: false,
+          liveProgress: true,
+        }
+      }
+      if (endpoint === "health") return { version: "0.14.11" }
+      if (endpoint === "app_update_state") return { seq: 0, status: "idle" }
+      throw new Error(`unexpected endpoint: ${endpoint}`)
+    })
+
+    renderWithIntl()
+
+    expect(
+      await screen.findByText(/Cannot reach the update download source/)
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(/Update failed\. Please try again/)
+    ).not.toBeInTheDocument()
+  })
+
   it("falls back to 'view release' for a legacy server lacking live_progress", async () => {
     // Newer client, older remote server: it reports an available update and
     // self-update capability, but NOT the `liveProgress` protocol flag. The

@@ -373,7 +373,7 @@
     "updateErrors": {
       "permissionDenied": "No se puede escribir en {path}, así que las actualizaciones no pueden instalarse en el lugar. Actualiza manualmente con permisos de administrador o revisa los permisos de instalación.",
       "targetWriteFailed": "No se puede escribir en {path}, así que las actualizaciones no pueden instalarse en el lugar: {reason}",
-      "sourceUnavailable": "No se puede acceder al origen de actualización. Revisa tu red o proxy e inténtalo de nuevo.",
+      "sourceUnavailable": "No se puede acceder al origen de descarga de actualizaciones, o ahora mismo no tiene información de versiones. Revisa tu red o proxy; la aplicación volverá a comprobarlo automáticamente más tarde.",
       "network": "Falló la conexión de red. Revisa tu red o proxy e inténtalo de nuevo.",
       "downloadFailed": "No se pudo descargar el paquete de actualización. Inténtalo más tarde.",
       "installFailed": "No se pudo instalar la actualización. Cierra la app e inténtalo de nuevo.",

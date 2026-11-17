@@ -373,7 +373,7 @@
     "updateErrors": {
       "permissionDenied": "Não é possível gravar em {path}, então as atualizações não podem ser instaladas no local. Atualize manualmente com privilégios de administrador ou verifique as permissões da instalação.",
       "targetWriteFailed": "Não é possível gravar em {path}, então as atualizações não podem ser instaladas no local: {reason}",
-      "sourceUnavailable": "Não foi possível acessar a fonte de atualização. Verifique sua rede ou proxy e tente novamente.",
+      "sourceUnavailable": "Não foi possível acessar a fonte de download de atualizações, ou ela não tem informações de versão no momento. Verifique sua rede ou proxy; o aplicativo verificará novamente automaticamente mais tarde.",
       "network": "Falha na conexão de rede. Verifique sua rede ou proxy e tente novamente.",
       "downloadFailed": "Falha ao baixar o pacote de atualização. Tente novamente mais tarde.",
       "installFailed": "Falha ao instalar a atualização. Feche o app e tente novamente.",

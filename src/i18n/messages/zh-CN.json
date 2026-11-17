@@ -373,7 +373,7 @@
     "updateErrors": {
       "permissionDenied": "无法写入 {path}，因此无法就地安装更新。请以管理员权限手动更新，或检查安装目录权限。",
       "targetWriteFailed": "无法写入 {path}，因此无法就地安装更新：{reason}",
-      "sourceUnavailable": "无法连接更新源，请检查网络或代理设置后重试。",
+      "sourceUnavailable": "连不上更新下载源，或下载源暂时没有可用的新版信息。请检查网络或代理设置；应用稍后会自动再查。",
       "network": "网络连接异常，请检查网络或代理设置后重试。",
       "downloadFailed": "下载更新包失败，请稍后重试。",
       "installFailed": "安装更新失败，请关闭应用后重试。",

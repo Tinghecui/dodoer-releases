@@ -354,13 +354,50 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   // Bumped on every reconnect reset, so a snapshot fetch started before the
   // reset cannot apply after it.
   const resyncEpochRef = useRef(0)
+  // Lifecycle status and "has an authoritative state landed", written in step
+  // with `latestSeqRef`. The automatic download reads these rather than
+  // `stateRef`, which only catches up in an effect — one render late.
+  const latestStatusRef = useRef<AppUpdateState["status"]>(IDLE_STATE.status)
+  const hydratedRef = useRef(false)
   const applyState = useCallback((next: unknown) => {
     if (!isAppUpdateState(next)) return
     if (next.seq < latestSeqRef.current) return
     latestSeqRef.current = next.seq
+    latestStatusRef.current = next.status
+    hydratedRef.current = true
     setState(next)
     setHydrated(true)
   }, [])
+
+  /**
+   * Desktop: once this window's own check finds release `version`, start
+   * downloading it in the background, so the status bar goes straight to
+   * progress and then "restart to update". Nothing is installed until the
+   * user restarts (see `src-tauri/src/commands/app_update.rs`).
+   *
+   * Skipped when the backend state hasn't landed yet, when an update is
+   * already downloading / staged / restarting, and for the release the user
+   * waved away ("Later", or the one a rollback just left — both live in the
+   * shared dismissal key, read from storage rather than React state so a
+   * sibling window's write counts). Several windows finding it at once is
+   * fine: the backend's `try_begin` starts one download and the others attach.
+   * A failed kickoff stays quiet and isn't retried; the next successful check
+   * tries again.
+   */
+  const autoStartUpdate = useCallback(
+    async (version: string) => {
+      if (!usesTauriUpdater() || !hydratedRef.current) return
+      const status = latestStatusRef.current
+      if (status !== "idle" && status !== "error") return
+      if (readDismissedVersion() === version) return
+      try {
+        applyState(await startAppUpdate())
+      } catch (err) {
+        console.debug("[Update] background download did not start:", err)
+      }
+    },
+    [applyState]
+  )
 
   // Arm the subscription BEFORE fetching the snapshot so no transition is
   // missed in the gap. Re-sync on transport reconnect.
@@ -487,6 +524,11 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
           writeDismissedVersion(null)
           return null
         })
+        // Only a check this window ran itself gets here — answers restored
+        // from storage (`adoptCached`, the `storage` event) never start a
+        // download: right after an update relaunch the cache may still offer
+        // the release that is now running.
+        if (result.update) void autoStartUpdate(result.update.version)
       } catch (err) {
         const { rawMessage } = normalizeAppUpdateError(err)
         if (mountedRef.current) setCheckError(rawMessage)
@@ -503,7 +545,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         if (mountedRef.current) setChecking(false)
       }
     },
-    [t]
+    [t, autoStartUpdate]
   )
 
   const checkNow = useCallback(

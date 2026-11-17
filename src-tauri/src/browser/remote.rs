@@ -33,6 +33,10 @@ use crate::web::browser_tunnel::frame::TUNNEL_PATH;
 /// secure context, and is loopback to the remote codeg-server (RFC 6761),
 /// which connects it to that host's own `localhost`. Dev servers take
 /// `*.localhost` for local too, so their host checks let it in.
+///
+/// 它是明文 HTTP 上带点的主机名：打包好的 macOS 应用要靠 Info.plist 里的
+/// `NSAllowsArbitraryLoadsInWebContent` 才让加载（ATS），见本文件测试
+/// `info_plist_lets_web_content_load_plain_http`。
 pub const ALIAS_HOST: &str = "remote.localhost";
 
 /// Longest the probe page may take to prove itself.
@@ -543,5 +547,38 @@ mod tests {
         assert_eq!(display_host("http://10.0.0.2"), "10.0.0.2");
         assert_eq!(display_host("http://[fd00::2]:3080"), "[fd00::2]:3080");
         assert_eq!(display_host("not a url"), "not a url");
+    }
+
+    /// `ALIAS_HOST` 是明文 HTTP 上带点的主机名，打包好的 Mac 应用要靠
+    /// Info.plist 里 `NSAppTransportSecurity` 下的
+    /// `NSAllowsArbitraryLoadsInWebContent` 才让 WebKit 加载它；删掉这个键，
+    /// 远程标签（连同开第一个标签前的自检）就全被 ATS 拦掉（-1022）。
+    /// 开发时和 Linux、Windows 上碰不到，所以在源码层按文字核对，不分平台。
+    #[test]
+    fn info_plist_lets_web_content_load_plain_http() {
+        let plist = include_str!("../../Info.plist");
+        let ats = plist
+            .split_once("<key>NSAppTransportSecurity</key>")
+            .expect("Info.plist 里要有 NSAppTransportSecurity")
+            .1
+            .trim_start();
+        assert!(
+            ats.starts_with("<dict>"),
+            "NSAppTransportSecurity 后面要跟 <dict>"
+        );
+        let body = &ats["<dict>".len()..ats.find("</dict>").expect("ATS 的 <dict> 要闭合")];
+        let value = body
+            .split_once("<key>NSAllowsArbitraryLoadsInWebContent</key>")
+            .expect("ATS 的 <dict> 里要有 NSAllowsArbitraryLoadsInWebContent")
+            .1
+            .trim_start();
+        assert!(
+            value.starts_with("<true/>"),
+            "NSAllowsArbitraryLoadsInWebContent 要是 <true/>"
+        );
+        assert_eq!(
+            plist.matches("<dict>").count(),
+            plist.matches("</dict>").count()
+        );
     }
 }

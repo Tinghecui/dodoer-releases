@@ -5,6 +5,7 @@ import type {
   AsyncTaskRecord,
   BackgroundPendingEntry,
   BackgroundUncertainReason,
+  ConnectionStatus,
 } from "@/lib/types"
 import {
   applyServerBackgroundPending,
@@ -15,6 +16,7 @@ import {
   isConversationActive,
   publishBackgroundPending,
   replaceServerBackgroundPending,
+  reportsBackgroundPending,
   useBackgroundPending,
   useBackgroundPendingStore,
   useBackgroundPendingSync,
@@ -130,6 +132,48 @@ describe("publishBackgroundPending", () => {
     expect(useBackgroundPendingStore.getState().bySession).toBe(before)
     publishBackgroundPending([conn("a", [task("1", "completed")])])
     expect(useBackgroundPendingStore.getState().bySession.size).toBe(0)
+  })
+
+  it("skips a disconnected or errored connection, keeps a live one of the same session", () => {
+    const disconnected: ConnectionStatus = "disconnected"
+    const errored: ConnectionStatus = "error"
+    const connected: ConnectionStatus = "connected"
+    publishBackgroundPending([
+      {
+        ...conn("a", [task("1", "running"), task("2", "running")]),
+        status: disconnected,
+      },
+      { ...conn("b", [], 3), status: errored },
+      { ...conn("a", [task("1", "running")]), status: connected },
+      { ...conn("c", [], 1), status: "prompting" as const },
+    ])
+    const map = useBackgroundPendingStore.getState().bySession
+    expect([...map.keys()].sort()).toEqual(["a", "c"])
+    expect(map.get("a")?.count).toBe(1)
+  })
+
+  it("drops a session's count once its only connection disconnects", () => {
+    publishBackgroundPending([
+      { ...conn("a", [], 2), status: "connected" as const },
+    ])
+    expect(useBackgroundPendingStore.getState().bySession.get("a")?.count).toBe(
+      2
+    )
+    publishBackgroundPending([
+      { ...conn("a", [], 2), status: "disconnected" as const },
+    ])
+    expect(useBackgroundPendingStore.getState().bySession.size).toBe(0)
+  })
+})
+
+describe("reportsBackgroundPending", () => {
+  it("is false only for a disconnected or errored connection", () => {
+    expect(reportsBackgroundPending("disconnected")).toBe(false)
+    expect(reportsBackgroundPending("error")).toBe(false)
+    expect(reportsBackgroundPending("connected")).toBe(true)
+    expect(reportsBackgroundPending("prompting")).toBe(true)
+    expect(reportsBackgroundPending("connecting")).toBe(true)
+    expect(reportsBackgroundPending(undefined)).toBe(true)
   })
 })
 
@@ -299,6 +343,41 @@ describe("server uncertain entries (Cowork fork)", () => {
     const { result } = renderHook(() => useBackgroundPending("sess-9", 9))
     expect(result.current?.state).toBe("uncertain")
     expect(result.current?.reason).toBe("agent_exited")
+  })
+
+  it("shows no hourglass once the server clears a session whose connection here is disconnected", () => {
+    act(() => {
+      replaceServerBackgroundPending([uncertain(9)])
+      publishBackgroundPending([
+        {
+          ...conn("sess-9", [task("1", "running")], 1),
+          status: "disconnected" as const,
+        },
+      ])
+    })
+    const conv = { id: 9, external_id: "sess-9", status: "pending_review" }
+    expect(
+      backgroundMarkFor(useBackgroundPendingStore.getState(), conv).uncertain
+    ).not.toBeNull()
+    act(() =>
+      applyServerBackgroundPending({
+        conversation_id: 9,
+        count: 0,
+        names: [],
+        state: "idle",
+      })
+    )
+    const { result } = renderHook(() => useBackgroundPending("sess-9", 9))
+    expect(result.current).toBeNull()
+    expect(
+      backgroundMarkFor(useBackgroundPendingStore.getState(), conv)
+    ).toEqual({ waiting: null, uncertain: null })
+    expect(
+      backgroundMarkFor(useBackgroundPendingStore.getState(), {
+        ...conv,
+        status: "completed",
+      })
+    ).toEqual({ waiting: null, uncertain: null })
   })
 })
 

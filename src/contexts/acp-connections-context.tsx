@@ -61,7 +61,10 @@ import {
   useConversationRuntimeStore,
 } from "@/stores/conversation-runtime-store"
 import { publishAwaitingUser } from "@/stores/awaiting-user-store"
-import { publishBackgroundPending } from "@/stores/background-pending-store"
+import {
+  publishBackgroundPending,
+  reportsBackgroundPending,
+} from "@/stores/background-pending-store"
 import type {
   AgentType,
   AcpAgentStatus,
@@ -3553,7 +3556,10 @@ function backgroundPendingChanged(
       !before ||
       before.asyncTasks !== conn.asyncTasks ||
       before.backgroundOutstanding !== conn.backgroundOutstanding ||
-      before.sessionId !== conn.sessionId
+      before.sessionId !== conn.sessionId ||
+      // Cowork fork (#529): a disconnect / reconnect turns the count off / on.
+      reportsBackgroundPending(before.status) !==
+        reportsBackgroundPending(conn.status)
     ) {
       return true
     }

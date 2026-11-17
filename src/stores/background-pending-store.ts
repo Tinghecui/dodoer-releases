@@ -9,6 +9,7 @@ import {
   type AsyncTaskRecord,
   type BackgroundPendingEntry,
   type BackgroundUncertainReason,
+  type ConnectionStatus,
 } from "@/lib/types"
 
 /**
@@ -70,6 +71,19 @@ export function backgroundPendingOf(conn: {
   return { count, names }
 }
 
+/** Cowork fork (#529): whether a connection in this window still reports its
+ *  background count. A disconnected / errored one does not: its count is the
+ *  last thing the agent said before the link went, and once the server clears
+ *  the row (its「?」withdrawn, the conversation closed) that stale count would
+ *  bring the hourglass back. After a disconnect only the server speaks. The
+ *  connection itself stays in the list (reconnect, history). Absent status
+ *  (callers that don't track one) counts as live. */
+export function reportsBackgroundPending(
+  status?: ConnectionStatus | null
+): boolean {
+  return status !== "disconnected" && status !== "error"
+}
+
 function samePending(a: BackgroundPending, b: BackgroundPending): boolean {
   return (
     a.count === b.count &&
@@ -83,18 +97,22 @@ function samePending(a: BackgroundPending, b: BackgroundPending): boolean {
 /**
  * Replace the whole map from the current connections. Several connections can
  * share a session (a viewer window, a re-keyed tab): the one with the most
- * outstanding work wins. A no-op (same reference) when nothing changed.
+ * outstanding work wins. A disconnected / errored connection reports nothing
+ * ({@link reportsBackgroundPending}). A no-op (same reference) when nothing
+ * changed.
  */
 export function publishBackgroundPending(
   connections: Iterable<{
     sessionId: string | null
     asyncTasks: AsyncTaskRecord[]
     backgroundOutstanding: number
+    status?: ConnectionStatus | null
   }>
 ): void {
   const next = new Map<string, BackgroundPending>()
   for (const conn of connections) {
     if (!conn.sessionId) continue
+    if (!reportsBackgroundPending(conn.status)) continue
     const pending = backgroundPendingOf(conn)
     if (!pending) continue
     const have = next.get(conn.sessionId)

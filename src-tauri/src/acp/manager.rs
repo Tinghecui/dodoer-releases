@@ -3698,12 +3698,42 @@ impl ConnectionManager {
     /// Cowork 加的：`acp_list_background_pending` 两个入口返回的东西：活着的连接的读数
     /// （[`Self::list_background_pending`]），加上 `broadcaster` 里留下来的「?」中活着的
     /// 连接没报的对话。先放开连接表的锁，再拿表锁。
+    ///
+    /// 留下来的「?」被一条没断开的活连接认领了（绑着这个对话，或者 resume 着断开前的会话、
+    /// resume 失败回退成新会话的也算，空闲的也算）就不再列出来，表里的也删掉（#441）。
     pub async fn list_background_pending_with_uncertain(
         &self,
         broadcaster: &crate::web::event_bridge::WebEventBroadcaster,
     ) -> Vec<crate::acp::types::BackgroundPendingEntry> {
         let live = self.list_background_pending().await;
-        broadcaster.merge_background_pending(live)
+        let bound = self.live_bindings().await;
+        broadcaster.merge_background_pending_with(live, &bound)
+    }
+
+    /// Cowork 加的（#441）：每条没断开的连接绑着的对话、resume 着的会话 id、启动时要
+    /// resume 的会话 id 和编号。
+    async fn live_bindings(&self) -> Vec<crate::web::event_bridge::LiveBinding> {
+        let connections = self.connections.lock().await;
+        let mut out = Vec::new();
+        for conn in connections.values() {
+            let state = conn.state.read().await;
+            if state.status == ConnectionStatus::Disconnected {
+                continue;
+            }
+            if state.conversation_id.is_none()
+                && state.external_id.is_none()
+                && state.resumed_from_external_id.is_none()
+            {
+                continue;
+            }
+            out.push(crate::web::event_bridge::LiveBinding {
+                conversation_id: state.conversation_id,
+                external_id: state.external_id.clone(),
+                resumed_from: state.resumed_from_external_id.clone(),
+                generation: state.generation,
+            });
+        }
+        out
     }
 
     /// Raw per-connection rows for the pet panel's active-session list.
@@ -8516,6 +8546,128 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(42, 2, BackgroundPendingState::Waiting)]
         );
+    }
+
+    /// #441：对话留下了「?」，又有一条没断开的活连接绑着它（`count` 是 0、空闲），或者
+    /// resume 着断开前的那个会话 id（还没绑对话）：列表里不再有这个「?」，表里的也删掉。
+    #[tokio::test]
+    async fn an_idle_live_connection_drops_the_leftover_uncertain_mark() {
+        let mgr = ConnectionManager::new();
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+        for (conn_id, conversation_id, session_id) in [("c1", 42, "sid-42"), ("c2", 43, "sid-43")] {
+            let gone = fake_connection(conn_id, None);
+            for event in [
+                AcpEvent::SessionStarted {
+                    session_id: session_id.into(),
+                },
+                AcpEvent::ConversationLinked {
+                    conversation_id,
+                    folder_id: 1,
+                    parent_conversation_id: None,
+                    parent_tool_use_id: None,
+                },
+                AcpEvent::BackgroundActivity {
+                    session_id: session_id.into(),
+                    turns: vec![],
+                    outstanding: 1,
+                    outstanding_tasks: vec![],
+                    settled: vec![],
+                    watermark: 1,
+                },
+                AcpEvent::StatusChanged {
+                    status: ConnectionStatus::Disconnected,
+                },
+            ] {
+                emit_with_state(&gone.state, &emitter, event).await;
+            }
+        }
+        assert_eq!(
+            mgr.list_background_pending_with_uncertain(&broadcaster)
+                .await
+                .iter()
+                .map(|e| e.conversation_id)
+                .collect::<Vec<_>>(),
+            vec![42, 43]
+        );
+
+        // 不发事件直接放进来的活连接：一条绑着 42，一条只 resume 着 43 的会话。
+        let bound = fake_connection("c3", Some(42));
+        let resumed = fake_connection("c4", None);
+        if let Ok(mut state) = resumed.state.try_write() {
+            state.external_id = Some("sid-43".into());
+        }
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert("c3".to_string(), bound);
+            map.insert("c4".to_string(), resumed);
+        }
+        assert!(mgr
+            .list_background_pending_with_uncertain(&broadcaster)
+            .await
+            .is_empty());
+
+        // 表里的也删了：活连接走了也不会再冒出来。
+        mgr.connections.lock().await.clear();
+        assert!(mgr
+            .list_background_pending_with_uncertain(&broadcaster)
+            .await
+            .is_empty());
+    }
+
+    /// #441（返工）：resume 旧会话失败回退成新会话的活连接（会话 id 是新的、还没绑对话，
+    /// 启动时要 resume 的是断开前的会话），列表时也认领这个对话留下的「?」。
+    #[tokio::test]
+    async fn a_live_connection_that_fell_back_from_the_session_drops_the_mark() {
+        let mgr = ConnectionManager::new();
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+        let gone = fake_connection("c1", None);
+        for event in [
+            AcpEvent::SessionStarted {
+                session_id: "sid-44".into(),
+            },
+            AcpEvent::ConversationLinked {
+                conversation_id: 44,
+                folder_id: 1,
+                parent_conversation_id: None,
+                parent_tool_use_id: None,
+            },
+            AcpEvent::BackgroundActivity {
+                session_id: "sid-44".into(),
+                turns: vec![],
+                outstanding: 1,
+                outstanding_tasks: vec![],
+                settled: vec![],
+                watermark: 1,
+            },
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Disconnected,
+            },
+        ] {
+            emit_with_state(&gone.state, &emitter, event).await;
+        }
+        assert_eq!(
+            mgr.list_background_pending_with_uncertain(&broadcaster)
+                .await
+                .len(),
+            1
+        );
+
+        // 不发事件直接放进来的活连接：会话 id 是回退出来的新的，启动时要 resume 的是 sid-44。
+        let fell_back = fake_connection("c2", None);
+        if let Ok(mut state) = fell_back.state.try_write() {
+            state.external_id = Some("sid-fresh".into());
+            state.resumed_from_external_id = Some("sid-44".into());
+        }
+        mgr.connections
+            .lock()
+            .await
+            .insert("c2".to_string(), fell_back);
+        assert!(mgr
+            .list_background_pending_with_uncertain(&broadcaster)
+            .await
+            .is_empty());
     }
 
     /// 给轮询注入的假进程表：按 pid 给死活，记下被读了几次；`during` 在每次读的时候跑

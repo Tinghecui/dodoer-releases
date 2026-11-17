@@ -265,6 +265,10 @@ pub struct SessionState {
     /// as this session's — an epoch taken at the tick itself would classify
     /// them as copied history and drop them.
     pub external_id_changed_at: Option<std::time::SystemTime>,
+    /// Cowork 加的（#441）：这条连接启动时要 resume 的智能体会话 id（`acp_connect` 带来的
+    /// `session_id`）。resume 失败或智能体不支持、回退成新会话时 `external_id` 是新的，
+    /// 靠它认出这条连接接的是哪个旧会话。
+    pub resumed_from_external_id: Option<String>,
     pub agent_type: AgentType,
     /// Counter semantics of the adapter definition used for this launch.
     pub(crate) prompt_usage_mode: crate::acp::reported_usage::PromptUsageMode,
@@ -937,6 +941,7 @@ impl SessionState {
             conversation_id: None,
             external_id: None,
             external_id_changed_at: None,
+            resumed_from_external_id: None,
             agent_type,
             prompt_usage_mode: crate::acp::reported_usage::PromptUsageMode::default(),
             working_dir,

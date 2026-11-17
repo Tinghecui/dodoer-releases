@@ -2820,6 +2820,8 @@ pub async fn spawn_agent_connection(
     // installer. The receiver is returned to `spawn_agent`, which holds the
     // per-session dedup lock until this rx fires (or times out / aborts).
     let session_started_rx = initial_state.install_session_started_signal();
+    // #441：记下要 resume 的会话 id，回退成新会话时也认得出接的是哪个旧会话。
+    initial_state.resumed_from_external_id = session_id.clone();
     // Record what this launch's environment freezes before the state is shared:
     // the emit path and the preference replay both read it, and both run after
     // this point.

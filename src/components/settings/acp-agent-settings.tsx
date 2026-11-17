@@ -227,6 +227,7 @@ import { MiniMaxCodeConfigPanel } from "./minimax-code-config-panel"
 import { KimiCodeConfigPanel } from "./kimi-code-config-panel"
 import { PiConfigPanel } from "./pi-config-panel"
 import { QoderConfigPanel } from "./qoder-config-panel"
+import { SettingsLoadError } from "./settings-load-error"
 
 interface AgentCheckState {
   result?: PreflightResult
@@ -8601,6 +8602,26 @@ export function AcpAgentSettings() {
       <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
         {t("loadingAgents")}
+      </div>
+    )
+  }
+
+  // Cowork fork: 一个都没加载出来时，用统一的「加载失败 + 原因 + 重试」替掉
+  // 空列表和「暂无可用 Agent」（#542），不然看着像服务器上一个智能体都没有。
+  // 已经有列表、之后刷新失败的，仍走下面的顶部错误条，列表留着。
+  if (loadingError && agents.length === 0) {
+    return (
+      <div className="h-full flex flex-col p-3 md:p-4">
+        <div className="pb-4">
+          <h2 className="text-base font-semibold">{t("title")}</h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            {t("description")}
+          </p>
+        </div>
+        <SettingsLoadError
+          message={loadingError}
+          onRetry={() => void refreshAgents()}
+        />
       </div>
     )
   }

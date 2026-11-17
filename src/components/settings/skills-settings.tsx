@@ -9,7 +9,9 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  RotateCw,
   Save,
+  TriangleAlert,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import ReactMarkdown from "react-markdown"
@@ -172,6 +174,12 @@ export function SkillsSettings() {
   const [agents, setAgents] = useState<AcpAgentInfo[]>([])
   const [loadingAgents, setLoadingAgents] = useState(true)
   const [loadingError, setLoadingError] = useState<string | null>(null)
+  // 有的智能体探测失败、有的成功：照常显示成功的，上面提示几个没读出来（#526）
+  const [partialFailure, setPartialFailure] = useState<{
+    count: number
+    message: string
+  } | null>(null)
+  const loadErrorT = useTranslations("SettingsLoadError")
   const [selectedAgentType, setSelectedAgentType] = useState<AgentType | null>(
     null
   )
@@ -377,6 +385,7 @@ export function SkillsSettings() {
   const refreshAgents = useCallback(async () => {
     setLoadingAgents(true)
     setLoadingError(null)
+    setPartialFailure(null)
 
     try {
       const next = await acpListAgents()
@@ -392,22 +401,31 @@ export function SkillsSettings() {
       const supported = new Set<AgentType>()
       let firstFailure: unknown = undefined
       let failed = false
+      let failedCount = 0
       for (const check of supportChecks) {
         if (check.status !== "fulfilled") {
           if (!failed) firstFailure = check.reason
           failed = true
+          failedCount += 1
           continue
         }
         if (!check.value) continue
         supported.add(check.value)
       }
 
-      // 探测请求失败不等于「不支持」：一个能管的都没探出来、又有失败的，
-      // 算加载失败，不显示「没有可管理 Skills 的 Agent」（#438）。
-      if (failed && supported.size === 0) {
+      // 探测请求失败不等于「不支持」：所有探测都失败的，算加载失败，
+      // 不显示「没有可管理 Skills 的 Agent」（#438）。有一个探测成功了
+      // （哪怕它答的是不支持）就只算部分失败，提示几个没读出来（#526）。
+      if (failed && failedCount === supportChecks.length) {
         setLoadingError(toErrorMessage(firstFailure))
         setAgents([])
         return
+      }
+      if (failed) {
+        setPartialFailure({
+          count: failedCount,
+          message: toErrorMessage(firstFailure),
+        })
       }
 
       // A pi pointed at a custom PI_CODING_AGENT_DIR isn't managed by the
@@ -763,6 +781,35 @@ export function SkillsSettings() {
           </p>
         </div>
       </div>
+
+      {/* 部分智能体探测失败：只提示、不挡，成功的照常能管（#526） */}
+      {loadingError == null && partialFailure && (
+        <div
+          role="alert"
+          className="mb-3 shrink-0 flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs"
+        >
+          <TriangleAlert
+            className="size-3.5 shrink-0 text-amber-500"
+            aria-hidden="true"
+          />
+          <span className="min-w-0 flex-1 break-words">
+            {t("partialLoadFailed", {
+              count: partialFailure.count,
+              reason: partialFailure.message,
+            })}
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 shrink-0 gap-1.5"
+            onClick={() => void refreshAgents()}
+          >
+            <RotateCw className="size-3.5" aria-hidden="true" />
+            {loadErrorT("retry")}
+          </Button>
+        </div>
+      )}
 
       {loadingError != null ? (
         <div className="rounded-lg border bg-card">

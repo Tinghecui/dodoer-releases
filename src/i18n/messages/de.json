@@ -615,6 +615,7 @@
     "description": "Wähle links einen Skill aus. Rechts wird standardmäßig eine Markdown-Vorschau angezeigt; wechsle zum Bearbeiten, um zu ändern und zu speichern.",
     "loadingAgents": "Agenten mit Skill-Unterstützung werden geladen...",
     "emptyNoManageableAgents": "Keine Agenten für Skill-Verwaltung verfügbar.",
+    "partialLoadFailed": "{count, plural, one {# Agent konnte} other {# Agenten konnten}} nicht gelesen werden: {reason}",
     "managedTarget": "Verwaltetes Ziel",
     "selectAgentPlaceholder": "Agent auswählen",
     "searchPlaceholder": "Nach Name / ID / Pfad suchen...",

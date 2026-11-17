@@ -615,6 +615,7 @@
     "description": "Selecciona una Skill a la izquierda. A la derecha se muestra una vista previa de Markdown por defecto; cambia a edición para modificar y guardar.",
     "loadingAgents": "Cargando agentes compatibles con Skills...",
     "emptyNoManageableAgents": "No hay agentes disponibles para gestionar Skills.",
+    "partialLoadFailed": "{count, plural, one {No se pudo leer # agente} other {No se pudieron leer # agentes}}: {reason}",
     "managedTarget": "Objetivo gestionado",
     "selectAgentPlaceholder": "Selecciona un agente",
     "searchPlaceholder": "Buscar por nombre / ID / ruta...",

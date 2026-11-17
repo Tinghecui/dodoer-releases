@@ -615,6 +615,7 @@
     "description": "Select a skill on the left. The right side previews Markdown by default; switch to edit to modify and save.",
     "loadingAgents": "Loading agents that support Skills...",
     "emptyNoManageableAgents": "No agents available for Skills management.",
+    "partialLoadFailed": "{count, plural, one {# agent} other {# agents}} couldn't be read: {reason}",
     "managedTarget": "Managed target",
     "selectAgentPlaceholder": "Select an agent",
     "searchPlaceholder": "Search by name / ID / path...",

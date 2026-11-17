@@ -32,6 +32,7 @@ import {
 import { toErrorMessage } from "@/lib/app-error"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import type { AcpAgentInfo, AgentType, ExpertLinkState } from "@/lib/types"
+import { SettingsLoadError } from "./settings-load-error"
 
 /** The matrix groups rows by category; this pack has one. */
 const CATEGORY = "ui"
@@ -157,9 +158,13 @@ export function GenerativeUiBody({
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {loadError && (
-        <div className="mb-3 shrink-0 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-          {loadError}
+      {loadError != null && (
+        // 没读出来就只说失败和重试（#526），版式照「专家」标签（#438）
+        <div className="flex-1 min-h-0 rounded-lg border bg-card flex items-center justify-center">
+          <SettingsLoadError
+            message={loadError}
+            onRetry={() => void refresh()}
+          />
         </div>
       )}
 

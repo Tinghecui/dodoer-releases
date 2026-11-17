@@ -26,6 +26,7 @@ import type {
 import { toErrorMessage } from "@/lib/app-error"
 import { pickLocalized } from "@/lib/expert-presentation"
 import { getScienceIcon } from "@/lib/science-presentation"
+import { SettingsLoadError } from "./settings-load-error"
 
 const CATEGORY_SORT: Record<string, number> = {
   ideation: 1,
@@ -177,13 +178,15 @@ export function ScienceBody({
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {loadError && (
-        <div className="mb-3 shrink-0 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-          {loadError}
+      {loadError != null ? (
+        // 没读出来就只说失败和重试，不说「暂无科研技能」（#438、#526）
+        <div className="flex-1 min-h-0 rounded-lg border bg-card flex items-center justify-center">
+          <SettingsLoadError
+            message={loadError}
+            onRetry={() => void refresh()}
+          />
         </div>
-      )}
-
-      {skills.length === 0 ? (
+      ) : skills.length === 0 ? (
         <div className="flex-1 min-h-0 rounded-lg border bg-card flex items-center justify-center text-sm text-muted-foreground">
           {t("emptySkills")}
         </div>

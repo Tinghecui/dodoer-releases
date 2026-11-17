@@ -615,6 +615,7 @@
     "description": "왼쪽에서 Skill을 선택하세요. 오른쪽은 기본적으로 Markdown 미리보기이며, 편집으로 전환해 수정 후 저장할 수 있습니다.",
     "loadingAgents": "Skill을 지원하는 에이전트를 불러오는 중...",
     "emptyNoManageableAgents": "Skill을 관리할 수 있는 에이전트가 없습니다.",
+    "partialLoadFailed": "에이전트 {count}개를 불러오지 못했습니다: {reason}",
     "managedTarget": "관리 대상",
     "selectAgentPlaceholder": "에이전트 선택",
     "searchPlaceholder": "이름 / ID / 경로로 검색...",

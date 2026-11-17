@@ -615,6 +615,7 @@
     "description": "左側選擇 Skill，右側預設預覽 Markdown，點擊編輯後可修改並儲存。",
     "loadingAgents": "正在載入支援 Skills 的 Agent...",
     "emptyNoManageableAgents": "目前沒有可管理 Skills 的 Agent。",
+    "partialLoadFailed": "有 {count} 個 Agent 沒讀出來：{reason}",
     "managedTarget": "管理對象",
     "selectAgentPlaceholder": "請選擇 Agent",
     "searchPlaceholder": "搜尋名稱 / ID / 路徑...",

@@ -57,6 +57,7 @@ import type {
 } from "@/lib/types"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import { toErrorMessage } from "@/lib/app-error"
+import { SettingsLoadError } from "./settings-load-error"
 
 const ICON_MAP: Record<string, LucideIcon> = {
   FileStack,
@@ -237,6 +238,8 @@ export function OfficeToolsBody({
   const [skills, setSkills] = useState<OfficecliSkill[]>([])
   const [agents, setAgents] = useState<AcpAgentInfo[]>([])
   const [reloadKey, setReloadKey] = useState(0)
+  // 技能列表没读出来时的原因：标签里显示「加载失败、重试」，不只剩空列表（#526）
+  const [skillsLoadError, setSkillsLoadError] = useState<string | null>(null)
 
   const translatedState = useCallback(
     (state: ExpertLinkState): string => {
@@ -301,6 +304,7 @@ export function OfficeToolsBody({
         acpListAgents(),
       ])
       if (!current()) return
+      setSkillsLoadError(null)
       setSkills(skillList)
       // A pi pointed at a custom PI_CODING_AGENT_DIR isn't managed by the
       // default-dir skill store, so it doesn't get a column here.
@@ -314,7 +318,9 @@ export function OfficeToolsBody({
       setReloadKey((k) => k + 1)
     } catch (err) {
       if (!current()) return
-      toast.error(t("toasts.loadFailed"), { description: toErrorMessage(err) })
+      const message = toErrorMessage(err)
+      setSkillsLoadError(message)
+      toast.error(t("toasts.loadFailed"), { description: message })
     }
   }, [beginSkillsLoad, t])
 
@@ -505,7 +511,15 @@ export function OfficeToolsBody({
       </div>
 
       <div className="flex-1 min-h-0 min-w-0 mt-4">
-        {skills.length === 0 ? (
+        {skillsLoadError != null ? (
+          // 没读出来就只说失败和重试，不说「暂无技能」（#438、#526）
+          <div className="h-full rounded-lg border bg-card flex items-center justify-center">
+            <SettingsLoadError
+              message={skillsLoadError}
+              onRetry={() => void refreshSkills()}
+            />
+          </div>
+        ) : skills.length === 0 ? (
           <div className="h-full rounded-lg border bg-card flex items-center justify-center text-sm text-muted-foreground">
             {t("emptySkills")}
           </div>

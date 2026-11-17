@@ -87,6 +87,7 @@ import type {
 } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 import { cn } from "@/lib/utils"
+import { SettingsLoadError } from "./settings-load-error"
 
 // Custom skills have no curated category taxonomy — they live under one group.
 const CATEGORY_ORDER: Record<string, number> = { custom: 1 }
@@ -641,33 +642,38 @@ export function CustomSkillsBody({
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {loadError && (
-        <div className="mb-3 shrink-0 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-          {loadError}
+      {loadError != null ? (
+        // 没读出来就只说失败和重试，连工具栏一起替掉，不显示「暂无内容。」
+        // （#526，照「专家」标签 #438 的做法）
+        <div className="flex-1 min-h-0 rounded-lg border bg-card flex items-center justify-center">
+          <SettingsLoadError
+            message={loadError}
+            onRetry={() => void refresh()}
+          />
+        </div>
+      ) : (
+        /* Even when empty, the matrix renders its toolbar (New / Import CTA). */
+        <div className="flex-1 min-h-0 min-w-0">
+          <SkillAgentMatrix
+            key={reloadKey}
+            skills={matrixSkills}
+            agents={agents}
+            categoryOrder={CATEGORY_ORDER}
+            translateCategory={() => t("category")}
+            translateState={translateState}
+            loadAllStatuses={customListAllInstallStatuses}
+            applyLinks={customApplyLinks}
+            loadContent={customReadSkill}
+            onApplied={(touched: AgentType[]) =>
+              touched.forEach((a) => invalidateAgentSkillsCache(a))
+            }
+            searchPlaceholder={t("searchPlaceholder")}
+            toolbarActions={toolbarActions}
+            rowActions={rowActions}
+            bulkActions={bulkActions}
+          />
         </div>
       )}
-
-      {/* Even when empty, the matrix renders its toolbar (New / Import CTA). */}
-      <div className="flex-1 min-h-0 min-w-0">
-        <SkillAgentMatrix
-          key={reloadKey}
-          skills={matrixSkills}
-          agents={agents}
-          categoryOrder={CATEGORY_ORDER}
-          translateCategory={() => t("category")}
-          translateState={translateState}
-          loadAllStatuses={customListAllInstallStatuses}
-          applyLinks={customApplyLinks}
-          loadContent={customReadSkill}
-          onApplied={(touched: AgentType[]) =>
-            touched.forEach((a) => invalidateAgentSkillsCache(a))
-          }
-          searchPlaceholder={t("searchPlaceholder")}
-          toolbarActions={toolbarActions}
-          rowActions={rowActions}
-          bulkActions={bulkActions}
-        />
-      </div>
 
       {/* Editor dialog (create / edit). */}
       <Dialog open={editorOpen} onOpenChange={setEditorOpen}>

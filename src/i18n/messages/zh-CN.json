@@ -615,6 +615,7 @@
     "description": "左侧选择 Skill，右侧默认预览 Markdown，点击编辑后可修改并保存。",
     "loadingAgents": "正在加载支持 Skills 的 Agent...",
     "emptyNoManageableAgents": "当前没有可管理 Skills 的 Agent。",
+    "partialLoadFailed": "有 {count} 个 Agent 没读出来：{reason}",
     "managedTarget": "管理对象",
     "selectAgentPlaceholder": "请选择 Agent",
     "searchPlaceholder": "搜索名称 / ID / 路径...",

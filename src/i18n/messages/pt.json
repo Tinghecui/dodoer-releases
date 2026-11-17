@@ -615,6 +615,7 @@
     "description": "Selecione uma Skill à esquerda. À direita, a prévia em Markdown é mostrada por padrão; mude para edição para modificar e salvar.",
     "loadingAgents": "Carregando agentes que suportam Skills...",
     "emptyNoManageableAgents": "Não há agentes disponíveis para gerenciamento de Skills.",
+    "partialLoadFailed": "{count, plural, one {Não foi possível ler # agente} other {Não foi possível ler # agentes}}: {reason}",
     "managedTarget": "Alvo gerenciado",
     "selectAgentPlaceholder": "Selecione um agente",
     "searchPlaceholder": "Pesquisar por nome / ID / caminho...",

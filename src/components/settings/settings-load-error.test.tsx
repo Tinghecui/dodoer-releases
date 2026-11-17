@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import type { ReactNode } from "react"
@@ -6,10 +6,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
 import { ChannelListTab } from "./channel-list-tab"
+import { CustomSkillsBody } from "./custom-skills-settings"
 import { ExpertsBody } from "./experts-settings"
+import { GenerativeUiBody } from "./generative-ui-settings"
 import { McpSettings } from "./mcp-settings"
 import { ModelProviderSettings } from "./model-provider-settings"
+import { OfficeToolsBody } from "./office-tools-settings"
 import { QuickMessagesSettings } from "./quick-messages-settings"
+import { ScienceBody } from "./science-settings"
 import { SettingsLoadError } from "./settings-load-error"
 import { SkillsSettings } from "./skills-settings"
 
@@ -50,11 +54,34 @@ const api = vi.hoisted(() => ({
   expertsListAllInstallStatuses: vi.fn(async () => []),
   expertsApplyLinks: vi.fn(),
   expertsReadContent: vi.fn(),
+  customList: vi.fn(),
+  customListAllInstallStatuses: vi.fn(async () => []),
+  customApplyLinks: vi.fn(),
+  customReadSkill: vi.fn(),
+  scienceList: vi.fn(),
+  scienceListAllInstallStatuses: vi.fn(async () => []),
+  scienceApplyLinks: vi.fn(),
+  scienceReadContent: vi.fn(),
+  generativeUiSkillInfo: vi.fn(),
+  generativeUiListAllInstallStatuses: vi.fn(async () => []),
+  generativeUiApplyLinks: vi.fn(),
+  generativeUiReadContent: vi.fn(),
+  officecliDetect: vi.fn(async () => ({
+    installed: true,
+    version: "1.0.0",
+    path: "/usr/local/bin/officecli",
+    runtimeError: null,
+  })),
+  officecliListSkills: vi.fn(),
+  officecliSkillListAllInstallStatuses: vi.fn(async () => []),
+  officecliSkillApplyLinks: vi.fn(),
+  officecliSkillReadContent: vi.fn(),
 }))
 
 vi.mock("@/lib/api", () => api)
 vi.mock("@/lib/platform", () => ({
   subscribe: vi.fn(async () => () => {}),
+  isLocalDesktop: () => false,
 }))
 vi.mock("@/hooks/use-agent-skills", () => ({
   invalidateAgentSkillsCache: vi.fn(),
@@ -68,12 +95,26 @@ vi.mock("@/components/ui/resizable", () => ({
   ResizableHandle: () => null,
 }))
 vi.mock("@/components/settings/skill-agent-matrix", () => ({
-  SkillAgentMatrix: ({ skills }: { skills: { id: string }[] }) => (
-    <ul>
-      {skills.map((s) => (
-        <li key={s.id}>{s.id}</li>
-      ))}
-    </ul>
+  // 照真表格：工具栏总在，没有技能时写「暂无内容。」
+  SkillAgentMatrix: ({
+    skills,
+    toolbarActions,
+  }: {
+    skills: { id: string }[]
+    toolbarActions?: ReactNode
+  }) => (
+    <div>
+      {toolbarActions}
+      {skills.length === 0 ? (
+        <p>{enMessages.SkillMatrix.empty}</p>
+      ) : (
+        <ul>
+          {skills.map((s) => (
+            <li key={s.id}>{s.id}</li>
+          ))}
+        </ul>
+      )}
+    </div>
   ),
 }))
 
@@ -261,5 +302,232 @@ describe("settings lists that failed to load (#438)", () => {
           },
         ]),
     })
+  })
+
+  it("custom skills", async () => {
+    api.acpListAgents.mockResolvedValue([agent])
+    api.customList.mockRejectedValueOnce(boom)
+    renderWithIntl(<CustomSkillsBody />)
+    await screen.findByRole("alert")
+    // 工具栏（新建、导入）也一起替掉
+    expect(
+      screen.queryByRole("button", {
+        name: enMessages.CustomSkillsSettings.actions.new,
+      })
+    ).not.toBeInTheDocument()
+    await expectErrorThenRetry({
+      title: enMessages.SettingsLoadError.title,
+      empty: enMessages.SkillMatrix.empty,
+      recovered: "acme-skill",
+      succeed: () =>
+        api.customList.mockResolvedValueOnce([
+          {
+            id: "acme-skill",
+            name: "acme-skill",
+            description: null,
+            central_path: "/tmp/skills/acme-skill",
+          },
+        ]),
+    })
+  })
+
+  it("custom skills, when the agent list failed", async () => {
+    api.customList.mockResolvedValue([])
+    api.acpListAgents.mockRejectedValueOnce(boom)
+    renderWithIntl(<CustomSkillsBody />)
+    await expectErrorThenRetry({
+      title: enMessages.SettingsLoadError.title,
+      empty: enMessages.SkillMatrix.empty,
+      recovered: enMessages.SkillMatrix.empty,
+      succeed: () => api.acpListAgents.mockResolvedValueOnce([agent]),
+    })
+  })
+
+  it("science skills", async () => {
+    api.acpListAgents.mockResolvedValue([agent])
+    api.scienceList.mockRejectedValueOnce(boom)
+    renderWithIntl(<ScienceBody />)
+    await expectErrorThenRetry({
+      title: enMessages.SettingsLoadError.title,
+      empty: enMessages.ScienceSettings.emptySkills,
+      recovered: "acme-science",
+      succeed: () =>
+        api.scienceList.mockResolvedValueOnce([
+          {
+            metadata: {
+              id: "acme-science",
+              display_name: { en: "acme-science" },
+              description: { en: "" },
+              category: "analysis",
+              icon: null,
+              sort_order: 0,
+              bundled_hash: "",
+              needs_key: false,
+              needs_env: false,
+              featured: false,
+              accent: null,
+            },
+            installed_centrally: true,
+            user_modified: false,
+            central_path: "/tmp/science/acme-science",
+          },
+        ]),
+    })
+  })
+
+  it("generative UI", async () => {
+    api.acpListAgents.mockResolvedValue([agent])
+    api.generativeUiSkillInfo.mockRejectedValueOnce(boom)
+    renderWithIntl(<GenerativeUiBody />)
+    await expectErrorThenRetry({
+      title: enMessages.SettingsLoadError.title,
+      empty: enMessages.GenerativeUiSettings.usage,
+      recovered: "ui-render",
+      succeed: () =>
+        api.generativeUiSkillInfo.mockResolvedValueOnce({
+          id: "ui-render",
+          conflict: false,
+        }),
+    })
+  })
+
+  it("office skills", async () => {
+    api.acpListAgents.mockResolvedValue([agent])
+    api.officecliListSkills.mockRejectedValueOnce(boom)
+    renderWithIntl(<OfficeToolsBody />)
+    await expectErrorThenRetry({
+      title: enMessages.SettingsLoadError.title,
+      empty: enMessages.OfficeToolsSettings.emptySkills,
+      recovered: "acme-office",
+      succeed: () =>
+        api.officecliListSkills.mockResolvedValueOnce([
+          {
+            id: "acme-office",
+            category: "documents",
+            icon: "FileText",
+            sortOrder: 0,
+            displayName: { en: "acme-office" },
+            description: { en: "" },
+            installedCentrally: true,
+          },
+        ]),
+    })
+  })
+
+  it("skills, when some agents' probes failed and others worked", async () => {
+    const other = { ...agent, agent_type: "codex", name: "Codex" }
+    api.acpListAgents.mockResolvedValue([agent, other])
+    api.acpListAgentSkills.mockImplementation(
+      async ({ agentType }: { agentType: string }) => {
+        if (agentType === "codex") throw boom
+        return { supported: true, message: null, locations: [], skills: [] }
+      }
+    )
+    renderWithIntl(<SkillsSettings />)
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent("1 agent couldn't be read")
+    expect(alert).toHaveTextContent("boom")
+    // 成功的那个照常能管，不是整页加载失败
+    expect(
+      screen.getByText(enMessages.SkillsSettings.managedTarget)
+    ).toBeInTheDocument()
+    expect(alert).not.toHaveTextContent(enMessages.SettingsLoadError.title)
+
+    api.acpListAgentSkills.mockResolvedValue({
+      supported: true,
+      message: null,
+      locations: [],
+      skills: [],
+    })
+    await userEvent.setup().click(screen.getByRole("button", { name: /Retry/ }))
+    await waitFor(() =>
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    )
+    expect(
+      screen.getByText(enMessages.SkillsSettings.managedTarget)
+    ).toBeInTheDocument()
+  })
+
+  it("skills, when one probe failed and the other said unsupported", async () => {
+    const other = { ...agent, agent_type: "codex", name: "Codex" }
+    api.acpListAgents.mockResolvedValue([agent, other])
+    api.acpListAgentSkills.mockImplementation(
+      async ({ agentType }: { agentType: string }) => {
+        if (agentType === "codex") throw boom
+        return { supported: false, message: null, locations: [], skills: [] }
+      }
+    )
+    renderWithIntl(<SkillsSettings />)
+    // 有一个探测成功了（只是不支持），算部分失败，不是整页加载失败
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent("1 agent couldn't be read")
+    expect(alert).toHaveTextContent("boom")
+    expect(
+      screen.queryByText(enMessages.SettingsLoadError.title)
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByText(enMessages.SkillsSettings.emptyNoManageableAgents)
+    ).toBeInTheDocument()
+  })
+})
+
+// 接口成功、确实一条都没有时，照旧显示各自的空状态，不显示加载失败（#526）
+describe("skill pack tabs that are really empty", () => {
+  beforeEach(() => {
+    api.acpListAgents.mockResolvedValue([agent])
+  })
+
+  it("custom skills keep the toolbar and the empty matrix", async () => {
+    api.customList.mockResolvedValueOnce([])
+    renderWithIntl(<CustomSkillsBody />)
+    expect(
+      await screen.findByRole("button", {
+        name: enMessages.CustomSkillsSettings.actions.new,
+      })
+    ).toBeInTheDocument()
+    expect(screen.getByText(enMessages.SkillMatrix.empty)).toBeInTheDocument()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("science skills", async () => {
+    api.scienceList.mockResolvedValueOnce([])
+    renderWithIntl(<ScienceBody />)
+    expect(
+      await screen.findByText(enMessages.ScienceSettings.emptySkills)
+    ).toBeInTheDocument()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("generative UI", async () => {
+    api.generativeUiSkillInfo.mockResolvedValueOnce({
+      id: "ui-render",
+      conflict: false,
+    })
+    renderWithIntl(<GenerativeUiBody />)
+    expect(await screen.findByText("ui-render")).toBeInTheDocument()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("office skills", async () => {
+    api.officecliListSkills.mockResolvedValueOnce([])
+    renderWithIntl(<OfficeToolsBody />)
+    expect(
+      await screen.findByText(enMessages.OfficeToolsSettings.emptySkills)
+    ).toBeInTheDocument()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("skills, with every probe working", async () => {
+    api.acpListAgentSkills.mockResolvedValue({
+      supported: true,
+      message: null,
+      locations: [],
+      skills: [],
+    })
+    renderWithIntl(<SkillsSettings />)
+    expect(
+      await screen.findByText(enMessages.SkillsSettings.managedTarget)
+    ).toBeInTheDocument()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
 })

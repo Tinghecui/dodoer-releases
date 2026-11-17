@@ -615,6 +615,7 @@
     "description": "左側でSkillを選択します。右側は既定でMarkdownプレビューです。編集に切り替えると変更して保存できます。",
     "loadingAgents": "Skill対応エージェントを読み込み中...",
     "emptyNoManageableAgents": "Skillを管理できるエージェントがありません。",
+    "partialLoadFailed": "{count} 件のエージェントを読み込めませんでした：{reason}",
     "managedTarget": "管理対象",
     "selectAgentPlaceholder": "エージェントを選択",
     "searchPlaceholder": "名前 / ID / パスで検索...",

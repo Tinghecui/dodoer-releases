@@ -615,6 +615,7 @@
     "description": "اختر Skill من الجهة اليسرى. تعرض الجهة اليمنى معاينة Markdown بشكل افتراضي؛ انتقل إلى وضع التحرير للتعديل والحفظ.",
     "loadingAgents": "جارٍ تحميل الوكلاء الذين يدعمون Skills...",
     "emptyNoManageableAgents": "لا توجد وكلاء متاحة لإدارة Skills.",
+    "partialLoadFailed": "تعذّرت قراءة {count} من الوكلاء: {reason}",
     "managedTarget": "الهدف المُدار",
     "selectAgentPlaceholder": "اختر وكيلًا",
     "searchPlaceholder": "ابحث بالاسم / المعرّف / المسار...",

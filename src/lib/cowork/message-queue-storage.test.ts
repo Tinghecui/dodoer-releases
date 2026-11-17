@@ -55,6 +55,17 @@ describe("read / write", () => {
     ])
   })
 
+  it("keeps a turn that failed after it was sent as such (#424)", () => {
+    writeStoredQueue(KEY, [
+      item("a", { failed: true, failure: "turn_failed" }),
+      item("b"),
+    ])
+    expect(readStoredQueue(KEY)).toEqual([
+      { ...item("a"), failed: true, failure: "turn_failed" },
+      { ...item("b"), failed: true, failure: "restored" },
+    ])
+  })
+
   it("removes the entry once the queue is empty", () => {
     writeStoredQueue(KEY, [item("a")])
     expect(window.sessionStorage.getItem(KEY)).not.toBeNull()

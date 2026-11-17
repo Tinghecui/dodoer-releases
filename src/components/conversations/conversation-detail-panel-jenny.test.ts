@@ -54,12 +54,16 @@ describe("jenny fork: send before the agent is ready", () => {
 
   // SQ5: a turn that fails after the message left puts the message back at
   // the front of the queue, marked failed, so the queue's retry can resend it.
+  // Cowork fork (#424): only when the agent answered nothing — the decision
+  // (and the kind, `auth` or `turn_failed`) is `failedTurnRequeueKind`.
   it("re-queues the sent message as failed when its turn fails", () => {
     const start = source.indexOf("const lastSentRef = useRef<")
-    const block = source.slice(start, start + 900)
+    const block = source.slice(start, start + 1500)
     expect(block).toContain('block.type === "turn_error"')
-    // Cowork fork: the call also says when the failure was a sign-in refusal.
-    expect(block).toContain("mqRequeueFailed(sent.draft, sent.modeId,")
+    expect(block).toContain("failedTurnRequeueKind(liveContent, authFailed)")
+    expect(block).toContain(
+      "mqRequeueFailed(sent.draft, sent.modeId, requeueKind)"
+    )
   })
 
   it("wires the queue into the welcome composer", () => {

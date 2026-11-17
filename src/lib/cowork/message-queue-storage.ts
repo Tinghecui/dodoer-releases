@@ -87,9 +87,14 @@ export function readStoredQueue(key: string): QueuedMessage[] {
       modeId,
       ...(e.adoptSendTimeMode === true ? { adoptSendTimeMode: true } : {}),
       failed: true,
-      // A refusal for credentials keeps its "sign in" link; anything else
-      // says it was read back after a reload.
-      failure: e.failure === "auth" ? "auth" : "restored",
+      // A refusal for credentials keeps its "sign in" link, and a message
+      // whose turn failed after it went out still says so (#424): neither
+      // was "not sent yet". Anything else says it was read back after a
+      // reload.
+      failure:
+        e.failure === "auth" || e.failure === "turn_failed"
+          ? e.failure
+          : "restored",
     })
   }
   return items

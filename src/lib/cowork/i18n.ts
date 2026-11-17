@@ -117,6 +117,9 @@ const en = {
   // sent on its own.
   queueRestoredReason:
     "It had not been sent when the page reloaded, and is not sent again on its own so it cannot go out twice.",
+  // A sent message whose turn failed before the agent answered (#424).
+  queueTurnFailedReason:
+    "This message was sent, but the turn failed partway. Retrying sends it again.",
   // Lending this computer's shell to a remote workspace
   // (`status-bar-host-ssh.tsx`, `docs/host-ssh.md`).
   hostSshTitle: "Lend this computer to agents",
@@ -377,6 +380,7 @@ const zhCN: Record<CoworkTextKey, string> = {
   turnFailedAuthRequiredPortal:
     "{agent} 需要你重新登录后才能执行本轮回复。请到门户「我的账户 → AI 账户」配置，然后重新发送这条消息。",
   queueRestoredReason: "页面刷新时还没发出去，为免重复发送，不会自动续发。",
+  queueTurnFailedReason: "这条已经发出，本轮中途失败；重试会再发一次。",
   hostSshTitle: "把这台电脑借给智能体",
   hostSshTooltipOn: "这台电脑已借给这个工作区的智能体",
   hostSshTooltipOff: "这台电脑没有借给这个工作区",
@@ -611,6 +615,7 @@ const zhTW: Record<CoworkTextKey, string> = {
   turnFailedAuthRequiredPortal:
     "{agent} 需要你重新登入後才能執行本輪回覆。請到入口網站「我的帳戶 → AI 帳戶」設定，然後重新傳送這則訊息。",
   queueRestoredReason: "頁面重新整理時還沒送出，為避免重複傳送，不會自動續傳。",
+  queueTurnFailedReason: "這則已經送出，本輪中途失敗；重試會再送一次。",
   hostSshTitle: "把這台電腦借給智慧體",
   hostSshTooltipOn: "這台電腦已借給這個工作區的智慧體",
   hostSshTooltipOff: "這台電腦沒有借給這個工作區",

@@ -152,6 +152,7 @@ import { useCoworkText } from "@/lib/cowork/i18n"
 import { ModelSwitchContext } from "@/lib/cowork/model-switch"
 import { useCachedCoworkInfo } from "@/lib/cowork/info"
 import { openAgentSignIn, signInViaPortal } from "@/lib/cowork/sign-in"
+import { failedTurnRequeueKind } from "@/lib/cowork/failed-turn"
 import { blockingPrompts } from "@/lib/blocking-prompts"
 import { notify } from "@/lib/notify"
 import {
@@ -1002,11 +1003,16 @@ const ConversationTabView = memo(function ConversationTabView({
     lastSentRef.current = null
     const authFailed = turnAuthFailedRef.current
     turnAuthFailedRef.current = false
-    const failed = getRuntimeSession(
-      effectiveConversationId
-    )?.liveMessage?.content.some((block) => block.type === "turn_error")
-    if (sent && failed) {
-      mqRequeueFailed(sent.draft, sent.modeId, authFailed ? "auth" : undefined)
+    const liveContent = getRuntimeSession(effectiveConversationId)?.liveMessage
+      ?.content
+    const failed = liveContent?.some((block) => block.type === "turn_error")
+    // Cowork fork (#424): once the agent answered anything (text, thinking,
+    // a tool call) the message reached it and may have run in part, so it is
+    // not put back — retrying would run it again. The transcript keeps the
+    // turn's failure line.
+    const requeueKind = failedTurnRequeueKind(liveContent, authFailed)
+    if (sent && requeueKind) {
+      mqRequeueFailed(sent.draft, sent.modeId, requeueKind)
     }
     sent?.turn.end(failed ? "error" : "complete", { connStatus })
 
@@ -2812,6 +2818,10 @@ const ConversationTabView = memo(function ConversationTabView({
     // go; the user decides, so it is never sent twice.
     if (queueHeadFailure === "restored") {
       return { reason: coworkT("queueRestoredReason") }
+    }
+    // Sent, then the turn failed before any answer (#424).
+    if (queueHeadFailure === "turn_failed") {
+      return { reason: coworkT("queueTurnFailedReason") }
     }
     return null
   }, [

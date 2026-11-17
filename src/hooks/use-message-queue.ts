@@ -45,12 +45,14 @@ export interface QueuedMessage {
    * the turn for credentials, so the hint links to where the agent signs in.
    * `restored` — read back after a page reload (`message-queue-storage.ts`):
    * it may or may not have been about to go, so it waits for the user.
+   * `turn_failed` — it went out, but the turn failed before the agent
+   * answered anything (#424): retrying sends it again.
    * Only ever set together with `failed`; retry clears both.
    */
   failure?: QueueFailureKind
 }
 
-export type QueueFailureKind = "auth" | "restored"
+export type QueueFailureKind = "auth" | "restored" | "turn_failed"
 
 export interface UseMessageQueueReturn {
   queue: QueuedMessage[]

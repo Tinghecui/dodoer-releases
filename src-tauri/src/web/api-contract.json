@@ -220,6 +220,7 @@
     "POST /api/conversation_taxonomy_get": "web",
     "POST /api/conversation_unopenable_list": "web",
     "POST /api/cowork_create_project": "web",
+    "POST /api/cowork_disconnect_device": "cowork-web 吊销门户设备后直连 daemon（web/portal_device.rs）",
     "POST /api/cowork_info": "web",
     "POST /api/cowork_reload_web": "cowork-root",
     "POST /api/create_chat_channel": "web",

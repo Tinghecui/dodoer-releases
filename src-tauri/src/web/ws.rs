@@ -3,15 +3,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use axum::{
     extract::{Extension, WebSocketUpgrade},
-    response::IntoResponse,
+    http::HeaderMap,
+    response::{IntoResponse, Response},
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::host_registry::HostRegistration;
+use super::portal_device::{self, ConnectionLease};
 use super::shutdown::ShutdownSignal;
 use super::ws_attach::{self, ClientMsg, DetachReason, ServerMsg, OUTBOUND_CAPACITY};
 use crate::app_state::AppState;
@@ -59,22 +61,44 @@ static NEXT_WS_ID: AtomicU64 = AtomicU64::new(1);
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
+    headers: HeaderMap,
     Extension(state): Extension<Arc<AppState>>,
     Extension(shutdown_signal): Extension<Arc<ShutdownSignal>>,
-) -> impl IntoResponse {
+) -> Response {
+    // Cowork fork（#387）：门户设备的连接在握手时登记（`web::portal_device`），
+    // 登记随连接任务带走；断开过的设备在这里就回 401，不升级。
+    let lease = match portal_device::global().admit(&headers) {
+        Ok(lease) => lease,
+        Err(refused) => return refused.into_response(),
+    };
     ws.protocols([super::auth::WS_EVENT_PROTOCOL])
-        .on_upgrade(|socket| handle_ws_connection(socket, state, shutdown_signal))
+        .on_upgrade(|socket| handle_ws_connection(socket, state, shutdown_signal, lease))
+        .into_response()
+}
+
+/// Cowork fork（#387）：这台门户设备被断开了，给它的关闭帧。
+fn device_disconnected_frame() -> Message {
+    Message::Close(Some(CloseFrame {
+        code: portal_device::CLOSE_CODE,
+        reason: portal_device::CLOSE_REASON.into(),
+    }))
 }
 
 async fn handle_ws_connection(
     mut socket: WebSocket,
     state: Arc<AppState>,
     shutdown_signal: Arc<ShutdownSignal>,
+    lease: ConnectionLease,
 ) {
     // Late handshake guard: if shutdown already fired before this task
     // even started, exit before subscribing to anything else.
     if shutdown_signal.is_triggered() {
         let _ = socket.send(Message::Close(None)).await;
+        return;
+    }
+    // Cowork fork（#387）：登记之后、任务开始之前就被断开的，一开始就结束。
+    if lease.is_disconnected() {
+        let _ = socket.send(device_disconnected_frame()).await;
         return;
     }
 
@@ -166,6 +190,15 @@ async fn handle_ws_connection(
                     }
                 }
                 let _ = socket.send(Message::Close(None)).await;
+                break;
+            }
+
+            // Cowork fork（#387）：门户吊销了这台设备（`web::portal_device`）。
+            // 只发关闭帧，不发 `Detached`（老客户端不认新的原因）；循环结束时
+            // `host` 随之丢掉，借出的命令行、浏览器跟着注销。
+            _ = lease.disconnected() => {
+                tracing::info!("[WS] socket {ws_id} closed: its portal device was disconnected");
+                let _ = socket.send(device_disconnected_frame()).await;
                 break;
             }
 

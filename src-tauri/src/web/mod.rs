@@ -9,6 +9,7 @@ pub mod host_devices;
 pub mod host_registry;
 pub mod host_tunnel;
 pub mod port_probe;
+pub mod portal_device;
 pub mod proxy_auth;
 pub mod router;
 pub mod session_usage;

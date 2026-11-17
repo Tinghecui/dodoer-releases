@@ -69,6 +69,11 @@ pub fn build_router_with_proxy_auth(
         .route("/cowork_reload_web", post(cowork_reload_web))
         // Cowork fork: /cowork_info, /cowork_create_project (authenticated).
         .merge(crate::cowork::api_routes())
+        // Cowork fork: cowork-web 吊销门户设备后断开它的长连接（#387，`web::portal_device`）。
+        .route(
+            "/cowork_disconnect_device",
+            post(super::portal_device::cowork_disconnect_device),
+        )
         // Debug endpoint: operator-facing snapshot of `EventBusMetrics`
         // (emit volume, lag/eviction counts, attach decision counts).
         // Sits behind the same auth middleware as every other route.

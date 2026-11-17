@@ -942,3 +942,71 @@ describe("ensureGitHead — HEAD for a folder the poll doesn't cover", () => {
     )
   })
 })
+
+// Cowork fork (#336): 门户限流时 transport 重试完还是 429，抛 `rate_limited`。
+// 侧栏不能停在报错上，过 5 秒自己再取一次；同一时间只排一次。
+describe("rate limited lists retry on their own (#336)", () => {
+  const rateLimited = { code: "rate_limited", message: "Too many requests." }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("fetchFolders tries again 5 s later and fills the folders", async () => {
+    const folder = { id: 7, git_branch: null } as unknown as FolderDetail
+    mockListOpenFolders.mockReset()
+    mockListOpenFolders
+      .mockRejectedValueOnce(rateLimited)
+      .mockRejectedValueOnce(rateLimited) // 并发的第二次也失败：仍只排一个定时器
+      .mockResolvedValue([folder])
+    vi.spyOn(console, "error").mockImplementation(() => {})
+
+    await Promise.all([
+      useAppWorkspaceStore.getState().fetchFolders(),
+      useAppWorkspaceStore.getState().fetchFolders(),
+    ])
+    expect(useAppWorkspaceStore.getState().folders).toEqual([])
+    expect(mockListOpenFolders).toHaveBeenCalledTimes(2)
+
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(mockListOpenFolders).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(mockListOpenFolders).toHaveBeenCalledTimes(3)
+    expect(useAppWorkspaceStore.getState().folders).toEqual([folder])
+    mockListOpenFolders.mockReset()
+    mockListOpenFolders.mockImplementation(async () => [])
+  })
+
+  it("refreshConversations shows a readable message, then recovers", async () => {
+    const { listAllConversations } = await import("@/lib/api")
+    const mockList = vi.mocked(listAllConversations)
+    const row = makeSummary({ id: 3 })
+    mockList.mockClear()
+    mockList.mockRejectedValueOnce(rateLimited).mockResolvedValueOnce([row])
+
+    await useAppWorkspaceStore.getState().refreshConversations()
+    expect(useAppWorkspaceStore.getState().conversationsError).toBe(
+      "Too many requests."
+    )
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(mockList).toHaveBeenCalledTimes(2)
+    expect(useAppWorkspaceStore.getState().conversationsError).toBeNull()
+    expect(
+      useAppWorkspaceStore.getState().conversations.map((c) => c.id)
+    ).toEqual([3])
+  })
+
+  it("does not retry other failures", async () => {
+    const { listAllConversations } = await import("@/lib/api")
+    const mockList = vi.mocked(listAllConversations)
+    mockList.mockClear()
+    mockList.mockRejectedValueOnce({ code: "internal", message: "boom" })
+    await useAppWorkspaceStore.getState().refreshConversations()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(mockList).toHaveBeenCalledTimes(1)
+  })
+})

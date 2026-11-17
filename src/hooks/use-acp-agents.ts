@@ -3,6 +3,7 @@
 import { useEffect } from "react"
 import { create } from "zustand"
 import { acpListAgents } from "@/lib/api"
+import { isRateLimitedError } from "@/lib/app-error"
 import { setCustomAgentDisplay } from "@/lib/custom-agents"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
 import type { UnsubscribeFn } from "@/lib/transport/types"
@@ -43,6 +44,25 @@ interface AcpAgentsStore {
 let latestRequestId = 0
 let latestSuccessId = 0
 
+// Cowork fork (#336): 门户限流（`rate_limited`）时过 5 秒自己再取一次，只排一个
+// 定时器；没人订阅了就不取（见下面 `refCount`），最后一个订阅者走时清掉。
+const RATE_LIMIT_RETRY_MS = 5_000
+let rateLimitRetryTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleRateLimitRetry(): void {
+  if (rateLimitRetryTimer !== null) return
+  rateLimitRetryTimer = setTimeout(() => {
+    rateLimitRetryTimer = null
+    if (refCount === 0) return
+    void useAcpAgentsStore.getState().reload()
+  }, RATE_LIMIT_RETRY_MS)
+}
+
+function clearRateLimitRetry(): void {
+  if (rateLimitRetryTimer !== null) clearTimeout(rateLimitRetryTimer)
+  rateLimitRetryTimer = null
+}
+
 const useAcpAgentsStore = create<AcpAgentsStore>((set) => ({
   agents: [],
   fresh: false,
@@ -72,9 +92,10 @@ const useAcpAgentsStore = create<AcpAgentsStore>((set) => ({
         }))
       )
       set({ agents: sorted, fresh: true })
-    } catch {
+    } catch (err) {
       // Keep the previous list — clearing on transient failure would silently
       // regress downstream defaults to AGENT_DISPLAY_ORDER[0].
+      if (isRateLimitedError(err)) scheduleRateLimitRetry()
     }
   },
 }))
@@ -169,6 +190,7 @@ function acquireSharedSubscription(): () => void {
     if (refCount === 0) {
       for (const dispose of disposers) dispose()
       disposers = []
+      clearRateLimitRetry()
       // With zero subscribers the listeners are gone, so a registry update
       // during this gap would be missed. Drop the cache to a COLD,
       // non-authoritative state (and invalidate any in-flight reload so it
@@ -210,6 +232,7 @@ export function useAcpAgents(): UseAcpAgentsResult {
 export function resetAcpAgentsStore(): void {
   for (const dispose of disposers) dispose()
   disposers = []
+  clearRateLimitRetry()
   refCount = 0
   latestRequestId = 0
   latestSuccessId = 0

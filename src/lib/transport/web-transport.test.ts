@@ -614,3 +614,60 @@ describe("WebTransport when an HTTP call cannot reach the server", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
+
+// Cowork fork (#336): 门户的 nginx 按员工限速，连续刷新几次就回 429。读接口
+// 等一会儿自己重试；重试用完、或者是写操作，抛 `rate_limited`，不再是「HTTP 429」。
+describe("WebTransport.call when the server rate-limits (429)", () => {
+  const resp429 = (retryAfter: string | null = "0") => ({
+    status: 429,
+    ok: false,
+    headers: new Headers(
+      retryAfter === null ? {} : { "Retry-After": retryAfter }
+    ),
+    json: async () => {
+      throw new SyntaxError("not json")
+    },
+  })
+  const ok = (body: string) => ({
+    status: 200,
+    ok: true,
+    text: async () => body,
+  })
+
+  it("retries a read after Retry-After and returns its result", async () => {
+    const t = new WebTransport("http://localhost")
+    fetchMock
+      .mockResolvedValueOnce(resp429("0"))
+      .mockResolvedValueOnce(ok('{"n":1}'))
+    const result = expect(
+      t.call<{ n: number }>("list_all_folder_details")
+    ).resolves.toEqual({ n: 1 })
+    await vi.runAllTimersAsync()
+    await result
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(t.getConnectionSnapshot()).toBe("connected")
+  })
+
+  it("backs off without Retry-After, and gives up with rate_limited after 3 retries", async () => {
+    const t = new WebTransport("http://localhost")
+    fetchMock.mockResolvedValue(resp429(null))
+    const result = t.call("acp_list_agents")
+    const settled = result.catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(fetchMock).toHaveBeenCalledTimes(1) // 第一次至少等 1 秒
+    await vi.runAllTimersAsync()
+    const err = await settled
+    expect(err).toMatchObject({ code: "rate_limited" })
+    expect((err as { message: string }).message).not.toContain("HTTP 429")
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it("does not retry a write, but still reports rate_limited", async () => {
+    const t = new WebTransport("http://localhost")
+    fetchMock.mockResolvedValue(resp429("0"))
+    const result = t.call("create_folder_group").catch((e: unknown) => e)
+    await vi.runAllTimersAsync()
+    expect(await result).toMatchObject({ code: "rate_limited" })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})

@@ -88,6 +88,11 @@ const en = {
   // A request that got no response at all (`toErrorMessage`, #71).
   networkUnreachable:
     "Can't reach the server. Check your network connection; it reconnects on its own once the network is back.",
+  // The portal throttled us: too many requests in a short time (#336).
+  rateLimited: "Too many requests. Retrying automatically in a moment.",
+  // The agent list has not come back yet (or failed once and is retrying), so
+  // "no enabled agents" would be a guess (`agent-selector.tsx`, #336).
+  agentListLoading: "Loading agents…",
   // First steps on an empty workspace (`getting-started-card.tsx`), and the
   // sidebar's button for the same first step.
   newOrOpenProject: "New or open project",
@@ -355,6 +360,8 @@ const zhCN: Record<CoworkTextKey, string> = {
   resourcesCriticalTitle: "内存快用完了",
   resourcesCriticalDetail: "{where}只剩 {available}（共 {total}）。",
   networkUnreachable: "连不上服务器，请检查网络。网络恢复后会自动重连。",
+  rateLimited: "请求太频繁，稍后自动重试。",
+  agentListLoading: "正在加载 Agent 列表…",
   newOrOpenProject: "新建或打开项目",
   gettingStartedTitle: "从这里开始",
   gettingStartedProject: "新建或打开一个项目",
@@ -587,6 +594,8 @@ const zhTW: Record<CoworkTextKey, string> = {
   resourcesCriticalTitle: "記憶體快用完了",
   resourcesCriticalDetail: "{where}只剩 {available}（共 {total}）。",
   networkUnreachable: "連不上伺服器，請檢查網路。網路恢復後會自動重新連線。",
+  rateLimited: "請求太頻繁，稍後自動重試。",
+  agentListLoading: "正在載入 Agent 列表…",
   newOrOpenProject: "新增或開啟專案",
   gettingStartedTitle: "從這裡開始",
   gettingStartedProject: "新增或開啟一個專案",

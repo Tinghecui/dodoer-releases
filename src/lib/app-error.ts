@@ -102,6 +102,16 @@ export function isRemoteTokenRejected(error: unknown): boolean {
   )
 }
 
+/**
+ * Cowork fork (#336): 门户限流（HTTP 429），网页模式的 transport 重试用完后抛
+ * 这个 code。看到它的地方过几秒自己再请求一次，不用用户手动刷新。
+ */
+export const RATE_LIMITED_CODE = "rate_limited"
+
+export function isRateLimitedError(error: unknown): boolean {
+  return extractAppCommandError(error)?.code === RATE_LIMITED_CODE
+}
+
 /** Whether a command failed because the thing it named does not exist —
  *  `AppErrorCode::NotFound` on the backend. */
 export function isNotFoundError(error: unknown): boolean {

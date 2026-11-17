@@ -492,3 +492,39 @@ describe("AgentSelector", () => {
     setCustomAgentDisplay([])
   })
 })
+
+// Cowork fork (#336): 列表还没取回来（或者被限流、正在重试）时，空列表不等于
+// 「没有启用的 Agent」，不能叫人去设置里开。
+describe("AgentSelector before the agent list has loaded", () => {
+  it("shows loading, not 'no enabled agents', while the list is not fresh", () => {
+    mockUseAcpAgents.mockReturnValue({
+      agents: [],
+      fresh: false,
+      refresh: async () => {},
+    })
+    renderWithIntl(
+      <AgentSelector onSelect={() => {}} onOpenAgentsSettings={() => {}} />
+    )
+    expect(
+      screen.queryByText(enMessages.Folder.chat.agentSelector.noEnabledAgents)
+    ).toBeNull()
+    expect(
+      screen.queryByText(
+        enMessages.Folder.chat.agentSelector.openAgentsSettings
+      )
+    ).toBeNull()
+    expect(screen.getByText("Loading agents…")).toBeTruthy()
+  })
+
+  it("still says 'no enabled agents' once a loaded list has none", () => {
+    mockUseAcpAgents.mockReturnValue({
+      agents: [agent("codex", { enabled: false })],
+      fresh: true,
+      refresh: async () => {},
+    })
+    renderWithIntl(<AgentSelector onSelect={() => {}} />)
+    expect(
+      screen.getByText(enMessages.Folder.chat.agentSelector.noEnabledAgents)
+    ).toBeTruthy()
+  })
+})

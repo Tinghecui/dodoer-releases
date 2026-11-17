@@ -11,7 +11,8 @@ import type {
 import type { ServerCompat } from "@/lib/cowork/compat"
 import { buildCodegWebSocketProtocols } from "./ws-auth"
 import { parseJsonOrThrow } from "../json-parse-error"
-import { isFetchNetworkError } from "../app-error"
+import { isFetchNetworkError, RATE_LIMITED_CODE } from "../app-error"
+import { coworkText } from "../cowork/i18n"
 import { beginApiCall, noteWs } from "../telemetry"
 import {
   codegAuthHeaders,
@@ -29,6 +30,49 @@ import {
 // least that high — otherwise the UI aborts with "Request timed out"
 // while the backend is still holding a live probe process.
 const WEB_CALL_TIMEOUT_MS = 60_000
+
+// Cowork fork (#336): 门户前面的 nginx 按员工限速，工作区一加载就并发几十个
+// 接口，连续刷新几次就会被回 429。读接口（名字以 list_ / get_ / read_ 开头，
+// 带不带 acp_ 前缀都算）等一会儿自己重试：有 Retry-After 按它，没有就 1s、2s、
+// 4s 退避，加一点抖动，最多重试 3 次。写操作不重试，免得同一件事做两遍。
+const RATE_LIMIT_MAX_RETRIES = 3
+const RATE_LIMIT_BASE_DELAY_MS = 1_000
+const RATE_LIMIT_MAX_DELAY_MS = 30_000
+const RATE_LIMIT_JITTER_MS = 250
+const RETRYABLE_READ_COMMAND = /^(acp_)?(list|get|read)_/
+
+function isRetryableRead(command: string): boolean {
+  return RETRYABLE_READ_COMMAND.test(command)
+}
+
+/** 下一次重试前等多久：Retry-After（秒数或 HTTP 日期）优先，没有就指数退避。 */
+function rateLimitDelayMs(retryAfter: string | null, attempt: number): number {
+  const jitter = Math.random() * RATE_LIMIT_JITTER_MS
+  if (retryAfter !== null && retryAfter.trim() !== "") {
+    const seconds = Number(retryAfter)
+    const fromHeader = Number.isFinite(seconds)
+      ? seconds * 1000
+      : Date.parse(retryAfter) - Date.now()
+    if (Number.isFinite(fromHeader)) {
+      return Math.min(Math.max(fromHeader, 0), RATE_LIMIT_MAX_DELAY_MS) + jitter
+    }
+  }
+  return RATE_LIMIT_BASE_DELAY_MS * 2 ** attempt + jitter
+}
+
+/** 限流时抛给调用方的错误：`rate_limited`，文字是看得懂的「请求太频繁」。 */
+function rateLimitedError(): { code: string; message: string } {
+  const locale =
+    typeof document === "undefined" ? "en" : document.documentElement.lang
+  return {
+    code: RATE_LIMITED_CODE,
+    message: coworkText(locale, "rateLimited"),
+  }
+}
+
+type CallOutcome<T> =
+  | { kind: "ok"; value: T }
+  | { kind: "rateLimited"; retryAfter: string | null }
 // Upper bound on how long `subscribe()` will wait for the server `__ready__`
 // frame. Generous enough to cover slow local servers and remote round-trips
 // (typical: <100ms local, <1s WAN), but bounded so an older server (no
@@ -174,6 +218,23 @@ export class WebTransport implements Transport {
     args?: Record<string, unknown>,
     options?: CallOptions
   ): Promise<T> {
+    const retryable = isRetryableRead(command)
+    for (let attempt = 0; ; attempt++) {
+      const outcome = await this.callOnce<T>(command, args, options)
+      if (outcome.kind === "ok") return outcome.value
+      if (!retryable || attempt >= RATE_LIMIT_MAX_RETRIES) {
+        throw rateLimitedError()
+      }
+      const delay = rateLimitDelayMs(outcome.retryAfter, attempt)
+      await new Promise<void>((resolve) => window.setTimeout(resolve, delay))
+    }
+  }
+
+  private async callOnce<T>(
+    command: string,
+    args?: Record<string, unknown>,
+    options?: CallOptions
+  ): Promise<CallOutcome<T>> {
     const token = getToken()
     const controller = new AbortController()
     // Per-call override beats the transport-wide default. Used for
@@ -228,6 +289,12 @@ export class WebTransport implements Transport {
       )
       throw new Error("Unauthorized")
     }
+    if (res.status === 429) {
+      return {
+        kind: "rateLimited",
+        retryAfter: res.headers?.get("retry-after") ?? null,
+      }
+    }
     if (!res.ok) {
       const error = await res.json().catch(() => ({
         code: "network_error",
@@ -242,7 +309,7 @@ export class WebTransport implements Transport {
     // else a user could report. Exactly that error was reported against the
     // Agents settings page (#736) and could not be traced to a source.
     const body = await res.text()
-    return parseJsonOrThrow<T>(body, `API ${command}`)
+    return { kind: "ok", value: parseJsonOrThrow<T>(body, `API ${command}`) }
   }
 
   async subscribe<T>(

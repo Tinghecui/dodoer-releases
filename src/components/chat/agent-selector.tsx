@@ -11,6 +11,7 @@ import {
 import { useTranslations } from "next-intl"
 import { MoreHorizontal } from "lucide-react"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
+import { useCoworkText } from "@/lib/cowork/i18n"
 import type { AgentType, AcpAgentInfo } from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
 import { firstUsableAgent } from "@/lib/resolve-default-agent"
@@ -79,7 +80,8 @@ export function AgentSelector({
   align = "start",
 }: AgentSelectorProps) {
   const t = useTranslations("Folder.chat.agentSelector")
-  const { agents: rawAgents } = useAcpAgents()
+  const coworkT = useCoworkText()
+  const { agents: rawAgents, fresh } = useAcpAgents()
   const agents = useMemo<AcpAgentInfo[]>(
     () => rawAgents.filter((a) => a.enabled),
     [rawAgents]
@@ -326,6 +328,16 @@ export function AgentSelector({
     },
     []
   )
+
+  // Cowork fork (#336): 列表还没成功取回来过（刚打开、被限流正在重试），空
+  // 列表只是还不知道，不能说成「没有启用的 Agent」叫人去设置里开。
+  if (agents.length === 0 && !fresh) {
+    return (
+      <div className="rounded-lg border border-dashed bg-muted/30 px-4 py-3 text-center text-sm text-muted-foreground">
+        {coworkT("agentListLoading")}
+      </div>
+    )
+  }
 
   if (agents.length === 0) {
     return (

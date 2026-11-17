@@ -17,7 +17,7 @@ import {
   setFolderGroup as apiSetFolderGroup,
   updateFolderGroup as apiUpdateFolderGroup,
 } from "@/lib/api"
-import { toErrorMessage } from "@/lib/app-error"
+import { isRateLimitedError, toErrorMessage } from "@/lib/app-error"
 import {
   forgetClosedConversation,
   forgetClosedTabsInFolder,
@@ -330,6 +330,20 @@ function rollbackAndResync(
   void get().fetchFolders()
 }
 
+// Cowork fork (#336): 门户限流（`rate_limited`，transport 已经重试过几次）时，
+// 过一会儿自己再取一次，限流解除后侧栏不用手动刷新就恢复。每个列表同一时间
+// 只排一个定时器，几个并发请求一起失败也只补一次。
+const RATE_LIMIT_RETRY_MS = 5_000
+let foldersRetryTimer: ReturnType<typeof setTimeout> | null = null
+let conversationsRetryTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearRateLimitRetries() {
+  if (foldersRetryTimer !== null) clearTimeout(foldersRetryTimer)
+  if (conversationsRetryTimer !== null) clearTimeout(conversationsRetryTimer)
+  foldersRetryTimer = null
+  conversationsRetryTimer = null
+}
+
 export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
   (set, get) => ({
     folders: [],
@@ -401,6 +415,12 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
         })
       } catch (err) {
         console.error("[AppWorkspace] fetchFolders failed:", err)
+        if (isRateLimitedError(err) && foldersRetryTimer === null) {
+          foldersRetryTimer = setTimeout(() => {
+            foldersRetryTimer = null
+            void get().fetchFolders()
+          }, RATE_LIMIT_RETRY_MS)
+        }
       } finally {
         set({ foldersLoading: false })
       }
@@ -413,6 +433,12 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
         set({ ...withConversations(list), conversationsError: null })
       } catch (err) {
         set({ conversationsError: toErrorMessage(err) })
+        if (isRateLimitedError(err) && conversationsRetryTimer === null) {
+          conversationsRetryTimer = setTimeout(() => {
+            conversationsRetryTimer = null
+            void get().refreshConversations()
+          }, RATE_LIMIT_RETRY_MS)
+        }
       } finally {
         set({ conversationsLoading: false, conversationsLoaded: true })
       }
@@ -931,6 +957,7 @@ export function resetAppWorkspaceStore() {
   // today (the backend-identity guard never fires); a real in-place backend switch
   // would need per-store fetch epochs. See `RemoteConnectionGate`.
   deletedIds.clear()
+  clearRateLimitRetries()
   removedFolderSeq.clear()
   deletedGroupSeq.clear()
   gitHeadInFlight.clear()

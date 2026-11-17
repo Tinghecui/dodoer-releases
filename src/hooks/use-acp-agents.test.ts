@@ -256,3 +256,43 @@ describe("useAcpAgents — shared subscription", () => {
     mockResolveSubscribe?.(mockSubscribeDispose)
   })
 })
+
+// Cowork fork (#336): 门户限流时列表取不回来，过 5 秒自己再取，不用手动刷新。
+describe("useAcpAgents — rate limited", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("retries 5 s after a rate_limited failure and becomes fresh", async () => {
+    vi.useFakeTimers()
+    mockAcpListAgents
+      .mockRejectedValueOnce({ code: "rate_limited", message: "slow down" })
+      .mockResolvedValue([makeAgent("codex", 0)])
+
+    const h = renderHook(() => useAcpAgents())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(mockAcpListAgents).toHaveBeenCalledTimes(1)
+    expect(h.result.current.fresh).toBe(false)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000)
+    })
+    expect(mockAcpListAgents).toHaveBeenCalledTimes(2)
+    expect(h.result.current.fresh).toBe(true)
+    expect(h.result.current.agents.map((a) => a.agent_type)).toEqual(["codex"])
+    h.unmount()
+  })
+
+  it("does not retry other failures", async () => {
+    vi.useFakeTimers()
+    mockAcpListAgents.mockRejectedValue({ code: "internal", message: "boom" })
+    const h = renderHook(() => useAcpAgents())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+    expect(mockAcpListAgents).toHaveBeenCalledTimes(1)
+    h.unmount()
+  })
+})

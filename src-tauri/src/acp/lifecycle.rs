@@ -260,6 +260,18 @@ pub(crate) fn turn_complete_status(stop_reason: &str) -> Option<ConversationStat
     }
 }
 
+/// The stop reason the lifecycle worker acts on: an `end_turn` whose turn left
+/// an unresolved severity-"error" `SessionFailure` (the CLI died under the
+/// adapter, cowork-codeg#421) counts as a failed turn, `unknown`. Every other
+/// reason is taken as is.
+fn effective_stop_reason(stop_reason: &str, terminal_failed: bool) -> &str {
+    if stop_reason == "end_turn" && terminal_failed {
+        "unknown"
+    } else {
+        stop_reason
+    }
+}
+
 /// The conversation-status write a `TurnComplete` makes: the row first, then
 /// `ConversationStatusChanged`, so any subscriber that observes the event can
 /// assume the row is already at the target status. Shared by the lifecycle
@@ -482,7 +494,7 @@ async fn handle_event(
             else {
                 return Ok(());
             };
-            let (conversation_id, last_text, claimed, next_turn_started) = {
+            let (conversation_id, last_text, claimed, next_turn_started, terminal_failed) = {
                 let mut snap = state_arc.write().await;
                 // Re-entrant for this worker: a retry of this same envelope
                 // claims again and goes on. Only a CLI run's fallback that
@@ -495,8 +507,20 @@ async fn handle_event(
                     // This turn's own flag was cleared as the event was
                     // applied, so a set one is a later prompt's.
                     snap.turn_in_flight,
+                    // 还没解决的 error 就是这一轮的：SessionFailure 在
+                    // TurnComplete 之前已经应用到 state，回合结束只把 warning
+                    // 标成已解决，error 要到下一条 prompt 的 UserMessage 才清。
+                    snap.session_failures
+                        .values()
+                        .any(|f| f.severity == "error" && !f.resolved),
                 )
             };
+            // cowork-codeg#421：CLI 被杀时适配器照旧回 `end_turn`，失败只在
+            // SessionFailure 里。这一轮按失败算（`unknown` → Cancelled，侧栏
+            // 「本轮未完成」；委派的父会话也收到失败而不是成功结果）。
+            // 不在 connection.rs 改 reason_str：前端的 toast 和 settle 都按
+            // `end_turn` 判断，改了会多弹一个 toast。
+            let stop_reason = effective_stop_reason(stop_reason, terminal_failed);
             // No conversation row bound (defensive — should never happen in
             // practice since `send_prompt_linked` runs before TurnComplete can
             // fire). Nothing to update.
@@ -519,7 +543,7 @@ async fn handle_event(
                     db_conn,
                     b.as_ref(),
                     cid,
-                    stop_reason.as_str(),
+                    stop_reason,
                     last_text,
                 )
                 .await;
@@ -4396,6 +4420,83 @@ mod tests {
             vec![ConversationStatus::Cancelled],
             "the sidebar learns the turn is over"
         );
+    }
+
+    fn session_failure(
+        id: &str,
+        severity: &str,
+        resolved: bool,
+    ) -> crate::acp::types::SessionFailureRecord {
+        crate::acp::types::SessionFailureRecord {
+            id: id.into(),
+            revision: 1,
+            category: "connection".into(),
+            severity: severity.into(),
+            title: "The connection to Claude was lost.".into(),
+            details: None,
+            actions: Vec::new(),
+            resolved,
+        }
+    }
+
+    /// cowork-codeg#421：CLI 被杀以后，适配器照旧回 `end_turn`，真正的失败放在
+    /// 一条 severity=error 的 SessionFailure 里。这一轮是失败的，会话行要写成
+    /// Cancelled（侧栏「本轮未完成」），不能是 PendingReview（「已完成，尚未查看」）。
+    /// 只有 warning、或 error 已经被下一条 prompt 清掉时，仍按正常结束走。
+    #[tokio::test]
+    async fn handle_event_end_turn_with_terminal_failure_is_cancelled() {
+        for (failure, expected) in [
+            (
+                Some(session_failure("t1:error", "error", false)),
+                ConversationStatus::Cancelled,
+            ),
+            (
+                Some(session_failure("t1:warn", "warning", false)),
+                ConversationStatus::PendingReview,
+            ),
+            (
+                Some(session_failure("t1:error", "error", true)),
+                ConversationStatus::PendingReview,
+            ),
+            (None, ConversationStatus::PendingReview),
+        ] {
+            let db = test_helpers::fresh_in_memory_db().await;
+            let folder_id = test_helpers::seed_folder(&db, "/tmp/turn-failed").await;
+            let conv = conversation_service::create(
+                &db.conn,
+                folder_id,
+                AgentType::ClaudeCode,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            let mgr = ConnectionManager::new();
+            let conn = fake_connection_with_state("c1", Some(conv.id));
+            if let Some(record) = failure.clone() {
+                conn.state
+                    .write()
+                    .await
+                    .session_failures
+                    .insert(record.id.clone(), record);
+            }
+            let mut rx = conn.state.read().await.event_stream().subscribe();
+            mgr.connections.lock().await.insert("c1".to_string(), conn);
+
+            handle_event(&db.conn, &mgr, &turn_complete(1, "end_turn"), None, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                read_row_status(&db, conv.id).await,
+                expected,
+                "failure: {failure:?}"
+            );
+            assert_eq!(
+                drain_status_changes(&mut rx),
+                vec![expected.clone()],
+                "failure: {failure:?}"
+            );
+        }
     }
 
     /// The `cancelled` write is conditional: a row the user's stop already

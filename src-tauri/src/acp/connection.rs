@@ -12483,6 +12483,18 @@ async fn send_goal_control(
 ///
 /// `session_models` is the establishing answer's raw top-level `models`, when
 /// one was captured (see [`session_model_list_offers`]).
+/// 连接时补回已存选项失败时用哪个日志级别：agent 没列出这个选项（老适配器
+/// 不认识新选项，比如不认识 `fast` 的 claude-agent-acp）时失败是意料之中的，
+/// 记 INFO，不让 telemetry 的 ErrorLayer 开 Sentry 问题；列出了还设置失败
+/// 才是真问题，记 ERROR。
+fn preferred_config_failure_level(advertised: bool) -> tracing::Level {
+    if advertised {
+        tracing::Level::ERROR
+    } else {
+        tracing::Level::INFO
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn apply_preferred_session_options(
     cx: &ConnectionTo<Agent>,
@@ -12600,8 +12612,18 @@ async fn apply_preferred_session_options(
             advertised.is_some_and(|o| matches!(o.kind, SessionConfigKind::Boolean(_)));
         let value = encode_config_option_value(is_boolean, value_id);
         let agent_type = state.read().await.agent_type;
-        match set_session_config_option_inner(cx, &session_id, agent_type, config_id.clone(), value).await {
+        match set_session_config_option_inner(cx, &session_id, agent_type, config_id.clone(), value)
+            .await
+        {
             Ok(updated) => options = updated,
+            Err(e)
+                if preferred_config_failure_level(advertised.is_some()) == tracing::Level::INFO =>
+            {
+                tracing::info!(
+                    "[ACP] preferred config '{config_id}'='{value_id}' not applied on \
+                     connect: the agent does not advertise that option ({e})"
+                )
+            }
             Err(e) => tracing::error!(
                 "[ACP] failed to apply preferred config '{config_id}'='{value_id}' \
                  on connect: {e}"
@@ -26985,6 +27007,21 @@ mod tests {
             SessionConfigKindInfo::Select(sel) => sel,
             other => panic!("expected a select config option, got {other:?}"),
         }
+    }
+
+    // ── preferred_config_failure_level ──────────────────────────────────────
+
+    /// agent 没列出的选项设置失败是意料之中的（老适配器不认识新选项），
+    /// 只记 INFO，不进 Sentry。
+    #[test]
+    fn preferred_config_failure_unadvertised_logs_info() {
+        assert_eq!(preferred_config_failure_level(false), tracing::Level::INFO);
+    }
+
+    /// agent 列出了的选项还设置失败，照旧记 ERROR。
+    #[test]
+    fn preferred_config_failure_advertised_logs_error() {
+        assert_eq!(preferred_config_failure_level(true), tracing::Level::ERROR);
     }
 
     // ── ConnectionCleanupGuard ──────────────────────────────────────────────

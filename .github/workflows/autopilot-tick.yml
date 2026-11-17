@@ -8,6 +8,7 @@
 # 凭证在 Environment「ai-qa」里，只有 main 分支用得到；commit status 用仓库级的 SOURCE_STATUS_TOKEN；派 workflow 用这次运行的 github.token（actions: write）。
 # 仓库变量：AUTOPILOT（off / record / on，默认 record）、AUTOPILOT_DAILY_USD（默认 15）、AUTOPILOT_MAX_FIX（同时最多几个执行员，默认 2）、
 # AUTOPILOT_MERGE_PRODUCT（执行员的 PR 冲突、调度台解得开时推不推：on / record / off，默认 on）。
+# AUTOPILOT_TRIAL（界面试跑：off / record / on，默认 off）、AUTOPILOT_TRIAL_MAX（同时最多几个，默认 2）。
 name: autopilot-tick
 
 on:
@@ -41,6 +42,8 @@ jobs:
       MAX_FIX: ${{ vars.AUTOPILOT_MAX_FIX || '2' }}
       # 执行员的 PR 和 product 冲突、调度台自己解得开时推不推（源仓库 .cowork/autopilot/conflict.mjs）：on / record / off
       MERGE_PRODUCT: ${{ vars.AUTOPILOT_MERGE_PRODUCT || 'on' }}
+      TRIAL: ${{ vars.AUTOPILOT_TRIAL || 'off' }}
+      TRIAL_MAX: ${{ vars.AUTOPILOT_TRIAL_MAX || '2' }}
       # 定时触发的是备份：生产机上的调度台最近跑过就让开（tick.mjs）
       TICK_FALLBACK: ${{ github.event_name == 'schedule' && '1' || '' }}
       W: /home/runner/autopilot-work

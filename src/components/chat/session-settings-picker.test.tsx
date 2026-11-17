@@ -283,6 +283,104 @@ describe("SessionSettingsPicker — a model switch", () => {
     renderPicker({ modelSwitch: { ...SWITCH, phase: "failed" } })
     expect(summary()).toBe("Opus 5.5/High")
   })
+
+  // A long model list is the searchable one (`ModelOptionList`).
+  const LONG = Array.from({ length: 30 }, (_, i) => `m${i}`)
+  const LONG_SWITCH: ModelSwitchInfo = {
+    ...SWITCH,
+    from_value: "m0",
+    from_name: "m0",
+    to_value: "m7",
+    to_name: "m7",
+  }
+  const longList = () => [select("model", "Model", "model", "m0", LONG)]
+
+  it("marks the model the next message takes in a short list, the check staying put", async () => {
+    const user = userEvent.setup()
+    renderPicker({ modelSwitch: { ...SWITCH, phase: "after_turn" } })
+    const popover = await openPopover(user)
+    const opus = within(popover).getByRole("button", { name: /Opus 5\.5/ })
+    const sonnet = within(popover).getByRole("button", { name: /Sonnet 5\.5/ })
+    expect(sonnet).toHaveTextContent("From next message")
+    expect(sonnet).not.toHaveAttribute("aria-current")
+    expect(opus).toHaveAttribute("aria-current", "true")
+    expect(opus).not.toHaveTextContent("From next message")
+  })
+
+  it("marks the model being switched to in a short list", async () => {
+    const user = userEvent.setup()
+    renderPicker({ modelSwitch: SWITCH })
+    const popover = await openPopover(user)
+    const sonnet = within(popover).getByRole("button", { name: /Sonnet 5\.5/ })
+    expect(sonnet).toHaveTextContent("Switching")
+    expect(sonnet).not.toHaveTextContent("From next message")
+    expect(
+      within(popover).getByRole("button", { name: /Opus 5\.5/ })
+    ).toHaveAttribute("aria-current", "true")
+  })
+
+  it("marks the waiting and the switching model in a searchable list", async () => {
+    const user = userEvent.setup()
+    const { view } = renderPicker({
+      configOptions: longList(),
+      modelSwitch: { ...LONG_SWITCH, phase: "after_turn" },
+    })
+    let popover = await openPopover(user)
+    let target = within(popover).getByRole("option", { name: /^m7/ })
+    expect(target).toHaveTextContent("From next message")
+    expect(target).toHaveAttribute("aria-selected", "false")
+    expect(
+      within(popover).getByRole("option", { name: /^m0/ })
+    ).toHaveAttribute("aria-selected", "true")
+    view.unmount()
+
+    renderPicker({ configOptions: longList(), modelSwitch: LONG_SWITCH })
+    popover = await openPopover(user)
+    target = within(popover).getByRole("option", { name: /^m7/ })
+    expect(target).toHaveTextContent("Switching")
+    expect(target).not.toHaveTextContent("From next message")
+  })
+
+  it("takes back a waiting switch when the model in use is picked again", async () => {
+    const user = userEvent.setup()
+    const { onChange } = renderPicker({
+      modelSwitch: { ...SWITCH, phase: "after_turn" },
+    })
+    const popover = await openPopover(user)
+    await user.click(within(popover).getByRole("button", { name: /Opus 5\.5/ }))
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith(
+      { type: "config", configId: "model" },
+      "opus"
+    )
+    expect(screen.queryByRole("dialog")).toBeNull()
+  })
+
+  it("takes back a switch under way from the searchable list too", async () => {
+    const user = userEvent.setup()
+    const { onChange } = renderPicker({
+      configOptions: longList(),
+      modelSwitch: LONG_SWITCH,
+    })
+    const popover = await openPopover(user)
+    await user.click(within(popover).getByRole("option", { name: /^m0/ }))
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith(
+      { type: "config", configId: "model" },
+      "m0"
+    )
+    expect(screen.queryByRole("dialog")).toBeNull()
+  })
+
+  it("does not take back anything over a switch of another option", async () => {
+    const user = userEvent.setup()
+    const { onChange } = renderPicker({
+      modelSwitch: { ...SWITCH, config_id: "other", phase: "after_turn" },
+    })
+    const popover = await openPopover(user)
+    await user.click(within(popover).getByRole("button", { name: /Opus 5\.5/ }))
+    expect(onChange).not.toHaveBeenCalled()
+  })
 })
 
 describe("SessionSettingsPicker — the popover", () => {
@@ -304,21 +402,101 @@ describe("SessionSettingsPicker — the popover", () => {
     expect(popover).toHaveFocus()
   })
 
-  it("applies a model pick at once and stays open for the next one", async () => {
+  it("applies a segmented pick at once and stays open for the next one", async () => {
     const user = userEvent.setup()
     const { onChange } = renderPicker()
     const popover = await openPopover(user)
 
+    await user.click(within(popover).getByRole("button", { name: "Low" }))
+    expect(onChange).toHaveBeenLastCalledWith(
+      { type: "config", configId: "effort" },
+      "low"
+    )
+    // Still open: the next setting can be changed in the same visit.
+    await user.click(within(popover).getByRole("switch", { name: "Fast mode" }))
+    expect(onChange).toHaveBeenLastCalledWith(
+      { type: "config", configId: "fast" },
+      "on"
+    )
+    expect(
+      screen.getByRole("dialog", { name: MSGS.agentSettings })
+    ).toBeInTheDocument()
+  })
+
+  // Cowork fork: a model pick closes the popover — the chip then reads what
+  // became of it (switching, this reply / next, the new model).
+  it("closes on a model pick from a short list, focus back on the chip", async () => {
+    const user = userEvent.setup()
+    const { onChange } = renderPicker()
+    const popover = await openPopover(user)
     await user.click(within(popover).getByRole("button", { name: /Sonnet/ }))
     expect(onChange).toHaveBeenCalledWith(
       { type: "config", configId: "model" },
       "sonnet"
     )
-    // Still open: the next setting can be changed in the same visit.
-    await user.click(within(popover).getByRole("button", { name: "Low" }))
+    expect(screen.queryByRole("dialog")).toBeNull()
+    expect(trigger()).toHaveFocus()
+  })
+
+  it("closes on a model picked with Enter in a short list", async () => {
+    const user = userEvent.setup()
+    renderPicker()
+    const popover = await openPopover(user)
+    within(popover)
+      .getByRole("button", { name: /Sonnet 5\.5/ })
+      .focus()
+    await user.keyboard("{Enter}")
+    expect(screen.queryByRole("dialog")).toBeNull()
+  })
+
+  it("closes on a model pick from a searchable list, click or Enter", async () => {
+    const user = userEvent.setup()
+    const options = Array.from({ length: 30 }, (_, i) => `m${i}`)
+    const { onChange } = renderPicker({
+      configOptions: [select("model", "Model", "model", "m0", options)],
+    })
+    let popover = await openPopover(user)
+    await user.click(within(popover).getByRole("option", { name: /^m12/ }))
     expect(onChange).toHaveBeenLastCalledWith(
-      { type: "config", configId: "effort" },
-      "low"
+      { type: "config", configId: "model" },
+      "m12"
+    )
+    expect(screen.queryByRole("dialog")).toBeNull()
+    expect(trigger()).toHaveFocus()
+
+    popover = await openPopover(user)
+    const search = within(popover).getByRole("combobox", {
+      name: MSGS.searchModelAria,
+    })
+    await user.type(search, "m17")
+    await user.keyboard("{Enter}")
+    expect(onChange).toHaveBeenLastCalledWith(
+      { type: "config", configId: "model" },
+      "m17"
+    )
+    expect(screen.queryByRole("dialog")).toBeNull()
+  })
+
+  it("closes on the model in use without sending it again", async () => {
+    const user = userEvent.setup()
+    const { onChange } = renderPicker()
+    const popover = await openPopover(user)
+    await user.click(within(popover).getByRole("button", { name: /Opus 5\.5/ }))
+    expect(onChange).not.toHaveBeenCalled()
+    expect(screen.queryByRole("dialog")).toBeNull()
+  })
+
+  it("keeps open a long non-model list after a pick", async () => {
+    const user = userEvent.setup()
+    const agents = Array.from({ length: 9 }, (_, i) => `agent-${i}`)
+    const { onChange } = renderPicker({
+      configOptions: [select("mode", "Agent", "mode", agents[0], agents)],
+    })
+    const popover = await openPopover(user)
+    await user.click(within(popover).getByRole("option", { name: /agent-3/ }))
+    expect(onChange).toHaveBeenCalledWith(
+      { type: "config", configId: "mode" },
+      "agent-3"
     )
     expect(
       screen.getByRole("dialog", { name: MSGS.agentSettings })
@@ -362,8 +540,9 @@ describe("SessionSettingsPicker — the popover", () => {
     const user = userEvent.setup()
     const { onChange } = renderPicker()
     const popover = await openPopover(user)
-    await user.click(within(popover).getByRole("button", { name: /Opus 5\.5/ }))
+    // The segmented one first: a model pick closes the popover.
     await user.click(within(popover).getByRole("button", { name: "High" }))
+    await user.click(within(popover).getByRole("button", { name: /Opus 5\.5/ }))
     expect(onChange).not.toHaveBeenCalled()
   })
 

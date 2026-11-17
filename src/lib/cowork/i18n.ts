@@ -277,6 +277,9 @@ const en = {
   modelSwitchNoAnswer: "the agent didn't answer within 10 seconds",
   modelSwitchAgentError: "the agent reported an error ({detail})",
   modelSwitchNotAdopted: "the agent didn't take it",
+  // The picker's mark on the row of the model a switch under way goes to.
+  modelSwitchNextMark: "From next message",
+  modelSwitchPendingMark: "Switching",
 }
 
 export type CoworkTextKey = keyof typeof en
@@ -507,6 +510,8 @@ const zhCN: Record<CoworkTextKey, string> = {
   modelSwitchNoAnswer: "agent 10 秒内没有回应",
   modelSwitchAgentError: "agent 报错（{detail}）",
   modelSwitchNotAdopted: "agent 没有采用",
+  modelSwitchNextMark: "下一条起用",
+  modelSwitchPendingMark: "正在切换",
 }
 
 const zhTW: Record<CoworkTextKey, string> = {
@@ -737,6 +742,8 @@ const zhTW: Record<CoworkTextKey, string> = {
   modelSwitchNoAnswer: "agent 10 秒內沒有回應",
   modelSwitchAgentError: "agent 報錯（{detail}）",
   modelSwitchNotAdopted: "agent 沒有採用",
+  modelSwitchNextMark: "下一則起用",
+  modelSwitchPendingMark: "正在切換",
 }
 
 const CATALOGS: Record<string, Record<CoworkTextKey, string>> = {

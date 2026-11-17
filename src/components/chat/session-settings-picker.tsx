@@ -53,6 +53,8 @@ interface SessionSettingsPickerProps {
  * current value at once ("Opus 5.5 / High / Plan"), opening a popover in which
  * each setting is adjusted in place. A pick applies immediately and the
  * popover stays open, so several settings can be changed in one visit.
+ * Cowork fork: except a model pick, which closes it — the chip then reads what
+ * became of the pick (switching, this reply / next, the new model).
  *
  * One dismissable layer only: every control in the popover is a plain button
  * (or the Radix Switch, which is not a layer). Nesting a second Radix layer —
@@ -232,7 +234,11 @@ export function SessionSettingsPicker({
                   ) : setting.kind === "segmented" ? (
                     <SegmentedSetting setting={setting} onChange={onChange} />
                   ) : (
-                    <ListSetting setting={setting} onChange={onChange} />
+                    <ListSetting
+                      setting={setting}
+                      onChange={onChange}
+                      onModelPicked={() => setOpen(false)}
+                    />
                   )}
                 </Fragment>
               )
@@ -452,14 +458,34 @@ function SegmentedSetting({
 function ListSetting({
   setting,
   onChange,
+  onModelPicked,
 }: {
   setting: SessionChoiceSetting
   onChange: OnChange
+  /** Cowork fork: a model pick closes the popover. */
+  onModelPicked: () => void
 }) {
   const t = useTranslations("Folder.chat.messageInput")
   const headerId = useId()
+  // Cowork fork: a switch of this option under way. Its target row carries a
+  // mark, and picking the model the agent reports takes it back (the backend
+  // drops the waiting switch, or switches back once the one under way ends).
+  const coworkT = useCoworkText()
+  const switchInFlight = useSwitchInFlight(setting)
+  const mark = switchInFlight
+    ? {
+        value: switchInFlight.to_value,
+        label: coworkT(
+          switchInFlight.phase === "pending"
+            ? "modelSwitchPendingMark"
+            : "modelSwitchNextMark"
+        ),
+      }
+    : null
   const commit = (value: string) => {
-    if (value !== setting.currentValue) onChange(setting.target, value)
+    if (value !== setting.currentValue || switchInFlight)
+      onChange(setting.target, value)
+    if (setting.isModel) onModelPicked()
   }
   if (setting.searchable) {
     return (
@@ -474,6 +500,7 @@ function ListSetting({
           currentValue={setting.currentValue}
           recommendedValue={setting.recommendedValue}
           recommendedLabel={t("recommendedBadge")}
+          mark={mark}
           onSelect={commit}
           searchPlaceholder={
             setting.isModel ? t("searchModel") : t("searchOptions")
@@ -493,20 +520,34 @@ function ListSetting({
       setting={setting}
       headerId={headerId}
       recommendedLabel={t("recommendedBadge")}
+      mark={mark}
       onPick={commit}
     />
   )
+}
+
+/** Cowork fork: the model switch under way of `setting`'s option, or `null`. */
+function useSwitchInFlight(setting: SessionChoiceSetting) {
+  const modelSwitch = useContext(ModelSwitchContext)
+  if (!modelSwitch) return null
+  if (modelSwitch.phase !== "pending" && modelSwitch.phase !== "after_turn")
+    return null
+  if (setting.target.type !== "config") return null
+  return setting.target.configId === modelSwitch.config_id ? modelSwitch : null
 }
 
 function PlainList({
   setting,
   headerId,
   recommendedLabel,
+  mark,
   onPick,
 }: {
   setting: SessionChoiceSetting
   headerId: string
   recommendedLabel: string
+  /** Cowork fork: see `ModelOptionList`'s `mark`. */
+  mark: { value: string; label: string } | null
   onPick: (value: string) => void
 }) {
   const rows = flattenModelGroups(setting.groups)
@@ -578,6 +619,16 @@ function PlainList({
                         className="px-1 text-3xs font-normal"
                       >
                         {recommendedLabel}
+                      </Badge>
+                    ) : null}
+                    {/* Cowork fork: where a model switch under way goes. */}
+                    {mark && option.value === mark.value ? (
+                      <Badge
+                        variant="secondary"
+                        data-slot="model-switch-mark"
+                        className="px-1 text-3xs font-normal"
+                      >
+                        {mark.label}
                       </Badge>
                     ) : null}
                   </span>

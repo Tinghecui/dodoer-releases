@@ -132,6 +132,18 @@ describe("ModelOptionList", () => {
     expect(selected).not.toHaveTextContent("Recommended")
   })
 
+  // Cowork fork: the model a switch under way goes to carries a mark; the
+  // check stays on the model the agent reports.
+  it("marks the row a switch goes to, the selection staying put", () => {
+    renderList({ mark: { value: "openai/gpt-4o", label: "From next message" } })
+    const target = screen.getByRole("option", { name: /gpt-4o/ })
+    expect(target).toHaveTextContent("From next message")
+    expect(target).toHaveAttribute("aria-selected", "false")
+    const selected = screen.getByRole("option", { name: /opus/ })
+    expect(selected).toHaveAttribute("aria-selected", "true")
+    expect(selected).not.toHaveTextContent("From next message")
+  })
+
   // A recommendation that matches no option marks nothing — the backend
   // deliberately does not validate membership against the list, so this is the
   // guard that makes that safe. Same for a recommendation with no label.

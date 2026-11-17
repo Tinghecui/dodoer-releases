@@ -1502,7 +1502,8 @@ describe("MessageInput selector loading placeholder", () => {
 describe("MessageInput settings popover", () => {
   afterEach(() => cleanup())
 
-  it("selects a config option and stays open for the next change", async () => {
+  // Cowork fork: 选完模型弹出框收起（#462），结果看设置按钮那行字。
+  it("selects a model and closes the popover", async () => {
     const user = userEvent.setup()
     const onConfigOptionChange = vi.fn()
     const { container } = renderInput({
@@ -1517,8 +1518,8 @@ describe("MessageInput settings popover", () => {
     await user.click(within(popover).getByRole("button", { name: /Opus/ }))
     expect(onConfigOptionChange).toHaveBeenCalledWith("model", "opus")
     expect(
-      screen.getByRole("dialog", { name: MSGS.agentSettings })
-    ).toBeInTheDocument()
+      screen.queryByRole("dialog", { name: MSGS.agentSettings })
+    ).toBeNull()
   })
 
   it("groups model values by their provider prefix", async () => {

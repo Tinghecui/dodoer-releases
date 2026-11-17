@@ -6,6 +6,7 @@ import { Virtualizer, type VirtualizerHandle } from "virtua"
 import { useImeGuard } from "@/hooks/use-ime-guard"
 import { useZoomLevel } from "@/hooks/use-appearance"
 import { cn } from "@/lib/utils"
+import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { DropdownRadioItemContent } from "@/components/chat/dropdown-radio-item-content"
 import {
@@ -24,6 +25,10 @@ interface ModelOptionListProps {
   /** Localized chip text for that row (like the search/empty labels below, the
    *  translation is the caller's). */
   recommendedLabel?: string
+  /** Cowork fork: the row a model switch under way goes to, and the mark it
+   *  carries ("From next message", "Switching"). The check stays on
+   *  `currentValue` — the model the agent reports. */
+  mark?: { value: string; label: string } | null
   onSelect: (value: string) => void
   searchPlaceholder: string
   searchAriaLabel: string
@@ -74,6 +79,7 @@ export function ModelOptionList({
   currentValue,
   recommendedValue = null,
   recommendedLabel,
+  mark = null,
   onSelect,
   searchPlaceholder,
   searchAriaLabel,
@@ -333,6 +339,16 @@ export function ModelOptionList({
                               : null
                           }
                         />
+                        {/* Cowork fork: where a model switch under way goes. */}
+                        {mark && row.option.value === mark.value ? (
+                          <Badge
+                            variant="secondary"
+                            data-slot="model-switch-mark"
+                            className="mt-0.5 px-1 text-3xs font-normal"
+                          >
+                            {mark.label}
+                          </Badge>
+                        ) : null}
                       </button>
                     )
                   })}

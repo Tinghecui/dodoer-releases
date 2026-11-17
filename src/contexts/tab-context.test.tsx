@@ -208,6 +208,9 @@ function seedWorkspaceStore() {
   // `persistGroupState` writes localStorage during hydrated tests and would
   // otherwise leak split layouts across tests.
   localStorage.clear()
+  // 「标签页跟随文件夹」默认是开（#338）；这些测试测的是关着的全局标签，
+  // 先存成关。测默认值和跨窗口同步的用例自己再改。
+  localStorage.setItem("workspace:tabs-follow-folder:local", "false")
   // The tab store is a module-level singleton: reset it (state + coordination
   // vars + injected runtime + one-shot correction/recovery flags) after seeding
   // the workspace store so `lastConversations` aligns with the seeded list.
@@ -3038,7 +3041,10 @@ describe("Folder-tabs preference hydration", () => {
     await act(async () => {})
     expect(useAppWorkspaceStore.getState().activeFolderId).toBe(2)
     const key = "workspace:tabs-follow-folder:local"
-    const otherWindowWrote = (newValue: string | null, eventKey = key) =>
+    const otherWindowWrote = (
+      newValue: string | null,
+      eventKey: string | null = key
+    ) =>
       act(() => {
         window.dispatchEvent(
           new StorageEvent("storage", { key: eventKey, newValue })
@@ -3071,6 +3077,11 @@ describe("Folder-tabs preference hydration", () => {
 
     otherWindowWrote("false")
     expect(useFolderTabsStore.getState().enabled).toBe(false)
+
+    // 整个存储被清空：回到默认的开。
+    localStorage.clear()
+    otherWindowWrote(null, null)
+    expect(useFolderTabsStore.getState().enabled).toBe(true)
     resetFolderTabsStore()
     setActiveFolderIdMock.mockReset()
   })

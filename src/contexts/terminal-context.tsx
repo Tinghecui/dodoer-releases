@@ -637,6 +637,43 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     setActiveTabId(id)
   }, [])
 
+  // 终端跟着当前项目走（#338）：每个项目记住上次选中的终端，切到别的项目时
+  // 显示那个项目的终端。只换选中的那个，不关、不新建；这个项目一个终端都
+  // 没有时不动（别的项目的终端标签上带着项目名）；全局终端（folderId 0）
+  // 选中时也不被切走。
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
+  const lastActiveByFolderRef = useRef(new Map<number, string>())
+  useEffect(() => {
+    const tab = tabs.find((t) => t.id === activeTabId)
+    if (tab && tab.folderId !== 0) {
+      lastActiveByFolderRef.current.set(tab.folderId, tab.id)
+    }
+  }, [activeTabId, tabs])
+  const previousFolderIdRef = useRef(currentFolderId)
+  useEffect(() => {
+    if (previousFolderIdRef.current === currentFolderId) return
+    previousFolderIdRef.current = currentFolderId
+    if (currentFolderId === 0) return
+    setActiveTabId((prev) => {
+      const current = tabsRef.current
+      const active = current.find((t) => t.id === prev)
+      if (
+        !active ||
+        active.folderId === 0 ||
+        active.folderId === currentFolderId
+      ) {
+        return prev
+      }
+      const remembered = lastActiveByFolderRef.current.get(currentFolderId)
+      const target =
+        current.find(
+          (t) => t.id === remembered && t.folderId === currentFolderId
+        ) ?? current.find((t) => t.folderId === currentFolderId)
+      return target ? target.id : prev
+    })
+  }, [currentFolderId])
+
   const isInTerminalRegion = useCallback((target: EventTarget | null) => {
     if (!(target instanceof Element)) return false
     return Boolean(target.closest('[data-terminal-panel-region="true"]'))

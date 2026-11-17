@@ -305,6 +305,18 @@ describe("Folder-tabs conversation scope", () => {
   })
 })
 
+describe("Folder-tabs default preference", () => {
+  it("turns on when nothing is stored, and keeps a stored false", () => {
+    useFolderTabsStore.getState().hydratePreference()
+    expect(useFolderTabsStore.getState().enabled).toBe(true)
+
+    resetFolderTabsStore()
+    localStorage.setItem("workspace:tabs-follow-folder:local", "false")
+    useFolderTabsStore.getState().hydratePreference()
+    expect(useFolderTabsStore.getState().enabled).toBe(false)
+  })
+})
+
 describe("Folder-tabs scope repairs", () => {
   function setFolders(
     list: Array<{ id: number; parent_id?: number; kind?: string }>

@@ -884,3 +884,112 @@ describe("TerminalProvider closeTerminalsByFolder", () => {
     expect(screen.getByTestId("tabs").textContent).toBe(`7:${tabs[0].id}`)
   })
 })
+
+describe("TerminalProvider follows the active project", () => {
+  function SwitchProbe() {
+    const terminal = useTerminalContext()
+    return (
+      <div>
+        <button onClick={() => terminal.createTerminal()}>New</button>
+        <button
+          onClick={() => {
+            void terminal.createTerminalInDirectory("/tmp/codeg-749-other")
+          }}
+        >
+          Open dir
+        </button>
+        <button
+          onClick={() =>
+            terminal.tabs[0] && terminal.switchTerminal(terminal.tabs[0].id)
+          }
+        >
+          Pick first
+        </button>
+        <span data-testid="tabs">
+          {terminal.tabs.map((tab) => `${tab.folderId}:${tab.id}`).join(",")}
+        </span>
+        <span data-testid="active">{terminal.activeTabId ?? ""}</span>
+      </div>
+    )
+  }
+
+  beforeEach(() => {
+    h.terminalKill.mockClear()
+    h.listeners.clear()
+    h.holdSubscribe = false
+    h.remoteId = null
+    h.windowLabel = "main"
+    sessionStorage.clear()
+    window.name = ""
+  })
+
+  function setup() {
+    h.activeFolderId = 7
+    const view = render(
+      <TerminalProvider>
+        <SwitchProbe />
+      </TerminalProvider>
+    )
+    const goTo = (folderId: number | null) => {
+      h.activeFolderId = folderId
+      view.rerender(
+        <TerminalProvider>
+          <SwitchProbe />
+        </TerminalProvider>
+      )
+    }
+    const tabs = () =>
+      (screen.getByTestId("tabs").textContent ?? "")
+        .split(",")
+        .filter(Boolean)
+        .map((entry) => {
+          const [folderId, id] = entry.split(":")
+          return { folderId: Number(folderId), id }
+        })
+    const active = () => screen.getByTestId("active").textContent
+    return { goTo, tabs, active }
+  }
+
+  it("shows the switched-to project's terminal, and the one last picked on return", () => {
+    const { goTo, tabs, active } = setup()
+    fireEvent.click(screen.getByRole("button", { name: "New" }))
+    fireEvent.click(screen.getByRole("button", { name: "New" }))
+    // 项目 7 有两个终端，用户选了第一个。
+    fireEvent.click(screen.getByRole("button", { name: "Pick first" }))
+    const [a1] = tabs()
+    expect(active()).toBe(a1.id)
+
+    goTo(8)
+    fireEvent.click(screen.getByRole("button", { name: "New" }))
+    const b = tabs()[2]
+    expect(b.folderId).toBe(8)
+    expect(active()).toBe(b.id)
+
+    goTo(7)
+    expect(active()).toBe(a1.id)
+
+    goTo(8)
+    expect(active()).toBe(b.id)
+  })
+
+  it("leaves the active terminal alone for a project with no terminals", () => {
+    const { goTo, tabs, active } = setup()
+    fireEvent.click(screen.getByRole("button", { name: "New" }))
+    const [a] = tabs()
+    goTo(9)
+    expect(active()).toBe(a.id)
+  })
+
+  it("does not move a global (folder 0) terminal away", () => {
+    const { goTo, tabs, active } = setup()
+    fireEvent.click(screen.getByRole("button", { name: "New" }))
+    // 没有活动项目时打开的终端记在 0（全局）下。
+    goTo(null)
+    fireEvent.click(screen.getByRole("button", { name: "Open dir" }))
+    const global = tabs()[1]
+    expect(global.folderId).toBe(0)
+    expect(active()).toBe(global.id)
+    goTo(7)
+    expect(active()).toBe(global.id)
+  })
+})

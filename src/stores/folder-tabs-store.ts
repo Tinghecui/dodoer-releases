@@ -74,9 +74,11 @@ const initialState = () => ({
 
 export const useFolderTabsStore = create<FolderTabsState>()((set, get) => ({
   ...initialState(),
+  // Cowork 默认开（#338）：没存过就按项目分开显示标签；用户在侧栏关过的
+  // 存的是 "false"，照旧关着。
   hydratePreference: () => {
     try {
-      if (localStorage.getItem(preferenceKey()) === "true") {
+      if (localStorage.getItem(preferenceKey()) !== "false") {
         get().setEnabled(true)
       }
     } catch {
@@ -172,7 +174,8 @@ export function followStoredFolderTabsPreference(event: StorageEvent) {
   } catch {
     return
   }
-  useFolderTabsStore.getState().setEnabled(stored === "true")
+  // 和 hydratePreference 一样：没存值（含整个清空）就是默认的开。
+  useFolderTabsStore.getState().setEnabled(stored !== "false")
 }
 
 export function resetFolderTabsStore() {

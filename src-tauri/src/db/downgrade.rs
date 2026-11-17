@@ -155,8 +155,16 @@ pub(super) async fn restore_copy_before_upgrade(
 
     // 1. 副本先复制到库旁边，复制完、落了盘才动原库。
     let restoring = restoring_path(&db_path);
-    let staged =
-        std::fs::copy(&copy, &restoring).and_then(|_| std::fs::File::open(&restoring)?.sync_all());
+    // 落盘用可写句柄：Windows 上 sync_all 是 FlushFileBuffers，只读句柄会拒绝访问。
+    // `fs::copy` 会把副本的权限带过来，副本是只读的话可写打开也会被拒，
+    // 所以先改成 0600 再打开（改权限也就一起落了盘）。
+    let staged = std::fs::copy(&copy, &restoring).and_then(|_| {
+        restrict_to_owner(&restoring, 0o600);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&restoring)?
+            .sync_all()
+    });
     if let Err(e) = staged {
         let _ = std::fs::remove_file(&restoring);
         return Err(DbError::Migration(format!(
@@ -167,7 +175,6 @@ pub(super) async fn restore_copy_before_upgrade(
             db_path.display()
         )));
     }
-    restrict_to_owner(&restoring, 0o600);
 
     // 2. 原库挪走，不删。
     let replaced = move_aside(app_data_dir, &db_path)?;
@@ -445,6 +452,32 @@ mod tests {
         db.conn.close().await.expect("close");
 
         assert_restored(dir.path(), &done).await;
+    }
+
+    /// 落盘要用可写句柄（Windows 上只读句柄落盘会拒绝访问）；副本本身是只读的
+    /// 也得换得回来：`fs::copy` 会把只读的权限带到临时文件上，可写打开前要先改成 0600。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_read_only_copy_is_still_restored() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        upgraded_by_newer_build(dir.path(), true).await;
+        let done = done_copies(dir.path());
+        for copy in copies(dir.path()) {
+            if !done.contains(&copy) {
+                std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o400)).unwrap();
+            }
+        }
+
+        let db = init_database(dir.path(), "older").await.expect("restores");
+        db.conn.close().await.expect("close");
+
+        assert_restored(dir.path(), &done).await;
+        let mode = std::fs::metadata(db_path(dir.path()))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

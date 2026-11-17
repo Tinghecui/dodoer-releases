@@ -1,0 +1,104 @@
+# 先红核对：PR 新加、改过的测试放到修之前的代码上跑，看它们是不是真的会失败（这个文件在私有仓库 cowork-codeg 的 .github/public/workflows/ 里维护）。
+# 源仓库 .cowork/journal/2026-11-17-evidence-gate-red-check.md；判法在 scripts/ci/red-check.mjs。
+# pr/<n> 的提交是「PR 合进当时的 product」，父提交是公开 main = 修之前的代码。结果给私有 PR 头打 commit status「先红核对」。
+# 仓库变量 RED_CHECK：不设 / record = 只记录（永远 success，描述里写结论，不在 ruleset 里）；on = 全绿时 failure；off = 不跑。
+# 第 1 步只核对前端（vitest）；Rust 的测试和代码在同一个文件里，第 2 步再做。
+# 跑测试的那一格不带 secret（测试是 PR 的代码）；报结果的另一格不 checkout、不执行任何 PR 的东西，只按正则从提交说明取 sha。
+name: 先红核对
+
+on:
+  push:
+    branches:
+      - "pr/**"
+
+permissions: {}
+
+concurrency:
+  group: red-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 先红核对（前端）
+    if: vars.RED_CHECK != 'off'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.judge.outputs.state }}
+      description: ${{ steps.judge.outputs.description }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: 要跑哪些测试
+        id: plan
+        run: |
+          node scripts/ci/red-check.mjs plan HEAD^1 HEAD "$RUNNER_TEMP/plan.json"
+          echo "n=$(jq '.vitest | length' "$RUNNER_TEMP/plan.json")" >> "$GITHUB_OUTPUT"
+          # 修之前的代码里还没有这个脚本（第一次加它的 PR）：先拷出来
+          cp scripts/ci/red-check.mjs "$RUNNER_TEMP/red-check.mjs"
+      - name: 换成修之前的代码，只放进 PR 的测试
+        if: steps.plan.outputs.n != '0'
+        run: |
+          git checkout -q HEAD^1
+          jq -r '.vitest[]' "$RUNNER_TEMP/plan.json" | xargs git checkout -q "$GITHUB_SHA" --
+          git status --short
+      - uses: pnpm/action-setup@v4
+        if: steps.plan.outputs.n != '0'
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        if: steps.plan.outputs.n != '0'
+        with:
+          node-version: 24
+          cache: "pnpm"
+      - name: 装依赖（修之前的 lockfile）
+        if: steps.plan.outputs.n != '0'
+        # 装不上也往下走：判成「核对不了」，不让这一格红
+        continue-on-error: true
+        run: pnpm install --frozen-lockfile
+      - name: 在修之前的代码上跑这些测试
+        if: steps.plan.outputs.n != '0'
+        # 要的就是失败：退出码不管，看报告
+        run: |
+          mapfile -t files < <(jq -r '.vitest[]' "$RUNNER_TEMP/plan.json")
+          pnpm exec vitest run --reporter=json --outputFile="$RUNNER_TEMP/vitest.json" "${files[@]}" || echo "vitest 退出码 $?（失败是预期的）"
+      - name: 判
+        id: judge
+        if: always() && steps.plan.outcome == 'success'
+        env:
+          RED_CHECK_MODE: ${{ vars.RED_CHECK }}
+        run: |
+          node "$RUNNER_TEMP/red-check.mjs" judge "$RUNNER_TEMP/plan.json" "$RUNNER_TEMP/vitest.json" "$RUNNER_TEMP/result.json"
+          {
+            echo "state=$(jq -r .state "$RUNNER_TEMP/result.json")"
+            echo "description=$(jq -r .description "$RUNNER_TEMP/result.json")"
+          } >> "$GITHUB_OUTPUT"
+
+  report:
+    name: 报给私有仓库
+    needs: check
+    if: always() && vars.RED_CHECK != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: commit status「先红核对」
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_STATUS_TOKEN }}
+          MESSAGE: ${{ github.event.head_commit.message }}
+          STATE: ${{ needs.check.outputs.state }}
+          DESC: ${{ needs.check.outputs.description }}
+          URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [[ -n "$GH_TOKEN" ]] || { echo "::warning::没配 SOURCE_STATUS_TOKEN，不报"; exit 0; }
+          sha=$(printf '%s\n' "$MESSAGE" | sed -nE 's/^source: cowork-codeg@([0-9a-f]{40})$/\1/p' | tail -1)
+          [[ -n "$sha" ]] || { echo "提交说明里没有 40 位的 source sha，不报"; exit 0; }
+          # 核对这一格自己没跑完（机器出问题、被取消）：不拦
+          if [[ -z "$STATE" ]]; then STATE=success; DESC="核对不了：这一格自己没跑完"; fi
+          jq -n --arg s "$STATE" --arg u "$URL" --arg d "${DESC:0:140}" '{state:$s,target_url:$u,description:$d,context:"先红核对"}' \
+            | gh api -X POST "repos/Tinghecui/cowork-codeg/statuses/$sha" --input - >/dev/null
+          echo "cowork-codeg@${sha:0:12}：先红核对 → $STATE（$DESC）"

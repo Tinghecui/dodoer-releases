@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use super::idle::BlockReason;
+
 /// 数据目录下放升级相关文件的目录。
 pub const DIR_NAME: &str = "update";
 /// 日志文件名。
@@ -202,6 +204,20 @@ pub struct Blocked {
     pub unknown: u64,
 }
 
+impl Blocked {
+    /// 被 `reason` 挡了一次。
+    pub fn add(&mut self, reason: BlockReason) {
+        let count = match reason {
+            BlockReason::LocalTurn => &mut self.local_turn,
+            BlockReason::Terminal => &mut self.terminal,
+            BlockReason::LentDevice => &mut self.lent_device,
+            BlockReason::UserActive => &mut self.user_active,
+            BlockReason::Unknown => &mut self.unknown,
+        };
+        *count = count.saturating_add(1);
+    }
+}
+
 /// 当前这一次升级。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Attempt {
@@ -254,6 +270,23 @@ pub struct Journal {
     /// 哪一版已经在启动时换过（第 4 行）：每一版启动时只试一次，试之前先写。
     /// 不跟着 `attempt` 清空，换失败了下次启动也不再试这一版。
     pub launch_apply_tried: Option<String>,
+    /// 空闲时自动重启试过几次、试的是哪一版（第 5 行）：同一版最多试
+    /// `idle::MAX_IDLE_TRIES` 次。不跟着 `attempt` 清空，安装失败以后再下好
+    /// 同一版也不会接着试。
+    pub idle_apply: Option<IdleApply>,
+}
+
+/// 空闲时自动重启试过的那一版和次数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdleApply {
+    pub version: String,
+    pub tries: u32,
+}
+
+/// `take_update_announcement` 回给窗口的：已经换上的版本。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Announcement {
+    pub version: String,
 }
 
 /// 一条要上报的升级记录：`crash_report` 把它做成一条非致命的报告。
@@ -583,6 +616,51 @@ impl Journal {
     }
 }
 
+impl Journal {
+    /// 等空闲时被 `reason` 挡了一次：记在下好了、等换上的那条上。
+    pub fn note_blocked(&mut self, reason: BlockReason) {
+        if let Some(a) = self
+            .attempt
+            .as_mut()
+            .filter(|a| a.state == AttemptState::Ready)
+        {
+            a.blocked.add(reason);
+        }
+    }
+
+    /// `version` 空闲时自动重启试过几次。
+    pub fn idle_tries(&self, version: &str) -> u32 {
+        self.idle_apply
+            .as_ref()
+            .filter(|tried| tried.version == version)
+            .map_or(0, |tried| tried.tries)
+    }
+
+    /// 空闲时自动重启 `version` 又试了一次（开始安装之前记）。
+    pub fn note_idle_try(&mut self, version: &str) {
+        let tries = self.idle_tries(version).saturating_add(1);
+        self.idle_apply = Some(IdleApply {
+            version: version.to_string(),
+            tries,
+        });
+    }
+
+    /// 「已更新到…」：上一次是换上了、还没提示过的，而且换上的就是正在运行
+    /// 的版本，置成提示过并回它的版本；别的都是 `None`。只看正在运行的版本：
+    /// 上一次换上的还没提示过、这次又换了新版但没确认下来时，`last` 还是
+    /// 上一次的，不能当成这次的结果提示。调用方在一次加锁里读、改、写，几个
+    /// 窗口同时问只有一个拿到。
+    pub fn take_announcement(&mut self, running: &str) -> Option<Announcement> {
+        let last = self.last.as_mut().filter(|last| {
+            last.result == UpdateResult::Applied && !last.announced && last.to == running
+        })?;
+        last.announced = true;
+        Some(Announcement {
+            version: last.to.clone(),
+        })
+    }
+}
+
 /// 状态变化的那行日志（`commands::app_update` 每次状态变化都打）。
 pub fn transition_line(from: &str, to: &str, version: Option<&str>) -> String {
     format!("[update] {from} -> {to} version={}", version.unwrap_or("-"))
@@ -624,6 +702,72 @@ pub fn record_launch_apply(
         ));
     }
     Ok(())
+}
+
+/// 「已更新到…」从文件里拿：读、置成提示过、写回，写回成功才回版本。日志
+/// 读得出、写不进去时回 `None`：不然这次提示了，文件里却还是「没提示过」，
+/// 别的窗口、下次启动会再提示一遍。调用方在一次加锁里调它。
+pub fn take_announcement_at(path: &Path, running: &str) -> Option<Announcement> {
+    let mut journal = load(path, running);
+    let announcement = journal.take_announcement(running)?;
+    save(path, &journal).ok()?;
+    Some(announcement)
+}
+
+/// 启动确认有了结果（确认了、没确认、或者这次不用确认）就放行的闸。
+/// 「已更新到…」要等它：新版本启动后要等本机服务起来再跑满
+/// [`CONFIRM_AFTER_SECS`] 才确认，之前 `last` 还是上一次的结果，早问了
+/// 就拿不到这次的提示。
+#[derive(Debug, Default)]
+pub struct ConfirmGate {
+    settled: std::sync::Mutex<bool>,
+    cv: std::sync::Condvar,
+}
+
+impl ConfirmGate {
+    pub const fn new() -> Self {
+        Self {
+            settled: std::sync::Mutex::new(false),
+            cv: std::sync::Condvar::new(),
+        }
+    }
+
+    /// 启动确认结束了（不管确认没确认）。
+    pub fn settle(&self) {
+        *self.settled.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        self.cv.notify_all();
+    }
+
+    /// 等到放行，最多等 `wait`；放行了回 true。
+    pub fn wait(&self, wait: std::time::Duration) -> bool {
+        let settled = self.settled.lock().unwrap_or_else(|p| p.into_inner());
+        let (settled, _) = self
+            .cv
+            .wait_timeout_while(settled, wait, |settled| !*settled)
+            .unwrap_or_else(|p| p.into_inner());
+        *settled
+    }
+}
+
+/// 「已更新到…」：这次启动还在等启动确认（正在换上的就是正在运行的
+/// 版本）时，先等 `gate` 放行（最多 `wait`），再在 `lock` 下照
+/// [`take_announcement_at`] 拿。等的时候不占着 `lock`，确认要写日志。
+pub fn take_announcement_once_confirmed(
+    path: &Path,
+    running: &str,
+    lock: &std::sync::Mutex<()>,
+    gate: &ConfirmGate,
+    wait: std::time::Duration,
+) -> Option<Announcement> {
+    let awaiting = {
+        let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+        load(path, running).awaiting_confirmation(running)
+    };
+    if awaiting {
+        gate.wait(wait);
+    }
+    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+    take_announcement_at(path, running)
 }
 
 /// 写日志：先写临时文件再改名，读的人不会看到写了一半的。
@@ -1048,6 +1192,262 @@ mod tests {
         assert_eq!(Trigger::from_param(Some("manual")), Trigger::Manual);
         assert_eq!(Trigger::from_param(Some("rollback")), Trigger::Manual);
         assert_eq!(Trigger::from_param(None), Trigger::Manual);
+    }
+
+    #[test]
+    fn an_applied_update_is_announced_once() {
+        let mut j = ready(Trigger::Auto);
+        j.apply_started(ApplyHow::Idle, at(100));
+        j.on_boot("1.6.41", at(110));
+        j.confirm("1.6.41", at(170)).unwrap();
+        assert_eq!(
+            j.take_announcement("1.6.41"),
+            Some(Announcement {
+                version: "1.6.41".to_string()
+            })
+        );
+        assert!(j.last.as_ref().unwrap().announced);
+        assert_eq!(j.take_announcement("1.6.41"), None);
+        // 回给窗口的格式：`{"version": "1.6.41"}`。
+        assert_eq!(
+            serde_json::to_value(Announcement {
+                version: "1.6.41".to_string()
+            })
+            .unwrap(),
+            serde_json::json!({"version": "1.6.41"})
+        );
+    }
+
+    #[test]
+    fn an_announcement_asked_before_the_confirmation_waits_for_it() {
+        // 新版本刚起来：还在等启动确认，窗口几秒后就来问。
+        let mut j = ready(Trigger::Auto);
+        j.apply_started(ApplyHow::Idle, at(100));
+        j.on_boot("1.6.41", at(110));
+        let dir = tempfile::tempdir().unwrap();
+        let file = path(dir.path());
+        save(&file, &j).unwrap();
+        let lock = std::sync::Mutex::new(());
+        let gate = ConfirmGate::new();
+
+        let got = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let _guard = lock.lock().unwrap();
+                let mut j = load(&file, "1.6.41");
+                j.confirm("1.6.41", at(170)).unwrap();
+                save(&file, &j).unwrap();
+                drop(_guard);
+                gate.settle();
+            });
+            take_announcement_once_confirmed(
+                &file,
+                "1.6.41",
+                &lock,
+                &gate,
+                std::time::Duration::from_secs(30),
+            )
+        });
+        assert_eq!(
+            got,
+            Some(Announcement {
+                version: "1.6.41".to_string()
+            })
+        );
+        assert!(load(&file, "1.6.41").last.unwrap().announced);
+    }
+
+    #[test]
+    fn an_announcement_does_not_wait_forever_or_when_nothing_is_awaited() {
+        let lock = std::sync::Mutex::new(());
+        // 一直没确认：等到头回 None，日志里还在等。
+        let mut j = ready(Trigger::Auto);
+        j.apply_started(ApplyHow::Idle, at(100));
+        j.on_boot("1.6.41", at(110));
+        let dir = tempfile::tempdir().unwrap();
+        let file = path(dir.path());
+        save(&file, &j).unwrap();
+        let gate = ConfirmGate::new();
+        let wait = std::time::Duration::from_millis(100);
+        assert_eq!(
+            take_announcement_once_confirmed(&file, "1.6.41", &lock, &gate, wait),
+            None
+        );
+        assert!(!gate.wait(std::time::Duration::ZERO));
+        assert!(load(&file, "1.6.41").awaiting_confirmation("1.6.41"));
+
+        // 早就确认过了（这次启动不用确认）：不等闸，直接拿。
+        let mut j = load(&file, "1.6.41");
+        j.confirm("1.6.41", at(170)).unwrap();
+        save(&file, &j).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            take_announcement_once_confirmed(
+                &file,
+                "1.6.41",
+                &lock,
+                &gate,
+                std::time::Duration::from_secs(30),
+            ),
+            Some(Announcement {
+                version: "1.6.41".to_string()
+            })
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        // 放行以后再等立刻回 true。
+        gate.settle();
+        assert!(gate.wait(std::time::Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn an_earlier_update_is_not_announced_by_a_version_that_was_not_confirmed() {
+        // 上一次换上的 1.6.40 还没提示过，这次换上 1.6.41 以后本机服务没起来，
+        // 确认放弃了（闸放行了、日志里还在等）：不能把 1.6.40 当成这次的结果提示。
+        let mut j = ready(Trigger::Auto);
+        j.last = Some(Last {
+            to: "1.6.40".to_string(),
+            result: UpdateResult::Applied,
+            finished_at: at(0),
+            announced: false,
+        });
+        j.apply_started(ApplyHow::Idle, at(100));
+        j.on_boot("1.6.41", at(110));
+        let dir = tempfile::tempdir().unwrap();
+        let file = path(dir.path());
+        save(&file, &j).unwrap();
+        let lock = std::sync::Mutex::new(());
+        let gate = ConfirmGate::new();
+        gate.settle();
+        assert_eq!(
+            take_announcement_once_confirmed(
+                &file,
+                "1.6.41",
+                &lock,
+                &gate,
+                std::time::Duration::from_secs(30),
+            ),
+            None
+        );
+        assert_eq!(take_announcement_at(&file, "1.6.41"), None);
+
+        // 还在跑 1.6.40（新版没换上过）时，它自己的那次照常提示。
+        let mut j = Journal {
+            last: j.last.clone(),
+            ..Default::default()
+        };
+        assert_eq!(j.take_announcement("1.6.41"), None);
+        assert_eq!(
+            j.take_announcement("1.6.40"),
+            Some(Announcement {
+                version: "1.6.40".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn an_announcement_that_cannot_be_saved_is_not_handed_out() {
+        let mut j = ready(Trigger::Auto);
+        j.apply_started(ApplyHow::Idle, at(100));
+        j.on_boot("1.6.41", at(110));
+        j.confirm("1.6.41", at(170)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = path(dir.path());
+        save(&file, &j).unwrap();
+
+        // 读得出、写不进去（临时文件的位置被一个目录占着）：不提示，文件里
+        // 还是没提示过。
+        let tmp = file.with_extension("json.tmp");
+        std::fs::create_dir(&tmp).unwrap();
+        assert_eq!(take_announcement_at(&file, "1.6.41"), None);
+        assert!(!load(&file, "1.6.41").last.unwrap().announced);
+
+        // 写得进去了：提示一次，第二次没有。
+        std::fs::remove_dir(&tmp).unwrap();
+        assert_eq!(
+            take_announcement_at(&file, "1.6.41"),
+            Some(Announcement {
+                version: "1.6.41".to_string()
+            })
+        );
+        assert_eq!(take_announcement_at(&file, "1.6.41"), None);
+    }
+
+    #[test]
+    fn other_outcomes_are_never_announced() {
+        assert_eq!(Journal::default().take_announcement("1.6.41"), None);
+        for result in [
+            UpdateResult::DownloadFailed,
+            UpdateResult::InstallFailed,
+            UpdateResult::BootUnconfirmed,
+            UpdateResult::WaitingLong,
+        ] {
+            let mut j = Journal {
+                last: Some(Last {
+                    to: "1.6.41".to_string(),
+                    result,
+                    finished_at: at(0),
+                    // 就算没标成提示过，也不提示。
+                    announced: false,
+                }),
+                ..Default::default()
+            };
+            assert_eq!(j.take_announcement("1.6.41"), None, "{result:?}");
+            assert_eq!(j.take_announcement("1.6.41"), None, "{result:?}");
+        }
+    }
+
+    #[test]
+    fn blocked_checks_are_counted_on_the_ready_attempt() {
+        let mut j = ready(Trigger::Auto);
+        j.note_blocked(BlockReason::LocalTurn);
+        j.note_blocked(BlockReason::LocalTurn);
+        j.note_blocked(BlockReason::Terminal);
+        j.note_blocked(BlockReason::LentDevice);
+        j.note_blocked(BlockReason::UserActive);
+        j.note_blocked(BlockReason::Unknown);
+        assert_eq!(
+            j.attempt.as_ref().unwrap().blocked,
+            Blocked {
+                local_turn: 2,
+                terminal: 1,
+                lent_device: 1,
+                user_active: 1,
+                unknown: 1,
+            }
+        );
+        // 上报时带着。
+        j.apply_started(ApplyHow::Idle, at(100));
+        j.on_boot("1.6.41", at(110));
+        assert_eq!(j.confirm("1.6.41", at(170)).unwrap().blocked.local_turn, 2);
+
+        // 没有下好的那条：不记。
+        let mut j = Journal::default();
+        j.note_blocked(BlockReason::Terminal);
+        assert_eq!(j, Journal::default());
+    }
+
+    #[test]
+    fn idle_restarts_are_counted_per_version() {
+        let mut j = Journal::default();
+        assert_eq!(j.idle_tries("1.6.41"), 0);
+        j.note_idle_try("1.6.41");
+        assert_eq!(j.idle_tries("1.6.41"), 1);
+        j.note_idle_try("1.6.41");
+        assert_eq!(j.idle_tries("1.6.41"), 2);
+        assert_eq!(j.idle_tries("1.6.42"), 0);
+        // 换了一版从头数。
+        j.note_idle_try("1.6.42");
+        assert_eq!(j.idle_tries("1.6.42"), 1);
+        assert_eq!(j.idle_tries("1.6.41"), 0);
+
+        // 存进文件、读回来还在；老文件没有这一项也读得出来。
+        let dir = tempfile::tempdir().unwrap();
+        let file = path(dir.path());
+        save(&file, &j).unwrap();
+        assert_eq!(load(&file, "1.6.40").idle_tries("1.6.42"), 1);
+        std::fs::write(&file, br#"{"attempt": null}"#).unwrap();
+        assert_eq!(load(&file, "1.6.40").idle_apply, None);
     }
 
     #[test]

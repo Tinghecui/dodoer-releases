@@ -28,12 +28,23 @@ pub struct AppPreferences {
     /// not tell a choice from a default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<bool>,
+    /// Cowork fork (issue #412): the "Automatic updates" setting of the macOS
+    /// app, `"auto"` / `"download"` / `"off"`; `None` and anything else is
+    /// `"auto"` (`update::idle::UpdateMode::parse`). Read where the update
+    /// is put in place at launch, before the window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_mode: Option<String>,
 }
 
 impl AppPreferences {
     /// Whether diagnostics are sent: unless the person turned them off.
     pub fn diagnostics_enabled(&self) -> bool {
         self.diagnostics.unwrap_or(true)
+    }
+
+    /// The "Automatic updates" setting, unknown values read as automatic.
+    pub fn update_mode(&self) -> crate::update::idle::UpdateMode {
+        crate::update::idle::UpdateMode::parse(self.update_mode.as_deref())
     }
 }
 
@@ -90,5 +101,27 @@ mod tests {
         };
         let saved = serde_json::to_string(&off).unwrap();
         assert!(!read(&saved).diagnostics_enabled());
+    }
+
+    #[test]
+    fn the_update_mode_is_auto_until_set() {
+        use crate::update::idle::UpdateMode;
+        let read = |raw: &str| serde_json::from_str::<AppPreferences>(raw).unwrap();
+        assert_eq!(read("{}").update_mode(), UpdateMode::Auto);
+        assert_eq!(
+            read(r#"{"update_mode":"download"}"#).update_mode(),
+            UpdateMode::Download
+        );
+        assert_eq!(
+            read(r#"{"update_mode":"off"}"#).update_mode(),
+            UpdateMode::Off
+        );
+        assert_eq!(
+            read(r#"{"update_mode":"later"}"#).update_mode(),
+            UpdateMode::Auto
+        );
+        // Untouched files stay as they were.
+        let untouched = serde_json::to_string(&AppPreferences::default()).unwrap();
+        assert!(!untouched.contains("update_mode"), "{untouched}");
     }
 }

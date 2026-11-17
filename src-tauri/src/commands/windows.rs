@@ -2507,6 +2507,29 @@ pub fn show_main_window(app: &AppHandle) {
     show_and_focus_window(app, "main");
 }
 
+/// Cowork fork (issue #412): [`show_and_focus_window`] without the focus, for
+/// the launch an idle restart reopened in the background
+/// (`update::idle::relaunched_in_background`): the windows come back, behind
+/// whatever the user has in front.
+pub(crate) fn show_window_quietly(app: &AppHandle, label: &str) {
+    let Some(window) = app.get_webview_window(label) else {
+        return;
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    crate::commands::workspace_windows::note_shown(app, label);
+}
+
+/// [`show_and_focus_window`], or [`show_window_quietly`] when this launch
+/// was reopened in the background.
+pub(crate) fn show_window_at_launch(app: &AppHandle, label: &str) {
+    if crate::update::idle::relaunched_in_background() {
+        show_window_quietly(app, label);
+    } else {
+        show_and_focus_window(app, label);
+    }
+}
+
 /// Send `main` to the tray: what the close button does under the `minimize`
 /// preference. The local ACP connections and terminals live on; only the
 /// window goes.

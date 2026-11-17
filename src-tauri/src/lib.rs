@@ -1495,7 +1495,11 @@ mod tauri_app {
                         .title("dodoer")
                         .inner_size(1260.0, 860.0)
                         .min_inner_size(400.0, 600.0)
-                        .visible(restore.show_local());
+                        .visible(restore.show_local())
+                        // Cowork fork: reopened in the background by an
+                        // idle restart, it does not take the focus
+                        // (`update::idle::relaunched_in_background`).
+                        .focused(!crate::update::idle::relaunched_in_background());
                     let builder = windows::apply_platform_window_style(builder);
                     // The workspace title bar is taller than the shared default
                     // (it hosts the tab strips), so nudge the native macOS
@@ -1519,6 +1523,9 @@ mod tauri_app {
                 // Cowork fork: the daemon and the main window are up; 60 s more
                 // and an update that put this version in place is confirmed.
                 app_update_commands::confirm_when_running(mode);
+                // Cowork fork: on macOS a downloaded update is put in place
+                // on its own once the Mac is idle (`update_mode` "auto").
+                app_update_commands::start_idle_restart(app.handle());
                 crate::deep_link::start_cowork_connect_links(app.handle(), &startup_urls);
 
                 #[cfg(all(
@@ -2410,6 +2417,9 @@ mod tauri_app {
                 web::probe_web_service_port,
                 crate::crash_report::get_crash_report_settings,
                 crate::crash_report::update_crash_report_settings,
+                app_update_commands::get_update_preferences,
+                app_update_commands::update_update_preferences,
+                app_update_commands::take_update_announcement,
             ])
             .build(context)
             .expect("error while building tauri application")

@@ -128,8 +128,102 @@ fn to_value<T: Serialize>(outcome: T) -> serde_json::Value {
     serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null)
 }
 
+/// Cowork fork（issue #412 第 5 行）：借出设备有没有在用，给空闲时自动重启
+/// 判断用。浏览器、电脑操作的调用（本机 daemon 和远端服务器来的都经过
+/// [`dispatch`]）记下最后一次的时刻；借出 shell 的隧道
+/// （`commands::remote_proxy` 的 `open_tunnel`）开着的时候拿着一个
+/// [`LentTunnel`]，数着开着几条。
+pub mod lent {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    static LAST_CALL: Mutex<Option<Instant>> = Mutex::new(None);
+    static OPEN_TUNNELS: AtomicU32 = AtomicU32::new(0);
+    static CALLS_IN_FLIGHT: AtomicU32 = AtomicU32::new(0);
+
+    /// 借出设备被调用了一次（开始和结束各记一次）。
+    pub fn note_call() {
+        *LAST_CALL.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+    }
+
+    /// 距上一次调用过了多少秒；这次运行里没有过是 `None`。
+    /// 还有调用在跑时是 `Some(0)`。
+    pub fn last_call_secs() -> Option<u64> {
+        let elapsed = LAST_CALL
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .map(|at| at.elapsed().as_secs());
+        call_age(calls_in_flight(), elapsed)
+    }
+
+    /// 距上一次调用的秒数：还有调用在跑（`in_flight > 0`）时一律算刚刚
+    /// （`Some(0)`），不管它是多久以前开始的；否则就是 `elapsed`。
+    pub fn call_age(in_flight: u32, elapsed: Option<u64>) -> Option<u64> {
+        if in_flight > 0 {
+            Some(0)
+        } else {
+            elapsed
+        }
+    }
+
+    /// 还没回来的借出调用数。
+    pub fn calls_in_flight() -> u32 {
+        CALLS_IN_FLIGHT.load(Ordering::SeqCst)
+    }
+
+    /// 一次在跑的借出调用：开始和结束（丢掉，包括 future 被取消时）各记一次
+    /// 时刻，在跑的这段时间数着，空闲检查不会把一次很长的调用当成早就结束了。
+    #[must_use]
+    pub struct LentCall(());
+
+    impl LentCall {
+        pub fn begin() -> Self {
+            CALLS_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+            note_call();
+            LentCall(())
+        }
+    }
+
+    impl Drop for LentCall {
+        fn drop(&mut self) {
+            note_call();
+            CALLS_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// 开着的借出 shell 隧道数。
+    pub fn open_tunnels() -> u32 {
+        OPEN_TUNNELS.load(Ordering::SeqCst)
+    }
+
+    /// 一条开着的隧道，丢掉（隧道关了）时数减一。
+    #[must_use]
+    pub struct LentTunnel(());
+
+    impl LentTunnel {
+        pub fn open() -> Self {
+            OPEN_TUNNELS.fetch_add(1, Ordering::SeqCst);
+            LentTunnel(())
+        }
+    }
+
+    impl Drop for LentTunnel {
+        fn drop(&mut self) {
+            OPEN_TUNNELS.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
 /// Run one call against the app's tools; the outcome as JSON.
 pub async fn dispatch(tools: &HostTools, call: BridgeCall) -> serde_json::Value {
+    // Cowork fork: 借出设备在用，空闲时不自动重启（`lent`）。
+    // 调用在跑的整段时间都算在用，结束（或被取消）时 guard 丢掉。
+    let _in_flight = lent::LentCall::begin();
+    dispatch_call(tools, call).await
+}
+
+async fn dispatch_call(tools: &HostTools, call: BridgeCall) -> serde_json::Value {
     match call {
         BridgeCall::Browser(call) => {
             let b = &tools.browser;
@@ -712,6 +806,37 @@ pub mod ws_host {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_call_still_running_counts_as_just_now_however_long_ago_it_began() {
+        // 一次调用跑了 20 分钟还没回来：照样算刚刚在用。
+        assert_eq!(lent::call_age(1, Some(1200)), Some(0));
+        assert_eq!(lent::call_age(2, None), Some(0));
+        // 没有在跑的：按最后一次的时刻算。
+        assert_eq!(lent::call_age(0, Some(1200)), Some(1200));
+        assert_eq!(lent::call_age(0, None), None);
+    }
+
+    #[test]
+    fn a_call_in_flight_is_counted_until_its_guard_drops() {
+        let call = lent::LentCall::begin();
+        assert!(lent::calls_in_flight() >= 1);
+        assert_eq!(lent::last_call_secs(), Some(0));
+        drop(call);
+    }
+
+    #[test]
+    fn lent_tunnels_are_counted_while_open_and_calls_are_timed() {
+        let tunnel = lent::LentTunnel::open();
+        let second = lent::LentTunnel::open();
+        // 别的测试也可能开着，只看至少有这两条。
+        assert!(lent::open_tunnels() >= 2);
+        drop(second);
+        drop(tunnel);
+
+        lent::note_call();
+        assert!(lent::last_call_secs().is_some_and(|secs| secs < 5));
+    }
 
     #[test]
     fn calls_round_trip_as_tagged_json() {

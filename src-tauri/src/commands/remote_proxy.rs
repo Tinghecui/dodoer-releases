@@ -2709,7 +2709,11 @@ impl WsHost for DesktopWsHost {
             .map_err(|_| "dialing the server back timed out".to_string())?
             .map_err(|e| format!("could not dial the server back: {}", WsConnectError::from(e)))?;
         let server = self.server.clone();
+        // Cowork fork: 开着的隧道算借出设备在用（`host_bridge::lent`），
+        // 空闲时不自动重启。
+        let open = crate::host_bridge::lent::LentTunnel::open();
         tokio::spawn(async move {
+            let _open = open;
             tracing::info!("[host-ssh] a tunnel from {server} is open");
             let (reader, writer) = service.into_split();
             let withdrawn = Arc::clone(&lending);

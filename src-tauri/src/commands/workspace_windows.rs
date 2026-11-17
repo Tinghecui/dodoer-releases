@@ -666,12 +666,14 @@ fn finish_restore(app: &AppHandle, front: WorkspaceWindow, failures: Vec<Workspa
         };
         (state.open.is_empty(), front)
     };
+    // Cowork fork: a launch an idle restart reopened in the background shows
+    // the windows without focusing them (`show_window_at_launch`).
     if !failures.is_empty() || nothing_open {
         // The toast saying why a window did not come back is shown in `main`;
         // and with nothing reopened, `main` is all there is.
-        crate::commands::windows::show_main_window(app);
+        crate::commands::windows::show_window_at_launch(app, "main");
     } else if app.get_webview_window(&front.label()).is_some() {
-        crate::commands::windows::show_and_focus_window(app, &front.label());
+        crate::commands::windows::show_window_at_launch(app, &front.label());
     }
     if !failures.is_empty() {
         session.lock().failures.extend(failures);

@@ -95,6 +95,7 @@ export const SHELL_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   "get_system_autostart_settings",
   "get_system_close_behavior_settings",
   "get_system_rendering_settings",
+  "get_update_preferences",
   "host_device",
   "host_ssh_lend_again",
   "host_ssh_permissions",
@@ -137,6 +138,7 @@ export const SHELL_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   "send_notification",
   "set_tray_locale",
   "take_pending_deep_link",
+  "take_update_announcement",
   "take_workspace_restore_failures",
   "test_remote_workspace_connection",
   "toggle_pet_panel",
@@ -147,6 +149,7 @@ export const SHELL_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   "update_system_close_behavior_settings",
   "update_system_rendering_settings",
   "update_traffic_light_position",
+  "update_update_preferences",
 ])
 
 export const SHELL_COMMANDS: ReadonlySet<string> = new Set([

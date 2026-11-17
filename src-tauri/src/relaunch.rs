@@ -34,6 +34,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Set once an exit has been requested in order to restart.
 static RESTART_PENDING: AtomicBool = AtomicBool::new(false);
 
+/// Cowork fork (issue #412): the pending restart is the one an idle Mac
+/// does on its own to put an update in place, and the new instance comes
+/// back behind the app in use ([`set_background`]).
+static BACKGROUND: AtomicBool = AtomicBool::new(false);
+
 /// What launches the new instance, as in tauri's restart.
 const OPEN: &str = "/usr/bin/open";
 
@@ -43,7 +48,7 @@ const OPEN: &str = "/usr/bin/open";
 const WAIT_TRIES: u32 = 200;
 
 /// The relauncher. Run as
-/// `/bin/sh -c RELAUNCHER codeg-relaunch <pid> <tries> <open> <bundle> <exe> [args…]`.
+/// `/bin/sh -c RELAUNCHER codeg-relaunch <pid> <tries> <open> <bundle> <exe> <how> [args…]`.
 ///
 /// It waits until `<pid>` has left the process table, or is a zombie nobody
 /// has reaped yet (`kill -0` would still find one), and LaunchServices no
@@ -51,8 +56,12 @@ const WAIT_TRIES: u32 = 200;
 /// hears about the new one. Then `open -n`, as tauri does, or, if that fails,
 /// the executable itself, as tauri's fallback does. Paths are absolute: PATH is
 /// whatever codeg's was.
-const RELAUNCHER: &str = r#"pid=$1 tries=$2 open=$3 bundle=$4 exe=$5
-shift 5
+///
+/// Cowork fork: `<how>` is `background` for the restart an idle Mac does on
+/// its own (issue #412): `open -g` leaves the app in front where it is.
+/// Anything else (`front`) opens it as before.
+const RELAUNCHER: &str = r#"pid=$1 tries=$2 open=$3 bundle=$4 exe=$5 how=$6
+shift 6
 while [ "$tries" -gt 0 ]; do
   case $(/bin/ps -o stat= -p "$pid" 2>/dev/null) in
     '' | Z*) [ -z "$(/usr/bin/lsappinfo find "pid=$pid" 2>/dev/null)" ] && break ;;
@@ -60,9 +69,21 @@ while [ "$tries" -gt 0 ]; do
   tries=$((tries - 1))
   /bin/sleep 0.05
 done
-"$open" -n "$bundle" --args "$@" && exit 0
+case $how in
+  background) "$open" -g -n "$bundle" --args "$@" && exit 0 ;;
+  *) "$open" -n "$bundle" --args "$@" && exit 0 ;;
+esac
 exec "$exe" "$@"
 "#;
+
+/// Cowork fork (issue #412): whether the next restart reopens in the
+/// background — `open -g`, and the new instance started with
+/// [`crate::update::idle::RELAUNCHED_IN_BACKGROUND`], so that it neither
+/// focuses its windows nor activates. Set by the idle restart just before it
+/// installs, and cleared again when that fails.
+pub(crate) fn set_background(background: bool) {
+    BACKGROUND.store(background, Ordering::SeqCst);
+}
 
 /// From `RunEvent::ExitRequested`: remembers whether the exit is a restart.
 /// tauri requests one with `RESTART_EXIT_CODE` and nothing else uses it.
@@ -99,6 +120,7 @@ pub(crate) fn relaunch_after_exit(app: &tauri::AppHandle) {
         Path::new(OPEN),
         &exe,
         &env.args_os,
+        BACKGROUND.load(Ordering::SeqCst),
     ) else {
         return;
     };
@@ -136,6 +158,7 @@ pub(crate) fn relaunch_now(app: &tauri::AppHandle) -> Result<std::convert::Infal
         Path::new(OPEN),
         &exe,
         &env.args_os,
+        false,
     )
     .ok_or_else(|| format!("{} is not in an app bundle", exe.display()))?;
     relauncher.spawn().map_err(|e| e.to_string())?;
@@ -145,17 +168,21 @@ pub(crate) fn relaunch_now(app: &tauri::AppHandle) -> Result<std::convert::Infal
 
 /// The relauncher for `exe`, given this process's command line `args_os`
 /// (the program first, as in `Env::args_os`): what follows the program is
-/// passed on to the new instance. None when `exe` is not in an app bundle.
+/// passed on to the new instance — without the background flag of an earlier
+/// background relaunch, and with it when this one is in the `background`
+/// ([`crate::update::idle::relaunch_args`]). None when `exe` is not in an app
+/// bundle.
 fn relauncher_for(
     pid: u32,
     tries: u32,
     open: &Path,
     exe: &Path,
     args_os: &[OsString],
+    background: bool,
 ) -> Option<Command> {
     let bundle = app_bundle(exe)?;
-    let args = args_os.get(1..).unwrap_or_default();
-    Some(relauncher(pid, tries, open, bundle, exe, args))
+    let args = crate::update::idle::relaunch_args(args_os.get(1..).unwrap_or_default(), background);
+    Some(relauncher(pid, tries, open, bundle, exe, &args, background))
 }
 
 /// The `.app` bundle `exe` runs from, `<bundle>.app/Contents/MacOS/<exe>`: the
@@ -176,6 +203,7 @@ pub(crate) fn app_bundle(exe: &Path) -> Option<&Path> {
 /// a codeg started at login is the process of a launchd job
 /// (`~/Library/LaunchAgents/codeg.plist`), and launchd kills whatever is left
 /// in the job's process group when the job exits. No stdio of codeg's.
+#[allow(clippy::too_many_arguments)]
 fn relauncher(
     pid: u32,
     tries: u32,
@@ -183,6 +211,7 @@ fn relauncher(
     bundle: &Path,
     exe: &Path,
     args: &[OsString],
+    background: bool,
 ) -> Command {
     let mut command = Command::new("/bin/sh");
     command
@@ -194,6 +223,7 @@ fn relauncher(
         .arg(open)
         .arg(bundle)
         .arg(exe)
+        .arg(if background { "background" } else { "front" })
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -295,6 +325,7 @@ mod tests {
             bundle,
             &exe,
             &args(&["--flag", "two words"]),
+            false,
         )
         .spawn()
         .unwrap();
@@ -340,6 +371,7 @@ mod tests {
             Path::new("/Applications/codeg.app"),
             &exe,
             &args(&["--x"]),
+            false,
         )
         .spawn()
         .unwrap();
@@ -371,6 +403,7 @@ mod tests {
             &open,
             &exe,
             &args(&[exe.to_str().unwrap(), "--flag", "two words"]),
+            false,
         )
         .expect("the executable is in a bundle")
         .spawn()
@@ -390,7 +423,7 @@ mod tests {
         );
 
         // Started without arguments: nothing after `--args`.
-        let mut relauncher = relauncher_for(gone.id(), 3, &open, &exe, &args(&["codeg"]))
+        let mut relauncher = relauncher_for(gone.id(), 3, &open, &exe, &args(&["codeg"]), false)
             .unwrap()
             .spawn()
             .unwrap();
@@ -400,7 +433,53 @@ mod tests {
             .ends_with("--args\n"));
 
         // Not in a bundle: no relauncher.
-        assert!(relauncher_for(1, 3, &open, &open, &args(&["x"])).is_none());
+        assert!(relauncher_for(1, 3, &open, &open, &args(&["x"]), false).is_none());
+    }
+
+    /// Cowork fork (issue #412): the idle restart reopens with `open -g` and
+    /// the background flag; every other restart has neither.
+    #[test]
+    fn a_background_relaunch_opens_with_g_and_the_flag() {
+        use crate::update::idle::RELAUNCHED_IN_BACKGROUND;
+        let dir = tempfile::tempdir().unwrap();
+        let open = recorder(dir.path(), "open", 0);
+        let macos = dir.path().join("Some App.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let exe = recorder(&macos, "codeg", 0);
+        let bundle = dir.path().join("Some App.app");
+        let mut gone = Command::new("/usr/bin/true").spawn().unwrap();
+        gone.wait().unwrap();
+
+        let launched_with = |launch_args: &[&str], background: bool| {
+            let _ = std::fs::remove_file(recorded(&open));
+            let mut relauncher =
+                relauncher_for(gone.id(), 3, &open, &exe, &args(launch_args), background)
+                    .unwrap()
+                    .spawn()
+                    .unwrap();
+            let launched =
+                wait_for(&recorded(&open), Duration::from_secs(10)).expect("not relaunched");
+            reap(&mut relauncher);
+            launched
+        };
+
+        assert_eq!(
+            launched_with(&["codeg", "--flag"], true),
+            format!(
+                "-g\n-n\n{}\n--args\n--flag\n{RELAUNCHED_IN_BACKGROUND}\n",
+                bundle.display()
+            )
+        );
+        assert_eq!(
+            launched_with(&["codeg", "--flag"], false),
+            format!("-n\n{}\n--args\n--flag\n", bundle.display())
+        );
+        // The instance that came back in the background, restarted by a
+        // click: in front, and without the flag.
+        assert_eq!(
+            launched_with(&["codeg", "--flag", RELAUNCHED_IN_BACKGROUND], false),
+            format!("-n\n{}\n--args\n--flag\n", bundle.display())
+        );
     }
 
     #[test]
@@ -418,6 +497,7 @@ mod tests {
             Path::new("/Applications/codeg.app"),
             &exe,
             &[],
+            false,
         )
         .spawn()
         .unwrap();

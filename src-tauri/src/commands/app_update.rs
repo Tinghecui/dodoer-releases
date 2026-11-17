@@ -46,6 +46,12 @@
 //! restored the update from its manifest and checked the package's signature.
 //! A rollback stores nothing and removes what was stored: the older release
 //! may not know to clean it up.
+//!
+//! Cowork fork: on macOS, with "Automatic updates" at "Install automatically"
+//! (the `update_mode` preference, [`crate::update::idle::UpdateMode`]), a
+//! downloaded update is put in place on its own once the Mac has been idle
+//! for two checks a minute apart ([`start_idle_restart`]): the same way as
+//! the restart button, then reopened in the background (`open -g`).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -54,7 +60,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::app_error::AppCommandError;
-use crate::update::journal::{self, ApplyHow, Journal, Outcome, Trigger};
+use crate::update::idle::{self, IdleSnapshot, IdleStreak, IdleTries, IdleVerdict, UpdateMode};
+use crate::update::journal::{self, Announcement, ApplyHow, Journal, Outcome, Trigger};
 use crate::update::restart_install::{self, RestartInstallOutcome};
 use crate::update::rollback::{self, AppRollbackTarget, ReleaseSource};
 use crate::update::staged::{self, Check, Restored, Verdict};
@@ -79,6 +86,13 @@ struct JournalHome {
 static JOURNAL_HOME: OnceLock<JournalHome> = OnceLock::new();
 /// Around every read-change-write of the journal.
 static JOURNAL_LOCK: Mutex<()> = Mutex::new(());
+/// Opened once the start confirmation of this run is over
+/// ([`confirm_when_running`]); [`take_update_announcement`] waits for it.
+static CONFIRM_GATE: journal::ConfirmGate = journal::ConfirmGate::new();
+/// The longest [`take_update_announcement`] waits for the confirmation: the
+/// local daemon gets up to 5 minutes, then [`journal::CONFIRM_AFTER_SECS`].
+const ANNOUNCE_WAIT: std::time::Duration =
+    std::time::Duration::from_secs(5 * 60 + journal::CONFIRM_AFTER_SECS + 60);
 
 /// Read the journal, let `f` change it, write it back when it changed. None
 /// before [`start_journal`].
@@ -210,41 +224,48 @@ pub fn start_journal(app: &tauri::AppHandle, data_dir: &Path) {
 /// watches.
 pub fn confirm_when_running(mode: crate::local_daemon::Mode) {
     if with_journal(|j, running| j.awaiting_confirmation(running)) != Some(true) {
+        CONFIRM_GATE.settle();
         return;
     }
     tauri::async_runtime::spawn(async move {
-        if mode == crate::local_daemon::Mode::Child {
-            let mut up = false;
-            // Up to 5 minutes.
-            for _ in 0..60 {
-                if matches!(crate::local_daemon::connection_info().await, Ok(Some(_))) {
-                    up = true;
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            }
-            if !up {
-                tracing::warn!("[update] the local daemon did not come up; not confirmed");
-                return;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(journal::CONFIRM_AFTER_SECS)).await;
-        let confirmed = tauri::async_runtime::spawn_blocking(|| {
-            with_journal(|j, running| j.confirm(running, now()))
-        })
-        .await;
-        if let Ok(Some(Some(outcome))) = confirmed {
-            tracing::info!("[update] confirmed running {}", outcome.to);
-            report(&outcome);
-            // The update (or the rollback) is in place: what was stored for
-            // it has done its job.
-            if let Some(root) = STAGED_ROOT.get() {
-                if let Err(e) = staged::clear(root) {
-                    tracing::warn!("[update] could not remove the stored package: {e}");
-                }
-            }
-        }
+        confirm_after_start(mode).await;
+        // 确认了或没确认，「已更新到…」都不用再等了。
+        CONFIRM_GATE.settle();
     });
+}
+
+async fn confirm_after_start(mode: crate::local_daemon::Mode) {
+    if mode == crate::local_daemon::Mode::Child {
+        let mut up = false;
+        // Up to 5 minutes.
+        for _ in 0..60 {
+            if matches!(crate::local_daemon::connection_info().await, Ok(Some(_))) {
+                up = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+        if !up {
+            tracing::warn!("[update] the local daemon did not come up; not confirmed");
+            return;
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(journal::CONFIRM_AFTER_SECS)).await;
+    let confirmed = tauri::async_runtime::spawn_blocking(|| {
+        with_journal(|j, running| j.confirm(running, now()))
+    })
+    .await;
+    if let Ok(Some(Some(outcome))) = confirmed {
+        tracing::info!("[update] confirmed running {}", outcome.to);
+        report(&outcome);
+        // The update (or the rollback) is in place: what was stored for
+        // it has done its job.
+        if let Some(root) = STAGED_ROOT.get() {
+            if let Err(e) = staged::clear(root) {
+                tracing::warn!("[update] could not remove the stored package: {e}");
+            }
+        }
+    }
 }
 
 /// Begin (or attach to) a download+install of the available update. Returns
@@ -534,6 +555,8 @@ fn use_stored_install(
         None
     });
     tracing::info!("[update] using the stored package {version}, no download");
+    // 存着的包只会是升级的，回退不存盘。
+    READY_IS_ROLLBACK.store(false, Ordering::SeqCst);
     transition(handle, || {
         update_state::set_ready(handle, emitter, Some(version), None, None, None)
     });
@@ -617,8 +640,8 @@ pub fn apply_at_launch(app: &tauri::AppHandle, data_dir: &Path, sole_instance: b
     let earlier_outcome = !early_outcomes().is_empty();
     let decision = staged::launch_apply(staged::LaunchCheck {
         platform,
-        // 第 5 行加 `update_mode` 偏好之前，当作不是「关闭」。
-        mode_allows: true,
+        // 自动更新是「关闭」时不在启动时换上。
+        mode_allows: crate::preferences::load().update_mode().applies_at_launch(),
         stored: install.as_ref().map(|i| i.update.version.as_str()),
         tried: tried.as_deref(),
         bundle_writable: install.is_some() && launch_bundle_writable(app),
@@ -877,6 +900,7 @@ async fn run_download(
         j.download_done(bytes, now());
         None
     });
+    READY_IS_ROLLBACK.store(downgrade.is_some(), Ordering::SeqCst);
     // The desktop app relaunches itself, so there is no supervisor trial or
     // restart-delay metadata to carry (those are server-only).
     transition(&handle, || {
@@ -896,7 +920,16 @@ pub async fn restart_app(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppUpdateStateHandle>,
 ) -> Result<(), AppCommandError> {
-    let handle = state.inner().clone();
+    restart_into_update(app, state.inner().clone(), ApplyHow::Click).await
+}
+
+/// [`restart_app`], and the idle restart ([`start_idle_restart`]): `how` is
+/// what the journal records.
+async fn restart_into_update(
+    app: tauri::AppHandle,
+    handle: AppUpdateStateHandle,
+    how: ApplyHow,
+) -> Result<(), AppCommandError> {
     let emitter = EventEmitter::Tauri(app.clone());
     // Atomically claim the relaunch (flips to `Restarting`) only if an update is
     // genuinely staged — same authority check as the server `restart_impl`.
@@ -910,7 +943,7 @@ pub async fn restart_app(
         ));
     }
     journal_event(|j, _| {
-        j.apply_started(ApplyHow::Click, now());
+        j.apply_started(how, now());
         None
     });
     if INSTALL_AT_RESTART {
@@ -1029,4 +1062,285 @@ async fn install_and_quit(
         update_state::set_error(&handle, &emitter, message.clone())
     });
     Err(AppCommandError::task_execution_failed(message))
+}
+
+/// The "Automatic updates" setting, as the settings page reads and writes it:
+/// `"auto"`, `"download"` or `"off"`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UpdatePreferences {
+    pub mode: String,
+}
+
+#[tauri::command]
+pub async fn get_update_preferences() -> Result<UpdatePreferences, AppCommandError> {
+    Ok(UpdatePreferences {
+        mode: crate::preferences::load()
+            .update_mode()
+            .as_str()
+            .to_string(),
+    })
+}
+
+/// Save the "Automatic updates" setting; a value it does not know is saved as
+/// `"auto"`. The idle restart reads it at each check, the launch at the next
+/// start.
+#[tauri::command]
+pub async fn update_update_preferences(
+    settings: UpdatePreferences,
+) -> Result<UpdatePreferences, AppCommandError> {
+    let mode = UpdateMode::parse(Some(&settings.mode));
+    let mut prefs = crate::preferences::load();
+    prefs.update_mode = Some(mode.as_str().to_string());
+    crate::preferences::save(&prefs).map_err(|err| {
+        AppCommandError::io_error("Failed to save the update setting").with_detail(err.to_string())
+    })?;
+    tracing::info!("[update] automatic updates: {}", mode.as_str());
+    Ok(UpdatePreferences {
+        mode: mode.as_str().to_string(),
+    })
+}
+
+/// "Updated to …": the version the last update put in place, the first time
+/// a window asks after it was confirmed; `null` after that and for any other
+/// outcome. Asked while this run is still being confirmed, it answers once
+/// the confirmation is over (at most [`ANNOUNCE_WAIT`]). Read and marked under the journal's lock, so of several windows
+/// asking at once only one gets it.
+#[tauri::command]
+pub async fn take_update_announcement() -> Result<Option<Announcement>, AppCommandError> {
+    Ok(tauri::async_runtime::spawn_blocking(|| {
+        // 写回成功才算提示过（[`journal::take_announcement_at`]）：日志写
+        // 不进去时不提示，免得别的窗口、下次启动再提示一遍。
+        // 新版本刚起来、还在等启动确认时，先等确认有了结果再拿
+        // （[`journal::take_announcement_once_confirmed`]）：确认要跑满一分钟，
+        // 早拿只会拿到上一次的结果。
+        let home = JOURNAL_HOME.get()?;
+        journal::take_announcement_once_confirmed(
+            &home.path,
+            &home.running,
+            &JOURNAL_LOCK,
+            &CONFIRM_GATE,
+            ANNOUNCE_WAIT,
+        )
+    })
+    .await
+    .ok()
+    .flatten())
+}
+
+/// How long to wait for each of the local daemon's answers.
+const IDLE_QUERY_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(idle::QUERY_TIMEOUT_SECS);
+
+/// The idle restart's minute timer runs once.
+static IDLE_TIMER: AtomicBool = AtomicBool::new(false);
+
+/// 现在下好、等重启的这一版是不是回退下的。下载走到 `ReadyToRestart` 时写
+/// （[`run_download`]、[`use_stored_install`]），不靠升级日志：日志丢了、坏了，
+/// 空闲检查也知道这是回退，不会自己重启装上它（回退要等人点）。
+static READY_IS_ROLLBACK: AtomicBool = AtomicBool::new(false);
+
+/// Cowork fork (issue #412): on macOS, from `setup` once the windows are on
+/// their way, check once a minute whether a downloaded update can be put in
+/// place on its own. Only while it may happen ([`idle::should_watch`]: the
+/// mode is "Install automatically", the update is `ReadyToRestart`, it is not
+/// a rollback, this version has not been tried twice) is the Mac looked at
+/// ([`idle_snapshot`]); otherwise nothing is asked of the local daemon. A
+/// check that finds it busy counts why in the journal; two idle checks in a
+/// row restart the way the button does, reopening in the background.
+pub fn start_idle_restart(app: &tauri::AppHandle) {
+    if !idle::restarts_when_idle_on(restart_install::CURRENT_PLATFORM)
+        || IDLE_TIMER.swap(true, Ordering::SeqCst)
+    {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let handle = {
+            use tauri::Manager;
+            app.state::<AppUpdateStateHandle>().inner().clone()
+        };
+        let mut streak = IdleStreak::default();
+        let mut tried_here = IdleTries::default();
+        let mut every_minute =
+            tokio::time::interval(std::time::Duration::from_secs(idle::CHECK_EVERY_SECS));
+        // The first tick is at once.
+        every_minute.tick().await;
+        loop {
+            every_minute.tick().await;
+            let state = update_state::snapshot(&handle);
+            let ready = state.status == AppUpdateLifecycle::ReadyToRestart;
+            let Some(version) = state.version.filter(|_| ready) else {
+                streak.reset();
+                continue;
+            };
+            let mode = crate::preferences::load().update_mode();
+            let journal = with_journal(|j, _| {
+                let rollback = j
+                    .attempt
+                    .as_ref()
+                    .is_some_and(|a| a.trigger == Trigger::Rollback);
+                (rollback, j.idle_tries(&version))
+            });
+            // 升级日志丢了、坏了也不把回退当成普通升级，次数也照样数：内存里
+            // 那份和日志里的合起来看。
+            let (rollback, tries) = idle::watch_facts(
+                READY_IS_ROLLBACK.load(Ordering::SeqCst),
+                journal,
+                tried_here.count(&version),
+            );
+            if !idle::should_watch(mode, ready, rollback, tries) {
+                streak.reset();
+                continue;
+            }
+            let snapshot = idle_snapshot(&app).await;
+            let verdict = idle::idle_verdict(&snapshot);
+            if let IdleVerdict::Blocked(reason) = verdict {
+                tracing::debug!("[update] not idle ({}): {snapshot:?}", reason.as_str());
+                journal_event(|j, _| {
+                    j.note_blocked(reason);
+                    None
+                });
+            }
+            if !streak.observe(verdict) {
+                continue;
+            }
+            tried_here.note(&version, tries);
+            journal_event(|j, _| {
+                j.note_idle_try(&version);
+                None
+            });
+            tracing::info!("[update] idle, restarting into {version}");
+            #[cfg(target_os = "macos")]
+            crate::relaunch::set_background(true);
+            if let Err(e) = restart_into_update(app.clone(), handle.clone(), ApplyHow::Idle).await {
+                // The install failed (the state is `Error` and the button
+                // is the user's to press) or the update was no longer
+                // ready: the next restart is a front one again.
+                #[cfg(target_os = "macos")]
+                crate::relaunch::set_background(false);
+                tracing::warn!("[update] the idle restart did not happen: {e}");
+            }
+        }
+    });
+}
+
+/// What [`idle::idle_verdict`] looks at, now. The local daemon's turns,
+/// background tasks and terminals: through its HTTP API when it is a child
+/// (each answer within [`IDLE_QUERY_TIMEOUT`]), from this process when it is
+/// in it, none in client mode; any of them not answered is
+/// `daemon_reachable = false`. The lent shell tunnels and the last lent
+/// browser or computer-use call ([`crate::host_bridge::lent`]), and how long
+/// the keyboard and the mouse have been left alone.
+async fn idle_snapshot(app: &tauri::AppHandle) -> IdleSnapshot {
+    use tauri::Manager;
+    let mode = app
+        .try_state::<crate::commands::local_daemon::DaemonModeState>()
+        .map(|state| state.0);
+    let local = match mode {
+        Some(crate::local_daemon::Mode::Client) => Some((0, 0, 0)),
+        Some(crate::local_daemon::Mode::Child) => child_daemon_activity(app).await,
+        Some(crate::local_daemon::Mode::Embedded) => in_process_activity(app).await,
+        None => None,
+    };
+    let (local_turns, local_background, local_terminals) = local.unwrap_or_default();
+    IdleSnapshot {
+        local_turns,
+        local_background,
+        local_terminals,
+        lent_tunnels: crate::host_bridge::lent::open_tunnels(),
+        lent_last_call_secs: crate::host_bridge::lent::last_call_secs(),
+        user_idle_secs: user_idle_secs(),
+        daemon_reachable: local.is_some(),
+    }
+}
+
+async fn child_daemon_activity(app: &tauri::AppHandle) -> Option<(u32, u32, u32)> {
+    use tauri::Manager;
+    let conn = tokio::time::timeout(IDLE_QUERY_TIMEOUT, crate::local_daemon::connection_info())
+        .await
+        .ok()?
+        .ok()??;
+    let proxy = app
+        .try_state::<Arc<crate::commands::remote_proxy::RemoteProxyState>>()?
+        .inner()
+        .clone();
+    let ask = |command: &'static str| {
+        let proxy = proxy.clone();
+        let conn = conn.clone();
+        async move {
+            tokio::time::timeout(
+                IDLE_QUERY_TIMEOUT,
+                crate::commands::remote_proxy::call_api(
+                    &proxy,
+                    &conn,
+                    command,
+                    None,
+                    Some(idle::QUERY_TIMEOUT_SECS * 1000),
+                ),
+            )
+            .await
+            .ok()?
+            .ok()
+        }
+    };
+    let pets = ask("pet_list_active_sessions").await?;
+    let background = ask("acp_list_background_pending").await?;
+    let terminals = ask("terminal_list").await?;
+    idle::count_activity(&pets, &background, &terminals)
+}
+
+async fn in_process_activity(app: &tauri::AppHandle) -> Option<(u32, u32, u32)> {
+    use tauri::Manager;
+    let manager = app.try_state::<crate::acp::manager::ConnectionManager>()?;
+    let db = app.try_state::<crate::db::AppDatabase>()?;
+    let web = app.try_state::<Arc<crate::web::event_bridge::WebEventBroadcaster>>()?;
+    let terminals = app.try_state::<crate::terminal::manager::TerminalManager>()?;
+    let pets = tokio::time::timeout(
+        IDLE_QUERY_TIMEOUT,
+        crate::commands::pet::pet_list_active_sessions_core(&manager, &db.conn),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let background = tokio::time::timeout(
+        IDLE_QUERY_TIMEOUT,
+        manager.list_background_pending_with_uncertain(&web),
+    )
+    .await
+    .ok()?;
+    let live_terminals = terminals.list_with_exit_check(None);
+    idle::count_activity(
+        &serde_json::to_value(pets).ok()?,
+        &serde_json::to_value(background).ok()?,
+        &serde_json::to_value(live_terminals).ok()?,
+    )
+}
+
+/// Seconds since the last keyboard or mouse input in this session (macOS:
+/// CoreGraphics). Elsewhere, where nothing restarts when idle, 0.
+fn user_idle_secs() -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        /// `kCGEventSourceStateCombinedSessionState`.
+        const COMBINED_SESSION_STATE: i32 = 0;
+        /// `kCGAnyInputEventType`.
+        const ANY_INPUT_EVENT_TYPE: u32 = !0;
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
+        }
+        // SAFETY: a pure query of the session's input state.
+        let secs = unsafe {
+            CGEventSourceSecondsSinceLastEventType(COMBINED_SESSION_STATE, ANY_INPUT_EVENT_TYPE)
+        };
+        if secs.is_finite() && secs > 0.0 {
+            secs as u64
+        } else {
+            0
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        0
+    }
 }

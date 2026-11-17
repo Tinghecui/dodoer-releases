@@ -2281,6 +2281,7 @@
       "importing": "Import en cours...",
       "error": "Erreur : {message}",
       "loadFailed": "Impossible de charger les conversations",
+      "foldersLoadFailed": "Impossible de charger la liste des projets",
       "retry": "Réessayer",
       "completeAllSessions": "Terminer toutes les sessions",
       "completeAllReviewTitle": "Terminer toutes les sessions en revue ?",

@@ -1005,6 +1005,10 @@ export function SidebarConversationList({
   const ensureGitHead = useAppWorkspaceStore((s) => s.ensureGitHead)
   const loading = useAppWorkspaceStore((s) => s.conversationsLoading)
   const error = useAppWorkspaceStore((s) => s.conversationsError)
+  // #540: 项目列表一次都没取到时的原因（取到过的瞬时失败 store 不记）。
+  const foldersError = useAppWorkspaceStore((s) => s.foldersError)
+  const fetchFolders = useAppWorkspaceStore((s) => s.fetchFolders)
+  const foldersLoading = useAppWorkspaceStore((s) => s.foldersLoading)
   const refreshConversations = useAppWorkspaceStore(
     (s) => s.refreshConversations
   )
@@ -3722,6 +3726,35 @@ export function SidebarConversationList({
             onClick={() => void refreshConversations()}
           >
             {refreshing ? (
+              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <RotateCw className="size-3.5" aria-hidden="true" />
+            )}
+            {t("retry")}
+          </Button>
+        </div>
+      ) : foldersError ? (
+        // 项目列表没取到（#540）：不能落到下面的新员工空态，那看起来像项目
+        // 全被删了。说清楚、给「重试」，点了只重取项目列表。
+        <div
+          role="alert"
+          className="flex-1 flex flex-col items-center justify-center gap-2 px-3 text-center"
+        >
+          <p className="text-xs font-medium text-destructive">
+            {t("foldersLoadFailed")}
+          </p>
+          <p className="max-w-full break-words text-xs text-muted-foreground">
+            {foldersError}
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            disabled={foldersLoading}
+            onClick={() => void fetchFolders()}
+          >
+            {foldersLoading ? (
               <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
             ) : (
               <RotateCw className="size-3.5" aria-hidden="true" />

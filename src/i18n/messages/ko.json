@@ -2281,6 +2281,7 @@
       "importing": "가져오는 중...",
       "error": "오류: {message}",
       "loadFailed": "대화 목록을 불러오지 못했습니다",
+      "foldersLoadFailed": "프로젝트 목록을 불러오지 못했습니다",
       "retry": "다시 시도",
       "completeAllSessions": "모든 세션 완료 처리",
       "completeAllReviewTitle": "모든 검토 세션을 완료 처리할까요?",

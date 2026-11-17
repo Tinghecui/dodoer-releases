@@ -56,6 +56,10 @@ export interface AppWorkspaceStoreState {
    * mistake an unknown folder list for deleted folders and prune drafts. */
   foldersHydrated: boolean
   foldersLoading: boolean
+  /** Cowork fork (#540): 还没取到过项目列表、这次又失败时的原因。侧栏据此
+   *  显示「加载失败 + 重试」，不当成没有项目。取到过一次以后的失败不记，
+   *  侧栏照旧显示上一份列表。 */
+  foldersError: string | null
 
   conversations: DbConversationSummary[]
   conversationsLoading: boolean
@@ -351,6 +355,7 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
     folderGroups: [],
     foldersHydrated: false,
     foldersLoading: true,
+    foldersError: null,
 
     conversations: [],
     conversationsLoading: true,
@@ -412,9 +417,13 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
           folderGroups: groupList,
           branches,
           foldersHydrated: true,
+          foldersError: null,
         })
       } catch (err) {
         console.error("[AppWorkspace] fetchFolders failed:", err)
+        if (!get().foldersHydrated) {
+          set({ foldersError: toErrorMessage(err) })
+        }
         if (isRateLimitedError(err) && foldersRetryTimer === null) {
           foldersRetryTimer = setTimeout(() => {
             foldersRetryTimer = null

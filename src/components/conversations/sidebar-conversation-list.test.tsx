@@ -456,6 +456,32 @@ describe("SidebarConversationList — load failure offers a retry", () => {
     })
     expect(refresh).toHaveBeenCalledTimes(1)
   })
+
+  // #540: 项目列表没取到时不能显示成新员工空态，要说清楚、给「重试」。
+  it("shows a projects load failure instead of the empty workspace", async () => {
+    brand.cowork = true
+    const fetchFolders = vi.fn(async () => {})
+    useAppWorkspaceStore.setState({
+      folders: [],
+      conversations: [],
+      foldersHydrated: false,
+      foldersLoading: false,
+      foldersError: "folders-boom",
+      fetchFolders,
+    })
+    const { getByRole, getByText, queryByRole } = render(tree())
+    expect(
+      getByText(enMessages.Folder.sidebar.foldersLoadFailed)
+    ).not.toBeNull()
+    expect(getByText("folders-boom")).not.toBeNull()
+    expect(queryByRole("button", { name: "New or open project" })).toBeNull()
+    await act(async () => {
+      fireEvent.click(
+        getByRole("button", { name: enMessages.Folder.sidebar.retry })
+      )
+    })
+    expect(fetchFolders).toHaveBeenCalledTimes(1)
+  })
 })
 
 // Cowork (AI QA #93): a newcomer's first step has a button of its own, not

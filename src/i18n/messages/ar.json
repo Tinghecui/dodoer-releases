@@ -2281,6 +2281,7 @@
       "importing": "جارٍ الاستيراد...",
       "error": "خطأ: {message}",
       "loadFailed": "تعذّر تحميل المحادثات",
+      "foldersLoadFailed": "تعذّر تحميل قائمة المشاريع",
       "retry": "إعادة المحاولة",
       "completeAllSessions": "إكمال جميع الجلسات",
       "completeAllReviewTitle": "إكمال جميع جلسات المراجعة؟",

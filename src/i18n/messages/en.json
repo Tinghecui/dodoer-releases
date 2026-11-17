@@ -2281,6 +2281,7 @@
       "importing": "Importing...",
       "error": "Error: {message}",
       "loadFailed": "Couldn't load conversations",
+      "foldersLoadFailed": "Couldn't load projects",
       "retry": "Retry",
       "completeAllSessions": "Complete all sessions",
       "completeAllReviewTitle": "Complete all review sessions?",

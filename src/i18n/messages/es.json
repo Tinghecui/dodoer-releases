@@ -2281,6 +2281,7 @@
       "importing": "Importando...",
       "error": "Error del sistema: {message}",
       "loadFailed": "No se pudieron cargar las conversaciones",
+      "foldersLoadFailed": "No se pudo cargar la lista de proyectos",
       "retry": "Reintentar",
       "completeAllSessions": "Completar todas las sesiones",
       "completeAllReviewTitle": "¿Completar todas las sesiones en revisión?",

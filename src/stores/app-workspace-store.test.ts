@@ -249,6 +249,41 @@ describe("fetchFolders — offline hydration safety", () => {
     expect(after.folderGroups).toBe(before.folderGroups)
   })
 
+  // #540: 第一次就没取到项目列表时记下原因，侧栏据此显示「加载失败 + 重试」，
+  // 不当成没有项目；取到了就清掉。
+  it("records the reason when the first folder read fails, and clears it on recovery", async () => {
+    mockListOpenFolders.mockRejectedValueOnce(new Error("folders-boom"))
+    await useAppWorkspaceStore.getState().fetchFolders()
+
+    expect(useAppWorkspaceStore.getState()).toMatchObject({
+      foldersHydrated: false,
+      foldersError: "folders-boom",
+    })
+
+    const folder = makeFolder({ id: 1 })
+    mockListOpenFolders.mockResolvedValueOnce([folder])
+    mockListAllFolders.mockResolvedValueOnce([folder])
+    await useAppWorkspaceStore.getState().fetchFolders()
+
+    expect(useAppWorkspaceStore.getState()).toMatchObject({
+      foldersHydrated: true,
+      foldersError: null,
+      folders: [folder],
+    })
+  })
+
+  it("keeps showing the last list without an error when a later refresh fails", async () => {
+    const folder = makeFolder({ id: 1 })
+    mockListOpenFolders.mockResolvedValueOnce([folder])
+    mockListAllFolders.mockResolvedValueOnce([folder])
+    await useAppWorkspaceStore.getState().fetchFolders()
+
+    mockListOpenFolders.mockRejectedValueOnce(new Error("folders-boom"))
+    await useAppWorkspaceStore.getState().fetchFolders()
+
+    expect(useAppWorkspaceStore.getState().foldersError).toBeNull()
+  })
+
   it("accepts a successful empty snapshot as authoritative", async () => {
     await useAppWorkspaceStore.getState().fetchFolders()
 

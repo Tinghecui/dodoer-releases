@@ -2281,6 +2281,7 @@
       "importing": "匯入中...",
       "error": "錯誤：{message}",
       "loadFailed": "對話列表載入失敗",
+      "foldersLoadFailed": "專案列表載入失敗",
       "retry": "重試",
       "completeAllSessions": "完成全部會話",
       "completeAllReviewTitle": "完成全部複查會話？",

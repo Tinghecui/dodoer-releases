@@ -29,11 +29,18 @@ describe("commit window paths param", () => {
     )
   })
 
-  it("ignores values that are not a list of paths", () => {
+  it("tells a missing param from one that was given", () => {
     expect(parseCommitPathsParam(null)).toBeNull()
-    expect(parseCommitPathsParam("README.md")).toBeNull()
-    expect(parseCommitPathsParam('{"a":1}')).toBeNull()
-    expect(parseCommitPathsParam("[]")).toBeNull()
+  })
+
+  // #442: a param that is there but unreadable must not read as "no param"
+  // (which ticks every tracked change).
+  it("reads values that are not a list of paths as given but empty", () => {
+    expect(parseCommitPathsParam("")).toEqual([])
+    expect(parseCommitPathsParam("README.md")).toEqual([])
+    expect(parseCommitPathsParam("[not json")).toEqual([])
+    expect(parseCommitPathsParam('{"a":1}')).toEqual([])
+    expect(parseCommitPathsParam("[]")).toEqual([])
     expect(parseCommitPathsParam('[1, "a.md"]')).toEqual(["a.md"])
   })
 })

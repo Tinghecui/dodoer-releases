@@ -296,6 +296,9 @@ export function CommitWorkspace({
     Set<string>
   >(new Set())
   const [confirm, setConfirm] = useState<ConfirmState>(CONFIRM_INITIAL)
+  // 带着路径打开、却有路径一个改动都没对上时，列表上方写明哪些没有改动；
+  // 路径参数读不出来时是 []（#442）。null = 不用提示。
+  const [unmatchedPaths, setUnmatchedPaths] = useState<string[] | null>(null)
 
   // Use refs to track mutable values without causing callback recreation
   const diffFileRef = useRef(diffFile)
@@ -412,18 +415,29 @@ export function CommitWorkspace({
       const untracked = result.filter(
         (entry) => entry.status === UNTRACKED_STATUS
       )
-      const picked =
-        initialPaths && initialPaths.length > 0
-          ? result.filter((entry) =>
-              matchesInitialPaths(entry.file, initialPaths)
-            )
-          : []
+      // 带了路径（哪怕读不出来、一个都没对上）就只勾对上的；只有完全没带
+      // 路径时才勾全部已跟踪改动。对不上时全勾会让人误提交别的文件（#442）。
+      const withPaths = initialPaths != null
+      const picked = withPaths
+        ? result.filter((entry) =>
+            matchesInitialPaths(entry.file, initialPaths)
+          )
+        : []
       const pickedFiles = new Set(picked.map((entry) => entry.file))
       setSelected(
-        picked.length > 0
-          ? pickedFiles
-          : new Set(tracked.map((entry) => entry.file))
+        withPaths ? pickedFiles : new Set(tracked.map((entry) => entry.file))
       )
+      if (withPaths) {
+        const missing = initialPaths.filter(
+          (path) =>
+            !result.some((entry) => matchesInitialPaths(entry.file, [path]))
+        )
+        setUnmatchedPaths(
+          initialPaths.length === 0 || missing.length > 0 ? missing : null
+        )
+      } else {
+        setUnmatchedPaths(null)
+      }
       // 勾上的有未跟踪文件时把未跟踪分组展开，不然勾了也看不见。
       if (picked.some((entry) => entry.status === UNTRACKED_STATUS)) {
         setUntrackedOpen(true)
@@ -437,14 +451,12 @@ export function CommitWorkspace({
 
       // Auto-select the first file in visual tree order for diff preview —
       // among the picked files when the window was opened for some.
-      const previewTracked =
-        picked.length > 0
-          ? tracked.filter((entry) => pickedFiles.has(entry.file))
-          : tracked
-      const previewUntracked =
-        picked.length > 0
-          ? untracked.filter((entry) => pickedFiles.has(entry.file))
-          : untracked
+      const previewTracked = withPaths
+        ? tracked.filter((entry) => pickedFiles.has(entry.file))
+        : tracked
+      const previewUntracked = withPaths
+        ? untracked.filter((entry) => pickedFiles.has(entry.file))
+        : untracked
       const firstFile =
         findFirstFile(buildFileTree(previewTracked)) ??
         findFirstFile(buildFileTree(previewUntracked))
@@ -1148,6 +1160,17 @@ export function CommitWorkspace({
             {error && (
               <div className="border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 {error}
+              </div>
+            )}
+
+            {unmatchedPaths && !loadingStatus && (
+              <div className="border-b bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                {unmatchedPaths.length === 0
+                  ? t("pathsInvalid")
+                  : t("pathsNotChanged", {
+                      paths: unmatchedPaths.join(t("pathSeparator")),
+                      count: unmatchedPaths.length,
+                    })}
               </div>
             )}
 

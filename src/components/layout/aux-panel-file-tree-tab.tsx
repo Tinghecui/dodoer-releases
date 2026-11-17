@@ -797,7 +797,7 @@ function RenderNode({
             <ContextMenuSubContent>
               <ContextMenuItem
                 onSelect={() => onOpenCommitWindow([node.path])}
-                disabled={isGitMenuDisabled}
+                disabled={isGitMenuDisabled || gitStatusCode === undefined}
               >
                 {t("actions.commitCode")}
               </ContextMenuItem>
@@ -1053,7 +1053,7 @@ function RenderNode({
           <ContextMenuSubContent>
             <ContextMenuItem
               onSelect={() => onOpenCommitWindow([node.path])}
-              disabled={isGitMenuDisabled}
+              disabled={isGitMenuDisabled || !dirHasChanges}
             >
               {t("actions.commitCode")}
             </ContextMenuItem>

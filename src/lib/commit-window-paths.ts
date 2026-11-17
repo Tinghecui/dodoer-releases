@@ -18,17 +18,20 @@ export function appendCommitPathsParam(
   )}`
 }
 
-/** 读回查询参数（`URLSearchParams.get` 已经解过码）；不对的值当没给。 */
+/**
+ * 读回查询参数（`URLSearchParams.get` 已经解过码）。没带参数返回 null；
+ * 带了但读不出路径（不是 JSON 数组、空数组）返回 []，表示「带了但无效」，
+ * 提交窗口就什么都不勾，不再当成没带参数去勾全部改动（#442）。
+ */
 export function parseCommitPathsParam(raw: string | null): string[] | null {
-  if (!raw) return null
+  if (raw === null) return null
   try {
     const value: unknown = JSON.parse(raw)
-    if (!Array.isArray(value)) return null
-    const list = value.filter(
+    if (!Array.isArray(value)) return []
+    return value.filter(
       (item): item is string => typeof item === "string" && item.length > 0
     )
-    return list.length > 0 ? list : null
   } catch {
-    return null
+    return []
   }
 }

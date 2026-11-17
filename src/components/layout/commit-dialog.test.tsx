@@ -250,10 +250,38 @@ describe("CommitWorkspace opened for some paths", () => {
     await waitFor(() => expect(lastPreviewedFile()).toBe("src/new.ts"))
   })
 
-  it("falls back to every tracked change when none of the paths changed", async () => {
+  // #442: right-clicking a file that has no changes must not tick (and offer
+  // to commit) some other file instead.
+  it("ticks and previews nothing when none of the paths changed", async () => {
     renderWorkspace(["gone.md"])
 
-    await screen.findByRole("button", { name: "Commit (2)" })
+    expect(
+      await screen.findByText("gone.md has no changes")
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Commit (0)" })).toBeDisabled()
+    expect(screen.getByText("0 / 4 files")).toBeInTheDocument()
+    expect(api.readFilePreview).not.toHaveBeenCalled()
+  })
+
+  it("names only the paths that matched nothing", async () => {
+    renderWorkspace(["README.md", "gone.md", "old/a.md"])
+
+    await screen.findByRole("button", { name: "Commit (1)" })
+    expect(
+      screen.getByText("gone.md, old/a.md have no changes")
+    ).toBeInTheDocument()
+  })
+
+  it("ticks nothing when the paths in the link were unreadable", async () => {
+    renderWorkspace([])
+
+    expect(
+      await screen.findByText(
+        "The files in this link could not be read, so nothing was selected"
+      )
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Commit (0)" })).toBeDisabled()
+    expect(api.readFilePreview).not.toHaveBeenCalled()
   })
 
   it("ticks every tracked change when opened without paths", async () => {
@@ -261,5 +289,6 @@ describe("CommitWorkspace opened for some paths", () => {
 
     await screen.findByRole("button", { name: "Commit (2)" })
     await waitFor(() => expect(lastPreviewedFile()).toBe("docs/notes.md"))
+    expect(screen.queryByText(/have no changes|has no changes/)).toBeNull()
   })
 })

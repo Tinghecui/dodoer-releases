@@ -398,3 +398,19 @@ describe("workspace-context divergence-aware save guard", () => {
     )
   })
 })
+
+describe("aux file tree greys out Commit for unchanged entries", () => {
+  // #442: "Commit" on a file or directory with no changes used to open the
+  // commit window with some other file ticked.
+  it("disables Commit on a file without a git status", () => {
+    expect(auxSource).toMatch(
+      /onOpenCommitWindow\(\[node\.path\]\)\}\s*disabled=\{\s*isGitMenuDisabled \|\| gitStatusCode === undefined\s*\}/
+    )
+  })
+
+  it("disables Commit on a directory without changes", () => {
+    expect(auxSource).toMatch(
+      /onOpenCommitWindow\(\[node\.path\]\)\}\s*disabled=\{\s*isGitMenuDisabled \|\| !dirHasChanges\s*\}/
+    )
+  })
+})

@@ -251,6 +251,9 @@ pub struct Journal {
     pub attempt: Option<Attempt>,
     pub last: Option<Last>,
     pub last_download_failure_reported_at: Option<DateTime<Utc>>,
+    /// 哪一版已经在启动时换过（第 4 行）：每一版启动时只试一次，试之前先写。
+    /// 不跟着 `attempt` 清空，换失败了下次启动也不再试这一版。
+    pub launch_apply_tried: Option<String>,
 }
 
 /// 一条要上报的升级记录：`crash_report` 把它做成一条非致命的报告。
@@ -469,6 +472,15 @@ impl Journal {
         true
     }
 
+    /// 启动时换上 `to`（磁盘上存着的包，第 4 行）：先记下这一版在启动时
+    /// 试过了，再把 `attempt` 记成 `applying` / `launch`。日志里没有同一版
+    /// 下好的那条（丢了）就照 [`Journal::package_reused`] 新开一条。
+    pub fn launch_apply_started(&mut self, from: &str, to: &str, bytes: u64, now: DateTime<Utc>) {
+        self.launch_apply_tried = Some(to.to_string());
+        self.package_reused(from, to, Trigger::Auto, bytes, now);
+        self.apply_started(ApplyHow::Launch, now);
+    }
+
     /// 安装这一步做完了（还要等新版本启动后确认）。
     pub fn install_done(&mut self, now: DateTime<Utc>) {
         if let Some(a) = self
@@ -591,6 +603,29 @@ pub fn load(path: &Path, running: &str) -> Journal {
     journal
 }
 
+/// 启动时换上之前，把「这一版在启动时试过了、正在换上」写进日志文件
+/// （[`Journal::launch_apply_started`]），并读回来确认真的写进去了。
+/// 写不进去（数据目录只读、磁盘满）就回错：调用方不换，不然换失败了
+/// 每次启动都会再试，换成功了新版本也没有这一条可确认、可上报。
+pub fn record_launch_apply(
+    path: &Path,
+    running: &str,
+    to: &str,
+    bytes: u64,
+    now: DateTime<Utc>,
+) -> io::Result<()> {
+    let mut journal = load(path, running);
+    journal.launch_apply_started(running, to, bytes, now);
+    save(path, &journal)?;
+    let back = load(path, running);
+    if back.launch_apply_tried.as_deref() != Some(to) || back.attempt != journal.attempt {
+        return Err(io::Error::other(
+            "the update journal did not keep the record",
+        ));
+    }
+    Ok(())
+}
+
 /// 写日志：先写临时文件再改名，读的人不会看到写了一半的。
 pub fn save(path: &Path, journal: &Journal) -> io::Result<()> {
     if let Some(dir) = path.parent() {
@@ -706,6 +741,78 @@ mod tests {
         let outcome = j.confirm("1.6.41", at(300)).unwrap();
         assert_eq!(outcome.result, UpdateResult::Applied);
         assert!(outcome.reused_package);
+    }
+
+    #[test]
+    fn a_launch_apply_is_tried_once_per_version_and_recorded_as_launch() {
+        // 上次运行下好、存着的那一版：接着用那一条。
+        let mut j = ready(Trigger::Auto);
+        j.launch_apply_started("1.6.40", "1.6.41", 140_512_345, at(5_000));
+        assert_eq!(j.launch_apply_tried.as_deref(), Some("1.6.41"));
+        let a = j.attempt.clone().unwrap();
+        assert_eq!(a.state, AttemptState::Applying);
+        assert_eq!(a.apply_how, Some(ApplyHow::Launch));
+        assert_eq!(a.apply_started_at, Some(at(5_000)));
+        assert_eq!(a.ready_at, Some(at(41)));
+        assert!(a.reused_package);
+
+        // 换失败了：attempt 清空，「试过」留着，下次启动不再试这一版。
+        let o = j.install_failed("1.6.40", "x", at(5_003)).unwrap();
+        assert_eq!(o.how, Some(ApplyHow::Launch));
+        assert_eq!(j.launch_apply_tried.as_deref(), Some("1.6.41"));
+
+        // 日志里没有那一条（丢了）：新开一条，照样记成启动时换上。
+        let mut j = Journal::default();
+        j.launch_apply_started("1.6.40", "1.6.41", 7, at(100));
+        let a = j.attempt.clone().unwrap();
+        assert_eq!(
+            (a.from.as_str(), a.to.as_str(), a.state, a.apply_how),
+            (
+                "1.6.40",
+                "1.6.41",
+                AttemptState::Applying,
+                Some(ApplyHow::Launch)
+            )
+        );
+        // 新版本起来以后照常确认。
+        j.install_done(at(103));
+        assert_eq!(j.on_boot("1.6.41", at(110)), None);
+        let o = j.confirm("1.6.41", at(170)).unwrap();
+        assert_eq!(o.result, UpdateResult::Applied);
+        assert_eq!(o.how, Some(ApplyHow::Launch));
+
+        // 存进文件、读回来还在；老文件没有这一项也读得出来。
+        let dir = tempfile::tempdir().unwrap();
+        let file = path(dir.path());
+        save(&file, &j).unwrap();
+        assert_eq!(
+            load(&file, "1.6.41").launch_apply_tried.as_deref(),
+            Some("1.6.41")
+        );
+        std::fs::write(&file, br#"{"attempt": null, "last": null}"#).unwrap();
+        assert_eq!(load(&file, "1.6.41").launch_apply_tried, None);
+    }
+
+    #[test]
+    fn a_launch_apply_is_recorded_on_disk_or_reported_as_not() {
+        // 写得进去：文件里有「试过」和 applying / launch。
+        let dir = tempfile::tempdir().unwrap();
+        let file = path(dir.path());
+        save(&file, &ready(Trigger::Auto)).unwrap();
+        record_launch_apply(&file, "1.6.40", "1.6.41", 140_512_345, at(5_000)).unwrap();
+        let j = load(&file, "1.6.40");
+        assert_eq!(j.launch_apply_tried.as_deref(), Some("1.6.41"));
+        let a = j.attempt.unwrap();
+        assert_eq!(
+            (a.state, a.apply_how),
+            (AttemptState::Applying, Some(ApplyHow::Launch))
+        );
+
+        // 写不进去（日志该在的目录其实是个文件）：回错，不能当作记下了。
+        let blocked = dir.path().join("not-a-dir");
+        std::fs::write(&blocked, b"x").unwrap();
+        let file = path(&blocked);
+        assert!(record_launch_apply(&file, "1.6.40", "1.6.41", 7, at(100)).is_err());
     }
 
     #[test]

@@ -122,6 +122,86 @@ pub fn verdict(check: Check<'_>) -> Verdict {
     Verdict::Use
 }
 
+/// 哪个平台在启动时把存着的包换上：只有 macOS（Windows、Linux 不做）。
+pub const fn applies_at_launch(platform: DesktopPlatform) -> bool {
+    matches!(platform, DesktopPlatform::MacOs)
+}
+
+/// 「要不要在启动时换上」要看的几样（issue #412 完成标准 18）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaunchCheck<'a> {
+    pub platform: DesktopPlatform,
+    /// 自动更新不是「关闭」。
+    pub mode_allows: bool,
+    /// 磁盘上存着、`restore_update` 和 `verify` 都过了的那一版；没有是 `None`。
+    pub stored: Option<&'a str>,
+    /// 日志里的 `launch_apply_tried`：哪一版已经在启动时试过了。
+    pub tried: Option<&'a str>,
+    /// 应用包和它所在的目录当前用户都可写。
+    pub bundle_writable: bool,
+    /// 拿到了运行锁，不是第二个实例。
+    pub sole_instance: bool,
+    /// 这次启动时，上一次换上刚结束（没换上、启动几次都没确认）、结果还
+    /// 等着上报：这时换上就直接退出了，那条记录发不出去，这次先不换。
+    pub earlier_outcome: bool,
+}
+
+/// 启动时换不换。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchApply {
+    Apply,
+    /// 不换，带上原因，进日志。
+    Skip(&'static str),
+}
+
+/// 要不要在启动时把存着的包换上：条件全满足才换。
+pub fn launch_apply(check: LaunchCheck<'_>) -> LaunchApply {
+    if !applies_at_launch(check.platform) {
+        return LaunchApply::Skip("platform");
+    }
+    if !check.mode_allows {
+        return LaunchApply::Skip("mode_off");
+    }
+    let Some(stored) = check.stored else {
+        return LaunchApply::Skip("no_package");
+    };
+    if check.tried == Some(stored) {
+        return LaunchApply::Skip("tried");
+    }
+    if !check.bundle_writable {
+        // 不可写时插件要在主线程弹管理员密码框，事件循环还没开始，会卡死。
+        return LaunchApply::Skip("not_writable");
+    }
+    if !check.sole_instance {
+        return LaunchApply::Skip("not_sole_instance");
+    }
+    if check.earlier_outcome {
+        return LaunchApply::Skip("earlier_outcome");
+    }
+    LaunchApply::Apply
+}
+
+/// 当前用户能不能写 `path`（`access(W_OK)`）。不存在的是不可写。
+#[cfg(unix)]
+pub fn writable(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: 以 NUL 结尾的路径，`access` 只读它。
+    unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
+}
+
+#[cfg(not(unix))]
+pub fn writable(_path: &Path) -> bool {
+    false
+}
+
+/// 应用包和它所在的目录都可写：插件不用弹管理员密码框就能换。
+pub fn bundle_writable(bundle: &Path) -> bool {
+    writable(bundle) && bundle.parent().is_some_and(writable)
+}
+
 #[cfg(unix)]
 fn create_private_dir(dir: &Path) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -418,6 +498,120 @@ mod tests {
         clear(&root).unwrap();
         assert!(!root.exists());
         assert_eq!(read(&root), None);
+    }
+
+    /// 启动时换上的条件全满足：macOS、模式允许、存着 1.6.41、没试过、可写、
+    /// 唯一的实例、没有等着上报的结果。
+    fn launch_ok() -> LaunchCheck<'static> {
+        LaunchCheck {
+            platform: DesktopPlatform::MacOs,
+            mode_allows: true,
+            stored: Some("1.6.41"),
+            tried: None,
+            bundle_writable: true,
+            sole_instance: true,
+            earlier_outcome: false,
+        }
+    }
+
+    #[test]
+    fn only_macos_applies_at_launch() {
+        assert!(applies_at_launch(DesktopPlatform::MacOs));
+        assert!(!applies_at_launch(DesktopPlatform::Windows));
+        assert!(!applies_at_launch(DesktopPlatform::Linux));
+    }
+
+    #[test]
+    fn a_launch_with_every_condition_met_applies() {
+        assert_eq!(launch_apply(launch_ok()), LaunchApply::Apply);
+        // 试过的是别的版本（上一个存着的包），这一版照样换。
+        let check = LaunchCheck {
+            tried: Some("1.6.40"),
+            ..launch_ok()
+        };
+        assert_eq!(launch_apply(check), LaunchApply::Apply);
+    }
+
+    #[test]
+    fn a_launch_missing_any_condition_does_not_apply() {
+        let cases = [
+            LaunchCheck {
+                platform: DesktopPlatform::Windows,
+                ..launch_ok()
+            },
+            LaunchCheck {
+                platform: DesktopPlatform::Linux,
+                ..launch_ok()
+            },
+            LaunchCheck {
+                mode_allows: false,
+                ..launch_ok()
+            },
+            LaunchCheck {
+                stored: None,
+                ..launch_ok()
+            },
+            LaunchCheck {
+                tried: Some("1.6.41"),
+                ..launch_ok()
+            },
+            LaunchCheck {
+                bundle_writable: false,
+                ..launch_ok()
+            },
+            LaunchCheck {
+                sole_instance: false,
+                ..launch_ok()
+            },
+            LaunchCheck {
+                earlier_outcome: true,
+                ..launch_ok()
+            },
+        ];
+        for check in cases {
+            assert!(
+                matches!(launch_apply(check), LaunchApply::Skip(_)),
+                "{check:?}"
+            );
+        }
+        // 原因各不相同，日志里看得出是哪一条挡住的。
+        let tried = LaunchCheck {
+            tried: Some("1.6.41"),
+            ..launch_ok()
+        };
+        assert_eq!(launch_apply(tried), LaunchApply::Skip("tried"));
+        let locked = LaunchCheck {
+            bundle_writable: false,
+            ..launch_ok()
+        };
+        assert_eq!(launch_apply(locked), LaunchApply::Skip("not_writable"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bundle_is_writable_only_when_it_and_its_folder_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("Some App.app");
+        // 还没有：不可写。
+        assert!(!bundle_writable(&bundle));
+        std::fs::create_dir(&bundle).unwrap();
+        assert!(writable(dir.path()));
+        assert!(bundle_writable(&bundle));
+        // root 不看权限位，只在普通用户下查只读的情形。
+        if unsafe { libc::geteuid() } != 0 {
+            use std::os::unix::fs::PermissionsExt;
+            let set = |p: &Path, mode| {
+                std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap()
+            };
+            // 所在目录只读（比如 /Applications 归 root）。
+            set(dir.path(), 0o555);
+            assert!(!bundle_writable(&bundle));
+            set(dir.path(), 0o755);
+            // 包自己只读。
+            set(&bundle, 0o555);
+            assert!(!bundle_writable(&bundle));
+            set(&bundle, 0o755);
+        }
     }
 
     #[cfg(unix)]

@@ -147,11 +147,20 @@ fn transition<R>(handle: &AppUpdateStateHandle, f: impl FnOnce() -> R) -> R {
     result
 }
 
-/// At start, from `setup` (once the crash reports have started, so an
-/// outcome found here is queued): read the journal, count this boot of a
-/// version being applied ([`Journal::on_boot`]), and check once a minute
-/// whether a downloaded update has been waiting too long.
-pub fn start_journal(app: &tauri::AppHandle, data_dir: &Path) {
+/// Outcomes found before the crash reports have started ([`apply_at_launch`]
+/// runs ahead of them), reported by [`start_journal`].
+static EARLY_OUTCOMES: Mutex<Vec<Outcome>> = Mutex::new(Vec::new());
+/// The minute timer of [`start_journal`] runs once.
+static JOURNAL_TIMER: AtomicBool = AtomicBool::new(false);
+
+fn early_outcomes() -> MutexGuard<'static, Vec<Outcome>> {
+    EARLY_OUTCOMES.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Where the journal is, and this boot of a version being applied counted
+/// ([`Journal::on_boot`]), once: by [`apply_at_launch`] when it runs, else by
+/// [`start_journal`]. What `on_boot` ends with waits in [`EARLY_OUTCOMES`].
+fn init_journal(app: &tauri::AppHandle, data_dir: &Path) {
     let home = JournalHome {
         path: journal::path(data_dir),
         running: app.package_info().version.to_string(),
@@ -159,7 +168,25 @@ pub fn start_journal(app: &tauri::AppHandle, data_dir: &Path) {
     if JOURNAL_HOME.set(home).is_err() {
         return;
     }
-    journal_event(|j, running| j.on_boot(running, now()));
+    if let Some(Some(outcome)) = with_journal(|j, running| j.on_boot(running, now())) {
+        early_outcomes().push(outcome);
+    }
+}
+
+/// At start, from `setup` (once the crash reports have started, so an
+/// outcome found here is queued): read the journal, count this boot of a
+/// version being applied ([`Journal::on_boot`]), report what was found before
+/// the crash reports started, and check once a minute whether a downloaded
+/// update has been waiting too long.
+pub fn start_journal(app: &tauri::AppHandle, data_dir: &Path) {
+    init_journal(app, data_dir);
+    let early = std::mem::take(&mut *early_outcomes());
+    for outcome in &early {
+        report(outcome);
+    }
+    if JOURNAL_TIMER.swap(true, Ordering::SeqCst) {
+        return;
+    }
     tauri::async_runtime::spawn(async {
         let mut every_minute = tokio::time::interval(std::time::Duration::from_secs(60));
         // The first tick is at once.
@@ -514,10 +541,13 @@ fn use_stored_install(
 
 /// At start, from `setup` before the local daemon starts (macOS): when a
 /// package downloaded by an earlier run is stored and still good, the update
-/// is `ReadyToRestart` at once, without going to the network.
+/// is `ReadyToRestart` at once, without going to the network. The one
+/// [`apply_at_launch`] already took back and left is used as it is, without
+/// reading and checking it again.
 pub fn restore_staged_at_start(app: &tauri::AppHandle, data_dir: &Path) {
     let _ = STAGED_ROOT.set(staged::root(data_dir));
-    let Some(install) = stored_install(app) else {
+    let left = launch_leftover().take();
+    let Some(install) = left.or_else(|| stored_install(app)) else {
         return;
     };
     let handle = {
@@ -530,6 +560,140 @@ pub fn restore_staged_at_start(app: &tauri::AppHandle, data_dir: &Path) {
     let (started, _) = transition(&handle, || update_state::try_begin(&handle, &emitter));
     if started {
         use_stored_install(install, &handle, &emitter, Trigger::Auto);
+    }
+}
+
+/// The stored package [`apply_at_launch`] took back and did not install, for
+/// [`restore_staged_at_start`].
+static LAUNCH_LEFTOVER: Mutex<Option<StagedInstall>> = Mutex::new(None);
+
+fn launch_leftover() -> MutexGuard<'static, Option<StagedInstall>> {
+    LAUNCH_LEFTOVER.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Whether the app bundle this process runs from, and the folder it is in,
+/// are writable by the user ([`staged::bundle_writable`]). If not, the plugin
+/// asks for an administrator password on the main thread, which at launch
+/// has no event loop yet to show it.
+fn launch_bundle_writable(app: &tauri::AppHandle) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::Manager;
+        let Ok(exe) = tauri::process::current_binary(&app.env()) else {
+            return false;
+        };
+        crate::relaunch::app_bundle(&exe).is_some_and(staged::bundle_writable)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        false
+    }
+}
+
+/// Cowork fork (issue #412): at launch, on macOS, put the package an earlier
+/// run downloaded and stored in place, then relaunch into it, before the
+/// database, the crash reports, the tray, the local daemon and the first
+/// window. From `setup`, once the runtime lock is held (`sole_instance`: not
+/// a second instance). Never goes to the network.
+///
+/// Only when [`staged::launch_apply`] says so: the stored package restores and
+/// passes its signature, this version has not been tried at launch before
+/// (`launch_apply_tried`, written before trying), the bundle is writable. A
+/// success relaunches through [`crate::relaunch::relaunch_now`], not
+/// `request_restart()` and `shut_down`, with nothing started yet. A failure
+/// is `install_failed` (reported once the crash reports start) and the app
+/// starts as it is; the stored package stays, and the restart button takes
+/// it from there.
+pub fn apply_at_launch(app: &tauri::AppHandle, data_dir: &Path, sole_instance: bool) {
+    let platform = restart_install::CURRENT_PLATFORM;
+    if !staged::applies_at_launch(platform) {
+        return;
+    }
+    init_journal(app, data_dir);
+    let _ = STAGED_ROOT.set(staged::root(data_dir));
+    let install = stored_install(app);
+    let tried = with_journal(|j, _| j.launch_apply_tried.clone()).flatten();
+    let earlier_outcome = !early_outcomes().is_empty();
+    let decision = staged::launch_apply(staged::LaunchCheck {
+        platform,
+        // 第 5 行加 `update_mode` 偏好之前，当作不是「关闭」。
+        mode_allows: true,
+        stored: install.as_ref().map(|i| i.update.version.as_str()),
+        tried: tried.as_deref(),
+        bundle_writable: install.is_some() && launch_bundle_writable(app),
+        sole_instance,
+        earlier_outcome,
+    });
+    if let staged::LaunchApply::Skip(why) = decision {
+        if let Some(install) = &install {
+            tracing::info!(
+                "[update] not installing the stored package {} at launch ({why})",
+                install.update.version
+            );
+        }
+        *launch_leftover() = install;
+        return;
+    }
+    let Some(install) = install else {
+        return;
+    };
+    let version = install.update.version.clone();
+    let size = install.bytes.len() as u64;
+    // 「试过了、正在换上」必须先落到文件里再换：写不进去（数据目录只读、
+    // 磁盘满）就不换，不然换失败了每次启动都会再试，换成功了新版本也没有
+    // 这一条可确认、可上报。存着的包留给「重启以更新」。
+    let recorded = JOURNAL_HOME.get().map(|home| {
+        let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        journal::record_launch_apply(&home.path, &home.running, &version, size, now())
+    });
+    if let Err(e) = recorded.unwrap_or_else(|| Err(std::io::Error::other("no journal"))) {
+        tracing::warn!(
+            "[update] not installing the stored package {version} at launch \
+             (journal_unwritable: {e})"
+        );
+        *launch_leftover() = Some(install);
+        return;
+    }
+    let StagedInstall { update, bytes, .. } = install;
+    tracing::info!("[update] installing {version} at launch");
+    // On the main thread, before the event loop: the bundle is writable, so
+    // the plugin swaps it without asking for a password (which it would show
+    // through the main thread, and wait for here).
+    match update.install(bytes) {
+        Ok(()) => {
+            journal_event(|j, _| {
+                j.install_done(now());
+                None
+            });
+            tracing::info!("[update] installed {version} at launch, relaunching");
+            #[cfg(target_os = "macos")]
+            {
+                // The process ends without dropping the log guard: give the
+                // log writer a moment to get the lines above out.
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                // `relaunch_now` 只在起不来时才返回，返回的一定是错误。
+                let Err(e) = crate::relaunch::relaunch_now(app);
+                tracing::error!(
+                    "[update] cannot start the relauncher ({e}); tauri restarts instead"
+                );
+            }
+            // The new bundle is in place, and this process must not go on as
+            // the old version from it. On the main thread `restart()`
+            // relaunches straight away.
+            app.restart();
+        }
+        Err(e) => {
+            let message = e.to_string();
+            tracing::warn!(
+                "[update] could not install {version} at launch: {message}; starting as it is"
+            );
+            if let Some(Some(outcome)) =
+                with_journal(|j, running| j.install_failed(running, &message, now()))
+            {
+                early_outcomes().push(outcome);
+            }
+        }
     }
 }
 

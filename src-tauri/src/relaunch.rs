@@ -93,20 +93,16 @@ pub(crate) fn relaunch_after_exit(app: &tauri::AppHandle) {
     let Ok(exe) = tauri::process::current_binary(&env) else {
         return;
     };
-    let Some(bundle) = app_bundle(&exe) else {
-        return;
-    };
-    let args = env.args_os.get(1..).unwrap_or_default();
-    match relauncher(
+    let Some(mut relauncher) = relauncher_for(
         std::process::id(),
         WAIT_TRIES,
         Path::new(OPEN),
-        bundle,
         &exe,
-        args,
-    )
-    .spawn()
-    {
+        &env.args_os,
+    ) else {
+        return;
+    };
+    match relauncher.spawn() {
         Ok(_) => {
             // What tauri does after this event before it restarts.
             app.cleanup_before_exit();
@@ -120,9 +116,51 @@ pub(crate) fn relaunch_after_exit(app: &tauri::AppHandle) {
     }
 }
 
+/// Cowork fork: relaunch right away, from `setup` before anything has
+/// started — the update put in place at launch
+/// (`commands::app_update::apply_at_launch`, issue #412). Not through
+/// `request_restart()`: `shut_down` would remember the open windows, of which
+/// there are none yet, and there is nothing else for it to stop. Starts the
+/// relauncher with this launch's own arguments (`open -n`, in front, as a
+/// restart the user asked for), then ends the process the way
+/// [`relaunch_after_exit`] does. Returns only when it cannot: not running from
+/// an app bundle, or the relauncher would not start.
+pub(crate) fn relaunch_now(app: &tauri::AppHandle) -> Result<std::convert::Infallible, String> {
+    use tauri::Manager;
+
+    let env = app.env();
+    let exe = tauri::process::current_binary(&env).map_err(|e| e.to_string())?;
+    let mut relauncher = relauncher_for(
+        std::process::id(),
+        WAIT_TRIES,
+        Path::new(OPEN),
+        &exe,
+        &env.args_os,
+    )
+    .ok_or_else(|| format!("{} is not in an app bundle", exe.display()))?;
+    relauncher.spawn().map_err(|e| e.to_string())?;
+    app.cleanup_before_exit();
+    std::process::exit(0);
+}
+
+/// The relauncher for `exe`, given this process's command line `args_os`
+/// (the program first, as in `Env::args_os`): what follows the program is
+/// passed on to the new instance. None when `exe` is not in an app bundle.
+fn relauncher_for(
+    pid: u32,
+    tries: u32,
+    open: &Path,
+    exe: &Path,
+    args_os: &[OsString],
+) -> Option<Command> {
+    let bundle = app_bundle(exe)?;
+    let args = args_os.get(1..).unwrap_or_default();
+    Some(relauncher(pid, tries, open, bundle, exe, args))
+}
+
 /// The `.app` bundle `exe` runs from, `<bundle>.app/Contents/MacOS/<exe>`: the
 /// layout tauri restarts through `open -n`.
-fn app_bundle(exe: &Path) -> Option<&Path> {
+pub(crate) fn app_bundle(exe: &Path) -> Option<&Path> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
     let bundle = contents.parent()?;
@@ -314,6 +352,55 @@ mod tests {
             "-n\n/Applications/codeg.app\n--args\n--x\n"
         );
         reap(&mut relauncher);
+    }
+
+    #[test]
+    fn relaunching_straight_away_passes_this_launch_s_arguments_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let open = recorder(dir.path(), "open", 0);
+        let macos = dir.path().join("Some App.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let exe = recorder(&macos, "codeg", 0);
+        let mut gone = Command::new("/usr/bin/true").spawn().unwrap();
+        gone.wait().unwrap();
+
+        // `Env::args_os`: the program first, then what it was started with.
+        let mut relauncher = relauncher_for(
+            gone.id(),
+            3,
+            &open,
+            &exe,
+            &args(&[exe.to_str().unwrap(), "--flag", "two words"]),
+        )
+        .expect("the executable is in a bundle")
+        .spawn()
+        .unwrap();
+        let launched = wait_for(&recorded(&open), Duration::from_secs(10)).expect("not relaunched");
+        assert_eq!(
+            launched,
+            format!(
+                "-n\n{}\n--args\n--flag\ntwo words\n",
+                dir.path().join("Some App.app").display()
+            )
+        );
+        reap(&mut relauncher);
+        assert!(
+            !recorded(&exe).exists(),
+            "fell back although open succeeded"
+        );
+
+        // Started without arguments: nothing after `--args`.
+        let mut relauncher = relauncher_for(gone.id(), 3, &open, &exe, &args(&["codeg"]))
+            .unwrap()
+            .spawn()
+            .unwrap();
+        reap(&mut relauncher);
+        assert!(std::fs::read_to_string(recorded(&open))
+            .unwrap()
+            .ends_with("--args\n"));
+
+        // Not in a bundle: no relauncher.
+        assert!(relauncher_for(1, 3, &open, &open, &args(&["x"])).is_none());
     }
 
     #[test]

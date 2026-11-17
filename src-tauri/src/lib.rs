@@ -1041,6 +1041,19 @@ mod tauri_app {
                     return Ok(());
                 }
 
+                // Cowork fork: on macOS, a newer version an earlier run
+                // downloaded and stored is put in place here and the app
+                // relaunches into it — before the database, the crash
+                // reports, the tray, the local daemon and the first window,
+                // and only once the runtime lock is held, so never in a
+                // second instance (`commands::app_update::apply_at_launch`).
+                // Returns when it does not, or could not, install.
+                app_update_commands::apply_at_launch(
+                    app.handle(),
+                    &effective_data_dir,
+                    app.try_state::<HeldRuntimeLock>().is_some(),
+                );
+
                 let app_version = env!("CARGO_PKG_VERSION");
                 let database = tauri::async_runtime::block_on(db::init_database(
                     &effective_data_dir,

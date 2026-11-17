@@ -1,8 +1,11 @@
-import {
-  AGENT_DISPLAY_ORDER,
-  type AcpAgentInfo,
-  type AgentType,
-} from "@/lib/types"
+import type { AcpAgentInfo, AgentType } from "@/lib/types"
+
+/**
+ * Cowork fork（AI QA #436）：连列表缓存都没有的冷启动猜 Claude Code，不用
+ * `AGENT_DISPLAY_ORDER[0]`（Codex）。Cowork 的员工默认用 Claude Code，猜成
+ * Codex 的话列表回来之前那一下就去连一个没有凭据的智能体。
+ */
+const COLD_START_AGENT: AgentType = "claude_code"
 
 export interface ResolveDefaultAgentInput {
   /** Folder's saved `default_agent_type`, or null if none set. */
@@ -48,8 +51,8 @@ export interface ResolveDefaultAgentResult {
  *      defaults: the user's drag-sorted order with the installed agents
  *      moved ahead ([`installedFirst`]), so the default is one that can
  *      start.
- *   4. `AGENT_DISPLAY_ORDER[0]` — final fallback when even the sorted list
- *      isn't available yet (cold start).
+ *   4. `COLD_START_AGENT` (Claude Code) — final fallback when even the sorted
+ *      list isn't available yet (cold start).
  *
  * The result is marked `provisional: true` for cases 3 and 4 when `fresh`
  * is false — i.e. the sorted list might still be stale or empty seed data
@@ -69,7 +72,7 @@ export function resolveDefaultAgent(
   if (sortedTypes.length > 0) {
     return { agentType: sortedTypes[0], provisional: !fresh }
   }
-  return { agentType: AGENT_DISPLAY_ORDER[0], provisional: !fresh }
+  return { agentType: COLD_START_AGENT, provisional: !fresh }
 }
 
 /**

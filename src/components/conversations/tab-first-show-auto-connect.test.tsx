@@ -309,4 +309,12 @@ describe("TabViewGate mirrors ConversationTabView", () => {
     expect(panel).toContain("!awaitingHistoricalSessionId &&")
     expect(panel).toContain("isActive: isActive && canAutoConnect,")
   })
+
+  // AI QA #436：草稿等智能体定下来才连（逻辑见 draft-auto-connect.test.ts）
+  it("holds a draft's auto-connect until its agent is settled", () => {
+    expect(panel).toContain("provisional: ownTab?.agentTypeProvisional,")
+    expect(panel).toMatch(
+      /agentsLoaded && usableAgentCount > 0 && draftAgentReady\)\)/
+    )
+  })
 })

@@ -193,6 +193,7 @@ import { contentBlocksFromUserMessage } from "@/lib/user-message-blocks"
 import { getAgentLabel } from "@/lib/custom-agents"
 import { saveModePreference } from "@/lib/selector-prefs-storage"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
+import { draftAgentSettled } from "@/lib/draft-auto-connect"
 import {
   adoptLegacyNewConversationDraft,
   buildConversationDraftStorageKey,
@@ -700,8 +701,21 @@ const ConversationTabView = memo(function ConversationTabView({
       true,
     [acpAgents, selectedAgent]
   )
+  const connectAgent = useDebouncedValue(
+    selectedAgent,
+    AGENT_SWITCH_DEBOUNCE_MS
+  )
+  // Cowork fork（AI QA #436）：草稿要等智能体定下来（纠正跑完、防抖跟上）才连，
+  // 不然冷启动猜的 Codex 会先连出去，新员工首屏弹「Codex 无法建立会话」。
+  const draftAgentReady = draftAgentSettled({
+    provisional: ownTab?.agentTypeProvisional,
+    tabAgent: agentType,
+    selectedAgent,
+    connectAgent,
+  })
   const canAutoConnect =
-    (hasPersistedConversation || (agentsLoaded && usableAgentCount > 0)) &&
+    (hasPersistedConversation ||
+      (agentsLoaded && usableAgentCount > 0 && draftAgentReady)) &&
     !awaitingHistoricalSessionId &&
     // Skip the doomed auto-connect for a not-installed agent ONLY in the draft
     // surfaces, where the persistent install banner explains it instead. A
@@ -730,10 +744,6 @@ const ConversationTabView = memo(function ConversationTabView({
   // briefly exposes the previous folder's path to the ACP auto-connect
   // effect, and the connection sticks with the wrong cwd.
   const workingDirForConnection = workingDir ?? folder?.path
-  const connectAgent = useDebouncedValue(
-    selectedAgent,
-    AGENT_SWITCH_DEBOUNCE_MS
-  )
 
   const {
     conn,

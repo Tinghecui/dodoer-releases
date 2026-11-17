@@ -110,9 +110,12 @@ export interface TabItemInternal {
    * list arrives). **Not persisted** to opened_tabs — hydrated drafts
    * default to false and are re-evaluated only when their agent_type is
    * no longer in the fresh sorted list (the `!sortedAvailableAgents.
-   * includes(...)` branch of correction). Internal-only: no UI component
-   * reads it, so a stale `true` value is harmless if correction never
-   * runs (e.g. `acpListAgents()` keeps failing).
+   * includes(...)` branch of correction). Cowork fork (AI QA #436): the
+   * conversation panel holds a draft's auto-connect while this is true, so
+   * nothing may set it once the one-shot correction has run (see
+   * `setDraftAgentFromFallback`). If correction never runs (e.g.
+   * `acpListAgents()` keeps failing) the panel's `agentsLoaded` gate holds
+   * the connect anyway.
    */
   agentTypeProvisional?: boolean
   /**
@@ -2683,12 +2686,20 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   setDraftAgentFromFallback: (tabId, agentType) => {
+    // Cowork fork（AI QA #436）：草稿在 provisional 时不自动连接，而纠正一次会话
+    // 只跑一次。纠正跑过以后再发生的替补没人会再纠正，留成 provisional 这个草稿
+    // 就永远连不上，所以那之后的替补直接算定下来。
+    const provisional = !correctionRan
     const prev = get().rawTabs
     const next = prev.map((t) => {
       if (t.id !== tabId) return t
       if (t.conversationId != null) return t // not a draft
-      if (t.agentType === agentType && t.agentTypeProvisional) return t
-      return { ...t, agentType, agentTypeProvisional: true }
+      if (
+        t.agentType === agentType &&
+        (t.agentTypeProvisional ?? false) === provisional
+      )
+        return t
+      return { ...t, agentType, agentTypeProvisional: provisional }
     })
     if (next.every((t, i) => t === prev[i])) return
     set({ rawTabs: next })

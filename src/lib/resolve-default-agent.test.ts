@@ -68,6 +68,18 @@ describe("resolveDefaultAgent with the default order", () => {
     ).toBe("codex")
   })
 
+  // AI QA #436：没有列表缓存的冷启动不再猜 Codex
+  it("guesses Claude Code on a cold start with no list at all", () => {
+    expect(
+      resolveDefaultAgent({
+        folderDefault: null,
+        inherit: null,
+        sortedTypes: [],
+        fresh: false,
+      })
+    ).toEqual({ agentType: "claude_code", provisional: true })
+  })
+
   it("still honours an explicit folder default that is not installed", () => {
     expect(
       resolveDefaultAgent({

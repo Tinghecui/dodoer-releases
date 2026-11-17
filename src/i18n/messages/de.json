@@ -2279,6 +2279,8 @@
       "importLocalSessions": "Lokale Sitzungen importieren",
       "importing": "Importiere...",
       "error": "Fehler: {message}",
+      "loadFailed": "Unterhaltungen konnten nicht geladen werden",
+      "retry": "Erneut versuchen",
       "completeAllSessions": "Alle Sitzungen abschließen",
       "completeAllReviewTitle": "Alle Review-Sitzungen abschließen?",
       "completeAllReviewDescription": "Dadurch werden alle {count, plural, one {# Sitzung} other {# Sitzungen}} im Review als abgeschlossen markiert.",

@@ -38,6 +38,7 @@ import {
   MoreHorizontal,
   Palette,
   Rocket,
+  RotateCw,
   Settings,
   SquarePen,
   Tag,
@@ -3700,10 +3701,33 @@ export function SidebarConversationList({
           ))}
         </div>
       ) : error ? (
-        <div className="flex-1 flex items-center justify-center px-3">
-          <p className="text-destructive text-xs">
-            {t("error", { message: error })}
+        // 列表没加载出来：说清楚、给「重试」（#439，定的是只给按钮、不自动
+        // 重试；限流的照旧由 store 每 5 秒自己重试），点了不用刷新整页。
+        <div
+          role="alert"
+          className="flex-1 flex flex-col items-center justify-center gap-2 px-3 text-center"
+        >
+          <p className="text-xs font-medium text-destructive">
+            {t("loadFailed")}
           </p>
+          <p className="max-w-full break-words text-xs text-muted-foreground">
+            {error}
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            disabled={refreshing}
+            onClick={() => void refreshConversations()}
+          >
+            {refreshing ? (
+              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <RotateCw className="size-3.5" aria-hidden="true" />
+            )}
+            {t("retry")}
+          </Button>
         </div>
       ) : showEmptyWorkspaceActions ? (
         <div className="flex-1 flex flex-col items-center justify-center px-3 gap-2">

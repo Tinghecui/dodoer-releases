@@ -2279,6 +2279,8 @@
       "importLocalSessions": "استيراد الجلسات المحلية",
       "importing": "جارٍ الاستيراد...",
       "error": "خطأ: {message}",
+      "loadFailed": "تعذّر تحميل المحادثات",
+      "retry": "إعادة المحاولة",
       "completeAllSessions": "إكمال جميع الجلسات",
       "completeAllReviewTitle": "إكمال جميع جلسات المراجعة؟",
       "completeAllReviewDescription": "سيؤدي ذلك إلى وضع علامة مكتمل على جميع {count, plural, one {# جلسة} other {# جلسات}} في المراجعة.",

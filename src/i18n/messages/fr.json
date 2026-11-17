@@ -2279,6 +2279,8 @@
       "importLocalSessions": "Importer les sessions locales",
       "importing": "Import en cours...",
       "error": "Erreur : {message}",
+      "loadFailed": "Impossible de charger les conversations",
+      "retry": "Réessayer",
       "completeAllSessions": "Terminer toutes les sessions",
       "completeAllReviewTitle": "Terminer toutes les sessions en revue ?",
       "completeAllReviewDescription": "Cela marquera comme terminées toutes les {count, plural, one {# session} other {# sessions}} en Revue.",

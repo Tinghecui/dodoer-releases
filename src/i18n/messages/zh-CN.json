@@ -2279,6 +2279,8 @@
       "importLocalSessions": "导入本地会话",
       "importing": "导入中...",
       "error": "错误：{message}",
+      "loadFailed": "会话列表加载失败",
+      "retry": "重试",
       "completeAllSessions": "完成全部会话",
       "completeAllReviewTitle": "完成全部复查会话？",
       "completeAllReviewDescription": "这会将复查中的 {count} 个会话全部标记为已完成。",

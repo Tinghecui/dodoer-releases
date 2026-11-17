@@ -2279,6 +2279,8 @@
       "importLocalSessions": "Import local sessions",
       "importing": "Importing...",
       "error": "Error: {message}",
+      "loadFailed": "Couldn't load conversations",
+      "retry": "Retry",
       "completeAllSessions": "Complete all sessions",
       "completeAllReviewTitle": "Complete all review sessions?",
       "completeAllReviewDescription": "This will mark all {count, plural, one {# session} other {# sessions}} in Review as completed.",

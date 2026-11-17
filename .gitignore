@@ -90,6 +90,7 @@ src-tauri/binaries/
 !/docs/chat-channels/
 !/docs/cli.md
 !/docs/conversation-mindmap.md
+!/docs/cowork-portal-devices.md
 !/docs/devices.md
 !/docs/host-ssh.md
 !/docs/images/

@@ -2279,6 +2279,8 @@
       "importLocalSessions": "Importar sesiones locales",
       "importing": "Importando...",
       "error": "Error del sistema: {message}",
+      "loadFailed": "No se pudieron cargar las conversaciones",
+      "retry": "Reintentar",
       "completeAllSessions": "Completar todas las sesiones",
       "completeAllReviewTitle": "¿Completar todas las sesiones en revisión?",
       "completeAllReviewDescription": "Esto marcará como completadas todas las {count, plural, one {# sesión} other {# sesiones}} en Revisión.",

@@ -436,6 +436,28 @@ beforeEach(() => {
   brand.cowork = false
 })
 
+// #439: 会话列表没加载出来时说清楚、给「重试」，不只剩一行错误。
+describe("SidebarConversationList — load failure offers a retry", () => {
+  it("shows the reason and a Retry button that refetches", async () => {
+    const refresh = vi.fn(async () => {})
+    useAppWorkspaceStore.setState({
+      folders: [],
+      conversations: [],
+      conversationsError: "qa injected 500",
+      refreshConversations: refresh,
+    })
+    const { getByRole, getByText } = render(tree())
+    expect(getByText(enMessages.Folder.sidebar.loadFailed)).not.toBeNull()
+    expect(getByText("qa injected 500")).not.toBeNull()
+    await act(async () => {
+      fireEvent.click(
+        getByRole("button", { name: enMessages.Folder.sidebar.retry })
+      )
+    })
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+})
+
 // Cowork (AI QA #93): a newcomer's first step has a button of its own, not
 // only the Folders header's hover actions.
 describe("SidebarConversationList — Cowork first project button", () => {

@@ -1009,4 +1009,18 @@ describe("rate limited lists retry on their own (#336)", () => {
     await vi.advanceTimersByTimeAsync(10_000)
     expect(mockList).toHaveBeenCalledTimes(1)
   })
+
+  // #439 定的是 A：500 这类失败只留侧栏的「重试」按钮，不自己重拉。
+  it("a 500 stays put until the user retries", async () => {
+    const { listAllConversations } = await import("@/lib/api")
+    const mockList = vi.mocked(listAllConversations)
+    mockList.mockClear()
+    mockList.mockRejectedValueOnce({ error: "qa injected 500" })
+    await useAppWorkspaceStore.getState().refreshConversations()
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(mockList).toHaveBeenCalledTimes(1)
+    expect(useAppWorkspaceStore.getState().conversationsError).toBe(
+      "qa injected 500"
+    )
+  })
 })

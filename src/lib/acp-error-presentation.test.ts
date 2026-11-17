@@ -176,3 +176,14 @@ describe("rejectedPromptText", () => {
     expect(rejectedPromptText("API key expired.")).toBe("API key expired.")
   })
 })
+
+// #423：智能体不认这个会话了。这一轮没开始，算失败的一轮（对话里留一行说明），
+// 但会自动重连重发一次，所以只是提醒，不弹系统通知。
+describe("session_lost", () => {
+  it("closes the turn with a failure line and only warns", () => {
+    expect(isFailedTurnVerdict("session_lost")).toBe(true)
+    const route = routeAcpError("session_lost")
+    expect(route).toMatchObject({ kind: "session", level: "warning" })
+    expect(acpErrorNotifiesDesktop(route)).toBe(false)
+  })
+})

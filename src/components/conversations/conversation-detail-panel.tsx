@@ -152,6 +152,10 @@ import { useCoworkText } from "@/lib/cowork/i18n"
 import { ModelSwitchContext } from "@/lib/cowork/model-switch"
 import { useCachedCoworkInfo } from "@/lib/cowork/info"
 import { openAgentSignIn, signInViaPortal } from "@/lib/cowork/sign-in"
+import {
+  createSessionLostRetry,
+  sessionLostRetryRoute,
+} from "@/lib/cowork/session-lost-retry"
 import { failedTurnRequeueKind } from "@/lib/cowork/failed-turn"
 import { blockingPrompts } from "@/lib/blocking-prompts"
 import { notify } from "@/lib/notify"
@@ -753,6 +757,7 @@ const ConversationTabView = memo(function ConversationTabView({
     selectorsLoading,
     autoConnectError,
     handleFocus,
+    reconnectInBackground,
     handleSend: lifecycleSend,
     handleSetConfigOption: lifecycleSetConfigOption,
     handleCancel,
@@ -982,6 +987,11 @@ const ConversationTabView = memo(function ConversationTabView({
   // the error event does, and it lands inside the turn — set there (see the
   // `useAcpEvent` below), read and cleared when the turn ends.
   const turnAuthFailedRef = useRef(false)
+  // Cowork 加的（#423）：这一轮是不是以 `session_lost` 结束（智能体不认这个会话了，
+  // 这一轮没开始）。和 `turnAuthFailedRef` 一样，在下面的 `useAcpEvent` 里记下，
+  // 回合结束时读、清；要自动重发的那条记在 `sessionLostRetry`。
+  const turnSessionLostRef = useRef(false)
+  const [sessionLostRetry] = useState(createSessionLostRetry)
   const prevConnStatusRef = useRef(connStatus)
   // jenny fork: the message this tab sent last, until its turn ends. When the
   // turn fails (for example the agent quits mid-reply), it goes back to the
@@ -1003,6 +1013,8 @@ const ConversationTabView = memo(function ConversationTabView({
     lastSentRef.current = null
     const authFailed = turnAuthFailedRef.current
     turnAuthFailedRef.current = false
+    const sessionLost = turnSessionLostRef.current
+    turnSessionLostRef.current = false
     const liveContent = getRuntimeSession(effectiveConversationId)?.liveMessage
       ?.content
     const failed = liveContent?.some((block) => block.type === "turn_error")
@@ -1013,6 +1025,9 @@ const ConversationTabView = memo(function ConversationTabView({
     const requeueKind = failedTurnRequeueKind(liveContent, authFailed)
     if (sent && requeueKind) {
       mqRequeueFailed(sent.draft, sent.modeId, requeueKind)
+      // #423：智能体不认这个会话了，第一次失败时记下这条，旧连接退下去以后
+      // 自动重试一次（见下面 `handleQueueRetry` 旁边的 effect）。
+      if (sessionLost) sessionLostRetry.noteFailed(sent.draft)
     }
     sent?.turn.end(failed ? "error" : "complete", { connStatus })
 
@@ -1041,6 +1056,7 @@ const ConversationTabView = memo(function ConversationTabView({
     connStatus,
     effectiveConversationId,
     mqRequeueFailed,
+    sessionLostRetry,
     syncTurnMetadata,
   ])
   // Cowork fork: a turn still open when the panel goes away is told so.
@@ -1299,6 +1315,9 @@ const ConversationTabView = memo(function ConversationTabView({
         if (envelope.type !== "error") return
         if (envelope.code === "turn_failed_auth_required") {
           turnAuthFailedRef.current = true
+        }
+        if (envelope.code === "session_lost") {
+          turnSessionLostRef.current = true
         }
       },
       [conn.connectionId]
@@ -1590,6 +1609,7 @@ const ConversationTabView = memo(function ConversationTabView({
         turn: turnStarted(selectedAgentRef.current),
       }
       turnAuthFailedRef.current = false
+      turnSessionLostRef.current = false
       const onTurnInProgress = () => {
         lastSentRef.current?.turn.end("busy")
         lastSentRef.current = null
@@ -2749,6 +2769,38 @@ const ConversationTabView = memo(function ConversationTabView({
       handleOpenAgentsSettings,
     ]
   )
+
+  // Cowork 加的（#423）：智能体不认这个会话了的那条消息，等旧连接退下去（不再是
+  // error / prompting），替用户点一次「重试」：清掉失败标记、重新连接、由排队区
+  // 发出去。每条只自动一次，再失败就留在排队区等用户（见 `createSessionLostRetry`）。
+  // 用户已经切到别的会话时，「重试」里的重连不管后台标签，这里自己在后台连
+  // （见 `sessionLostRetryRoute`）。
+  const queueHead = msgQueue[0]
+  useEffect(() => {
+    const route = sessionLostRetryRoute({
+      isActive,
+      canConnect: canAutoConnect && agentUnavailableReason == null,
+    })
+    if (route === "wait") return
+    if (!sessionLostRetry.takeReady(queueHead, connStatus)) return
+    if (!queueHead) return
+    if (route === "retry") {
+      handleQueueRetry(queueHead.id)
+      return
+    }
+    mqRetry(queueHead.id)
+    reconnectInBackground()
+  }, [
+    queueHead,
+    connStatus,
+    isActive,
+    canAutoConnect,
+    agentUnavailableReason,
+    handleQueueRetry,
+    mqRetry,
+    reconnectInBackground,
+    sessionLostRetry,
+  ])
 
   // Cowork fork: "Retry all" — the same rule as a single retry above. No
   // usable agent: clear nothing, say why and try the connection once. A

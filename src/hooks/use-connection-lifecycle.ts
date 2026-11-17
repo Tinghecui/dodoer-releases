@@ -65,6 +65,12 @@ export interface UseConnectionLifecycleReturn {
   selectorsLoading: boolean
   autoConnectError: string | null
   handleFocus: () => void
+  /**
+   * Cowork 加的（#423）：不看 isActive 的重连，给切到后台的标签用（自动重发智能体
+   * 不认会话了的那条消息）。连接已经断了 / 出错时才连；调用方自己保证这个标签现在
+   * 能连（`isActive` 里合进去的那些准备条件）。
+   */
+  reconnectInBackground: () => void
   handleSend: (
     draft: PromptDraft,
     modeId?: string | null,
@@ -489,6 +495,19 @@ export function useConnectionLifecycle({
     touchActivity,
   ])
 
+  const reconnectInBackground = useCallback(() => {
+    if (!workingDir) return
+    if (status && status !== "disconnected" && status !== "error") return
+    setLastAutoConnectError(null)
+    connConnect(agentType, workingDir, sessionId, conversationId).catch(
+      (e: unknown) => {
+        if (!isExpectedConnectError(e)) {
+          console.error("[ConnLifecycle] background reconnect:", e)
+        }
+      }
+    )
+  }, [agentType, workingDir, sessionId, conversationId, status, connConnect])
+
   // Why connecting failed, for the composer's inline banner. The auto-connect's
   // own rejection says it first; a request parked behind another in-flight
   // connect never rejects to it (its promise resolves at once, and the run
@@ -645,6 +664,7 @@ export function useConnectionLifecycle({
     selectorsLoading,
     autoConnectError,
     handleFocus,
+    reconnectInBackground,
     handleSend,
     handleSetConfigOption,
     handleCancel,

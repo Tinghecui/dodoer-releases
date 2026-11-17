@@ -217,3 +217,32 @@ describe("a worktree that cannot be created fails the message", () => {
     expect(failure).not.toContain("toErrorMessage(e)")
   })
 })
+
+// #423：智能体不认这个会话了（`session_lost`），失败的那条消息自动重试一次。
+// 判断在 `createSessionLostRetry`（单测在它旁边），这里守着它接在面板上。
+describe("a lost session retries the message once", () => {
+  it("notes the code during the turn and the message when the turn fails", () => {
+    expect(source).toContain('envelope.code === "session_lost"')
+    const edge = between(
+      "const sessionLost = turnSessionLostRef.current",
+      "completeTurn(effectiveConversationId)"
+    )
+    expect(edge).toContain("mqRequeueFailed(")
+    expect(edge).toContain("sessionLostRetry.noteFailed(sent.draft)")
+  })
+
+  it("retries through the queue's own retry, once the old connection is gone", () => {
+    const effect = between(
+      "const route = sessionLostRetryRoute({",
+      "reconnectInBackground,\n    sessionLostRetry,"
+    )
+    expect(effect).toContain(
+      'if (route === "wait") return\n    if (!sessionLostRetry.takeReady(queueHead, connStatus)) return'
+    )
+    expect(effect).toContain("handleQueueRetry(queueHead.id)")
+    // 切到别的会话以后：自己清掉失败标记、在后台重连。
+    expect(effect).toContain(
+      "mqRetry(queueHead.id)\n    reconnectInBackground()"
+    )
+  })
+})

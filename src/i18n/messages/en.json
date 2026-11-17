@@ -3583,6 +3583,7 @@
           "initializeTimeout": "{agent} connection handshake timed out after 60 seconds. Please open Settings to check Agent configuration and network settings.",
           "mcpRejectedByAgent": "{agent} refused the session while dodoer’s MCP companion was attached: {message} If this agent does not support MCP, turn off “MCP support” for it in Settings and connect again.",
           "processExited": "{agent} process exited unexpectedly.",
+          "sessionLost": "{agent} no longer has this session, so the message was not run. The first time this happens it reconnects and sends the message once more by itself; if the message is still marked as failed in the queue, click Retry.",
           "spawnFailed": "Failed to start {agent}: {message}",
           "downloadFailed": "{agent} download failed: {message}",
           "sessionLoadResourceNotFound": "{agent} session failed to load. Reload to retry, or start a new conversation.",

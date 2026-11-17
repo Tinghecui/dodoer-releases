@@ -3583,6 +3583,7 @@
           "initializeTimeout": "{agent} の接続ハンドシェイクがタイムアウトしました（60 秒以内に応答なし）。設定を開いてエージェントとネットワーク設定を確認してください。",
           "mcpRejectedByAgent": "dodoer の MCP コンパニオンを渡した際、{agent} がセッションを拒否しました: {message} このエージェントが MCP に対応していない場合は、設定で「MCP サポート」をオフにして再接続してください。",
           "processExited": "{agent} プロセスが予期せず終了しました。",
+          "sessionLost": "{agent} 側のセッションが終了したため、このメッセージは実行されませんでした。初回は自動で再接続してもう一度送信します。キューでこのメッセージがまだ送信失敗のままなら「再試行」を押してください。",
           "spawnFailed": "{agent} の起動に失敗しました: {message}",
           "downloadFailed": "{agent} のダウンロードに失敗しました: {message}",
           "sessionLoadResourceNotFound": "{agent} セッションの読み込みに失敗しました。再読み込みして再試行するか、新しい会話を開始してください。",

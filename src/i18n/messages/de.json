@@ -3583,6 +3583,7 @@
           "initializeTimeout": "Der Verbindungs-Handshake von {agent} hat nach 60 Sekunden das Zeitlimit überschritten. Öffnen Sie die Einstellungen, um Agenten- und Netzwerkkonfiguration zu prüfen.",
           "mcpRejectedByAgent": "{agent} hat die Sitzung abgelehnt, während dodoers MCP-Begleitprozess angehängt war: {message} Falls dieser Agent MCP nicht unterstützt, deaktivieren Sie „MCP-Unterstützung“ in den Einstellungen und verbinden Sie erneut.",
           "processExited": "{agent}-Prozess wurde unerwartet beendet.",
+          "sessionLost": "{agent} hat diese Sitzung nicht mehr, daher wurde die Nachricht nicht ausgeführt. Beim ersten Mal wird automatisch neu verbunden und die Nachricht noch einmal gesendet; ist sie in der Warteschlange weiterhin als fehlgeschlagen markiert, klicke auf Erneut versuchen.",
           "spawnFailed": "{agent} konnte nicht gestartet werden: {message}",
           "downloadFailed": "{agent}-Download fehlgeschlagen: {message}",
           "sessionLoadResourceNotFound": "{agent}-Sitzung konnte nicht geladen werden. Neu laden, um es erneut zu versuchen, oder eine neue Konversation starten.",

@@ -1536,6 +1536,12 @@ const AUTH_REQUIRED_SENTINEL: &str = "__codeg_auth_required__";
 /// [`INIT_TIMEOUT_SENTINEL`].
 const PI_RUNTIME_OUTDATED_SENTINEL: &str = "__codeg_pi_runtime_outdated__";
 
+/// Cowork 加的（#423）：`session/prompt` 被回了 `ResourceNotFound`（智能体那边已经没有
+/// 这个会话，这一轮没开始），对话循环带着它结束连接时打的标记，外层的
+/// [`connection_failure`] 据此给出 `AcpError::SessionLost`（代码 `session_lost`），
+/// 不把智能体的原文（sessionId 的 JSON）交给前端。和 [`INIT_TIMEOUT_SENTINEL`] 同一个办法。
+const SESSION_LOST_SENTINEL: &str = "__codeg_session_lost__";
+
 /// [`pi_runtime_is_outdated`]'s verdict, carried out of the typed inner future
 /// on [`PI_RUNTIME_OUTDATED_SENTINEL`].
 fn tag_pi_runtime_outdated(
@@ -10271,6 +10277,8 @@ fn connection_failure(err: agent_client_protocol::Error) -> AcpError {
         AcpError::AgentRuntimeOutdated(pi_runtime_outdated_message())
     } else if raw.contains(AUTH_REQUIRED_SENTINEL) {
         AcpError::agent_auth_required(raw.replace(AUTH_REQUIRED_SENTINEL, ""))
+    } else if raw.contains(SESSION_LOST_SENTINEL) {
+        AcpError::SessionLost
     } else if raw.contains(MCP_SUSPECT_SENTINEL) {
         // Strip the marker so the user sees the agent's own words, then
         // let the frontend append the `supports_mcp` suggestion.
@@ -15632,6 +15640,23 @@ async fn run_conversation_loop(
                                 }
                                 Err(e) if lost_the_connection(&e) => {
                                     return Err(defer_to_connection_report(e).await)
+                                }
+                                // Cowork 加的（#423）：智能体不认这个会话了，这一轮
+                                // 没开始。连接照旧结束，但带上标记：前端拿到
+                                // `session_lost` 会重连、把这条消息自动再发一次。
+                                Err(e)
+                                    if matches!(
+                                        e.code,
+                                        agent_client_protocol::schema::v1::ErrorCode::ResourceNotFound
+                                    ) =>
+                                {
+                                    tracing::warn!(
+                                        "[ACP] session/prompt answered ResourceNotFound ({e}); \
+                                         the agent lost the session, ending the connection"
+                                    );
+                                    return Err(agent_client_protocol::util::internal_error(
+                                        SESSION_LOST_SENTINEL,
+                                    ));
                                 }
                                 Err(e) => return Err(e),
                             };
@@ -52357,6 +52382,118 @@ mod tests {
             None,
             "a retryable failure keeps the connection"
         );
+    }
+
+    /// #423：智能体底下的进程没了、适配器还活着，下一条消息的 prompt 被回
+    /// ResourceNotFound（-32002，data 里带 sessionId 的 JSON）。这一轮根本没开始，
+    /// 连接照旧结束，但结束时带的是固定代码 `session_lost`（前端据此自动重连重发一次、
+    /// 再失败才显示本地化的说明），不再把「Resource not found: { "sessionId": … }」
+    /// 原文交给前端。
+    #[tokio::test]
+    async fn a_prompt_on_a_session_the_agent_forgot_ends_as_session_lost() {
+        let (client_end, agent_end) = agent_client_protocol::Channel::duplex();
+        let agent = tokio::spawn(async move {
+            let _ = Agent
+                .builder()
+                .on_receive_request(
+                    async |_req: NewSessionRequest,
+                           responder: Responder<NewSessionResponse>,
+                           _cx: ConnectionTo<Client>| {
+                        responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+                    },
+                    on_receive_request!(),
+                )
+                .on_receive_request(
+                    async |_req: PromptRequest,
+                           responder: Responder<
+                        agent_client_protocol::schema::v1::PromptResponse,
+                    >,
+                           _cx: ConnectionTo<Client>| {
+                        responder.respond_with_error(
+                            agent_client_protocol::Error::resource_not_found(None)
+                                .data(serde_json::json!({ "sessionId": "s1" })),
+                        )
+                    },
+                    on_receive_request!(),
+                )
+                .connect_with(agent_end, async |_cx: ConnectionTo<Client>| {
+                    std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                })
+                .await;
+        });
+
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-forgot".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "win".to_string(),
+            None,
+        )));
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let loop_state = Arc::clone(&state);
+        let (done_tx, done_rx) =
+            tokio::sync::oneshot::channel::<Result<(), agent_client_protocol::Error>>();
+        let client = tokio::spawn(async move {
+            let _ = Client
+                .builder()
+                .connect_with(client_end, async move |cx: ConnectionTo<Agent>| {
+                    let raw = cx
+                        .send_request_to(
+                            Agent,
+                            UntypedMessage::new("session/new", NewSessionRequest::new("/tmp"))?,
+                        )
+                        .block_task()
+                        .await?;
+                    let response: NewSessionResponse = serde_json::from_value(raw)
+                        .map_err(agent_client_protocol::Error::into_internal_error)?;
+                    let mut session = AgentSession::attach(&cx, response)?;
+                    let perms = PendingPermissions::default();
+                    let ledger = background_watch::PromptLedger::shared();
+                    let stderr_tail = Arc::new(StderrTail::new());
+                    let result = run_conversation_loop(
+                        &mut session,
+                        "conn-forgot",
+                        &EventEmitter::Noop,
+                        &loop_state,
+                        AgentType::ClaudeCode,
+                        &perms,
+                        &mut cmd_rx,
+                        Arc::new(TerminalRuntime::with_base_env(BTreeMap::new())),
+                        "/tmp",
+                        false,
+                        &[],
+                        &ledger,
+                        None,
+                        &stderr_tail,
+                    )
+                    .await;
+                    let _ = done_tx.send(result.map(|_| ()));
+                    Ok(())
+                })
+                .await;
+        });
+
+        state.write().await.turn_in_flight = true;
+        cmd_tx
+            .send(ConnectionCommand::Prompt {
+                blocks: vec![PromptInputBlock::Text { text: "ok3".into() }],
+                user_message: None,
+                internal_suffix: Vec::new(),
+            })
+            .await
+            .expect("the loop is running");
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), done_rx)
+            .await
+            .expect("the loop ends on the rejection")
+            .expect("the loop reports how it ended");
+        client.abort();
+        agent.abort();
+
+        let error = connection_failure(ended.expect_err("the connection cannot go on"));
+        assert_eq!(error.code(), Some("session_lost"), "{error}");
+        let shown = error.to_string();
+        assert!(!shown.contains("sessionId"), "{shown}");
+        assert!(!shown.contains("Resource not found"), "{shown}");
     }
 }
 

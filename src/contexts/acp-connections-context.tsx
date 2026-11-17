@@ -5239,6 +5239,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           return t("blocked.unavailable", { agent: agentLabel })
         case "process_exited":
           return t("backendErrors.processExited", { agent: agentLabel })
+        // Cowork 加的（#423）：不显示智能体的原文（sessionId 的 JSON）。
+        case "session_lost":
+          return t("backendErrors.sessionLost", { agent: agentLabel })
         case "spawn_failed":
           return t("backendErrors.spawnFailed", {
             agent: agentLabel,

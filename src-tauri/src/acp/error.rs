@@ -108,6 +108,12 @@ pub enum AcpError {
     /// two sizes back out of it for its own localized message.
     #[error("{0}")]
     PromptImagesTooLarge(String),
+    /// Cowork 加的（#423）：智能体对这条消息回了 `ResourceNotFound`——它那边已经没有
+    /// 这个会话了（比如底下的 Claude CLI 被杀了、适配器还活着），这一轮根本没开始。
+    /// 连接照旧结束；前端按代码 `session_lost` 自动重连、把这条消息再发一次，
+    /// 再失败才显示本地化的说明。不带智能体的原文（里面是 sessionId 的 JSON）。
+    #[error("the agent's session has ended; this message was not run")]
+    SessionLost,
 }
 
 impl AcpError {
@@ -178,6 +184,7 @@ impl AcpError {
             Self::AgentRuntimeOutdated(_) => Some("agent_runtime_outdated"),
             Self::ConversationMoved { .. } => Some("conversation_moved"),
             Self::PromptImagesTooLarge(_) => Some("prompt_images_too_large"),
+            Self::SessionLost => Some("session_lost"),
             Self::Protocol(_) => None,
         }
     }

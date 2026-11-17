@@ -3583,6 +3583,7 @@
           "initializeTimeout": "Le handshake de connexion de {agent} a expiré (aucune réponse après 60 secondes). Ouvrez Paramètres pour vérifier la configuration de l'agent et du réseau.",
           "mcpRejectedByAgent": "{agent} a refusé la session alors que le compagnon MCP de dodoer était joint : {message} Si cet agent ne prend pas en charge MCP, désactivez « Prise en charge de MCP » dans les Paramètres puis reconnectez-vous.",
           "processExited": "Le processus {agent} s'est arrêté de manière inattendue.",
+          "sessionLost": "{agent} n'a plus cette session, le message n'a donc pas été exécuté. La première fois, la reconnexion et un nouvel envoi se font automatiquement ; si le message reste marqué en échec dans la file, cliquez sur Réessayer.",
           "spawnFailed": "Impossible de démarrer {agent} : {message}",
           "downloadFailed": "Échec du téléchargement de {agent} : {message}",
           "sessionLoadResourceNotFound": "Échec du chargement de la session de {agent}. Rechargez pour réessayer ou démarrez une nouvelle conversation.",

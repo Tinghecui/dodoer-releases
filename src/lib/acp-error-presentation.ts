@@ -66,6 +66,9 @@ const ROUTES: Readonly<Record<string, AcpErrorRoute>> = {
     level: "warning",
     rawAsDetail: true,
   },
+  // Cowork 加的（#423）：智能体不认这个会话了，这条消息没执行。会话面板会重连、
+  // 自动再发一次，所以只是提醒：琥珀色，不弹系统通知。
+  session_lost: { kind: "session", level: "warning", rawAsDetail: false },
   // Verdicts on a selector the user just changed. The selector itself snaps
   // back (or keeps the agent's value), so the notification only says why.
   set_mode_failed: { kind: "action", level: "error", rawAsDetail: true },
@@ -121,6 +124,8 @@ export function isTurnFailureCode(code: string | null | undefined): boolean {
  */
 const FAILED_TURN_VERDICTS: ReadonlySet<string> = new Set([
   "turn_failed_auth_required",
+  // Cowork 加的（#423）：智能体不认这个会话了，这一轮没开始。
+  "session_lost",
   "turn_failed_empty",
   "turn_failed_empty_protocol",
   "turn_failed_empty_metadata",

@@ -5593,6 +5593,23 @@ describe("empty-turn error diagnostics", () => {
     )
   })
 
+  // #423：智能体不认这个会话了（底下的 CLI 被杀，适配器还在），后端结束连接时
+  // 带 `session_lost`。显示本地化的一句，不是「Resource not found: { "sessionId": … }」。
+  it("localizes a session the agent lost", async () => {
+    const handlers = await connectOwner()
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "error",
+      message: "the agent's session has ended; this message was not run",
+      agent_type: "claude_code",
+      code: "session_lost",
+    })
+
+    expect(h.store!.getConnection(TAB)!.error).toBe("backendErrors.sessionLost")
+  })
+
   it("keeps evidence for the alert list — out of conn.error, the toast and the OS notification", async () => {
     const handlers = await connectOwner()
     h.notifyDesktop.mockClear()

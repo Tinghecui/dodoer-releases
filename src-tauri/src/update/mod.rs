@@ -15,6 +15,10 @@ pub mod install;
 #[cfg(any(feature = "tauri-runtime", test))]
 #[cfg_attr(not(feature = "tauri-runtime"), allow(dead_code))]
 pub mod rollback;
+// Desktop only (`commands::app_update`); compiled for the tests in every mode.
+#[cfg(any(feature = "tauri-runtime", test))]
+#[cfg_attr(not(feature = "tauri-runtime"), allow(dead_code))]
+pub mod restart_install;
 pub mod runtime;
 pub mod state;
 pub mod verify;

@@ -18,9 +18,19 @@
 //! takes the older version ([`crate::update::rollback`]).
 //!
 //! Every platform downloads first and switches over only when the user asks
-//! for the restart. macOS and Linux put the new version in place at the end of
-//! the download. Windows keeps the downloaded installer until the restart and
-//! runs it then, because running it is what ends the app.
+//! for the restart. Windows and macOS keep the downloaded package in memory
+//! until the restart and install it then; Linux puts the new version in place
+//! at the end of the download. On Windows running the installer is what ends
+//! the app. On macOS installing swaps the app bundle, and the old version
+//! keeps starting things from that bundle while it runs (`codeg-server` for
+//! the local workspace, restarted whenever it dies, and the `codeg-mcp`
+//! companion of every new conversation), so swapping it at the end of the
+//! download would have those come up as the new version under the old app —
+//! a new server migrating the database the old app has open. The rules are
+//! plain functions in [`crate::update::restart_install`].
+//!
+//! `perform_app_rollback` goes through the same `run_download`, so on macOS a
+//! rollback, too, only downloads and waits for the restart to install.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -28,6 +38,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::app_error::AppCommandError;
+use crate::update::restart_install::{self, RestartInstallOutcome};
 use crate::update::rollback::{self, AppRollbackTarget, ReleaseSource};
 use crate::update::state::{self as update_state, AppUpdateState, AppUpdateStateHandle};
 use crate::web::event_bridge::EventEmitter;
@@ -95,7 +106,9 @@ pub async fn app_rollback_target(
 
 /// Begin a download of `version`, the release before this one, like an
 /// update: progress arrives as `app_update_state`, and `restart_app` switches
-/// over. Looks the release up again, so that only the previous release, and
+/// over. It shares `run_download` with the update, so where the update
+/// installs at the restart ([`INSTALL_AT_RESTART`], Windows and macOS), the
+/// rollback does too. Looks the release up again, so that only the previous release, and
 /// only one that opens this app's database, is ever installed.
 #[tauri::command]
 pub async fn perform_app_rollback(
@@ -162,13 +175,33 @@ struct Downgrade {
 const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Whether the download stops short of installing and leaves that to the
-/// restart, which is the case on Windows. There the install is the restart:
-/// the plugin starts the installer and ends the app (see [`updater`]). Run at
-/// the end of the download, it closed the app the moment the download
-/// finished, without waiting for the user to restart.
+/// restart, which is the case on Windows and macOS.
 ///
-/// `cfg!` rather than `#[cfg]`, so that both paths compile on every platform.
-const INSTALL_AT_RESTART: bool = cfg!(windows);
+/// On Windows the install is the restart: the plugin starts the installer and
+/// ends the app (see [`updater`]). Run at the end of the download, it closed
+/// the app the moment the download finished, without waiting for the user to
+/// restart.
+///
+/// On macOS the install swaps the app bundle in place. Done at the end of the
+/// download, the old version went on running for hours or days from a bundle
+/// that already held the new one, and whatever it started from there in the
+/// meantime was the new version: the `codeg-mcp` of every new conversation
+/// (found beside the running executable, `Contents/MacOS`), connecting to the
+/// old app, and the local workspace's `codeg-server`, restarted whenever it
+/// dies, which opened — and first migrated — the database under the old app.
+/// So the restart installs it, and then relaunches ([`install_and_quit`]).
+///
+/// `cfg!` rather than `#[cfg]` (inside [`restart_install::CURRENT_PLATFORM`]),
+/// so that both paths compile on every platform.
+const INSTALL_AT_RESTART: bool =
+    restart_install::installs_at_restart(restart_install::CURRENT_PLATFORM);
+
+/// Whether a successful install ends the app itself, so that `install`
+/// returning at all means it failed: Windows, where the plugin starts the
+/// installer and exits. On macOS `install` returns once the new bundle is in
+/// place, and the relaunch is ours to ask for.
+const INSTALL_ENDS_APP: bool =
+    restart_install::installer_ends_app(restart_install::CURRENT_PLATFORM);
 
 /// A downloaded update that the restart installs ([`INSTALL_AT_RESTART`]).
 struct StagedInstall {
@@ -295,8 +328,8 @@ async fn run_download(
 /// `Restarting` first so the UI (and any other window) reflects it, then
 /// asks for the restart after a short flush delay and returns.
 ///
-/// On Windows the install happens here instead ([`INSTALL_AT_RESTART`]); see
-/// [`install_and_quit`].
+/// On Windows and macOS the install happens here instead
+/// ([`INSTALL_AT_RESTART`]); see [`install_and_quit`].
 #[tauri::command]
 pub async fn restart_app(
     app: tauri::AppHandle,
@@ -353,9 +386,20 @@ pub async fn restart_app(
     Ok(())
 }
 
-/// The restart on Windows: runs the installer the download left, which ends
-/// the app and, once it has installed the new version, starts it (the plugin
-/// passes it `/R`). Returns only if that failed, with the state at `Error`.
+/// The restart on Windows and macOS: installs the package the download left.
+///
+/// - Windows: runs the installer, which ends the app and, once it has
+///   installed the new version, starts it (the plugin passes it `/R`).
+///   Returns only if that failed.
+/// - macOS: swaps the app bundle for the new one (the plugin puts the old one
+///   back if the swap fails), then asks for the restart, which relaunches
+///   into it through `RunEvent::Exit` and `crate::relaunch`. Installing comes
+///   first and the app only shuts down (in `ExitRequested` / `Exit`) once it
+///   worked: when it fails, nothing has been stopped and the old version
+///   carries on. The downloaded package is dropped either way; the next
+///   update downloads it again.
+///
+/// On failure the state is at `Error`, with the plugin's message.
 async fn install_and_quit(
     app: tauri::AppHandle,
     handle: AppUpdateStateHandle,
@@ -373,14 +417,25 @@ async fn install_and_quit(
     };
     // Lets the windows show `Restarting` before the app shuts down.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    tracing::info!("[update] starting the installer");
-    // On a blocking thread: it writes the installer out and shuts the app
-    // down, and if the installer starts it ends the process right there.
-    let outcome = tauri::async_runtime::spawn_blocking(move || update.install(bytes)).await;
-    let message = match outcome {
-        Ok(Ok(())) => "The installer did not take over".to_string(),
-        Ok(Err(err)) => err.to_string(),
-        Err(err) => err.to_string(),
+    tracing::info!("[update] installing the downloaded update");
+    // On a blocking thread. On Windows it writes the installer out and shuts
+    // the app down, and if the installer starts it ends the process right
+    // there. On macOS it may need an administrator password: the plugin then
+    // shows the prompt on the main thread and waits for it on this one, so
+    // this can be neither the main thread nor a runtime worker.
+    let outcome = tauri::async_runtime::spawn_blocking(move || update.install(bytes))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.map_err(|e| e.to_string()));
+    let message = match restart_install::restart_install_outcome(outcome, INSTALL_ENDS_APP) {
+        RestartInstallOutcome::Relaunch => {
+            // Not `restart()`, which would park this tokio worker for good (see
+            // `restart_app`).
+            tracing::info!("[update] relaunching into the installed update");
+            app.request_restart();
+            return Ok(());
+        }
+        RestartInstallOutcome::Failed(message) => message,
     };
     if quit.load(Ordering::SeqCst) {
         // The installer failed to start after the app had already shut down

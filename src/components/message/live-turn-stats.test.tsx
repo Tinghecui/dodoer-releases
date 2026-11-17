@@ -70,14 +70,153 @@ describe("extractLiveEditStats", () => {
     expect(stats).toEqual({ files: 1, additions: 2, deletions: 0 })
   })
 
-  it("dedupes files and sums line counts across blocks", () => {
+  it("dedupes files; a later write to the same file replaces the earlier one", () => {
     const stats = extractLiveEditStats(
       msg([
         toolBlock(writeInput("a", "same.ts")),
         toolBlock(writeInput("b\nc", "same.ts")),
       ])
     )
+    expect(stats).toEqual({ files: 1, additions: 2, deletions: 0 })
+  })
+
+  it("does not count a write's trailing newline as an extra line", () => {
+    const stats = extractLiveEditStats(
+      msg([toolBlock(writeInput("a\nb\nc\n", "c2.md"))])
+    )
     expect(stats).toEqual({ files: 1, additions: 3, deletions: 0 })
+  })
+
+  it("counts a file written then edited in the turn by its net lines", () => {
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(writeInput("a\nb\nc\n", "c2.md")),
+        toolBlock(
+          JSON.stringify({
+            file_path: "c2.md",
+            old_string: "b",
+            new_string: "B",
+          })
+        ),
+      ])
+    )
+    expect(stats).toEqual({ files: 1, additions: 3, deletions: 0 })
+  })
+
+  it("counts a file written then patched (one-file apply_patch) by its net lines", () => {
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(writeInput("a\nb\nc\n", "c2.md")),
+        toolBlock(applyPatch("*** Update File: c2.md\n@@\n-b\n+B")),
+      ])
+    )
+    expect(stats).toEqual({ files: 1, additions: 3, deletions: 0 })
+  })
+
+  it("counts a file written then patched (multi-file apply_patch) by its net lines", () => {
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(writeInput("a\nb\nc\n", "c2.md")),
+        toolBlock(
+          applyPatch(
+            "*** Update File: c2.md\n@@\n-b\n+B\n*** Update File: other.ts\n@@\n-x\n+y\n+z"
+          )
+        ),
+      ])
+    )
+    // c2.md 写过，按净行数 +3/-0；other.ts 照常 +2/-1
+    expect(stats).toEqual({ files: 2, additions: 5, deletions: 1 })
+  })
+
+  it("counts a file written then edited via a multi-file changes edit by its net lines", () => {
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(writeInput("a\nb\nc\n", "c2.md")),
+        toolBlock(
+          JSON.stringify({
+            changes: {
+              "c2.md": { old_string: "b", new_string: "B" },
+              "other.ts": { old_string: "x", new_string: "y\nz" },
+            },
+          })
+        ),
+      ])
+    )
+    expect(stats).toEqual({ files: 2, additions: 5, deletions: 1 })
+  })
+
+  it("counts a file created by a patch then patched by its net lines", () => {
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(applyPatch("*** Add File: c2.md\n+a\n+b\n+c")),
+        toolBlock(applyPatch("*** Update File: c2.md\n@@\n-b\n+B")),
+      ])
+    )
+    expect(stats).toEqual({ files: 1, additions: 3, deletions: 0 })
+  })
+
+  it("counts a file created in a multi-file patch then edited by its net lines", () => {
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(
+          applyPatch(
+            "*** Add File: c2.md\n+a\n+b\n+c\n*** Update File: other.ts\n@@\n-x\n+y"
+          )
+        ),
+        toolBlock(
+          JSON.stringify({
+            file_path: "c2.md",
+            old_string: "b",
+            new_string: "B",
+          })
+        ),
+      ])
+    )
+    // c2.md 新建后改一行仍是 +3/-0；other.ts 照常 +1/-1
+    expect(stats).toEqual({ files: 2, additions: 4, deletions: 1 })
+  })
+
+  it("keeps a new file's content through a patch so a later edit counts right", () => {
+    // 3 行的新文件补丁改一行，再去掉最后一个换行：仍是 3 行
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(writeInput("a\nb\nc\n", "c2.md")),
+        toolBlock(applyPatch("*** Update File: c2.md\n@@\n a\n-b\n+B\n c")),
+        toolBlock(
+          JSON.stringify({
+            file_path: "c2.md",
+            old_string: "c\n",
+            new_string: "c",
+          })
+        ),
+      ])
+    )
+    expect(stats).toEqual({ files: 1, additions: 3, deletions: 0 })
+  })
+
+  it("does not take a patch-added line starting with ++ for a file header", () => {
+    // 内容行「++ hello」在补丁里写成「+++ hello」
+    const stats = extractLiveEditStats(
+      msg([toolBlock(applyPatch("*** Add File: c2.md\n+a\n+++ hello\n+c"))])
+    )
+    expect(stats).toEqual({ files: 1, additions: 3, deletions: 0 })
+  })
+
+  it("counts the blank line an edit adds to a new file", () => {
+    // 「b」换成「b\n」：文件从 3 行变成 4 行
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(writeInput("a\nb\nc\n", "c2.md")),
+        toolBlock(
+          JSON.stringify({
+            file_path: "c2.md",
+            old_string: "b",
+            new_string: "b\n",
+          })
+        ),
+      ])
+    )
+    expect(stats).toEqual({ files: 1, additions: 4, deletions: 0 })
   })
 
   it("ignores non-edit blocks", () => {

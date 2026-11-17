@@ -1,8 +1,15 @@
 import type { ContentBlock, MessageTurn } from "./types"
 import { normalizeToolName } from "./tool-call-normalization"
-import { estimateChangedLineStats } from "./line-change-stats"
+import {
+  applyPatchHunks,
+  applyTextEdits,
+  estimateChangedLineStats,
+  textEditsLineDelta,
+  type TextEdit,
+} from "./line-change-stats"
 import { generateUnifiedDiff } from "./unified-diff-generator"
 import { approvalFromMeta } from "./activity/approval"
+import { countLines } from "./activity/format"
 
 export type FileOperation = "read" | "edit" | "write" | "apply_patch"
 
@@ -252,11 +259,6 @@ function isDiffDeletedLine(line: string): boolean {
   return line.startsWith("-") && !line.startsWith("---")
 }
 
-function countLines(s: string): number {
-  if (!s) return 0
-  return s.split("\n").length
-}
-
 function countDiffLines(text: string): DiffStat {
   let additions = 0
   let deletions = 0
@@ -458,8 +460,10 @@ function parseApplyPatchSections(patchText: string): Map<string, DiffSection> {
       if (movedPath) currentPath = movedPath
       continue
     }
-    if (isDiffAddedLine(line)) additions += 1
-    if (isDiffDeletedLine(line)) deletions += 1
+    // 补丁段里没有 unified diff 的文件头：「++ x」「-- x」写出来的
+    // 「+++ x」「--- x」也是内容行
+    if (line.startsWith("+")) additions += 1
+    if (line.startsWith("-")) deletions += 1
   }
 
   flush()
@@ -738,6 +742,132 @@ function computeLineDiff(
   return null
 }
 
+/**
+ * 一次操作对某个文件做了什么，用来算新文件现在有几行：
+ * - `created`：这次是新建（write 整篇写入，或补丁的 `*** Add File:`），值是写入的内容；
+ * - `edits`：这次是字符串替换式的编辑，能套到已知内容上；
+ * - `patchHunks`：这次是补丁的 `*** Update File:` 段，值是段里的正文，也能套到已知内容上；
+ * 都不是时三个都是 null，只能用增删数。
+ */
+function describeFileOp(
+  op: string,
+  inputPreview: string | null,
+  filePath: string
+): {
+  created: string | null
+  edits: TextEdit[] | null
+  patchHunks: string[] | null
+} {
+  const none = { created: null, edits: null, patchHunks: null }
+  if (!inputPreview) return none
+  const parsed = parseInputObject(inputPreview)
+
+  if (op === "write") {
+    const content =
+      parsed && typeof parsed.content === "string" ? parsed.content : null
+    return { created: content, edits: null, patchHunks: null }
+  }
+
+  if (op === "apply_patch" && !isEditShapedInput(parsed)) {
+    const patchText = extractPatchTextFromInputPreview(inputPreview)
+    if (!patchText) return none
+    const bodies = parseApplyPatchFileBodies(patchText)
+    const added = bodies.added.get(filePath)
+    if (added !== undefined) {
+      return { created: added, edits: null, patchHunks: null }
+    }
+    return {
+      created: null,
+      edits: null,
+      patchHunks: bodies.updated.get(filePath) ?? null,
+    }
+  }
+
+  if (op !== "edit" && op !== "apply_patch") return none
+  if (!parsed) return none
+
+  const changes = findObjectFieldDeep(parsed, "changes")
+  if (changes) {
+    const changeValues = collectEditChangeValues(
+      pickValueByNormalizedPath(changes, filePath)
+    )
+    if (changeValues.length === 0) return none
+    // 带 unified diff 的改动没有原文和新文，套不到内容上
+    if (changeValues.some((change) => change.unifiedDiff)) return none
+    return {
+      created: null,
+      edits: changeValues.map((change) => ({
+        oldText: change.oldText,
+        newText: change.newText,
+      })),
+      patchHunks: null,
+    }
+  }
+
+  const oldText = typeof parsed.old_string === "string" ? parsed.old_string : ""
+  const newText = typeof parsed.new_string === "string" ? parsed.new_string : ""
+  if (!oldText && !newText) return none
+  return {
+    created: null,
+    edits: [{ oldText, newText, replaceAll: parsed.replace_all === true }],
+    patchHunks: null,
+  }
+}
+
+/**
+ * 补丁里 `*** Add File:` 新建的每个文件和它写入的内容（`+` 开头的行），
+ * 以及 `*** Update File:` 改的每个文件和段里的正文（改名的按新名字记）。
+ */
+function parseApplyPatchFileBodies(patchText: string): {
+  added: Map<string, string>
+  updated: Map<string, string[]>
+} {
+  const added = new Map<string, string[]>()
+  const updated = new Map<string, string[]>()
+  let addLines: string[] | null = null
+  let updatePath: string | null = null
+  let updateLines: string[] | null = null
+  for (const line of patchText.split("\n")) {
+    if (line.startsWith("*** Move to: ") && updatePath && updateLines) {
+      const moved = normalizeDiffPath(line.slice(13))
+      if (moved) {
+        updated.delete(updatePath)
+        updatePath = moved
+        updated.set(moved, updateLines)
+      }
+      continue
+    }
+    if (line.startsWith("*** End of File")) continue
+    if (line.startsWith("*** ")) {
+      addLines = null
+      updatePath = null
+      updateLines = null
+      if (line.startsWith("*** Add File: ")) {
+        const path = normalizeDiffPath(line.slice(14))
+        if (path) {
+          addLines = []
+          added.set(path, addLines)
+        }
+      } else if (line.startsWith("*** Update File: ")) {
+        const path = normalizeDiffPath(line.slice(17))
+        if (path) {
+          updatePath = path
+          updateLines = updated.get(path) ?? []
+          updated.set(path, updateLines)
+        }
+      }
+      continue
+    }
+    if (addLines && line.startsWith("+")) addLines.push(line.slice(1))
+    updateLines?.push(line)
+  }
+  const result = new Map<string, string>()
+  for (const [path, lines] of added) {
+    result.set(path, lines.length > 0 ? `${lines.join("\n")}\n` : "")
+  }
+  return { added: result, updated }
+}
+
 function extractUserMessage(turn: MessageTurn): string {
   for (const block of turn.blocks) {
     if (block.type === "text" && block.text) {
@@ -972,7 +1102,8 @@ function writeDidNotLand(
  * Aggregate an assistant reply's write operations into ONE `FileChangeStat`
  * per file path. Unlike `extractSessionFilesGrouped` (which groups by user
  * turn), this collects every edit/write/apply_patch across the supplied turns,
- * summing line counts and concatenating diff chunks per file — the shape the
+ * summing line counts (a write restarts its file's count — it replaces the
+ * whole file) and concatenating diff chunks per file — the shape the
  * per-reply "artifacts" card needs. Pass only the raw turns that compose a
  * single reply (the assistant sub-turns merged into one visual reply).
  *
@@ -987,6 +1118,10 @@ export function extractReplyFileChanges(
     additions: number
     deletions: number
     diffs: string[]
+    // 这次回复里新建过（write / 补丁 Add File）：additions 记的是文件现在的行数
+    created: boolean
+    // 新建过的文件现在的内容，套不上编辑以后就不知道了（null）
+    content: string | null
   }
   const byPath = new Map<string, Acc>()
   const order: string[] = []
@@ -1025,12 +1160,56 @@ export function extractReplyFileChanges(
 
         let acc = byPath.get(normalizedPath)
         if (!acc) {
-          acc = { path: normalizedPath, additions: 0, deletions: 0, diffs: [] }
+          acc = {
+            path: normalizedPath,
+            additions: 0,
+            deletions: 0,
+            diffs: [],
+            created: false,
+            content: null,
+          }
           byPath.set(normalizedPath, acc)
           order.push(normalizedPath)
         }
-        acc.additions += diff?.additions ?? 0
-        acc.deletions += diff?.deletions ?? 0
+        const op = describeFileOp(
+          normalized,
+          block.input_preview,
+          normalizedPath
+        )
+        // 新建（write 整篇写入、补丁 Add File）是把整个文件写成这次的内容：
+        // 之前的增删都被覆盖，从这次写入的行数重新算起。新建过的文件之后再改，
+        // 记的是文件现在有几行（新文件卡片显示的就是它）：能套到已知内容上的
+        // 编辑照着改一遍再数，套不上的按换行符 / 补丁的净增减算。
+        if (normalized === "write" || op.created !== null) {
+          acc.created = true
+          acc.content = op.created
+          acc.additions =
+            op.created !== null
+              ? countLines(op.created)
+              : (diff?.additions ?? 0)
+          acc.deletions = 0
+        } else if (acc.created) {
+          const edited =
+            acc.content === null
+              ? null
+              : op.edits
+                ? applyTextEdits(acc.content, op.edits)
+                : op.patchHunks
+                  ? applyPatchHunks(acc.content, op.patchHunks)
+                  : null
+          if (edited !== null) {
+            acc.additions = countLines(edited)
+          } else {
+            const delta = op.edits
+              ? textEditsLineDelta(op.edits)
+              : (diff?.additions ?? 0) - (diff?.deletions ?? 0)
+            acc.additions = Math.max(0, acc.additions + delta)
+          }
+          acc.content = edited
+        } else {
+          acc.additions += diff?.additions ?? 0
+          acc.deletions += diff?.deletions ?? 0
+        }
         if (diffChunk?.trim()) acc.diffs.push(diffChunk.trim())
       }
     }

@@ -221,3 +221,123 @@ export function countUnifiedDiffLineChanges(text: string): LineChangeStats {
   }
   return { additions, deletions }
 }
+
+/** 一次字符串替换式的编辑：把 oldText 换成 newText（replaceAll 时全部替换）。 */
+export interface TextEdit {
+  oldText: string
+  newText: string
+  replaceAll?: boolean
+}
+
+function countNewlines(text: string): number {
+  let count = 0
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) count++
+  }
+  return count
+}
+
+/**
+ * 把编辑依次套到已知的文件内容上，得到改完的内容；有一处对不上（找不到
+ * oldText）就返回 null，调用方改用 `textEditsLineDelta` 估算。
+ */
+export function applyTextEdits(
+  content: string,
+  edits: TextEdit[]
+): string | null {
+  let next = content
+  for (const edit of edits) {
+    if (!edit.oldText) {
+      // 空的 oldText 只在文件本来是空的时候说得通（整篇写入）
+      if (next) return null
+      next = edit.newText
+      continue
+    }
+    const index = next.indexOf(edit.oldText)
+    if (index < 0) return null
+    next = edit.replaceAll
+      ? next.split(edit.oldText).join(edit.newText)
+      : next.slice(0, index) +
+        edit.newText +
+        next.slice(index + edit.oldText.length)
+  }
+  return next
+}
+
+/**
+ * 不知道文件内容时，这些编辑让文件行数净变了多少：按换行符的增减算。
+ * 只看行的增删估算（`estimateChangedLineStats`）会漏掉「b」改成「b\n」这种
+ * 多出一个空行的情况，按换行符数就不会。
+ */
+export function textEditsLineDelta(edits: TextEdit[]): number {
+  let delta = 0
+  for (const edit of edits) {
+    delta += countNewlines(edit.newText) - countNewlines(edit.oldText)
+  }
+  return delta
+}
+
+/**
+ * 把补丁 `*** Update File:` 段的正文（`@@` 分块，行首是空格 / `-` / `+`）
+ * 套到已知的文件内容上，得到改完的内容；有一块对不上就返回 null，调用方
+ * 改用补丁的净增减估算。
+ */
+export function applyPatchHunks(
+  content: string,
+  body: string[]
+): string | null {
+  const lines = splitNormalizedLines(content)
+  // 正文结尾的换行切出来的空串不是一行上下文
+  let end = body.length
+  while (end > 0 && body[end - 1] === "") end--
+  const hunks: { oldLines: string[]; newLines: string[] }[] = []
+  let hunk: { oldLines: string[]; newLines: string[] } | null = null
+  for (const line of body.slice(0, end)) {
+    if (line.startsWith("@@")) {
+      hunk = { oldLines: [], newLines: [] }
+      hunks.push(hunk)
+      continue
+    }
+    // 「文件结尾」标记和「\ No newline at end of file」不影响行
+    if (line.startsWith("*** ") || line.startsWith("\\")) continue
+    if (!hunk) {
+      // 有的补丁第一块前面不写 @@
+      hunk = { oldLines: [], newLines: [] }
+      hunks.push(hunk)
+    }
+    if (line.startsWith("+")) {
+      hunk.newLines.push(line.slice(1))
+    } else if (line.startsWith("-")) {
+      hunk.oldLines.push(line.slice(1))
+    } else if (line.startsWith(" ") || line === "") {
+      // 上下文行；空行的上下文有时连行首的空格也省掉
+      hunk.oldLines.push(line.slice(1))
+      hunk.newLines.push(line.slice(1))
+    } else {
+      return null
+    }
+  }
+
+  const out: string[] = []
+  let cursor = 0
+  for (const { oldLines, newLines } of hunks) {
+    if (oldLines.length === 0) {
+      // 纯插入、没有上下文：加在文件末尾
+      out.push(...lines.slice(cursor), ...newLines)
+      cursor = lines.length
+      continue
+    }
+    let at = -1
+    for (let i = cursor; i + oldLines.length <= lines.length; i++) {
+      if (oldLines.every((line, k) => lines[i + k] === line)) {
+        at = i
+        break
+      }
+    }
+    if (at < 0) return null
+    out.push(...lines.slice(cursor, at), ...newLines)
+    cursor = at + oldLines.length
+  }
+  out.push(...lines.slice(cursor))
+  return out.length > 0 ? `${out.join("\n")}\n` : ""
+}

@@ -221,8 +221,9 @@ describe("buildMessageNavEntries", () => {
     expect(a.diff).toContain("+uno")
     expect(a.diff).toContain("+tres")
     expect(a.diff!.indexOf("+uno")).toBeLessThan(a.diff!.indexOf("+tres"))
-    // The totals are the round's, as before.
-    expect([entry.additions, entry.deletions]).toEqual([5, 2])
+    // The totals are the round's: a.ts +3/-2 plus b.ts's one written line
+    // ("x\n" — the trailing newline is not a line of its own).
+    expect([entry.additions, entry.deletions]).toEqual([4, 2])
   })
 
   it("lists each loaded message's sub-agents", () => {

@@ -203,9 +203,11 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                                   </span>
                                 )}
                               </span>
-                              {file.additions > 0 && (
+                              {/* 新文件显示它现在有几行：写入的行数加上后来
+                                  改动的净增减，不是各次操作的加总 */}
+                              {file.additions - file.deletions > 0 && (
                                 <CommitFileAdditions
-                                  count={file.additions}
+                                  count={file.additions - file.deletions}
                                   className="shrink-0 font-mono text-3xs"
                                 />
                               )}

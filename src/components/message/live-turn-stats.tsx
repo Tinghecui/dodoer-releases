@@ -8,10 +8,15 @@ import type {
 } from "@/contexts/acp-connections-context"
 import { inferLiveToolName } from "@/lib/tool-call-normalization"
 import { toolCallFailedOrRejected } from "@/lib/session-files"
+import { countLines } from "@/lib/activity/format"
 import { formatElapsedLabel } from "@/lib/format-elapsed"
 import {
+  applyPatchHunks,
+  applyTextEdits,
   countUnifiedDiffLineChanges,
   estimateChangedLineStats,
+  textEditsLineDelta,
+  type TextEdit,
 } from "@/lib/line-change-stats"
 import { FilePenLine, Plane, Timer } from "lucide-react"
 import { useTokenOutputSpeed } from "@/hooks/use-token-output-speed"
@@ -148,79 +153,191 @@ function collectParsedPaths(
   return paths
 }
 
+interface FileLineChange {
+  path: string
+  additions: number
+  deletions: number
+  // 这次新建了它（write 整篇写入、补丁 Add File）：写入的内容
+  created?: string
+  // 这次是字符串替换式的编辑：能套到已知内容上
+  edits?: TextEdit[]
+  // 这次是补丁的 Update File 段：段里的正文，能套到已知内容上
+  patchHunks?: string[]
+}
+
+function addFileChange(
+  perFile: Map<string, FileLineChange>,
+  path: string,
+  additions: number,
+  deletions: number
+): void {
+  const entry = perFile.get(path) ?? { path, additions: 0, deletions: 0 }
+  entry.additions += additions
+  entry.deletions += deletions
+  perFile.set(path, entry)
+}
+
 function parseApplyPatchStats(patch: string): {
   files: Set<string>
   additions: number
   deletions: number
+  // 补丁里每个文件各自的增删（跟在 *** Add/Update/Delete File 或 +++ 后面的行）；
+  // 出现在任何文件头之前的行记不到文件上，只算进上面的总数。
+  perFile: Map<string, FileLineChange>
 } {
   const files = new Set<string>()
+  const perFile = new Map<string, FileLineChange>()
   let additions = 0
   let deletions = 0
+  let current: string | null = null
+  // 正在读的 Add File 段写入的行（不在 Add File 段里时是 null）
+  let addedLines: string[] | null = null
+  const added = new Map<string, string[]>()
+  // 正在读的 Update File 段的正文（不在 Update File 段里时是 null）
+  let updateLines: string[] | null = null
+  const updated = new Map<string, string[]>()
+  // 在 *** Add/Update/Delete File 段里：段里 + / - 开头的行都是内容，
+  // 「++ x」「-- x」写出来的「+++ x」「--- x」不是 unified diff 的文件头
+  let inPatchSection = false
+
+  const setCurrent = (value: string) => {
+    const path = value.trim()
+    current = path || null
+    if (current) files.add(current)
+    addedLines = null
+    updateLines = null
+  }
 
   for (const line of patch.split("\n")) {
     if (line.startsWith("*** Add File: ")) {
-      addPathIfValid(files, line.slice(14))
+      setCurrent(line.slice(14))
+      inPatchSection = true
+      if (current) {
+        addedLines = []
+        added.set(current, addedLines)
+      }
       continue
     }
     if (line.startsWith("*** Update File: ")) {
-      addPathIfValid(files, line.slice(17))
+      setCurrent(line.slice(17))
+      inPatchSection = true
+      if (current) {
+        updateLines = updated.get(current) ?? []
+        updated.set(current, updateLines)
+      }
       continue
     }
     if (line.startsWith("*** Delete File: ")) {
-      addPathIfValid(files, line.slice(17))
+      setCurrent(line.slice(17))
+      inPatchSection = true
+      continue
+    }
+    if (
+      line.startsWith("*** End Patch") ||
+      line.startsWith("*** Begin Patch")
+    ) {
+      current = null
+      addedLines = null
+      updateLines = null
+      inPatchSection = false
+      continue
+    }
+    if (inPatchSection) {
+      updateLines?.push(line)
+      if (line.startsWith("+")) {
+        additions += 1
+        if (current) addFileChange(perFile, current, 1, 0)
+        addedLines?.push(line.slice(1))
+      } else if (line.startsWith("-")) {
+        deletions += 1
+        if (current) addFileChange(perFile, current, 0, 1)
+      }
       continue
     }
     if (line.startsWith("+++ ")) {
       const normalized = line.slice(4).replace(/^b\//, "").trim()
       if (normalized && normalized !== "/dev/null") {
-        files.add(normalized)
+        setCurrent(normalized)
       }
       continue
     }
-    if (line.startsWith("+") && !line.startsWith("+++")) additions += 1
-    if (line.startsWith("-") && !line.startsWith("---")) deletions += 1
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      additions += 1
+      if (current) addFileChange(perFile, current, 1, 0)
+      addedLines?.push(line.slice(1))
+    }
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      deletions += 1
+      if (current) addFileChange(perFile, current, 0, 1)
+    }
   }
 
-  return { files, additions, deletions }
+  for (const [path, lines] of added) {
+    const entry = perFile.get(path) ?? { path, additions: 0, deletions: 0 }
+    entry.created = lines.length > 0 ? `${lines.join("\n")}\n` : ""
+    perFile.set(path, entry)
+  }
+  for (const [path, lines] of updated) {
+    const entry = perFile.get(path)
+    // 同一个文件既有 Add 又有 Update 段的，按新建算
+    if (entry && entry.created === undefined) entry.patchHunks = lines
+  }
+
+  return { files, additions, deletions, perFile }
 }
 
-function extractEditStats(parsed: Record<string, unknown>): LineChangeStats {
+function extractEditStats(parsed: Record<string, unknown>): LineChangeStats & {
+  // `changes` 形式的多文件 edit：每个文件各自的增删
+  perFile: Map<string, FileLineChange> | null
+  // 单个文件的 old/new 编辑
+  edits: TextEdit[] | null
+} {
   const changes = asObject(parsed.changes)
   if (changes) {
     let additions = 0
     let deletions = 0
+    const perFile = new Map<string, FileLineChange>()
 
-    for (const change of Object.values(changes)) {
+    for (const [rawPath, change] of Object.entries(changes)) {
       const record = asObject(change)
       if (!record) continue
+      const path = rawPath.trim()
 
       const unifiedDiff =
         (typeof record.unifiedDiff === "string" && record.unifiedDiff) ||
         (typeof record.unified_diff === "string" && record.unified_diff) ||
         null
 
+      let stats: LineChangeStats
+      let edit: TextEdit | null = null
       if (unifiedDiff) {
-        const stats = countUnifiedDiffLineChanges(unifiedDiff)
-        additions += stats.additions
-        deletions += stats.deletions
-        continue
+        stats = countUnifiedDiffLineChanges(unifiedDiff)
+      } else {
+        const oldString =
+          (typeof record.oldText === "string" && record.oldText) ||
+          (typeof record.old_string === "string" && record.old_string) ||
+          ""
+        const newString =
+          (typeof record.newText === "string" && record.newText) ||
+          (typeof record.new_string === "string" && record.new_string) ||
+          ""
+        stats = estimateChangedLineStats(oldString, newString)
+        edit = { oldText: oldString, newText: newString }
       }
-
-      const oldString =
-        (typeof record.oldText === "string" && record.oldText) ||
-        (typeof record.old_string === "string" && record.old_string) ||
-        ""
-      const newString =
-        (typeof record.newText === "string" && record.newText) ||
-        (typeof record.new_string === "string" && record.new_string) ||
-        ""
-
-      const estimated = estimateChangedLineStats(oldString, newString)
-      additions += estimated.additions
-      deletions += estimated.deletions
+      additions += stats.additions
+      deletions += stats.deletions
+      if (path) {
+        perFile.set(path, {
+          path,
+          additions: stats.additions,
+          deletions: stats.deletions,
+          // unified diff 形式的改动没有原文和新文，套不到内容上
+          ...(edit ? { edits: [edit] } : {}),
+        })
+      }
     }
 
-    return { additions, deletions }
+    return { additions, deletions, perFile, edits: null }
   }
 
   const oldString =
@@ -232,21 +349,40 @@ function extractEditStats(parsed: Record<string, unknown>): LineChangeStats {
     (typeof parsed.newText === "string" && parsed.newText) ||
     ""
 
-  return estimateChangedLineStats(oldString, newString)
+  return {
+    ...estimateChangedLineStats(oldString, newString),
+    perFile: null,
+    edits:
+      oldString || newString
+        ? [
+            {
+              oldText: oldString,
+              newText: newString,
+              replaceAll: parsed.replace_all === true,
+            },
+          ]
+        : null,
+  }
 }
 
-function extractWriteStats(parsed: Record<string, unknown>): LineChangeStats {
+function extractWriteStats(
+  parsed: Record<string, unknown>
+): LineChangeStats & { content: string } {
   const content =
     (typeof parsed.content === "string" && parsed.content) ||
     (typeof parsed.new_source === "string" && parsed.new_source) ||
     ""
 
-  const additions = content.length === 0 ? 0 : content.split("\n").length
-  return { additions, deletions: 0 }
+  // 结尾的换行不另算一行，和工具卡、回复下面的文件统计同一种数法。
+  return { additions: countLines(content), deletions: 0, content }
 }
 
 interface BlockEditContribution {
+  toolName: "edit" | "write" | "apply_patch"
   files: string[]
+  // 能分到具体文件上的增删（按文件记账用）
+  perFile: FileLineChange[]
+  // 分不到文件上的增删，直接加进总数
   additions: number
   deletions: number
 }
@@ -284,6 +420,10 @@ function computeBlockEditContribution(
   const files = new Set<string>()
   let additions = 0
   let deletions = 0
+  let perFile: Map<string, FileLineChange> | null = null
+  // 只动一个文件时，这次对它做了什么（新建的内容 / 字符串编辑）
+  let created: string | undefined
+  let edits: TextEdit[] | undefined
 
   const parsed = parseInputObject(block.info.raw_input)
   for (const path of collectParsedPaths(parsed)) files.add(path)
@@ -295,15 +435,58 @@ function computeBlockEditContribution(
       for (const path of stats.files) files.add(path)
       additions += stats.additions
       deletions += stats.deletions
+      perFile = stats.perFile
     }
   } else if (parsed) {
-    const stats =
-      toolName === "edit" ? extractEditStats(parsed) : extractWriteStats(parsed)
-    additions += stats.additions
-    deletions += stats.deletions
+    if (toolName === "edit") {
+      const stats = extractEditStats(parsed)
+      additions += stats.additions
+      deletions += stats.deletions
+      perFile = stats.perFile
+      edits = stats.edits ?? undefined
+    } else {
+      const stats = extractWriteStats(parsed)
+      additions += stats.additions
+      deletions += stats.deletions
+      created = stats.content
+    }
   }
 
-  return { files: [...files], additions, deletions }
+  // 只动一个文件的：整笔记到这个文件上（补丁里文件头前的零散行也算它的）。
+  // 动多个文件的：能分到文件上的按文件记，剩下的直接加进总数。
+  const entries: FileLineChange[] = []
+  if (files.size === 1) {
+    const [path] = files
+    const fromPatch = perFile?.get(path)
+    // 补丁里只有这一个文件的段时，它是 Add 还是 Update 看补丁；段外还有零散行就不算
+    const patchEntry =
+      fromPatch &&
+      fromPatch.additions === additions &&
+      fromPatch.deletions === deletions
+        ? fromPatch
+        : undefined
+    const patchCreated = patchEntry?.created
+    entries.push({
+      path,
+      additions,
+      deletions,
+      ...(created !== undefined || patchCreated !== undefined
+        ? { created: created ?? patchCreated }
+        : {}),
+      ...(edits ? { edits } : {}),
+      ...(patchEntry?.patchHunks ? { patchHunks: patchEntry.patchHunks } : {}),
+    })
+    additions = 0
+    deletions = 0
+  } else if (perFile) {
+    for (const entry of perFile.values()) {
+      entries.push(entry)
+      additions -= entry.additions
+      deletions -= entry.deletions
+    }
+  }
+
+  return { toolName, files: [...files], perFile: entries, additions, deletions }
 }
 
 function blockEditContribution(
@@ -320,13 +503,76 @@ export function extractLiveEditStats(message: LiveMessage): LiveEditStats {
   const files = new Set<string>()
   let additions = 0
   let deletions = 0
+  // edit / write / apply_patch 能分到文件上的增删按文件记账（多文件补丁、
+  // `changes` 形式的多文件 edit 也逐个文件记）：write 把整个文件换成这次的内容，
+  // 之前的增删作废、从这次写入的行数重新算；本轮写过的文件按净行数算，
+  // 和回复下面「新增文件」的数字对得上（写 3 行再改一行还是 +3/-0）。
+  const perFile = new Map<
+    string,
+    {
+      additions: number
+      deletions: number
+      // 本轮新建过（write / 补丁 Add File）：additions 记的是文件现在的行数
+      written: boolean
+      // 新建过的文件现在的内容；套不上编辑以后就不知道了（null）
+      content: string | null
+    }
+  >()
 
   for (const block of message.content) {
     const contribution = blockEditContribution(block)
     if (!contribution) continue
     for (const path of contribution.files) files.add(path)
+    for (const change of contribution.perFile) {
+      files.add(change.path)
+      const entry = perFile.get(change.path) ?? {
+        additions: 0,
+        deletions: 0,
+        written: false,
+        content: null,
+      }
+      if (change.created !== undefined) {
+        entry.additions = countLines(change.created)
+        entry.deletions = 0
+        entry.written = true
+        entry.content = change.created
+      } else if (entry.written) {
+        // 新建过的文件再改：能套到已知内容上就改一遍再数行，
+        // 套不上的按换行符（字符串编辑）或补丁的净增减算
+        const edited =
+          entry.content === null
+            ? null
+            : change.edits
+              ? applyTextEdits(entry.content, change.edits)
+              : change.patchHunks
+                ? applyPatchHunks(entry.content, change.patchHunks)
+                : null
+        if (edited !== null) {
+          entry.additions = countLines(edited)
+        } else {
+          const delta = change.edits
+            ? textEditsLineDelta(change.edits)
+            : change.additions - change.deletions
+          entry.additions = Math.max(0, entry.additions + delta)
+        }
+        entry.content = edited
+      } else {
+        entry.additions += change.additions
+        entry.deletions += change.deletions
+      }
+      perFile.set(change.path, entry)
+    }
     additions += contribution.additions
     deletions += contribution.deletions
+  }
+
+  for (const entry of perFile.values()) {
+    if (entry.written) {
+      additions += entry.additions
+    } else {
+      additions += entry.additions
+      deletions += entry.deletions
+    }
   }
 
   return { files: files.size, additions, deletions }

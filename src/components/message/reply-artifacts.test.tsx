@@ -142,3 +142,26 @@ describe("ReplyArtifacts — view diff action", () => {
     expect(screen.getByText("remove")).toBeInTheDocument()
   })
 })
+
+describe("ReplyArtifacts — new file line count", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("shows a new file's net line count, not additions alone", () => {
+    // 写了 3 行、后来又改了一行（+1/-1）：卡片上应是 +3，不是 +4。
+    renderCard([
+      {
+        id: "f1",
+        path: "notes/c2.md",
+        additions: 4,
+        deletions: 1,
+        diff: "--- /dev/null\n+++ b/notes/c2.md\n@@ -0,0 +1,3 @@\n+a\n+b\n+c",
+      },
+    ])
+
+    const row = screen.getByRole("button", { name: "openFile" })
+    expect(row.textContent).toContain("3")
+    expect(row.textContent).not.toContain("4")
+  })
+})

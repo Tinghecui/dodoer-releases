@@ -269,23 +269,95 @@ function applyPatchTurn(
 
 describe("extractReplyFileChanges", () => {
   it("aggregates the same file edited across sub-turns into one row", () => {
-    const first = writeTurn("a1", "t1", "/repo/src/a.ts", "line1\nline2\n")
-    const second = writeTurn(
-      "a2",
-      "t2",
-      "/repo/src/a.ts",
-      "line3\nline4\nline5\n"
-    )
+    const first = editTurn("a1", "t1", "/repo/src/a.ts", "one", "one\ntwo")
+    const second = editTurn("a2", "t2", "/repo/src/a.ts", "x", "x\ny\nz")
 
     const soloA = extractReplyFileChanges([first])[0].additions
     const soloB = extractReplyFileChanges([second])[0].additions
     const files = extractReplyFileChanges([first, second])
 
-    // One row per path; counts summed across sub-turns; diff chunks joined.
+    // One row per path; edit counts summed across sub-turns; diff chunks joined.
     expect(files).toHaveLength(1)
     expect(files[0].path).toBe("/repo/src/a.ts")
     expect(files[0].additions).toBe(soloA + soloB)
     expect(files[0].diff).toBeTruthy()
+  })
+
+  it("does not count a write's trailing newline as an extra line", () => {
+    const [file] = extractReplyFileChanges([
+      writeTurn("a1", "t1", "/repo/c2.md", "a\nb\nc\n"),
+    ])
+    expect(file.additions).toBe(3)
+    expect(file.deletions).toBe(0)
+  })
+
+  it("a new file written then edited nets out to its current line count", () => {
+    const [file] = extractReplyFileChanges([
+      writeTurn("a1", "t1", "/repo/c2.md", "a\nb\nc\n"),
+      editTurn("a2", "t2", "/repo/c2.md", "b", "B"),
+    ])
+    expect(file.additions - file.deletions).toBe(3)
+  })
+
+  it("a file created by a patch then patched nets out to its current line count", () => {
+    const [file] = extractReplyFileChanges([
+      applyPatchTurn(
+        "a1",
+        "t1",
+        "*** Begin Patch\n*** Add File: /repo/c2.md\n+a\n+b\n+c\n*** End Patch"
+      ),
+      applyPatchTurn(
+        "a2",
+        "t2",
+        "*** Begin Patch\n*** Update File: /repo/c2.md\n@@\n-b\n+B\n*** End Patch"
+      ),
+    ])
+    expect(file.additions - file.deletions).toBe(3)
+  })
+
+  it("keeps a new file's content through a patch so a later edit counts right", () => {
+    // 3 行的新文件补丁改一行，再去掉最后一个换行：仍是 3 行
+    const [file] = extractReplyFileChanges([
+      writeTurn("a1", "t1", "/repo/c2.md", "a\nb\nc\n"),
+      applyPatchTurn(
+        "a2",
+        "t2",
+        "*** Begin Patch\n*** Update File: /repo/c2.md\n@@\n a\n-b\n+B\n c\n*** End Patch"
+      ),
+      editTurn("a3", "t3", "/repo/c2.md", "c\n", "c"),
+    ])
+    expect(file.additions - file.deletions).toBe(3)
+  })
+
+  it("counts a patch line starting with ++ as content, not a file header", () => {
+    // 补丁改已有文件：删「-- x」、加「++ y」写成「--- x」「+++ y」
+    const [file] = extractReplyFileChanges([
+      applyPatchTurn(
+        "a1",
+        "t1",
+        "*** Begin Patch\n*** Update File: /repo/a.lua\n@@\n--- x\n+++ y\n*** End Patch"
+      ),
+    ])
+    expect(file.additions).toBe(1)
+    expect(file.deletions).toBe(1)
+  })
+
+  it("an edit that adds a newline to a new file counts the extra line", () => {
+    // 「b」换成「b\n」：文件从 3 行变成 4 行（多了一个空行）
+    const [file] = extractReplyFileChanges([
+      writeTurn("a1", "t1", "/repo/c2.md", "a\nb\nc\n"),
+      editTurn("a2", "t2", "/repo/c2.md", "b", "b\n"),
+    ])
+    expect(file.additions - file.deletions).toBe(4)
+  })
+
+  it("a second write to the same file replaces the first one's count", () => {
+    const [file] = extractReplyFileChanges([
+      writeTurn("a1", "t1", "/repo/c2.md", "a\nb\nc\n"),
+      writeTurn("a2", "t2", "/repo/c2.md", "x\ny\n"),
+    ])
+    expect(file.additions).toBe(2)
+    expect(file.deletions).toBe(0)
   })
 
   it("lists distinct files as separate rows in first-seen order", () => {

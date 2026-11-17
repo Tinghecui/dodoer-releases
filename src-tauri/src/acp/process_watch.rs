@@ -124,6 +124,20 @@ fn direct_children(proc_root: &Path, pid: u32) -> Result<Option<Vec<u32>>, ()> {
     Ok(Some(children))
 }
 
+/// 一个进程直接的子进程（只一层），顺序照 `task/*/children` 里读到的。
+///
+/// `None` 是不知道：不是 Linux，或者读不了。进程不在了时是空列表。
+pub(crate) fn children_of(proc_root: &Path, pid: u32) -> Option<Vec<u32>> {
+    if !cfg!(target_os = "linux") || pid == 0 {
+        return None;
+    }
+    match direct_children(proc_root, pid) {
+        Ok(Some(children)) => Some(children),
+        Ok(None) => Some(Vec::new()),
+        Err(()) => None,
+    }
+}
+
 /// 从 `root` 出发一层层往下找子孙进程（不含 `root` 自己），最多
 /// [`MAX_DESCENDANTS`] 个、[`MAX_DEPTH`] 层，超了就停（已经找到的照用）。
 ///
@@ -224,6 +238,8 @@ pub(crate) trait ProcReader: Send + Sync {
     fn probe(&self, pid: u32) -> ProcessProbe;
     /// 子孙进程，见 [`descendants`]。
     fn descendants(&self, pid: u32) -> Option<Vec<u32>>;
+    /// 直接的子进程（只一层），见 [`children_of`]。
+    fn children(&self, pid: u32) -> Option<Vec<u32>>;
     /// 在 `pids` 里找以写方式打开着 `path` 的进程，见 [`writers_of`]。
     fn writers_of(&self, pids: &[u32], path: &Path) -> Option<Vec<ProcessIdentity>>;
 }
@@ -238,6 +254,10 @@ impl ProcReader for LiveProc {
 
     fn descendants(&self, pid: u32) -> Option<Vec<u32>> {
         descendants(Path::new(PROC_ROOT), pid)
+    }
+
+    fn children(&self, pid: u32) -> Option<Vec<u32>> {
+        children_of(Path::new(PROC_ROOT), pid)
     }
 
     fn writers_of(&self, pids: &[u32], path: &Path) -> Option<Vec<ProcessIdentity>> {
@@ -277,6 +297,10 @@ pub(crate) struct ProcessWatch {
     pub agent: Option<ProcessIdentity>,
     /// 后台任务 id → 绑上的写它输出文件的进程。没绑上的任务不在这里。
     pub writers: BTreeMap<String, Vec<ProcessIdentity>>,
+    /// 只有 Claude 连接用：在跑或等后台时第一次看到的、转接进程（pid 格子里那个）下面的
+    /// 直接子进程，也就是真正的 Claude 进程。之后只认这一个，不猜新冒出来的子进程。
+    /// 不在跑也不在等后台、pid 格子换了时丢掉。
+    pub claude_child: Option<ProcessIdentity>,
     /// 上一次观察的结论：`Some` 是「?」。有进展时清掉。
     pub uncertain: Option<BackgroundUncertainReason>,
 }
@@ -298,6 +322,8 @@ pub(crate) struct WatchTarget {
     pub tasks: Vec<WatchedTask>,
     /// 要不要数活着的子进程（已经安静过了时限才要）。
     pub needs_children: bool,
+    /// 要不要看转接进程下面的 Claude 进程：Claude 连接（在跑或等后台）才看。
+    pub claude_child: bool,
 }
 
 /// 一次采样读到的东西。`None` / [`ProcessProbe::Unknown`] 都是不知道。
@@ -311,6 +337,11 @@ pub(crate) struct WatchSample {
     pub new_writers: Vec<(String, Vec<ProcessIdentity>)>,
     /// 绑过的任务：写进程里还有没有活着的。
     pub writers_alive: Vec<(String, Option<bool>)>,
+    /// 记下过的 Claude 进程还是不是那一个：`Some(false)` 确定不在了或 pid 被重用，
+    /// `None` 不知道（没看、没记下过、读不了）。
+    pub claude_child_alive: Option<bool>,
+    /// 还没记下过 Claude 进程时，这次看到的第一个活着的直接子进程。
+    pub new_claude_child: Option<ProcessIdentity>,
 }
 
 impl WatchSample {
@@ -320,6 +351,8 @@ impl WatchSample {
             has_children: None,
             new_writers: Vec::new(),
             writers_alive: Vec::new(),
+            claude_child_alive: None,
+            new_claude_child: None,
         }
     }
 }
@@ -360,6 +393,25 @@ pub(crate) fn sample(reader: &dyn ProcReader, target: &WatchTarget) -> WatchSamp
         .filter(|t| !target.watch.writers.contains_key(&t.task_id))
         .collect();
     let agent_alive = matches!(out.agent, ProcessProbe::Alive { .. });
+
+    // Claude 进程：转接进程活着才看。记下过的按身份查；没记下过的读一层直接子进程，
+    // 取第一个活着的（它要是又起了自己的子进程，不往下猜）。
+    if agent_alive && target.claude_child {
+        match target.watch.claude_child {
+            Some(child) => out.claude_child_alive = reader.probe(child.pid).matches(child),
+            None => {
+                out.new_claude_child = reader.children(target.pid).and_then(|children| {
+                    children
+                        .into_iter()
+                        .find_map(|pid| match reader.probe(pid) {
+                            ProcessProbe::Alive { start } => Some(ProcessIdentity { pid, start }),
+                            _ => None,
+                        })
+                });
+            }
+        }
+    }
+
     if !agent_alive || (unbound.is_empty() && !target.needs_children) {
         return out;
     }
@@ -405,7 +457,8 @@ pub(crate) struct WatchInput {
     pub silence: chrono::Duration,
 }
 
-/// 判「?」（纯函数）：原因按 `agent_exited`、`background_process_exited`、
+/// 判「?」（纯函数）：原因按 `agent_exited`（含 Claude 连接里转接进程下面的 Claude
+/// 进程没了）、`background_process_exited`、
 /// `silent_without_children` 的顺序取第一个成立的；任何一样不知道，那一条就不成立。
 pub(crate) fn judge(
     watch: &ProcessWatch,
@@ -435,6 +488,14 @@ pub(crate) fn judge(
             ProcessProbe::Unknown => None,
         }
     };
+    // Claude 进程：在等后台、转接进程活着、先前记下过的那个 Claude 进程确定不在了。
+    if input.waiting
+        && agent_alive == Some(true)
+        && watch.claude_child.is_some()
+        && sample.claude_child_alive == Some(false)
+    {
+        return Some(BackgroundUncertainReason::AgentExited);
+    }
     if sample
         .writers_alive
         .iter()
@@ -461,6 +522,7 @@ pub(crate) fn observe(
     if input.pid != 0 {
         if watch.seen_pid != input.pid {
             watch.agent = None;
+            watch.claude_child = None;
         }
         watch.seen_pid = input.pid;
         if let (None, ProcessProbe::Alive { start }) = (watch.agent, sample.agent) {
@@ -469,6 +531,11 @@ pub(crate) fn observe(
                 start,
             });
         }
+    }
+    if !(input.running || input.waiting) {
+        watch.claude_child = None;
+    } else if watch.claude_child.is_none() && input.pid != 0 {
+        watch.claude_child = sample.new_claude_child;
     }
     watch
         .writers
@@ -778,6 +845,8 @@ mod tests {
             has_children: Some(true),
             new_writers: Vec::new(),
             writers_alive: Vec::new(),
+            claude_child_alive: None,
+            new_claude_child: None,
         }
     }
 
@@ -931,6 +1000,9 @@ mod tests {
         fn descendants(&self, _pid: u32) -> Option<Vec<u32>> {
             self.children.clone()
         }
+        fn children(&self, _pid: u32) -> Option<Vec<u32>> {
+            self.children.clone()
+        }
         fn writers_of(&self, _pids: &[u32], _path: &Path) -> Option<Vec<ProcessIdentity>> {
             self.writers.clone()
         }
@@ -969,6 +1041,7 @@ mod tests {
             watch: watch.clone(),
             tasks: vec![task.clone()],
             needs_children: false,
+            claude_child: false,
         };
 
         // 第一次：绑上写进程，记下智能体身份，没有「?」。
@@ -1030,6 +1103,7 @@ mod tests {
             watch: watch.clone(),
             tasks: vec![sample_task()],
             needs_children: false,
+            claude_child: false,
         };
         let got = sample(&reader, &target);
         assert!(got.new_writers.is_empty());
@@ -1061,6 +1135,7 @@ mod tests {
             watch: watched(),
             tasks: vec![],
             needs_children: false,
+            claude_child: false,
         };
         assert_eq!(sample(&reader, &target).has_children, None);
         target.needs_children = true;
@@ -1068,6 +1143,240 @@ mod tests {
         // pid 格子是 0：什么都不读，全是不知道。
         target.pid = 0;
         assert_eq!(sample(&reader, &target), WatchSample::unknown());
+    }
+
+    // ---- Claude 连接：转接进程下面的 Claude 进程没了（#529 完成标准 1、2） ----
+
+    /// 在等后台（不在跑）。
+    fn waiting() -> WatchInput {
+        WatchInput {
+            running: false,
+            waiting: true,
+            ..input()
+        }
+    }
+
+    /// 已经见过转接进程 100，也记下过它下面的 Claude 进程 200（starttime 20）。
+    fn watched_with_claude() -> ProcessWatch {
+        ProcessWatch {
+            claude_child: Some(ProcessIdentity {
+                pid: 200,
+                start: 20,
+            }),
+            ..watched()
+        }
+    }
+
+    #[test]
+    fn a_vanished_claude_child_under_a_live_adapter_is_agent_exited() {
+        // 转接进程活着、记下过的 Claude 进程确定不在了：智能体进程已经退出。
+        let gone = WatchSample {
+            claude_child_alive: Some(false),
+            ..healthy()
+        };
+        assert_eq!(
+            judge(&watched_with_claude(), &waiting(), &gone),
+            Some(AgentExited)
+        );
+
+        // 用假的进程表走一遍 sample：200 不在了、pid 200 被别的进程重用，都算不在了。
+        let target = WatchTarget {
+            pid: 100,
+            watch: watched_with_claude(),
+            tasks: vec![],
+            needs_children: false,
+            claude_child: true,
+        };
+        for child in [ProcessProbe::Gone, ProcessProbe::Alive { start: 21 }] {
+            let reader = FakeReader {
+                probes: BTreeMap::from([(100, ProcessProbe::Alive { start: 7 }), (200, child)]),
+                children: Some(vec![200]),
+                writers: None,
+            };
+            let got = sample(&reader, &target);
+            assert_eq!(got.claude_child_alive, Some(false), "{child:?}");
+            let mut watch = watched_with_claude();
+            assert_eq!(
+                observe(&mut watch, &waiting(), &[], &got),
+                Some(AgentExited),
+                "{child:?}"
+            );
+            assert_eq!(watch.uncertain, Some(AgentExited));
+        }
+    }
+
+    #[test]
+    fn a_claude_child_is_not_marked_unless_seen_before_and_surely_gone() {
+        let gone = WatchSample {
+            claude_child_alive: Some(false),
+            ..healthy()
+        };
+        // 从没见过 Claude 子进程（比如别的智能体本来就没有子进程）：不标。
+        assert_eq!(judge(&watched(), &waiting(), &gone), None);
+        // 子进程读不到（不知道）：不标。
+        let unknown = WatchSample {
+            claude_child_alive: None,
+            ..healthy()
+        };
+        assert_eq!(judge(&watched_with_claude(), &waiting(), &unknown), None);
+        // 子进程还在：不标。
+        let alive = WatchSample {
+            claude_child_alive: Some(true),
+            ..healthy()
+        };
+        assert_eq!(judge(&watched_with_claude(), &waiting(), &alive), None);
+        // 连接空闲（不在跑也不在等后台）：不标。
+        let idle = WatchInput {
+            running: false,
+            waiting: false,
+            ..input()
+        };
+        assert_eq!(judge(&watched_with_claude(), &idle, &gone), None);
+        // 转接进程活不活不知道：不标。
+        let unknown_agent = WatchSample {
+            agent: ProcessProbe::Unknown,
+            ..gone.clone()
+        };
+        assert_eq!(
+            judge(&watched_with_claude(), &waiting(), &unknown_agent),
+            None
+        );
+
+        // sample：进程表读不到时是不知道；没要看 Claude 进程时一个子进程都不读。
+        let unreadable = FakeReader {
+            probes: BTreeMap::from([
+                (100, ProcessProbe::Alive { start: 7 }),
+                (200, ProcessProbe::Unknown),
+            ]),
+            children: None,
+            writers: None,
+        };
+        let mut target = WatchTarget {
+            pid: 100,
+            watch: watched_with_claude(),
+            tasks: vec![],
+            needs_children: false,
+            claude_child: true,
+        };
+        assert_eq!(sample(&unreadable, &target).claude_child_alive, None);
+        target.watch = watched();
+        assert_eq!(sample(&unreadable, &target).new_claude_child, None);
+        target.claude_child = false;
+        target.watch = watched_with_claude();
+        let skipped = sample(&unreadable, &target);
+        assert_eq!(skipped.claude_child_alive, None);
+        assert_eq!(skipped.new_claude_child, None);
+    }
+
+    #[test]
+    fn the_first_live_direct_child_is_remembered_while_waiting_only() {
+        let reader = FakeReader {
+            probes: BTreeMap::from([
+                (100, ProcessProbe::Alive { start: 7 }),
+                (199, ProcessProbe::Gone),
+                (200, ProcessProbe::Alive { start: 20 }),
+                (201, ProcessProbe::Alive { start: 21 }),
+            ]),
+            children: Some(vec![199, 200, 201]),
+            writers: None,
+        };
+        let target = |watch: &ProcessWatch| WatchTarget {
+            pid: 100,
+            watch: watch.clone(),
+            tasks: vec![],
+            needs_children: false,
+            claude_child: true,
+        };
+        let mut watch = watched();
+        let first = sample(&reader, &target(&watch));
+        assert_eq!(
+            first.new_claude_child,
+            Some(ProcessIdentity {
+                pid: 200,
+                start: 20
+            })
+        );
+        assert_eq!(observe(&mut watch, &waiting(), &[], &first), None);
+        assert_eq!(
+            watch.claude_child,
+            Some(ProcessIdentity {
+                pid: 200,
+                start: 20
+            })
+        );
+        // 记下以后只按身份查这一个。
+        let again = sample(&reader, &target(&watch));
+        assert_eq!(again.claude_child_alive, Some(true));
+        assert_eq!(again.new_claude_child, None);
+        assert_eq!(observe(&mut watch, &waiting(), &[], &again), None);
+        // 又开始跑一轮：留着。
+        observe(&mut watch, &input(), &[], &again);
+        assert!(watch.claude_child.is_some());
+        // 不在跑也不在等后台了：丢掉。
+        let idle = WatchInput {
+            running: false,
+            ..input()
+        };
+        observe(&mut watch, &idle, &[], &again);
+        assert_eq!(watch.claude_child, None);
+        // pid 格子换了：丢掉。
+        let mut watch = watched_with_claude();
+        let other = WatchInput {
+            pid: 101,
+            ..waiting()
+        };
+        observe(&mut watch, &other, &[], &WatchSample::unknown());
+        assert_eq!(watch.claude_child, None);
+    }
+
+    /// 已定的决定 2：在跑的时候就记下 Claude 进程；它在这一轮里没了不标（一轮内被杀走
+    /// 另一条路），这一轮结束、开始等后台以后才按记下的身份判「?」。
+    #[test]
+    fn a_claude_child_seen_while_running_is_checked_once_waiting() {
+        let reader = FakeReader {
+            probes: BTreeMap::from([
+                (100, ProcessProbe::Alive { start: 7 }),
+                (200, ProcessProbe::Alive { start: 20 }),
+            ]),
+            children: Some(vec![200]),
+            writers: None,
+        };
+        let target = |watch: &ProcessWatch| WatchTarget {
+            pid: 100,
+            watch: watch.clone(),
+            tasks: vec![],
+            needs_children: false,
+            claude_child: true,
+        };
+        let mut watch = watched();
+        let first = sample(&reader, &target(&watch));
+        assert_eq!(observe(&mut watch, &input(), &[], &first), None);
+        let remembered = Some(ProcessIdentity {
+            pid: 200,
+            start: 20,
+        });
+        assert_eq!(watch.claude_child, remembered);
+
+        // 还在跑：Claude 进程没了也不标，记下的身份留着。
+        let gone = FakeReader {
+            probes: BTreeMap::from([
+                (100, ProcessProbe::Alive { start: 7 }),
+                (200, ProcessProbe::Gone),
+            ]),
+            children: Some(vec![]),
+            writers: None,
+        };
+        let during = sample(&gone, &target(&watch));
+        assert_eq!(during.claude_child_alive, Some(false));
+        assert_eq!(observe(&mut watch, &input(), &[], &during), None);
+        assert_eq!(watch.claude_child, remembered);
+
+        // 这一轮结束、开始等后台：标「?」。
+        let after = sample(&gone, &target(&watch));
+        assert_eq!(
+            observe(&mut watch, &waiting(), &[], &after),
+            Some(BackgroundUncertainReason::AgentExited)
+        );
     }
 
     #[test]
@@ -1121,6 +1430,7 @@ mod tests {
             watch: watch.clone(),
             tasks: vec![task.clone()],
             needs_children: false,
+            claude_child: false,
         };
 
         let first = sample(&LiveProc, &target(&watch));

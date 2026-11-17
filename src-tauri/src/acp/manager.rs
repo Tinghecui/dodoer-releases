@@ -3658,6 +3658,10 @@ impl ConnectionManager {
                         watch: s.process_watch.clone(),
                         tasks: s.watched_tasks(),
                         needs_children: now.signed_duration_since(s.last_progress_at) >= silence,
+                        // 只有 Claude 连接看转接进程下面的 Claude 进程（在跑或等后台时都记下，
+                        // 判「?」只在等后台时）：别的智能体有的没有子进程、有的每轮起一个，看了会误标。
+                        claude_child: conn.agent_type
+                            == crate::models::agent::AgentType::ClaudeCode,
                     })
                 } else if s.process_watch.uncertain.is_some() {
                     None
@@ -8749,6 +8753,8 @@ mod tests {
     /// （模拟采样期间连接上又来了事件、pid 变了）。
     struct CountingReader {
         probes: std::collections::BTreeMap<u32, crate::acp::process_watch::ProcessProbe>,
+        /// 任何 pid 的直接子进程都给这个。
+        children: Vec<u32>,
         calls: std::sync::atomic::AtomicUsize,
         during: Box<dyn Fn() + Send + Sync>,
     }
@@ -8758,8 +8764,17 @@ mod tests {
             probes: &[(u32, crate::acp::process_watch::ProcessProbe)],
             during: impl Fn() + Send + Sync + 'static,
         ) -> Arc<Self> {
+            Self::with_children(probes, &[], during)
+        }
+
+        fn with_children(
+            probes: &[(u32, crate::acp::process_watch::ProcessProbe)],
+            children: &[u32],
+            during: impl Fn() + Send + Sync + 'static,
+        ) -> Arc<Self> {
             Arc::new(Self {
                 probes: probes.iter().copied().collect(),
+                children: children.to_vec(),
                 calls: std::sync::atomic::AtomicUsize::new(0),
                 during: Box::new(during),
             })
@@ -8782,6 +8797,10 @@ mod tests {
         fn descendants(&self, _pid: u32) -> Option<Vec<u32>> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Some(vec![])
+        }
+        fn children(&self, _pid: u32) -> Option<Vec<u32>> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(self.children.clone())
         }
         fn writers_of(
             &self,
@@ -8870,6 +8889,161 @@ mod tests {
         mgr.refresh_process_watch_with(reader.clone(), chrono::Utc::now(), silence())
             .await;
         assert!(background_broadcasts(&mut rx).is_empty());
+    }
+
+    /// 一条绑着对话 `conv`、一轮已经结束（`Connected`）、还在等 1 个后台任务、转接进程
+    /// pid 是 `pid` 的连接。
+    fn waiting_connection(
+        id: &str,
+        conv: i32,
+        agent_type: crate::models::agent::AgentType,
+        pid: u32,
+        broadcaster: &Arc<WebEventBroadcaster>,
+    ) -> AgentConnection {
+        let mut conn = watched_connection(id, pid, broadcaster);
+        conn.agent_type = agent_type;
+        if let Ok(mut state) = conn.state.try_write() {
+            state.status = ConnectionStatus::Connected;
+            state.conversation_id = Some(conv);
+            state.background_outstanding = 1;
+        }
+        conn
+    }
+
+    /// #529 完成标准 4、3：两轮之间在等后台的 Claude 连接，第一轮看见转接进程下面的
+    /// Claude 进程，第二轮它没了：广播「?」、原因是智能体进程已经退出，列表里也是「?」。
+    /// 别的智能体（Codex）同样的进程表：子进程一个都不读，也不标。
+    #[tokio::test]
+    async fn process_watch_reports_a_vanished_claude_child_between_turns() {
+        use crate::acp::process_watch::ProcessProbe;
+        use crate::models::agent::AgentType;
+        let mgr = ConnectionManager::new();
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "claude".into(),
+                waiting_connection("claude", 42, AgentType::ClaudeCode, 4242, &broadcaster),
+            );
+            map.insert(
+                "codex".into(),
+                waiting_connection("codex", 43, AgentType::Codex, 4343, &broadcaster),
+            );
+        }
+
+        // 第一轮：两个转接进程都活着，下面各有一个子进程。
+        let first = CountingReader::with_children(
+            &[
+                (4242, ProcessProbe::Alive { start: 1 }),
+                (4343, ProcessProbe::Alive { start: 2 }),
+                (5000, ProcessProbe::Alive { start: 50 }),
+            ],
+            &[5000],
+            || {},
+        );
+        mgr.refresh_process_watch_with(first.clone(), chrono::Utc::now(), silence())
+            .await;
+        assert!(background_broadcasts(&mut rx).is_empty());
+        let claude = mgr.get_state("claude").await.unwrap();
+        assert_eq!(
+            claude.read().await.process_watch.claude_child,
+            Some(crate::acp::process_watch::ProcessIdentity {
+                pid: 5000,
+                start: 50
+            })
+        );
+        let codex = mgr.get_state("codex").await.unwrap();
+        assert_eq!(codex.read().await.process_watch.claude_child, None);
+        // 两条连接各读一次 stat，Claude 那条再读一层子进程和子进程的 stat。
+        assert_eq!(first.calls(), 4);
+
+        // 第二轮：子进程没了，转接进程还活着。
+        let second = CountingReader::with_children(
+            &[
+                (4242, ProcessProbe::Alive { start: 1 }),
+                (4343, ProcessProbe::Alive { start: 2 }),
+            ],
+            &[],
+            || {},
+        );
+        mgr.refresh_process_watch_with(second.clone(), chrono::Utc::now(), silence())
+            .await;
+        let sent = background_broadcasts(&mut rx);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["conversation_id"], 42);
+        assert_eq!(sent[0]["state"], "uncertain");
+        assert_eq!(sent[0]["reason"], "agent_exited");
+        assert_eq!(codex.read().await.process_watch.uncertain, None);
+
+        let listed = mgr
+            .list_background_pending_with_uncertain(&broadcaster)
+            .await;
+        let row = listed.iter().find(|e| e.conversation_id == 42).unwrap();
+        assert_eq!(
+            row.state,
+            crate::acp::types::BackgroundPendingState::Uncertain
+        );
+        assert_eq!(
+            row.reason,
+            Some(crate::acp::types::BackgroundUncertainReason::AgentExited)
+        );
+        let other = listed.iter().find(|e| e.conversation_id == 43).unwrap();
+        assert_eq!(
+            other.state,
+            crate::acp::types::BackgroundPendingState::Waiting
+        );
+    }
+
+    /// #529 已定的决定 2：Claude 连接在跑、还没有后台任务时就记下 Claude 进程；它在这一轮
+    /// 里没了，这一轮结束才出现后台任务，下一次轮询照样标「?」。
+    #[tokio::test]
+    async fn process_watch_remembers_the_claude_child_while_running() {
+        use crate::acp::process_watch::ProcessProbe;
+        use crate::models::agent::AgentType;
+        let mgr = ConnectionManager::new();
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let mut conn = watched_connection("claude", 4242, &broadcaster);
+        conn.agent_type = AgentType::ClaudeCode;
+        let state = Arc::clone(&conn.state);
+        mgr.connections.lock().await.insert("claude".into(), conn);
+
+        // 在跑、没有后台任务：记下子进程 5000。
+        let first = CountingReader::with_children(
+            &[
+                (4242, ProcessProbe::Alive { start: 1 }),
+                (5000, ProcessProbe::Alive { start: 50 }),
+            ],
+            &[5000],
+            || {},
+        );
+        mgr.refresh_process_watch_with(first, chrono::Utc::now(), silence())
+            .await;
+        assert!(background_broadcasts(&mut rx).is_empty());
+        assert_eq!(
+            state.read().await.process_watch.claude_child,
+            Some(crate::acp::process_watch::ProcessIdentity {
+                pid: 5000,
+                start: 50
+            })
+        );
+
+        // 子进程没了，这一轮结束才出现后台任务。
+        {
+            let mut s = state.write().await;
+            s.status = ConnectionStatus::Connected;
+            s.background_outstanding = 1;
+        }
+        let second =
+            CountingReader::with_children(&[(4242, ProcessProbe::Alive { start: 1 })], &[], || {});
+        mgr.refresh_process_watch_with(second, chrono::Utc::now(), silence())
+            .await;
+        let sent = background_broadcasts(&mut rx);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["conversation_id"], 42);
+        assert_eq!(sent[0]["state"], "uncertain");
+        assert_eq!(sent[0]["reason"], "agent_exited");
     }
 
     /// 完成标准 13：采样期间 `event_seq` 加 1 或 pid 变了，这次观察整个丢掉。

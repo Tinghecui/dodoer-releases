@@ -31,16 +31,27 @@
 //!
 //! `perform_app_rollback` goes through the same `run_download`, so on macOS a
 //! rollback, too, only downloads and waits for the restart to install.
+//!
+//! Cowork fork: every update leaves its steps in the update journal
+//! ([`crate::update::journal`], `<data dir>/update/journal.json`): when it
+//! started and how, the download, the install, and at the next start whether
+//! the new version came up. Each outcome is reported through the crash
+//! report channel (`crash_report::push_update`), and every change of the
+//! update state is a line in the log.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::app_error::AppCommandError;
+use crate::update::journal::{self, ApplyHow, Journal, Outcome, Trigger};
 use crate::update::restart_install::{self, RestartInstallOutcome};
 use crate::update::rollback::{self, AppRollbackTarget, ReleaseSource};
-use crate::update::state::{self as update_state, AppUpdateState, AppUpdateStateHandle};
+use crate::update::state::{
+    self as update_state, AppUpdateLifecycle, AppUpdateState, AppUpdateStateHandle,
+};
 use crate::web::event_bridge::EventEmitter;
 
 /// Current update snapshot, for the renderer to re-sync on mount.
@@ -49,30 +60,195 @@ pub fn app_update_state(state: tauri::State<'_, AppUpdateStateHandle>) -> AppUpd
     update_state::snapshot(state.inner())
 }
 
+/// Where the update journal is, and the version this process runs
+/// ([`start_journal`]).
+struct JournalHome {
+    path: PathBuf,
+    running: String,
+}
+
+static JOURNAL_HOME: OnceLock<JournalHome> = OnceLock::new();
+/// Around every read-change-write of the journal.
+static JOURNAL_LOCK: Mutex<()> = Mutex::new(());
+
+/// Read the journal, let `f` change it, write it back when it changed. None
+/// before [`start_journal`].
+fn with_journal<R>(f: impl FnOnce(&mut Journal, &str) -> R) -> Option<R> {
+    let home = JOURNAL_HOME.get()?;
+    let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut journal = journal::load(&home.path, &home.running);
+    let before = journal.clone();
+    let result = f(&mut journal, &home.running);
+    if journal != before {
+        if let Err(e) = journal::save(&home.path, &journal) {
+            tracing::warn!("[update] could not write the update journal: {e}");
+        }
+    }
+    Some(result)
+}
+
+/// Change the journal; an outcome it ends with is logged and reported.
+fn journal_event(f: impl FnOnce(&mut Journal, &str) -> Option<Outcome>) {
+    if let Some(Some(outcome)) = with_journal(f) {
+        report(&outcome);
+    }
+}
+
+fn report(outcome: &Outcome) {
+    let line = format!(
+        "[update] {} {} -> {}{}",
+        outcome.result.as_str(),
+        outcome.from,
+        outcome.to,
+        outcome
+            .error_kind
+            .map(|kind| format!(" ({})", kind.as_str()))
+            .unwrap_or_default()
+    );
+    if outcome.error_kind.is_some() {
+        tracing::warn!("{line}");
+    } else {
+        tracing::info!("{line}");
+    }
+    crate::crash_report::push_update(outcome);
+}
+
+fn now() -> chrono::DateTime<chrono::Utc> {
+    chrono::Utc::now()
+}
+
+/// Run `f`, which may change the update state, and log the change: one info
+/// line, a warning with the message when it ends in `Error`.
+fn transition<R>(handle: &AppUpdateStateHandle, f: impl FnOnce() -> R) -> R {
+    let before = update_state::snapshot(handle).status;
+    let result = f();
+    let after = update_state::snapshot(handle);
+    if after.status != before {
+        let line = journal::transition_line(
+            before.as_str(),
+            after.status.as_str(),
+            after.version.as_deref(),
+        );
+        if after.status == AppUpdateLifecycle::Error {
+            tracing::warn!("{line} error={}", after.error.as_deref().unwrap_or("-"));
+        } else {
+            tracing::info!("{line}");
+        }
+    }
+    result
+}
+
+/// At start, from `setup` (once the crash reports have started, so an
+/// outcome found here is queued): read the journal, count this boot of a
+/// version being applied ([`Journal::on_boot`]), and check once a minute
+/// whether a downloaded update has been waiting too long.
+pub fn start_journal(app: &tauri::AppHandle, data_dir: &Path) {
+    let home = JournalHome {
+        path: journal::path(data_dir),
+        running: app.package_info().version.to_string(),
+    };
+    if JOURNAL_HOME.set(home).is_err() {
+        return;
+    }
+    journal_event(|j, running| j.on_boot(running, now()));
+    tauri::async_runtime::spawn(async {
+        let mut every_minute = tokio::time::interval(std::time::Duration::from_secs(60));
+        // The first tick is at once.
+        every_minute.tick().await;
+        loop {
+            every_minute.tick().await;
+            let _ = tauri::async_runtime::spawn_blocking(|| {
+                journal_event(|j, running| j.check_waiting_long(running, now()))
+            })
+            .await;
+        }
+    });
+}
+
+/// The start confirmation, from `setup` once the main window is built: when
+/// this process is the version an update was putting in place, wait for the
+/// local daemon (a child: its endpoint, which it has once `/api/health`
+/// answered; the in-process one is up by now; client mode has none), then
+/// 60 s more, and if the process is still alive by then the update is
+/// `applied`. A tokio timer, off the main thread the crash report watchdog
+/// watches.
+pub fn confirm_when_running(mode: crate::local_daemon::Mode) {
+    if with_journal(|j, running| j.awaiting_confirmation(running)) != Some(true) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        if mode == crate::local_daemon::Mode::Child {
+            let mut up = false;
+            // Up to 5 minutes.
+            for _ in 0..60 {
+                if matches!(crate::local_daemon::connection_info().await, Ok(Some(_))) {
+                    up = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+            if !up {
+                tracing::warn!("[update] the local daemon did not come up; not confirmed");
+                return;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(journal::CONFIRM_AFTER_SECS)).await;
+        let confirmed = tauri::async_runtime::spawn_blocking(|| {
+            with_journal(|j, running| j.confirm(running, now()))
+        })
+        .await;
+        if let Ok(Some(Some(outcome))) = confirmed {
+            tracing::info!("[update] confirmed running {}", outcome.to);
+            report(&outcome);
+        }
+    });
+}
+
 /// Begin (or attach to) a download+install of the available update. Returns
 /// immediately with the current snapshot; the work runs detached and reports
 /// progress via the `app_update_state` event.
+///
+/// `trigger` is `"auto"` when the window started it on its own (the
+/// background download after a check), else absent: the journal reports a
+/// failed download only for those ([`Journal::download_failed`]).
 #[tauri::command]
 pub async fn perform_app_update(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppUpdateStateHandle>,
+    trigger: Option<String>,
 ) -> Result<AppUpdateState, AppCommandError> {
     let handle = state.inner().clone();
     let emitter = EventEmitter::Tauri(app.clone());
+    let trigger = Trigger::from_param(trigger.as_deref());
 
-    let (started, snap) = update_state::try_begin(&handle, &emitter);
+    let (started, snap) = transition(&handle, || update_state::try_begin(&handle, &emitter));
     if !started {
         // A download is already in flight (or staged) — attach to it.
         return Ok(snap);
     }
 
-    tauri::async_runtime::spawn(async move {
-        if let Err(message) = run_download(app, handle.clone(), emitter.clone(), None).await {
-            update_state::set_error(&handle, &emitter, message);
-        }
-    });
+    tauri::async_runtime::spawn(download(app, handle, emitter, None, trigger));
 
     Ok(snap)
+}
+
+/// [`run_download`], and what a failure leaves: the `Error` state, a warning
+/// in the log and the journal's `download_failed`.
+async fn download(
+    app: tauri::AppHandle,
+    handle: AppUpdateStateHandle,
+    emitter: EventEmitter,
+    downgrade: Option<Downgrade>,
+    trigger: Trigger,
+) {
+    if let Err(message) =
+        run_download(app, handle.clone(), emitter.clone(), downgrade, trigger).await
+    {
+        journal_event(|j, running| j.download_failed(running, trigger, &message, now()));
+        transition(&handle, || {
+            update_state::set_error(&handle, &emitter, message)
+        });
+    }
 }
 
 /// Where the updater checks, when it is a GitHub repository's latest release
@@ -140,20 +316,20 @@ pub async fn perform_app_rollback(
 
     let handle = state.inner().clone();
     let emitter = EventEmitter::Tauri(app.clone());
-    let (started, snap) = update_state::try_begin(&handle, &emitter);
+    let (started, snap) = transition(&handle, || update_state::try_begin(&handle, &emitter));
     if !started {
         // An update is already downloading or staged; leave it be.
         return Err(AppCommandError::invalid_input(
             "An update is already in progress",
         ));
     }
-    tauri::async_runtime::spawn(async move {
-        if let Err(message) =
-            run_download(app, handle.clone(), emitter.clone(), Some(downgrade)).await
-        {
-            update_state::set_error(&handle, &emitter, message);
-        }
-    });
+    tauri::async_runtime::spawn(download(
+        app,
+        handle,
+        emitter,
+        Some(downgrade),
+        Trigger::Rollback,
+    ));
 
     Ok(snap)
 }
@@ -270,6 +446,7 @@ async fn run_download(
     handle: AppUpdateStateHandle,
     emitter: EventEmitter,
     downgrade: Option<Downgrade>,
+    trigger: Trigger,
 ) -> Result<(), String> {
     let quit = Arc::new(AtomicBool::new(false));
     let updater = updater(&app, quit.clone(), downgrade.as_ref()).map_err(|e| e.to_string())?;
@@ -286,16 +463,21 @@ async fn run_download(
             None => "No update available".to_string(),
         })?;
     let version = update.version.clone();
+    journal_event(|j, running| {
+        j.begin_download(running, &version, trigger, now());
+        None
+    });
 
     let pe = Arc::new(update_state::ProgressEmitter::new(
         handle.clone(),
         emitter.clone(),
     ));
     let pe_chunk = pe.clone();
-    let mut downloaded: u64 = 0;
+    let downloaded = Arc::new(AtomicU64::new(0));
+    let counted = downloaded.clone();
     let on_chunk = move |chunk_len: usize, content_len: Option<u64>| {
-        downloaded += chunk_len as u64;
-        pe_chunk.downloading(downloaded, content_len);
+        let so_far = counted.fetch_add(chunk_len as u64, Ordering::Relaxed) + chunk_len as u64;
+        pe_chunk.downloading(so_far, content_len);
     };
     if INSTALL_AT_RESTART {
         // Nothing gets installed until the restart, so there is no
@@ -305,6 +487,7 @@ async fn run_download(
             .download(on_chunk, || {})
             .await
             .map_err(|e| e.to_string())?;
+        downloaded.store(bytes.len() as u64, Ordering::Relaxed);
         *staged_install() = Some(StagedInstall {
             update,
             bytes,
@@ -312,15 +495,29 @@ async fn run_download(
         });
     } else {
         let pe_finish = pe.clone();
+        let installing = version.clone();
         update
-            .download_and_install(on_chunk, move || pe_finish.installing())
+            .download_and_install(on_chunk, move || {
+                pe_finish.installing();
+                tracing::info!(
+                    "{}",
+                    journal::transition_line("downloading", "installing", Some(&installing))
+                );
+            })
             .await
             .map_err(|e| e.to_string())?;
     }
 
+    let bytes = downloaded.load(Ordering::Relaxed);
+    journal_event(|j, _| {
+        j.download_done(bytes, now());
+        None
+    });
     // The desktop app relaunches itself, so there is no supervisor trial or
     // restart-delay metadata to carry (those are server-only).
-    update_state::set_ready(&handle, &emitter, Some(version), None, None, None);
+    transition(&handle, || {
+        update_state::set_ready(&handle, &emitter, Some(version), None, None, None)
+    });
     Ok(())
 }
 
@@ -341,11 +538,17 @@ pub async fn restart_app(
     // genuinely staged — same authority check as the server `restart_impl`.
     // Guards a stale window / direct IPC call from relaunching during
     // idle/error/downloading/installing, and serializes concurrent clicks.
-    if !update_state::try_claim_restart(&handle, &emitter) {
+    if !transition(&handle, || {
+        update_state::try_claim_restart(&handle, &emitter)
+    }) {
         return Err(AppCommandError::invalid_input(
             "No staged update to restart into",
         ));
     }
+    journal_event(|j, _| {
+        j.apply_started(ApplyHow::Click, now());
+        None
+    });
     if INSTALL_AT_RESTART {
         return install_and_quit(app, handle, emitter).await;
     }
@@ -412,9 +615,13 @@ async fn install_and_quit(
     }) = staged_install().take()
     else {
         let message = "No downloaded update to install";
-        update_state::set_error(&handle, &emitter, message);
+        journal_event(|j, running| j.install_failed(running, message, now()));
+        transition(&handle, || {
+            update_state::set_error(&handle, &emitter, message)
+        });
         return Err(AppCommandError::invalid_input(message));
     };
+    let version = update.version.clone();
     // Lets the windows show `Restarting` before the app shuts down.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     tracing::info!("[update] installing the downloaded update");
@@ -429,14 +636,19 @@ async fn install_and_quit(
         .and_then(|r| r.map_err(|e| e.to_string()));
     let message = match restart_install::restart_install_outcome(outcome, INSTALL_ENDS_APP) {
         RestartInstallOutcome::Relaunch => {
+            journal_event(|j, _| {
+                j.install_done(now());
+                None
+            });
             // Not `restart()`, which would park this tokio worker for good (see
             // `restart_app`).
-            tracing::info!("[update] relaunching into the installed update");
+            tracing::info!("[update] installed {version}, relaunching into it");
             app.request_restart();
             return Ok(());
         }
         RestartInstallOutcome::Failed(message) => message,
     };
+    journal_event(|j, running| j.install_failed(running, &message, now()));
     if quit.load(Ordering::SeqCst) {
         // The installer failed to start after the app had already shut down
         // for it: its agents, terminals and web service are gone. Come back up
@@ -448,6 +660,8 @@ async fn install_and_quit(
         return Ok(());
     }
     tracing::error!("[update] the update could not be installed: {message}");
-    update_state::set_error(&handle, &emitter, message.clone());
+    transition(&handle, || {
+        update_state::set_error(&handle, &emitter, message.clone())
+    });
     Err(AppCommandError::task_execution_failed(message))
 }

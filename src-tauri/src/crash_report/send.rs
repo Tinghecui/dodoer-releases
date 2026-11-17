@@ -7,12 +7,14 @@
 //! child, `local_daemon`) is asked the same way: a release build reports
 //! with the DSNs built into it, unless diagnostics are off.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use sea_orm::DatabaseConnection;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
+use tokio::sync::Notify;
 
 use super::envelope::{self, Target};
 use super::store;
@@ -29,17 +31,48 @@ const RETRY_EVERY: Duration = Duration::from_secs(10 * 60);
 /// Each call to a server.
 const CALL_TIMEOUT_MS: u64 = 15_000;
 
+/// The app, for [`wake`] to start the sending with.
+static APP: OnceLock<AppHandle> = OnceLock::new();
+/// The sending loop is running (it waits for [`wake`] once nothing is left).
+static RUNNING: AtomicBool = AtomicBool::new(false);
+/// A report was queued: send now rather than at the next retry.
+static WAKE: Notify = Notify::const_new();
+
+pub fn remember(app: &AppHandle) {
+    let _ = APP.set(app.clone());
+}
+
+/// Start the sending: earlier runs' records are turned into reports first,
+/// then what is pending goes out, again every [`RETRY_EVERY`] while some is
+/// left. Once nothing is, the loop waits for [`wake`] (a report queued in this
+/// run), so that one goes out within a minute, not at the next start. It ends
+/// when the switch is turned off or the quit has finished.
 pub fn spawn(app: AppHandle) {
+    if RUNNING.swap(true, Ordering::SeqCst) {
+        WAKE.notify_one();
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         let _ = tauri::async_runtime::spawn_blocking(super::collect_previous).await;
         tokio::time::sleep(FIRST_TRY).await;
         while super::enabled() && !super::stopped() {
             if send_pending(&app).await {
-                return;
+                WAKE.notified().await;
+            } else {
+                let _ = tokio::time::timeout(RETRY_EVERY, WAKE.notified()).await;
             }
-            tokio::time::sleep(RETRY_EVERY).await;
         }
+        RUNNING.store(false, Ordering::SeqCst);
     });
+}
+
+/// A report was just queued (`push_update`): send it in this run.
+pub fn wake() {
+    if RUNNING.load(Ordering::SeqCst) {
+        WAKE.notify_one();
+    } else if let Some(app) = APP.get() {
+        spawn(app.clone());
+    }
 }
 
 /// What became of one report.

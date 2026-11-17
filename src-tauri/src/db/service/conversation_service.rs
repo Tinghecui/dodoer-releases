@@ -135,6 +135,7 @@ async fn create_inner(
         assistant_id: Set(assistant_id),
         assistant_snapshot: Set(assistant_snapshot),
         source: Set(None),
+        interrupted_at: Set(None),
     };
     Ok(model.insert(conn).await?)
 }
@@ -150,6 +151,8 @@ pub async fn update_status(
         .ok_or_else(|| DbError::NotFound(format!("Conversation not found: {conversation_id}")))?;
     let mut active: conversation::ActiveModel = conv.into();
     active.status = Set(status);
+    // 状态一变就不再算被打断。
+    active.interrupted_at = Set(None);
     active.updated_at = Set(Utc::now());
     active.update(conn).await?;
     Ok(())
@@ -169,6 +172,11 @@ pub async fn update_status_if(
     use sea_orm::sea_query::Expr;
     let result = conversation::Entity::update_many()
         .col_expr(conversation::Column::Status, Expr::value(new_status))
+        // 状态一变就不再算被打断。
+        .col_expr(
+            conversation::Column::InterruptedAt,
+            Expr::value(None::<chrono::DateTime<Utc>>),
+        )
         .col_expr(conversation::Column::UpdatedAt, Expr::value(Utc::now()))
         .filter(conversation::Column::Id.eq(conversation_id))
         .filter(conversation::Column::Status.eq(expected))
@@ -180,6 +188,7 @@ pub async fn update_status_if(
 /// 把还停在 `in_progress` 的回合改成 `cancelled`（被打断），返回改了哪些 id。
 /// `only` 是 `Some` 时只看这些 id（退出时：本进程连接上绑定的对话），`Some(&[])` 不查库；
 /// `None` 时扫全部（启动时：上次没跑完留下的）。Loop 行由 Loop 工作台自己管，不碰。
+/// 同时写 `interrupted_at = 现在`，界面据此和用户自己点的「停止」分开；下一次状态写入会清掉它。
 /// 不改 `updated_at`：未读和侧栏排序都按它，一次升级扫出的一堆老行不该全跳到最上面变成未读。
 pub async fn interrupt_in_progress(
     conn: &DatabaseConnection,
@@ -205,6 +214,10 @@ pub async fn interrupt_in_progress(
         .col_expr(
             conversation::Column::Status,
             Expr::value(conversation::ConversationStatus::Cancelled),
+        )
+        .col_expr(
+            conversation::Column::InterruptedAt,
+            Expr::value(Some(Utc::now())),
         )
         .filter(conversation::Column::Id.is_in(ids.iter().copied()))
         .filter(conversation::Column::Status.eq(conversation::ConversationStatus::InProgress))
@@ -1095,6 +1108,7 @@ impl CarriedOverRow {
             assistant_id: Set(self.assistant_id),
             assistant_snapshot: Set(self.assistant_snapshot),
             source: Set(self.source),
+            interrupted_at: Set(None),
         }
     }
 }
@@ -1504,6 +1518,11 @@ pub async fn restore_soft_deleted(
             conversation::Column::Status,
             Expr::value(conversation::ConversationStatus::PendingReview),
         )
+        // 写了状态，就不再算被打断。
+        .col_expr(
+            conversation::Column::InterruptedAt,
+            Expr::value(None::<chrono::DateTime<Utc>>),
+        )
         .filter(conversation::Column::Id.eq(conversation_id))
         .filter(conversation::Column::DeletedAt.is_not_null())
         .filter(conversation::Column::ParentId.is_null())
@@ -1560,6 +1579,7 @@ fn conv_to_summary(r: conversation::Model) -> DbConversationSummary {
             .and_then(AssistantRunSnapshot::name_from_json),
         assistant_id: r.assistant_id,
         source: r.source,
+        interrupted_at: r.interrupted_at,
         // Backfilled by `fill_summary_extras`, like `child_count`.
         tag_ids: Vec::new(),
     }
@@ -2030,8 +2050,83 @@ mod tests {
         let row = status_of(&db.conn, running).await;
         assert_eq!(row.status, S::Cancelled);
         assert_eq!(row.updated_at, before, "不改 updated_at");
-        assert_eq!(status_of(&db.conn, review).await.status, S::PendingReview);
-        assert_eq!(status_of(&db.conn, looped).await.status, S::InProgress);
+        assert!(row.interrupted_at.is_some(), "被改的行写上 interrupted_at");
+        let review_row = status_of(&db.conn, review).await;
+        assert_eq!(review_row.status, S::PendingReview);
+        assert_eq!(review_row.interrupted_at, None);
+        let loop_row = status_of(&db.conn, looped).await;
+        assert_eq!(loop_row.status, S::InProgress);
+        assert_eq!(loop_row.interrupted_at, None);
+    }
+
+    /// 扫完以后下一次状态写入（`update_status` / `update_status_if`）都把标记清掉。
+    #[tokio::test]
+    async fn the_next_status_write_clears_interrupted_at() {
+        use conversation::ConversationStatus as S;
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-interrupt-clear").await;
+        let a = seed_conv(&db.conn, folder, "a").await;
+        let b = seed_conv(&db.conn, folder, "b").await;
+        let marked = interrupt_in_progress(&db.conn, None).await.expect("scan");
+        assert_eq!(marked.len(), 2);
+        assert!(status_of(&db.conn, a).await.interrupted_at.is_some());
+        assert!(status_of(&db.conn, b).await.interrupted_at.is_some());
+
+        update_status(&db.conn, a, S::InProgress)
+            .await
+            .expect("continue a");
+        assert!(update_status_if(&db.conn, b, S::Cancelled, S::Completed)
+            .await
+            .expect("complete b"));
+
+        let row_a = status_of(&db.conn, a).await;
+        assert_eq!(row_a.status, S::InProgress);
+        assert_eq!(row_a.interrupted_at, None);
+        let row_b = status_of(&db.conn, b).await;
+        assert_eq!(row_b.status, S::Completed);
+        assert_eq!(row_b.interrupted_at, None);
+    }
+
+    /// 恢复软删除的对话写状态（`pending_review`）时也清掉标记。
+    #[tokio::test]
+    async fn restoring_a_soft_deleted_row_clears_interrupted_at() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-interrupt-restore").await;
+        let a = seed_conv(&db.conn, folder, "a").await;
+        let mut active: conversation::ActiveModel = status_of(&db.conn, a).await.into();
+        active.status = Set(conversation::ConversationStatus::Cancelled);
+        active.interrupted_at = Set(Some(Utc::now()));
+        active.deleted_at = Set(Some(Utc::now()));
+        active.update(&db.conn).await.expect("soft delete");
+
+        assert!(restore_soft_deleted(&db.conn, a, folder)
+            .await
+            .expect("restore"));
+        assert_eq!(status_of(&db.conn, a).await.interrupted_at, None);
+    }
+
+    /// summary 带上 `interrupted_at`：被扫的行有，下一次状态写入以后没有（也不进 JSON）。
+    #[tokio::test]
+    async fn the_summary_carries_interrupted_at_until_the_next_status_write() {
+        use conversation::ConversationStatus as S;
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-interrupt-summary").await;
+        let a = seed_conv(&db.conn, folder, "a").await;
+        interrupt_in_progress(&db.conn, None).await.expect("scan");
+
+        let summary = get_by_id(&db.conn, a).await.expect("summary");
+        assert_eq!(summary.status, "cancelled");
+        assert!(summary.interrupted_at.is_some());
+        let json = serde_json::to_value(&summary).expect("json");
+        assert!(json.get("interrupted_at").is_some_and(|v| !v.is_null()));
+
+        update_status(&db.conn, a, S::InProgress)
+            .await
+            .expect("continue");
+        let summary = get_by_id(&db.conn, a).await.expect("summary");
+        assert_eq!(summary.interrupted_at, None);
+        let json = serde_json::to_value(&summary).expect("json");
+        assert!(json.get("interrupted_at").is_none());
     }
 
     #[tokio::test]

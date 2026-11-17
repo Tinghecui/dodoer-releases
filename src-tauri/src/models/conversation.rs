@@ -82,6 +82,10 @@ pub struct DbConversationSummary {
     /// `codeg-cli` run started. Absent on every other row.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// 镜像 `conversation.interrupted_at`：回合没跑完程序就停了时有值（这时 `status` 是 `cancelled`），
+    /// 界面据此画暂停圈和「继续」提示条。没被打断时不出现在 JSON 里。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interrupted_at: Option<DateTime<Utc>>,
     /// Ids of the tags on this conversation, ascending. Not stored on the row —
     /// backfilled from `conversation_tag_link` by one query over the returned
     /// set (`fill_summary_extras`), the same way `child_count` is. Omitted from

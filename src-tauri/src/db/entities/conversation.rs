@@ -92,6 +92,9 @@ pub struct Model {
     /// value from a newer build never stops an older one decoding the row.
     /// See `m20261017_000002_conversation_source`.
     pub source: Option<String>,
+    /// 回合没跑完程序就停了（退出、崩溃、被杀）时写上的时间；被打断 = `status = cancelled` 且这里有值。
+    /// 之后任何一次状态写入都清回 `None`。见 `m20261115_000001_conversation_interrupted_at`。
+    pub interrupted_at: Option<DateTimeUtc>,
 }
 
 /// [`Model::source`] of a conversation a `codeg-cli` run started.

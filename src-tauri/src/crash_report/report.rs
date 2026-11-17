@@ -12,6 +12,9 @@ use serde_json::{json, Map, Value};
 use super::macos_reports::OsReport;
 use super::store::{HangMarker, PanicRecord, Phase, Record, RecoveredHang, RunMarker};
 use crate::telemetry::scrub::scrub_text;
+use crate::update::journal::Outcome;
+#[cfg(test)]
+use crate::update::journal::{ApplyHow, Blocked, ErrorKind, Trigger, UpdateResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -19,6 +22,8 @@ pub enum Kind {
     Panic,
     Hang,
     UncleanExit,
+    /// Cowork fork: the outcome of a software update (`update::journal`).
+    Update,
 }
 
 impl Kind {
@@ -27,6 +32,7 @@ impl Kind {
             Kind::Panic => "panic",
             Kind::Hang => "hang",
             Kind::UncleanExit => "unclean-exit",
+            Kind::Update => "update",
         }
     }
 }
@@ -46,6 +52,10 @@ pub struct Report {
     pub message: String,
     pub fingerprint: Vec<String>,
     pub details: Map<String, Value>,
+    /// Tags of this kind only, beside the four every report has
+    /// (`envelope::event`). Only update reports have any.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tags: BTreeMap<String, String>,
 }
 
 /// Runs leave at most this many of their panics and recovered hangs.
@@ -178,6 +188,7 @@ fn panic_report(panic: &PanicRecord, fatal: bool, os: &str) -> Report {
         message: format!("panic at {location}: {}", scrub_message(&panic.message)),
         fingerprint: vec!["desktop-native".to_string(), "panic".to_string(), location],
         details,
+        tags: BTreeMap::new(),
     }
 }
 
@@ -204,6 +215,7 @@ fn recovered_report(hang: &RecoveredHang, os: &str) -> Report {
             "recovered".to_string(),
         ],
         details,
+        tags: BTreeMap::new(),
     }
 }
 
@@ -248,6 +260,7 @@ fn unclean_report(marker: &RunMarker, left: &RunLeft, os: &str) -> Report {
                 hang.phase.label(),
             ],
             details: Map::new(),
+            tags: BTreeMap::new(),
         }
     } else if let Some(panic) = fatal_panic {
         panic_report(panic, true, os)
@@ -269,6 +282,7 @@ fn unclean_report(marker: &RunMarker, left: &RunLeft, os: &str) -> Report {
                 marker.phase.label(),
             ],
             details: Map::new(),
+            tags: BTreeMap::new(),
         }
     };
     // The panic the report is about is not listed again among the others.
@@ -408,12 +422,220 @@ fn os_only_report(os_reports: &[OsReport], values: Vec<Value>, os: &str) -> Repo
             "macos-report".to_string(),
         ],
         details,
+        tags: BTreeMap::new(),
     }
+}
+
+/// Cowork fork: the report of one software update's outcome
+/// (docs/telemetry.md「软件更新的记录」). `install` tells devices apart
+/// ([`install_tag`]).
+pub fn update_report(outcome: &Outcome, os: &str, install: &str) -> Report {
+    let result = outcome.result.as_str();
+    let error_kind = outcome.error_kind.map(|k| k.as_str());
+
+    let mut tags = BTreeMap::new();
+    let mut tag = |key: &str, value: &str| {
+        tags.insert(key.to_string(), value.to_string());
+    };
+    tag("update_result", result);
+    tag("update_from", &outcome.from);
+    tag("update_to", &outcome.to);
+    tag("update_trigger", outcome.trigger.as_str());
+    if let Some(how) = outcome.how {
+        tag("update_how", how.as_str());
+    }
+    tag("install", install);
+
+    let mut details = Map::new();
+    let mut put = |key: &str, value: Option<u64>| {
+        if let Some(value) = value {
+            details.insert(key.to_string(), json!(value));
+        }
+    };
+    put("download_ms", outcome.download_ms);
+    put("bytes", outcome.bytes);
+    put("wait_ms", outcome.wait_ms);
+    put("install_ms", outcome.install_ms);
+    put("boot_ms", outcome.boot_ms);
+    details.insert(
+        "reused_package".to_string(),
+        Value::Bool(outcome.reused_package),
+    );
+    details.insert("boots".to_string(), json!(outcome.boots));
+    details.insert(
+        "blocked".to_string(),
+        serde_json::to_value(outcome.blocked).unwrap_or(Value::Null),
+    );
+    if let Some(kind) = error_kind {
+        details.insert("error_kind".to_string(), json!(kind));
+    }
+    let error = outcome.error.as_deref().map(scrub_text);
+    if let Some(error) = &error {
+        details.insert("error".to_string(), json!(error));
+    }
+
+    let mut message = format!("update {} -> {}: {result}", outcome.from, outcome.to);
+    if let Some(how) = outcome.how {
+        message.push_str(&format!(" ({})", how.as_str()));
+    }
+    if let Some(kind) = error_kind {
+        message.push_str(&format!(", {kind}"));
+    }
+    if let Some(error) = &error {
+        message.push_str(&format!(": {error}"));
+    }
+
+    Report {
+        event_id: new_event_id(),
+        kind: Kind::Update,
+        fatal: false,
+        at: outcome.at.timestamp(),
+        version: outcome.release_version().to_string(),
+        os: os.to_string(),
+        message,
+        fingerprint: vec![
+            "desktop-native".to_string(),
+            "update".to_string(),
+            result.to_string(),
+            error_kind.unwrap_or("-").to_string(),
+        ],
+        details,
+        tags,
+    }
+}
+
+/// The `install` tag: the first 12 hex digits of the SHA-256 of the device
+/// id (`host_device::device_id`), which tells devices apart without sending
+/// the id itself.
+pub fn install_tag(device_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(device_id.as_bytes());
+    digest.iter().take(6).map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn outcome(result: UpdateResult) -> Outcome {
+        Outcome {
+            result,
+            from: "1.6.40".to_string(),
+            to: "1.6.41".to_string(),
+            trigger: Trigger::Auto,
+            how: Some(ApplyHow::Idle),
+            running: "1.6.40".to_string(),
+            at: chrono::DateTime::from_timestamp(1_763_200_000, 0).unwrap(),
+            download_ms: Some(41_000),
+            bytes: Some(140_512_345),
+            reused_package: false,
+            wait_ms: Some(59_000),
+            install_ms: Some(5_000),
+            boot_ms: None,
+            boots: 1,
+            blocked: Blocked {
+                local_turn: 12,
+                lent_device: 3,
+                ..Blocked::default()
+            },
+            error_kind: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn an_applied_update_is_filed_under_the_new_version() {
+        let mut applied = outcome(UpdateResult::Applied);
+        applied.running = "1.6.41".to_string();
+        applied.boot_ms = Some(70_000);
+        let report = update_report(&applied, "macos", "0123456789ab");
+        assert_eq!(report.kind, Kind::Update);
+        assert!(!report.fatal);
+        assert_eq!(report.version, "1.6.41");
+        assert_eq!(report.at, 1_763_200_000);
+        assert_eq!(report.os, "macos");
+        assert_eq!(
+            report.fingerprint,
+            ["desktop-native", "update", "applied", "-"]
+        );
+        assert_eq!(report.tags["update_result"], "applied");
+        assert_eq!(report.tags["update_from"], "1.6.40");
+        assert_eq!(report.tags["update_to"], "1.6.41");
+        assert_eq!(report.tags["update_trigger"], "auto");
+        assert_eq!(report.tags["update_how"], "idle");
+        assert_eq!(report.tags["install"], "0123456789ab");
+        let d = &report.details;
+        assert_eq!(d["download_ms"], 41_000);
+        assert_eq!(d["bytes"], 140_512_345);
+        assert_eq!(d["reused_package"], false);
+        assert_eq!(d["wait_ms"], 59_000);
+        assert_eq!(d["install_ms"], 5_000);
+        assert_eq!(d["boot_ms"], 70_000);
+        assert_eq!(d["boots"], 1);
+        assert_eq!(d["blocked"]["local_turn"], 12);
+        assert_eq!(d["blocked"]["lent_device"], 3);
+        assert_eq!(d["blocked"]["unknown"], 0);
+        assert!(d.get("error_kind").is_none());
+        assert!(d.get("error").is_none());
+    }
+
+    #[test]
+    fn a_failed_update_carries_its_scrubbed_error_under_the_running_version() {
+        let mut failed = outcome(UpdateResult::InstallFailed);
+        failed.how = None;
+        failed.error_kind = Some(ErrorKind::PermissionDenied);
+        failed.error = Some(
+            "failed to move /Users/someone/Downloads/dodoer.app: Permission denied (os error 13)"
+                .to_string(),
+        );
+        let report = update_report(&failed, "macos", "0123456789ab");
+        assert_eq!(report.version, "1.6.40");
+        assert_eq!(
+            report.fingerprint,
+            [
+                "desktop-native",
+                "update",
+                "install_failed",
+                "permission_denied"
+            ]
+        );
+        assert!(!report.tags.contains_key("update_how"));
+        assert_eq!(report.details["error_kind"], "permission_denied");
+        let error = report.details["error"].as_str().unwrap();
+        assert!(!error.contains("someone"), "{error}");
+        assert!(!report.message.contains("someone"), "{}", report.message);
+        assert!(
+            report.message.contains("install_failed"),
+            "{}",
+            report.message
+        );
+        // The tags of the other kinds stay the four every report has.
+        assert!(panic_report(
+            &PanicRecord {
+                run: "r".to_string(),
+                version: "1.6.40".to_string(),
+                at: 1,
+                thread: "main".to_string(),
+                main_thread: true,
+                location: "src/lib.rs:1:1".to_string(),
+                message: "boom".to_string(),
+            },
+            true,
+            "macos"
+        )
+        .tags
+        .is_empty());
+    }
+
+    #[test]
+    fn the_install_tag_is_a_short_hash_of_the_device_id() {
+        let tag = install_tag("0123456789abcdef0123456789abcdef");
+        assert_eq!(tag.len(), 12);
+        assert!(tag.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert!(!"0123456789abcdef0123456789abcdef".contains(&tag));
+        assert_eq!(tag, install_tag("0123456789abcdef0123456789abcdef"));
+        assert_ne!(tag, install_tag("fedcba9876543210fedcba9876543210"));
+    }
 
     fn run(run: &str, phase: Phase) -> Record {
         Record::Run(RunMarker {

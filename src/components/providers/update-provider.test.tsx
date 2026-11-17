@@ -1416,6 +1416,11 @@ describe("UpdateProvider — automatic download (desktop)", () => {
       await vi.advanceTimersByTimeAsync(9000)
     })
     expect(performCalls()).toBe(1)
+    // Cowork fork: marked as started on its own, for the update journal.
+    const perform = call.mock.calls.find(
+      ([e]) => e === "perform_app_update"
+    ) as unknown[] | undefined
+    expect(perform?.[1]).toEqual({ trigger: "auto" })
     expect(screen.getByTestId("lifecycle").textContent).toBe("downloading")
     expect(screen.getByTestId("available").textContent).toBe("1.1.24")
   })

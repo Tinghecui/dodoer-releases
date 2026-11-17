@@ -1409,6 +1409,7 @@ mod tests {
                 assistant_id: None,
                 source: None,
                 assistant_name: None,
+                interrupted_at: None,
                 tag_ids: Vec::new(),
             },
             turns,

@@ -50,6 +50,21 @@ pub enum AppUpdateLifecycle {
     Error,
 }
 
+impl AppUpdateLifecycle {
+    /// The wire name (`snake_case`, as serialized), for the log lines of
+    /// `commands::app_update`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AppUpdateLifecycle::Idle => "idle",
+            AppUpdateLifecycle::Downloading => "downloading",
+            AppUpdateLifecycle::Installing => "installing",
+            AppUpdateLifecycle::ReadyToRestart => "ready_to_restart",
+            AppUpdateLifecycle::Restarting => "restarting",
+            AppUpdateLifecycle::Error => "error",
+        }
+    }
+}
+
 /// Full update snapshot, emitted on every transition and returned by the
 /// snapshot query. A flat struct (rather than a tagged enum) keeps the
 /// TypeScript mirror a plain discriminated-by-`status` object and dodges
@@ -385,6 +400,23 @@ impl ProgressEmitter {
 mod tests {
     use super::*;
     use crate::web::event_bridge::EventEmitter;
+
+    #[test]
+    fn lifecycle_names_match_the_wire() {
+        for status in [
+            AppUpdateLifecycle::Idle,
+            AppUpdateLifecycle::Downloading,
+            AppUpdateLifecycle::Installing,
+            AppUpdateLifecycle::ReadyToRestart,
+            AppUpdateLifecycle::Restarting,
+            AppUpdateLifecycle::Error,
+        ] {
+            assert_eq!(
+                serde_json::to_value(status).unwrap(),
+                serde_json::Value::String(status.as_str().to_string())
+            );
+        }
+    }
 
     #[test]
     fn try_begin_starts_once_then_attaches() {

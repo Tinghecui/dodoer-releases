@@ -45,6 +45,14 @@ pub fn release(version: &str) -> String {
 }
 
 fn level(report: &Report) -> &'static str {
+    if report.kind == Kind::Update {
+        // Cowork fork: a successful update is a record, not a problem.
+        return match report.tags.get("update_result").map(String::as_str) {
+            Some("applied") => "info",
+            Some("waiting_long") => "warning",
+            _ => "error",
+        };
+    }
     match (report.kind, report.fatal) {
         (_, true) => "fatal",
         (Kind::Panic, false) => "error",
@@ -57,6 +65,7 @@ fn exception_type(kind: Kind) -> &'static str {
         Kind::Panic => "Panic",
         Kind::Hang => "Hang",
         Kind::UncleanExit => "UncleanExit",
+        Kind::Update => "Update",
     }
 }
 
@@ -90,6 +99,14 @@ pub fn event(report: &Report, target: &Target) -> Value {
             "desktop": report.details,
         },
     });
+    // The tags of this kind (only update reports have any) go beside the
+    // fixed four, which they never replace.
+    if let Some(tags) = event["tags"].as_object_mut() {
+        for (key, value) in &report.tags {
+            tags.entry(key.clone())
+                .or_insert_with(|| Value::String(value.clone()));
+        }
+    }
     if !target.user.is_empty() {
         event["user"] = json!({ "id": target.user });
     }
@@ -135,6 +152,7 @@ mod tests {
             message: "the tokio thread did not answer for 45 s".to_string(),
             fingerprint: vec!["desktop-native".to_string(), "hang".to_string()],
             details,
+            tags: Default::default(),
         }
     }
 
@@ -186,6 +204,41 @@ mod tests {
             ..target()
         };
         assert!(super::event(&report(), &anonymous).get("user").is_none());
+    }
+
+    #[test]
+    fn an_update_report_carries_its_tags_and_its_level() {
+        let mut update = report();
+        update.kind = Kind::Update;
+        update.fatal = false;
+        update.version = "1.6.41".to_string();
+        for (result, level) in [
+            ("applied", "info"),
+            ("waiting_long", "warning"),
+            ("download_failed", "error"),
+            ("install_failed", "error"),
+            ("boot_unconfirmed", "error"),
+        ] {
+            update.tags = [
+                ("update_result".to_string(), result.to_string()),
+                ("update_to".to_string(), "1.6.41".to_string()),
+                ("install".to_string(), "0123456789ab".to_string()),
+            ]
+            .into_iter()
+            .collect();
+            let event = event(&update, &target());
+            assert_eq!(event["level"], level, "{result}");
+            assert_eq!(event["tags"]["update_result"], result);
+            assert_eq!(event["tags"]["update_to"], "1.6.41");
+            assert_eq!(event["tags"]["install"], "0123456789ab");
+            assert_eq!(event["tags"]["kind"], "update");
+            assert_eq!(event["tags"]["surface"], "desktop-native");
+            assert_eq!(event["release"], "dodoer-desktop@1.6.41");
+            assert_eq!(event["exception"]["values"][0]["type"], "Update");
+        }
+        // Other kinds carry the four fixed tags only.
+        let tags = event(&report(), &target())["tags"].clone();
+        assert_eq!(tags.as_object().unwrap().len(), 4);
     }
 
     #[test]

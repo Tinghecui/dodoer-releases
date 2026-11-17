@@ -338,6 +338,7 @@ async fn upsert_loop_row(
             assistant_id: Set(None),
             assistant_snapshot: Set(None),
             source: Set(None),
+            interrupted_at: Set(None),
         };
         let row = sea_orm::ActiveModelTrait::insert(inserted, conn)
             .await

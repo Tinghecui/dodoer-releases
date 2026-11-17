@@ -49,7 +49,10 @@ pub mod cowork;
 // Cowork fork: the portal's `codeg://cowork/connect` link (desktop side).
 pub mod cowork_connect;
 // Cowork fork: the desktop app's own crashes and hangs (docs/telemetry.md §5.11).
-#[cfg(feature = "tauri-runtime")]
+// Desktop only; compiled for the tests in every mode (its reports and their
+// queue are plain code the server's test run covers).
+#[cfg(any(feature = "tauri-runtime", test))]
+#[cfg_attr(not(feature = "tauri-runtime"), allow(dead_code))]
 pub mod crash_report;
 pub mod db;
 pub mod deep_link;
@@ -1034,6 +1037,10 @@ mod tauri_app {
                 // Cowork fork: crash and hang reports, when switched on
                 // (`crash_report`).
                 crate::crash_report::start(app.handle());
+                // Cowork fork: the update journal — this boot of a version
+                // being put in place is counted, and what an update ended
+                // with is reported (`commands::app_update`).
+                app_update_commands::start_journal(app.handle(), &effective_data_dir);
 
                 // The `codeg-cli` startup put first on PATH (`cli_run::shim`),
                 // written off the way of the window.
@@ -1453,6 +1460,9 @@ mod tauri_app {
                     }
                 }
                 workspace_windows::begin_restore(app.handle(), restore);
+                // Cowork fork: the daemon and the main window are up; 60 s more
+                // and an update that put this version in place is confirmed.
+                app_update_commands::confirm_when_running(mode);
                 crate::deep_link::start_cowork_connect_links(app.handle(), &startup_urls);
 
                 #[cfg(all(

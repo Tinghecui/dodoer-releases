@@ -391,7 +391,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       if (status !== "idle" && status !== "error") return
       if (readDismissedVersion() === version) return
       try {
-        applyState(await startAppUpdate())
+        applyState(await startAppUpdate("auto"))
       } catch (err) {
         console.debug("[Update] background download did not start:", err)
       }

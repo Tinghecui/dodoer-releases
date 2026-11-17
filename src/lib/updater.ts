@@ -145,12 +145,18 @@ export function subscribeAppUpdateState(
   )
 }
 
-/** Begin (or attach to) the download+install. Returns immediately with the
- * current snapshot; progress arrives via {@link subscribeAppUpdateState}. The
+/** Begin (or attach to) the download+install. `"auto"` marks one the window
+ * started on its own (the background download), not the user. Returns
+ * immediately with the current snapshot; progress arrives via {@link subscribeAppUpdateState}. The
  * download runs detached in the backend, so it is not bound to this call's
  * lifetime. */
-export function startAppUpdate(): Promise<AppUpdateState> {
-  return updateTransport().call<AppUpdateState>("perform_app_update")
+export function startAppUpdate(trigger?: "auto"): Promise<AppUpdateState> {
+  // Cowork fork: the desktop backend's update journal reports a failed
+  // download only when the window started it on its own (`trigger: "auto"`);
+  // one the user clicked shows its error right there.
+  return trigger
+    ? updateTransport().call<AppUpdateState>("perform_app_update", { trigger })
+    : updateTransport().call<AppUpdateState>("perform_app_update")
 }
 
 /** Where the desktop app's "roll back" goes: the release before the running

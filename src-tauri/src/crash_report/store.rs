@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::report::Report;
+use super::report::{Kind, Report};
 
 /// Finished reports waiting to be sent, one file each.
 const PENDING_DIR: &str = "pending";
@@ -18,6 +18,9 @@ const STATE_FILE: &str = "state.json";
 
 /// At most this many reports wait to be sent; the oldest go first.
 pub const MAX_PENDING: usize = 5;
+/// Update reports (`Kind::Update`) wait apart: at most this many, the
+/// oldest go first, and they never take the place of a crash report.
+pub const MAX_PENDING_UPDATES: usize = 3;
 /// A report not sent within this long is dropped.
 pub const PENDING_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
 
@@ -221,19 +224,25 @@ pub fn push_pending(dir: &Path, report: &Report, now: i64) -> io::Result<()> {
 }
 
 /// Drop reports older than [`PENDING_MAX_AGE_SECS`], then the oldest beyond
-/// [`MAX_PENDING`].
+/// [`MAX_PENDING`] crash reports and, apart from those, the oldest beyond
+/// [`MAX_PENDING_UPDATES`] update reports.
 pub fn prune_pending(dir: &Path, now: i64) {
-    let mut kept = Vec::new();
+    let mut crashes = Vec::new();
+    let mut updates = Vec::new();
     for (path, report) in list_pending(dir) {
         if now - report.at > PENDING_MAX_AGE_SECS {
             let _ = fs::remove_file(&path);
+        } else if report.kind == Kind::Update {
+            updates.push(path);
         } else {
-            kept.push(path);
+            crashes.push(path);
         }
     }
-    let excess = kept.len().saturating_sub(MAX_PENDING);
-    for path in kept.iter().take(excess) {
-        let _ = fs::remove_file(path);
+    for (kept, max) in [(crashes, MAX_PENDING), (updates, MAX_PENDING_UPDATES)] {
+        let excess = kept.len().saturating_sub(max);
+        for path in kept.iter().take(excess) {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
@@ -270,7 +279,6 @@ pub fn clear(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crash_report::report::Kind;
 
     fn report(id: &str, at: i64) -> Report {
         Report {
@@ -283,6 +291,7 @@ mod tests {
             message: "the app ended".to_string(),
             fingerprint: vec!["desktop-native".to_string()],
             details: serde_json::Map::new(),
+            tags: Default::default(),
         }
     }
 
@@ -348,6 +357,43 @@ mod tests {
         // A week later, all of them are too old.
         prune_pending(dir.path(), now + PENDING_MAX_AGE_SECS + 1);
         assert!(list_pending(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn update_reports_and_crash_reports_do_not_crowd_each_other_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = 1_000_000_000;
+        for n in 0..5 {
+            push_pending(
+                dir.path(),
+                &report(&format!("crash{n}"), now - 100 + n),
+                now,
+            )
+            .unwrap();
+        }
+        for n in 0..4 {
+            let mut update = report(&format!("update{n}"), now - 50 + n);
+            update.kind = Kind::Update;
+            push_pending(dir.path(), &update, now).unwrap();
+        }
+        let left: Vec<String> = list_pending(dir.path())
+            .into_iter()
+            .map(|(_, r)| r.event_id)
+            .collect();
+        assert_eq!(
+            left,
+            ["crash0", "crash1", "crash2", "crash3", "crash4", "update1", "update2", "update3"]
+        );
+        // A sixth crash report pushes out the oldest crash report, not an update.
+        push_pending(dir.path(), &report("crash5", now - 10), now).unwrap();
+        let left: Vec<String> = list_pending(dir.path())
+            .into_iter()
+            .map(|(_, r)| r.event_id)
+            .collect();
+        assert_eq!(
+            left,
+            ["crash1", "crash2", "crash3", "crash4", "update1", "update2", "update3", "crash5"]
+        );
     }
 
     #[test]

@@ -534,6 +534,17 @@ describe("update commands (Cowork fork: desktop windows update the app)", () => 
     expect(call).not.toHaveBeenCalled()
   })
 
+  it("a download the window started on its own says so (Cowork fork)", async () => {
+    desktop = true
+    shellCall.mockResolvedValue({ status: "idle" })
+    await startAppUpdate("auto")
+    await startAppUpdate()
+    expect(shellCall.mock.calls).toEqual([
+      ["perform_app_update", { trigger: "auto" }],
+      ["perform_app_update"],
+    ])
+  })
+
   it("the browser drives the server", async () => {
     desktop = false
     call.mockResolvedValue({ status: "idle" })

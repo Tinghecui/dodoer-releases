@@ -2866,6 +2866,7 @@ impl ConnectionManager {
                         assistant_id: Set(None),
                         assistant_snapshot: Set(None),
                         source: Set(source),
+                        interrupted_at: Set(None),
                     };
                     let inserted = sibling.insert(txn).await?;
                     // The sibling keeps the pre-fork history under the

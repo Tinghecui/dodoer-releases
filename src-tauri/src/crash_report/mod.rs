@@ -25,8 +25,10 @@
 mod envelope;
 mod macos_reports;
 mod report;
+#[cfg(feature = "tauri-runtime")]
 mod send;
 mod store;
+#[cfg(feature = "tauri-runtime")]
 mod watchdog;
 
 use std::panic::PanicHookInfo;
@@ -38,6 +40,7 @@ use std::thread::ThreadId;
 use serde::{Deserialize, Serialize};
 
 use self::store::{HangMarker, PanicRecord, Phase, Record, RecoveredHang, RunMarker};
+#[cfg(feature = "tauri-runtime")]
 use crate::app_error::AppCommandError;
 
 /// Under the data directory. A debug build keeps its own, so a `cargo run`
@@ -133,6 +136,7 @@ fn log_write_error(what: &str, result: std::io::Result<()>) {
 /// managed. Not earlier: the single-instance plugin ends a second launch
 /// before `setup`, and that launch would take the running app's marker for one
 /// left by a crash.
+#[cfg(feature = "tauri-runtime")]
 pub fn start(app: &tauri::AppHandle) {
     let run = Run {
         id: format!(
@@ -159,9 +163,34 @@ pub fn start(app: &tauri::AppHandle) {
     }
     write_run_marker(&Phase::default());
     watchdog::spawn(app.clone());
+    // Kept so a report queued later in this run (`push_update`) can start
+    // the sending when it is not running.
+    send::remember(app);
     if on {
         send::spawn(app.clone());
     }
+}
+
+/// Cowork fork: queue the report of one software update's outcome
+/// (`update::journal`) and have it sent in this run. Nothing is kept while
+/// the switch is off, nor once the quit has finished.
+pub fn push_update(outcome: &crate::update::journal::Outcome) {
+    let install = crate::host_device::device_id(&crate::paths::codeg_home_dir())
+        .map(|id| report::install_tag(&id))
+        .unwrap_or_else(|| "unknown".to_string());
+    let queued = with_files(|run| {
+        let report = report::update_report(outcome, std::env::consts::OS, &install);
+        let result = store::push_pending(&run.dir, &report, now());
+        let queued = result.is_ok();
+        log_write_error("update report", result);
+        queued
+    });
+    #[cfg(feature = "tauri-runtime")]
+    if queued == Some(true) {
+        send::wake();
+    }
+    #[cfg(not(feature = "tauri-runtime"))]
+    let _ = queued;
 }
 
 /// The quit has begun (`shut_down`).
@@ -343,6 +372,7 @@ pub struct CrashReportSettings {
     pub enabled: bool,
 }
 
+#[cfg(feature = "tauri-runtime")]
 #[tauri::command]
 pub async fn get_crash_report_settings() -> Result<CrashReportSettings, AppCommandError> {
     Ok(CrashReportSettings {
@@ -353,6 +383,7 @@ pub async fn get_crash_report_settings() -> Result<CrashReportSettings, AppComma
 /// Turn the switch on or off. Off forgets everything kept so far. The app's
 /// own daemon reads it when it starts (`local_daemon::ChildSpec`), so for it
 /// and the local windows the change takes effect at the next start.
+#[cfg(feature = "tauri-runtime")]
 #[tauri::command]
 pub async fn update_crash_report_settings(
     settings: CrashReportSettings,
@@ -368,6 +399,7 @@ pub async fn update_crash_report_settings(
 }
 
 /// The watchdog writes the running marker on its next tick.
+#[cfg(feature = "tauri-runtime")]
 fn set_enabled(on: bool) {
     let Some(run) = RUN.get() else {
         return;

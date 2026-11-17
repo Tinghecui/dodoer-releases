@@ -508,7 +508,8 @@ async fn prompting_connections(cm: &crate::acp::manager::ConnectionManager) -> V
 }
 
 /// Cowork 升级 / `systemctl restart codeg@…` 时 systemd 发 SIGTERM。上游的 server 直接退出，正在跑的 turn 没头没尾地断在
-/// transcript 里，重连后要靠事后收敛。这里：先对每个 `prompting` 的连接发 cancel（和用户点「停止」一样，行记成 cancelled），
+/// transcript 里，重连后要靠事后收敛。这里：先把本进程连接上还在跑的回合标成被打断（`cancelled` 并写上 `interrupted_at`，
+/// 界面上和用户点「停止」分得开），再对每个 `prompting` 的连接发 cancel（这时 cancel 的 CAS 落空，不会再记成普通的「已取消」），
 /// 等 agent 应答最多 5 秒，再 `disconnect_all`（它自带 500ms 宽限和兜底 kill 进程树），最后触发 WebSocket 任务退出、
 /// axum 停收新连接。给 `axum::serve(...).with_graceful_shutdown`。
 /// 兜底：触发后 8 秒还没退就 `process::exit(0)`（systemd 单元那边另有 TimeoutStopSec）。

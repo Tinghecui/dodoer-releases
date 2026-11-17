@@ -8345,5 +8345,9 @@
   "JennyFork": {
     "waitingToSend": "Aguardando {agent} ficar pronto — as mensagens na fila serão enviadas automaticamente.",
     "selectionUnavailable": "{name}: sua escolha salva não está disponível agora. Enviando com {current}."
+  },
+  "SettingsLoadError": {
+    "title": "Falha ao carregar",
+    "retry": "Tentar novamente"
   }
 }

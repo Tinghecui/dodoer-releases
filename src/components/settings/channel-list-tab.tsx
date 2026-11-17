@@ -57,6 +57,7 @@ import {
 import { AddChatChannelDialog } from "./add-chat-channel-dialog"
 import { EditChatChannelDialog } from "./edit-chat-channel-dialog"
 import { WeixinQrcodeDialog } from "./weixin-qrcode-dialog"
+import { SettingsLoadError } from "./settings-load-error"
 
 /**
  * Cowork fork (#366): 微信通道连接失败时，是不是该弹扫码框：只有没设 token
@@ -74,6 +75,8 @@ export function ChannelListTab() {
   const [channels, setChannels] = useState<ChatChannelInfo[]>([])
   const [statuses, setStatuses] = useState<ChannelStatusInfo[]>([])
   const [loading, setLoading] = useState(true)
+  // 列表没读出来：显示错误和重试，不显示「尚未配置」（#438）
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<ChatChannelInfo | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<ChatChannelInfo | null>(null)
@@ -88,12 +91,13 @@ export function ChannelListTab() {
       ])
       setChannels(chs)
       setStatuses(sts)
-    } catch {
-      toast.error(t("loadFailed"))
+      setLoadError(null)
+    } catch (err) {
+      setLoadError(toErrorMessage(err))
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [])
 
   useEffect(() => {
     loadChannels().catch(console.error)
@@ -253,7 +257,18 @@ export function ChannelListTab() {
         </Button>
       </div>
 
-      {channels.length === 0 ? (
+      {loadError != null ? (
+        <section className="rounded-xl border bg-card">
+          <SettingsLoadError
+            title={t("loadFailed")}
+            message={loadError}
+            onRetry={() => {
+              setLoading(true)
+              void loadChannels()
+            }}
+          />
+        </section>
+      ) : channels.length === 0 ? (
         <section className="rounded-xl border bg-card p-8 text-center">
           <MessageCircle className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
           <p className="text-sm text-muted-foreground">{t("noChannels")}</p>

@@ -32,13 +32,17 @@ import {
   type ModelProviderInfo,
 } from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
+import { toErrorMessage } from "@/lib/app-error"
 import { AddModelProviderDialog } from "./add-model-provider-dialog"
 import { EditModelProviderDialog } from "./edit-model-provider-dialog"
+import { SettingsLoadError } from "./settings-load-error"
 
 export function ModelProviderSettings() {
   const t = useTranslations("ModelProviderSettings")
   const [providers, setProviders] = useState<ModelProviderInfo[]>([])
   const [loading, setLoading] = useState(true)
+  // 列表没读出来：显示错误和重试，不显示「尚未配置」（#438）
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [filter, setFilter] = useState<AgentType | null>(null)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<ModelProviderInfo | null>(null)
@@ -50,12 +54,13 @@ export function ModelProviderSettings() {
     try {
       const rows = await listModelProviders()
       setProviders(rows)
-    } catch {
-      toast.error(t("loadFailed"))
+      setLoadError(null)
+    } catch (err) {
+      setLoadError(toErrorMessage(err))
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [])
 
   useEffect(() => {
     loadProviders().catch(console.error)
@@ -136,6 +141,15 @@ export function ModelProviderSettings() {
           <div className="flex items-center justify-center py-8">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           </div>
+        ) : loadError != null ? (
+          <SettingsLoadError
+            title={t("loadFailed")}
+            message={loadError}
+            onRetry={() => {
+              setLoading(true)
+              void loadProviders()
+            }}
+          />
         ) : filteredProviders.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
             <Server className="h-8 w-8 mb-2 opacity-40" />

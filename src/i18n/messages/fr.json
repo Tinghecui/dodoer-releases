@@ -8345,5 +8345,9 @@
   "JennyFork": {
     "waitingToSend": "En attente de {agent} — les messages en file seront envoyés automatiquement.",
     "selectionUnavailable": "{name} : votre choix enregistré n'est plus disponible. Envoi avec {current}."
+  },
+  "SettingsLoadError": {
+    "title": "Échec du chargement",
+    "retry": "Réessayer"
   }
 }

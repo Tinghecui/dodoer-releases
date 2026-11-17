@@ -8345,5 +8345,9 @@
   "JennyFork": {
     "waitingToSend": "Warte, bis {agent} bereit ist – Nachrichten in der Warteschlange werden automatisch gesendet.",
     "selectionUnavailable": "{name}: Deine gespeicherte Auswahl ist derzeit nicht verfügbar. Gesendet wird mit {current}."
+  },
+  "SettingsLoadError": {
+    "title": "Laden fehlgeschlagen",
+    "retry": "Erneut versuchen"
   }
 }

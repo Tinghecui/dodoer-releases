@@ -52,6 +52,7 @@ import {
 import { toLocalizedErrorMessage } from "@/lib/app-error"
 import { normalizeMcpType } from "@/lib/mcp-types"
 import { cn } from "@/lib/utils"
+import { SettingsLoadError } from "./settings-load-error"
 import type {
   LocalMcpServer,
   LocalMcpSourceWarning,
@@ -1202,12 +1203,6 @@ export function McpSettings() {
                 />
               </div>
 
-              {loadingError ? (
-                <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-                  {t("local.loadFailed", { message: loadingError })}
-                </div>
-              ) : null}
-
               {/* One agent's config being unreadable hides only that agent's
                   servers — the rest of the list below is still real, so this
                   is a warning beside it rather than an error instead of it. */}
@@ -1224,7 +1219,13 @@ export function McpSettings() {
               ))}
 
               <div className="flex-1 min-h-0 overflow-auto space-y-1">
-                {filteredLocalServers.length === 0 ? (
+                {loadingError != null ? (
+                  // 没扫出来就只说失败和重试，不说「未检测到」（#438）
+                  <SettingsLoadError
+                    message={loadingError}
+                    onRetry={() => void loadInitial()}
+                  />
+                ) : filteredLocalServers.length === 0 ? (
                   <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
                     {t("local.empty")}
                   </div>

@@ -43,6 +43,7 @@ import {
 } from "@/lib/api"
 import type { QuickMessage } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
+import { SettingsLoadError } from "./settings-load-error"
 
 const LEFT_MIN_WIDTH = 280
 const RIGHT_MIN_WIDTH = 420
@@ -328,6 +329,30 @@ export function QuickMessagesSettings() {
     )
   }
 
+  const header = (
+    <div className="flex items-center justify-between gap-3 pb-4">
+      <div>
+        <h2 className="text-base font-semibold">{t("title")}</h2>
+        <p className="text-xs text-muted-foreground mt-1">{t("description")}</p>
+      </div>
+    </div>
+  )
+
+  if (loadError != null) {
+    // 没读出来就只说失败和重试，不说「暂无快捷消息」（#438）
+    return (
+      <div className="h-full flex flex-col p-3 md:p-4">
+        {header}
+        <div className="rounded-lg border bg-card">
+          <SettingsLoadError
+            message={loadError}
+            onRetry={() => void refresh()}
+          />
+        </div>
+      </div>
+    )
+  }
+
   const deleteTargetMessage =
     deleteTargetId !== null
       ? (messages.find((m) => m.id === deleteTargetId) ?? null)
@@ -335,20 +360,7 @@ export function QuickMessagesSettings() {
 
   return (
     <div className="h-full flex flex-col p-3 md:p-4">
-      <div className="flex items-center justify-between gap-3 pb-4">
-        <div>
-          <h2 className="text-base font-semibold">{t("title")}</h2>
-          <p className="text-xs text-muted-foreground mt-1">
-            {t("description")}
-          </p>
-        </div>
-      </div>
-
-      {loadError && (
-        <div className="mb-3 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-          {loadError}
-        </div>
-      )}
+      {header}
 
       <div ref={panelContainerRef} className="flex-1 min-h-0 min-w-0">
         <ResizablePanelGroup

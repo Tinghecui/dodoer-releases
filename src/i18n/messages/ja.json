@@ -8345,5 +8345,9 @@
   "JennyFork": {
     "waitingToSend": "{agent} の準備を待っています。キューのメッセージは自動で送信されます。",
     "selectionUnavailable": "{name}：前回選択した値は現在使用できません。{current} で送信します。"
+  },
+  "SettingsLoadError": {
+    "title": "読み込みに失敗しました",
+    "retry": "再試行"
   }
 }

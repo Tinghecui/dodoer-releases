@@ -21,6 +21,7 @@ import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import type { AcpAgentInfo, ExpertLinkState, ExpertListItem } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 import { getExpertIcon, pickLocalized } from "@/lib/expert-presentation"
+import { SettingsLoadError } from "./settings-load-error"
 
 const CATEGORY_SORT: Record<string, number> = {
   discovery: 1,
@@ -166,13 +167,15 @@ export function ExpertsBody({
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {loadError && (
-        <div className="mb-3 shrink-0 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-          {loadError}
+      {loadError != null ? (
+        // 没读出来就只说失败和重试，不说「没有可用的专家」（#438）
+        <div className="flex-1 min-h-0 rounded-lg border bg-card flex items-center justify-center">
+          <SettingsLoadError
+            message={loadError}
+            onRetry={() => void refresh()}
+          />
         </div>
-      )}
-
-      {experts.length === 0 ? (
+      ) : experts.length === 0 ? (
         <div className="flex-1 min-h-0 rounded-lg border bg-card flex items-center justify-center text-sm text-muted-foreground">
           {t("emptyExperts")}
         </div>

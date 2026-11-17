@@ -8345,5 +8345,9 @@
   "JennyFork": {
     "waitingToSend": "正在等待 {agent} 就緒，排隊的訊息會自動傳送。",
     "selectionUnavailable": "{name}：你上次選擇的值現在不可用，本次使用 {current} 傳送。"
+  },
+  "SettingsLoadError": {
+    "title": "載入失敗",
+    "retry": "重試"
   }
 }

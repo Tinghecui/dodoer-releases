@@ -71,6 +71,7 @@ import type {
 } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 import { joinFsPath } from "@/lib/path-utils"
+import { SettingsLoadError } from "./settings-load-error"
 
 type SkillsTranslator = (
   key: string,
@@ -389,10 +390,24 @@ export function SkillsSettings() {
       )
 
       const supported = new Set<AgentType>()
+      let firstFailure: unknown = undefined
+      let failed = false
       for (const check of supportChecks) {
-        if (check.status !== "fulfilled") continue
+        if (check.status !== "fulfilled") {
+          if (!failed) firstFailure = check.reason
+          failed = true
+          continue
+        }
         if (!check.value) continue
         supported.add(check.value)
+      }
+
+      // 探测请求失败不等于「不支持」：一个能管的都没探出来、又有失败的，
+      // 算加载失败，不显示「没有可管理 Skills 的 Agent」（#438）。
+      if (failed && supported.size === 0) {
+        setLoadingError(toErrorMessage(firstFailure))
+        setAgents([])
+        return
       }
 
       // A pi pointed at a custom PI_CODING_AGENT_DIR isn't managed by the
@@ -749,13 +764,14 @@ export function SkillsSettings() {
         </div>
       </div>
 
-      {loadingError && (
-        <div className="mb-3 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-          {loadingError}
+      {loadingError != null ? (
+        <div className="rounded-lg border bg-card">
+          <SettingsLoadError
+            message={loadingError}
+            onRetry={() => void refreshAgents()}
+          />
         </div>
-      )}
-
-      {sortedAgents.length === 0 ? (
+      ) : sortedAgents.length === 0 ? (
         <div className="h-full rounded-lg border bg-card flex items-center justify-center text-sm text-muted-foreground">
           {t("emptyNoManageableAgents")}
         </div>

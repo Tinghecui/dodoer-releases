@@ -8345,5 +8345,9 @@
   "JennyFork": {
     "waitingToSend": "Waiting for {agent} to be ready — queued messages will send automatically.",
     "selectionUnavailable": "{name}: your saved choice is not available now. Sending with {current}."
+  },
+  "SettingsLoadError": {
+    "title": "Failed to load",
+    "retry": "Retry"
   }
 }

@@ -244,20 +244,30 @@ export function SystemNetworkSettings() {
     }).format(lastCheckedAt)
   }, [lastCheckedAt, locale])
 
-  const formattedUpdateDate = useMemo(() => {
-    if (!availableUpdate?.date) return null
+  // 已经下好、等重启时，重启装的是后端那一版（updateState.version）：桌面版
+  // 重启后用的可能是存着的旧一点的包，之后查到的更新的版本不是要装的那一版，
+  // 它的版本号、日期和更新说明都不显示（和状态栏的更新弹层一致）。
+  const offeredRelease =
+    updateReady &&
+    updateState.version &&
+    availableUpdate?.version !== updateState.version
+      ? null
+      : availableUpdate
 
-    const parsed = new Date(availableUpdate.date)
-    if (Number.isNaN(parsed.getTime())) return availableUpdate.date
+  const formattedUpdateDate = useMemo(() => {
+    if (!offeredRelease?.date) return null
+
+    const parsed = new Date(offeredRelease.date)
+    if (Number.isNaN(parsed.getTime())) return offeredRelease.date
 
     return new Intl.DateTimeFormat(locale, {
       dateStyle: "medium",
     }).format(parsed)
-  }, [availableUpdate?.date, locale])
+  }, [offeredRelease?.date, locale])
 
   const updateNotes = useMemo(
-    () => availableUpdate?.body?.trim() ?? "",
-    [availableUpdate?.body]
+    () => offeredRelease?.body?.trim() ?? "",
+    [offeredRelease?.body]
   )
 
   const updateStatusMessage = useMemo(() => {
@@ -704,11 +714,11 @@ export function SystemNetworkSettings() {
                 </p>
               )}
 
-            {availableUpdate && (
+            {offeredRelease && (
               <div className="space-y-2 pt-2 border-t border-border/70">
                 <div className="flex items-center justify-between gap-3">
                   <span className="font-medium">
-                    {t("upgradableVersion")}：v{availableUpdate.version}
+                    {t("upgradableVersion")}：v{offeredRelease.version}
                   </span>
                   {formattedUpdateDate && (
                     <span className="text-muted-foreground text-2xs">

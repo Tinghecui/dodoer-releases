@@ -225,6 +225,21 @@ describe("StatusBarUpdate — popover", () => {
     expect(restart).toHaveBeenCalledTimes(1)
   })
 
+  it("names the staged version, not a newer release found since", async () => {
+    // 桌面版重启后用的是存着的 0.21.8 的包，之后查到了 0.21.9：点重启装的是
+    // 0.21.8，弹层上写的版本和更新说明都不能是 0.21.9 的。
+    renderWith({
+      available: RELEASE,
+      state: { seq: 4, status: "ready_to_restart", version: "0.21.8" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /Restart to update/ }))
+
+    expect(await screen.findByText("v0.21.7 → v0.21.8")).toBeVisible()
+    expect(screen.queryByText("v0.21.7 → v0.21.9")).toBeNull()
+    expect(screen.queryByTestId("notes")).toBeNull()
+    expect(screen.queryByText(/Jul 24, 2026/)).toBeNull()
+  })
+
   it("waits for a restarting server to come back", async () => {
     renderWith({ state: { seq: 6, status: "restarting" }, restartCountdown: 0 })
     fireEvent.click(screen.getByRole("button", { name: /Restarting/ }))

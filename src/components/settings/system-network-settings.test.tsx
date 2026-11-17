@@ -542,6 +542,53 @@ describe("SystemNetworkSettings — update source outage", () => {
     ).not.toBeInTheDocument()
   })
 
+  it("names the staged version, not a newer release found since", async () => {
+    // 重启后用的是存着的 0.17.0，之后又查到了 0.17.1：点「重启以更新」装的
+    // 是 0.17.0，所以页面上不该出现 0.17.1 的版本号和更新说明。
+    mockGetProxy.mockResolvedValue({ enabled: false, proxy_url: null })
+    call.mockImplementation(
+      liveServerCalls(
+        { seq: 5, status: "ready_to_restart", version: "0.17.0" },
+        {
+          update: {
+            version: "0.17.1",
+            body: "Fixes in 0.17.1",
+            date: "2026-07-24",
+          },
+        }
+      )
+    )
+
+    renderWithIntl()
+
+    expect(
+      await screen.findByRole("button", { name: "Restart to update" })
+    ).toBeInTheDocument()
+    await waitFor(() =>
+      expect(
+        call.mock.calls.some(([endpoint]) => endpoint === "check_app_update")
+      ).toBe(true)
+    )
+    await act(async () => {})
+    expect(screen.queryByText(/v0\.17\.1/)).not.toBeInTheDocument()
+    expect(screen.queryByText("Fixes in 0.17.1")).not.toBeInTheDocument()
+  })
+
+  it("keeps the notes when the staged version is the one on offer", async () => {
+    mockGetProxy.mockResolvedValue({ enabled: false, proxy_url: null })
+    call.mockImplementation(
+      liveServerCalls(
+        { seq: 5, status: "ready_to_restart", version: "0.17.0" },
+        { update: { version: "0.17.0", body: "Fixes in 0.17.0", date: null } }
+      )
+    )
+
+    renderWithIntl()
+
+    expect(await screen.findByText("Fixes in 0.17.0")).toBeInTheDocument()
+    expect(screen.getByText(/v0\.17\.0/)).toBeInTheDocument()
+  })
+
   it("closes a stale rollback dialog when an upgrade becomes staged", async () => {
     // Idle to begin with, so rollback is offered and its confirm dialog opens.
     mockGetProxy.mockResolvedValue({ enabled: false, proxy_url: null })

@@ -203,11 +203,20 @@ export function StatusBarUpdate() {
 
   // ─── Popover body ────────────────────────────────────────────────────────
 
-  const targetVersion = available?.version ?? state.version
+  // 已经下好、等重启时，重启装的是后端那一版（state.version）：桌面版重启后
+  // 用的可能是存着的旧一点的包，之后查到的更新的版本不能拿来当目标，它的
+  // 日期和更新说明也不显示。
+  const release =
+    ready && state.version && available?.version !== state.version
+      ? null
+      : available
+  const targetVersion = ready
+    ? (state.version ?? available?.version)
+    : (available?.version ?? state.version)
   const formattedDate = (() => {
-    if (!available?.date) return null
-    const parsed = new Date(available.date)
-    if (Number.isNaN(parsed.getTime())) return available.date
+    if (!release?.date) return null
+    const parsed = new Date(release.date)
+    if (Number.isNaN(parsed.getTime())) return release.date
     return new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(
       parsed
     )
@@ -334,13 +343,13 @@ export function StatusBarUpdate() {
           </div>
         )}
 
-        {available && (
+        {release && (
           <div className="space-y-1.5">
             <div className="text-2xs font-medium text-muted-foreground">
               {t("releaseNotesTitle")}
             </div>
             <ReleaseNotes
-              notes={available.body}
+              notes={release.body}
               emptyLabel={t("none")}
               className="max-h-48 overflow-auto rounded-md border bg-background/70 px-2.5 py-2 text-xs"
             />

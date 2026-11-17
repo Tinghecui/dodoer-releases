@@ -38,6 +38,14 @@
 //! the new version came up. Each outcome is reported through the crash
 //! report channel (`crash_report::push_update`), and every change of the
 //! update state is a line in the log.
+//!
+//! Cowork fork: on macOS the downloaded package is also stored on disk
+//! ([`crate::update::staged`], `<data dir>/update/staged/<version>/`), so an
+//! app quit before the restart does not download it again: the next start,
+//! and the next `perform_app_update`, take it back once the plugin has
+//! restored the update from its manifest and checked the package's signature.
+//! A rollback stores nothing and removes what was stored: the older release
+//! may not know to clean it up.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -49,6 +57,7 @@ use crate::app_error::AppCommandError;
 use crate::update::journal::{self, ApplyHow, Journal, Outcome, Trigger};
 use crate::update::restart_install::{self, RestartInstallOutcome};
 use crate::update::rollback::{self, AppRollbackTarget, ReleaseSource};
+use crate::update::staged::{self, Check, Restored, Verdict};
 use crate::update::state::{
     self as update_state, AppUpdateLifecycle, AppUpdateState, AppUpdateStateHandle,
 };
@@ -200,6 +209,13 @@ pub fn confirm_when_running(mode: crate::local_daemon::Mode) {
         if let Ok(Some(Some(outcome))) = confirmed {
             tracing::info!("[update] confirmed running {}", outcome.to);
             report(&outcome);
+            // The update (or the rollback) is in place: what was stored for
+            // it has done its job.
+            if let Some(root) = STAGED_ROOT.get() {
+                if let Err(e) = staged::clear(root) {
+                    tracing::warn!("[update] could not remove the stored package: {e}");
+                }
+            }
         }
     });
 }
@@ -397,6 +413,157 @@ fn staged_install() -> MutexGuard<'static, Option<StagedInstall>> {
     STAGED_INSTALL.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// Whether the downloaded package is also stored on disk: macOS only
+/// ([`staged::stores_package`]). `cfg!`, so both paths compile everywhere.
+const STORES_PACKAGE: bool = staged::stores_package(restart_install::CURRENT_PLATFORM);
+
+/// `<data dir>/update/staged`, set by [`restore_staged_at_start`].
+static STAGED_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// The package stored on disk, when it can be used: the plugin restores the
+/// update from the stored manifest (`restore_update`, by the same rules as a
+/// check, so only one newer than this version) and the package passes its
+/// signature (`verify`). Anything else is removed ([`staged::verdict`]).
+/// Reads the package (well over 100 MB) and checks it: call it off the
+/// runtime's workers. Never goes to the network.
+fn stored_install(app: &tauri::AppHandle) -> Option<StagedInstall> {
+    if !STORES_PACKAGE {
+        return None;
+    }
+    let root = STAGED_ROOT.get()?;
+    let stored = staged::read(root)?;
+    let quit = Arc::new(AtomicBool::new(false));
+    // `Ok(None)`: the plugin restored it and found it no newer than this
+    // version.
+    let restore = match &stored.manifest {
+        Some(manifest) => updater(app, quit.clone(), None)
+            .and_then(|updater| updater.restore_update(manifest.clone()))
+            .map_err(|e| {
+                tracing::warn!("[update] the stored update could not be restored: {e}");
+            }),
+        None => Err(()),
+    };
+    let restored = match &restore {
+        Ok(Some(update)) => Restored::Newer(&update.version),
+        Ok(None) => Restored::NotNewer,
+        Err(()) => Restored::Failed,
+    };
+    let update = restore.as_ref().ok().and_then(Option::as_ref);
+    let verified = match (update, &stored.package) {
+        (Some(update), Some(bytes)) => match update.verify(bytes) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!("[update] the stored package failed its signature: {e}");
+                false
+            }
+        },
+        _ => false,
+    };
+    let verdict = staged::verdict(Check {
+        stored: &stored.version,
+        running: &app.package_info().version.to_string(),
+        manifest_read: stored.manifest.is_some(),
+        package_read: stored.package.is_some(),
+        restored,
+        verified,
+    });
+    match (verdict, restore, stored.package) {
+        (Verdict::Use, Ok(Some(update)), Some(bytes)) => Some(StagedInstall {
+            update,
+            bytes,
+            quit,
+        }),
+        (verdict, _, _) => {
+            let why = match verdict {
+                Verdict::Discard(why) => why,
+                Verdict::Use => "incomplete",
+            };
+            tracing::info!(
+                "[update] removing the stored package {} ({why})",
+                stored.version
+            );
+            if let Err(e) = staged::clear(root) {
+                tracing::warn!("[update] could not remove the stored package: {e}");
+            }
+            None
+        }
+    }
+}
+
+/// Put a package [`stored_install`] took back in place of a download: it
+/// becomes the staged install, the journal marks the package reused, and the
+/// state goes to `ReadyToRestart` for its version.
+fn use_stored_install(
+    install: StagedInstall,
+    handle: &AppUpdateStateHandle,
+    emitter: &EventEmitter,
+    trigger: Trigger,
+) {
+    let version = install.update.version.clone();
+    let bytes = install.bytes.len() as u64;
+    *staged_install() = Some(install);
+    journal_event(|j, running| {
+        j.package_reused(running, &version, trigger, bytes, now());
+        None
+    });
+    tracing::info!("[update] using the stored package {version}, no download");
+    transition(handle, || {
+        update_state::set_ready(handle, emitter, Some(version), None, None, None)
+    });
+}
+
+/// At start, from `setup` before the local daemon starts (macOS): when a
+/// package downloaded by an earlier run is stored and still good, the update
+/// is `ReadyToRestart` at once, without going to the network.
+pub fn restore_staged_at_start(app: &tauri::AppHandle, data_dir: &Path) {
+    let _ = STAGED_ROOT.set(staged::root(data_dir));
+    let Some(install) = stored_install(app) else {
+        return;
+    };
+    let handle = {
+        use tauri::Manager;
+        app.state::<AppUpdateStateHandle>().inner().clone()
+    };
+    let emitter = EventEmitter::Tauri(app.clone());
+    // Fresh from start the state is `Idle`; `try_begin` claims it the way a
+    // download would, so nothing else can be started meanwhile.
+    let (started, _) = transition(&handle, || update_state::try_begin(&handle, &emitter));
+    if started {
+        use_stored_install(install, &handle, &emitter, Trigger::Auto);
+    }
+}
+
+/// Store the downloaded package on disk ([`STORES_PACKAGE`]): a failure (a
+/// full disk, say) is a warning, the copy in memory is used all the same.
+/// Hands the bytes back.
+async fn store_package(update: &tauri_plugin_updater::Update, bytes: Vec<u8>) -> Vec<u8> {
+    let Some(root) = STAGED_ROOT.get().filter(|_| STORES_PACKAGE).cloned() else {
+        return bytes;
+    };
+    let version = update.version.clone();
+    let manifest = update.raw_json.clone();
+    let stored = tauri::async_runtime::spawn_blocking(move || {
+        let result = staged::save(&root, &version, &manifest, &bytes);
+        (bytes, version, result)
+    })
+    .await;
+    match stored {
+        Ok((bytes, version, Ok(()))) => {
+            tracing::info!("[update] stored the package {version} on disk");
+            bytes
+        }
+        Ok((bytes, version, Err(e))) => {
+            tracing::warn!("[update] could not store the package {version} on disk: {e}");
+            bytes
+        }
+        // The blocking task panicked and took the bytes with it.
+        Err(e) => {
+            tracing::warn!("[update] storing the package failed: {e}");
+            Vec::new()
+        }
+    }
+}
+
 /// `app.updater()`, except that the app quits properly before a Windows
 /// installer takes over.
 ///
@@ -448,6 +615,30 @@ async fn run_download(
     downgrade: Option<Downgrade>,
     trigger: Trigger,
 ) -> Result<(), String> {
+    // A package stored by an earlier download is used as it is, without a
+    // check or a download. Not for a rollback, which wants an older release.
+    if STORES_PACKAGE && downgrade.is_none() {
+        let reuse = app.clone();
+        if let Ok(Some(install)) =
+            tauri::async_runtime::spawn_blocking(move || stored_install(&reuse)).await
+        {
+            use_stored_install(install, &handle, &emitter, trigger);
+            return Ok(());
+        }
+    }
+    // A rollback goes to an older release, which may have no code to clean up
+    // what is stored here (one from before this was added), so it leaves
+    // nothing on disk: the newer package stored before is removed, and the
+    // older one is not stored ([`staged::stores_download`]).
+    if STORES_PACKAGE && downgrade.is_some() {
+        if let Some(root) = STAGED_ROOT.get().cloned() {
+            if let Ok(Err(e)) =
+                tauri::async_runtime::spawn_blocking(move || staged::clear(&root)).await
+            {
+                tracing::warn!("[update] could not remove the stored package: {e}");
+            }
+        }
+    }
     let quit = Arc::new(AtomicBool::new(false));
     let updater = updater(&app, quit.clone(), downgrade.as_ref()).map_err(|e| e.to_string())?;
     let update = tokio::time::timeout(CHECK_TIMEOUT, updater.check())
@@ -488,6 +679,15 @@ async fn run_download(
             .await
             .map_err(|e| e.to_string())?;
         downloaded.store(bytes.len() as u64, Ordering::Relaxed);
+        let bytes =
+            if staged::stores_download(restart_install::CURRENT_PLATFORM, downgrade.is_some()) {
+                store_package(&update, bytes).await
+            } else {
+                bytes
+            };
+        if bytes.is_empty() {
+            return Err("The downloaded package was lost while storing it".to_string());
+        }
         *staged_install() = Some(StagedInstall {
             update,
             bytes,
@@ -599,8 +799,9 @@ pub async fn restart_app(
 ///   into it through `RunEvent::Exit` and `crate::relaunch`. Installing comes
 ///   first and the app only shuts down (in `ExitRequested` / `Exit`) once it
 ///   worked: when it fails, nothing has been stopped and the old version
-///   carries on. The downloaded package is dropped either way; the next
-///   update downloads it again.
+///   carries on. The package in memory is dropped either way; the copy
+///   stored on disk ([`STORES_PACKAGE`]) is what the next attempt uses, and
+///   is removed once the new version is confirmed running.
 ///
 /// On failure the state is at `Error`, with the plugin's message.
 async fn install_and_quit(

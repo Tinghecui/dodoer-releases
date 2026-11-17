@@ -398,6 +398,32 @@ impl Journal {
         }
     }
 
+    /// 磁盘上存着的包验过了、直接用（不下载）：`attempt` 是 `ready`，
+    /// `reused_package = true`。已经有同一版下好的那条（上次运行下的）就接着
+    /// 用它，等待的时间从当时下好算起；别的（没有、别的版本）换成新的一条。
+    pub fn package_reused(
+        &mut self,
+        from: &str,
+        to: &str,
+        trigger: Trigger,
+        bytes: u64,
+        now: DateTime<Utc>,
+    ) {
+        match self.attempt.as_mut() {
+            Some(a) if a.to == to && a.state == AttemptState::Ready => {
+                a.reused_package = true;
+            }
+            _ => {
+                let mut a = new_attempt(from, to, trigger, now);
+                a.state = AttemptState::Ready;
+                a.bytes = Some(bytes);
+                a.reused_package = true;
+                a.ready_at = Some(now);
+                self.attempt = Some(a);
+            }
+        }
+    }
+
     /// 下载（或下载前的检查）失败了。`attempt` 清空；只有自动下载的才报，
     /// 而且 24 小时内最多报一条，用户手动点的界面上已经看得到。
     /// 还没查到要下哪一版就失败的，`to` 记 `unknown`。
@@ -641,6 +667,45 @@ mod tests {
             j.on_boot("1.6.41", at(110));
             assert_eq!(j.confirm("1.6.41", at(170)).unwrap().how, Some(how));
         }
+    }
+
+    #[test]
+    fn a_reused_package_is_ready_without_a_download() {
+        // 上次运行下好的同一版：接着用那一条，等待从当时算起。
+        let mut j = ready(Trigger::Manual);
+        j.package_reused("1.6.40", "1.6.41", Trigger::Auto, 140_512_345, at(5_000));
+        let a = j.attempt.clone().unwrap();
+        assert_eq!(a.state, AttemptState::Ready);
+        assert!(a.reused_package);
+        assert_eq!(a.trigger, Trigger::Manual);
+        assert_eq!(a.ready_at, Some(at(41)));
+        assert_eq!(a.download_ms, Some(41_000));
+
+        // 日志里没有（或是别的版本）：新开一条，没有下载时间。
+        let mut j = Journal::default();
+        j.package_reused("1.6.40", "1.6.41", Trigger::Auto, 7, at(100));
+        let a = j.attempt.clone().unwrap();
+        assert_eq!(
+            (a.from.as_str(), a.to.as_str(), a.state),
+            ("1.6.40", "1.6.41", AttemptState::Ready)
+        );
+        assert!(a.reused_package);
+        assert_eq!(
+            (a.bytes, a.download_ms, a.ready_at),
+            (Some(7), None, Some(at(100)))
+        );
+        let mut other = ready(Trigger::Auto);
+        other.package_reused("1.6.40", "1.6.42", Trigger::Manual, 7, at(100));
+        let a = other.attempt.unwrap();
+        assert_eq!((a.to.as_str(), a.trigger), ("1.6.42", Trigger::Manual));
+
+        // 换上、确认以后照样是 applied，上报里带着 reused_package。
+        j.apply_started(ApplyHow::Launch, at(200));
+        j.install_done(at(205));
+        j.on_boot("1.6.41", at(210));
+        let outcome = j.confirm("1.6.41", at(300)).unwrap();
+        assert_eq!(outcome.result, UpdateResult::Applied);
+        assert!(outcome.reused_package);
     }
 
     #[test]

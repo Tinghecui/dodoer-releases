@@ -24,7 +24,12 @@ pub mod rollback;
 #[cfg(any(feature = "tauri-runtime", test))]
 #[cfg_attr(not(feature = "tauri-runtime"), allow(dead_code))]
 pub mod restart_install;
+// Cowork fork: desktop only (`commands::app_update`); compiled for the tests
+// in every mode.
 pub mod runtime;
+#[cfg(any(feature = "tauri-runtime", test))]
+#[cfg_attr(not(feature = "tauri-runtime"), allow(dead_code))]
+pub mod staged;
 pub mod state;
 pub mod verify;
 pub mod version;

@@ -1062,6 +1062,11 @@ mod tauri_app {
                 // being put in place is counted, and what an update ended
                 // with is reported (`commands::app_update`).
                 app_update_commands::start_journal(app.handle(), &effective_data_dir);
+                // Cowork fork: a package an earlier run downloaded and stored
+                // (macOS) is ready to restart into again, before the local
+                // daemon starts and without the network
+                // (`commands::app_update`).
+                app_update_commands::restore_staged_at_start(app.handle(), &effective_data_dir);
 
                 // The `codeg-cli` startup put first on PATH (`cli_run::shim`),
                 // written off the way of the window.

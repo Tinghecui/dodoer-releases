@@ -4,6 +4,7 @@ import { toast } from "sonner"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { ClipboardFile } from "@/lib/clipboard-files"
+import { setFileTreeDragActive } from "@/lib/file-tree-dnd"
 import { buildFileUri } from "@/lib/reference-link"
 
 import { DRAG_DROP_IMAGE_MAX_BYTES } from "./attachment-files"
@@ -616,6 +617,49 @@ describe("an OS drop anywhere in the conversation area", () => {
     drop(["/work/notes.md"])
     expect(result.current.isZoneDragActive).toBe(false)
     outside.remove()
+  })
+
+  it("不带路径、也不是文件树拖动（从别的应用拖文字进来）时不高亮", async () => {
+    const { zone, transcript, host } = track(mountZone())
+    hit = () => transcript
+    const { result } = renderDropTarget({ host, zone })
+    await listening()
+    act(() =>
+      emit("tauri://drag-enter", { paths: [], position: { x: 40, y: 40 } })
+    )
+    expect(result.current.isZoneDragActive).toBe(false)
+    act(() => emit("tauri://drag-over", { position: { x: 40, y: 40 } }))
+    expect(result.current.isZoneDragActive).toBe(false)
+    expect(result.current.isDragActive).toBe(false)
+    drop([])
+    // 之后再从访达拖带路径的文件进来，照样亮
+    act(() =>
+      emit("tauri://drag-enter", {
+        paths: ["/work/notes.md"],
+        position: { x: 40, y: 40 },
+      })
+    )
+    expect(result.current.isZoneDragActive).toBe(true)
+  })
+
+  it("文件树拖动中经过对话区照样高亮", async () => {
+    const { zone, transcript, host } = track(mountZone())
+    hit = () => transcript
+    const { result } = renderDropTarget({ host, zone })
+    await listening()
+    setFileTreeDragActive(true)
+    try {
+      act(() =>
+        emit("tauri://drag-enter", { paths: [], position: { x: 40, y: 40 } })
+      )
+      expect(result.current.isZoneDragActive).toBe(true)
+      act(() => emit("tauri://drag-over", { position: { x: 40, y: 40 } }))
+      expect(result.current.isZoneDragActive).toBe(true)
+    } finally {
+      setFileTreeDragActive(false)
+    }
+    drop([])
+    expect(result.current.isZoneDragActive).toBe(false)
   })
 
   it("explains instead of dropping silently while the composer is disabled", async () => {

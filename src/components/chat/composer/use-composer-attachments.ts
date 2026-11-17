@@ -40,6 +40,7 @@ import {
 import { readClipboardFiles } from "@/lib/clipboard-files"
 import {
   hasFileTreeDragType,
+  isFileTreeDragActive,
   readFileTreeDragPayload,
 } from "@/lib/file-tree-dnd"
 import type { KnownInvocations } from "@/lib/invocation-token"
@@ -1188,6 +1189,9 @@ export function useComposerAttachments({
     if (!containerRef) return
     let cancelled = false
     const unlisteners: Array<() => void | Promise<void>> = []
+    // 这次拖动进来时（drag-enter）有没有带路径。drag-over 不带路径，只能记进来时的。
+    // 没见过 drag-enter 时按带路径算，行为和原来一样。
+    let enterWithoutPaths = false
 
     const cleanupListeners = () => {
       for (const fn of unlisteners.splice(0)) {
@@ -1220,8 +1224,12 @@ export function useComposerAttachments({
         setZoneDragActiveIfChanged(false)
         return
       }
+      if (payload.type === "enter") {
+        enterWithoutPaths = payload.paths.length === 0
+      }
       const inside = pointWithinElement(payload.position, host)
       if (payload.type === "drop") {
+        enterWithoutPaths = false
         setDragActiveIfChanged(false)
         setZoneDragActiveIfChanged(false)
         if (Date.now() - lastDomDropAtRef.current < 250) return
@@ -1256,7 +1264,10 @@ export function useComposerAttachments({
           .finally(settle)
         return
       }
-      setActive(inside && !disabledRef.current)
+      // 进来时没带路径、又不是文件树拖动（例如从别的应用拖一段文字）：松手也
+      // 没人收，不亮。文件树拖动在 Tauri 事件里同样不带路径，靠它自己设的标记认。
+      const accepts = !enterWithoutPaths || isFileTreeDragActive()
+      setActive(inside && accepts && !disabledRef.current)
     }
 
     const setup = async () => {

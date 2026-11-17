@@ -58,6 +58,7 @@ import { FileTreeCopySubContent } from "@/components/layout/file-tree-copy-menu"
 import { emitAttachFileToSession } from "@/lib/session-attachment-events"
 import {
   resolveFileTreeDropZone,
+  setFileTreeDragActive,
   writeFileTreeDragData,
   type FileTreeDragPayload,
 } from "@/lib/file-tree-dnd"
@@ -1895,6 +1896,9 @@ export function FileTreeTab() {
       }
       dragEndedRef.current = false
       writeFileTreeDragData(event.dataTransfer, payload)
+      // 告诉输入框这是文件树拖动：桌面版的 Tauri 拖放事件里它不带路径，
+      // 不靠这个就和从别的应用拖文字分不开，对话区不会高亮。
+      setFileTreeDragActive(true)
       // Let the target choose: "move" for a tree folder, "copy" for the composer.
       event.dataTransfer.effectAllowed = "copyMove"
       applyCompactDragImage(event, node.name)
@@ -1934,6 +1938,8 @@ export function FileTreeTab() {
   }, [])
 
   const onEntryDragEnd = useCallback(() => {
+    // 拖动结束（松手或取消）就清掉；桌面版随后到的 DRAG_DROP 只用来提交，不再要高亮。
+    setFileTreeDragActive(false)
     // On desktop the HTML5 `drop` never fires — Tauri's webview consumes the OS
     // drop before WebKit dispatches it — so the drag is committed later from the
     // native DRAG_DROP event, which arrives *after* this `dragend` and still

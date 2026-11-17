@@ -1,12 +1,14 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 
 import {
   FILE_TREE_DND_MIME,
   FILE_TREE_DROP_COMPOSER_ATTR,
   FILE_TREE_DROP_DIR_ATTR,
   hasFileTreeDragType,
+  isFileTreeDragActive,
   readFileTreeDragPayload,
   resolveFileTreeDropZone,
+  setFileTreeDragActive,
   writeFileTreeDragData,
   type FileTreeDragPayload,
 } from "./file-tree-dnd"
@@ -142,5 +144,112 @@ describe("resolveFileTreeDropZone", () => {
       kind: "dir",
       destDir: "pkg",
     })
+  })
+})
+
+describe("resolveFileTreeDropZone 在对话区里找它自己的输入框", () => {
+  let mounted: HTMLElement[] = []
+  afterEach(() => {
+    for (const el of mounted) el.remove()
+    mounted = []
+  })
+
+  /** 一个对话区：聊天记录、收起的那一条、输入框外框（可以没有）。 */
+  function mountShell(tabId: string | null) {
+    const shell = document.createElement("div")
+    shell.setAttribute("data-conversation-shell", "")
+    const transcript = document.createElement("div")
+    transcript.innerHTML = `<p class="msg"><span>hello</span></p>`
+    const collapsedBar = document.createElement("button")
+    const body = document.createElement("div")
+    shell.append(transcript, collapsedBar, body)
+    if (tabId !== null) {
+      const composer = document.createElement("div")
+      composer.setAttribute(FILE_TREE_DROP_COMPOSER_ATTR, tabId)
+      body.append(composer)
+    }
+    document.body.append(shell)
+    mounted.push(shell)
+    return { shell, transcript, collapsedBar, body }
+  }
+
+  it("聊天记录里的元素落到这个对话区的输入框", () => {
+    const { transcript } = mountShell("tab-a")
+    expect(resolveFileTreeDropZone(transcript.querySelector("span"))).toEqual({
+      kind: "composer",
+      tabId: "tab-a",
+    })
+  })
+
+  it("两个对话区并排时各认各的", () => {
+    const left = mountShell("tab-left")
+    const right = mountShell("tab-right")
+    expect(resolveFileTreeDropZone(left.transcript)).toEqual({
+      kind: "composer",
+      tabId: "tab-left",
+    })
+    expect(resolveFileTreeDropZone(right.transcript)).toEqual({
+      kind: "composer",
+      tabId: "tab-right",
+    })
+  })
+
+  it("对话区里没有输入框时没有落点", () => {
+    const { transcript } = mountShell(null)
+    expect(resolveFileTreeDropZone(transcript)).toBeNull()
+  })
+
+  it("输入框收起时，松在收起的那一条或聊天记录上同样落到它", () => {
+    const { body, collapsedBar, transcript } = mountShell("tab-c")
+    // 收起时输入框本体看不见，但还在对话区里
+    body.style.visibility = "hidden"
+    expect(resolveFileTreeDropZone(collapsedBar)).toEqual({
+      kind: "composer",
+      tabId: "tab-c",
+    })
+    expect(resolveFileTreeDropZone(transcript)).toEqual({
+      kind: "composer",
+      tabId: "tab-c",
+    })
+  })
+
+  it("嵌套的对话区：外层只认直接属于它的输入框，不认里层的", () => {
+    const outer = mountShell("tab-outer")
+    const inner = document.createElement("div")
+    inner.setAttribute("data-conversation-shell", "")
+    const innerComposer = document.createElement("div")
+    innerComposer.setAttribute(FILE_TREE_DROP_COMPOSER_ATTR, "tab-inner")
+    const innerTranscript = document.createElement("div")
+    inner.append(innerTranscript, innerComposer)
+    // 里层的放在外层输入框前面，选择器按文档顺序会先碰到它
+    outer.transcript.prepend(inner)
+    expect(resolveFileTreeDropZone(outer.collapsedBar)).toEqual({
+      kind: "composer",
+      tabId: "tab-outer",
+    })
+    expect(resolveFileTreeDropZone(innerTranscript)).toEqual({
+      kind: "composer",
+      tabId: "tab-inner",
+    })
+  })
+
+  it("对话区外面仍然没有落点", () => {
+    mountShell("tab-a")
+    const sidebar = document.createElement("nav")
+    document.body.append(sidebar)
+    mounted.push(sidebar)
+    expect(resolveFileTreeDropZone(sidebar)).toBeNull()
+  })
+})
+
+describe("文件树拖动标记", () => {
+  afterEach(() => setFileTreeDragActive(false))
+
+  it("开始时设、结束时清", () => {
+    expect(isFileTreeDragActive()).toBe(false)
+    setFileTreeDragActive(true)
+    expect(isFileTreeDragActive()).toBe(true)
+    setFileTreeDragActive(false)
+    expect(isFileTreeDragActive()).toBe(false)
   })
 })

@@ -101,6 +101,21 @@ export function readFileTreeDragPayload(
   return { rootPath, relPath, absPath, name, kind }
 }
 
+// 桌面版：当前是不是正在从文件树拖东西。文件树拖动开始时设、结束（含取消）时清。
+// Tauri 的拖放事件里文件树拖动不带路径，和从别的应用拖文字进来分不开，
+// 输入框那边靠它决定对话区要不要高亮（见 `useComposerAttachments`）。
+let fileTreeDragActive = false
+
+/** 文件树拖动开始（true）或结束（false）时调用。 */
+export function setFileTreeDragActive(active: boolean): void {
+  fileTreeDragActive = active
+}
+
+/** 当前是不是正在从文件树拖东西。 */
+export function isFileTreeDragActive(): boolean {
+  return fileTreeDragActive
+}
+
 /**
  * DOM attribute marking a directory drop zone. Its value is the destination
  * directory path relative to the workspace root (`""` = the root itself).
@@ -112,6 +127,27 @@ export const FILE_TREE_DROP_DIR_ATTR = "data-tree-drop-dir"
  * session's input.
  */
 export const FILE_TREE_DROP_COMPOSER_ATTR = "data-tree-drop-composer"
+
+/** 对话区（`ConversationShell` 的根）的标记，和
+ *  `CONVERSATION_DROP_ZONE_SELECTOR`（composer/attachment-files.ts）是同一个。 */
+const CONVERSATION_SHELL_SELECTOR = "[data-conversation-shell]"
+
+/**
+ * 落点在某个对话区里、但不在输入框外框上时（聊天记录、收起的那一条），找这个对话区
+ * 自己的输入框：取离落点最近的对话区，在里面找直接属于它的输入框（跳过嵌套在里层
+ * 对话区里的）。用选择器找而不是按坐标取，输入框收起、本体看不见时也找得到。
+ */
+function composerInConversationShell(element: Element): Element | null {
+  const shell = element.closest(CONVERSATION_SHELL_SELECTOR)
+  if (!shell) return null
+  for (const el of shell.querySelectorAll(
+    `[${FILE_TREE_DROP_COMPOSER_ATTR}]`
+  )) {
+    if (el.closest(CONVERSATION_SHELL_SELECTOR) !== shell) continue
+    if (el.getAttribute(FILE_TREE_DROP_COMPOSER_ATTR)) return el
+  }
+  return null
+}
 
 /** Where a file-tree drag landed, resolved from the element under the drop
  *  point. `dir` moves the entry; `composer` inserts a file reference. */
@@ -126,7 +162,9 @@ export type FileTreeDropZone =
  * drag-drop handler always reports the drop as handled), so a drag is committed
  * from Tauri's own drag-drop event by hit-testing the drop coordinates rather
  * than from a `drop` handler that never runs. Returns null when the point isn't
- * over a directory row, the workspace-root row, or a composer.
+ * over a directory row, the workspace-root row, a composer, or a conversation
+ * area that contains a composer (anywhere in a conversation area counts as its
+ * own composer — the area lights up as one drop zone during the drag).
  */
 export function resolveFileTreeDropZone(
   element: Element | null
@@ -149,5 +187,6 @@ export function resolveFileTreeDropZone(
   }
   if (dirEl) return toDir(dirEl)
   if (composerEl) return toComposer(composerEl)
-  return null
+  const shellComposer = composerInConversationShell(element)
+  return shellComposer ? toComposer(shellComposer) : null
 }

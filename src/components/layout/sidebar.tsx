@@ -131,11 +131,6 @@ const SIDEBAR_HEAD_BUTTON =
 // constants rather than a per-render `new Set`, so the reference is stable and
 // the two states are spelled out once. "Recent" is the only section with a
 // visibility toggle today.
-// jenny fork: the conversation tab bar is gone, so "tabs follow folder" has no
-// strip to act on and its View options row is not offered. The mode itself
-// (folder-tabs-store, the scoped views) stays upstream's.
-const TABS_FOLLOW_FOLDER_OFFERED: boolean = false
-
 const NO_HIDDEN_SECTIONS: ReadonlySet<SidebarSectionId> = new Set()
 const RECENT_HIDDEN: ReadonlySet<SidebarSectionId> = new Set(["recent"])
 
@@ -757,20 +752,19 @@ export function Sidebar({
                   })}
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
-              {TABS_FOLLOW_FOLDER_OFFERED && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuCheckboxItem
-                    checked={tabsFollowFolder}
-                    onCheckedChange={setTabsFollowFolder}
-                    onSelect={(event) => event.preventDefault()}
-                    title={t("tabsFollowFolderHint")}
-                  >
-                    <FolderSync className="text-muted-foreground" />
-                    {t("tabsFollowFolder")}
-                  </DropdownMenuCheckboxItem>
-                </>
-              )}
+              <DropdownMenuSeparator />
+              {/* Cowork：会话标签栏已经没了，但「标签页跟随文件夹」默认开
+                  （#338），管的是文件标签和终端按项目显示，所以照上游给出
+                  这一行，让用户能关。 */}
+              <DropdownMenuCheckboxItem
+                checked={tabsFollowFolder}
+                onCheckedChange={setTabsFollowFolder}
+                onSelect={(event) => event.preventDefault()}
+                title={t("tabsFollowFolderHint")}
+              >
+                <FolderSync className="text-muted-foreground" />
+                {t("tabsFollowFolder")}
+              </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>{t("sortBy")}</DropdownMenuLabel>
               <DropdownMenuRadioGroup

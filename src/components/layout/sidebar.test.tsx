@@ -21,7 +21,10 @@ import {
   resetConversationTagsStore,
   useConversationTagsStore,
 } from "@/stores/conversation-tags-store"
-import { resetFolderTabsStore } from "@/stores/folder-tabs-store"
+import {
+  resetFolderTabsStore,
+  useFolderTabsStore,
+} from "@/stores/folder-tabs-store"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
   publishTaskAwaiting,
@@ -911,18 +914,23 @@ describe("Sidebar — Tabs follow folder", () => {
     mockState.activeFolder = { id: 7, path: "/x" }
   })
 
-  // jenny fork: without the conversation tab bar the mode has nothing to act
-  // on, so View options does not offer it.
-  it("is not offered in View options", async () => {
+  // Cowork 里这个模式默认开（#338），管文件标签和终端，View options 里要有
+  // 关掉它的地方。
+  it("is offered in View options, checked by default, and switches off", async () => {
+    // 没存过偏好：hydrate 以后就是开着的。
+    useFolderTabsStore.getState().hydratePreference()
+    expect(useFolderTabsStore.getState().enabled).toBe(true)
     renderSidebar()
     await userEvent.click(screen.getByRole("button", { name: "View options" }))
-    expect(
-      screen.queryByRole("menuitemcheckbox", { name: "Tabs follow folder" })
-    ).toBeNull()
-    // Control: the menu is open, so the row above is absent, not unrendered.
-    expect(
-      screen.getByRole("menuitemradio", { name: "Created time" })
-    ).toBeTruthy()
+    const row = screen.getByRole("menuitemcheckbox", {
+      name: "Tabs follow folder",
+    })
+    expect(row.getAttribute("aria-checked")).toBe("true")
+    await userEvent.click(row)
+    expect(useFolderTabsStore.getState().enabled).toBe(false)
+    expect(localStorage.getItem("workspace:tabs-follow-folder:local")).toBe(
+      "false"
+    )
   })
 })
 

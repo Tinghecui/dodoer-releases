@@ -22,7 +22,9 @@ use std::path::Path;
 
 /// The variable suffixes read here; all of them are removed from the process
 /// environment once read ([`env_names`]).
-pub const KEYS: &[&str] = &["DSN", "WEB_DSN", "ENV", "TRACES", "USER", "SELFTEST"];
+pub const KEYS: &[&str] = &[
+    "DSN", "WEB_DSN", "ENV", "TRACES", "USER", "SELFTEST", "RELEASE",
+];
 
 /// The master switch, `CODEG_TELEMETRY` (and its `COWORK_` alias).
 pub const SWITCH: &str = "TELEMETRY";
@@ -159,6 +161,11 @@ pub struct TelemetryConfig {
     pub install_id_user: bool,
     /// `CODEG_TELEMETRY_SELFTEST` truthy: report one test error at startup.
     pub self_test: bool,
+    /// `CODEG_TELEMETRY_RELEASE`: the release to report under, over the
+    /// `COWORK-VERSION` beside the binary ([`release_from`]). A desktop app
+    /// gives its own daemon `dodoer-desktop@<desktop version>`
+    /// (`local_daemon::TELEMETRY_RELEASE_ENV`).
+    pub release: Option<String>,
     /// What was wrong with the values, for the startup log.
     pub problems: Vec<String>,
 }
@@ -310,6 +317,7 @@ pub fn resolve_with(env: &dyn Fn(&str) -> Option<String>, builtin: &Builtin) -> 
         user,
         install_id_user,
         self_test: crate::cowork::truthy(lookup(env, "SELFTEST").as_deref()),
+        release: lookup(env, "RELEASE"),
         problems,
     }
 }
@@ -354,12 +362,17 @@ fn keep_install_id(data_dir: &Path, file: &Path, id: &str) -> std::io::Result<()
     std::fs::write(file, id)
 }
 
-/// The release both ends report: the Cowork tag in `COWORK-VERSION` beside
-/// the binary (`cowork-codeg-vX.Y.Z`), else the upstream version.
-pub fn release_from(cowork_version: Option<&str>) -> String {
-    cowork_version
-        .map(str::trim)
-        .filter(|v| !v.is_empty() && *v != "unknown")
+/// The release both ends report: the one set ([`TelemetryConfig::release`]),
+/// else the Cowork tag in `COWORK-VERSION` beside the binary
+/// (`cowork-codeg-vX.Y.Z`), else the upstream version.
+pub fn release_from(set: Option<&str>, cowork_version: Option<&str>) -> String {
+    set.map(str::trim)
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            cowork_version
+                .map(str::trim)
+                .filter(|v| !v.is_empty() && *v != "unknown")
+        })
         .map(str::to_string)
         .unwrap_or_else(|| format!("codeg@{}", env!("CARGO_PKG_VERSION")))
 }
@@ -584,18 +597,50 @@ mod tests {
         assert!(names.contains(&"COWORK_TELEMETRY_DSN".to_string()));
         assert!(names.contains(&"CODEG_TELEMETRY".to_string()));
         assert!(names.contains(&"COWORK_TELEMETRY".to_string()));
+        assert!(names.contains(&"CODEG_TELEMETRY_RELEASE".to_string()));
         assert_eq!(names.len(), (KEYS.len() + 1) * 2);
     }
 
     #[test]
     fn release_is_the_cowork_tag_when_there_is_one() {
         assert_eq!(
-            release_from(Some("cowork-codeg-v0.6.0\n")),
+            release_from(None, Some("cowork-codeg-v0.6.0\n")),
             "cowork-codeg-v0.6.0"
         );
         let upstream = format!("codeg@{}", env!("CARGO_PKG_VERSION"));
-        assert_eq!(release_from(Some("unknown")), upstream);
-        assert_eq!(release_from(None), upstream);
+        assert_eq!(release_from(None, Some("unknown")), upstream);
+        assert_eq!(release_from(None, None), upstream);
+    }
+
+    #[test]
+    fn a_set_release_wins_over_the_cowork_tag() {
+        assert_eq!(
+            release_from(Some("dodoer-desktop@1.6.50"), Some("cowork-codeg-v0.6.50")),
+            "dodoer-desktop@1.6.50"
+        );
+        assert_eq!(
+            release_from(Some("dodoer-desktop@1.6.50"), None),
+            "dodoer-desktop@1.6.50"
+        );
+    }
+
+    #[test]
+    fn the_release_is_read_from_either_name() {
+        let config = resolve(&env_of(&[(
+            "CODEG_TELEMETRY_RELEASE",
+            "dodoer-desktop@1.6.50",
+        )]));
+        assert_eq!(config.release.as_deref(), Some("dodoer-desktop@1.6.50"));
+        let config = resolve(&env_of(&[("COWORK_TELEMETRY_RELEASE", "r-cowork")]));
+        assert_eq!(config.release.as_deref(), Some("r-cowork"));
+        let config = resolve(&env_of(&[
+            ("CODEG_TELEMETRY_RELEASE", "r-codeg"),
+            ("COWORK_TELEMETRY_RELEASE", "r-cowork"),
+        ]));
+        assert_eq!(config.release.as_deref(), Some("r-codeg"));
+        let config = resolve(&env_of(&[("CODEG_TELEMETRY_RELEASE", "  ")]));
+        assert_eq!(config.release, None);
+        assert_eq!(resolve(&env_of(&[])).release, None);
     }
 
     #[test]

@@ -39,6 +39,9 @@ use std::thread::ThreadId;
 
 use serde::{Deserialize, Serialize};
 
+/// The release a desktop run's reports go under (`dodoer-desktop@<version>`);
+/// the app's own daemon reports under it too (`local_daemon`).
+pub use self::envelope::release;
 use self::store::{HangMarker, PanicRecord, Phase, Record, RecoveredHang, RunMarker};
 #[cfg(feature = "tauri-runtime")]
 use crate::app_error::AppCommandError;

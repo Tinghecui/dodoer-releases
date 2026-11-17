@@ -59,6 +59,11 @@ pub const HOST_BRIDGE_TOKEN_ENV: &str = "CODEG_HOST_BRIDGE_TOKEN";
 /// The child's telemetry switch (`telemetry::config::SWITCH`).
 pub const TELEMETRY_SWITCH_ENV: &str = "CODEG_TELEMETRY";
 
+/// The release the child reports under (`telemetry::config`,
+/// `TelemetryConfig::release`): the desktop app's own,
+/// `dodoer-desktop@<version>`, the one its crash reports use.
+pub const TELEMETRY_RELEASE_ENV: &str = "CODEG_TELEMETRY_RELEASE";
+
 /// The executable's bare name.
 pub const SERVER_BIN: &str = if cfg!(windows) {
     "codeg-server.exe"
@@ -178,6 +183,9 @@ pub struct ChildSpec {
     /// the child gets `CODEG_TELEMETRY=off`. Otherwise it reports as its
     /// build says (a release build has DSNs built in, `telemetry::config`).
     pub telemetry_off: bool,
+    /// The release the child reports under ([`TELEMETRY_RELEASE_ENV`]).
+    /// `None`: the child's own (`COWORK-VERSION`, else upstream's).
+    pub telemetry_release: Option<String>,
 }
 
 impl ChildSpec {
@@ -206,6 +214,9 @@ impl ChildSpec {
         }
         if self.telemetry_off {
             envs.push((TELEMETRY_SWITCH_ENV, "off".into()));
+        }
+        if let Some(release) = &self.telemetry_release {
+            envs.push((TELEMETRY_RELEASE_ENV, release.clone().into()));
         }
         envs
     }
@@ -298,6 +309,8 @@ pub struct LaunchConfig {
     pub host_bridge: Option<HostBridgeEnv>,
     /// [`ChildSpec::telemetry_off`].
     pub telemetry_off: bool,
+    /// [`ChildSpec::telemetry_release`].
+    pub telemetry_release: Option<String>,
     /// How long one start may take before it counts as failed.
     pub start_timeout: Duration,
 }
@@ -311,6 +324,7 @@ impl LaunchConfig {
             token: self.token.clone(),
             host_bridge: self.host_bridge.clone(),
             telemetry_off: self.telemetry_off,
+            telemetry_release: self.telemetry_release.clone(),
         }
     }
 }
@@ -804,6 +818,7 @@ pub fn run_smoke(args: &[String]) -> i32 {
             host_bridge: None,
             // A smoke run is not anybody's use of the app.
             telemetry_off: true,
+            telemetry_release: None,
             start_timeout: START_TIMEOUT,
         };
         let daemon = match LocalDaemon::start(config).await {
@@ -906,6 +921,7 @@ mod tests {
             token: "t0k".into(),
             host_bridge: None,
             telemetry_off: false,
+            telemetry_release: None,
         };
         let envs: std::collections::HashMap<_, _> = spec.envs().into_iter().collect();
         assert_eq!(
@@ -936,11 +952,47 @@ mod tests {
             token: "t".into(),
             host_bridge: None,
             telemetry_off: true,
+            telemetry_release: None,
         };
         let envs: std::collections::HashMap<_, _> = spec.envs().into_iter().collect();
         assert_eq!(envs[TELEMETRY_SWITCH_ENV], OsString::from("off"));
         let switch = format!("CODEG_{}", crate::telemetry::config::SWITCH);
         assert_eq!(TELEMETRY_SWITCH_ENV, switch);
+    }
+
+    #[test]
+    fn the_child_reports_under_the_release_it_is_given() {
+        let spec = ChildSpec {
+            server: PathBuf::from("/app/codeg-server"),
+            data_dir: PathBuf::from("/d"),
+            port: 1,
+            token: "t".into(),
+            host_bridge: None,
+            telemetry_off: false,
+            telemetry_release: Some("dodoer-desktop@1.6.50".into()),
+        };
+        let envs: std::collections::HashMap<String, String> = spec
+            .envs()
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string_lossy().into_owned()))
+            .collect();
+        let builtin = crate::telemetry::config::Builtin {
+            dsn: Some("https://pub@x.test/10".into()),
+            web_dsn: Some("https://pub@x.test/11".into()),
+        };
+        let config = crate::telemetry::config::resolve_with(&|k| envs.get(k).cloned(), &builtin);
+        assert_eq!(config.release.as_deref(), Some("dodoer-desktop@1.6.50"));
+        assert_eq!(
+            config.environment,
+            crate::telemetry::config::DESKTOP_LOCAL_ENVIRONMENT
+        );
+
+        let spec = ChildSpec {
+            telemetry_release: None,
+            ..spec
+        };
+        let envs: std::collections::HashMap<_, _> = spec.envs().into_iter().collect();
+        assert!(!envs.contains_key(TELEMETRY_RELEASE_ENV));
     }
 
     #[test]
@@ -955,6 +1007,7 @@ mod tests {
                 token: "b".into(),
             }),
             telemetry_off: false,
+            telemetry_release: None,
         };
         let envs: std::collections::HashMap<_, _> = spec.envs().into_iter().collect();
         assert_eq!(
@@ -1011,6 +1064,7 @@ mod tests {
             token: "t".into(),
             host_bridge: None,
             telemetry_off: true,
+            telemetry_release: None,
             start_timeout: Duration::from_secs(5),
         })
         .await
@@ -1043,6 +1097,7 @@ mod tests {
             token: "t".into(),
             host_bridge: None,
             telemetry_off: true,
+            telemetry_release: None,
             start_timeout: Duration::from_secs(5),
         })
         .await

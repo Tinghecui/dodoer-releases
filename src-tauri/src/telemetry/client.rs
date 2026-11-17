@@ -146,7 +146,7 @@ pub(in crate::telemetry) fn init(config: TelemetryConfig) -> Option<ClientGuard>
         crate::update::runtime::self_exe().with_file_name("COWORK-VERSION"),
     )
     .ok();
-    let release = config::release_from(cowork_version.as_deref());
+    let release = config::release_from(config.release.as_deref(), cowork_version.as_deref());
 
     let server = match config.dsn.as_deref().map(str::parse::<Dsn>) {
         None => None,

@@ -469,6 +469,11 @@ mod tauri_app {
             host_bridge: Some(bridge.env()),
             // Cowork fork: "Send diagnostics" off reaches the daemon too.
             telemetry_off: !crate::preferences::load().diagnostics_enabled(),
+            // The daemon's reports go under the desktop app's release, the
+            // one its crash reports use (`crash_report::release`).
+            telemetry_release: Some(crate::crash_report::release(
+                &app.package_info().version.to_string(),
+            )),
             start_timeout: LOCAL_DAEMON_START_TIMEOUT,
         };
         match tauri::async_runtime::block_on(crate::local_daemon::LocalDaemon::start(config)) {

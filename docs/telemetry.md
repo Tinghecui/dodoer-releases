@@ -94,6 +94,7 @@
 | `CODEG_TELEMETRY_ENV` | 环境名。默认：用环境变量的地址时 `production`；用内置地址时 `community`，桌面 app 自带的 daemon（环境里有 `CODEG_DESKTOP_CHILD=1`）是 `desktop-local`。AI QA 的环境设 `ai-qa`。 |
 | `CODEG_TELEMETRY_TRACES` | 接口追踪的抽样率，0 到 1，默认 1。量大了往下调。 |
 | `CODEG_TELEMETRY_USER` | 这个进程的用户标识。默认：用环境变量的地址时是系统用户名去掉 `cw-` 前缀（生产机，和以前一样）；用内置地址时是安装编号（第 5.7 节）。 |
+| `CODEG_TELEMETRY_RELEASE` | 上报用的 release（服务端事件和给前端的 `cowork_info.telemetry.release` 同一个）。不设时服务器读程序旁边的 `COWORK-VERSION`（`cowork-codeg-vX.Y.Z`），没有就是上游版本 `codeg@<版本>`；桌面 app 自带的 daemon 由 app 给 `dodoer-desktop@<桌面版本>`，和崩溃报告同名。 |
 
 `CoworkInfo` 多一个可空的字段，前端据此决定开不开。服务端用内置地址时照样给出去，前端自己不内置地址：
 
@@ -101,7 +102,7 @@
 "telemetry": {
   "dsn": "…",              // 前端项目的地址（环境变量或内置的）
   "environment": "production",
-  "release": "cowork-codeg-v0.6.0",   // 服务端读 COWORK-VERSION
+  "release": "cowork-codeg-v0.6.0",   // CODEG_TELEMETRY_RELEASE，没设读 COWORK-VERSION，再没有是 codeg@<上游版本>；桌面自带的 daemon 是 dodoer-desktop@<桌面版本>
   "tracesSampleRate": 1,
   "user": "james"
 }
@@ -277,7 +278,7 @@ pub fn client_config() -> Option<ClientTelemetry>;
 ### 5.11 桌面端
 
 - 远端窗口：跑的是同一份前端，问的是它连的那台服务器的 `cowork_info`，上报经 Rust 代理走同一个转发接口。追踪头暂时带不过去（代理自己组请求头），两头的记录靠时间和 request_id 对。开不开、报到哪，跟着那台服务器走，不受桌面端的开关影响。
-- 本机工作区（2026-11-15 起）：本机后端是 app 带着的 `codeg-server` 子进程（`local_daemon.rs`，默认的 child 模式），它启动时照第 5.1 节的规则开遥测——发版的包里有内置地址，所以默认开，environment `desktop-local`，用户是安装编号。本机窗口只问它要 `cowork_info.telemetry` 这一项（`loadLocalDaemonTelemetry`，`cowork_info` 的其他内容不用，本机工作区不因此变成 Cowork 工作区），有就启动前端遥测（`surface=desktop-local`），信封经子进程的 `/api/telemetry_envelope` 转发，和远端窗口走同一个代理。内嵌 daemon 模式不报（第 2 节）。
+- 本机工作区（2026-11-15 起）：本机后端是 app 带着的 `codeg-server` 子进程（`local_daemon.rs`，默认的 child 模式），它启动时照第 5.1 节的规则开遥测——发版的包里有内置地址，所以默认开，environment `desktop-local`，用户是安装编号，release 是 app 用 `CODEG_TELEMETRY_RELEASE` 交给它的 `dodoer-desktop@<桌面版本>`（和崩溃报告同名，桌面包里没有 `COWORK-VERSION`；2026-11-17 以前是上游的 `codeg@0.43.0`），本机窗口经 `cowork_info.telemetry.release` 用同一个。本机窗口只问它要 `cowork_info.telemetry` 这一项（`loadLocalDaemonTelemetry`，`cowork_info` 的其他内容不用，本机工作区不因此变成 Cowork 工作区），有就启动前端遥测（`surface=desktop-local`），信封经子进程的 `/api/telemetry_envelope` 转发，和远端窗口走同一个代理。内嵌 daemon 模式不报（第 2 节）。
 - 桌面端自己的进程：崩溃和卡死、软件更新的记录，见下面。Rust 代理的连接断开还没做。
 
 **开关**：设置 → 通用 →「发送诊断数据（崩溃、卡死、报错）」，桌面端的总开关，**默认开**。存在 `~/.codeg/preferences.json` 的 `diagnostics`：没有这一项 = 开，只有用户自己关掉才写 `false`。关掉时：崩溃和卡死不记、不发，攒着的删掉（立刻生效）；app 下次启动子进程时给它 `CODEG_TELEMETRY=off`，本机后端和本机窗口都不报（下次启动 dodoer 后生效，开关下面写着）。#290 的 `crash_reports` 那一项不再读：它默认是 `false`，存过任何设置的文件里都有，分不出是不是用户自己关的。

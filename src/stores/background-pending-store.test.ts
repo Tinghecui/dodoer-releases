@@ -11,6 +11,7 @@ import {
   backgroundMarkFor,
   backgroundMarkOf,
   backgroundPendingOf,
+  countsAsRunning,
   isConversationActive,
   publishBackgroundPending,
   replaceServerBackgroundPending,
@@ -358,5 +359,29 @@ describe("backgroundMarkOf (Cowork fork)", () => {
         status: "pending_review",
       })
     ).toBe(false)
+  })
+})
+
+// Cowork fork (#435): the running counts (bell, folder, group) leave「?」out —
+// no live process moves it — while it stays first in the attention order.
+describe("countsAsRunning (Cowork fork)", () => {
+  it("counts a running turn and background waiting, not「?」or idle", () => {
+    replaceServerBackgroundPending([
+      uncertain(5),
+      { conversation_id: 7, count: 1, names: ["Watch CI"] },
+    ])
+    const state = useBackgroundPendingStore.getState()
+    const at = (id: number, status: string) => ({
+      id,
+      external_id: null,
+      status,
+    })
+    expect(countsAsRunning(state, at(6, "in_progress"))).toBe(true)
+    expect(countsAsRunning(state, at(7, "pending_review"))).toBe(true)
+    expect(countsAsRunning(state, at(5, "pending_review"))).toBe(false)
+    expect(countsAsRunning(state, at(5, "in_progress"))).toBe(true)
+    expect(countsAsRunning(state, at(6, "pending_review"))).toBe(false)
+    // 「?」still leads the attention order.
+    expect(isConversationActive(state, at(5, "pending_review"))).toBe(true)
   })
 })

@@ -238,14 +238,27 @@ export function holdsBackUnread(
   return mark.waiting != null || mark.uncertain != null
 }
 
-/** Cowork fork (#386): counts as running in the sidebar — its turn runs, or
- *  it waits on background work, or the server marked it「?」. What the
- *  attention order's first band and the running counts go by. */
+/** Cowork fork (#386): first in the sidebar's attention order — its turn
+ *  runs, or it waits on background work, or the server marked it「?」. The
+ *  running counts go by {@link countsAsRunning} instead (#435). */
 export function isConversationActive(
   state: BackgroundPendingState,
   conv: MarkInput
 ): boolean {
   return conv.status === "in_progress" || holdsBackUnread(state, conv)
+}
+
+/** Cowork fork (#435): counts in「N sessions running」(the bell, folder and
+ *  group badges) — its turn runs, or it waits on background work. A「?」is
+ *  left out: no live process moves it. */
+export function countsAsRunning(
+  state: BackgroundPendingState,
+  conv: MarkInput
+): boolean {
+  return (
+    conv.status === "in_progress" ||
+    backgroundMarkFor(state, conv).waiting != null
+  )
 }
 
 /** The live background work of the session behind `externalId` — or, with no

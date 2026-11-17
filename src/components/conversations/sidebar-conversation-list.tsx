@@ -165,6 +165,7 @@ import {
   useAwaitingUserStore,
 } from "@/stores/awaiting-user-store"
 import {
+  countsAsRunning,
   holdsBackUnread,
   isConversationActive,
   useBackgroundPendingStore,
@@ -1533,10 +1534,10 @@ export function SidebarConversationList({
   )
 
   // Cowork fork (#386): a conversation waiting on background work, or marked
-  // 「?」by the server, counts as running — first in the attention order, in
-  // the folder's running count, out of its unread count (its row holds the
-  // unread dot back too). The store hands back the same maps when nothing
-  // changed.
+  // 「?」by the server, goes first in the attention order and out of its
+  // unread count (its row holds the unread dot back too). Only the waiting one
+  // is in the folder's running count — no live process moves a「?」(#435).
+  // The store hands back the same maps when nothing changed.
   const backgroundState = useBackgroundPendingStore(
     useShallow((s) => ({
       bySession: s.bySession,
@@ -1636,8 +1637,8 @@ export function SidebarConversationList({
     return map
   }, [conversations, displayChildToParent])
 
-  // Running (`in_progress`, or waiting on background work / 「?」— Cowork
-  // fork, #386) sessions per display group — what the folder header
+  // Running (`in_progress`, or waiting on background work — Cowork fork, #386;
+  // not「?」, #435) sessions per display group — what the folder header
   // badge shows. Counted off the FULL conversation list rather than `byFolder`
   // on purpose: the badge answers "is there work running in here", so neither
   // the "Show completed" filter nor a session being pinned into the Pinned
@@ -1647,12 +1648,12 @@ export function SidebarConversationList({
   const folderRunningCounts = useMemo(() => {
     const map = new Map<number, number>()
     for (const conv of conversations) {
-      if (!isActive(conv)) continue
+      if (!countsAsRunning(backgroundState, conv)) continue
       const groupId = displayChildToParent.get(conv.folder_id) ?? conv.folder_id
       map.set(groupId, (map.get(groupId) ?? 0) + 1)
     }
     return map
-  }, [conversations, displayChildToParent, isActive])
+  }, [conversations, displayChildToParent, backgroundState])
 
   // Unread root sessions per display group (jenny fork) — same grouping and
   // full-list counting as the running badge, so collapsing a folder or

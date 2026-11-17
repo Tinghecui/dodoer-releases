@@ -31,6 +31,10 @@ import {
 } from "@/stores/app-workspace-store"
 import enMessages from "@/i18n/messages/en.json"
 import {
+  replaceServerBackgroundPending,
+  useBackgroundPendingStore,
+} from "@/stores/background-pending-store"
+import {
   useAwaitingUserStore,
   type AwaitingUserKind,
 } from "@/stores/awaiting-user-store"
@@ -2176,6 +2180,34 @@ describe("SidebarConversationList — folder groups", () => {
     expect(
       heading?.querySelector('[title="2 sessions running"]')
     ).not.toBeNull()
+  })
+
+  // #435: a「?」session has no live process moving it — not running.
+  it("leaves a「?」session out of the folder and group running badges", () => {
+    groupWith([5], [conv(11, 5, { status: "pending_review" })])
+    act(() =>
+      replaceServerBackgroundPending([
+        {
+          conversation_id: 11,
+          count: 0,
+          names: [],
+          state: "uncertain",
+          reason: "agent_exited",
+          tasks: [],
+        },
+      ])
+    )
+    try {
+      const { container } = render(tree())
+      const heading = container.querySelector('[data-folder-group-id="7"]')
+      expect(heading?.textContent).toBe("Work")
+      expect(container.querySelector('[title$="running"]')).toBeNull()
+    } finally {
+      useBackgroundPendingStore.setState({
+        bySession: new Map(),
+        byConversation: new Map(),
+      })
+    }
   })
 
   it("renders no group badge when nothing in it is running", () => {

@@ -10,8 +10,8 @@ import {
   useAwaitingUserStore,
 } from "@/stores/awaiting-user-store"
 import {
+  countsAsRunning,
   holdsBackUnread,
-  isConversationActive,
   useBackgroundPendingStore,
 } from "@/stores/background-pending-store"
 import {
@@ -58,8 +58,9 @@ export function SidebarBell({
       byTaskConversation: s.byTaskConversation,
     }))
   )
-  // Cowork fork (#386): waiting on background work or marked「?」counts as
-  // running, not unread — its row holds the unread dot back too.
+  // Cowork fork (#386): waiting on background work counts as running, not
+  // unread — its row holds the unread dot back too. Marked「?」is neither
+  // running (#435, no live process moves it) nor unread.
   const backgroundState = useBackgroundPendingStore(
     useShallow((s) => ({
       bySession: s.bySession,
@@ -75,7 +76,7 @@ export function SidebarBell({
       awaitingUserFor(awaitingState, c.external_id, c.id) != null
   ).length
   const running = conversations.filter((c) =>
-    isConversationActive(backgroundState, c)
+    countsAsRunning(backgroundState, c)
   ).length
   const unread =
     countUnreadByGroup(

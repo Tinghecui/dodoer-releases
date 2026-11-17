@@ -54,9 +54,10 @@ const unread = (container: HTMLElement) =>
     .querySelector("[data-global-unread-count]")
     ?.getAttribute("data-global-unread-count") ?? null
 
-// Cowork fork (#386): a conversation still waiting on background work (or
-// marked「?」by the server) counts as running, not as unread — the same as
-// its row, which holds back the unread dot.
+// Cowork fork (#386): a conversation still waiting on background work counts
+// as running, not as unread — the same as its row, which holds back the
+// unread dot. One marked「?」by the server is not running (#435), but is not
+// unread either.
 describe("SidebarBell with background work", () => {
   beforeEach(() => {
     localStorage.clear()
@@ -94,7 +95,9 @@ describe("SidebarBell with background work", () => {
     expect(unread(container)).toBe("2")
   })
 
-  it("counts a「?」conversation as running too", () => {
+  // #435: no live process moves a「?」conversation, so it is not running —
+  // but it still holds its unread dot back.
+  it("leaves a「?」conversation out of the running count", () => {
     act(() =>
       replaceServerBackgroundPending([
         {
@@ -108,7 +111,7 @@ describe("SidebarBell with background work", () => {
       ])
     )
     const { container } = renderBell()
-    expect(running(container)).toBe("1")
+    expect(running(container)).toBeNull()
     expect(unread(container)).toBe("1")
   })
 })

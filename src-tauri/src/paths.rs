@@ -256,6 +256,24 @@ pub fn codeg_chrome_sites_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(FILE))
 }
 
+/// Cowork fork: 右边的网页借用 Chrome 里的登录的设置
+/// （`browser::chrome::logins`）：数据目录下的 `chrome-logins.json`，
+/// 和 `chrome-sites.json` 在同一个目录。
+///
+/// Resolution order matches `codeg_chrome_sites_path()`.
+pub fn codeg_chrome_logins_path() -> PathBuf {
+    const FILE: &str = crate::browser::chrome::logins::LOGINS_FILE;
+    if let Some(custom) = std::env::var_os("CODEG_HOME").filter(|s| !s.is_empty()) {
+        return PathBuf::from(custom).join(FILE);
+    }
+    if let Some(data) = std::env::var_os("CODEG_DATA_DIR").filter(|s| !s.is_empty()) {
+        return PathBuf::from(data).join(FILE);
+    }
+    dirs::home_dir()
+        .map(|h| h.join(CODEG_DIR_NAME).join(FILE))
+        .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(FILE))
+}
+
 /// The data directory the desktop app exports as `CODEG_DATA_DIR` at the top
 /// of `run()`, before the logging init or anything else reads it: a preset
 /// `CODEG_DATA_DIR` (the operator's, or inherited from the codeg that launched

@@ -125,7 +125,8 @@ pub fn opens_in_chrome(lending: &ChromeLending, scope: &str, raw_url: &str) -> b
             .is_some_and(|url| matches!(url.scheme(), "http" | "https") && !is_local_address(&url))
 }
 
-fn is_local_address(url: &Url) -> bool {
+/// Cowork fork: `logins` 判断哪些地址不借 Chrome 的登录时也用这一个。
+pub(crate) fn is_local_address(url: &Url) -> bool {
     use std::net::{Ipv4Addr, Ipv6Addr};
     use url::Host;
     // 100.64.0.0/10: carrier-grade NAT, and the addresses of a tailnet.

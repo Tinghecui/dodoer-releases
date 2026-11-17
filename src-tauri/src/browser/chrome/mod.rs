@@ -23,6 +23,7 @@
 //! - `agent_window` — the window agents open their pages in
 //! - `lending`  — whose agents may use it, and which tabs each is told of
 //! - `sensitive` — the sites agents are kept off in that Chrome
+//! - `logins`   — Cowork fork: Chrome 的登录（Cookie）借给右边的内置浏览器
 //! - `activity` — what agents did to each tab, for the Chrome panel
 //! - `files`    — uploads from one folder, and the downloads agents start
 
@@ -33,6 +34,7 @@ pub mod endpoint;
 pub mod files;
 pub mod lending;
 pub mod link;
+pub mod logins;
 pub mod page;
 pub mod sensitive;
 pub mod tabs;

@@ -459,6 +459,10 @@ let pendingRestoreActiveConversation: string | null = null
 // 防抖中的保存还没落地，服务器快照里没有它。只补这些，服务器确认过、后来在
 // 别处关掉的标签不在里面，不会被复活。
 let pendingRestoreUnsynced: PersistedUnsyncedConversation[] = []
+// 标签页跟随文件夹时本机上次停在的项目（#741）。刷新后的当前项目原来只靠
+// 选中的标签推出来，停在一个没开会话的项目里时就推不出来、落到别的项目。
+// 由 restorePersistedFolderScope 在跟随模式恢复以后用一次。
+let pendingRestoreActiveScope: TabScope | null = null
 // 首次读取失败时补回的本机标签（未确认的会话标签和草稿）→ blob 里记下的位置
 // （#626）。那时还没有服务器快照，标签排不回原位；第一个快照落地时
 // applyRemoteSnapshot 按这里的位置把它们插回去，用完即清。
@@ -1021,6 +1025,7 @@ function readPersistedGroupState(): {
   pendingRestoreActiveDraft = null
   pendingRestoreActiveConversation = null
   pendingRestoreUnsynced = []
+  pendingRestoreActiveScope = null
   restoredLocalIndex = new Map()
   const fallback = () => ({
     groupLayout: singleGroupLayout() as LayoutNode,
@@ -1045,6 +1050,13 @@ function readPersistedGroupState(): {
             ? parsed.activeConversation
             : null
         pendingRestoreUnsynced = sanitizeUnsynced(parsed.unsyncedConversations)
+        pendingRestoreActiveScope =
+          parsed.activeScope === "global" ||
+          (typeof parsed.activeScope === "number" &&
+            Number.isInteger(parsed.activeScope) &&
+            parsed.activeScope > 0)
+            ? parsed.activeScope
+            : null
         return {
           groupLayout: parsed.layout,
           groupOf: sanitizeStringRecord(parsed.assignments),
@@ -1156,6 +1168,7 @@ function persistGroupState() {
     }
   }
   const activeTab = st.rawTabs.find((t) => t.id === st.activeTabId)
+  const folderTabs = useFolderTabsStore.getState()
   const blob = JSON.stringify({
     layout: normal.layout,
     assignments,
@@ -1172,6 +1185,8 @@ function persistGroupState() {
         : null,
     ...(unsynced.length > 0 ? { unsyncedConversations: unsynced } : {}),
     ...(Object.keys(folderViews).length > 0 ? { views: folderViews } : {}),
+    // 跟随文件夹时本机停在哪个项目（#741），刷新后按它回去。
+    ...(folderTabs.enabled ? { activeScope: folderTabs.scope } : {}),
   })
   if (blob === lastGroupBlob) return
   lastGroupBlob = blob
@@ -3621,6 +3636,28 @@ export function runCorrectionOnce() {
   if (correctionRan) return
   correctionRan = true
   useTabStore.getState().correctDraftAgents()
+}
+
+/**
+ * 刷新后回到本机上次停在的项目（#741）。TabProvider 在跟随模式按存的设置
+ * 恢复以后调一次：这时的项目是从选中的标签推出来的，停在没开会话的项目里
+ * 刷新会落到别的项目。存的项目已经不在侧栏里时不动，照旧按标签走。切项目
+ * 由 folder-tabs 的订阅者接着选这个项目里的标签（没有就不选）、同步当前项目。
+ */
+export function restorePersistedFolderScope() {
+  const scope = pendingRestoreActiveScope
+  pendingRestoreActiveScope = null
+  const folderTabs = useFolderTabsStore.getState()
+  if (scope == null || !folderTabs.enabled || scope === folderTabs.scope) {
+    return
+  }
+  if (
+    scope !== "global" &&
+    !useAppWorkspaceStore.getState().folders.some((f) => f.id === scope)
+  ) {
+    return
+  }
+  folderTabs.activateScope(scope)
 }
 
 export function runRecoveryOnce() {

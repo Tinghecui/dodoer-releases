@@ -7,6 +7,7 @@ import {
 import {
   dropParkedFolderGroupViews,
   resetTabStore,
+  restorePersistedFolderScope,
   shellGroupOfTab,
   useTabStore,
 } from "./tab-store"
@@ -959,5 +960,61 @@ describe("Folder-tabs split layouts per folder", () => {
     useFolderTabsStore.getState().setEnabled(true)
     useFolderTabsStore.getState().activateScope(1)
     expect(leaves()).toHaveLength(1)
+  })
+
+  // #741：停在一个没开会话的项目里刷新，要回到这个项目，而不是落到上次
+  // 选中的会话所在的项目。下面照 TabProvider 刷新后的顺序走一遍。
+  async function reloadWithStoredMode() {
+    restart()
+    useTabStore.setState({ tabsHydrated: true })
+    await useTabStore.getState().refetchTabs()
+    useTabStore.getState().syncActiveFolderId()
+    useFolderTabsStore.getState().hydratePreference()
+    restorePersistedFolderScope()
+  }
+
+  it("reloads into the folder the user was on, even one without conversations", async () => {
+    await twoFolders()
+    useFolderTabsStore.getState().activateScope(3)
+    expect(useTabStore.getState().activeTabId).toBeNull()
+
+    await reloadWithStoredMode()
+    expect(useFolderTabsStore.getState().scope).toBe(3)
+    expect(useAppWorkspaceStore.getState().activeFolderId).toBe(3)
+    expect(useTabStore.getState().activeTabId).toBeNull()
+
+    // 再刷新一次也一样。
+    await reloadWithStoredMode()
+    expect(useFolderTabsStore.getState().scope).toBe(3)
+    expect(useAppWorkspaceStore.getState().activeFolderId).toBe(3)
+  })
+
+  it("reloads into a folder with conversations on that folder's tab", async () => {
+    await twoFolders()
+    useFolderTabsStore.getState().activateScope(1)
+    useFolderTabsStore.getState().activateScope(2)
+    // 刷新后服务器快照的第一个标签在项目 1，按它决定的话会落到项目 1。
+    await reloadWithStoredMode()
+    expect(useFolderTabsStore.getState().scope).toBe(2)
+    expect(useAppWorkspaceStore.getState().activeFolderId).toBe(2)
+    expect(
+      useTabStore
+        .getState()
+        .rawTabs.find((t) => t.id === useTabStore.getState().activeTabId)
+        ?.folderId
+    ).toBe(2)
+  })
+
+  it("falls back to the active tab's folder when the stored folder was removed", async () => {
+    await twoFolders()
+    useFolderTabsStore.getState().activateScope(3)
+    const folders = useAppWorkspaceStore
+      .getState()
+      .folders.filter((f) => f.id !== 3)
+    useAppWorkspaceStore.setState({ folders, allFolders: folders })
+    await reloadWithStoredMode()
+    const { scope } = useFolderTabsStore.getState()
+    expect(scope).not.toBe(3)
+    expect(useAppWorkspaceStore.getState().activeFolderId).toBe(scope)
   })
 })

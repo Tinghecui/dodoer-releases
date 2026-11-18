@@ -16,6 +16,7 @@ import { onTransportReconnect, subscribe } from "@/lib/platform"
 import {
   dropParkedFolderGroupViews,
   pruneOrphanDraftsOnce,
+  restorePersistedFolderScope,
   runCorrectionOnce,
   runRecoveryOnce,
   useTabStore,
@@ -88,6 +89,8 @@ export function TabProvider({ children }: TabProviderProps) {
     preferenceHydrated.current = true
     useTabStore.getState().syncActiveFolderId()
     useFolderTabsStore.getState().hydratePreference()
+    // 回到本机上次停在的项目，没开会话的项目也算（#741）。
+    restorePersistedFolderScope()
     dropParkedFolderGroupViews()
   }, [tabsHydrated, foldersHydrated])
   // From then on, a switch made in another window applies here too.

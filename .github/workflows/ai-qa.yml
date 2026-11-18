@@ -128,8 +128,16 @@ jobs:
         run: |
           set -euo pipefail
           src="${PR:+refs/pull/$PR/merge}"; src="${src:-${REF:-HEAD}}"
+          url="https://x-access-token:${AIQA_PRIVATE_TOKEN}@github.com/${SOURCE_REPO}.git"
           git init -q .
-          git fetch -q --depth 1 "https://x-access-token:${AIQA_PRIVATE_TOKEN}@github.com/${SOURCE_REPO}.git" "$src" 2>/dev/null \
-            || { echo "fetch failed"; exit 1; }
+          if ! git fetch -q --depth 1 "$url" "$src" 2>/dev/null; then
+            # PR 在派这一轮之后、机器起来之前合进去了（调度台的界面试跑在审查员通过时派，auto-merge 几秒后就合，2026-11-18 的 PR #632）：
+            # refs/pull/<n>/merge 合并以后就没了，改测合进去的那个提交（和合并前的 refs/pull/<n>/merge 一样，第一个父是 base、第二个是 PR 头）
+            mc=""
+            if [[ -n "$PR" ]]; then
+              mc=$(GH_TOKEN="$AIQA_PRIVATE_TOKEN" gh api "repos/$SOURCE_REPO/pulls/$PR" --jq 'select(.merged) | .merge_commit_sha' 2>/dev/null || true)
+            fi
+            { [[ -n "$mc" ]] && git fetch -q --depth 1 "$url" "$mc" 2>/dev/null; } || { echo "fetch failed"; exit 1; }
+          fi
           git checkout -q --detach FETCH_HEAD
           exec bash .cowork/ai-qa/sealed.sh

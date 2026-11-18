@@ -145,6 +145,10 @@ const gitCommitMock = vi.hoisted(() =>
 const generateMock = vi.hoisted(() => vi.fn())
 const cancelGenerateMock = vi.hoisted(() => vi.fn(async () => {}))
 const openCommitWindowMock = vi.hoisted(() => vi.fn(async () => {}))
+const gitStatusMock = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ status: string; file: string }[]> => [])
+)
+const gitRollbackFileMock = vi.hoisted(() => vi.fn(async () => {}))
 
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
@@ -152,6 +156,8 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   openCommitWindow: openCommitWindowMock,
   gitGenerateCommitMessage: generateMock,
   gitGenerateCommitMessageCancel: cancelGenerateMock,
+  gitStatus: gitStatusMock,
+  gitRollbackFile: gitRollbackFileMock,
 }))
 
 vi.mock("@/hooks/use-workspace-state-store", () => ({
@@ -1025,5 +1031,44 @@ describe("GitChangesTab commit code from a row's menu", () => {
       "Too many files selected. The commit window is open: tick the files there and check the selection before committing."
     )
     warning.mockRestore()
+  })
+})
+
+describe("GitChangesTab rollback of a renamed file (#604)", () => {
+  afterEach(() => {
+    menus.render = false
+  })
+
+  it("restores the old name before removing the new one", async () => {
+    menus.render = true
+    gitRollbackFileMock.mockClear()
+    gitStatusMock.mockResolvedValue([
+      { status: "R", file: "a.md -> docs/b.md" },
+      { status: "M", file: "README.md" },
+    ])
+    store.git = [
+      { path: "docs/b.md", status: "R", additions: 1, deletions: 0 },
+      { path: "README.md", status: "M", additions: 1, deletions: 0 },
+    ]
+    renderTab()
+
+    const box = screen
+      .getAllByTestId("ctx")
+      .filter(
+        (el) =>
+          el.querySelector('[data-testid="ctx"]') === null &&
+          el.textContent?.includes("b.md")
+      )
+    expect(box).toHaveLength(1)
+    fireEvent.click(within(box[0]).getByRole("button", { name: "Rollback" }))
+    const dialog = await screen.findByRole("alertdialog")
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Rollback" }))
+    })
+
+    expect(gitRollbackFileMock.mock.calls).toEqual([
+      ["/repo", "a.md"],
+      ["/repo", "docs/b.md"],
+    ])
   })
 })

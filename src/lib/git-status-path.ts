@@ -52,3 +52,69 @@ export function rollbackPaths(
   }
   return [...originals, target]
 }
+
+/**
+ * 一行 git 状态拆成新名和旧名：只拆改名、复制的行，普通文件名里本来带「 -> 」的
+ * 原样保留；名字首尾的空格也原样保留。
+ */
+export function splitGitStatusEntry<T extends { status: string; file: string }>(
+  entry: T
+): T & { originalFile?: string } {
+  if (!isRenameStatus(entry.status)) return entry
+  const { file, originalFile } = splitGitStatusRename(entry.file)
+  return originalFile ? { ...entry, file, originalFile } : entry
+}
+
+/**
+ * 一次回滚好几个目标（「变更」面板、文件树的目录回滚窗口里勾的文件）要交给恢复
+ * 接口的路径：每个目标按 rollbackPaths 补上改名的旧名，重复的只留第一次出现的。
+ * entries 是原样的状态行（还没拆「旧名 -> 新名」）。
+ */
+export function rollbackPathsForStatus(
+  targets: readonly string[],
+  entries: readonly { status: string; file: string }[]
+): string[] {
+  const split = entries.map(splitGitStatusEntry)
+  const paths: string[] = []
+  for (const target of targets) {
+    for (const path of rollbackPaths(target, split)) {
+      if (!paths.includes(path)) paths.push(path)
+    }
+  }
+  return paths
+}
+
+function normalizeComparePath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/, "")
+}
+
+/**
+ * 目录（"" 是整个仓库）下有变更的文件，给「变更」面板、文件树的目录操作窗口列出来。
+ * 改名、复制的行用新名；普通文件名里带「 -> 」的不拆，名字首尾的空格不去掉。
+ */
+export function scopeGitStatusEntriesForDirectory(
+  entries: readonly { status: string; file: string }[],
+  directoryPath: string
+): { path: string; status: string }[] {
+  const normalizedDirPath = normalizeComparePath(directoryPath)
+  const scopedEntries: { path: string; status: string }[] = []
+  const dedupByPath = new Set<string>()
+
+  for (const entry of entries) {
+    const normalizedPath = normalizeComparePath(splitGitStatusEntry(entry).file)
+    if (!normalizedPath) continue
+    if (
+      normalizedDirPath &&
+      !normalizedPath.startsWith(`${normalizedDirPath}/`)
+    ) {
+      continue
+    }
+    if (dedupByPath.has(normalizedPath)) continue
+    dedupByPath.add(normalizedPath)
+    scopedEntries.push({ path: normalizedPath, status: entry.status })
+  }
+
+  return scopedEntries.sort((left, right) =>
+    left.path.localeCompare(right.path, undefined, { sensitivity: "base" })
+  )
+}

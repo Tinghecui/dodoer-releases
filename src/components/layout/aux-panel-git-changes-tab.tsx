@@ -87,7 +87,10 @@ import {
 } from "@/lib/api"
 import { joinFsPath } from "@/lib/path-utils"
 import { emitAttachFileToSession } from "@/lib/session-attachment-events"
-import type { GitStatusEntry } from "@/lib/types"
+import {
+  rollbackPathsForStatus,
+  scopeGitStatusEntriesForDirectory,
+} from "@/lib/git-status-path"
 import { toErrorMessage } from "@/lib/app-error"
 import { type CommitScope } from "@/lib/commit-window-paths"
 import {
@@ -185,53 +188,6 @@ function normalizePathSegments(path: string): string[] {
   const normalized = path.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "")
   if (!normalized) return []
   return normalized.split("/").filter(Boolean)
-}
-
-function normalizeGitStatusPath(path: string): string {
-  const normalized = path.trim().replace(/\/+$/, "")
-  const renameSeparator = " -> "
-  const renameIndex = normalized.lastIndexOf(renameSeparator)
-  if (renameIndex < 0) return normalized
-  return normalized.slice(renameIndex + renameSeparator.length).trim()
-}
-
-function normalizeComparePath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/\/+$/, "")
-}
-
-function isPathInDirectory(path: string, directoryPath: string): boolean {
-  const normalizedPath = normalizeComparePath(path)
-  const normalizedDir = normalizeComparePath(directoryPath)
-  if (!normalizedDir) return normalizedPath.length > 0
-  return (
-    normalizedPath === normalizedDir ||
-    normalizedPath.startsWith(`${normalizedDir}/`)
-  )
-}
-
-function scopeGitStatusEntriesForDirectory(
-  entries: GitStatusEntry[],
-  directoryPath: string
-): DirectoryGitCandidateEntry[] {
-  const normalizedDirPath = normalizeComparePath(directoryPath)
-  const scopedEntries: DirectoryGitCandidateEntry[] = []
-  const dedupByPath = new Set<string>()
-
-  for (const entry of entries) {
-    const normalizedPath = normalizeComparePath(
-      normalizeGitStatusPath(entry.file)
-    )
-    if (!normalizedPath) continue
-    if (!isPathInDirectory(normalizedPath, normalizedDirPath)) continue
-    if (normalizedPath === normalizedDirPath) continue
-    if (dedupByPath.has(normalizedPath)) continue
-    dedupByPath.add(normalizedPath)
-    scopedEntries.push({ path: normalizedPath, status: entry.status })
-  }
-
-  return scopedEntries.sort((left, right) =>
-    left.path.localeCompare(right.path, undefined, { sensitivity: "base" })
-  )
 }
 
 function isDeleteAction(action: DirectoryGitAction): boolean {
@@ -1104,7 +1060,14 @@ export function GitChangesTab() {
 
     setRollingBack(true)
     try {
-      await gitRollbackFile(folder.path, rollbackTarget.path)
+      // 改名的新名要连同旧名一起恢复，不然新名被删、旧名留着暂存的删除（#604）
+      const statusEntries = await gitStatus(folder.path, true)
+      for (const target of rollbackPathsForStatus(
+        [rollbackTarget.path],
+        statusEntries
+      )) {
+        await gitRollbackFile(folder.path, target)
+      }
       toast.success(t("toasts.rolledBack", { name: rollbackTarget.name }))
       setRollbackTarget(null)
       await workspaceState.requestResync("git_action:rollback")
@@ -1212,8 +1175,13 @@ export function GitChangesTab() {
           })
         )
       } else {
-        for (const filePath of selectedPaths) {
-          await gitRollbackFile(folder.path, filePath)
+        // 勾的文件里有改名过来的，旧名也一起恢复（#604）
+        const statusEntries = await gitStatus(folder.path, true)
+        for (const target of rollbackPathsForStatus(
+          selectedPaths,
+          statusEntries
+        )) {
+          await gitRollbackFile(folder.path, target)
         }
         toast.success(
           t("toasts.rolledBackFiles", {

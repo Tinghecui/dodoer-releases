@@ -62,13 +62,16 @@ import {
   writeFileTreeDragData,
   type FileTreeDragPayload,
 } from "@/lib/file-tree-dnd"
+import {
+  rollbackPathsForStatus,
+  scopeGitStatusEntriesForDirectory,
+} from "@/lib/git-status-path"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   FOLDER_LINKS_CHANGED_EVENT,
   type FileTreeNode,
   type FolderLinksChanged,
   type GitBranchList,
-  type GitStatusEntry,
 } from "@/lib/types"
 import {
   FileTree,
@@ -164,14 +167,6 @@ type GitFileState =
   | "conflicted"
   | "deleted"
   | "renamed"
-
-function normalizeGitStatusPath(path: string): string {
-  const normalized = path.trim()
-  const renameSeparator = " -> "
-  const renameIndex = normalized.lastIndexOf(renameSeparator)
-  if (renameIndex < 0) return normalized
-  return normalized.slice(renameIndex + renameSeparator.length).trim()
-}
 
 function normalizeComparePath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "")
@@ -321,41 +316,6 @@ interface MutableDirectoryGitTreeDirNode {
 }
 
 const DIRECTORY_GIT_TREE_ROOT_PATH = "__directory_git_tree_root__"
-
-function isPathInDirectory(path: string, directoryPath: string): boolean {
-  const normalizedPath = normalizeComparePath(path)
-  const normalizedDir = normalizeComparePath(directoryPath)
-  if (!normalizedDir) return normalizedPath.length > 0
-  return (
-    normalizedPath === normalizedDir ||
-    normalizedPath.startsWith(`${normalizedDir}/`)
-  )
-}
-
-function scopeGitStatusEntriesForDirectory(
-  entries: GitStatusEntry[],
-  directoryPath: string
-): DirectoryGitCandidateEntry[] {
-  const normalizedDirPath = normalizeComparePath(directoryPath)
-  const scopedEntries: DirectoryGitCandidateEntry[] = []
-  const dedupByPath = new Set<string>()
-
-  for (const entry of entries) {
-    const normalizedPath = normalizeComparePath(
-      normalizeGitStatusPath(entry.file)
-    )
-    if (!normalizedPath) continue
-    if (!isPathInDirectory(normalizedPath, normalizedDirPath)) continue
-    if (normalizedPath === normalizedDirPath) continue
-    if (dedupByPath.has(normalizedPath)) continue
-    dedupByPath.add(normalizedPath)
-    scopedEntries.push({ path: normalizedPath, status: entry.status })
-  }
-
-  return scopedEntries.sort((left, right) =>
-    left.path.localeCompare(right.path, undefined, { sensitivity: "base" })
-  )
-}
 
 function filterDirectoryGitCandidates(
   entries: DirectoryGitCandidateEntry[],
@@ -2755,7 +2715,14 @@ export function FileTreeTab() {
     if (!folder?.path || !rollbackTarget) return
     setRollingBack(true)
     try {
-      await gitRollbackFile(folder.path, rollbackTarget.path)
+      // 改名的新名要连同旧名一起恢复，不然新名被删、旧名留着暂存的删除（#604）
+      const statusEntries = await gitStatus(folder.path, true)
+      for (const target of rollbackPathsForStatus(
+        [rollbackTarget.path],
+        statusEntries
+      )) {
+        await gitRollbackFile(folder.path, target)
+      }
       toast.success(t("toasts.rolledBack", { name: rollbackTarget.name }))
       setRollbackTarget(null)
       await fetchTree()
@@ -2784,8 +2751,13 @@ export function FileTreeTab() {
           })
         )
       } else {
-        for (const filePath of selectedPaths) {
-          await gitRollbackFile(folder.path, filePath)
+        // 勾的文件里有改名过来的，旧名也一起恢复（#604）
+        const statusEntries = await gitStatus(folder.path, true)
+        for (const target of rollbackPathsForStatus(
+          selectedPaths,
+          statusEntries
+        )) {
+          await gitRollbackFile(folder.path, target)
         }
         toast.success(
           t("toasts.rolledBackFiles", {

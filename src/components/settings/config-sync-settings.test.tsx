@@ -647,3 +647,52 @@ describe("ConfigSyncSettings — background status", () => {
     await screen.findByText(/connection refused/)
   })
 })
+
+describe("ConfigSyncSettings — load failure", () => {
+  const tSystem = enMessages.SystemSettings
+
+  /// Regression: a failed read used to mark the panel loaded with every field
+  /// at its default, and the master switch saves the whole form on click —
+  /// one flip overwrote the stored server, folder and schedule.
+  it("locks the WebDAV controls and offers a retry until the read succeeds", async () => {
+    vi.mocked(getConfigSyncSettings).mockRejectedValueOnce(
+      new Error("server unreachable")
+    )
+    renderPanel()
+
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent(/Load failed: .*server unreachable/)
+    const toggle = screen.getByRole("switch", { name: t.webdavTitle })
+    expect(toggle).toBeDisabled()
+    expect(
+      screen.queryByRole("button", { name: t.saveButton })
+    ).not.toBeInTheDocument()
+    fireEvent.click(toggle)
+    expect(updateConfigSyncSettings).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole("button", { name: tSystem.retry }))
+    await screen.findByRole("button", { name: t.saveButton })
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.getByRole("switch", { name: t.webdavTitle })).toBeEnabled()
+    expect(
+      (document.querySelector("#config-sync-url") as HTMLInputElement).value
+    ).toBe(SAVED.serverUrl)
+
+    fireEvent.click(screen.getByRole("button", { name: t.saveButton }))
+    await waitFor(() => expect(updateConfigSyncSettings).toHaveBeenCalled())
+    expect(vi.mocked(updateConfigSyncSettings).mock.calls[0][0]).toMatchObject({
+      serverUrl: SAVED.serverUrl,
+      username: SAVED.username,
+    })
+  })
+
+  it("shows no failure notice and keeps saving when the read succeeds", async () => {
+    await renderLoaded()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: tSystem.retry })
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: t.saveButton }))
+    await waitFor(() => expect(updateConfigSyncSettings).toHaveBeenCalled())
+  })
+})

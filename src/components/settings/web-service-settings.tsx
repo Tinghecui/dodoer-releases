@@ -51,6 +51,7 @@ import {
   webServerErrorCode,
 } from "@/lib/web-service/start-error"
 import { asWebServiceHost } from "@/lib/web-service/hosts"
+import { toErrorMessage } from "@/lib/app-error"
 
 // Remembers which reachable address the user last chose to display/open.
 // Keyed by host (IP) only, so the choice survives a port change.
@@ -287,6 +288,7 @@ function TokenEditor({
 
 export function WebServiceSettings() {
   const t = useTranslations("WebServiceSettings")
+  const tSystem = useTranslations("SystemSettings")
   const [status, setStatus] = useState<WebServerInfo | null>(null)
   const [port, setPort] = useState(String(DEFAULT_PORT))
   const [host, setHost] = useState<WebServiceHost>(DEFAULT_WEB_SERVICE_HOST)
@@ -296,6 +298,10 @@ export function WebServiceSettings() {
   const [portProbe, setPortProbe] = useState<WebServicePortProbe | null>(null)
   const [autoStart, setAutoStart] = useState(false)
   const [configLoaded, setConfigLoaded] = useState(false)
+  /** Why the saved config could not be read. While it is unread every
+   *  control that writes it stays disabled — saving then would put the
+   *  defaults over the real port, token, host and auto-start. */
+  const [configLoadError, setConfigLoadError] = useState<string | null>(null)
   const [selectedAddress, setSelectedAddress] = useState<string | null>(null)
   const startErrorMessage = useWebServerStartErrorMessage()
   /** Bumped by every status read issued: only the newest read lands. Reads
@@ -334,7 +340,11 @@ export function WebServiceSettings() {
         getWebServerStatus(),
         getWebServiceConfig()
           .then((config) => ({ ok: true as const, config }))
-          .catch(() => ({ ok: false as const, config: fallbackConfig })),
+          .catch((e: unknown) => ({
+            ok: false as const,
+            config: fallbackConfig,
+            error: toErrorMessage(e),
+          })),
       ])
       if (seq !== fetchSeqRef.current) return
       const savedConfig = configResult.config
@@ -358,8 +368,12 @@ export function WebServiceSettings() {
         probePort(resolvedPort)
       }
       setConfigLoaded(configResult.ok)
-    } catch {
-      // Server status unavailable
+      setConfigLoadError(configResult.ok ? null : configResult.error)
+    } catch (e: unknown) {
+      // Server status unavailable: the config was not applied either.
+      if (seq !== fetchSeqRef.current) return
+      setConfigLoaded(false)
+      setConfigLoadError(toErrorMessage(e))
     }
   }, [probePort])
 
@@ -424,6 +438,7 @@ export function WebServiceSettings() {
 
   const persistWebServiceConfig = useCallback(
     async (nextAutoStart = autoStart) => {
+      if (!configLoaded) return
       const portNum = parseInt(port, 10)
       if (!Number.isFinite(portNum) || portNum < 1 || portNum > 65535) {
         return
@@ -440,7 +455,7 @@ export function WebServiceSettings() {
         setError(t("saveConfigFailed"))
       }
     },
-    [autoStart, host, port, t, token]
+    [autoStart, configLoaded, host, port, t, token]
   )
 
   useEffect(() => {
@@ -506,6 +521,7 @@ export function WebServiceSettings() {
   }
 
   const isRunning = status !== null
+  const configLocked = !configLoaded
   const currentAddress = selectedAddress ?? status?.addresses[0] ?? null
   const hasMultipleAddresses = (status?.addresses.length ?? 0) > 1
   const showStaleBanner =
@@ -542,6 +558,22 @@ export function WebServiceSettings() {
             </div>
           )}
 
+          {configLoadError !== null && (
+            <div className="flex items-center gap-3 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
+              <span className="min-w-0 flex-1">
+                {tSystem("loadFailed", { message: configLoadError })}
+              </span>
+              <button
+                type="button"
+                onClick={() => void fetchStatus()}
+                className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-input bg-background px-2.5 text-xs font-medium text-foreground ring-offset-background transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                {tSystem("retry")}
+              </button>
+            </div>
+          )}
+
           {/* Port config */}
           <div className="flex items-center gap-4">
             <label className="w-20 text-sm font-medium">{t("port")}</label>
@@ -553,7 +585,7 @@ export function WebServiceSettings() {
                 setPort(e.target.value)
                 setPortProbe(null)
               }}
-              disabled={isRunning}
+              disabled={isRunning || configLocked}
               min={1024}
               max={65535}
               className="flex h-9 w-32 rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
@@ -574,7 +606,7 @@ export function WebServiceSettings() {
                   markEdited()
                   setHost(asWebServiceHost(next))
                 }}
-                disabled={isRunning}
+                disabled={isRunning || configLocked}
               >
                 <SelectTrigger className="w-full max-w-sm">
                   <SelectValue />
@@ -602,7 +634,7 @@ export function WebServiceSettings() {
               markEdited()
               setToken(next)
             }}
-            disabled={isRunning}
+            disabled={isRunning || configLocked}
             placeholder={t("tokenPlaceholder")}
           />
           <p className="text-xs text-muted-foreground">{t("tokenHint")}</p>
@@ -613,6 +645,7 @@ export function WebServiceSettings() {
             <div className="flex min-w-0 items-center gap-3">
               <Switch
                 checked={autoStart}
+                disabled={configLocked}
                 onCheckedChange={(checked) => {
                   markEdited()
                   setAutoStart(checked)

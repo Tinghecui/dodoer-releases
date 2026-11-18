@@ -544,4 +544,45 @@ describe("LogsSettings", () => {
 
     expect(screen.getByRole("button", { name: M.targetsAdd })).toBeDisabled()
   })
+
+  /// Regression: after a failed read the editor held `info` and no overrides
+  /// but stayed editable, and every save persists the whole object — one
+  /// level change wiped the stored per-module overrides.
+  it("locks the capture settings after a failed read until a retry succeeds", async () => {
+    const T = enMessages.SystemSettings
+    mockGetSettings.mockRejectedValueOnce(new Error("backend down"))
+    renderWithIntl()
+
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent("Load failed: Error: backend down")
+    // The viewer says the read failed rather than claiming there are no logs.
+    expect(screen.queryByText(M.empty)).toBeNull()
+    expect(screen.getByRole("button", { name: M.targetsAdd })).toBeDisabled()
+    // The first combobox is the capture level; the viewer filter stays usable.
+    expect(screen.getAllByRole("combobox")[0]).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: M.targetsAdd }))
+    expect(screen.queryByPlaceholderText("codeg_lib::acp")).toBeNull()
+
+    mockGetSettings.mockResolvedValueOnce({
+      level: "warn",
+      targets: [{ target: "codeg_lib::acp", level: "debug" }],
+      env_locked: false,
+    })
+    fireEvent.click(screen.getByRole("button", { name: T.retry }))
+
+    const input = await screen.findByDisplayValue("codeg_lib::acp")
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.getByText(M.empty)).toBeInTheDocument()
+    expect(input).toBeEnabled()
+    expect(screen.getByRole("button", { name: M.targetsAdd })).toBeEnabled()
+    expect(mockSetSettings).not.toHaveBeenCalled()
+
+    fireEvent.blur(input)
+    await waitFor(() =>
+      expect(mockSetSettings).toHaveBeenCalledWith({
+        level: "warn",
+        targets: [{ target: "codeg_lib::acp", level: "debug" }],
+      })
+    )
+  })
 })

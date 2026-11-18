@@ -271,6 +271,7 @@ const LogRow = memo(function LogRow({
 
 export function LogsSettings() {
   const t = useTranslations("LogsSettings")
+  const tSystem = useTranslations("SystemSettings")
   const desktop = isDesktop()
 
   const [loading, setLoading] = useState(true)
@@ -644,6 +645,11 @@ export function LogsSettings() {
     [t]
   )
 
+  // Without the saved settings the editor shows `info` and no overrides, and
+  // every edit persists the whole object — one level change would wipe the
+  // stored per-module overrides. Lock it until a load succeeds.
+  const settingsLocked = envLocked || loadError !== null
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
@@ -664,8 +670,26 @@ export function LogsSettings() {
         </section>
 
         {loadError && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-            {loadError}
+          <div
+            role="alert"
+            className="flex items-center justify-between gap-3 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400"
+          >
+            <span className="min-w-0 break-words">
+              {tSystem("loadFailed", { message: loadError })}
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="shrink-0"
+              onClick={() => {
+                loadInitial().catch((err) => {
+                  console.error("[LogsSettings] retry failed:", err)
+                })
+              }}
+            >
+              <RotateCw className="h-3.5 w-3.5" />
+              {tSystem("retry")}
+            </Button>
           </div>
         )}
 
@@ -684,11 +708,11 @@ export function LogsSettings() {
             <Select
               value={captureLevel}
               onValueChange={handleLevelChange}
-              disabled={envLocked}
+              disabled={settingsLocked}
             >
               <SelectTrigger
                 className="h-8 w-40 text-xs"
-                disabled={savingLevel || envLocked}
+                disabled={savingLevel || settingsLocked}
               >
                 <SelectValue />
               </SelectTrigger>
@@ -721,7 +745,7 @@ export function LogsSettings() {
                 size="sm"
                 variant="outline"
                 onClick={handleAddTarget}
-                disabled={envLocked}
+                disabled={settingsLocked}
               >
                 <Plus className="h-3.5 w-3.5" />
                 {t("targetsAdd")}
@@ -742,7 +766,7 @@ export function LogsSettings() {
                         onBlur={queueSave}
                         placeholder="codeg_lib::acp"
                         list="codeg-log-targets"
-                        disabled={envLocked}
+                        disabled={settingsLocked}
                         className={`h-8 flex-1 text-xs ${
                           invalid ? "border-red-500/60" : ""
                         }`}
@@ -752,7 +776,7 @@ export function LogsSettings() {
                         onValueChange={(v) =>
                           handleTargetLevelChange(i, v as LogLevel)
                         }
-                        disabled={envLocked}
+                        disabled={settingsLocked}
                       >
                         <SelectTrigger className="h-8 w-28 text-xs">
                           <SelectValue />
@@ -774,7 +798,7 @@ export function LogsSettings() {
                         variant="ghost"
                         className="h-8 w-8 shrink-0"
                         onClick={() => handleRemoveTarget(i)}
-                        disabled={envLocked}
+                        disabled={settingsLocked}
                         aria-label={t("targetsRemove")}
                       >
                         <X className="h-3.5 w-3.5" />
@@ -881,7 +905,11 @@ export function LogsSettings() {
           <div className="h-[30rem] rounded-md border bg-background/50 font-mono text-2xs leading-5">
             {visible.length === 0 ? (
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                {t("empty")}
+                {/* A failed read is not an empty log; the banner above
+                    carries the retry. */}
+                {loadError && records.length === 0
+                  ? tSystem("loadFailed", { message: loadError })
+                  : t("empty")}
               </div>
             ) : (
               <ScrollArea

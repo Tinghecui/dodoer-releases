@@ -134,6 +134,7 @@ function formatTimestamp(value: string | null): string | null {
  */
 export function ConfigSyncSettings() {
   const t = useTranslations("ConfigSyncSettings")
+  const tSystem = useTranslations("SystemSettings")
   // Root translator so backend errors carrying `configSync.error.*` keys
   // localize; falls back to the English message when the key is unknown.
   const tRoot = useTranslations()
@@ -154,6 +155,7 @@ export function ConfigSyncSettings() {
   )
 
   const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [enabled, setEnabled] = useState(false)
   const [serverUrl, setServerUrl] = useState("")
   const [preset, setPreset] = useState<PresetId>("custom")
@@ -235,43 +237,51 @@ export function ConfigSyncSettings() {
     }
   }, [])
 
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const [settings, state] = await Promise.all([
-          getConfigSyncSettings(),
-          getConfigSyncState(),
-          refreshRollbacks(),
-        ])
-        if (cancelled) return
-        setEnabled(settings.enabled)
-        setServerUrl(settings.serverUrl)
-        setPreset(presetFromUrl(settings.serverUrl))
-        setUsername(settings.username)
-        setHasPassword(settings.hasPassword)
-        setSavedAccount({
-          serverUrl: settings.serverUrl,
-          username: settings.username,
-        })
-        setEncrypt(settings.encrypt)
-        setHasPassphrase(settings.hasPassphrase)
-        setRemoteDir(settings.remoteDir)
-        setProfile(settings.profile)
-        setAutoSync(settings.autoSync)
-        setIntervalMinutes(settings.intervalMinutes)
-        setLastSyncAt(state.lastSyncAt)
-        setLastError(state.lastError)
-      } catch (err) {
-        console.error("[config-sync] failed to load settings", err)
-      } finally {
-        if (!cancelled) setLoaded(true)
+  // Bumped per load so a slow, superseded read cannot overwrite a newer one.
+  const loadSeq = useRef(0)
+  const loadSettings = useCallback(async () => {
+    const seq = ++loadSeq.current
+    setLoadError(null)
+    setLoaded(false)
+    try {
+      const [settings, state] = await Promise.all([
+        getConfigSyncSettings(),
+        getConfigSyncState(),
+        refreshRollbacks(),
+      ])
+      if (!mounted.current || seq !== loadSeq.current) return
+      setEnabled(settings.enabled)
+      setServerUrl(settings.serverUrl)
+      setPreset(presetFromUrl(settings.serverUrl))
+      setUsername(settings.username)
+      setHasPassword(settings.hasPassword)
+      setSavedAccount({
+        serverUrl: settings.serverUrl,
+        username: settings.username,
+      })
+      setEncrypt(settings.encrypt)
+      setHasPassphrase(settings.hasPassphrase)
+      setRemoteDir(settings.remoteDir)
+      setProfile(settings.profile)
+      setAutoSync(settings.autoSync)
+      setIntervalMinutes(settings.intervalMinutes)
+      setLastSyncAt(state.lastSyncAt)
+      setLastError(state.lastError)
+      setLoaded(true)
+    } catch (err) {
+      console.error("[config-sync] failed to load settings", err)
+      // Stays unloaded: the form would otherwise hold defaults, and the
+      // switch saves the whole form on click — overwriting the stored server,
+      // folder and schedule with them.
+      if (mounted.current && seq === loadSeq.current) {
+        setLoadError(localize(err))
       }
-    })()
-    return () => {
-      cancelled = true
     }
-  }, [refreshRollbacks])
+  }, [localize, refreshRollbacks])
+
+  useEffect(() => {
+    void loadSettings()
+  }, [loadSettings])
 
   // The background uploader reports here; without this the panel would show a
   // stale "last synced" until the page is reopened.
@@ -745,6 +755,26 @@ export function ConfigSyncSettings() {
             disabled={!loaded || busy !== null}
           />
         </div>
+
+        {loadError ? (
+          <div
+            role="alert"
+            className="flex items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+          >
+            <span className="min-w-0 break-words">
+              {tSystem("loadFailed", { message: loadError })}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              onClick={() => void loadSettings()}
+            >
+              <RefreshCw className="h-4 w-4" />
+              {tSystem("retry")}
+            </Button>
+          </div>
+        ) : null}
 
         {enabled ? (
           <div className="space-y-3">

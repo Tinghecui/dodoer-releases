@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -33,7 +39,9 @@ import {
   detectGit,
   getGitSettings,
   getGitHubAccounts,
+  testGitPath,
   updateGitHubAccounts,
+  updateGitSettings,
 } from "@/lib/api"
 import type { GitHubAccount } from "@/lib/types"
 
@@ -41,6 +49,8 @@ const mockDetectGit = vi.mocked(detectGit)
 const mockGetGitSettings = vi.mocked(getGitSettings)
 const mockGetGitHubAccounts = vi.mocked(getGitHubAccounts)
 const mockUpdateGitHubAccounts = vi.mocked(updateGitHubAccounts)
+const mockUpdateGitSettings = vi.mocked(updateGitSettings)
+const mockTestGitPath = vi.mocked(testGitPath)
 
 function account(overrides: Partial<GitHubAccount> = {}): GitHubAccount {
   return {
@@ -248,5 +258,77 @@ describe("VersionControlSettings account changes", () => {
 
     await waitFor(() => expect(mockGetGitHubAccounts).toHaveBeenCalledTimes(2))
     expect(mockUpdateGitHubAccounts).not.toHaveBeenCalled()
+  })
+})
+
+describe("VersionControlSettings read failure", () => {
+  const T = enMessages.VersionControlSettings
+  const retry = enMessages.SystemSettings.retry
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDetectGit.mockResolvedValue({
+      installed: true,
+      version: "git version 2.39.0",
+      path: "/opt/git/bin/git",
+    })
+    mockGetGitHubAccounts.mockResolvedValue({ accounts: [] })
+  })
+
+  /// Regression (#628): a failed read left the path field empty and every
+  /// account list reading "no accounts", with only a passing toast; saving
+  /// the path then wrote the real custom git path back as empty.
+  it("locks the git path and says the lists failed until a retry succeeds", async () => {
+    mockGetGitSettings.mockRejectedValueOnce(new Error("backend down"))
+
+    renderWithIntl()
+
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent("backend down")
+    // An unread detection is not reported as "git not found".
+    expect(screen.queryByText(T.gitNotFound)).not.toBeInTheDocument()
+    // The account sections say the read failed instead of "no accounts".
+    expect(screen.queryByText(T.noAccounts)).not.toBeInTheDocument()
+    expect(screen.queryByText(T.gitAccount.noAccounts)).not.toBeInTheDocument()
+    expect(
+      screen.getAllByText(/Failed to load settings: backend down/)
+    ).toHaveLength(6)
+    // Every write is out of reach: path editing and every add button.
+    expect(screen.getByRole("button", { name: T.customGitPath })).toBeDisabled()
+    // GitHub, GitLab, Gitea, CNB and plain git each have one.
+    const adds = screen.getAllByRole("button", { name: T.addAccount })
+    expect(adds).toHaveLength(5)
+    for (const button of adds) expect(button).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: T.customGitPath }))
+    expect(screen.queryByPlaceholderText(T.customGitPathPlaceholder)).toBeNull()
+
+    mockGetGitSettings.mockResolvedValueOnce({
+      custom_path: "/opt/git/bin/git",
+    })
+    fireEvent.click(within(alert).getByRole("button", { name: retry }))
+
+    await waitFor(() =>
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    )
+    expect(await screen.findByText(T.noAccounts)).toBeInTheDocument()
+    const edit = screen.getByRole("button", { name: T.customGitPath })
+    expect(edit).toBeEnabled()
+    fireEvent.click(edit)
+    const input = screen.getByPlaceholderText(T.customGitPathPlaceholder)
+    expect(input).toHaveValue("/opt/git/bin/git")
+    expect(mockUpdateGitSettings).not.toHaveBeenCalled()
+
+    mockTestGitPath.mockResolvedValue({
+      installed: true,
+      version: "git version 2.39.0",
+      path: "/opt/git/bin/git",
+    })
+    mockUpdateGitSettings.mockResolvedValue({ custom_path: "/opt/git/bin/git" })
+    fireEvent.click(screen.getByRole("button", { name: T.save }))
+    await waitFor(() =>
+      expect(mockUpdateGitSettings).toHaveBeenCalledWith({
+        custom_path: "/opt/git/bin/git",
+      })
+    )
   })
 })

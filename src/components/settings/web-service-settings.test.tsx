@@ -74,6 +74,12 @@ function portInput() {
   return screen.getByRole("spinbutton") as HTMLInputElement
 }
 
+function tokenInput() {
+  return screen.getByPlaceholderText(
+    enMessages.WebServiceSettings.tokenPlaceholder
+  ) as HTMLInputElement
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   handlers.clear()
@@ -132,6 +138,74 @@ describe("WebServiceSettings", () => {
           expect.objectContaining({ port: 4000 })
         ),
       { timeout: 2000 }
+    )
+  })
+
+  /** The saved config could not be read: every control that writes it is
+   *  locked, so the defaults never land over the real port, token, host
+   *  and auto-start. Retry reads again and unlocks with the saved values. */
+  it("locks the writing controls until the saved config is read", async () => {
+    api.getWebServiceConfig.mockRejectedValueOnce(new Error("boom"))
+    mount()
+    await screen.findByText("Load failed: boom")
+
+    const autoStart = screen.getByRole("switch")
+    expect(autoStart).toBeDisabled()
+    expect(portInput()).toBeDisabled()
+    expect(screen.getByRole("combobox")).toBeDisabled()
+    expect(tokenInput()).toBeDisabled()
+    fireEvent.click(autoStart)
+    await act(() => new Promise((r) => setTimeout(r, 700)))
+    expect(api.updateWebServiceConfig).not.toHaveBeenCalled()
+
+    api.getWebServiceConfig.mockResolvedValue(
+      config({ port: 4123, token: "saved", autoStart: true, host: "0.0.0.0" })
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    await waitFor(() => expect(screen.getByRole("switch")).not.toBeDisabled())
+    expect(screen.queryByText("Load failed: boom")).not.toBeInTheDocument()
+    expect(portInput()).not.toBeDisabled()
+    expect(portInput().value).toBe("4123")
+    expect(tokenInput()).not.toBeDisabled()
+    expect(screen.getByRole("switch")).toBeChecked()
+
+    fireEvent.click(screen.getByRole("switch"))
+    await waitFor(() =>
+      expect(api.updateWebServiceConfig).toHaveBeenCalledWith({
+        port: 4123,
+        token: "saved",
+        autoStart: false,
+        host: "0.0.0.0",
+      })
+    )
+  })
+
+  it("locks the writing controls when the status read fails", async () => {
+    api.getWebServerStatus.mockRejectedValueOnce(new Error("offline"))
+    mount()
+    await screen.findByText("Load failed: offline")
+    expect(screen.getByRole("switch")).toBeDisabled()
+    expect(portInput()).toBeDisabled()
+    expect(api.updateWebServiceConfig).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    await waitFor(() => expect(screen.getByRole("switch")).not.toBeDisabled())
+    expect(screen.queryByText("Load failed: offline")).not.toBeInTheDocument()
+  })
+
+  it("saves the auto-start switch once the config is read", async () => {
+    mount()
+    await waitFor(() => expect(screen.getByRole("switch")).not.toBeDisabled())
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull()
+    fireEvent.click(screen.getByRole("switch"))
+    await waitFor(() =>
+      expect(api.updateWebServiceConfig).toHaveBeenCalledWith({
+        port: 3080,
+        token: "secret",
+        autoStart: true,
+        // A saved `host: null` reads as our default, all interfaces.
+        host: "0.0.0.0",
+      })
     )
   })
 

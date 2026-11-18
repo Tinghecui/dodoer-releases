@@ -40,6 +40,16 @@ const GROK_TASK_OUTPUT_CAP: usize = 48 * 1024;
 /// be recovered from `chat_history.jsonl` (see `inject_grok_ask_answers`).
 const GROK_ASK_TOOL_NAME: &str = "ask_user_question";
 
+/// Grok's native todo tool (`_meta["x.ai/tool"].name`). Every call is followed
+/// by a `plan` update carrying the whole merged list, which supersedes it (see
+/// `upsert_grok_plan`).
+const GROK_TODO_TOOL_NAME: &str = "todo_write";
+
+/// `tool_use_id` prefix of the one synthetic plan block per turn (see
+/// `upsert_grok_plan`). Each turn appends its own index: a result whose id also
+/// appears in a later turn is moved there by `relocate_orphaned_tool_results`.
+const GROK_PLAN_ID: &str = "grok-plan";
+
 /// Grok's native sub-agent launcher (`_meta["x.ai/tool"].name`). Rewritten to
 /// `"Agent"` at parse time — the same parser-side rename opencode/codex/
 /// codebuddy do — so the frontend routes the call to the dedicated
@@ -918,6 +928,14 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
                 apply_tool_status(assistant.as_mut(), &tool_result_idx, &id, status.as_deref());
                 apply_tool_result(assistant.as_mut(), &tool_result_idx, &id, output, failed);
             }
+            // Grok's `plan` update: the whole list after each `todo_write`.
+            // Kept as one plan block per turn, like the live reducer does.
+            "plan" => {
+                out.content_events += 1;
+                let plan_id = format!("{GROK_PLAN_ID}-{}", out.turns.len());
+                let turn = ensure_assistant(&mut assistant, now);
+                upsert_grok_plan(turn, &mut tool_result_idx, update, &plan_id);
+            }
             "turn_completed" => {
                 if let Some(mut turn) = assistant.take() {
                     // The one place Grok states real token spend, scoped to the
@@ -1711,6 +1729,89 @@ fn ensure_assistant(
     assistant.as_mut().expect("assistant just set")
 }
 
+/// Grok's `plan` updates are cumulative snapshots, so a turn keeps only the
+/// last one, as a single `TodoWrite` block the frontend draws as a plan card.
+/// Like the live `PLAN_UPDATE` reducer, each update drops the previous plan
+/// and appends the new one at the current end of the turn; an empty list
+/// clears it. The turn's `todo_write` calls are dropped too: each one is also
+/// drawn as a plan card (`merge: true` ones with only the changed items), and
+/// the update that follows it carries the whole list.
+fn upsert_grok_plan(
+    turn: &mut MessageTurn,
+    tool_result_idx: &mut std::collections::HashMap<String, usize>,
+    update: &Value,
+    plan_id: &str,
+) {
+    let dropped: std::collections::HashSet<String> = turn
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::ToolUse {
+                tool_use_id: Some(id),
+                tool_name,
+                ..
+            } if tool_name == GROK_TODO_TOOL_NAME || id == plan_id => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    if !dropped.is_empty() {
+        turn.blocks.retain(|b| match b {
+            ContentBlock::ToolUse {
+                tool_use_id: Some(id),
+                ..
+            }
+            | ContentBlock::ToolResult {
+                tool_use_id: Some(id),
+                ..
+            } => !dropped.contains(id),
+            _ => true,
+        });
+        // Removing blocks shifts the indices later updates write results to.
+        tool_result_idx.retain(|id, _| !dropped.contains(id));
+        for (id, idx) in tool_result_idx.iter_mut() {
+            if let Some(pos) = turn.blocks.iter().position(
+                |b| matches!(b, ContentBlock::ToolResult { tool_use_id: Some(r), .. } if r == id),
+            ) {
+                *idx = pos;
+            }
+        }
+    }
+    let todos: Vec<Value> = update
+        .get("entries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let content = e.get("content").and_then(Value::as_str)?;
+            Some(serde_json::json!({
+                "content": content,
+                "status": e.get("status").and_then(Value::as_str).unwrap_or("pending"),
+                "priority": e.get("priority").and_then(Value::as_str).unwrap_or("medium"),
+            }))
+        })
+        .collect();
+    if todos.is_empty() {
+        return;
+    }
+    turn.blocks.push(ContentBlock::ToolUse {
+        tool_use_id: Some(plan_id.to_string()),
+        tool_name: "TodoWrite".to_string(),
+        input_preview: Some(serde_json::json!({ "todos": todos }).to_string()),
+        status: None,
+        meta: None,
+    });
+    // Paired like every other tool call: `subagent_tool_calls` only keeps a
+    // call that has its result, and the frontend consumes the empty result.
+    turn.blocks.push(ContentBlock::ToolResult {
+        tool_use_id: Some(plan_id.to_string()),
+        output_preview: None,
+        is_error: false,
+        agent_stats: None,
+        images: Vec::new(),
+        exit_code: None,
+    });
+}
+
 fn flush_assistant(
     assistant: &mut Option<MessageTurn>,
     turns: &mut Vec<MessageTurn>,
@@ -2150,6 +2251,148 @@ mod tests {
             .iter()
             .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("system-reminder")))));
         assert!(matches!(&detail.turns[2].blocks[0], ContentBlock::Text { text } if text == "那次失败可以忽略"));
+    }
+
+    /// Each `todo_write` is followed by a `plan` update with the whole list
+    /// (real 1.0.x capture shape). Reopened, a turn shows one plan, the last
+    /// one, placed where the live reducer leaves it; the `todo_write` calls it
+    /// supersedes are gone, and a later tool's result still lands on its card.
+    #[test]
+    fn history_keeps_the_last_plan_of_each_turn() {
+        let line = |update: &str| {
+            format!(
+                r#"{{"method":"session/update","params":{{"sessionId":"s","update":{update}}},"timestamp":1783584030}}"#
+            )
+        };
+        let todo = |id: &str, merge: bool| {
+            [
+                line(&format!(
+                    r#"{{"sessionUpdate":"tool_call","toolCallId":"{id}","title":"todo_write","rawInput":{{"todos":[{{"id":"1","content":"写测试","status":"completed"}}],"merge":{merge}}},"_meta":{{"x.ai/tool":{{"name":"todo_write","kind":"plan"}}}}}}"#
+                )),
+                line(&format!(
+                    r#"{{"sessionUpdate":"tool_call_update","toolCallId":"{id}","status":"completed","rawOutput":{{"type":"Todo"}}}}"#
+                )),
+            ]
+            .join("\n")
+        };
+        let plan = |a: &str, b: &str| {
+            line(&format!(
+                r#"{{"sessionUpdate":"plan","entries":[{{"content":"写测试","priority":"medium","status":"{a}"}},{{"content":"改解析器","priority":"high","status":"{b}"}}]}}"#
+            ))
+        };
+        let text = |t: &str| {
+            line(&format!(
+                r#"{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"{t}"}}}}"#
+            ))
+        };
+        let user = |t: &str, i: u32| {
+            line(&format!(
+                r#"{{"sessionUpdate":"user_message_chunk","content":{{"type":"text","text":"{t}"}},"_meta":{{"promptIndex":{i}}}}}"#
+            ))
+        };
+        let updates = [
+            user("做计划", 0),
+            todo("call-t1", false),
+            plan("in_progress", "pending"),
+            text("开始"),
+            line(r#"{"sessionUpdate":"tool_call","toolCallId":"call-run","title":"run_terminal_command","rawInput":{"command":"ls"},"_meta":{"x.ai/tool":{"name":"run_terminal_command","kind":"execute"}}}"#),
+            todo("call-t2", true),
+            plan("completed", "in_progress"),
+            // Arrives after the blocks before it were removed.
+            line(r#"{"sessionUpdate":"tool_call_update","toolCallId":"call-run","status":"completed","content":[{"type":"content","content":{"type":"text","text":"a.txt"}}]}"#),
+            text("做完了"),
+            line(r#"{"sessionUpdate":"turn_completed","prompt_id":"p0","stop_reason":"end_turn"}"#),
+            user("再来", 1),
+            todo("call-t3", true),
+            plan("completed", "completed"),
+            line(r#"{"sessionUpdate":"turn_completed","prompt_id":"p1","stop_reason":"end_turn"}"#),
+        ]
+        .join("\n");
+        let (_tmp, sessions) = fixture(SUMMARY, &updates);
+        let detail = GrokParser::with_base_dir(sessions)
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap();
+        let shape = |turn: &MessageTurn| -> Vec<String> {
+            turn.blocks
+                .iter()
+                .map(|b| match b {
+                    ContentBlock::Text { text } => format!("text:{text}"),
+                    ContentBlock::ToolUse { tool_name, .. } => format!("use:{tool_name}"),
+                    ContentBlock::ToolResult { output_preview, .. } => {
+                        format!("result:{}", output_preview.as_deref().unwrap_or(""))
+                    }
+                    _ => "other".to_string(),
+                })
+                .collect()
+        };
+        let plan_of = |turn: &MessageTurn| -> Value {
+            turn.blocks
+                .iter()
+                .find_map(|b| match b {
+                    ContentBlock::ToolUse {
+                        tool_use_id: Some(id),
+                        input_preview,
+                        ..
+                    } if id.starts_with(GROK_PLAN_ID) => {
+                        serde_json::from_str(input_preview.as_deref()?).ok()
+                    }
+                    _ => None,
+                })
+                .expect("a plan block")
+        };
+        let turns = &detail.turns;
+        assert_eq!(turns.len(), 4);
+        assert_eq!(
+            shape(&turns[1]),
+            [
+                "text:开始",
+                "use:run_terminal_command",
+                "result:a.txt",
+                "use:TodoWrite",
+                "result:",
+                "text:做完了",
+            ]
+        );
+        assert_eq!(
+            plan_of(&turns[1]),
+            serde_json::json!({"todos": [
+                {"content": "写测试", "status": "completed", "priority": "medium"},
+                {"content": "改解析器", "status": "in_progress", "priority": "high"},
+            ]})
+        );
+        assert_eq!(shape(&turns[3]), ["use:TodoWrite", "result:"]);
+        assert_eq!(plan_of(&turns[3])["todos"][1]["status"], "completed");
+
+        // A sub-agent's tool list is read from the same parse: the plan that
+        // replaced its `todo_write` calls must still be listed there.
+        let child = _tmp.path().join("child-updates.jsonl");
+        fs::write(&child, &updates).unwrap();
+        let calls: Vec<(String, Option<String>)> = subagent_tool_calls(&child)
+            .into_iter()
+            .map(|c| (c.tool_name, c.input_preview))
+            .collect();
+        let names: Vec<&str> = calls.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["run_terminal_command", "TodoWrite", "TodoWrite"]);
+        assert!(calls[1].1.as_deref().unwrap().contains("改解析器"));
+    }
+
+    /// An empty `plan` update clears the turn's plan, as the live reducer does.
+    #[test]
+    fn an_empty_plan_update_clears_the_plan() {
+        let updates = [
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hi"},"_meta":{"promptIndex":0}}},"timestamp":1783584019}"#,
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"plan","entries":[{"content":"a","priority":"medium","status":"pending"}]}},"timestamp":1783584020}"#,
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ok"}}},"timestamp":1783584021}"#,
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"plan","entries":[]}},"timestamp":1783584022}"#,
+        ]
+        .join("\n");
+        let (_tmp, sessions) = fixture(SUMMARY, &updates);
+        let detail = GrokParser::with_base_dir(sessions)
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap();
+        let blocks = &detail.turns[1].blocks;
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "ok"));
     }
 
     #[test]

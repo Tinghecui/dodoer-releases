@@ -938,6 +938,62 @@ describe("SystemNetworkSettings — proxy bypass list", () => {
   })
 })
 
+describe("SystemNetworkSettings — proxy read failure", () => {
+  beforeEach(() => {
+    call.mockImplementation(liveServerCalls({ seq: 1, status: "idle" }))
+  })
+
+  /// Regression (#628): after a failed read the card held `enabled: false`
+  /// and empty fields but stayed editable, and the switch and both fields
+  /// save the whole card on change or blur — one stray click overwrote the
+  /// real proxy.
+  it("locks the proxy card after a failed read until a retry succeeds", async () => {
+    const T = enMessages.SystemSettings
+    mockGetProxy.mockRejectedValueOnce(new Error("backend down"))
+    mockSetProxy.mockImplementation(async (settings) => settings)
+
+    renderWithIntl()
+
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent("Load failed: backend down")
+    const toggle = screen.getByLabelText("Enable system proxy")
+    const address = screen.getByPlaceholderText("http://127.0.0.1:7890")
+    const bypass = screen.getByLabelText("Bypass proxy for")
+    expect(toggle).toBeDisabled()
+    expect(address).toBeDisabled()
+    expect(bypass).toBeDisabled()
+    fireEvent.click(toggle)
+    fireEvent.blur(address)
+    fireEvent.blur(bypass)
+    expect(mockSetProxy).not.toHaveBeenCalled()
+
+    mockGetProxy.mockResolvedValueOnce({
+      enabled: true,
+      proxy_url: "http://10.0.0.2:3128",
+      no_proxy: "corp.example.com",
+    })
+    fireEvent.click(within(alert).getByRole("button", { name: T.retry }))
+
+    const restored = await screen.findByDisplayValue("http://10.0.0.2:3128")
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(restored).toBeEnabled()
+    expect(screen.getByLabelText("Bypass proxy for")).toHaveValue(
+      "corp.example.com"
+    )
+    expect(screen.getByLabelText("Enable system proxy")).toBeChecked()
+    expect(mockSetProxy).not.toHaveBeenCalled()
+
+    fireEvent.blur(restored)
+    await waitFor(() =>
+      expect(mockSetProxy).toHaveBeenCalledWith({
+        enabled: true,
+        proxy_url: "http://10.0.0.2:3128",
+        no_proxy: "corp.example.com",
+      })
+    )
+  })
+})
+
 describe("SystemNetworkSettings — proxy bypass hint in every locale", () => {
   it.each([
     ["ar", arMessages],

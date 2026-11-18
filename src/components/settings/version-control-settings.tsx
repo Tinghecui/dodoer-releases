@@ -9,6 +9,7 @@ import {
   Github,
   Globe,
   Loader2,
+  RotateCw,
   Trash2,
   Gitlab,
   XCircle,
@@ -226,8 +227,10 @@ function AccountRow({
 
 export function VersionControlSettings() {
   const t = useTranslations("VersionControlSettings")
+  const tSystem = useTranslations("SystemSettings")
 
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [gitInfo, setGitInfo] = useState<GitDetectResult | null>(null)
   const [customPath, setCustomPath] = useState("")
   const [editingPath, setEditingPath] = useState(false)
@@ -276,6 +279,7 @@ export function VersionControlSettings() {
 
   const loadData = useCallback(async () => {
     setLoading(true)
+    setLoadError(null)
     try {
       const [git, settings, ghAccounts] = await Promise.all([
         detectGit(),
@@ -286,12 +290,12 @@ export function VersionControlSettings() {
       setCustomPath(settings.custom_path ?? "")
       setAccounts(ghAccounts)
     } catch (err) {
-      const message = toErrorMessage(err)
-      toast.error(t("loadFailed", { message }))
+      setLoadError(toErrorMessage(err))
+      console.error("[VersionControlSettings] load failed:", err)
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [])
 
   useEffect(() => {
     loadData().catch(console.error)
@@ -444,6 +448,14 @@ export function VersionControlSettings() {
 
   // --- Render ---
 
+  // Without the saved settings the path field is empty and every account
+  // list reads as "no accounts": saving the path would erase a custom git
+  // path, and the lists would claim the accounts are gone. Lock the writes
+  // and say the read failed until a retry succeeds.
+  const locked = loadError !== null
+  const emptyOrFailed = (emptyText: string) =>
+    loadError !== null ? t("loadFailed", { message: loadError }) : emptyText
+
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center text-sm text-muted-foreground gap-2">
@@ -463,6 +475,30 @@ export function VersionControlSettings() {
           </p>
         </section>
 
+        {loadError && (
+          <div
+            role="alert"
+            className="flex items-center justify-between gap-3 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400"
+          >
+            <span className="min-w-0 break-words">
+              {t("loadFailed", { message: loadError })}
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="shrink-0"
+              onClick={() => {
+                loadData().catch((err) => {
+                  console.error("[VersionControlSettings] retry failed:", err)
+                })
+              }}
+            >
+              <RotateCw className="h-3.5 w-3.5" />
+              {tSystem("retry")}
+            </Button>
+          </div>
+        )}
+
         {/* ---- Git Configuration ---- */}
         <section className="rounded-xl border bg-card p-4 space-y-4">
           <div className="flex items-center gap-2">
@@ -480,6 +516,9 @@ export function VersionControlSettings() {
                       {t("gitDetected")}
                     </span>
                   </>
+                ) : loadError !== null ? (
+                  // Unread is not "not installed"; the banner says why.
+                  <span className="text-muted-foreground">-</span>
                 ) : (
                   <>
                     <XCircle className="h-3.5 w-3.5 text-red-500" />
@@ -500,6 +539,7 @@ export function VersionControlSettings() {
                   variant="ghost"
                   className="text-xs"
                   onClick={() => setEditingPath(true)}
+                  disabled={locked}
                 >
                   {t("customGitPath")}
                 </Button>
@@ -533,7 +573,11 @@ export function VersionControlSettings() {
                 >
                   {t("removeCancel")}
                 </Button>
-                <Button size="sm" onClick={handleSaveGit} disabled={savingGit}>
+                <Button
+                  size="sm"
+                  onClick={handleSaveGit}
+                  disabled={savingGit || locked}
+                >
                   {savingGit ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
@@ -563,7 +607,7 @@ export function VersionControlSettings() {
 
           {githubAccounts.length === 0 ? (
             <div className="rounded-md border border-dashed bg-muted/10 px-4 py-6 text-center text-xs text-muted-foreground">
-              {t("noAccounts")}
+              {emptyOrFailed(t("noAccounts"))}
             </div>
           ) : (
             <div className="space-y-2">
@@ -583,7 +627,11 @@ export function VersionControlSettings() {
           )}
 
           <div className="flex justify-end">
-            <Button size="sm" onClick={() => setAddGitHubOpen(true)}>
+            <Button
+              size="sm"
+              onClick={() => setAddGitHubOpen(true)}
+              disabled={locked}
+            >
               {t("addAccount")}
             </Button>
           </div>
@@ -601,7 +649,7 @@ export function VersionControlSettings() {
 
           {gitlabAccounts.length === 0 ? (
             <div className="rounded-md border border-dashed bg-muted/10 px-4 py-6 text-center text-xs text-muted-foreground">
-              {t("gitlabNoAccounts")}
+              {emptyOrFailed(t("gitlabNoAccounts"))}
             </div>
           ) : (
             <div className="space-y-2">
@@ -621,7 +669,11 @@ export function VersionControlSettings() {
           )}
 
           <div className="flex justify-end">
-            <Button size="sm" onClick={() => setAddGitLabOpen(true)}>
+            <Button
+              size="sm"
+              onClick={() => setAddGitLabOpen(true)}
+              disabled={locked}
+            >
               {t("addAccount")}
             </Button>
           </div>
@@ -639,7 +691,7 @@ export function VersionControlSettings() {
 
           {giteaAccounts.length === 0 ? (
             <div className="rounded-md border border-dashed bg-muted/10 px-4 py-6 text-center text-xs text-muted-foreground">
-              {t("giteaNoAccounts")}
+              {emptyOrFailed(t("giteaNoAccounts"))}
             </div>
           ) : (
             <div className="space-y-2">
@@ -659,7 +711,11 @@ export function VersionControlSettings() {
           )}
 
           <div className="flex justify-end">
-            <Button size="sm" onClick={() => setAddGiteaOpen(true)}>
+            <Button
+              size="sm"
+              onClick={() => setAddGiteaOpen(true)}
+              disabled={locked}
+            >
               {t("addAccount")}
             </Button>
           </div>
@@ -677,7 +733,7 @@ export function VersionControlSettings() {
 
           {cnbAccounts.length === 0 ? (
             <div className="rounded-md border border-dashed bg-muted/10 px-4 py-6 text-center text-xs text-muted-foreground">
-              {t("cnbNoAccounts")}
+              {emptyOrFailed(t("cnbNoAccounts"))}
             </div>
           ) : (
             <div className="space-y-2">
@@ -697,7 +753,11 @@ export function VersionControlSettings() {
           )}
 
           <div className="flex justify-end">
-            <Button size="sm" onClick={() => setAddCnbOpen(true)}>
+            <Button
+              size="sm"
+              onClick={() => setAddCnbOpen(true)}
+              disabled={locked}
+            >
               {t("addAccount")}
             </Button>
           </div>
@@ -717,7 +777,7 @@ export function VersionControlSettings() {
 
           {gitAccounts.length === 0 ? (
             <div className="rounded-md border border-dashed bg-muted/10 px-4 py-6 text-center text-xs text-muted-foreground">
-              {t("gitAccount.noAccounts")}
+              {emptyOrFailed(t("gitAccount.noAccounts"))}
             </div>
           ) : (
             <div className="space-y-2">
@@ -736,7 +796,11 @@ export function VersionControlSettings() {
           )}
 
           <div className="flex justify-end">
-            <Button size="sm" onClick={() => setAddGitOpen(true)}>
+            <Button
+              size="sm"
+              onClick={() => setAddGitOpen(true)}
+              disabled={locked}
+            >
               {t("gitAccount.addAccount")}
             </Button>
           </div>

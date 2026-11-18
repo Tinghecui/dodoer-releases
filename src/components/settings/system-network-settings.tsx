@@ -15,6 +15,7 @@ import {
   Power,
   RefreshCw,
   RotateCcw,
+  RotateCw,
   Wifi,
 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
@@ -353,6 +354,9 @@ export function SystemNetworkSettings() {
   const saveProxySettings = useCallback(
     async (nextEnabled: boolean, nextProxyUrl: string, nextNoProxy: string) => {
       if (nextEnabled && !nextProxyUrl.trim()) return
+      // The fields hold placeholders, not the stored proxy, until a read
+      // succeeds; a blur can still reach here, so refuse it too.
+      if (loadError !== null) return
 
       setSaving(true)
       try {
@@ -371,7 +375,7 @@ export function SystemNetworkSettings() {
         setSaving(false)
       }
     },
-    [t]
+    [loadError, t]
   )
 
   const saveAutostartSettings = useCallback(
@@ -480,6 +484,11 @@ export function SystemNetworkSettings() {
     await rollback()
     void refreshLocalStatus()
   }, [rollback, refreshLocalStatus])
+
+  // Without the saved proxy the card holds `enabled: false` and empty fields,
+  // and every control here saves the whole card on change or blur — one
+  // stray click would overwrite the real proxy. Lock it until a load succeeds.
+  const proxyLocked = saving || loadError !== null
 
   if (loading) {
     return (
@@ -810,8 +819,29 @@ export function SystemNetworkSettings() {
           </p>
 
           {loadError && (
-            <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-              {t("loadFailed", { message: loadError })}
+            <div
+              role="alert"
+              className="flex items-center justify-between gap-3 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400"
+            >
+              <span className="min-w-0 break-words">
+                {t("loadFailed", { message: loadError })}
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                className="shrink-0"
+                onClick={() => {
+                  loadSettings().catch((err) => {
+                    console.error(
+                      "[Settings] retry system settings failed:",
+                      err
+                    )
+                  })
+                }}
+              >
+                <RotateCw className="h-3.5 w-3.5" />
+                {t("retry")}
+              </Button>
             </div>
           )}
 
@@ -819,7 +849,7 @@ export function SystemNetworkSettings() {
             <input
               type="checkbox"
               checked={enabled}
-              disabled={saving}
+              disabled={proxyLocked}
               onChange={(event) => {
                 const next = event.target.checked
                 if (next && !proxyUrl.trim()) {
@@ -853,7 +883,7 @@ export function SystemNetworkSettings() {
                 saveProxySettings(enabled, proxyUrl, noProxy)
               }}
               placeholder={PROXY_EXAMPLE}
-              disabled={saving}
+              disabled={proxyLocked}
               aria-invalid={proxyUrlError ? true : undefined}
             />
             {proxyUrlError && (
@@ -880,7 +910,7 @@ export function SystemNetworkSettings() {
               onChange={(event) => setNoProxy(event.target.value)}
               onBlur={() => saveProxySettings(enabled, proxyUrl, noProxy)}
               placeholder={PROXY_BYPASS_EXAMPLE}
-              disabled={saving}
+              disabled={proxyLocked}
             />
             <p className="text-2xs text-muted-foreground">
               {t.rich("proxyBypassHint", {

@@ -48,6 +48,15 @@ type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MAX_STDERR_CAPTURE_BYTES: usize = 1024 * 1024;
 
+/// How long `monitor_child` keeps reading stderr once a failed child has been
+/// reaped. By then whatever the agent wrote is already in the pipe's kernel
+/// buffer, so reading it out takes milliseconds; 250 ms leaves room for a busy
+/// machine while staying far below the 2 s `CONNECTION_LOSS_GRACE` the
+/// connection gives this exit report to arrive. The cap matters when the pipe
+/// never closes: a launcher that left a child of its own holding stderr would
+/// otherwise stall the report until that child exits.
+const STDERR_DRAIN_LIMIT: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Windows' extended-length spelling of a UNC path, e.g. what
 /// `fs::canonicalize` returns for `\\server\share`.
 const VERBATIM_UNC_PREFIX: &str = r"\\?\UNC\";
@@ -638,9 +647,90 @@ fn has_null_error_data(line: &str) -> Option<bool> {
     }
 }
 
+/// The agent's stderr as read so far. The reader task appends each line as it
+/// arrives, so an exit report can use what is here even if the pipe never
+/// closes.
+#[derive(Default)]
+struct StderrCapture {
+    collected: String,
+    truncated: bool,
+}
+
+impl StderrCapture {
+    fn push_line(&mut self, line: &str) {
+        if !self.collected.is_empty() {
+            self.truncated |=
+                append_limited_utf8(&mut self.collected, "\n", MAX_STDERR_CAPTURE_BYTES);
+        }
+        self.truncated |= append_limited_utf8(&mut self.collected, line, MAX_STDERR_CAPTURE_BYTES);
+    }
+
+    fn text(&self) -> String {
+        if !self.truncated {
+            return self.collected.clone();
+        }
+        let prefix = "[stderr truncated to last 1 MiB]\n";
+        let mut marked = String::with_capacity(prefix.len() + self.collected.len());
+        marked.push_str(prefix);
+        marked.push_str(&self.collected);
+        marked
+    }
+}
+
+/// `monitor_child`'s view of the stderr reader: the shared capture, and a
+/// channel that resolves (sent or dropped) once the reader has hit end of file.
+struct StderrCollector {
+    capture: Arc<std::sync::Mutex<StderrCapture>>,
+    closed: tokio::sync::oneshot::Receiver<()>,
+}
+
+impl StderrCollector {
+    /// Waits up to `limit` for the pipe to close, then returns what was read.
+    async fn drain(self, limit: std::time::Duration) -> String {
+        let _ = tokio::time::timeout(limit, self.closed).await;
+        self.capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .text()
+    }
+}
+
+/// Reads the agent's stderr line by line until it closes, handing each line to
+/// `debug_callback` and appending it to the returned collector's capture.
+fn spawn_stderr_reader(
+    child_stderr: tokio::process::ChildStderr,
+    debug_callback: Option<DebugCallback>,
+) -> StderrCollector {
+    use futures::io::{AsyncBufReadExt, BufReader};
+    use futures::StreamExt;
+
+    let capture = Arc::new(std::sync::Mutex::new(StderrCapture::default()));
+    let (closed_tx, closed) = tokio::sync::oneshot::channel();
+    let writer = Arc::clone(&capture);
+    tokio::spawn(async move {
+        let mut stderr_lines = BufReader::new(child_stderr.compat()).lines();
+        while let Some(line_result) = stderr_lines.next().await {
+            if let Ok(line) = line_result {
+                if let Some(ref callback) = debug_callback {
+                    callback(&line, LineDirection::Stderr);
+                }
+                writer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push_line(&line);
+            }
+        }
+        let _ = closed_tx.send(());
+    });
+    StderrCollector { capture, closed }
+}
+
 /// Waits for a child process and returns an error if it exits with non-zero status.
 ///
-/// The error message includes any stderr output collected by the background task.
+/// The error message includes the stderr collected by the background reader.
+/// After a failed exit it waits at most `stderr_drain_limit` for that pipe to
+/// close and then uses whatever was read by then; a successful exit returns at
+/// once without waiting on stderr at all.
 /// Dropping the returned future drops a [`ChildGuard`], which signals the
 /// child's process tree and — given a runtime to reap on — keeps owning the
 /// child until it is really gone. Neither half is unconditional: see
@@ -664,7 +754,8 @@ fn has_null_error_data(line: &str) -> Option<bool> {
 /// reported against that impl rather than against this function.
 fn monitor_child(
     child: Child,
-    stderr_rx: tokio::sync::oneshot::Receiver<String>,
+    stderr: StderrCollector,
+    stderr_drain_limit: std::time::Duration,
     exit_callback: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
 ) -> impl Future<Output = Result<(), agent_client_protocol::Error>> + Send {
     // Construct the guard before returning the future. `connect_to` races this
@@ -688,7 +779,7 @@ fn monitor_child(
             Ok(())
         } else {
             // Get stderr content if available
-            let stderr = stderr_rx.await.unwrap_or_default();
+            let stderr = stderr.drain(stderr_drain_limit).await;
 
             let message = if stderr.is_empty() {
                 format!("Process exited with {}", status)
@@ -730,46 +821,17 @@ impl<Counterpart: AcpAgentCounterpartRole> ConnectTo<Counterpart> for AcpAgent {
             }
         }
 
-        // Create a channel to collect stderr for error reporting
-        let (stderr_tx, stderr_rx) = tokio::sync::oneshot::channel::<String>();
-
-        // Spawn a task to read stderr, optionally calling the debug callback
-        let debug_callback = self.debug_callback.clone();
-        tokio::spawn(async move {
-            let stderr_reader = BufReader::new(child_stderr.compat());
-            let mut stderr_lines = stderr_reader.lines();
-            let mut collected = String::new();
-            let mut truncated = false;
-            while let Some(line_result) = stderr_lines.next().await {
-                if let Ok(line) = line_result {
-                    // Call debug callback if present
-                    if let Some(ref callback) = debug_callback {
-                        callback(&line, LineDirection::Stderr);
-                    }
-                    // Always collect for error reporting
-                    if !collected.is_empty() {
-                        truncated |= append_limited_utf8(
-                            &mut collected,
-                            "\n",
-                            MAX_STDERR_CAPTURE_BYTES,
-                        );
-                    }
-                    truncated |=
-                        append_limited_utf8(&mut collected, &line, MAX_STDERR_CAPTURE_BYTES);
-                }
-            }
-            if truncated {
-                let prefix = "[stderr truncated to last 1 MiB]\n";
-                let mut marked = String::with_capacity(prefix.len() + collected.len());
-                marked.push_str(prefix);
-                marked.push_str(&collected);
-                collected = marked;
-            }
-            let _ = stderr_tx.send(collected);
-        });
+        // Read stderr in the background, for the debug callback and for the
+        // exit report.
+        let stderr = spawn_stderr_reader(child_stderr, self.debug_callback.clone());
 
         // Create a future that monitors the child process for early exit
-        let child_monitor = monitor_child(child, stderr_rx, self.exit_callback.clone());
+        let child_monitor = monitor_child(
+            child,
+            stderr,
+            STDERR_DRAIN_LIMIT,
+            self.exit_callback.clone(),
+        );
 
         // Convert stdio to line streams with optional debug inspection
         let incoming_lines = if let Some(callback) = self.debug_callback.clone() {
@@ -993,6 +1055,125 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
+    /// Long enough that a pipe which does close is always read to the end,
+    /// even on a busy machine; the tests that need the cap itself pass
+    /// `STDERR_DRAIN_LIMIT` on a paused clock instead.
+    #[cfg(unix)]
+    const TEST_DRAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// Spawns `/bin/sh -c script` as an agent would be: stderr piped into
+    /// the real reader, stdout piped so a script can report a pid on it.
+    #[cfg(unix)]
+    fn spawn_sh(script: &str) -> (Child, StderrCollector) {
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn sh");
+        let stderr = spawn_stderr_reader(child.stderr.take().expect("stderr"), None);
+        (child, stderr)
+    }
+
+    /// A script that leaves `sleep` holding its stderr reports the sleeper's
+    /// pid as its first stdout line; the returned guard kills it.
+    ///
+    /// Also waits for the script itself to exit. On a paused clock any armed
+    /// timer would be auto-advanced while the runtime idles on that exit, so
+    /// the exit is awaited here with none armed; `monitor_child` then finds
+    /// the status already reaped, and only its drain wait is measured.
+    #[cfg(unix)]
+    async fn exit_leaving_a_sleeper(child: &mut Child) -> StraySleeper {
+        use tokio::io::AsyncBufReadExt;
+        let stdout = child.stdout.take().expect("stdout");
+        let mut line = String::new();
+        tokio::io::BufReader::new(stdout)
+            .read_line(&mut line)
+            .await
+            .expect("read pid");
+        let sleeper = StraySleeper(line.trim().to_string());
+        child.wait().await.expect("wait for sh");
+        sleeper
+    }
+
+    #[cfg(unix)]
+    struct StraySleeper(String);
+
+    #[cfg(unix)]
+    impl Drop for StraySleeper {
+        fn drop(&mut self) {
+            // It may already be gone with the agent's process tree.
+            let _ = std::process::Command::new("kill")
+                .arg(&self.0)
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+
+    // An agent that explains itself on stderr and quits at once: the exit
+    // error ends with that explanation.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_exit_error_carries_the_last_stderr_line() {
+        let (child, stderr) =
+            spawn_sh("echo 'starting up' >&2; echo 'error: please log in first' >&2; exit 1");
+        let err = monitor_child(child, stderr, TEST_DRAIN_WAIT, None)
+            .await
+            .unwrap_err();
+        let text = format!("{err:?}");
+        assert!(text.contains("Process exited with"), "{text}");
+        assert!(text.contains("error: please log in first"), "{text}");
+    }
+
+    // A launcher that exits but leaves a child holding stderr: the pipe never
+    // closes, so the report must stop waiting at the cap and use the lines
+    // read by then. The clock is paused, so the cap is measured, not slept.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn an_exit_error_stops_draining_a_held_pipe_at_the_cap() {
+        let (mut child, stderr) =
+            spawn_sh("echo 'error: please log in first' >&2; sleep 30 & echo $!; exit 1");
+        let _sleeper = exit_leaving_a_sleeper(&mut child).await;
+        let started = tokio::time::Instant::now();
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            monitor_child(child, stderr, STDERR_DRAIN_LIMIT, None),
+        )
+        .await
+        .expect("the exit report waited past the drain cap")
+        .unwrap_err();
+        assert!(
+            started.elapsed() <= STDERR_DRAIN_LIMIT + std::time::Duration::from_millis(50),
+            "took {:?}",
+            started.elapsed()
+        );
+        let text = format!("{err:?}");
+        assert!(text.contains("error: please log in first"), "{text}");
+    }
+
+    // A clean exit is not a failure to explain: it returns at once, without
+    // waiting on a stderr pipe that something else still holds.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_clean_exit_does_not_wait_for_stderr() {
+        let (mut child, stderr) = spawn_sh("echo 'bye' >&2; sleep 30 & echo $!; exit 0");
+        let _sleeper = exit_leaving_a_sleeper(&mut child).await;
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            monitor_child(child, stderr, STDERR_DRAIN_LIMIT, None),
+        )
+        .await
+        .expect("a clean exit waited")
+        .expect("a clean exit is a success");
+        assert!(
+            started.elapsed() < STDERR_DRAIN_LIMIT,
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
     /// Regression for the select race in `connect_to`: the protocol side may
     /// finish before the child-monitor future receives its first poll. The
     /// monitor must already own a `ChildGuard`, otherwise dropping that
@@ -1013,16 +1194,14 @@ mod tests {
             command.stderr(std::process::Stdio::piped());
             let mut child = command.spawn().expect("spawn sh");
             let stderr = child.stderr.take().expect("stderr");
-            let (stderr_tx, stderr_rx) = tokio::sync::oneshot::channel();
-            tokio::spawn(async move {
-                use tokio::io::AsyncReadExt;
-                let mut stderr = stderr;
-                let mut bytes = Vec::new();
-                let _ = stderr.read_to_end(&mut bytes).await;
-                let _ = stderr_tx.send(String::from_utf8_lossy(&bytes).into_owned());
-            });
+            let stderr = spawn_stderr_reader(stderr, None);
 
-            let monitor = monitor_child(child, stderr_rx, Some(counting_callback(&calls)));
+            let monitor = monitor_child(
+                child,
+                stderr,
+                STDERR_DRAIN_LIMIT,
+                Some(counting_callback(&calls)),
+            );
             // Deliberately never poll it.
             drop(monitor);
 

@@ -1,31 +1,42 @@
 # 公开镜像 Tinghecui/dodoer-releases：Linux 桌面版的 WebDriver 冒烟（文件在私有仓库 cowork-codeg 的 .github/public/workflows/ 里维护）。
-# 可行性验证（2026-11-18，源仓库 .cowork/journal/2026-11-18-linux-desktop-webdriver-spike.md）：我们只发 macOS 桌面版，AI QA 测不到
-# 「只有桌面 app 才有」的行为。这里在 GitHub 托管的 Linux 机器上编出桌面程序（不打包、不发），用 Tauri 官方的 WebDriver
-# （tauri-driver + WebKitWebDriver，xvfb 里）把它开起来，跑 scripts/desktop-linux-smoke.mjs。
+# 我们只发 macOS 桌面版，AI QA 的测试员（Playwright）测不到「只有桌面 app 才有」的行为。这里在 GitHub 托管的 Linux 机器上编出桌面程序
+# （不打包、不发），用 Tauri 官方的 WebDriver（tauri-driver + WebKitWebDriver，xvfb 里）把它开起来，跑 scripts/desktop-linux-smoke.mjs：
+# 开始页、设置窗口、远程工作区窗口、退出重开后数据还在、网页服务监听地址、排队的消息……每项各自报 过 / 没过 / 跳过，截图在 artifact 里。
+# 测得到的是跨平台的桌面逻辑；macOS 独有的（签名、钥匙串、自动更新换包、TCC、Chrome 接管）测不到。
+# 来历：源仓库 .cowork/journal/2026-11-18-linux-desktop-webdriver-spike.md、2026-11-18-desktop-linux-nightly.md。
 #
-# 只按需跑，不是必需检查，结果也不报回私有 PR（report-status.yml 没列它），到这个仓库的 Actions 里看：
-# - 私有 PR 打了 linux-desktop 标签：public-sync 把它同步到 linux/pr/<n>，这里编、冒烟。PR 再推会重跑，去掉标签或关掉 PR 就删分支
-# - 手动触发（Actions → desktop-linux → Run workflow）：编任意分支
+# - 每晚（北京时间 03:47）在 main 上跑一次。红了：report-status.yml 把结果报回私有仓库的那个提交（「公开 CI / desktop-linux」），
+#   那边的 product-ci-alert.yml 开一个 ci-red issue（已经有没关的就跟帖）。它不是 PR 的必需检查，也不关合并闸（合并闸只看 Test）
+# - 私有 PR 打了 linux-desktop 标签：public-sync 把它同步到 linux/pr/<n>，这里编、冒烟，结果报回那个 PR（「公开 CI / desktop-linux」，不是必需的）。
+#   PR 再推会重跑，去掉标签或关掉 PR 就删分支
+# - 手动触发（Actions → desktop-linux → Run workflow，或 `gh workflow run desktop-linux.yml --ref <分支>`）：编选的那个分支的头提交。
+#   没有单独的「ref」输入：report-status 按触发这次 run 的提交说明报回私有仓库，编的必须就是那个提交，不然结果会报到别的提交上
+#   （自动审查 #715 指出的）。勾 force_fail 加一项必挂的检查，验证「红了有人知道」那条链路
 #
 # 编法：前端（pnpm build）→ sidecar（debug，不带桌面 feature）→ 桌面主程序（tauri build --debug --no-bundle）。主 crate 要编两遍
-# （sidecar 一遍、桌面一遍），所以把编出来的几个程序按源码的哈希存进缓存：只改冒烟脚本、workflow 时不重编，几分钟一轮。
+# （sidecar 一遍、桌面一遍，一共十五分钟左右），所以把编出来的几个程序按源码的哈希存进缓存：源码没变（只改了冒烟脚本、workflow，
+# 或者 main 一天没动）就不重编，两三分钟一轮。
 name: desktop-linux
 
 on:
   push:
     branches: ["linux/pr/**"]
+  schedule:
+    # 避开 18:23 的 AI QA 每晚那轮和 18:37 的 desktop-macos；不放整点（GitHub 整点的定时任务最挤）
+    - cron: "47 19 * * *"
   workflow_dispatch:
     inputs:
-      ref:
-        description: "要编的分支 / tag / 提交"
+      force_fail:
+        description: "加一项必挂的检查（验证「红了有人知道」那条链路用）"
+        type: boolean
         required: false
-        default: main
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop-linux-${{ inputs.ref || github.ref }}
+  group: desktop-linux-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -44,8 +55,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # 分支推送按提交 sha 取：linux/pr/<n> 在 PR 合并、关闭时就删了
-          ref: ${{ inputs.ref || (github.ref_type == 'branch' && github.sha) || github.ref }}
+          # 按提交 sha 取：linux/pr/<n> 在 PR 合并、关闭时就删了；也保证编的就是 report-status 报回去的那个提交
+          ref: ${{ github.sha }}
 
       - name: 系统包（WebKitGTK、WebKitWebDriver、xvfb）
         run: |
@@ -76,7 +87,7 @@ jobs:
             src-tauri/target/debug/codeg-cli
             src-tauri/target/debug/codeg-computer-helper
             src-tauri/target/debug/web
-          key: desktop-linux-bin-v1-${{ hashFiles('src-tauri/**', 'src/**', 'public/**', 'package.json', 'pnpm-lock.yaml', 'rust-toolchain.toml', '*.config.*') }}
+          key: desktop-linux-bin-v2-${{ hashFiles('src-tauri/**', 'src/**', 'public/**', 'package.json', 'pnpm-lock.yaml', 'rust-toolchain.toml', '*.config.*') }}
 
       - name: Rust 版本（读 rust-toolchain.toml）
         id: toolchain
@@ -152,10 +163,11 @@ jobs:
         run: |
           set -euo pipefail
           t0=$(date +%s)
-          # 前端和 sidecar 上面编过了，beforeBuildCommand 置空；配置叠法同 scripts/cowork-desktop-build.sh
+          # 前端和 sidecar 上面编过了，beforeBuildCommand 置空；配置叠法同 scripts/cowork-desktop-build.sh。
+          # 版本号给一个比哪个正式版都大的：不然它是 tauri.jenny.conf.json 里的 1.1.0，远程窗口会提示「桌面 app 太旧」，app 还会去查更新
           pnpm tauri build --debug --no-bundle \
             --config src-tauri/tauri.jenny.conf.json --config src-tauri/tauri.cowork-desktop.conf.json \
-            --config '{"build":{"beforeBuildCommand":""}}'
+            --config '{"version":"1.999.0","build":{"beforeBuildCommand":""}}'
           ls -la src-tauri/target/debug | head -60
           test -x src-tauri/target/debug/codeg
           test -s src-tauri/target/debug/codeg-server
@@ -169,6 +181,7 @@ jobs:
       - name: WebDriver 冒烟
         env:
           SMOKE_OUT: ${{ github.workspace }}/smoke-out
+          SMOKE_FORCE_FAIL: ${{ inputs.force_fail && '1' || '' }}
         run: |
           set -euo pipefail
           t0=$(date +%s)

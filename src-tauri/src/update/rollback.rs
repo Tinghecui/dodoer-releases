@@ -20,6 +20,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use super::channel::{self, StableHistory, UpdateChannel};
 use crate::app_error::AppCommandError;
 
 /// The file in the source that registers the migrations.
@@ -75,6 +76,17 @@ impl ReleaseSource {
         format!(
             "https://github.com/{}/releases/download/{tag}/{}",
             self.repo, self.manifest
+        )
+    }
+
+    /// Cowork fork (issue #413): the stable channel's `history.json`, the
+    /// versions promoted to it, newest first.
+    pub fn stable_history_url(&self) -> String {
+        format!(
+            "https://github.com/{}/releases/download/{}/{}",
+            self.repo,
+            channel::STABLE_TAG,
+            channel::HISTORY_FILE
         )
     }
 
@@ -149,6 +161,33 @@ pub fn previous_release<'a>(
         .max_by(|a, b| a.0.cmp(&b.0))
 }
 
+/// Cowork fork (issue #413): the stable release a rollback goes to: the first
+/// version older than `current` in the stable `history` whose release (by
+/// tag) is published with the manifest and its own update package for
+/// `arch`, as [`previous_release`] checks it. An Intel app's history entry can
+/// be a release that only carries an older Intel manifest; going there would
+/// download that older package, so it is passed over.
+pub fn previous_stable_with_package<'a>(
+    history: &'a StableHistory,
+    releases: &[GithubRelease],
+    current: &Version,
+    manifest: &str,
+    arch: &str,
+) -> Option<(Version, &'a channel::StableEntry)> {
+    channel::previous_stable_where(history, current, |version, entry| {
+        let package = format!("-{version}-macos-{arch}.app.tar.gz");
+        releases.iter().any(|release| {
+            release.tag_name == entry.tag
+                && !release.draft
+                && release.assets.iter().any(|asset| asset.name == manifest)
+                && release
+                    .assets
+                    .iter()
+                    .any(|asset| asset.name.ends_with(&package))
+        })
+    })
+}
+
 /// The migrations a `db/migration/mod.rs` registers: every
 /// `Box::new(<name>::Migration)`. The names are the module names, which is
 /// what `DeriveMigrationName` records in `seaql_migrations`.
@@ -211,26 +250,27 @@ pub struct AppRollbackTarget {
 
 /// The release before `current`, and whether it can open this app's
 /// database. None when there is no older release.
+///
+/// Cowork fork (issue #413): which release is "before" depends on the update
+/// channel. Early: the newest older release in the repository. Stable: the
+/// first version older than `current` in the stable channel's
+/// `history.json` that has its own package for this machine
+/// ([`previous_stable_with_package`]); a history that cannot be read, or
+/// holds nothing older, is no release to go back to.
 pub async fn find_target(
     source: &ReleaseSource,
     current: &Version,
+    update_channel: UpdateChannel,
 ) -> Result<Option<AppRollbackTarget>, AppCommandError> {
-    let releases: Vec<GithubRelease> =
-        github_get(&source.releases_url(), "application/vnd.github+json")
-            .await?
-            .json()
-            .await
-            .map_err(|e| {
-                AppCommandError::network("Failed to read the list of releases")
-                    .with_detail(e.to_string())
-            })?;
-    let Some((version, release)) =
-        previous_release(&releases, current, &source.manifest, package_arch())
-    else {
+    let picked = match update_channel {
+        UpdateChannel::Early => previous_early(source, current).await?,
+        UpdateChannel::Stable => previous_stable_release(source, current).await?,
+    };
+    let Some(picked) = picked else {
         return Ok(None);
     };
     let list = github_get(
-        &source.migration_list_url(&release.tag_name),
+        &source.migration_list_url(&picked.tag),
         "application/vnd.github.raw+json",
     )
     .await?
@@ -244,15 +284,98 @@ pub async fn find_target(
     if migrations.is_empty() {
         return Err(AppCommandError::network(format!(
             "No database migrations found in {MIGRATION_LIST_PATH} at {}",
-            release.tag_name
+            picked.tag
         )));
     }
     Ok(Some(AppRollbackTarget {
-        version: version.to_string(),
-        tag: release.tag_name.clone(),
-        date: release.published_at.clone(),
+        version: picked.version.to_string(),
+        tag: picked.tag,
+        date: picked.date,
         unknown_migrations: unknown_to(&migrations, &own_migrations()),
     }))
+}
+
+/// The release [`find_target`] picked, before its migrations are read.
+struct Picked {
+    version: Version,
+    tag: String,
+    date: Option<String>,
+}
+
+/// Early channel: the newest older release in the repository
+/// ([`previous_release`]).
+async fn previous_early(
+    source: &ReleaseSource,
+    current: &Version,
+) -> Result<Option<Picked>, AppCommandError> {
+    let releases = release_list(source).await?;
+    Ok(
+        previous_release(&releases, current, &source.manifest, package_arch()).map(
+            |(version, release)| Picked {
+                version,
+                tag: release.tag_name.clone(),
+                date: release.published_at.clone(),
+            },
+        ),
+    )
+}
+
+/// The repository's releases ([`ReleaseSource::releases_url`]).
+async fn release_list(source: &ReleaseSource) -> Result<Vec<GithubRelease>, AppCommandError> {
+    github_get(&source.releases_url(), "application/vnd.github+json")
+        .await?
+        .json()
+        .await
+        .map_err(|e| {
+            AppCommandError::network("Failed to read the list of releases")
+                .with_detail(e.to_string())
+        })
+}
+
+/// Stable channel: the first older version in `history.json` that has its
+/// own update package for this machine ([`previous_stable_with_package`]);
+/// its date is when it was promoted. None when the history cannot be read.
+async fn previous_stable_release(
+    source: &ReleaseSource,
+    current: &Version,
+) -> Result<Option<Picked>, AppCommandError> {
+    let url = source.stable_history_url();
+    let history = match fetch_stable_history(&url).await {
+        Ok(history) => history,
+        Err(e) => {
+            tracing::warn!("[update] could not read the stable history {url}: {e}");
+            return Ok(None);
+        }
+    };
+    let releases = release_list(source).await?;
+    Ok(previous_stable_with_package(
+        &history,
+        &releases,
+        current,
+        &source.manifest,
+        package_arch(),
+    )
+    .map(|(version, entry)| Picked {
+        version,
+        tag: entry.tag.clone(),
+        date: entry.promoted_at.clone(),
+    }))
+}
+
+async fn fetch_stable_history(url: &str) -> Result<StableHistory, String> {
+    let response = super::version::manifest_client()
+        .map_err(|e| e.to_string())?
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("status {}", response.status()));
+    }
+    response
+        .json::<StableHistory>()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 async fn github_get(url: &str, accept: &str) -> Result<reqwest::Response, AppCommandError> {
@@ -313,6 +436,10 @@ mod tests {
         assert_eq!(
             source.manifest_url("v1.6.0"),
             "https://github.com/Tinghecui/dodoer-releases/releases/download/v1.6.0/latest.json"
+        );
+        assert_eq!(
+            source.stable_history_url(),
+            "https://github.com/Tinghecui/dodoer-releases/releases/download/stable/history.json"
         );
     }
 
@@ -404,6 +531,58 @@ mod tests {
         // an arm64 app goes back to the newest older release with an arm64 package
         let arm64 = previous_release(&releases, &current, "latest-x64.json", "arm64");
         assert_eq!(arm64.unwrap().0, Version::parse("1.6.4").unwrap());
+    }
+
+    fn stable(versions: &[&str]) -> StableHistory {
+        StableHistory {
+            versions: versions
+                .iter()
+                .map(|v| channel::StableEntry {
+                    version: v.to_string(),
+                    tag: format!("v{v}"),
+                    promoted_at: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn previous_stable_intel_release_is_one_with_its_own_package() {
+        // v1.6.4 只带着 v1.6.2 那份 Intel 清单，没有自己的 Intel 包
+        let releases = vec![
+            release(
+                "v1.6.5",
+                &["latest-x64.json", "dodoer-1.6.5-macos-x64.app.tar.gz"],
+            ),
+            release(
+                "v1.6.4",
+                &["latest-x64.json", "dodoer-1.6.4-macos-arm64.app.tar.gz"],
+            ),
+            release(
+                "v1.6.2",
+                &["latest-x64.json", "dodoer-1.6.2-macos-x64.app.tar.gz"],
+            ),
+        ];
+        let history = stable(&["1.6.5", "1.6.4", "1.6.2"]);
+        let current = Version::parse("1.6.5").unwrap();
+        let pick = |arch: &str| {
+            previous_stable_with_package(&history, &releases, &current, "latest-x64.json", arch)
+                .map(|(version, entry)| (version.to_string(), entry.tag.clone()))
+        };
+        assert_eq!(
+            pick("x64"),
+            Some(("1.6.2".to_string(), "v1.6.2".to_string()))
+        );
+        assert_eq!(
+            pick("arm64"),
+            Some(("1.6.4".to_string(), "v1.6.4".to_string()))
+        );
+        // history 里的版本在 Release 列表里找不到：不回退到它
+        let missing = stable(&["1.6.5", "1.6.3"]);
+        assert_eq!(
+            previous_stable_with_package(&missing, &releases, &current, "latest-x64.json", "x64"),
+            None
+        );
     }
 
     #[test]

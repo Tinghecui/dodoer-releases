@@ -87,4 +87,11 @@ describe("localDaemonRoute", () => {
     expect(localDaemonRoute("set_log_settings")).toBe("both")
     expect(localDaemonRoute("a_command_nobody_has")).toBe("daemon")
   })
+
+  it("asks the app, not the child daemon, for its update channel's release", () => {
+    // Cowork fork (issue #413): the server has a `check_app_update` too, but
+    // only the app knows the channel it downloads from.
+    expect(localDaemonRoute("check_app_update")).toBe("shell")
+    expect(localDaemonRoute("perform_app_update")).toBe("shell")
+  })
 })

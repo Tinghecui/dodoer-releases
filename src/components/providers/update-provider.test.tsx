@@ -52,8 +52,8 @@ let performResult: () => unknown = () => ({
 // Desktop mode (`usesTauriUpdater()`): off everywhere except the tests that
 // turn it on, so the other describes keep driving the server path.
 let desktop = false
-// What the desktop app reports as its own version, and what the updater
-// plugin's `check()` resolves to (null = up to date).
+// What the desktop app reports as its own version, and the release its
+// `check_app_update` finds (null = up to date).
 let desktopVersion = "1.1.23"
 let desktopRelease: {
   version: string
@@ -80,7 +80,22 @@ const call = vi.fn(async (endpoint: string) => {
   if (endpoint === "app_update_state") {
     return callQueue.length ? callQueue.shift()! : snapshot
   }
-  if (endpoint === "check_app_update") return checkResult()
+  if (endpoint === "check_app_update") {
+    // Desktop: the app's own channel check (Cowork fork, issue #413).
+    if (desktop) {
+      return {
+        currentVersion: desktopVersion,
+        channel: "stable",
+        update: desktopRelease && {
+          version: desktopRelease.version,
+          notes: desktopRelease.body,
+          date: desktopRelease.date,
+        },
+        blocked: false,
+      }
+    }
+    return checkResult()
+  }
   if (endpoint === "app_update_status") {
     return {
       currentVersion: "0.21.7",
@@ -118,9 +133,6 @@ vi.mock("@/lib/transport", () => ({
 
 vi.mock("@tauri-apps/api/app", () => ({
   getVersion: async () => desktopVersion,
-}))
-vi.mock("@tauri-apps/plugin-updater", () => ({
-  check: async () => desktopRelease,
 }))
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))

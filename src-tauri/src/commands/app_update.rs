@@ -60,6 +60,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::app_error::AppCommandError;
+use crate::update::channel::{self, UpdateChannel};
 use crate::update::idle::{self, IdleSnapshot, IdleStreak, IdleTries, IdleVerdict, UpdateMode};
 use crate::update::journal::{self, Announcement, ApplyHow, Journal, Outcome, Trigger};
 use crate::update::restart_install::{self, RestartInstallOutcome};
@@ -315,27 +316,43 @@ async fn download(
     if let Err(message) =
         run_download(app, handle.clone(), emitter.clone(), downgrade, trigger).await
     {
-        journal_event(|j, running| j.download_failed(running, trigger, &message, now()));
+        journal_event(|j, running| {
+            j.download_failed(running, trigger, current_channel(), &message, now())
+        });
         transition(&handle, || {
             update_state::set_error(&handle, &emitter, message)
         });
     }
 }
 
+/// The updater endpoints in the app's configuration
+/// (`plugins.updater.endpoints`).
+fn config_endpoints(app: &tauri::AppHandle) -> Vec<String> {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|updater| updater.get("endpoints"))
+        .and_then(|endpoints| endpoints.as_array())
+        .map(|endpoints| {
+            endpoints
+                .iter()
+                .filter_map(|endpoint| endpoint.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Where the updater checks, when it is a GitHub repository's latest release
 /// (the only kind of update source with older releases to go back to).
 fn rollback_source(app: &tauri::AppHandle) -> Option<ReleaseSource> {
-    let endpoints: Vec<String> = app
-        .config()
-        .plugins
-        .0
-        .get("updater")?
-        .get("endpoints")?
-        .as_array()?
-        .iter()
-        .filter_map(|endpoint| endpoint.as_str().map(str::to_string))
-        .collect();
-    ReleaseSource::from_endpoints(&endpoints)
+    ReleaseSource::from_endpoints(&config_endpoints(app))
+}
+
+/// Cowork fork (issue #413): the update channel the person chose, stable
+/// until they pick early. Read at each check, download and rollback lookup.
+fn current_channel() -> UpdateChannel {
+    crate::preferences::load().update_channel()
 }
 
 /// The release `perform_app_rollback` would go back to, and whether it can
@@ -348,7 +365,7 @@ pub async fn app_rollback_target(
     let Some(source) = rollback_source(&app) else {
         return Ok(None);
     };
-    rollback::find_target(&source, &app.package_info().version).await
+    rollback::find_target(&source, &app.package_info().version, current_channel()).await
 }
 
 /// Begin a download of `version`, the release before this one, like an
@@ -366,7 +383,7 @@ pub async fn perform_app_rollback(
     let source = rollback_source(&app).ok_or_else(|| {
         AppCommandError::configuration_missing("This build has no releases to roll back to")
     })?;
-    let target = rollback::find_target(&source, &app.package_info().version)
+    let target = rollback::find_target(&source, &app.package_info().version, current_channel())
         .await?
         .filter(|target| target.version == version)
         .ok_or_else(|| {
@@ -491,7 +508,7 @@ fn stored_install(app: &tauri::AppHandle) -> Option<StagedInstall> {
     // `Ok(None)`: the plugin restored it and found it no newer than this
     // version.
     let restore = match &stored.manifest {
-        Some(manifest) => updater(app, quit.clone(), None)
+        Some(manifest) => updater(app, quit.clone(), None, current_channel())
             .and_then(|updater| updater.restore_update(manifest.clone()))
             .map_err(|e| {
                 tracing::warn!("[update] the stored update could not be restored: {e}");
@@ -558,7 +575,7 @@ fn use_stored_install(
     let bytes = install.bytes.len() as u64;
     *staged_install() = Some(install);
     journal_event(|j, running| {
-        j.package_reused(running, &version, trigger, bytes, now());
+        j.package_reused(running, &version, trigger, current_channel(), bytes, now());
         None
     });
     tracing::info!("[update] using the stored package {version}, no download");
@@ -675,7 +692,14 @@ pub fn apply_at_launch(app: &tauri::AppHandle, data_dir: &Path, sole_instance: b
     // 这一条可确认、可上报。存着的包留给「重启以更新」。
     let recorded = JOURNAL_HOME.get().map(|home| {
         let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        journal::record_launch_apply(&home.path, &home.running, &version, size, now())
+        journal::record_launch_apply(
+            &home.path,
+            &home.running,
+            &version,
+            current_channel(),
+            size,
+            now(),
+        )
     });
     if let Err(e) = recorded.unwrap_or_else(|| Err(std::io::Error::other("no journal"))) {
         tracing::warn!(
@@ -773,10 +797,14 @@ async fn store_package(update: &tauri_plugin_updater::Update, bytes: Vec<u8>) ->
 ///
 /// With a `downgrade`, the updater checks that release's manifest instead,
 /// and takes its (older) version, where it otherwise only takes a newer one.
+///
+/// Cowork fork (issue #413): otherwise it checks the manifest of
+/// `update_channel` ([`channel::channel_endpoints`]).
 fn updater(
     app: &tauri::AppHandle,
     quit: Arc<AtomicBool>,
     downgrade: Option<&Downgrade>,
+    update_channel: UpdateChannel,
 ) -> tauri_plugin_updater::Result<tauri_plugin_updater::Updater> {
     let quitting = app.clone();
     let mut builder = app.updater_builder().on_before_exit(move || {
@@ -796,6 +824,11 @@ fn updater(
             .version_comparator(move |current, release| {
                 release.version == version && release.version < current
             });
+    } else {
+        let endpoints = channel::channel_endpoints(update_channel, &config_endpoints(app));
+        if !endpoints.is_empty() {
+            builder = builder.endpoints(endpoints)?;
+        }
     }
     builder.build()
 }
@@ -836,7 +869,9 @@ async fn run_download(
         }
     }
     let quit = Arc::new(AtomicBool::new(false));
-    let updater = updater(&app, quit.clone(), downgrade.as_ref()).map_err(|e| e.to_string())?;
+    let update_channel = current_channel();
+    let updater = updater(&app, quit.clone(), downgrade.as_ref(), update_channel)
+        .map_err(|e| e.to_string())?;
     let update = tokio::time::timeout(CHECK_TIMEOUT, updater.check())
         .await
         // "timed out" is what the frontend's `normalizeAppUpdateError` keys on
@@ -851,7 +886,7 @@ async fn run_download(
         })?;
     let version = update.version.clone();
     journal_event(|j, running| {
-        j.begin_download(running, &version, trigger, now());
+        j.begin_download(running, &version, trigger, update_channel, now());
         None
     });
 
@@ -916,6 +951,59 @@ async fn run_download(
         update_state::set_ready(&handle, &emitter, Some(version), None, None, None)
     });
     Ok(())
+}
+
+/// Cowork fork (issue #413): what [`check_app_update`] answers.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUpdateCheck {
+    pub current_version: String,
+    pub channel: UpdateChannel,
+    /// The newer release on the channel, or null when there is none.
+    pub update: Option<CheckedUpdate>,
+    /// The release found is one that did not start here before and is not
+    /// installed on its own (issue #413, row 3); always false until then.
+    pub blocked: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CheckedUpdate {
+    pub version: String,
+    pub notes: String,
+    pub date: Option<String>,
+}
+
+/// Cowork fork (issue #413): check the current update channel for a newer
+/// release, the way the download will ([`updater`] with the channel's
+/// manifest), within [`CHECK_TIMEOUT`]. Replaces the JS plugin's `check()`,
+/// which cannot change the endpoint. A failure is the plugin's message, for
+/// the window to classify.
+#[tauri::command]
+pub async fn check_app_update(app: tauri::AppHandle) -> Result<AppUpdateCheck, AppCommandError> {
+    let update_channel = current_channel();
+    let updater = updater(&app, Arc::new(AtomicBool::new(false)), None, update_channel)
+        .map_err(|e| AppCommandError::network(e.to_string()))?;
+    let update = tokio::time::timeout(CHECK_TIMEOUT, updater.check())
+        .await
+        // "timed out" is what `normalizeAppUpdateError` keys on.
+        .map_err(|_| AppCommandError::network("Update check timed out"))?
+        .map_err(|e| AppCommandError::network(e.to_string()))?;
+    Ok(AppUpdateCheck {
+        current_version: app.package_info().version.to_string(),
+        channel: update_channel,
+        update: update.map(|update| CheckedUpdate {
+            version: update.version.clone(),
+            notes: update.body.clone().unwrap_or_default(),
+            // The manifest's own `pub_date`, as the window got it from the
+            // JS plugin.
+            date: update
+                .raw_json
+                .get("pub_date")
+                .and_then(|date| date.as_str())
+                .map(str::to_string),
+        }),
+        blocked: false,
+    })
 }
 
 /// Relaunch into the freshly-installed bytes. Flips the shared snapshot to
@@ -1143,38 +1231,71 @@ async fn install_and_quit(
 
 /// The "Automatic updates" setting, as the settings page reads and writes it:
 /// `"auto"`, `"download"` or `"off"`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// Cowork fork (issue #413): and the update channel, `"stable"` or
+/// `"early"`. Saving, either may be left out to keep what is saved;
+/// `channels_available` is only read: false when this build's update source
+/// has no channels ([`channel::channels_available`]).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct UpdatePreferences {
-    pub mode: String,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub update_channel: Option<String>,
+    #[serde(default)]
+    pub channels_available: bool,
+}
+
+/// What the settings page is shown of the saved preferences.
+fn update_preferences_of(
+    prefs: &crate::preferences::AppPreferences,
+    channels_available: bool,
+) -> UpdatePreferences {
+    UpdatePreferences {
+        mode: Some(prefs.update_mode().as_str().to_string()),
+        update_channel: Some(prefs.update_channel().as_str().to_string()),
+        channels_available,
+    }
 }
 
 #[tauri::command]
-pub async fn get_update_preferences() -> Result<UpdatePreferences, AppCommandError> {
-    Ok(UpdatePreferences {
-        mode: crate::preferences::load()
-            .update_mode()
-            .as_str()
-            .to_string(),
-    })
+pub async fn get_update_preferences(
+    app: tauri::AppHandle,
+) -> Result<UpdatePreferences, AppCommandError> {
+    Ok(update_preferences_of(
+        &crate::preferences::load(),
+        channel::channels_available(&config_endpoints(&app)),
+    ))
 }
 
-/// Save the "Automatic updates" setting; a value it does not know is saved as
-/// `"auto"`. The idle restart reads it at each check, the launch at the next
-/// start.
+/// Save the "Automatic updates" setting and the update channel; a value it
+/// does not know is saved as `"auto"` / `"stable"`, one left out stays as it
+/// was. The idle restart reads the mode at each check, the launch at the next
+/// start; the channel is read at the next check. Switching the channel
+/// removes nothing: a package stored for the other channel stays.
 #[tauri::command]
 pub async fn update_update_preferences(
+    app: tauri::AppHandle,
     settings: UpdatePreferences,
 ) -> Result<UpdatePreferences, AppCommandError> {
-    let mode = UpdateMode::parse(Some(&settings.mode));
     let mut prefs = crate::preferences::load();
-    prefs.update_mode = Some(mode.as_str().to_string());
+    if let Some(mode) = settings.mode.as_deref() {
+        let mode = UpdateMode::parse(Some(mode));
+        prefs.update_mode = Some(mode.as_str().to_string());
+        tracing::info!("[update] automatic updates: {}", mode.as_str());
+    }
+    if let Some(update_channel) = settings.update_channel.as_deref() {
+        let update_channel = UpdateChannel::parse(Some(update_channel));
+        prefs.update_channel = Some(update_channel.as_str().to_string());
+        tracing::info!("[update] update channel: {}", update_channel.as_str());
+    }
     crate::preferences::save(&prefs).map_err(|err| {
         AppCommandError::io_error("Failed to save the update setting").with_detail(err.to_string())
     })?;
-    tracing::info!("[update] automatic updates: {}", mode.as_str());
-    Ok(UpdatePreferences {
-        mode: mode.as_str().to_string(),
-    })
+    Ok(update_preferences_of(
+        &prefs,
+        channel::channels_available(&config_endpoints(&app)),
+    ))
 }
 
 /// "Updated to …": the version the last update put in place, the first time

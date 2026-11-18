@@ -164,6 +164,8 @@ export const SHELL_COMMANDS: ReadonlySet<string> = new Set([
   "open_import_sessions_window",
   // The app's own updater and restart (the child is inside the bundle).
   "app_update_state",
+  // Cowork fork (issue #413): checks the app's own update channel.
+  "check_app_update",
   "perform_app_update",
   "restart_app",
   // Computer use: the service and its sharing panel live in the app; the

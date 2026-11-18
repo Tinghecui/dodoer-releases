@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use super::channel::UpdateChannel;
 use super::idle::BlockReason;
 
 /// 数据目录下放升级相关文件的目录。
@@ -225,6 +226,9 @@ pub struct Attempt {
     pub from: String,
     pub to: String,
     pub trigger: Trigger,
+    /// 从哪个更新通道下的（issue #413）。这一项加进来之前写的日志没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<UpdateChannel>,
     pub state: AttemptState,
     pub started_at: DateTime<Utc>,
     #[serde(default)]
@@ -297,6 +301,8 @@ pub struct Outcome {
     pub from: String,
     pub to: String,
     pub trigger: Trigger,
+    /// 更新通道（issue #413）：上报的 `update_channel`。
+    pub channel: Option<UpdateChannel>,
     pub how: Option<ApplyHow>,
     /// 产生这条记录的进程是哪一版。
     pub running: String,
@@ -333,6 +339,7 @@ impl Outcome {
             from: attempt.from.clone(),
             to: attempt.to.clone(),
             trigger: attempt.trigger,
+            channel: attempt.channel,
             how: attempt.apply_how,
             running: running.to_string(),
             at: now,
@@ -365,12 +372,19 @@ impl Outcome {
     }
 }
 
-fn new_attempt(from: &str, to: &str, trigger: Trigger, now: DateTime<Utc>) -> Attempt {
+fn new_attempt(
+    from: &str,
+    to: &str,
+    trigger: Trigger,
+    channel: UpdateChannel,
+    now: DateTime<Utc>,
+) -> Attempt {
     Attempt {
         id: uuid::Uuid::new_v4().to_string(),
         from: from.to_string(),
         to: to.to_string(),
         trigger,
+        channel: Some(channel),
         state: AttemptState::Downloading,
         started_at: now,
         download_ms: None,
@@ -416,8 +430,15 @@ impl Journal {
     }
 
     /// 开始下载 `to`（查到更新以后）。之前没结束的那次就此作废。
-    pub fn begin_download(&mut self, from: &str, to: &str, trigger: Trigger, now: DateTime<Utc>) {
-        self.attempt = Some(new_attempt(from, to, trigger, now));
+    pub fn begin_download(
+        &mut self,
+        from: &str,
+        to: &str,
+        trigger: Trigger,
+        channel: UpdateChannel,
+        now: DateTime<Utc>,
+    ) {
+        self.attempt = Some(new_attempt(from, to, trigger, channel, now));
     }
 
     /// 下完了（验签也过了），等换上。
@@ -437,20 +458,23 @@ impl Journal {
     /// 磁盘上存着的包验过了、直接用（不下载）：`attempt` 是 `ready`，
     /// `reused_package = true`。已经有同一版下好的那条（上次运行下的）就接着
     /// 用它，等待的时间从当时下好算起；别的（没有、别的版本）换成新的一条。
+    /// 接着用的那一条记的是下载时的通道，没记过（旧日志）才记 `channel`。
     pub fn package_reused(
         &mut self,
         from: &str,
         to: &str,
         trigger: Trigger,
+        channel: UpdateChannel,
         bytes: u64,
         now: DateTime<Utc>,
     ) {
         match self.attempt.as_mut() {
             Some(a) if a.to == to && a.state == AttemptState::Ready => {
                 a.reused_package = true;
+                a.channel.get_or_insert(channel);
             }
             _ => {
-                let mut a = new_attempt(from, to, trigger, now);
+                let mut a = new_attempt(from, to, trigger, channel, now);
                 a.state = AttemptState::Ready;
                 a.bytes = Some(bytes);
                 a.reused_package = true;
@@ -467,6 +491,7 @@ impl Journal {
         &mut self,
         running: &str,
         trigger: Trigger,
+        channel: UpdateChannel,
         error: &str,
         now: DateTime<Utc>,
     ) -> Option<Outcome> {
@@ -475,7 +500,7 @@ impl Journal {
             other => {
                 // 不是正在下的那条（还没查到要下哪一版就失败了）：原样放回。
                 self.attempt = other;
-                new_attempt(running, "unknown", trigger, now)
+                new_attempt(running, "unknown", trigger, channel, now)
             }
         };
         let mut outcome = Outcome::of(&attempt, UpdateResult::DownloadFailed, running, now)
@@ -508,9 +533,16 @@ impl Journal {
     /// 启动时换上 `to`（磁盘上存着的包，第 4 行）：先记下这一版在启动时
     /// 试过了，再把 `attempt` 记成 `applying` / `launch`。日志里没有同一版
     /// 下好的那条（丢了）就照 [`Journal::package_reused`] 新开一条。
-    pub fn launch_apply_started(&mut self, from: &str, to: &str, bytes: u64, now: DateTime<Utc>) {
+    pub fn launch_apply_started(
+        &mut self,
+        from: &str,
+        to: &str,
+        channel: UpdateChannel,
+        bytes: u64,
+        now: DateTime<Utc>,
+    ) {
         self.launch_apply_tried = Some(to.to_string());
-        self.package_reused(from, to, Trigger::Auto, bytes, now);
+        self.package_reused(from, to, Trigger::Auto, channel, bytes, now);
         self.apply_started(ApplyHow::Launch, now);
     }
 
@@ -689,11 +721,12 @@ pub fn record_launch_apply(
     path: &Path,
     running: &str,
     to: &str,
+    channel: UpdateChannel,
     bytes: u64,
     now: DateTime<Utc>,
 ) -> io::Result<()> {
     let mut journal = load(path, running);
-    journal.launch_apply_started(running, to, bytes, now);
+    journal.launch_apply_started(running, to, channel, bytes, now);
     save(path, &journal)?;
     let back = load(path, running);
     if back.launch_apply_tried.as_deref() != Some(to) || back.attempt != journal.attempt {
@@ -953,7 +986,7 @@ mod tests {
     /// 1.6.40 → 1.6.41，已经下好。
     fn ready(trigger: Trigger) -> Journal {
         let mut j = Journal::default();
-        j.begin_download("1.6.40", "1.6.41", trigger, at(0));
+        j.begin_download("1.6.40", "1.6.41", trigger, UpdateChannel::Stable, at(0));
         j.download_done(140_512_345, at(41));
         j
     }
@@ -1013,7 +1046,14 @@ mod tests {
     fn a_reused_package_is_ready_without_a_download() {
         // 上次运行下好的同一版：接着用那一条，等待从当时算起。
         let mut j = ready(Trigger::Manual);
-        j.package_reused("1.6.40", "1.6.41", Trigger::Auto, 140_512_345, at(5_000));
+        j.package_reused(
+            "1.6.40",
+            "1.6.41",
+            Trigger::Auto,
+            UpdateChannel::Stable,
+            140_512_345,
+            at(5_000),
+        );
         let a = j.attempt.clone().unwrap();
         assert_eq!(a.state, AttemptState::Ready);
         assert!(a.reused_package);
@@ -1023,7 +1063,14 @@ mod tests {
 
         // 日志里没有（或是别的版本）：新开一条，没有下载时间。
         let mut j = Journal::default();
-        j.package_reused("1.6.40", "1.6.41", Trigger::Auto, 7, at(100));
+        j.package_reused(
+            "1.6.40",
+            "1.6.41",
+            Trigger::Auto,
+            UpdateChannel::Stable,
+            7,
+            at(100),
+        );
         let a = j.attempt.clone().unwrap();
         assert_eq!(
             (a.from.as_str(), a.to.as_str(), a.state),
@@ -1035,7 +1082,14 @@ mod tests {
             (Some(7), None, Some(at(100)))
         );
         let mut other = ready(Trigger::Auto);
-        other.package_reused("1.6.40", "1.6.42", Trigger::Manual, 7, at(100));
+        other.package_reused(
+            "1.6.40",
+            "1.6.42",
+            Trigger::Manual,
+            UpdateChannel::Stable,
+            7,
+            at(100),
+        );
         let a = other.attempt.unwrap();
         assert_eq!((a.to.as_str(), a.trigger), ("1.6.42", Trigger::Manual));
 
@@ -1052,7 +1106,13 @@ mod tests {
     fn a_launch_apply_is_tried_once_per_version_and_recorded_as_launch() {
         // 上次运行下好、存着的那一版：接着用那一条。
         let mut j = ready(Trigger::Auto);
-        j.launch_apply_started("1.6.40", "1.6.41", 140_512_345, at(5_000));
+        j.launch_apply_started(
+            "1.6.40",
+            "1.6.41",
+            UpdateChannel::Stable,
+            140_512_345,
+            at(5_000),
+        );
         assert_eq!(j.launch_apply_tried.as_deref(), Some("1.6.41"));
         let a = j.attempt.clone().unwrap();
         assert_eq!(a.state, AttemptState::Applying);
@@ -1068,7 +1128,7 @@ mod tests {
 
         // 日志里没有那一条（丢了）：新开一条，照样记成启动时换上。
         let mut j = Journal::default();
-        j.launch_apply_started("1.6.40", "1.6.41", 7, at(100));
+        j.launch_apply_started("1.6.40", "1.6.41", UpdateChannel::Stable, 7, at(100));
         let a = j.attempt.clone().unwrap();
         assert_eq!(
             (a.from.as_str(), a.to.as_str(), a.state, a.apply_how),
@@ -1104,7 +1164,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = path(dir.path());
         save(&file, &ready(Trigger::Auto)).unwrap();
-        record_launch_apply(&file, "1.6.40", "1.6.41", 140_512_345, at(5_000)).unwrap();
+        record_launch_apply(
+            &file,
+            "1.6.40",
+            "1.6.41",
+            UpdateChannel::Stable,
+            140_512_345,
+            at(5_000),
+        )
+        .unwrap();
         let j = load(&file, "1.6.40");
         assert_eq!(j.launch_apply_tried.as_deref(), Some("1.6.41"));
         let a = j.attempt.unwrap();
@@ -1117,17 +1185,27 @@ mod tests {
         let blocked = dir.path().join("not-a-dir");
         std::fs::write(&blocked, b"x").unwrap();
         let file = path(&blocked);
-        assert!(record_launch_apply(&file, "1.6.40", "1.6.41", 7, at(100)).is_err());
+        assert!(
+            record_launch_apply(&file, "1.6.40", "1.6.41", UpdateChannel::Stable, 7, at(100))
+                .is_err()
+        );
     }
 
     #[test]
     fn a_failed_download_clears_the_attempt() {
         let mut j = Journal::default();
-        j.begin_download("1.6.40", "1.6.41", Trigger::Auto, at(0));
+        j.begin_download(
+            "1.6.40",
+            "1.6.41",
+            Trigger::Auto,
+            UpdateChannel::Stable,
+            at(0),
+        );
         let o = j
             .download_failed(
                 "1.6.40",
                 Trigger::Auto,
+                UpdateChannel::Stable,
                 "error sending request for url",
                 at(5),
             )
@@ -1148,31 +1226,63 @@ mod tests {
     #[test]
     fn download_failures_are_reported_for_automatic_downloads_once_a_day() {
         let mut j = Journal::default();
-        j.begin_download("1.6.40", "1.6.41", Trigger::Auto, at(0));
+        j.begin_download(
+            "1.6.40",
+            "1.6.41",
+            Trigger::Auto,
+            UpdateChannel::Stable,
+            at(0),
+        );
         assert!(j
-            .download_failed("1.6.40", Trigger::Auto, "x", at(10))
+            .download_failed("1.6.40", Trigger::Auto, UpdateChannel::Stable, "x", at(10))
             .is_some());
         assert_eq!(j.last_download_failure_reported_at, Some(at(10)));
 
         // 23 小时后又失败：不报。
-        j.begin_download("1.6.40", "1.6.41", Trigger::Auto, at(23 * 3600));
+        j.begin_download(
+            "1.6.40",
+            "1.6.41",
+            Trigger::Auto,
+            UpdateChannel::Stable,
+            at(23 * 3600),
+        );
         assert!(j
-            .download_failed("1.6.40", Trigger::Auto, "x", at(23 * 3600 + 10))
+            .download_failed(
+                "1.6.40",
+                Trigger::Auto,
+                UpdateChannel::Stable,
+                "x",
+                at(23 * 3600 + 10)
+            )
             .is_none());
         assert!(j.attempt.is_none());
         assert_eq!(j.last_download_failure_reported_at, Some(at(10)));
 
         // 满 24 小时：再报一条。
-        j.begin_download("1.6.40", "1.6.41", Trigger::Auto, at(24 * 3600));
+        j.begin_download(
+            "1.6.40",
+            "1.6.41",
+            Trigger::Auto,
+            UpdateChannel::Stable,
+            at(24 * 3600),
+        );
         assert!(j
-            .download_failed("1.6.40", Trigger::Auto, "x", at(24 * 3600 + 10))
+            .download_failed(
+                "1.6.40",
+                Trigger::Auto,
+                UpdateChannel::Stable,
+                "x",
+                at(24 * 3600 + 10)
+            )
             .is_some());
 
         // 用户点的、回退的：不报，也不占这 24 小时。
         let mut j = Journal::default();
         for trigger in [Trigger::Manual, Trigger::Rollback] {
-            j.begin_download("1.6.40", "1.6.41", trigger, at(0));
-            assert!(j.download_failed("1.6.40", trigger, "x", at(10)).is_none());
+            j.begin_download("1.6.40", "1.6.41", trigger, UpdateChannel::Stable, at(0));
+            assert!(j
+                .download_failed("1.6.40", trigger, UpdateChannel::Stable, "x", at(10))
+                .is_none());
             assert!(j.attempt.is_none());
         }
         assert_eq!(j.last_download_failure_reported_at, None);
@@ -1182,13 +1292,19 @@ mod tests {
     fn a_check_that_fails_before_the_download_is_reported_without_a_version() {
         let mut j = Journal::default();
         let o = j
-            .download_failed("1.6.40", Trigger::Auto, "Update check timed out", at(0))
+            .download_failed(
+                "1.6.40",
+                Trigger::Auto,
+                UpdateChannel::Stable,
+                "Update check timed out",
+                at(0),
+            )
             .unwrap();
         assert_eq!(o.to, "unknown");
         assert_eq!(o.from, "1.6.40");
         assert_eq!(o.error_kind, Some(ErrorKind::Network));
         assert!(j
-            .download_failed("1.6.40", Trigger::Manual, "x", at(0))
+            .download_failed("1.6.40", Trigger::Manual, UpdateChannel::Stable, "x", at(0))
             .is_none());
     }
 
@@ -1247,7 +1363,13 @@ mod tests {
         assert_eq!(j.attempt.as_ref().unwrap().state, AttemptState::Ready);
 
         let mut j = Journal::default();
-        j.begin_download("1.6.40", "1.6.41", Trigger::Auto, at(0));
+        j.begin_download(
+            "1.6.40",
+            "1.6.41",
+            Trigger::Auto,
+            UpdateChannel::Stable,
+            at(0),
+        );
         assert_eq!(j.on_boot("1.6.40", at(100)), None);
         assert!(j.attempt.is_none());
     }
@@ -1274,7 +1396,13 @@ mod tests {
         );
         // 还在下的、已经在换的：不算。
         let mut j = Journal::default();
-        j.begin_download("1.6.40", "1.6.41", Trigger::Auto, at(0));
+        j.begin_download(
+            "1.6.40",
+            "1.6.41",
+            Trigger::Auto,
+            UpdateChannel::Stable,
+            at(0),
+        );
         assert_eq!(
             j.check_waiting_long("1.6.40", at(10 * WAITING_LONG_SECS)),
             None
@@ -1864,6 +1992,75 @@ mod tests {
         assert_eq!(
             transition_line("downloading", "ready_to_restart", Some("1.6.41")),
             "[update] downloading -> ready_to_restart version=1.6.41"
+        );
+    }
+
+    #[test]
+    fn the_attempt_and_its_outcome_carry_the_channel() {
+        let mut j = Journal::default();
+        j.begin_download(
+            "1.6.40",
+            "1.6.41",
+            Trigger::Auto,
+            UpdateChannel::Early,
+            at(0),
+        );
+        j.download_done(7, at(41));
+        assert_eq!(
+            j.attempt.as_ref().unwrap().channel,
+            Some(UpdateChannel::Early)
+        );
+        let saved = serde_json::to_string(&j).unwrap();
+        assert!(saved.contains(r#""channel":"early""#), "{saved}");
+
+        // 接着用存着的包：记的还是下载时的通道。
+        j.package_reused(
+            "1.6.40",
+            "1.6.41",
+            Trigger::Auto,
+            UpdateChannel::Stable,
+            7,
+            at(50),
+        );
+        assert_eq!(
+            j.attempt.as_ref().unwrap().channel,
+            Some(UpdateChannel::Early)
+        );
+        j.apply_started(ApplyHow::Click, at(100));
+        j.on_boot("1.6.41", at(110));
+        let o = j.confirm("1.6.41", at(170)).unwrap();
+        assert_eq!(o.channel, Some(UpdateChannel::Early));
+
+        // 还没查到要下哪一版就失败的：记当前的通道。
+        let mut j = Journal::default();
+        let o = j
+            .download_failed("1.6.40", Trigger::Auto, UpdateChannel::Stable, "x", at(0))
+            .unwrap();
+        assert_eq!(o.channel, Some(UpdateChannel::Stable));
+    }
+
+    #[test]
+    fn a_journal_from_before_the_channel_reads_without_one() {
+        let mut j = ready(Trigger::Auto);
+        j.attempt.as_mut().unwrap().channel = None;
+        let mut raw = serde_json::to_value(&j).unwrap();
+        assert!(raw["attempt"].get("channel").is_none(), "{raw}");
+        raw["attempt"].as_object_mut().unwrap().remove("channel");
+        let back: Journal = serde_json::from_value(raw).unwrap();
+        assert_eq!(back.attempt.as_ref().unwrap().channel, None);
+        // 旧日志里的那一条接着用时补上通道。
+        let mut back = back;
+        back.package_reused(
+            "1.6.40",
+            "1.6.41",
+            Trigger::Auto,
+            UpdateChannel::Stable,
+            7,
+            at(50),
+        );
+        assert_eq!(
+            back.attempt.as_ref().unwrap().channel,
+            Some(UpdateChannel::Stable)
         );
     }
 }

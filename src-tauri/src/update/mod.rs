@@ -11,6 +11,11 @@
 //! - **Standalone** (no supervisor): the worker re-execs itself.
 
 pub mod install;
+// Cowork fork (issue #413): desktop only (`commands::app_update`); compiled
+// for the tests in every mode.
+#[cfg(any(feature = "tauri-runtime", test))]
+#[cfg_attr(not(feature = "tauri-runtime"), allow(dead_code))]
+pub mod channel;
 // Cowork fork: desktop only (`commands::app_update`, `crash_report`); compiled
 // for the tests in every mode.
 #[cfg(any(feature = "tauri-runtime", test))]

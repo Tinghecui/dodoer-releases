@@ -34,6 +34,11 @@ pub struct AppPreferences {
     /// is put in place at launch, before the window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_mode: Option<String>,
+    /// Cowork fork (issue #413): the desktop app's update channel,
+    /// `"stable"` / `"early"`; `None` and anything else is `"stable"`
+    /// (`update::channel::UpdateChannel::parse`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_channel: Option<String>,
 }
 
 impl AppPreferences {
@@ -45,6 +50,11 @@ impl AppPreferences {
     /// The "Automatic updates" setting, unknown values read as automatic.
     pub fn update_mode(&self) -> crate::update::idle::UpdateMode {
         crate::update::idle::UpdateMode::parse(self.update_mode.as_deref())
+    }
+
+    /// The update channel, unknown values read as stable.
+    pub fn update_channel(&self) -> crate::update::channel::UpdateChannel {
+        crate::update::channel::UpdateChannel::parse(self.update_channel.as_deref())
     }
 }
 
@@ -123,5 +133,26 @@ mod tests {
         // Untouched files stay as they were.
         let untouched = serde_json::to_string(&AppPreferences::default()).unwrap();
         assert!(!untouched.contains("update_mode"), "{untouched}");
+    }
+
+    #[test]
+    fn the_update_channel_is_stable_until_set_to_early() {
+        use crate::update::channel::UpdateChannel;
+        let read = |raw: &str| serde_json::from_str::<AppPreferences>(raw).unwrap();
+        assert_eq!(read("{}").update_channel(), UpdateChannel::Stable);
+        assert_eq!(
+            read(r#"{"update_channel":"stable"}"#).update_channel(),
+            UpdateChannel::Stable
+        );
+        assert_eq!(
+            read(r#"{"update_channel":"early"}"#).update_channel(),
+            UpdateChannel::Early
+        );
+        assert_eq!(
+            read(r#"{"update_channel":"nightly"}"#).update_channel(),
+            UpdateChannel::Stable
+        );
+        let untouched = serde_json::to_string(&AppPreferences::default()).unwrap();
+        assert!(!untouched.contains("update_channel"), "{untouched}");
     }
 }

@@ -256,6 +256,7 @@ describe("waitForServerHealthy", () => {
 describe("checkAppUpdateInfo", () => {
   beforeEach(() => {
     call.mockReset()
+    shellCall.mockReset()
     tauriCheck.mockReset()
     tauriGetVersion.mockClear()
     desktop = false
@@ -284,67 +285,61 @@ describe("checkAppUpdateInfo", () => {
     expect(result.liveProgress).toBe(true)
   })
 
-  it("copies the desktop release fields and releases the updater handle", async () => {
-    // The Tauri `Update` is a resource handle. Since the download is driven in
-    // Rust (which re-checks on its own), holding it would leak an entry in the
-    // resource table on every periodic check.
+  it("asks the desktop backend for the channel's release", async () => {
+    // Cowork fork (issue #413): the check goes to the app's own
+    // `check_app_update`, which reads the channel's manifest the way the
+    // download will; the JS plugin's `check()` can only read the configured one.
     desktop = true
-    const close = vi.fn(async () => {})
-    tauriCheck.mockResolvedValueOnce({
-      version: "0.21.9",
-      body: "fixes",
-      date: "2026-07-24",
-      close,
+    shellCall.mockResolvedValueOnce({
+      currentVersion: "0.21.8",
+      channel: "early",
+      update: { version: "0.21.9", notes: "fixes", date: "2026-07-24" },
+      blocked: false,
+    })
+
+    const result = await checkAppUpdateInfo()
+    expect(shellCall).toHaveBeenCalledWith("check_app_update")
+    expect(result).toEqual({
+      currentVersion: "0.21.8",
+      update: { version: "0.21.9", body: "fixes", date: "2026-07-24" },
+      channel: "early",
+      blocked: false,
+    })
+    expect(tauriCheck).not.toHaveBeenCalled()
+    // Never reaches the server endpoint in desktop mode.
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it("reports no update when desktop is up to date", async () => {
+    desktop = true
+    shellCall.mockResolvedValueOnce({
+      currentVersion: "0.21.8",
+      channel: "stable",
+      update: null,
+      blocked: false,
     })
 
     const result = await checkAppUpdateInfo()
     expect(result).toEqual({
       currentVersion: "0.21.8",
-      update: { version: "0.21.9", body: "fixes", date: "2026-07-24" },
+      update: null,
+      channel: "stable",
+      blocked: false,
     })
-    expect(close).toHaveBeenCalledTimes(1)
-    // Never reaches the server endpoint in desktop mode.
-    expect(call).not.toHaveBeenCalled()
   })
 
-  it("reports no update (and closes nothing) when desktop is up to date", async () => {
+  it("never offers an update to a jenny fork build", async () => {
     desktop = true
-    tauriCheck.mockResolvedValueOnce(null)
+    tauriGetVersion.mockResolvedValueOnce("0.33.0-jenny.1")
 
     const result = await checkAppUpdateInfo()
-    expect(result).toEqual({ currentVersion: "0.21.8", update: null })
-  })
-
-  it("still releases the handle when reading its fields throws", async () => {
-    desktop = true
-    const close = vi.fn(async () => {})
-    tauriCheck.mockResolvedValueOnce({
-      get version(): string {
-        throw new Error("resource gone")
-      },
-      close,
-    })
-
-    await expect(checkAppUpdateInfo()).rejects.toThrow("resource gone")
-    expect(close).toHaveBeenCalledTimes(1)
-  })
-
-  it("bounds the desktop manifest fetch so a black-holed network can't hang it", async () => {
-    // tauri-plugin-updater applies no timeout of its own; without an explicit
-    // one a dropped-packet network leaves check() pending forever, and with it
-    // the provider's in-flight guard — killing checks for the whole session.
-    desktop = true
-    tauriCheck.mockResolvedValueOnce(null)
-
-    await checkAppUpdateInfo()
-
-    const opts = tauriCheck.mock.calls[0]?.[0] as { timeout?: number }
-    expect(opts?.timeout).toBeGreaterThan(0)
+    expect(result).toEqual({ currentVersion: "0.33.0-jenny.1", update: null })
+    expect(shellCall).not.toHaveBeenCalled()
   })
 
   it("propagates a failed check so the caller can classify it", async () => {
     desktop = true
-    tauriCheck.mockRejectedValueOnce(new Error("error sending request for url"))
+    shellCall.mockRejectedValueOnce(new Error("error sending request for url"))
 
     await expect(checkAppUpdateInfo()).rejects.toThrow()
   })

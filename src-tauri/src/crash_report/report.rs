@@ -12,6 +12,8 @@ use serde_json::{json, Map, Value};
 use super::macos_reports::OsReport;
 use super::store::{HangMarker, PanicRecord, Phase, Record, RecoveredHang, RunMarker};
 use crate::telemetry::scrub::scrub_text;
+#[cfg(test)]
+use crate::update::channel::UpdateChannel;
 use crate::update::journal::Outcome;
 #[cfg(test)]
 use crate::update::journal::{ApplyHow, Blocked, ErrorKind, Trigger, UpdateResult};
@@ -441,6 +443,11 @@ pub fn update_report(outcome: &Outcome, os: &str, install: &str) -> Report {
     tag("update_from", &outcome.from);
     tag("update_to", &outcome.to);
     tag("update_trigger", outcome.trigger.as_str());
+    // Cowork fork (issue #413): which update channel it came from; none in
+    // journals written before the channel was recorded.
+    if let Some(channel) = outcome.channel {
+        tag("update_channel", channel.as_str());
+    }
     if let Some(how) = outcome.how {
         tag("update_how", how.as_str());
     }
@@ -523,6 +530,7 @@ mod tests {
             from: "1.6.40".to_string(),
             to: "1.6.41".to_string(),
             trigger: Trigger::Auto,
+            channel: Some(UpdateChannel::Early),
             how: Some(ApplyHow::Idle),
             running: "1.6.40".to_string(),
             at: chrono::DateTime::from_timestamp(1_763_200_000, 0).unwrap(),
@@ -562,6 +570,7 @@ mod tests {
         assert_eq!(report.tags["update_from"], "1.6.40");
         assert_eq!(report.tags["update_to"], "1.6.41");
         assert_eq!(report.tags["update_trigger"], "auto");
+        assert_eq!(report.tags["update_channel"], "early");
         assert_eq!(report.tags["update_how"], "idle");
         assert_eq!(report.tags["install"], "0123456789ab");
         let d = &report.details;
@@ -600,6 +609,11 @@ mod tests {
             ]
         );
         assert!(!report.tags.contains_key("update_how"));
+        // 旧日志里没有通道：不带这个标签。
+        let mut unknown = outcome(UpdateResult::InstallFailed);
+        unknown.channel = None;
+        let unknown = update_report(&unknown, "macos", "0123456789ab");
+        assert!(!unknown.tags.contains_key("update_channel"));
         assert_eq!(report.details["error_kind"], "permission_denied");
         let error = report.details["error"].as_str().unwrap();
         assert!(!error.contains("someone"), "{error}");

@@ -29,9 +29,7 @@ function updateTransport(): Transport {
   return usesTauriUpdater() ? getShellTransport() : getTransport()
 }
 
-// All updater imports are dynamic to avoid crashing in non-Tauri browsers.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Update = any
+// All Tauri imports are dynamic to avoid crashing in non-Tauri browsers.
 
 export type ServerUpdateCapability = "supervised" | "reexec"
 
@@ -64,7 +62,15 @@ export interface AppUpdateCheckResult {
   // (their `perform_app_update` blocks and returns the legacy shape), and falls
   // back to the "view release" affordance instead.
   liveProgress?: boolean
+  /** Desktop only (Cowork fork, issue #413): the update channel checked. */
+  channel?: UpdateChannel
+  /** Desktop only: the release found is one not installed on its own
+   * (issue #413, row 3); always false until then. */
+  blocked?: boolean
 }
+
+/** Cowork fork (issue #413): the desktop update channel. */
+export type UpdateChannel = "stable" | "early"
 
 // Local-only server self-update status, separate from {@link checkAppUpdate}
 // (which contacts the release source). Mirrors the backend `app_update_status`
@@ -409,28 +415,24 @@ export async function getCurrentAppVersion(): Promise<string> {
   }
 }
 
-/**
- * Bound on the manifest fetch. `tauri-plugin-updater` defaults to NO timeout,
- * so a black-holed network (dropped packets, captive portal, no RST) would
- * leave `check()` pending forever — and with it the caller's in-flight guard,
- * killing update checks for the rest of the session. Matches the standalone
- * server's own manifest budget (8s connect + 15s total in
- * `src-tauri/src/update/version.rs`), so every runtime fails in about the same
- * time. The server and remote-desktop paths are already bounded by their
- * transports (60s / 30s).
- */
-const MANIFEST_TIMEOUT_MS = 15_000
+/** Cowork fork (issue #413): what the desktop `check_app_update` answers
+ * (`src-tauri/src/commands/app_update.rs`). */
+interface DesktopUpdateCheck {
+  currentVersion: string
+  channel: UpdateChannel
+  update: { version: string; notes: string; date?: string | null } | null
+  blocked: boolean
+}
 
 /**
  * Ask the release source whether a newer version exists, normalized to plain
  * data across both runtimes.
  *
- * Desktop goes through `tauri-plugin-updater`, whose `check()` resolves to a
- * resource-backed `Update` handle. We copy the three fields we render and
- * release the handle immediately — nothing downstream needs it (the actual
- * download runs in Rust via `perform_app_update`, which re-checks itself), so
- * holding it would only leak an entry in Tauri's resource table on every
- * periodic check.
+ * Desktop asks the app's own `check_app_update` (Cowork fork, issue #413): it
+ * reads the manifest of the chosen update channel, the one
+ * `perform_app_update` downloads from, within 20 seconds. The JS plugin's
+ * `check()` can only read the configured (early) manifest, so a stable app
+ * would be offered a release its download never finds.
  *
  * Server/remote hits `check_app_update`, which already answers in this shape.
  */
@@ -446,35 +448,20 @@ export async function checkAppUpdateInfo(): Promise<AppUpdateCheckResult> {
   if (isJennyForkVersion(runningVersion)) {
     return { currentVersion: runningVersion, update: null }
   }
-  const { check } = await import("@tauri-apps/plugin-updater")
-  const [currentVersion, update] = await Promise.all([
-    Promise.resolve(runningVersion),
-    check({ timeout: MANIFEST_TIMEOUT_MS }),
-  ])
-  if (!update) return { currentVersion, update: null }
-  try {
-    return {
-      currentVersion,
-      update: {
-        version: update.version,
-        body: update.body ?? "",
-        date: update.date ?? null,
-      },
-    }
-  } finally {
-    // Best-effort: a failed close costs one resource-table slot, never the
-    // check result the caller is waiting on.
-    try {
-      await closeUpdateHandle(update)
-    } catch (err) {
-      console.error("[Update] release updater resource failed:", err)
-    }
+  const checked =
+    await getShellTransport().call<DesktopUpdateCheck>("check_app_update")
+  return {
+    currentVersion: checked.currentVersion,
+    update: checked.update
+      ? {
+          version: checked.update.version,
+          body: checked.update.notes,
+          date: checked.update.date ?? null,
+        }
+      : null,
+    channel: checked.channel,
+    blocked: checked.blocked,
   }
-}
-
-async function closeUpdateHandle(update: NonNullable<Update>): Promise<void> {
-  if (typeof update?.close !== "function") return
-  await update.close()
 }
 
 /**

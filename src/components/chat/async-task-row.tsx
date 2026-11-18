@@ -44,7 +44,7 @@ import { Button } from "@/components/ui/button"
 import { Shimmer } from "@/components/ai-elements/shimmer"
 import { cn } from "@/lib/utils"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
-import { formatTokenCount } from "@/lib/token-format"
+import { formatTokensCompact } from "@/lib/token-format"
 import {
   AUTONOMOUS_TURN_TASK_TYPE,
   autonomousTurnCause,
@@ -140,7 +140,9 @@ export function AsyncTaskRow({
           task.current_agent,
           task.last_tool_name,
           task.usage
-            ? t("tokens", { count: formatTokenCount(task.usage.total_tokens) })
+            ? t("tokens", {
+                count: formatTokensCompact(task.usage.total_tokens),
+              })
             : null,
         ]
   ).filter(Boolean) as string[]

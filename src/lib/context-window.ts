@@ -38,3 +38,18 @@ export function formatContextWindowPercent(percent: number | null): string {
   if (percent == null) return "--"
   return `${percent.toFixed(1)}%`
 }
+
+/**
+ * Format the "used" half of a `used / max` context-window figure. `used` is
+ * the latest turn's prompt size, which can never really exceed the window;
+ * when it does anyway (an imported or hand-written transcript, or a window
+ * cap inferred too small) it is shown capped as `>max` instead of an
+ * impossible "1589.2M / 1M" (#742). The percentage is already clamped to 100.
+ */
+export function formatContextWindowUsed(
+  used: number,
+  max: number | null | undefined,
+  format: (n: number) => string
+): string {
+  return max != null && max > 0 && used > max ? `>${format(max)}` : format(used)
+}

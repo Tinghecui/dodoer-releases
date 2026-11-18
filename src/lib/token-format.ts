@@ -9,10 +9,12 @@ export function formatTokenCount(n: number): string {
 }
 
 /**
- * Token counts for the usage page's lists, axes and hints: one decimal for K
+ * Token counts everywhere a figure is shown (usage page, session details,
+ * turn footers, context meter, tasks): one decimal for K
  * and M, and a two-decimal B step from one billion up, so a large figure
  * reads "4.77B" rather than "4769M". Rounding that would print "1000K" or
- * "1000.0M" moves up a step instead. Other screens keep `formatTokenCount`.
+ * "1000.0M" moves up a step instead. `formatTokenCount` (no B step) is kept
+ * only for compatibility; new display code should not use it (#742).
  */
 export function formatTokensCompact(n: number): string {
   if (!Number.isFinite(n) || n < 0) return "0"

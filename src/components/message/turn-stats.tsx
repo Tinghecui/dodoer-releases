@@ -22,7 +22,7 @@ import { useChatAnimationsEnabled } from "@/hooks/use-appearance"
 import { useArrivedOnCompletion } from "@/hooks/use-chat-motion"
 import { useModelLabel } from "@/components/message/model-label-context"
 import { useCreateTaskFromMessage } from "./use-create-task-from-message"
-import { formatTokenCount } from "@/lib/token-format"
+import { formatTokensCompact } from "@/lib/token-format"
 import { cn, copyTextToClipboard } from "@/lib/utils"
 import type { TurnUsage } from "@/lib/types"
 
@@ -289,7 +289,7 @@ export function TurnStats({
                 <div className="flex justify-between gap-3">
                   <span>{t("tokenInput")}</span>
                   <span className="font-mono tabular-nums">
-                    {formatTokenCount(usage.input_tokens)}
+                    {formatTokensCompact(usage.input_tokens)}
                   </span>
                 </div>
                 {/* An agent that reports no output split at all would otherwise
@@ -299,7 +299,7 @@ export function TurnStats({
                   <div className="flex justify-between gap-3">
                     <span>{t("tokenOutput")}</span>
                     <span className="font-mono tabular-nums">
-                      {formatTokenCount(usage.output_tokens)}
+                      {formatTokensCompact(usage.output_tokens)}
                     </span>
                   </div>
                 )}
@@ -307,7 +307,7 @@ export function TurnStats({
                   <div className="flex justify-between gap-3">
                     <span>{t("tokenCacheRead")}</span>
                     <span className="font-mono tabular-nums">
-                      {formatTokenCount(usage.cache_read_input_tokens)}
+                      {formatTokensCompact(usage.cache_read_input_tokens)}
                     </span>
                   </div>
                 )}
@@ -315,7 +315,7 @@ export function TurnStats({
                   <div className="flex justify-between gap-3">
                     <span>{t("tokenCacheWrite")}</span>
                     <span className="font-mono tabular-nums">
-                      {formatTokenCount(usage.cache_creation_input_tokens)}
+                      {formatTokensCompact(usage.cache_creation_input_tokens)}
                     </span>
                   </div>
                 )}

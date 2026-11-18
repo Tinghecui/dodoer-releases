@@ -13,9 +13,10 @@ import { STATUS_ORDER } from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
 import { cn, copyTextToClipboard } from "@/lib/utils"
 import { formatConversationTitle } from "@/lib/conversation-title"
-import { formatTokenCount } from "@/lib/token-format"
+import { formatTokensCompact } from "@/lib/token-format"
 import {
   formatContextWindowPercent,
+  formatContextWindowUsed,
   resolveContextWindowPercent,
 } from "@/lib/context-window"
 import { getFolderConversation } from "@/lib/api"
@@ -629,9 +630,9 @@ export function SessionDetailsContent({
     ctxPercent != null ? ` (${formatContextWindowPercent(ctxPercent)})` : ""
   const contextWindowValue =
     ctxMax != null
-      ? `${ctxUsed != null ? formatTokenCount(ctxUsed) : t("none")} / ${formatTokenCount(ctxMax)}${ctxPercentText}`
+      ? `${ctxUsed != null ? formatContextWindowUsed(ctxUsed, ctxMax, formatTokensCompact) : t("none")} / ${formatTokensCompact(ctxMax)}${ctxPercentText}`
       : ctxUsed != null
-        ? formatTokenCount(ctxUsed)
+        ? formatTokensCompact(ctxUsed)
         : null
   const hasTokenInfo =
     stats != null &&
@@ -720,25 +721,25 @@ export function SessionDetailsContent({
           <dl className="grid grid-cols-1 gap-x-4 gap-y-3 @[20rem]:grid-cols-2">
             {totalTokens != null && (
               <InfoItem label={t("totalTokens")} valueClassName={numeric}>
-                {formatTokenCount(totalTokens)}
+                {formatTokensCompact(totalTokens)}
               </InfoItem>
             )}
             {usage && (
               <>
                 <InfoItem label={t("inputTokens")} valueClassName={numeric}>
-                  {formatTokenCount(usage.input_tokens)}
+                  {formatTokensCompact(usage.input_tokens)}
                 </InfoItem>
                 <InfoItem label={t("outputTokens")} valueClassName={numeric}>
-                  {formatTokenCount(usage.output_tokens)}
+                  {formatTokensCompact(usage.output_tokens)}
                 </InfoItem>
                 {usage.cache_creation_input_tokens > 0 && (
                   <InfoItem label={t("cacheWrite")} valueClassName={numeric}>
-                    {formatTokenCount(usage.cache_creation_input_tokens)}
+                    {formatTokensCompact(usage.cache_creation_input_tokens)}
                   </InfoItem>
                 )}
                 {usage.cache_read_input_tokens > 0 && (
                   <InfoItem label={t("cacheRead")} valueClassName={numeric}>
-                    {formatTokenCount(usage.cache_read_input_tokens)}
+                    {formatTokensCompact(usage.cache_read_input_tokens)}
                   </InfoItem>
                 )}
               </>

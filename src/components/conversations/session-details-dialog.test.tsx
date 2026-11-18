@@ -295,6 +295,37 @@ describe("SessionDetailsDialog", () => {
     expect(getByText("50K / 200K (100.0%)")).toBeTruthy()
   })
 
+  it("writes billion-scale totals with a B and never shows used > max (#742)", () => {
+    // The AI QA seed session: three turns of 1.2M in + 0.8M out + 18M cache
+    // write + 1.57B cache read, the last prompt bigger than the 1M window.
+    const big: SessionStats = {
+      total_usage: {
+        input_tokens: 3_600_000,
+        output_tokens: 2_400_000,
+        cache_creation_input_tokens: 54_000_000,
+        cache_read_input_tokens: 4_710_000_000,
+      },
+      total_tokens: 4_770_000_000,
+      total_duration_ms: 0,
+      context_window_used_tokens: 1_589_200_000,
+      context_window_max_tokens: 1_000_000,
+      context_window_usage_percent: 158_920,
+    }
+    const { getByText, queryByText } = renderWithIntl(
+      <SessionDetailsDialog
+        open
+        onOpenChange={() => {}}
+        summary={summary()}
+        stats={big}
+      />
+    )
+    expect(getByText("4.77B")).toBeTruthy()
+    expect(getByText("4.71B")).toBeTruthy()
+    expect(queryByText("4770M")).toBeNull()
+    expect(getByText(">1M / 1M (100.0%)")).toBeTruthy()
+    expect(queryByText(/1589\.2M|1\.59B/)).toBeNull()
+  })
+
   it("fetches token usage when stats are omitted (sidebar path)", async () => {
     mockGet.mockResolvedValue({
       summary: summary(),

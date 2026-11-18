@@ -6,8 +6,11 @@ import { useTranslations } from "next-intl"
 import { useConnectionStore } from "@/contexts/acp-connections-context"
 import { useTabStore } from "@/contexts/tab-context"
 import { useConversationRuntimeStore } from "@/stores/conversation-runtime-store"
-import { formatTokenCount } from "@/lib/token-format"
-import { formatContextWindowPercent } from "@/lib/context-window"
+import { formatTokensCompact } from "@/lib/token-format"
+import {
+  formatContextWindowPercent,
+  formatContextWindowUsed,
+} from "@/lib/context-window"
 import {
   CACHE_HIT_RATE_DIGITS,
   cacheHitRatio,
@@ -165,9 +168,9 @@ export function ComposerContextUsage({ tabId }: { tabId: string | null }) {
   // the full breakdown on click).
   const triggerTitle = hasContext
     ? contextUsed != null && contextMax != null
-      ? `${t("contextWindow")}: ${formatContextWindowPercent(contextPercent)} (${formatTokenCount(contextUsed)} / ${formatTokenCount(contextMax)})`
+      ? `${t("contextWindow")}: ${formatContextWindowPercent(contextPercent)} (${formatContextWindowUsed(contextUsed, contextMax, formatTokensCompact)} / ${formatTokensCompact(contextMax)})`
       : `${t("contextWindow")}: ${formatContextWindowPercent(contextPercent)}`
-    : `${t("tokenUsage")}: ${formatTokenCount(total ?? 0)}`
+    : `${t("tokenUsage")}: ${formatTokensCompact(total ?? 0)}`
 
   return (
     <Popover>
@@ -214,7 +217,7 @@ export function ComposerContextUsage({ tabId }: { tabId: string | null }) {
           ) : (
             <>
               <Coins className="size-3.5" />
-              <span>{formatTokenCount(total ?? 0)}</span>
+              <span>{formatTokensCompact(total ?? 0)}</span>
             </>
           )}
         </button>
@@ -250,7 +253,7 @@ export function ComposerContextUsage({ tabId }: { tabId: string | null }) {
                   <div className="flex items-center justify-between text-xs leading-none text-muted-foreground">
                     <span>{t("usedMax")}</span>
                     <span className="tabular-nums">
-                      {`${formatTokenCount(contextUsed)} / ${formatTokenCount(contextMax)}`}
+                      {`${formatContextWindowUsed(contextUsed, contextMax, formatTokensCompact)} / ${formatTokensCompact(contextMax)}`}
                     </span>
                   </div>
                 ) : null}
@@ -286,7 +289,7 @@ export function ComposerContextUsage({ tabId }: { tabId: string | null }) {
                 >
                   <span>{t(row.key)}</span>
                   <span className="tabular-nums">
-                    {formatTokenCount(row.value)}
+                    {formatTokensCompact(row.value)}
                   </span>
                 </div>
               ))}

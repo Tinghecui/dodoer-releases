@@ -14,6 +14,7 @@ import { normalizeToolName } from "@/lib/tool-call-normalization"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { unwrapWholeFence } from "@/lib/fenced-text"
+import { formatTokensCompact } from "@/lib/token-format"
 import { PauseIcon, XIcon } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useFoldBack } from "./activity/fold-back"
@@ -134,8 +135,10 @@ function formatTokens(count: number | null, tokenLabel: string): string | null {
   if (count === null) return null
   const abs = Math.abs(count)
   if (abs >= 1000) {
-    const compact = (count / 1000).toFixed(1).replace(/\.0$/, "")
-    return `${compact}K ${tokenLabel}`
+    // Same K/M/B steps as every other token figure (#742); keep the sign so an
+    // overspent budget still reads negative.
+    const sign = count < 0 ? "-" : ""
+    return `${sign}${formatTokensCompact(abs)} ${tokenLabel}`
   }
   return `${count} ${tokenLabel}`
 }

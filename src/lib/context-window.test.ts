@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   formatContextWindowPercent,
+  formatContextWindowUsed,
   resolveContextWindowPercent,
 } from "./context-window"
 
@@ -40,5 +41,22 @@ describe("formatContextWindowPercent", () => {
 
   it("renders an em-dash placeholder for null", () => {
     expect(formatContextWindowPercent(null)).toBe("--")
+  })
+})
+
+describe("formatContextWindowUsed", () => {
+  const fmt = (n: number) => `${n}`
+  it("formats used as-is when it fits the window", () => {
+    expect(formatContextWindowUsed(500, 1000, fmt)).toBe("500")
+    expect(formatContextWindowUsed(1000, 1000, fmt)).toBe("1000")
+  })
+
+  it("caps an impossible used > max at the window, marked with >", () => {
+    expect(formatContextWindowUsed(1500, 1000, fmt)).toBe(">1000")
+  })
+
+  it("leaves used alone when the window is unknown or non-positive", () => {
+    expect(formatContextWindowUsed(1500, null, fmt)).toBe("1500")
+    expect(formatContextWindowUsed(1500, 0, fmt)).toBe("1500")
   })
 })

@@ -65,7 +65,7 @@ import {
   FOLLOW_UP_SCENARIOS,
   type FollowUpIntent,
 } from "@/lib/task-follow-up"
-import { formatTokenCount } from "@/lib/token-format"
+import { formatTokensCompact } from "@/lib/token-format"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
 import { MessageResponse } from "@/components/ai-elements/message"
@@ -876,7 +876,7 @@ export function TaskDetailSheet({
                       title={t("detailTokens")}
                     >
                       <Coins className="size-3" aria-hidden="true" />
-                      {formatTokenCount(tokenTotal)}
+                      {formatTokensCompact(tokenTotal)}
                     </span>
                   ) : null}
                 </div>

@@ -483,3 +483,31 @@ describe("DirectoryBrowser — new folder", () => {
     )
   })
 })
+
+describe("DirectoryBrowser — load errors", () => {
+  it("clears a failed path's error once a cached directory is opened again", async () => {
+    render(<Harness />)
+    await screen.findByText("work")
+
+    const pathBox = screen.getByDisplayValue("/home/me")
+    fireEvent.change(pathBox, { target: { value: "/no/such/dir" } })
+    await act(async () => {
+      fireEvent.keyDown(pathBox, { key: "Enter" })
+    })
+    expect(
+      await screen.findByText("Failed to load directory")
+    ).toBeInTheDocument()
+
+    // 起始目录已经在缓存里，这次不会再发请求
+    api.listDirectoryEntries.mockClear()
+    fireEvent.change(pathBox, { target: { value: "/home/me" } })
+    await act(async () => {
+      fireEvent.keyDown(pathBox, { key: "Enter" })
+    })
+    expect(api.listDirectoryEntries).not.toHaveBeenCalled()
+    expect(
+      screen.queryByText("Failed to load directory")
+    ).not.toBeInTheDocument()
+    expect(screen.getByText("work")).toBeInTheDocument()
+  })
+})

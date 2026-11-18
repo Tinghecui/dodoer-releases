@@ -221,12 +221,14 @@ export const DirectoryBrowser = forwardRef<
 
   const loadEntries = useCallback(
     async (path: string): Promise<DirectoryEntry[] | null> => {
+      // 先清掉上一次的报错：读缓存的目录也要清，不然失败后回到已打开过的
+      // 目录，「加载目录失败」会一直挂着
+      setError(null)
       // Already cached
       if (entries.has(path)) return entries.get(path)!
 
       const gen = sessionGen.current
       setLoading((prev) => new Set(prev).add(path))
-      setError(null)
       try {
         const result = await listDirectoryEntries(path)
         // Skip writes if a hide/show happened mid-flight — they belong to a
@@ -266,6 +268,8 @@ export const DirectoryBrowser = forwardRef<
         return
       }
       if (result !== null) {
+        // 最新一次导航成功了：并发中先失败的请求写下的报错不再算数
+        setError(null)
         setRootPath(path)
         onValueChange(path)
         setExpandedPaths(new Set())

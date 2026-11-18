@@ -710,7 +710,7 @@ pub async fn forget_host_device(
         .forget_device(&params.id)
         .map_err(|e| match e {
             ForgetError::Online => AppCommandError::invalid_input(
-                "A connected device cannot be removed: quit dodoer on it first",
+                "A connected device cannot be removed: quit CoTeam on it first",
             ),
             ForgetError::NoSuchDevice => AppCommandError::not_found("No such device"),
         })?;

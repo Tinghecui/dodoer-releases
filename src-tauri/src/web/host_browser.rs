@@ -112,7 +112,7 @@ impl RemoteHostBrowser {
                 log_failure(kind, failure, device.as_deref(), None);
                 Err(format!(
                     "{} went away before it answered. Ask the user to open this workspace in \
-                     the dodoer desktop app there, then try again.",
+                     the CoTeam desktop app there, then try again.",
                     device_or_app(host)
                 ))
             }
@@ -277,13 +277,13 @@ fn route_note(error: &BrowserRouteError) -> String {
         }
         BrowserRouteError::Offline { name, last_seen } => format!(
             "`{name}` is offline (last online {}). Ask the user to open this workspace in the \
-             dodoer desktop app on that computer, then try again. Do not use another device \
+             CoTeam desktop app on that computer, then try again. Do not use another device \
              instead unless the user says so.",
             ago(*last_seen, now_ms())
         ),
         BrowserRouteError::NotLent { name } => format!(
             "`{name}` is online but does not lend its browser. Ask the user to open this \
-             workspace in a remote window of the dodoer desktop app on that computer and to let \
+             workspace in a remote window of the CoTeam desktop app on that computer and to let \
              agents use its browser, then try again. Do not use another device instead unless \
              the user says so."
         ),
@@ -393,7 +393,7 @@ impl BrowserToolAccess for RemoteHostBrowser {
                     } else {
                         format!(
                             "None of the devices this conversation uses ({}) lends its browser \
-                             now. Ask the user to let agents use the browser in the dodoer \
+                             now. Ask the user to let agents use the browser in the CoTeam \
                              desktop app there; do not use another device instead.",
                             names.join(", ")
                         )

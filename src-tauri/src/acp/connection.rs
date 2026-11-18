@@ -1795,7 +1795,7 @@ fn pi_runtime_is_outdated(err: &agent_client_protocol::Error, agent_type: AgentT
 /// The explanation [`AcpError::AgentRuntimeOutdated`] carries for pi.
 fn pi_runtime_outdated_message() -> String {
     format!(
-        "Pi is too old for this version of dodoer: opening a session needs Pi {} or newer. \
+        "Pi is too old for this version of CoTeam: opening a session needs Pi {} or newer. \
          Update it with npm install -g @earendil-works/pi-coding-agent, or choose a newer \
          custom command in Agent Settings → Pi → Runtime.",
         registry::PI_MIN_RUNTIME_VERSION
@@ -27115,6 +27115,14 @@ async fn emit_conversation_update(
 mod tests {
     use super::*;
     use agent_client_protocol::schema::v1::{Diff, SessionConfigId};
+
+    /// Pi 太旧时的说明，产品名用显示名（#696）。
+    #[test]
+    fn the_outdated_pi_message_names_the_product_by_its_display_name() {
+        let message = pi_runtime_outdated_message();
+        assert!(message.contains(crate::brand::DISPLAY_NAME), "{message}");
+        assert!(!message.contains("dodoer"), "{message}");
+    }
 
     /// Unwrap a select selector. The Grok synthesizers below only ever build
     /// selects, so any other kind is a test failure rather than a branch to

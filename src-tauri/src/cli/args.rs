@@ -271,12 +271,12 @@ pub enum Command {
     Result(ResultArgs),
     /// Cancel a run.
     Cancel(CancelArgs),
-    /// The automations saved in dodoer; `automations run ID` runs one now.
+    /// The automations saved in CoTeam; `automations run ID` runs one now.
     Automations(AutomationsArgs),
     /// The conversation mind map's nightly reorganization: `projects`,
     /// `export PROJECT`, `apply PROJECT PLAN`.
     Taxonomy(TaxonomyArgs),
-    /// The computer a dodoer desktop app lends this workspace: `desktop
+    /// The computer a CoTeam desktop app lends this workspace: `desktop
     /// proxy` is what `ssh desktop` runs to reach it.
     Desktop(DesktopArgs),
 }
@@ -290,7 +290,7 @@ pub struct DesktopArgs {
 #[derive(Subcommand, Debug, Clone)]
 pub enum DesktopAction {
     /// Carry one SSH connection between stdin and stdout and one of the
-    /// person's computers a dodoer desktop app lends this workspace: the
+    /// person's computers a CoTeam desktop app lends this workspace: the
     /// ProxyCommand of `ssh <device>`, which codeg-server writes into the
     /// ssh configuration. Not for typing.
     Proxy {
@@ -374,7 +374,7 @@ pub struct AgentsArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum AgentsAction {
-    /// Install an agent the way dodoer's settings do: its npm package, or its
+    /// Install an agent the way CoTeam's settings do: its npm package, or its
     /// download.
     Install(AgentInstallArgs),
 }
@@ -390,7 +390,7 @@ pub struct AgentInstallArgs {
     pub version: Option<String>,
 
     /// How long to wait for the install (default: until it ends). It goes
-    /// on in dodoer either way.
+    /// on in CoTeam either way.
     #[arg(long, value_name = "DUR", value_parser = parse_duration)]
     pub wait: Option<Duration>,
 
@@ -412,7 +412,7 @@ pub struct AutomationsArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum AutomationsAction {
-    /// The automations saved in dodoer (what `codeg-cli automations` prints).
+    /// The automations saved in CoTeam (what `codeg-cli automations` prints).
     List(ListArgs),
     /// Run an automation now, as its Run now button does.
     Run(AutomationRunArgs),
@@ -622,7 +622,7 @@ pub enum PolicyArg {
     Allow,
     /// Refuse, and end the run with exit code 5.
     Fail,
-    /// Leave every request to a person in the dodoer window.
+    /// Leave every request to a person in the CoTeam window.
     Wait,
 }
 
@@ -939,6 +939,24 @@ mod tests {
         for bad in ["--worktree=../up", "--worktree=a b", "--worktree=-x"] {
             assert_eq!(parse(&[bad, "x"]).unwrap_err().exit_code(), 2, "{bad}");
         }
+    }
+
+    /// 帮助里说的产品名是显示名，每个子命令都查（#696）。
+    #[test]
+    fn help_names_the_product_by_its_display_name() {
+        use clap::CommandFactory;
+        fn walk(cmd: &mut clap::Command, out: &mut String) {
+            out.push_str(&cmd.render_long_help().to_string());
+            for sub in cmd.get_subcommands_mut() {
+                walk(sub, out);
+            }
+        }
+        let mut cmd = Cli::command();
+        cmd.build();
+        let mut help = String::new();
+        walk(&mut cmd, &mut help);
+        assert!(!help.to_lowercase().contains("dodoer"), "{help}");
+        assert!(help.contains(crate::brand::DISPLAY_NAME));
     }
 
     #[test]

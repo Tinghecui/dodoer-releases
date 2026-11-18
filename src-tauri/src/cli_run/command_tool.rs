@@ -145,7 +145,7 @@ fn status_of(plan: &Plan, command: &str) -> CommandToolStatus {
 pub fn install() -> Result<CommandToolStatus, String> {
     let plan = this_plan();
     match &plan {
-        Plan::Nothing => return Err("this build of dodoer has no codeg-cli to install".into()),
+        Plan::Nothing => return Err("this build of CoTeam has no codeg-cli to install".into()),
         Plan::Package { .. } => {}
         Plan::Link { link, target } => match link_state(link, target) {
             LinkState::Ours { current: true } => {}
@@ -254,7 +254,7 @@ fn make_link_as_admin(link: &Path, target: &Path) -> Result<(), String> {
     let dir = link.parent().unwrap_or(Path::new("/usr/local/bin"));
     let script = format!(
         "do shell script \"/bin/mkdir -p \" & {} & \" && /bin/ln -sfn \" & {} & \" \" & {} \
-         with prompt \"dodoer wants to put codeg-cli on your PATH.\" with administrator privileges",
+         with prompt \"CoTeam wants to put codeg-cli on your PATH.\" with administrator privileges",
         quoted(dir),
         quoted(target),
         quoted(link)

@@ -2121,7 +2121,7 @@ impl CliRunService {
                     &mut inner,
                     EventBody::Notice {
                         severity: "info".into(),
-                        title: "the agent's plan is waiting for approval in dodoer".into(),
+                        title: "the agent's plan is waiting for approval in CoTeam".into(),
                         message: None,
                     },
                 );
@@ -2324,7 +2324,7 @@ impl CliRunService {
                     Subtype::ErrorDuringExecution,
                     Some(ErrorInfo {
                         code: "cancelled".into(),
-                        message: "the turn was cancelled in dodoer".into(),
+                        message: "the turn was cancelled in CoTeam".into(),
                         next_steps: Vec::new(),
                     }),
                 ),
@@ -2873,7 +2873,7 @@ fn stop_outcome(cause: &StopCause) -> (Subtype, Option<ErrorInfo>) {
                 message: format!("{tool} needed a permission the run's policy does not give"),
                 next_steps: vec![
                     "--permissions allow   (allow every request, once each)".into(),
-                    "--permissions wait    (answer it yourself in dodoer)".into(),
+                    "--permissions wait    (answer it yourself in CoTeam)".into(),
                 ],
             }),
         ),
@@ -3141,8 +3141,8 @@ fn install_hint(agent: AgentType, available: bool, install_url: Option<&str>) ->
             format!("npm install -g {package}")
         }
         _ => match install_url {
-            Some(url) => format!("see {url}, or install it in dodoer → Settings → Agents"),
-            None => "install it in dodoer → Settings → Agents".to_string(),
+            Some(url) => format!("see {url}, or install it in CoTeam → Settings → Agents"),
+            None => "install it in CoTeam → Settings → Agents".to_string(),
         },
     }
 }

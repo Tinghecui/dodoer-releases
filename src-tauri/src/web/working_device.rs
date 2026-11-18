@@ -1146,7 +1146,7 @@ fn names(devices: &[DeviceView]) -> String {
 /// conversation (`docs/devices.md` 6.7).
 pub fn not_picked() -> String {
     "The user has not picked a computer for this conversation yet. Tell them to pick one with \
-     the device button below the message box in dodoer, then try again; do not ask them with \
+     the device button below the message box in CoTeam, then try again; do not ask them with \
      ask_user_question. If their message named one (\"on the laptop\"), call use_device with \
      that name instead."
         .to_string()
@@ -1160,7 +1160,7 @@ pub fn not_picked_for(part: DevicePart) -> String {
     };
     format!(
         "The user has not picked a computer for this conversation's {what}{how} yet. Tell them \
-         to pick one for the {what} with the device button below the message box in dodoer, \
+         to pick one for the {what} with the device button below the message box in CoTeam, \
          then try again; do not ask them with ask_user_question. If their message named one \
          (\"on the laptop\"), call use_device with that name instead."
     )
@@ -1200,7 +1200,7 @@ fn part_use(device: &DeviceView, part: DevicePart) -> String {
     if !device.online {
         return format!(
             "`{name}` is offline (last online {}): tell the user, and ask them to open this \
-             workspace in the dodoer desktop app on it. Do not use another device instead.",
+             workspace in the CoTeam desktop app on it. Do not use another device instead.",
             super::host_devices::ago(device.last_seen, now_ms())
         );
     }
@@ -1214,7 +1214,7 @@ fn part_use(device: &DeviceView, part: DevicePart) -> String {
     } else {
         format!(
             "`{name}` does not lend its {what} now: tell the user, who can lend it from the \
-             dodoer desktop app on it. Do not use another device instead."
+             CoTeam desktop app on it. Do not use another device instead."
         )
     }
 }
@@ -1265,7 +1265,7 @@ fn not_given(
 
 fn no_devices() -> String {
     "No computer of the user's has connected to this server. They can open this workspace \
-     in the dodoer desktop app on their computer."
+     in the CoTeam desktop app on their computer."
         .to_string()
 }
 
@@ -1426,14 +1426,14 @@ fn how_to_use(device: &DeviceView) -> String {
     if !device.online {
         return format!(
             "It is offline (last online {}): tell the user, and ask them to open this workspace \
-             in the dodoer desktop app on it. Do not use another device instead.",
+             in the CoTeam desktop app on it. Do not use another device instead.",
             super::host_devices::ago(device.last_seen, now_ms())
         );
     }
     let mut text = format!("It is online; {}.", lends(device));
     if !device.shell || !device.browser {
         text.push_str(
-            " What it does not lend, the user can lend from the dodoer desktop app on it.",
+            " What it does not lend, the user can lend from the CoTeam desktop app on it.",
         );
     }
     text
@@ -1464,6 +1464,21 @@ mod tests {
     use crate::host_device::HostDevice;
     use crate::web::host_registry::{HostRegistration, CAPABILITY_BROWSER};
     use tokio::sync::{mpsc, oneshot};
+
+    /// 给智能体的「去桌面 app 里选设备」说明，用显示名（#696）。
+    #[test]
+    fn device_notes_name_the_product_by_its_display_name() {
+        let notes = [
+            not_picked(),
+            not_picked_for(DevicePart::Shell),
+            not_picked_for(DevicePart::Browser),
+            no_devices(),
+        ];
+        for note in notes {
+            assert!(note.contains(crate::brand::DISPLAY_NAME), "{note}");
+            assert!(!note.contains("dodoer"), "{note}");
+        }
+    }
 
     fn device(id: &str, name: &str) -> HostDevice {
         HostDevice {

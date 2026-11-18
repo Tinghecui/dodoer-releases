@@ -308,7 +308,7 @@ pub fn validate_headers(
         }
         if RESERVED_HEADER_NAMES.contains(&name.to_ascii_lowercase().as_str()) {
             return Err(AppCommandError::invalid_input(format!(
-                "Custom header \"{name}\" is reserved by dodoer"
+                "Custom header \"{name}\" is reserved by CoTeam"
             )));
         }
         header.to_header_pair().map_err(|e| {

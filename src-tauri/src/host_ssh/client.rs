@@ -35,7 +35,7 @@ const CONTROL: &str = "cm";
 const SOCKET_PATH_MAX: usize = 86;
 
 const INCLUDE_NOTE: &str =
-    "# Added by codeg-server so that `ssh <device>` reaches the computers dodoer desktop apps\n\
+    "# Added by codeg-server so that `ssh <device>` reaches the computers CoTeam desktop apps\n\
      # lend this workspace (docs/devices.md). It has to stay above every Host line.";
 
 /// What the server's `ssh` configuration is written from: every device in
@@ -242,7 +242,7 @@ fn config_text(dir: &Path, plan: &SshPlan, program: &Path) -> Result<String, Str
     let proxy = crate::git_credential::sh_single_quote(program_text).replace('%', "%%");
     let mut text = String::from(
         "# Written by codeg-server: `ssh <device>` reaches that one of the person's computers\n\
-         # through codeg-server and the dodoer desktop app on it (docs/devices.md). Rewritten\n\
+         # through codeg-server and the CoTeam desktop app on it (docs/devices.md). Rewritten\n\
          # whenever the devices change, so edits here do not last.\n",
     );
     for device in &plan.devices {

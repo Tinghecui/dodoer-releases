@@ -100,7 +100,7 @@ pub async fn assistants(global: &GlobalArgs, list: &ListArgs, env: &Env) -> i32 
         return 0;
     }
     if assistants.is_empty() {
-        println!("no assistants yet: create one in dodoer → Settings → Assistants");
+        println!("no assistants yet: create one in CoTeam → Settings → Assistants");
         return 0;
     }
     let width = assistants

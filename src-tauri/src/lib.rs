@@ -513,7 +513,7 @@ mod tauri_app {
         );
         tauri::async_runtime::spawn(async move {
             let _ =
-                notification::send_notification(app, "dodoer Web service".to_string(), body).await;
+                notification::send_notification(app, "CoTeam Web service".to_string(), body).await;
         });
     }
 
@@ -1024,7 +1024,7 @@ mod tauri_app {
                         None
                     }
                     Ok(None) => Some(format!(
-                        "{} is in use by a `codeg-cli --standalone` server. Open dodoer again \
+                        "{} is in use by a `codeg-cli --standalone` server. Open CoTeam again \
                          once that command has finished.",
                         effective_data_dir.display()
                     )),
@@ -1038,7 +1038,7 @@ mod tauri_app {
                     }
                     // Not run unlocked: a private server could be using it.
                     Err(e) => Some(format!(
-                        "dodoer cannot lock its data directory {}: {e}",
+                        "CoTeam cannot lock its data directory {}: {e}",
                         effective_data_dir.display()
                     )),
                 };
@@ -1047,7 +1047,7 @@ mod tauri_app {
                     let handle = app.handle().clone();
                     app.dialog()
                         .message(message)
-                        .title("dodoer")
+                        .title("CoTeam")
                         .kind(MessageDialogKind::Error)
                         .show(move |_| handle.exit(1));
                     return Ok(());
@@ -1499,7 +1499,7 @@ mod tauri_app {
                 if app.get_webview_window("main").is_none() {
                     let url = tauri::WebviewUrl::App(workspace_path.into());
                     let builder = tauri::WebviewWindowBuilder::new(app, "main", url)
-                        .title("dodoer")
+                        .title("CoTeam")
                         .inner_size(1260.0, 860.0)
                         .min_inner_size(400.0, 600.0)
                         .visible(restore.show_local())

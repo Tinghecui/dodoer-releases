@@ -78,7 +78,7 @@ fn needs(conn: &Connection, capability: &str, what: &str) -> Result<(), Failure>
 pub async fn install(global: &GlobalArgs, args: &AgentInstallArgs, env: &Env) -> i32 {
     let out = Output::new(format(args.json), global);
     let body = install_inner(global, args, env, &out);
-    interruptible(&out, "the install goes on in dodoer", body).await
+    interruptible(&out, "the install goes on in CoTeam", body).await
 }
 
 async fn install_inner(
@@ -101,7 +101,7 @@ async fn install_inner(
         )
         .await?;
     out.note(&format!(
-        "codeg-cli: installing {} in dodoer; this can take a few minutes",
+        "codeg-cli: installing {} in CoTeam; this can take a few minutes",
         started.agent
     ));
     let conn_ref = &conn;
@@ -146,7 +146,7 @@ async fn install_inner(
         }
         "running" => {
             out.note(&format!(
-                "codeg-cli: {} is still being installed; it goes on in dodoer",
+                "codeg-cli: {} is still being installed; it goes on in CoTeam",
                 state.agent
             ));
             Ok(STILL_RUNNING_EXIT_CODE)
@@ -206,7 +206,7 @@ async fn list(global: &GlobalArgs, json: bool, env: &Env) -> i32 {
         return 0;
     }
     if automations.is_empty() {
-        println!("no automations yet: create one on dodoer's Automations page");
+        println!("no automations yet: create one on CoTeam's Automations page");
         return 0;
     }
     let width = automations
@@ -237,7 +237,7 @@ async fn list(global: &GlobalArgs, json: bool, env: &Env) -> i32 {
 async fn run(global: &GlobalArgs, args: &AutomationRunArgs, env: &Env) -> i32 {
     let out = Output::new(format(args.json), global);
     let body = run_inner(global, args, env, &out);
-    interruptible(&out, "the automation's run goes on in dodoer", body).await
+    interruptible(&out, "the automation's run goes on in CoTeam", body).await
 }
 
 async fn run_inner(
@@ -309,7 +309,7 @@ fn report_run(out: &Output, json: bool, state: &AutomationRunState, waited: bool
         .map(|l| format!(" ({l})"))
         .unwrap_or_default();
     let what = match (state.status.as_str(), state.task_id) {
-        ("running", _) if waited => "still running; it goes on in dodoer".to_string(),
+        ("running", _) if waited => "still running; it goes on in CoTeam".to_string(),
         ("running", _) => "started".to_string(),
         ("succeeded", Some(task)) => format!(
             "queued work task #{task}; the run is over, the task's own work is not part of it"

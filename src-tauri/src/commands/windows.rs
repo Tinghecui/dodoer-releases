@@ -1483,7 +1483,7 @@ pub async fn open_pet_window(
 
     let url = WebviewUrl::App(format!("pet?petId={pet_id}").into());
     let mut builder = WebviewWindowBuilder::new(&app, PET_WINDOW_LABEL, url)
-        .title("dodoer pet")
+        .title("CoTeam pet")
         .inner_size(PET_BASE_WIDTH * scale, PET_BASE_HEIGHT * scale)
         .min_inner_size(PET_BASE_WIDTH * 0.5, PET_BASE_HEIGHT * 0.5)
         .max_inner_size(PET_BASE_WIDTH * 3.0, PET_BASE_HEIGHT * 3.0)
@@ -1816,7 +1816,7 @@ fn open_pet_panel_window(app: &AppHandle) -> Result<(), AppCommandError> {
 
     let url = WebviewUrl::App("pet-panel".into());
     let builder = WebviewWindowBuilder::new(app, PET_PANEL_LABEL, url)
-        .title("dodoer sessions")
+        .title("CoTeam sessions")
         .inner_size(PET_PANEL_WIDTH, PET_PANEL_DEFAULT_HEIGHT)
         .position(panel_x, panel_y)
         .resizable(false)
@@ -2572,43 +2572,43 @@ fn tray_labels_for(locale: crate::models::system::AppLocale) -> TrayLabels {
     match locale {
         AppLocale::ZhCn => TrayLabels {
             show_workspace: "显示工作台",
-            quit: "退出 dodoer",
+            quit: "退出 CoTeam",
         },
         AppLocale::ZhTw => TrayLabels {
             show_workspace: "顯示工作臺",
-            quit: "退出 dodoer",
+            quit: "退出 CoTeam",
         },
         AppLocale::Ja => TrayLabels {
             show_workspace: "ワークスペースを表示",
-            quit: "dodoer を終了",
+            quit: "CoTeam を終了",
         },
         AppLocale::Ko => TrayLabels {
             show_workspace: "워크스페이스 표시",
-            quit: "dodoer 종료",
+            quit: "CoTeam 종료",
         },
         AppLocale::Es => TrayLabels {
             show_workspace: "Mostrar el área de trabajo",
-            quit: "Salir de dodoer",
+            quit: "Salir de CoTeam",
         },
         AppLocale::De => TrayLabels {
             show_workspace: "Arbeitsbereich anzeigen",
-            quit: "dodoer beenden",
+            quit: "CoTeam beenden",
         },
         AppLocale::Fr => TrayLabels {
             show_workspace: "Afficher l'espace de travail",
-            quit: "Quitter dodoer",
+            quit: "Quitter CoTeam",
         },
         AppLocale::Pt => TrayLabels {
             show_workspace: "Mostrar área de trabalho",
-            quit: "Sair do dodoer",
+            quit: "Sair do CoTeam",
         },
         AppLocale::Ar => TrayLabels {
             show_workspace: "إظهار مساحة العمل",
-            quit: "إنهاء dodoer",
+            quit: "إنهاء CoTeam",
         },
         AppLocale::En => TrayLabels {
             show_workspace: "Show Workspace",
-            quit: "Quit dodoer",
+            quit: "Quit CoTeam",
         },
     }
 }
@@ -2641,7 +2641,7 @@ pub fn install_tray_icon(
         .build()?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ICON_ID)
-        .tooltip("dodoer")
+        .tooltip("CoTeam")
         .menu(&menu)
         // `false` is required for `on_tray_icon_event::Click` to fire on
         // every platform we ship: the default `true` causes the OS to

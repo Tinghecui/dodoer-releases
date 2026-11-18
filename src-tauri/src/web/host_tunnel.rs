@@ -154,7 +154,7 @@ impl HostTunnels {
 /// instead".
 fn refusal(error: TunnelError) -> (StatusCode, String) {
     let lend_hint = "lend its command line from the laptop icon at the foot of the sidebar \
-                     in the dodoer desktop app on that computer";
+                     in the CoTeam desktop app on that computer";
     match error {
         TunnelError::NoHost => (StatusCode::SERVICE_UNAVAILABLE, NO_DESKTOP_NOTE.to_string()),
         TunnelError::UnknownDevice { names } => (
@@ -168,7 +168,7 @@ fn refusal(error: TunnelError) -> (StatusCode, String) {
         TunnelError::Offline { name, last_seen } => (
             StatusCode::SERVICE_UNAVAILABLE,
             format!(
-                "`{name}` is offline (last online {}). Ask the user to open the dodoer desktop \
+                "`{name}` is offline (last online {}). Ask the user to open the CoTeam desktop \
                  app on that computer and to {lend_hint}, then try again. Do not use another \
                  device instead unless the user says so.",
                 ago(last_seen, now_ms())

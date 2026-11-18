@@ -173,7 +173,7 @@ pub(crate) fn bridge_entry(command: &Path) -> Option<PathBuf> {
 
 pub(crate) fn bridge_entry_missing_message(command: &str) -> String {
     format!(
-        "The ZCode ACP bridge found at {command} does not lead to its JavaScript entry, which dodoer runs with the validated Node. Remove that installation from PATH or reinstall the bridge with npm."
+        "The ZCode ACP bridge found at {command} does not lead to its JavaScript entry, which CoTeam runs with the validated Node. Remove that installation from PATH or reinstall the bridge with npm."
     )
 }
 
@@ -377,6 +377,14 @@ pub fn initial_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 报错里的产品名是显示名（#696）。
+    #[test]
+    fn the_missing_entry_message_names_the_product_by_its_display_name() {
+        let message = bridge_entry_missing_message("/usr/bin/zcode-acp");
+        assert!(message.contains(crate::brand::DISPLAY_NAME), "{message}");
+        assert!(!message.contains("dodoer"), "{message}");
+    }
 
     fn file(path: &Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

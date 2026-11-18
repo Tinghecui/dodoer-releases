@@ -355,7 +355,7 @@ async fn drive_loop(
         }
         if args.permissions == super::args::PolicyArg::Wait {
             out.note(&format!(
-                "codeg-cli: --permissions wait: answer the agent's requests in dodoer at {}",
+                "codeg-cli: --permissions wait: answer the agent's requests in CoTeam at {}",
                 started.link
             ));
         }
@@ -709,7 +709,7 @@ fn lost(failure: Failure, run_id: &str) -> Failure {
         format!("lost the runtime mid-run: {}", failure.message),
     )
     .with_next_steps([
-        "the run may still be going: open its conversation in dodoer to watch or cancel it"
+        "the run may still be going: open its conversation in CoTeam to watch or cancel it"
             .to_string(),
         format!("codeg-cli result {run_id} --wait 30m   (once that codeg answers again)"),
     ])
@@ -870,6 +870,18 @@ impl Signals {
 mod tests {
     use super::*;
     use crate::cli_run::wire::RunResult;
+
+    /// 运行中断时教用户去哪里看，说的是显示名（#696）。
+    #[test]
+    fn a_lost_run_points_at_the_product_by_its_display_name() {
+        let failure = lost(
+            Failure::new(Subtype::ErrorRuntimeUnavailable, "x", "gone"),
+            "r1",
+        );
+        let steps = failure.next_steps.join("\n");
+        assert!(steps.contains(crate::brand::DISPLAY_NAME), "{steps}");
+        assert!(!steps.contains("dodoer"), "{steps}");
+    }
 
     #[test]
     fn a_local_workspace_is_made_absolute_as_written() {

@@ -42,8 +42,8 @@ pub const CLI_TUNNEL_ROUTE: &str = "cli_host_tunnel";
 /// What `ssh desktop` prints when nothing lends a shell. No product name
 /// for the server (it runs under either brand); the desktop app is dodoer's.
 pub const NO_DESKTOP_NOTE: &str =
-    "No dodoer desktop app lends this workspace its command line right now. Ask the user to \
-     open this workspace in the dodoer desktop app and to lend the computer from the laptop \
+    "No CoTeam desktop app lends this workspace its command line right now. Ask the user to \
+     open this workspace in the CoTeam desktop app and to lend the computer from the laptop \
      icon at the foot of the sidebar, then try again.";
 
 /// How many tunnels a server opens to one device in a minute at most.
@@ -256,6 +256,13 @@ pub fn ws_url(base_url: &str, path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 没有桌面 app 借命令行时的说明，用显示名（#696）。
+    #[test]
+    fn the_no_desktop_note_names_the_product_by_its_display_name() {
+        assert!(NO_DESKTOP_NOTE.contains(crate::brand::DISPLAY_NAME));
+        assert!(!NO_DESKTOP_NOTE.contains("dodoer"));
+    }
 
     fn shell(host_key: &str, user: &str) -> ShellHost {
         ShellHost {

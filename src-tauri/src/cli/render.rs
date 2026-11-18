@@ -266,7 +266,7 @@ impl Output {
             _ => "",
         };
         self.note(&format!(
-            "codeg-cli: the run goes on in dodoer ({link}); collect it with `codeg-cli result \
+            "codeg-cli: the run goes on in CoTeam ({link}); collect it with `codeg-cli result \
              {run_id}`"
         ));
     }
@@ -400,7 +400,7 @@ fn describe(body: &EventBody) -> Option<String> {
         } => {
             let by = match decided_by {
                 Some(DecidedBy::Policy) => " by --permissions",
-                Some(DecidedBy::User) => " in dodoer",
+                Some(DecidedBy::User) => " in CoTeam",
                 _ => "",
             };
             match decision {
@@ -410,7 +410,7 @@ fn describe(body: &EventBody) -> Option<String> {
                     format!("▸ permission for {tool}: needed, and --permissions fail ends the run")
                 }
                 PermissionVerdict::Waiting => {
-                    format!("▸ permission for {tool}: waiting for you in dodoer")
+                    format!("▸ permission for {tool}: waiting for you in CoTeam")
                 }
                 PermissionVerdict::Withdrawn => format!("▸ permission for {tool}: withdrawn"),
             }
@@ -418,7 +418,7 @@ fn describe(body: &EventBody) -> Option<String> {
         EventBody::Question { decision, .. } => match decision {
             QuestionVerdict::Declined => "▸ the agent asked a question; declined".to_string(),
             QuestionVerdict::Waiting => {
-                "▸ the agent asked a question; waiting for you in dodoer".to_string()
+                "▸ the agent asked a question; waiting for you in CoTeam".to_string()
             }
         },
         EventBody::Notice {
@@ -502,6 +502,37 @@ mod tests {
         .unwrap();
         assert_eq!(line, "▸ permission for Bash: refused by --permissions");
         assert!(describe(&EventBody::MessageDelta { text: "x".into() }).is_none());
+    }
+
+    /// 进度行里说「在哪里回答」时用产品的显示名（#696）。
+    #[test]
+    fn progress_lines_name_the_product_by_its_display_name() {
+        let permission = |decision, decided_by| {
+            describe(&EventBody::Permission {
+                request_id: "r".into(),
+                conversation_id: None,
+                tool: "Bash".into(),
+                tool_kind: None,
+                decision,
+                decided_by,
+                option_name: None,
+            })
+            .unwrap()
+        };
+        let lines = [
+            permission(PermissionVerdict::Allowed, Some(DecidedBy::User)),
+            permission(PermissionVerdict::Waiting, None),
+            describe(&EventBody::Question {
+                question_id: "q".into(),
+                conversation_id: None,
+                decision: QuestionVerdict::Waiting,
+            })
+            .unwrap(),
+        ];
+        for line in lines {
+            assert!(line.contains(crate::brand::DISPLAY_NAME), "{line}");
+            assert!(!line.to_lowercase().contains("dodoer"), "{line}");
+        }
     }
 
     fn quiet_output(format: OutputFormat) -> Output {

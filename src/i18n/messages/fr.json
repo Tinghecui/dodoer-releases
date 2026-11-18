@@ -362,6 +362,8 @@
     "channelEarlyBadge": "Anticipé",
     "updatedToTitle": "Mis à jour vers {version}",
     "updatedToNotes": "Notes de version",
+    "rolledBackTitle": "{failed} n'a pas démarré ; retour à {version}",
+    "updateBlockedHint": "Cette version n'a pas démarré sur cet ordinateur la dernière fois et a été annulée automatiquement. Vous pouvez réessayer manuellement.",
     "autoRestartHint": "Redémarre d'elle-même en cas d'inactivité. Vous pouvez aussi redémarrer maintenant.",
     "restarting": "Redémarrage...",
     "dockerUpgradeHint": "Cela met à jour le conteneur en cours d'exécution. La mise à jour est perdue si le conteneur est recréé — pour la conserver, récupérez ou créez une image à la nouvelle version puis recréez le conteneur.",

@@ -319,17 +319,20 @@ pub fn client_config() -> Option<ClientTelemetry>;
 **记什么**：每次升级一条非致命的事件，`kind=update`。
 
 - `level`：换上成功（`applied`）是 `info`，等了很久都没换上（`waiting_long`）是 `warning`，其余是 `error`；下载（或下载前的检查）因为网络失败的（`download_failed` 且 `error_kind` 是 `network` / `source_unreachable`）也是 `warning`：那是这台电脑到发布站之间的网络，下次检查会再试，不该按故障发提醒（2026-11-18 起）。成功的也报：晋级稳定版要靠「抢先版的设备确认换上了新版」当证据。
-- `release`：`applied` 用新版本 `dodoer-desktop@<新版本>`，其余用正在运行的版本。
+- `release`：`applied` 用新版本 `dodoer-desktop@<新版本>`，其余用正在运行的版本（`rolled_back` 是没起来的那一版）。
 - 标签：除了固定的 `surface=desktop-native`、`kind`、`fatal`、`os`，再带
-  - `update_result`：`applied` / `download_failed` / `install_failed` / `boot_unconfirmed` / `waiting_long`；
-  - `update_from`、`update_to`：从哪版到哪版；
+  - `update_result`：`applied` / `download_failed` / `install_failed` / `boot_unconfirmed` / `waiting_long` / `rolled_back`（2026-11 起，#413：新版本连着起不来、自动退回了上一版）；
+  - `update_from`、`update_to`：从哪版到哪版；`rolled_back` 时 `update_from` 是换上之前的版本（也就是退回到的那一版），`update_to` 是没起来的那一版；
+  - `update_channel`：这次升级走的更新通道，`stable`（稳定版）/ `early`（抢先版）（2026-11 起，#413）；记通道之前留下的升级记录不带。稳定版能不能晋级，看的就是抢先版设备的这些记录；
   - `update_trigger`：`auto`（后台自动开始的下载）、`manual`（用户点的）、`rollback`（回退到上一版）；
   - `update_how`：怎么换上的，`idle`（空闲时自己重启）、`click`（用户点「重启以更新」）、`launch`（下次启动时换上），没到这一步就不带；
   - `install`：设备编号（`host_device::device_id`）的 SHA-256 前 12 位十六进制，用来区分设备、又不发设备编号本身。经远端 Cowork 服务器上报时用户标识是那台服务器给的用户名，两台 Mac 会是同一个，所以要这个标签。
 - 上下文（`contexts.desktop`）：各步花了多久——下载（`download_ms`）、下好到开始换上（`wait_ms`）、安装（`install_ms`）、开始换上到新版本确认在跑（`boot_ms`）；包的大小（`bytes`）、是不是用了上次存在磁盘上的包（`reused_package`）、新版本启动了几次（`boots`）、空闲时自动重启被什么挡住过几次（`blocked`：本机在跑的回合、终端、借出的设备、有人在用、问不到）；失败时的错误类别（`error_kind`：网络、下载源、签名、权限、磁盘、别的）和脱敏后的报错（过 `telemetry::scrub::scrub_text`）。
 - 指纹：`desktop-native` / `update` / 结果 / 错误类别（没有就是 `-`），同一种结果、同一类错误归成一个问题。
 
-**什么时候发**：每个结果一条——新版本启动后确认在跑了（本机后端起来、主窗口建好、再过 60 秒进程还活着）报 `applied`；下载失败、安装失败、新版本启动 3 次都没确认（`boot_unconfirmed`）、下好以后 72 小时还没换上（`waiting_long`，一次升级只报一次）各报一条。下载失败只报后台自动开始的，24 小时内最多一条；用户自己点的下载失败界面上已经看得到，不报。记录放进待发以后本次运行里就发（有发送对象时 1 分钟内），不用等下次启动。
+**什么时候发**：每个结果一条——新版本启动后确认在跑了（本机后端起来、主窗口建好、再过 60 秒进程还活着）报 `applied`；下载失败、安装失败、新版本启动 3 次都没确认（`boot_unconfirmed`）、下好以后 72 小时还没换上（`waiting_long`，一次升级只报一次）各报一条。
+
+**自动退回（`rolled_back`，2026-11 起，#413）**：macOS 上新版本换上以后连着两次 60 秒内异常退出（正常退出不算），第 3 次启动时自动换回换上之前留的旧应用包，报一条 `rolled_back`：`error` 级别，指纹 `desktop-native` / `update` / `rolled_back` / `-`，`contexts.desktop` 带 `boots`（新版本启动了几次）。退回的那一刻记进本机日志，退回到的旧版本起来以后发。没起来的那一版之后不再自动下载、自动安装（手动点升级照常能装）。换不回去（没有留旧包、目录不可写、换的时候出错）时不退回，照常报 `boot_unconfirmed`。下载失败只报后台自动开始的，24 小时内最多一条；用户自己点的下载失败界面上已经看得到，不报。记录放进待发以后本次运行里就发（有发送对象时 1 分钟内），不用等下次启动。
 
 **和崩溃报告共用**：同一个开关（「发送诊断数据」，关着时只写本机日志，不记、不放待发、不发）；同一个发送通道（经连着的 Cowork 服务器或 app 自带的本机后端的 `/api/telemetry_envelope`，见上一小节「怎么发」），桌面主程序不另带上报地址。待发名额单独算：升级记录最多留 3 条，超了丢最旧的升级记录，不占崩溃报告那 5 条，谁也不挤谁。
 

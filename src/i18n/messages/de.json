@@ -362,6 +362,8 @@
     "channelEarlyBadge": "Vorab",
     "updatedToTitle": "Aktualisiert auf {version}",
     "updatedToNotes": "Versionshinweise",
+    "rolledBackTitle": "{failed} ist nicht gestartet; zurück zu {version}",
+    "updateBlockedHint": "Diese Version ist auf diesem Computer beim letzten Mal nicht gestartet und wurde automatisch zurückgesetzt. Du kannst es manuell erneut versuchen.",
     "autoRestartHint": "Startet bei Inaktivität von selbst neu. Du kannst auch jetzt neu starten.",
     "restarting": "Neustart...",
     "dockerUpgradeHint": "Dies aktualisiert jetzt den laufenden Container. Beim Neuerstellen des Containers geht es verloren – zum Beibehalten ein Image mit der neuen Version ziehen oder bauen und den Container neu erstellen.",

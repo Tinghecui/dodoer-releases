@@ -64,8 +64,9 @@ export interface AppUpdateCheckResult {
   liveProgress?: boolean
   /** Desktop only (Cowork fork, issue #413): the update channel checked. */
   channel?: UpdateChannel
-  /** Desktop only: the release found is one not installed on its own
-   * (issue #413, row 3); always false until then. */
+  /** Desktop only: the release found did not start on this computer last
+   * time and was rolled back automatically (issue #413), so it is not
+   * downloaded or installed on its own; a click still installs it. */
   blocked?: boolean
 }
 
@@ -288,14 +289,28 @@ export async function awaitUpdateConfirmation(): Promise<void> {
   await getShellTransport().call("await_update_confirmation")
 }
 
-/** 「已更新到…」：上一次升级换上的版本，第一次问时回给一个窗口，之后是 null。 */
-export async function takeUpdateAnnouncement(): Promise<string | null> {
-  const got = await getShellTransport().call<{ version?: unknown } | null>(
-    "take_update_announcement"
-  )
-  return got && typeof got.version === "string" && got.version
-    ? got.version
-    : null
+/** 桌面主程序换版本以后要告诉用户的一件事（issue #413）：换上了新版本
+ * （`applied`），或者新版本连着起不来、自动退回了（`rolled_back`，`version`
+ * 是退回到的版本，`failed` 是没起来的那一版）。 */
+export type UpdateAnnouncement =
+  | { result: "applied"; version: string }
+  | { result: "rolled_back"; version: string; failed: string }
+
+/** 「已更新到…」「…启动失败，已自动退回…」：上一次换版本的结果，第一次问时
+ * 回给一个窗口，之后是 null。没带 `result` 的（#413 之前的桌面主程序）算换上了。 */
+export async function takeUpdateAnnouncement(): Promise<UpdateAnnouncement | null> {
+  const got = await getShellTransport().call<{
+    version?: unknown
+    result?: unknown
+    failed?: unknown
+  } | null>("take_update_announcement")
+  if (!got || typeof got.version !== "string" || !got.version) return null
+  if (got.result === "rolled_back") {
+    return typeof got.failed === "string" && got.failed
+      ? { result: "rolled_back", version: got.version, failed: got.failed }
+      : null
+  }
+  return { result: "applied", version: got.version }
 }
 
 /** Relaunch into the freshly-installed bytes. Desktop relaunches the app;

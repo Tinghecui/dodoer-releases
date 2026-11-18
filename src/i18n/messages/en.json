@@ -362,6 +362,8 @@
     "channelEarlyBadge": "Early",
     "updatedToTitle": "Updated to {version}",
     "updatedToNotes": "Release notes",
+    "rolledBackTitle": "{failed} did not start; went back to {version}",
+    "updateBlockedHint": "This version did not start on this computer last time and was rolled back automatically. You can try it again by hand.",
     "autoRestartHint": "It restarts by itself when idle. You can also restart now.",
     "restarting": "Restarting...",
     "dockerUpgradeHint": "This upgrades the running container now. It's lost if the container is recreated — to keep it, pull or build an image at the new version and recreate.",

@@ -133,6 +133,11 @@ export interface UpdateContextValue {
   /** Cowork fork (issue #413): the update channel the last desktop check was
    * on. Null on a server and before the first check in this window. */
   channel: UpdateChannel | null
+  /** Cowork fork (issue #413): the release on offer did not start on this
+   * computer last time and was rolled back automatically. It is not
+   * downloaded on its own; {@link startUpdate} still installs it. Only the
+   * desktop check reports it; false before the first check in this window. */
+  blocked: boolean
   /** A check is in flight. */
   checking: boolean
   /** Raw failure message from the last check; classify with
@@ -256,6 +261,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const [available, setAvailable] = useState<AppUpdateInfo | null>(null)
   const [currentVersion, setCurrentVersion] = useState("")
   const [channel, setChannel] = useState<UpdateChannel | null>(null)
+  const [blocked, setBlocked] = useState(false)
   const [checking, setChecking] = useState(false)
   const [checkError, setCheckError] = useState<string | null>(null)
   const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null)
@@ -317,6 +323,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       ) {
         return
       }
+      // 被拦的标记跟着缓存走（issue #413）：刷新窗口、别的窗口查到的结果，
+      // 都和本窗口自己查到的一样显示提示。缓存只用来显示，从不自动下载。
+      setBlocked(!!cached.info && cached.blocked === true)
       appliedAtRef.current = cached.at
       appliedOfferRef.current = cached.info?.version ?? null
       setLastCheckedAt(new Date(cached.at))
@@ -347,6 +356,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     setLastCheckedAt(null)
     setAvailable(null)
     setChannel(null)
+    setBlocked(false)
   }, [])
 
   // `storage` fires in the OTHER windows of this origin, so what one workspace
@@ -636,9 +646,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
           if (!mountedRef.current) return null
           return takeUpdateAnnouncement()
         })
-        .then((version) => {
-          if (!version) return
-          toast.success(t("updatedToTitle", { version }), {
+        .then((announcement) => {
+          if (!announcement) return
+          const opts = {
             duration: Infinity,
             action: {
               label: t("updatedToNotes"),
@@ -650,7 +660,22 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
                   )
               },
             },
-          })
+          }
+          // issue #413：新版本连着起不来、已经自动退回了，同样不自动消失。
+          if (announcement.result === "rolled_back") {
+            toast.warning(
+              t("rolledBackTitle", {
+                failed: announcement.failed,
+                version: announcement.version,
+              }),
+              opts
+            )
+            return
+          }
+          toast.success(
+            t("updatedToTitle", { version: announcement.version }),
+            opts
+          )
         })
         .catch((err) =>
           console.debug("[Update] update announcement unavailable:", err)
@@ -697,6 +722,8 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         if (!mountedRef.current || stale()) return
         setCurrentVersion(result.currentVersion)
         setChannel(result.channel ?? null)
+        const blockedOffer = !!result.update && result.blocked === true
+        setBlocked(blockedOffer)
         setAvailable(result.update)
         setSelfUpdateSupported(result.selfUpdateSupported ?? false)
         setLiveProgress(result.liveProgress ?? false)
@@ -709,6 +736,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
           at: now,
           currentVersion: result.currentVersion,
           info: result.update,
+          blocked: blockedOffer,
         })
         appliedAtRef.current = now
         appliedOfferRef.current = result.update?.version ?? null
@@ -726,7 +754,11 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         // from storage (`adoptCached`, the `storage` event) never start a
         // download: right after an update relaunch the cache may still offer
         // the release that is now running.
-        if (result.update) void autoStartUpdate(result.update.version)
+        //
+        // Cowork fork (issue #413)：这一版上次在这台电脑上没能启动、被自动
+        // 退回了，不再自动下载（手动点「升级到 vX」照常能装）。
+        if (result.update && !blockedOffer)
+          void autoStartUpdate(result.update.version)
       } catch (err) {
         if (stale()) {
           console.debug("[Update] check on the old channel failed:", err)
@@ -1281,6 +1313,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       available,
       currentVersion,
       channel,
+      blocked,
       checking,
       checkError,
       lastCheckedAt,
@@ -1312,6 +1345,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       available,
       currentVersion,
       channel,
+      blocked,
       checking,
       checkError,
       lastCheckedAt,

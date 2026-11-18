@@ -362,6 +362,8 @@
     "channelEarlyBadge": "Antecipado",
     "updatedToTitle": "Atualizado para {version}",
     "updatedToNotes": "Notas da versão",
+    "rolledBackTitle": "{failed} não iniciou; voltou para {version}",
+    "updateBlockedHint": "Esta versão não iniciou neste computador da última vez e foi revertida automaticamente. Você pode tentar novamente manualmente.",
     "autoRestartHint": "Reinicia sozinho quando ocioso. Você também pode reiniciar agora.",
     "restarting": "Reiniciando...",
     "dockerUpgradeHint": "Isto atualiza o contêiner em execução agora. Perde-se se o contêiner for recriado — para mantê-lo, baixe ou crie uma imagem na nova versão e recrie o contêiner.",

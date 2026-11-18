@@ -61,6 +61,9 @@ let desktopChannel: "stable" | "early" = "stable"
 // channel while that check is still in flight; and makes it fail.
 let desktopCheckGate: Promise<void> | null = null
 let desktopCheckFails = false
+// Whether the desktop check says the release found is one that did not start
+// on this computer last time (issue #413, row 3).
+let desktopBlocked = false
 let desktopRelease: {
   version: string
   body: string
@@ -97,7 +100,7 @@ const call = vi.fn(async (endpoint: string) => {
           notes: desktopRelease.body,
           date: desktopRelease.date,
         },
-        blocked: false,
+        blocked: desktopBlocked,
       }
       const fails = desktopCheckFails
       if (desktopCheckGate) await desktopCheckGate
@@ -145,7 +148,9 @@ vi.mock("@tauri-apps/api/app", () => ({
   getVersion: async () => desktopVersion,
 }))
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+}))
 
 import { UpdateProvider, useAppUpdate } from "./update-provider"
 import { resetCoworkInfoForTests } from "@/lib/cowork/info"
@@ -194,6 +199,7 @@ beforeEach(() => {
   desktopChannel = "stable"
   desktopCheckGate = null
   desktopCheckFails = false
+  desktopBlocked = false
   checkResult = () => ({
     currentVersion: "0.21.7",
     update: null,
@@ -375,6 +381,7 @@ function AvailabilityProbe() {
       <div data-testid="dismissed">{u?.dismissedVersion ?? "none"}</div>
       <div data-testid="current">{u?.currentVersion || "none"}</div>
       <div data-testid="in-place">{String(u?.canInstallInPlace)}</div>
+      <div data-testid="blocked">{String(u?.blocked)}</div>
     </div>
   )
 }
@@ -2020,6 +2027,130 @@ describe("UpdateProvider — automatic download limits (desktop)", () => {
     }
   )
 
+  // issue #413 第 4 行：这一版上次在这台电脑上没能启动、被自动退回了。
+  it("does not download a release that did not start here last time", async () => {
+    desktopBlocked = true
+    await settle()
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(screen.getByTestId("available").textContent).toBe("1.1.24")
+    expect(screen.getByTestId("blocked").textContent).toBe("true")
+    expect(performCalls()).toBe(0)
+    // 不记自动下载的时间：下一个更新的版本不该被 6 小时限频挡住。
+    expect(localStorage.getItem(AUTO_KEY)).toBeNull()
+  })
+
+  it.each(["Win32", "Linux x86_64"])(
+    "does not download a blocked release on %s either",
+    async (platform) => {
+      onPlatform(platform)
+      desktopBlocked = true
+      await settle()
+      await act(async () => {
+        await ctx!.checkNow()
+      })
+      expect(performCalls()).toBe(0)
+    }
+  )
+
+  it("still installs a blocked release on a click", async () => {
+    desktopBlocked = true
+    await settle()
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(performCalls()).toBe(0)
+    await act(async () => {
+      await ctx!.startUpdate()
+    })
+    expect(performCalls()).toBe(1)
+  })
+
+  it("downloads a newer release that is not blocked", async () => {
+    desktopBlocked = true
+    await settle()
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(performCalls()).toBe(0)
+    desktopBlocked = false
+    desktopRelease = release("1.1.25")
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(screen.getByTestId("blocked").textContent).toBe("false")
+    await waitFor(() => expect(performCalls()).toBe(1))
+  })
+
+  // 返工：被拦的标记要跟着检查缓存走，刷新窗口、别的窗口带来的结果都认得。
+  it("keeps the blocked mark in the shared check cache", async () => {
+    desktopBlocked = true
+    await settle()
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    const cached = JSON.parse(localStorage.getItem(LAST_CHECK_KEY) ?? "{}")
+    expect(cached.info?.version).toBe("1.1.24")
+    expect(cached.blocked).toBe(true)
+  })
+
+  it("still says blocked after a reload with a fresh cache", async () => {
+    localStorage.setItem(
+      LAST_CHECK_KEY,
+      JSON.stringify({
+        at: Date.now(),
+        currentVersion: "1.1.23",
+        info: { version: "1.1.24", body: "notes", date: null },
+        blocked: true,
+      })
+    )
+    // 缓存还新鲜，不该再查；万一查了，查到的也不是被拦的，测试就会红。
+    desktopRelease = null
+    await settle()
+    expect(screen.getByTestId("available").textContent).toBe("1.1.24")
+    expect(screen.getByTestId("blocked").textContent).toBe("true")
+    expect(checkCalls()).toBe(0)
+    expect(performCalls()).toBe(0)
+  })
+
+  it("takes the blocked mark from a sibling window's check", async () => {
+    desktopRelease = null
+    await settle()
+    expect(screen.getByTestId("blocked").textContent).toBe("false")
+    localStorage.setItem(
+      LAST_CHECK_KEY,
+      JSON.stringify({
+        at: Date.now() + 1,
+        currentVersion: "1.1.23",
+        info: { version: "1.1.24", body: "notes", date: null },
+        blocked: true,
+      })
+    )
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"))
+      await Promise.resolve()
+    })
+    expect(screen.getByTestId("available").textContent).toBe("1.1.24")
+    expect(screen.getByTestId("blocked").textContent).toBe("true")
+    expect(performCalls()).toBe(0)
+    // 别的窗口后来查到的是没被拦的另一版：提示跟着撤掉。
+    localStorage.setItem(
+      LAST_CHECK_KEY,
+      JSON.stringify({
+        at: Date.now() + 2,
+        currentVersion: "1.1.23",
+        info: { version: "1.1.25", body: "notes", date: null },
+      })
+    )
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"))
+      await Promise.resolve()
+    })
+    expect(screen.getByTestId("available").textContent).toBe("1.1.25")
+    expect(screen.getByTestId("blocked").textContent).toBe("false")
+  })
+
   it("exposes the setting to the status bar", async () => {
     updateModeResult = () => ({ mode: "download" })
     render(availabilityTree())
@@ -2168,6 +2299,47 @@ describe("UpdateProvider — updated-to announcement (desktop)", () => {
       await vi.advanceTimersByTimeAsync(0)
     })
     expect(announcementCalls()).toBe(0)
+  })
+
+  it("shows one lasting warning when the new version was rolled back", async () => {
+    const { toast } = await import("sonner")
+    vi.mocked(toast.success).mockClear()
+    vi.mocked(toast.warning).mockClear()
+    vi.useFakeTimers()
+    announcementResult = () => ({
+      version: "1.1.23",
+      result: "rolled_back",
+      failed: "1.1.24",
+    })
+    render(availabilityTree())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3500)
+    })
+    expect(announcementCalls()).toBe(1)
+    expect(toast.success).not.toHaveBeenCalled()
+    expect(toast.warning).toHaveBeenCalledTimes(1)
+    const [title, opts] = vi.mocked(toast.warning).mock.calls[0] as [
+      string,
+      { duration?: number; action?: { label: string } },
+    ]
+    expect(title).toBe("1.1.24 did not start; went back to 1.1.23")
+    expect(opts.duration).toBe(Infinity)
+    expect(opts.action?.label).toBe("Release notes")
+  })
+
+  it("says updated for an applied result", async () => {
+    const { toast } = await import("sonner")
+    vi.mocked(toast.success).mockClear()
+    vi.mocked(toast.warning).mockClear()
+    vi.useFakeTimers()
+    announcementResult = () => ({ version: "1.1.24", result: "applied" })
+    render(availabilityTree())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3500)
+    })
+    expect(toast.success).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(toast.success).mock.calls[0][0]).toBe("Updated to 1.1.24")
+    expect(toast.warning).not.toHaveBeenCalled()
   })
 
   it("shows nothing when there is nothing to announce", async () => {

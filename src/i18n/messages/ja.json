@@ -362,6 +362,8 @@
     "channelEarlyBadge": "先行版",
     "updatedToTitle": "{version} にアップデートしました",
     "updatedToNotes": "リリースノート",
+    "rolledBackTitle": "{failed} を起動できなかったため、{version} に自動で戻しました",
+    "updateBlockedHint": "このバージョンは前回このコンピューターで起動できず、自動的に元に戻されました。手動でもう一度試せます。",
     "autoRestartHint": "アイドル時に自動で再起動して切り替えます。今すぐ再起動することもできます。",
     "restarting": "再起動しています…",
     "dockerUpgradeHint": "いま実行中のコンテナを更新します。コンテナを再作成すると失われます。維持するには、新しいバージョンのイメージを取得またはビルドしてコンテナを再作成してください。",

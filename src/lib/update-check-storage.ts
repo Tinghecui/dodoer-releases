@@ -41,6 +41,9 @@ export interface CachedUpdateCheck {
   currentVersion: string
   /** The newer release found, or null if already up to date. */
   info: AppUpdateInfo | null
+  /** Cowork fork (issue #413)：`info` 这一版上次在这台电脑上没能启动、被
+   * 自动退回了。只在有 `info` 时才可能为真；老缓存没有这一项，算 false。 */
+  blocked?: boolean
 }
 
 function scoped(key: string): string {
@@ -84,6 +87,7 @@ export function readLastCheck(): CachedUpdateCheck | null {
               date: typeof info.date === "string" ? info.date : null,
             }
           : null,
+      blocked: c.blocked === true && !!info && typeof info.version === "string",
     }
   } catch {
     return null

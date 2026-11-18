@@ -172,6 +172,7 @@ export function SystemNetworkSettings() {
     available: availableUpdate,
     currentVersion,
     channel: updateChannel,
+    blocked: updateBlocked,
     checking: checkingUpdate,
     checkError,
     lastCheckedAt,
@@ -628,6 +629,19 @@ export function SystemNetworkSettings() {
                 </Button>
               )}
             </div>
+
+            {/* Cowork fork (issue #413): the release on offer did not start
+                here last time and was rolled back on its own. The upgrade
+                button above stays usable; say why it was not installed. */}
+            {availableUpdate &&
+              updateBlocked &&
+              canInstallInPlace &&
+              !updateReady &&
+              !isBusy && (
+                <p className="text-muted-foreground">
+                  {t("updateBlockedHint")}
+                </p>
+              )}
 
             {/* Cowork: shown beside an offer too, to say how fresh it is. */}
             {formattedLastCheckedAt && (

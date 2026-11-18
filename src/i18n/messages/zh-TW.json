@@ -362,6 +362,8 @@
     "channelEarlyBadge": "搶先版",
     "updatedToTitle": "已更新到 {version}",
     "updatedToNotes": "更新說明",
+    "rolledBackTitle": "{failed} 啟動失敗，已自動退回 {version}",
+    "updateBlockedHint": "這一版上次在這台電腦上沒能啟動，已經自動退回。可以手動再試一次。",
     "autoRestartHint": "閒置時會自動重新啟動換上，也可以現在點。",
     "restarting": "正在重新啟動…",
     "dockerUpgradeHint": "現在升級的是正在執行的容器。容器一旦被重新建立即遺失——如需保留，請拉取或建置新版本映像後重新建立容器。",

@@ -175,7 +175,11 @@ beforeEach(() => {
 // check never reports that).
 function liveServerCalls(
   snapshot: unknown,
-  server: { update?: unknown; selfUpdateBlocker?: unknown } = {}
+  server: {
+    update?: unknown
+    selfUpdateBlocker?: unknown
+    blocked?: boolean
+  } = {}
 ) {
   return async (endpoint: string) => {
     if (endpoint === "check_app_update") {
@@ -188,6 +192,7 @@ function liveServerCalls(
         restartDelayMs: 2000,
         rollbackAvailable: true,
         liveProgress: true,
+        ...(server.blocked === undefined ? {} : { blocked: server.blocked }),
       }
     }
     if (endpoint === "app_update_status") {
@@ -726,6 +731,49 @@ describe("SystemNetworkSettings — an offer that may be out of date", () => {
       await loadCoworkInfo()
     })
     expect(checks()).toHaveLength(0)
+  })
+})
+
+// issue #413 第 4 行：查到的这一版上次在这台电脑上没能启动、被自动退回了。
+// 桌面主程序的检查才会带 `blocked`；这里用服务端那条检查的答复驱动页面。
+describe("SystemNetworkSettings — a release that did not start here", () => {
+  const offer = (version: string) => ({ version, body: "", date: null })
+  const HINT =
+    "This version did not start on this computer last time and was rolled back automatically. You can try it again by hand."
+
+  it("keeps the upgrade button and says why it was not installed", async () => {
+    mockGetProxy.mockResolvedValue({ enabled: false, proxy_url: null })
+    call.mockImplementation(
+      liveServerCalls(
+        { seq: 1, status: "idle" },
+        { update: offer("0.17.0"), blocked: true }
+      )
+    )
+
+    renderWithIntl()
+
+    const button = await screen.findByRole("button", {
+      name: "Upgrade to v0.17.0",
+    })
+    expect(button).toBeEnabled()
+    expect(await screen.findByText(HINT)).toBeVisible()
+  })
+
+  it("says nothing for a release that is not blocked", async () => {
+    mockGetProxy.mockResolvedValue({ enabled: false, proxy_url: null })
+    call.mockImplementation(
+      liveServerCalls(
+        { seq: 1, status: "idle" },
+        { update: offer("0.17.0"), blocked: false }
+      )
+    )
+
+    renderWithIntl()
+
+    expect(
+      await screen.findByRole("button", { name: "Upgrade to v0.17.0" })
+    ).toBeVisible()
+    expect(screen.queryByText(HINT)).toBeNull()
   })
 })
 

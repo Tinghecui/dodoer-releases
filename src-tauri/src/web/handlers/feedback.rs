@@ -13,9 +13,8 @@ use std::sync::Arc;
 use axum::{extract::Extension, Json};
 use serde::Deserialize;
 
-use crate::acp::error::AcpError;
 use crate::acp::feedback::FeedbackItem;
-use crate::app_error::{AppCommandError, AppErrorCode};
+use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::feedback::{
     load_feedback_settings, set_feedback_settings_core, FeedbackSettings,
@@ -64,25 +63,41 @@ pub async fn submit_session_feedback(
     Json(params): Json<SubmitSessionFeedbackParams>,
 ) -> Result<Json<FeedbackItem>, AppCommandError> {
     // The gate (per-connection feedback-tool availability + turn-in-flight) lives
-    // in `submit_feedback`; recoverable rejections map to 4xx below.
+    // in `submit_feedback`. `From<AcpError>` 把能恢复的拒绝（没有进行中的轮次、
+    // 反馈关了、反馈内容不对、图片太大）回成 400，连接已断回成 404；前端认
+    // NoActiveTurn（退回成普通的 prompt），别的照常显示。
     let item = state
         .connection_manager
         .submit_feedback(&params.connection_id, params.text, params.blocks)
         .await
-        .map_err(|e| {
-            let message = e.to_string();
-            match e {
-                // Expected, recoverable client conditions → 4xx, not a 500. The
-                // frontend recognizes NoActiveTurn (falls back to an ordinary
-                // prompt) and surfaces the others.
-                AcpError::NoActiveTurn
-                | AcpError::FeedbackDisabled
-                | AcpError::InvalidFeedback(_)
-                | AcpError::PromptImagesTooLarge(_) => {
-                    AppCommandError::new(AppErrorCode::InvalidInput, message)
-                }
-                _ => AppCommandError::task_execution_failed(message),
-            }
-        })?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(item))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_error::AppErrorCode;
+
+    /// 连接已经断了还来提交反馈，是调用方的事：404，不是 500。
+    #[tokio::test]
+    async fn feedback_to_a_missing_connection_is_404() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState::new_for_test(db, dir.path().to_path_buf()));
+        let params: SubmitSessionFeedbackParams = serde_json::from_value(serde_json::json!({
+            "connectionId": "gone-1",
+            "text": "look at the tests too"
+        }))
+        .unwrap();
+        let err = submit_session_feedback(Extension(state), Json(params))
+            .await
+            .expect_err("no such connection");
+        assert_eq!(err.code, AppErrorCode::NotFound, "{err:?}");
+        assert_eq!(err.message, "connection not found: gone-1");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+    }
 }

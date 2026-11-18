@@ -82,7 +82,7 @@ pub async fn terminal_spawn(
             },
             state.emitter.clone(),
         )
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
 
     Ok(Json(id))
 }
@@ -94,7 +94,7 @@ pub async fn terminal_write(
     let manager = &state.terminal_manager;
     manager
         .write(&params.terminal_id, params.data.as_bytes())
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -105,7 +105,7 @@ pub async fn terminal_resize(
     let manager = &state.terminal_manager;
     manager
         .resize(&params.terminal_id, params.cols, params.rows)
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -129,7 +129,7 @@ pub async fn terminal_kill(
     } else {
         manager.kill(&params.terminal_id)
     };
-    result.map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    result.map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -143,7 +143,46 @@ pub async fn terminal_list(
 
 #[cfg(test)]
 mod tests {
-    use super::TerminalKillParams;
+    use super::*;
+    use crate::app_error::AppErrorCode;
+
+    async fn test_state() -> (Arc<AppState>, tempfile::TempDir) {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState::new_for_test(db, dir.path().to_path_buf()));
+        (state, dir)
+    }
+
+    /// 对已经关掉（或从没开过）的终端写、改大小、关掉，都是调用方的事：404，
+    /// message 照旧是 `terminal not found: …`。
+    #[tokio::test]
+    async fn a_missing_terminal_is_404() {
+        let (state, _dir) = test_state().await;
+        let write: TerminalWriteParams =
+            serde_json::from_str(r#"{"terminalId":"gone","data":"ls\n"}"#).unwrap();
+        let err = terminal_write(Extension(state.clone()), Json(write))
+            .await
+            .expect_err("no such terminal");
+        assert_eq!(err.code, AppErrorCode::NotFound, "{err:?}");
+        assert_eq!(err.message, "terminal not found: gone");
+
+        let resize: TerminalResizeParams =
+            serde_json::from_str(r#"{"terminalId":"gone","cols":80,"rows":24}"#).unwrap();
+        let err = terminal_resize(Extension(state.clone()), Json(resize))
+            .await
+            .expect_err("no such terminal");
+        assert_eq!(err.code, AppErrorCode::NotFound, "{err:?}");
+
+        let kill: TerminalKillParams = serde_json::from_str(r#"{"terminalId":"gone"}"#).unwrap();
+        let err = terminal_kill(Extension(state), Json(kill))
+            .await
+            .expect_err("no such terminal");
+        assert_eq!(err.code, AppErrorCode::NotFound, "{err:?}");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+    }
 
     #[test]
     fn a_kill_without_keep_output_still_closes_the_terminal() {

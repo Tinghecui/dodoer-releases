@@ -5,14 +5,13 @@ use std::sync::Arc;
 use axum::{extract::Extension, Json};
 use serde::Deserialize;
 
-use crate::acp::error::AcpError;
 use crate::acp::opencode_plugins::PluginList;
 use crate::acp::preflight::PreflightResult;
 use crate::acp::types::{
     AcpAgentInfo, AcpAgentStatus, AgentDiagnosticsReport, AgentSkillContent, AgentSkillItem,
     AgentSkillLayout, AgentSkillScope, AgentSkillsListResult, ConnectionInfo, ForkResultInfo,
 };
-use crate::app_error::{AppCommandError, AppErrorCode};
+use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::acp as acp_commands;
 use crate::commands::custom_agents as custom_agent_commands;
@@ -32,7 +31,7 @@ pub async fn acp_get_agent_status(
     let db = &state.db;
     let result = acp_commands::acp_get_agent_status_core(params.agent_type, db)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -42,7 +41,7 @@ pub async fn acp_list_agents(
     let db = &state.db;
     let result = acp_commands::acp_list_agents_core(db)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(crate::cowork::redact_agents(result)))
 }
 
@@ -60,7 +59,7 @@ pub async fn acp_env_diagnostics(
     let db = &state.db;
     let result = acp_commands::acp_env_diagnostics_core(db, params.agent_type)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -90,14 +89,14 @@ pub async fn acp_connect(
         &state.data_dir,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
 
     // Guard: the session page must never trigger a download or install.
     // If the agent isn't ready, return SdkNotInstalled here so the frontend
     // can prompt the user to install it from Agent Settings.
     acp_commands::verify_agent_installed(params.agent_type)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
 
     // Cowork fork: the server decides which selector values this connect
     // applies — a resumed conversation's own, else the default (`session_prefs`).
@@ -123,7 +122,7 @@ pub async fn acp_connect(
             prefs.config_values,
         )
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
 
     Ok(Json(connection_id))
 }
@@ -140,7 +139,7 @@ pub async fn acp_disconnect(
 ) -> Result<Json<()>, AppCommandError> {
     acp_commands::acp_disconnect_core(&state.connection_manager, &params.connection_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -187,25 +186,8 @@ pub async fn acp_prompt(
             params.client_message_id,
         )
         .await
-        .map_err(|e| {
-            let message = e.to_string();
-            // A concurrent send while a turn is in flight is an expected,
-            // recoverable condition (409), not a server fault (500). The
-            // frontend re-queues the draft. Other errors stay 500.
-            match e {
-                AcpError::TurnInProgress => {
-                    AppCommandError::new(AppErrorCode::TurnInProgress, message)
-                }
-                // The conversation was moved to another folder: expected, and
-                // the client recovers by re-pointing its tab — not a fault.
-                // Images too big for one message to the agent: the user's to
-                // fix (fewer or smaller images), not a fault either.
-                AcpError::ConversationMoved { .. } | AcpError::PromptImagesTooLarge(_) => {
-                    AppCommandError::new(AppErrorCode::InvalidInput, message)
-                }
-                _ => AppCommandError::task_execution_failed(message),
-            }
-        })?;
+        // 轮次进行中是 409、对话已移走和图片太大是 400，都由 `From<AcpError>` 给出。
+        .map_err(AppCommandError::from)?;
     // Cowork fork: which of the person's computers it came from
     // (`web::working_device`).
     crate::web::working_device::note_prompt(&state, &headers, named.or(linked)).await;
@@ -225,9 +207,10 @@ pub async fn acp_preflight(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpPreflightParams>,
 ) -> Result<Json<PreflightResult>, AppCommandError> {
-    let result = acp_commands::acp_preflight_core(&state.db, params.agent_type, params.force_refresh)
-        .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    let result =
+        acp_commands::acp_preflight_core(&state.db, params.agent_type, params.force_refresh)
+            .await
+            .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -236,7 +219,7 @@ pub async fn acp_clear_binary_cache(
 ) -> Result<Json<()>, AppCommandError> {
     acp_commands::acp_clear_binary_cache(params.agent_type)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -244,7 +227,7 @@ pub async fn acp_scan_leaked_temp(
 ) -> Result<Json<codeg_temp_reclaim::LeakedTempScan>, AppCommandError> {
     let result = acp_commands::acp_scan_leaked_temp()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -259,7 +242,7 @@ pub async fn acp_reclaim_leaked_temp(
 ) -> Result<Json<codeg_temp_reclaim::LeakedTempReclaim>, AppCommandError> {
     let result = acp_commands::acp_reclaim_leaked_temp(params.paths)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -275,7 +258,7 @@ pub async fn acp_list_agent_skills(
 ) -> Result<Json<AgentSkillsListResult>, AppCommandError> {
     let result = acp_commands::acp_list_agent_skills(params.agent_type, params.workspace_path)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -289,7 +272,7 @@ pub async fn acp_list_agent_runtime_skills(
         &state.db,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -312,7 +295,7 @@ pub async fn acp_read_agent_skill(
         params.workspace_path,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -339,7 +322,7 @@ pub async fn acp_save_agent_skill(
         params.layout,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(skill))
 }
 
@@ -362,7 +345,7 @@ pub async fn acp_delete_agent_skill(
         params.workspace_path,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -407,7 +390,7 @@ pub async fn acp_set_mode(
     let db = &state.db.conn;
     crate::acp::session_prefs::set_mode(manager, db, &params.connection_id, params.mode_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -433,7 +416,7 @@ pub async fn acp_set_config_option(
         params.value_id,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -452,7 +435,7 @@ pub async fn acp_goal_control(
     manager
         .goal_control(&state.db.conn, &params.connection_id, params.action)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -481,7 +464,7 @@ pub async fn acp_describe_agent_options(
         params.config_values.unwrap_or_default(),
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(snapshot))
 }
 
@@ -493,7 +476,7 @@ pub async fn acp_cancel(
     manager
         .cancel(&state.db.conn, &params.connection_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -511,18 +494,8 @@ pub async fn acp_fork(
             params.fork_from_turn_id,
         )
         .await
-        .map_err(|e| {
-            let message = e.to_string();
-            // A fork requested while a turn is in flight is an expected,
-            // recoverable condition (409) — the frontend re-queues — not a
-            // server fault (500). Mirror `acp_prompt`. Other errors stay 500.
-            match e {
-                AcpError::TurnInProgress => {
-                    AppCommandError::new(AppErrorCode::TurnInProgress, message)
-                }
-                _ => AppCommandError::task_execution_failed(message),
-            }
-        })?;
+        // 轮次进行中是 409，和 `acp_prompt` 一样由 `From<AcpError>` 给出。
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -543,7 +516,7 @@ pub async fn acp_stop_async_task(
         .connection_manager
         .stop_async_task(&params.connection_id, &params.task_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(stopped))
 }
 
@@ -563,7 +536,7 @@ pub async fn acp_respond_permission(
     manager
         .respond_permission(&params.connection_id, &params.request_id, &params.option_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -583,7 +556,7 @@ pub async fn acp_answer_question(
     manager
         .answer_question(&params.connection_id, &params.question_id, params.answer)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -603,7 +576,7 @@ pub async fn acp_answer_plan_approval(
     manager
         .answer_plan_approval(&params.connection_id, &params.approval_id, params.answer)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -642,7 +615,7 @@ pub async fn acp_get_session_snapshot(
         &params.connection_id,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(snap))
 }
 
@@ -661,7 +634,7 @@ pub async fn acp_get_session_snapshot_by_conversation(
         params.conversation_id,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(snap))
 }
 
@@ -689,7 +662,7 @@ pub async fn acp_find_connection_for_conversation(
         params.agent_type,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(info))
 }
 
@@ -742,7 +715,7 @@ pub async fn acp_update_agent_preferences(
         &emitter,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(affected))
 }
 
@@ -782,7 +755,7 @@ pub async fn acp_update_agent_env(
         &emitter,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(affected))
 }
 
@@ -851,7 +824,7 @@ pub async fn acp_update_agent_config(
         &emitter,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(affected))
 }
 
@@ -938,7 +911,7 @@ pub async fn acp_update_hermes_config(
         },
         &emitter,
     )
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -990,7 +963,7 @@ pub async fn acp_update_claude_model_picker(
         &state.data_dir,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(affected))
 }
 
@@ -1022,7 +995,7 @@ pub async fn acp_update_kimi_code_config(
         &emitter,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(affected))
 }
 
@@ -1065,7 +1038,7 @@ pub async fn acp_update_pi_config(
         &emitter,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -1074,7 +1047,7 @@ pub async fn acp_load_pi_config(
 ) -> Result<Json<acp_commands::PiConfigProjection>, AppCommandError> {
     let config = acp_commands::load_pi_config_for_db(&state.db)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(config))
 }
 
@@ -1108,7 +1081,7 @@ pub async fn acp_update_deepseek_model_catalog(
 ) -> Result<Json<()>, AppCommandError> {
     let emitter = state.emitter.clone();
     deepseek_settings_commands::update_deepseek_model_catalog_core(params.models, &emitter)
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -1131,7 +1104,7 @@ pub async fn acp_sync_antigravity_settings(
 ) -> Result<Json<crate::acp::connection::AntigravitySyncReport>, AppCommandError> {
     let result = acp_commands::acp_sync_antigravity_settings_core(&state.db)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1147,7 +1120,7 @@ pub async fn acp_antigravity_login_start(
 ) -> Result<Json<crate::acp::antigravity_login::AntigravityLoginStart>, AppCommandError> {
     let result = acp_commands::acp_antigravity_login_start_core(&state.db, params.method_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1163,7 +1136,7 @@ pub async fn acp_antigravity_login_finish(
 ) -> Result<Json<crate::acp::antigravity_login::AntigravityLoginOutcome>, AppCommandError> {
     let result = acp_commands::acp_antigravity_login_finish_core(params.handle, params.redirect)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1178,7 +1151,7 @@ pub async fn acp_antigravity_login_cancel(
 ) -> Result<Json<()>, AppCommandError> {
     acp_commands::acp_antigravity_login_cancel_core(params.handle)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -1187,7 +1160,7 @@ pub async fn acp_antigravity_sign_out(
 ) -> Result<Json<crate::acp::connection::AntigravitySyncReport>, AppCommandError> {
     let result = acp_commands::acp_antigravity_sign_out_core(&state.db, &state.connection_manager)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1203,7 +1176,7 @@ pub async fn acp_pi_project_trust_state(
 ) -> Result<Json<acp_commands::PiProjectTrustState>, AppCommandError> {
     let result = acp_commands::acp_pi_project_trust_state_core(&state.db, params.workspace)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1223,7 +1196,7 @@ pub async fn acp_pi_set_project_trust(
 ) -> Result<Json<()>, AppCommandError> {
     acp_commands::acp_pi_set_project_trust_core(&state.db, params.workspace, params.trusted)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -1238,7 +1211,7 @@ pub async fn acp_pi_acknowledge_project_trust(
 ) -> Result<Json<()>, AppCommandError> {
     acp_commands::acp_pi_acknowledge_project_trust_core(params.workspace)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -1247,7 +1220,7 @@ pub async fn acp_pi_list_trust_entries(
 ) -> Result<Json<Vec<acp_commands::PiTrustEntry>>, AppCommandError> {
     let result = acp_commands::acp_pi_list_trust_entries_core(&state.db)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1272,7 +1245,7 @@ pub async fn acp_download_agent_binary(
         &emitter,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -1295,7 +1268,7 @@ pub async fn acp_update_system_agent(
         &emitter,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(version))
 }
 
@@ -1312,7 +1285,7 @@ pub async fn acp_install_uv_tool(
     let emitter = state.emitter.clone();
     acp_commands::acp_install_uv_tool_core(params.task_id, &emitter)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -1325,7 +1298,7 @@ pub async fn acp_detect_agent_local_version(
     let result =
         acp_commands::acp_detect_agent_local_version_core(params.agent_type, &db.conn, &emitter)
             .await
-            .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+            .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1334,7 +1307,7 @@ pub async fn acp_fetch_agent_latest_release(
 ) -> Result<Json<Option<crate::acp::latest_release::AgentLatestRelease>>, AppCommandError> {
     let result = acp_commands::acp_fetch_agent_latest_release_core(params.agent_type)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1366,7 +1339,7 @@ pub async fn acp_prepare_npx_agent(
         &emitter,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1385,7 +1358,7 @@ pub async fn acp_uninstall_agent(
     let emitter = state.emitter.clone();
     acp_commands::acp_uninstall_agent_core(params.agent_type, params.task_id, db, &emitter)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -1402,7 +1375,7 @@ pub async fn acp_install_pi_binary(
     let emitter = state.emitter.clone();
     acp_commands::acp_install_pi_binary_core(params.task_id, &emitter)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -1413,7 +1386,7 @@ pub async fn acp_uninstall_pi_binary(
     let emitter = state.emitter.clone();
     acp_commands::acp_uninstall_pi_binary_core(params.task_id, &emitter)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -1431,14 +1404,14 @@ pub async fn acp_reorder_agents(
     let emitter = state.emitter.clone();
     acp_commands::acp_reorder_agents_core(&params.agent_types, db, &emitter)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
 pub async fn opencode_list_plugins() -> Result<Json<PluginList>, AppCommandError> {
     let result = acp_commands::opencode_list_plugins_core()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1551,7 +1524,7 @@ pub async fn opencode_add_plugin(
 ) -> Result<Json<PluginList>, AppCommandError> {
     let result = acp_commands::opencode_add_plugin_core(params.spec)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1560,7 +1533,7 @@ pub async fn opencode_remove_plugin(
 ) -> Result<Json<PluginList>, AppCommandError> {
     let result = acp_commands::opencode_remove_plugin_core(params.spec)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1568,7 +1541,7 @@ pub async fn codex_request_device_code(
 ) -> Result<Json<acp_commands::CodexDeviceCodeResponse>, AppCommandError> {
     let result = acp_commands::codex_request_device_code_core()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1584,7 +1557,7 @@ pub async fn codex_poll_device_code(
 ) -> Result<Json<acp_commands::CodexDeviceCodePollResult>, AppCommandError> {
     let result = acp_commands::codex_poll_device_code_core(params.device_auth_id, params.user_code)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1597,7 +1570,7 @@ pub async fn acp_list_custom_agents(
 ) -> Result<Json<Vec<custom_agent_commands::CustomAgentInfo>>, AppCommandError> {
     let result = custom_agent_commands::acp_list_custom_agents_core(&state.db)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1615,7 +1588,7 @@ pub async fn acp_save_custom_agent(
     let emitter = state.emitter.clone();
     custom_agent_commands::acp_save_custom_agent_params_core(body.params, &state.db, &emitter)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -1639,7 +1612,7 @@ pub async fn acp_delete_custom_agent(
         &emitter,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -1648,7 +1621,7 @@ pub async fn acp_fetch_registry_catalog(
 ) -> Result<Json<Vec<crate::acp::remote_registry::RegistryCatalogAgent>>, AppCommandError> {
     let result = custom_agent_commands::acp_fetch_registry_catalog_core(&state.db)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -1672,7 +1645,7 @@ pub async fn acp_add_registry_agent(
         &emitter,
     )
     .await
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -1684,6 +1657,7 @@ pub async fn acp_current_platform() -> Json<String> {
 mod tests {
 
     use super::*;
+    use crate::app_error::AppErrorCode;
 
     use crate::acp::agent_mentions::append_agent_routes;
 
@@ -1699,6 +1673,51 @@ mod tests {
             serde_json::from_value(serde_json::json!({ "connectionId": "already-gone" })).unwrap();
         let result = acp_disconnect(Extension(state), Json(params)).await;
         assert!(result.is_ok(), "expected Ok, got {:?}", result.err());
+    }
+
+    /// 对已经断开（或从没有过）的连接回应权限请求，是调用方的事：404，
+    /// message 照旧是 `connection not found: …`（前端按这段文字认）。
+    #[tokio::test]
+    async fn responding_to_a_missing_connection_is_404() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState::new_for_test(db, dir.path().to_path_buf()));
+        let params: AcpRespondPermissionParams = serde_json::from_value(serde_json::json!({
+            "connectionId": "gone-1",
+            "requestId": "r1",
+            "optionId": "allow"
+        }))
+        .unwrap();
+        let err = acp_respond_permission(Extension(state), Json(params))
+            .await
+            .expect_err("no such connection");
+        assert_eq!(err.code, AppErrorCode::NotFound, "{err:?}");
+        assert_eq!(err.message, "connection not found: gone-1");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+    }
+
+    /// 不合法的技能 id 是坏输入：400。
+    #[tokio::test]
+    async fn reading_a_skill_with_a_bad_id_is_400() {
+        let tmp = tempfile::tempdir().unwrap();
+        let params: AcpReadAgentSkillParams = serde_json::from_value(serde_json::json!({
+            "agentType": "zcode",
+            "scope": "project",
+            "skillId": "../x",
+            "workspacePath": tmp.path().to_string_lossy(),
+        }))
+        .unwrap();
+        let err = acp_read_agent_skill(Json(params))
+            .await
+            .expect_err("bad skill id");
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::BAD_REQUEST
+        );
     }
 
     /// The editor reopens what it just saved from this response, so the web

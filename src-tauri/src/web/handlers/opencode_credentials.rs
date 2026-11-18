@@ -19,7 +19,7 @@ pub async fn opencode_list_integrations(
     commands::opencode_list_integrations_core(&state.db, &state.data_dir)
         .await
         .map(Json)
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))
+        .map_err(AppCommandError::from)
 }
 
 #[derive(Deserialize)]
@@ -42,7 +42,7 @@ pub async fn opencode_connect_key(
     )
     .await
     .map(Json)
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))
+    .map_err(AppCommandError::from)
 }
 
 #[derive(Deserialize)]
@@ -65,5 +65,5 @@ pub async fn opencode_disconnect_provider(
     )
     .await
     .map(Json)
-    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))
+    .map_err(AppCommandError::from)
 }

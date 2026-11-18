@@ -370,13 +370,21 @@ export function WorkspaceUploadDialog({
                 relativePath: next.source.relativePath || null,
                 signal: controller.signal,
                 onProgress: (loaded, total) => {
+                  // XHR 报的是整个 multipart 请求体（文件 + 边界 + 表单字段）
+                  // 的字节数，不是文件本身的大小：total 保持加入列表时的
+                  // 文件大小，loaded 按比例换算成文件字节。
                   setItems((prev) =>
                     prev.map((it) =>
                       it.id === next.id
                         ? {
                             ...it,
-                            loaded,
-                            total: total || it.total,
+                            loaded:
+                              total > 0
+                                ? Math.min(
+                                    it.total,
+                                    Math.round((loaded / total) * it.total)
+                                  )
+                                : it.loaded,
                           }
                         : it
                     )

@@ -4351,7 +4351,7 @@ export function buildAcpAdapterCheck(
       status: installed && sawNative ? "pass" : "warn",
       message: acpText(
         "zcode.adapterInfo",
-        "dodoer runs {adapterPackage} as an ACP bridge. Install and sign in to the official ZCode runtime first; the bridge uses its existing configuration.",
+        "CoTeam runs {adapterPackage} as an ACP bridge. Install and sign in to the official ZCode runtime first; the bridge uses its existing configuration.",
         values
       ),
       fixes: [
@@ -4363,17 +4363,17 @@ export function buildAcpAdapterCheck(
       ],
     }
   }
-  const split = `Codeg drives agents over ACP and the ${adapter.native_label} does not speak ACP, so Codeg needs a separate adapter package, ${adapter.adapter_package}.`
+  const split = `CoTeam drives agents over ACP and the ${adapter.native_label} does not speak ACP, so CoTeam needs a separate adapter package, ${adapter.adapter_package}.`
   const coexist = `It ships its own runtime, never modifies or replaces your ${adapter.native_cmd} command, and reads the same ${adapter.shared_config_dir} — your existing sign-in and settings carry over.`
   const [key, fallback] = installed
     ? sawNative
       ? [
           "adapter.readyWithNative",
-          `Adapter ${adapter.adapter_cmd} is installed — that is what dodoer launches, not your own ${adapter.native_cmd} at ${adapter.native_path}. They are separate packages that coexist, and both read ${adapter.shared_config_dir}.`,
+          `Adapter ${adapter.adapter_cmd} is installed — that is what CoTeam launches, not your own ${adapter.native_cmd} at ${adapter.native_path}. They are separate packages that coexist, and both read ${adapter.shared_config_dir}.`,
         ]
       : [
           "adapter.ready",
-          `Adapter ${adapter.adapter_cmd} is installed — that is what dodoer launches. It ships its own runtime, so the ${adapter.native_label} is not required.`,
+          `Adapter ${adapter.adapter_cmd} is installed — that is what CoTeam launches. It ships its own runtime, so the ${adapter.native_label} is not required.`,
         ]
     : sawNative
       ? [
@@ -4467,7 +4467,7 @@ export function buildVersionCheck(
             : "version.systemInstalled",
           agent.supports_self_update
             ? "{versionText}. Installed with the official installer; Upgrade runs its own updater."
-            : "{versionText}. Installed and updated by its own installer; dodoer launches it as-is.",
+            : "{versionText}. Installed and updated by its own installer; CoTeam launches it as-is.",
           {
             versionText: installed
               ? acpText("version.localOnly", "Local: {localVersion}", {
@@ -4714,7 +4714,7 @@ export function buildVersionCheck(
       status: "fail",
       message: acpText(
         "version.openCodeV1Unsupported",
-        "{versionText}. OpenCode 1.x is no longer supported: Codeg now runs OpenCode 2. Upgrade to open sessions.",
+        "{versionText}. OpenCode 1.x is no longer supported: CoTeam now runs OpenCode 2. Upgrade to open sessions.",
         { versionText }
       ),
       fixes: [

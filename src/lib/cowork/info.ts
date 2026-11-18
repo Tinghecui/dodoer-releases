@@ -12,6 +12,7 @@ import { extractAppCommandError } from "@/lib/app-error"
 import { isDesktop, isRemoteDesktopWindow } from "@/lib/platform"
 import { normalizeClientTelemetry, type ClientTelemetry } from "@/lib/telemetry"
 import { getTransport } from "@/lib/transport"
+import { PRODUCT_NAME } from "@/lib/cowork/brand"
 import { isLocalChildDaemon } from "@/lib/transport/local-daemon"
 import {
   getWebConnectionSnapshot,
@@ -39,7 +40,8 @@ export function normalizeCoworkInfo(raw: unknown): CoworkInfo | null {
       : null
   const telemetry = normalizeClientTelemetry(r.telemetry)
   return {
-    product: typeof r.product === "string" && r.product ? r.product : "Cowork",
+    product:
+      typeof r.product === "string" && r.product ? r.product : PRODUCT_NAME,
     projectsRoot: root,
     portal: r.portal === true,
     updateDisabled: r.updateDisabled === true,

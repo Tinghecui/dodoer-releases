@@ -191,7 +191,7 @@ describe("StatusBarDevices", () => {
     expect(book.getByText("MacBook Air")).toBeInTheDocument()
     expect(book.getByText("Last online 5 minutes ago")).toBeInTheDocument()
     expect(
-      screen.getByText(/1 older dodoer connected as well/)
+      screen.getByText(/1 older CoTeam connected as well/)
     ).toBeInTheDocument()
   })
 

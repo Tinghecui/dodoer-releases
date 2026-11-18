@@ -33,14 +33,14 @@ const en = {
   // `next` is the label of the dialog's button that opens the selected folder.
   projectExists:
     'There is already a project named {name}. Pick another name; to open the existing one, select it in the list below and click "{next}".',
-  portalSignIn: "Sign in through the Cowork portal",
-  upgradeAvailable: "Cowork {version} is available — upgrade in the portal",
+  portalSignIn: "Sign in through the CoTeam portal",
+  upgradeAvailable: "CoTeam {version} is available — upgrade in the portal",
   desktopTooOld: "This desktop app is too old for the server",
   desktopTooOldHint:
-    "The server needs dodoer {required} or newer; this is {version}. Update the app.",
+    "The server needs CoTeam {required} or newer; this is {version}. Update the app.",
   serverTooOld: "The server is too old for this desktop app",
   serverTooOldHint:
-    "Ask an administrator to upgrade Cowork in the portal. Some features may not work until then.",
+    "Ask an administrator to upgrade CoTeam in the portal. Some features may not work until then.",
   checkForUpdate: "Check for update",
   // The main window's start page (`start-home.tsx`).
   startTitle: "Where do you want to work?",
@@ -55,7 +55,7 @@ const en = {
   startOpen: "Open",
   startManage: "Add or manage servers",
   startPortalHint:
-    'With Cowork: in the portal, open My account → Desktop → "Open in desktop app". This app asks once, then connects.',
+    'With CoTeam: in the portal, open My account → Desktop → "Open in desktop app". This app asks once, then connects.',
   startNoLocal:
     "This app was started without a local daemon (CODEG_DESKTOP_DAEMON=client), so only servers can be opened.",
   // Quick actions in the local workspace: back to the start page.
@@ -144,7 +144,7 @@ const en = {
   hostSshStoppedToast: "Lending to {server} was stopped from another device.",
   hostSshTooltipStopped: "Lending was stopped from another device",
   hostSshServerNotReady:
-    "This server cannot reach a lent computer yet — it needs a newer Cowork. For now lending only readies this computer, and the self-test is all that logs in.",
+    "This server cannot reach a lent computer yet — it needs a newer CoTeam. For now lending only readies this computer, and the self-test is all that logs in.",
   hostSshNotRunning: "The SSH service did not start: {detail}",
   hostSshLend: "Lend this computer",
   hostSshStop: "Stop lending",
@@ -167,11 +167,11 @@ const en = {
   hostSshPermMissing: "Not granted or stale",
   hostSshPermFix: "Fix",
   hostSshPermHint:
-    "Commands agents run over SSH use dodoer's permissions. After dodoer updates, the switch in System Settings can stay on while the grant no longer works. Fix clears the old grant and brings up the system's request: allow dodoer there, and macOS asks to reopen it. Granted, these permissions also reach the agents of workspaces on this computer.",
+    "Commands agents run over SSH use CoTeam's permissions. After CoTeam updates, the switch in System Settings can stay on while the grant no longer works. Fix clears the old grant and brings up the system's request: allow CoTeam (shown there as dodoer), and macOS asks to reopen it. Granted, these permissions also reach the agents of workspaces on this computer.",
   hostSshPermNotSelf:
-    "dodoer was started from another app (a terminal?), so these are that app's permissions and can't be fixed here. Open dodoer from Applications to see its own.",
+    "CoTeam was started from another app (a terminal?), so these are that app's permissions and can't be fixed here. Open CoTeam from Applications (shown there as dodoer) to see its own.",
   hostSshPermAsked:
-    "Asked. Turn dodoer on in System Settings, then reopen dodoer when macOS asks; the status updates after that.",
+    "Asked. Turn CoTeam (shown there as dodoer) on in System Settings, then reopen CoTeam when macOS asks; the status updates after that.",
   hostSshPermFixFailed: "Couldn't fix: {detail}",
   // "Report a problem" in the account menu (`feedback-dialog.tsx`).
   feedback: "Report a problem",
@@ -186,7 +186,7 @@ const en = {
   // The person's devices (`status-bar-devices.tsx`, `docs/devices.md`).
   devicesTitle: "Devices",
   devicesIntro:
-    "Every computer that connected dodoer to this workspace, under the name you and the agents call it by.",
+    "Every computer that connected CoTeam to this workspace, under the name you and the agents call it by.",
   devicesEmpty: "No computer has connected yet.",
   devicesThis: "This computer",
   devicesOnline: "Online",
@@ -206,7 +206,7 @@ const en = {
   devicesNameTaken: "Another device is called {name} already.",
   devicesFailed: "Could not change it: {message}",
   devicesUnnamedHosts:
-    "{count} older dodoer connected as well. Update it there to see it in this list.",
+    "{count} older CoTeam connected as well. Update it there to see it in this list.",
   devicesNameTitle: "Name this computer",
   devicesNameBody:
     "You and the agents will call this computer by this name. You can change it later from the devices icon at the foot of the sidebar.",
@@ -216,14 +216,14 @@ const en = {
   devicesStopConfirm:
     "Stop everything {name} lends? What agents are running there is cut off, and only that computer can lend it again.",
   devicesStopped:
-    "Lending stopped from elsewhere. Lend it again on that computer (an older dodoer there needs updating first).",
+    "Lending stopped from elsewhere. Lend it again on that computer (an older CoTeam there needs updating first).",
   devicesInUse: "In use by: {titles}",
   devicesUntitled: "Untitled",
   // The mark beside a conversation's composer (`conversation-device-badge.tsx`).
   conversationDeviceWorksOn:
     "The agent of this conversation works on {name}. To switch, tell it which device to use.",
   conversationDeviceOffline:
-    "{name} is offline (last online {when}). Open this workspace in dodoer on it for the agent to go on.",
+    "{name} is offline (last online {when}). Open this workspace in CoTeam on it for the agent to go on.",
   conversationDeviceLendsNothing:
     "{name} lends neither its command line nor its browser now. Turn lending on there for the agent to go on.",
   // The button's menu: the person picks the conversation's computer
@@ -262,7 +262,7 @@ const en = {
   conversationDeviceBrowserNotLent:
     "{name} does not lend its browser now. Turn lending on there for the agent to go on.",
   conversationDevicePartOffline:
-    "{part}: {name} is offline (last online {when}). Open this workspace in dodoer on it for the agent to go on.",
+    "{part}: {name} is offline (last online {when}). Open this workspace in CoTeam on it for the agent to go on.",
   conversationDevicePartStopped:
     "{part}: lending on {name} was stopped from elsewhere. Lend it again on that computer for the agent to go on.",
   conversationDeviceSplitPickHint:
@@ -319,13 +319,13 @@ const zhCN: Record<CoworkTextKey, string> = {
   createFailed: "创建项目失败",
   projectExists:
     "已经有一个叫 {name} 的项目了，换个名称；要打开已有的项目，在下面的列表里选中它，再点「{next}」。",
-  portalSignIn: "通过 Cowork 门户登录",
-  upgradeAvailable: "Cowork {version} 可以升级，去门户升级",
+  portalSignIn: "通过 CoTeam 门户登录",
+  upgradeAvailable: "CoTeam {version} 可以升级，去门户升级",
   desktopTooOld: "桌面 app 版本太旧，和服务器不匹配",
   desktopTooOldHint:
-    "服务器需要 dodoer {required} 或更新的版本，当前是 {version}。请更新 app。",
+    "服务器需要 CoTeam {required} 或更新的版本，当前是 {version}。请更新 app。",
   serverTooOld: "服务器版本太旧，和这个桌面 app 不匹配",
-  serverTooOldHint: "请管理员在门户里升级 Cowork。升级之前有些功能可能用不了。",
+  serverTooOldHint: "请管理员在门户里升级 CoTeam。升级之前有些功能可能用不了。",
   checkForUpdate: "检查更新",
   startTitle: "在哪里工作？",
   startIntro:
@@ -338,7 +338,7 @@ const zhCN: Record<CoworkTextKey, string> = {
   startOpen: "打开",
   startManage: "添加或管理服务器",
   startPortalHint:
-    "用 Cowork：在门户「我的账户」的「桌面版」里点「在桌面 app 里打开」，这个 app 会问一句，然后自动连上。",
+    "用 CoTeam：在门户「我的账户」的「桌面版」里点「在桌面 app 里打开」，这个 app 会问一句，然后自动连上。",
   startNoLocal:
     "这次启动没有本机 daemon（CODEG_DESKTOP_DAEMON=client），只能打开服务器。",
   backToStart: "回到开始页",
@@ -405,7 +405,7 @@ const zhCN: Record<CoworkTextKey, string> = {
   hostSshStoppedToast: "已从别的设备停止借给「{server}」。",
   hostSshTooltipStopped: "已从别的设备停止借出",
   hostSshServerNotReady:
-    "这台服务器现在还连不到借出的电脑，要等 Cowork 升级。目前借出只是把这台电脑这一侧准备好，只有自检会登录进来。",
+    "这台服务器现在还连不到借出的电脑，要等 CoTeam 升级。目前借出只是把这台电脑这一侧准备好，只有自检会登录进来。",
   hostSshNotRunning: "SSH 服务没有启动：{detail}",
   hostSshLend: "借出这台电脑",
   hostSshStop: "停止借出",
@@ -427,11 +427,11 @@ const zhCN: Record<CoworkTextKey, string> = {
   hostSshPermMissing: "未授权或已失效",
   hostSshPermFix: "修复",
   hostSshPermHint:
-    "智能体经 SSH 执行的命令，用的是 dodoer 的权限。dodoer 更新后，系统设置里的开关可能还亮着，实际已经失效。点「修复」会清掉旧授权，并弹出系统的授权框：在那里允许 dodoer，macOS 会要求重开 dodoer。注意：授权后，这台电脑上本机工作区的智能体也能用这些权限。",
+    "智能体经 SSH 执行的命令，用的是 CoTeam 的权限。CoTeam 更新后，系统设置里的开关可能还亮着，实际已经失效。点「修复」会清掉旧授权，并弹出系统的授权框：在那里允许 CoTeam（系统里显示为 dodoer），macOS 会要求重开 CoTeam。注意：授权后，这台电脑上本机工作区的智能体也能用这些权限。",
   hostSshPermNotSelf:
-    "dodoer 是从别的程序（比如终端）里启动的，这里显示的是那个程序的权限，在这里修复不了。从「应用程序」打开 dodoer 再看。",
+    "CoTeam 是从别的程序（比如终端）里启动的，这里显示的是那个程序的权限，在这里修复不了。从「应用程序」打开 CoTeam（那里显示为 dodoer）再看。",
   hostSshPermAsked:
-    "已发出授权请求。在系统设置里打开 dodoer 的开关，按提示重开 dodoer，之后这里会更新。",
+    "已发出授权请求。在系统设置里打开 CoTeam（系统里显示为 dodoer）的开关，按提示重开 CoTeam，之后这里会更新。",
   hostSshPermFixFailed: "修复失败：{detail}",
   feedback: "反馈问题",
   feedbackHint:
@@ -462,7 +462,7 @@ const zhCN: Record<CoworkTextKey, string> = {
   devicesNameTaken: "已经有设备叫 {name}。",
   devicesFailed: "没改成：{message}",
   devicesUnnamedHosts:
-    "还有 {count} 个旧版 dodoer 连着，那台更新后才会出现在这里。",
+    "还有 {count} 个旧版 CoTeam 连着，那台更新后才会出现在这里。",
   devicesNameTitle: "给这台电脑起个名字",
   devicesNameBody:
     "你和智能体会用这个名字称呼这台电脑。以后可以在侧栏底部的设备图标里改。",
@@ -472,13 +472,13 @@ const zhCN: Record<CoworkTextKey, string> = {
   devicesStopConfirm:
     "停止 {name} 的所有借出？智能体在那台电脑上正在跑的会断开，之后只能在那台电脑上重新借出。",
   devicesStopped:
-    "已从别处停止借出。要在那台电脑上重新借出（那台的 dodoer 是老版本的话要先更新）。",
+    "已从别处停止借出。要在那台电脑上重新借出（那台的 CoTeam 是老版本的话要先更新）。",
   devicesInUse: "正在用它的对话：{titles}",
   devicesUntitled: "未命名",
   conversationDeviceWorksOn:
     "这个对话的智能体在 {name} 上操作。要换，跟它说用哪台。",
   conversationDeviceOffline:
-    "{name} 不在线（上次在线：{when}）。在那台电脑的 dodoer 里打开这个工作区，智能体才能接着用。",
+    "{name} 不在线（上次在线：{when}）。在那台电脑的 CoTeam 里打开这个工作区，智能体才能接着用。",
   conversationDeviceLendsNothing:
     "{name} 现在命令行和浏览器都没借出。在那台电脑上打开借出，智能体才能接着用。",
   conversationDeviceWorksOnPick:
@@ -509,7 +509,7 @@ const zhCN: Record<CoworkTextKey, string> = {
   conversationDeviceBrowserNotLent:
     "{name} 现在没借出浏览器。在那台电脑上打开借出，智能体才能接着用。",
   conversationDevicePartOffline:
-    "{part}：{name} 不在线（上次在线：{when}）。在那台电脑的 dodoer 里打开这个工作区，智能体才能接着用。",
+    "{part}：{name} 不在线（上次在线：{when}）。在那台电脑的 CoTeam 里打开这个工作区，智能体才能接着用。",
   conversationDevicePartStopped:
     "{part}：{name} 的借出已从别处停止。在那台电脑上重新借出，智能体才能接着用。",
   conversationDeviceSplitPickHint: "点一下给命令行和浏览器选电脑。",
@@ -555,14 +555,14 @@ const zhTW: Record<CoworkTextKey, string> = {
   createFailed: "建立專案失敗",
   projectExists:
     "已經有一個叫 {name} 的專案了，換個名稱；要開啟現有的專案，在下面的清單裡選取它，再按「{next}」。",
-  portalSignIn: "透過 Cowork 入口網站登入",
-  upgradeAvailable: "Cowork {version} 可以升級，到入口網站升級",
+  portalSignIn: "透過 CoTeam 入口網站登入",
+  upgradeAvailable: "CoTeam {version} 可以升級，到入口網站升級",
   desktopTooOld: "桌面 app 版本太舊，和伺服器不相容",
   desktopTooOldHint:
-    "伺服器需要 dodoer {required} 或更新的版本，目前是 {version}。請更新 app。",
+    "伺服器需要 CoTeam {required} 或更新的版本，目前是 {version}。請更新 app。",
   serverTooOld: "伺服器版本太舊，和這個桌面 app 不相容",
   serverTooOldHint:
-    "請管理員在入口網站升級 Cowork。升級之前有些功能可能無法使用。",
+    "請管理員在入口網站升級 CoTeam。升級之前有些功能可能無法使用。",
   checkForUpdate: "檢查更新",
   startTitle: "在哪裡工作？",
   startIntro:
@@ -575,7 +575,7 @@ const zhTW: Record<CoworkTextKey, string> = {
   startOpen: "開啟",
   startManage: "新增或管理伺服器",
   startPortalHint:
-    "用 Cowork：在入口網站「我的帳戶」的「桌面版」裡點「在桌面 app 中開啟」，這個 app 會問一句，然後自動連上。",
+    "用 CoTeam：在入口網站「我的帳戶」的「桌面版」裡點「在桌面 app 中開啟」，這個 app 會問一句，然後自動連上。",
   startNoLocal:
     "這次啟動沒有本機 daemon（CODEG_DESKTOP_DAEMON=client），只能開啟伺服器。",
   backToStart: "回到開始頁",
@@ -643,7 +643,7 @@ const zhTW: Record<CoworkTextKey, string> = {
   hostSshStoppedToast: "已從別的裝置停止借給「{server}」。",
   hostSshTooltipStopped: "已從別的裝置停止借出",
   hostSshServerNotReady:
-    "這台伺服器現在還連不到借出的電腦，要等 Cowork 升級。目前借出只是把這台電腦這一側準備好，只有自我檢查會登入進來。",
+    "這台伺服器現在還連不到借出的電腦，要等 CoTeam 升級。目前借出只是把這台電腦這一側準備好，只有自我檢查會登入進來。",
   hostSshNotRunning: "SSH 服務沒有啟動：{detail}",
   hostSshLend: "借出這台電腦",
   hostSshStop: "停止借出",
@@ -665,11 +665,11 @@ const zhTW: Record<CoworkTextKey, string> = {
   hostSshPermMissing: "未授權或已失效",
   hostSshPermFix: "修復",
   hostSshPermHint:
-    "智慧體經 SSH 執行的命令，用的是 dodoer 的權限。dodoer 更新後，系統設定裡的開關可能還亮著，實際已經失效。點「修復」會清掉舊授權，並跳出系統的授權視窗：在那裡允許 dodoer，macOS 會要求重開 dodoer。注意：授權後，這台電腦上本機工作區的智慧體也能用這些權限。",
+    "智慧體經 SSH 執行的命令，用的是 CoTeam 的權限。CoTeam 更新後，系統設定裡的開關可能還亮著，實際已經失效。點「修復」會清掉舊授權，並跳出系統的授權視窗：在那裡允許 CoTeam（系統裡顯示為 dodoer），macOS 會要求重開 CoTeam。注意：授權後，這台電腦上本機工作區的智慧體也能用這些權限。",
   hostSshPermNotSelf:
-    "dodoer 是從別的程式（例如終端機）裡啟動的，這裡顯示的是那個程式的權限，在這裡修復不了。從「應用程式」打開 dodoer 再看。",
+    "CoTeam 是從別的程式（例如終端機）裡啟動的，這裡顯示的是那個程式的權限，在這裡修復不了。從「應用程式」打開 CoTeam（那裡顯示為 dodoer）再看。",
   hostSshPermAsked:
-    "已送出授權請求。在系統設定裡打開 dodoer 的開關，依提示重開 dodoer，之後這裡會更新。",
+    "已送出授權請求。在系統設定裡打開 CoTeam（系統裡顯示為 dodoer）的開關，依提示重開 CoTeam，之後這裡會更新。",
   hostSshPermFixFailed: "修復失敗：{detail}",
   feedback: "回報問題",
   feedbackHint:
@@ -700,7 +700,7 @@ const zhTW: Record<CoworkTextKey, string> = {
   devicesNameTaken: "已經有裝置叫 {name}。",
   devicesFailed: "沒改成：{message}",
   devicesUnnamedHosts:
-    "還有 {count} 個舊版 dodoer 連著，那台更新後才會出現在這裡。",
+    "還有 {count} 個舊版 CoTeam 連著，那台更新後才會出現在這裡。",
   devicesNameTitle: "幫這台電腦取個名字",
   devicesNameBody:
     "你和智慧體會用這個名字稱呼這台電腦。之後可以在側欄底部的裝置圖示裡改。",
@@ -710,13 +710,13 @@ const zhTW: Record<CoworkTextKey, string> = {
   devicesStopConfirm:
     "停止 {name} 的所有借出？智慧體在那台電腦上正在跑的會斷開，之後只能在那台電腦上重新借出。",
   devicesStopped:
-    "已從別處停止借出。要在那台電腦上重新借出（那台的 dodoer 是舊版的話要先更新）。",
+    "已從別處停止借出。要在那台電腦上重新借出（那台的 CoTeam 是舊版的話要先更新）。",
   devicesInUse: "正在用它的對話：{titles}",
   devicesUntitled: "未命名",
   conversationDeviceWorksOn:
     "這個對話的智慧體在 {name} 上操作。要換，跟它說用哪台。",
   conversationDeviceOffline:
-    "{name} 不在線（上次在線：{when}）。在那台電腦的 dodoer 裡開啟這個工作區，智慧體才能接著用。",
+    "{name} 不在線（上次在線：{when}）。在那台電腦的 CoTeam 裡開啟這個工作區，智慧體才能接著用。",
   conversationDeviceLendsNothing:
     "{name} 現在命令列和瀏覽器都沒借出。在那台電腦上開啟借出，智慧體才能接著用。",
   conversationDeviceWorksOnPick:
@@ -747,7 +747,7 @@ const zhTW: Record<CoworkTextKey, string> = {
   conversationDeviceBrowserNotLent:
     "{name} 現在沒借出瀏覽器。在那台電腦上開啟借出，智慧體才能接著用。",
   conversationDevicePartOffline:
-    "{part}：{name} 不在線（上次在線：{when}）。在那台電腦的 dodoer 裡開啟這個工作區，智慧體才能接著用。",
+    "{part}：{name} 不在線（上次在線：{when}）。在那台電腦的 CoTeam 裡開啟這個工作區，智慧體才能接著用。",
   conversationDevicePartStopped:
     "{part}：{name} 的借出已從別處停止。在那台電腦上重新借出，智慧體才能接著用。",
   conversationDeviceSplitPickHint: "點一下給命令列和瀏覽器選電腦。",
@@ -794,4 +794,9 @@ export function useCoworkText() {
       coworkText(locale, key, values),
     [locale]
   )
+}
+
+/** 全部键（测试用来扫一遍所有文字）。 */
+export function coworkTextKeys(): CoworkTextKey[] {
+  return Object.keys(en) as CoworkTextKey[]
 }

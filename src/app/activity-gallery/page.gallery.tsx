@@ -702,7 +702,7 @@ const DELEGATION_TURN: MessageTurn = {
     ),
     {
       type: "text",
-      text: "Codex is waiting for you to approve `pnpm build`; it will not go on until you confirm in Codeg. I'll keep waiting.",
+      text: "Codex is waiting for you to approve `pnpm build`; it will not go on until you confirm in CoTeam. I'll keep waiting.",
     },
     toolUse("d2", "mcp__codeg-mcp__get_delegation_status", {
       task_ids: [POLLED_TASK_ID],

@@ -11,11 +11,11 @@ export const UI_RENDER_SKILL_NAME = "ui-render"
  *  it only means something inside Codeg's chat. No backticks: two YAML readers
  *  parse this line (`lib/skill-frontmatter.ts` and the Rust side). */
 const DESCRIPTION =
-  "Show results as interactive UI inside dodoer's chat (cards, tables, charts, tabs, accordions, badges, progress bars, simple forms) by writing a json-render spec code block in your reply. Use when the user invokes this skill or asks to see something as a card, table, chart, dashboard or other visual layout in dodoer."
+  "Show results as interactive UI inside CoTeam's chat (cards, tables, charts, tabs, accordions, badges, progress bars, simple forms) by writing a json-render spec code block in your reply. Use when the user invokes this skill or asks to see something as a card, table, chart, dashboard or other visual layout in CoTeam."
 
 /** Prepended to json-render's own guide. */
 const SYSTEM =
-  "dodoer renders a ```spec code block in your reply as interactive UI inside the chat. Write the block directly in your reply message, never into a file. Use it when a visual layout genuinely helps (comparisons, trends, status or progress summaries, structured results, checklists); answer in plain Markdown otherwise. The format reference follows."
+  "CoTeam renders a ```spec code block in your reply as interactive UI inside the chat. Write the block directly in your reply message, never into a file. Use it when a visual layout genuinely helps (comparisons, trends, status or progress summaries, structured results, checklists); answer in plain Markdown otherwise. The format reference follows."
 
 /** Appended to json-render's own rules. The first undoes the guide's advice to
  *  fill a UI with realistic sample data, which is right for a mock-up and wrong

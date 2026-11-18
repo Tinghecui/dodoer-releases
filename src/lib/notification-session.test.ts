@@ -81,7 +81,7 @@ describe("sessionNotificationPayload", () => {
     expect(p.body).toBe("codeg · Agent is waiting for your answer")
     // "Hide notification contents" must not leak the user's own words, and
     // its title names the folder again, so the body doesn't repeat it.
-    expect(p.redactedTitle).toBe("codeg - dodoer")
+    expect(p.redactedTitle).toBe("codeg - CoTeam")
     expect(p.redactedBody).toBe("Agent is waiting for your answer")
   })
 
@@ -93,7 +93,7 @@ describe("sessionNotificationPayload", () => {
     })
     expect(p.title).toBe("Refactor README.md intro")
     expect(p.body).toBe("Storefront · Agent error: boom")
-    expect(p.redactedTitle).toBe("Storefront - dodoer")
+    expect(p.redactedTitle).toBe("Storefront - CoTeam")
     expect(p.redactedBody).toBe("Agent ran into an error")
   })
 
@@ -131,7 +131,7 @@ describe("sessionNotificationPayload", () => {
     const p = sessionNotificationPayload("t6", null, "codeg", { body: "done" })
     expect(p.title).toBe("New chat")
     expect(p.body).toBe("done")
-    expect(p.redactedTitle).toBe("dodoer")
+    expect(p.redactedTitle).toBe("CoTeam")
   })
 
   it("names the conversation a tab closed mid-turn was serving", () => {
@@ -143,7 +143,7 @@ describe("sessionNotificationPayload", () => {
     })
     expect(p.title).toBe("Refactor README.md intro")
     expect(p.body).toBe("Storefront · done")
-    expect(p.redactedTitle).toBe("Storefront - dodoer")
+    expect(p.redactedTitle).toBe("Storefront - CoTeam")
   })
 
   it("prefers the tab's own conversation over its connection's", () => {
@@ -160,12 +160,12 @@ describe("sessionNotificationPayload", () => {
       sessionNotificationPayload("unknown-key", undefined, "codeg", {
         body: "done",
       })
-    ).toEqual({ title: "codeg - dodoer", body: "done" })
+    ).toEqual({ title: "codeg - CoTeam", body: "done" })
     // A delegated sub-agent's row: the conversation list leaves children out.
     expect(
       sessionNotificationPayload("child-connection", 99, "codeg", {
         body: "done",
       })
-    ).toEqual({ title: "codeg - dodoer", body: "done" })
+    ).toEqual({ title: "codeg - CoTeam", body: "done" })
   })
 })

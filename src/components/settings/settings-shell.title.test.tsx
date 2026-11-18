@@ -31,24 +31,24 @@ describe("SettingsShell document title", () => {
   // rendered for it — so the title is rewritten with no render to follow.
   it("is put back when the title is rewritten after a navigation", async () => {
     const { rerender, unmount } = render(shell())
-    expect(document.title).toBe("Settings - dodoer")
+    expect(document.title).toBe("Settings - CoTeam")
 
     nav.pathname = "/settings/system"
     rerender(shell())
-    document.title = "dodoer"
-    await waitFor(() => expect(document.title).toBe("Settings - dodoer"))
+    document.title = "CoTeam"
+    await waitFor(() => expect(document.title).toBe("Settings - CoTeam"))
 
     // A replaced <title> element, not only its text.
     document.querySelector("title")?.remove()
     const next = document.createElement("title")
-    next.textContent = "dodoer"
+    next.textContent = "CoTeam"
     document.head.append(next)
-    await waitFor(() => expect(document.title).toBe("Settings - dodoer"))
+    await waitFor(() => expect(document.title).toBe("Settings - CoTeam"))
 
     // Gone with the shell: the next page owns the title.
     unmount()
-    document.title = "dodoer"
+    document.title = "CoTeam"
     await Promise.resolve()
-    expect(document.title).toBe("dodoer")
+    expect(document.title).toBe("CoTeam")
   })
 })

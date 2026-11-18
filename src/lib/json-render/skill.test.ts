@@ -26,4 +26,11 @@ describe("ui-render skill", () => {
     expect(head[2]).toMatch(/^description: [^`]+$/)
     expect(head[3]).toBe("---")
   })
+
+  it("names the product CoTeam in what the agent reads", () => {
+    const skill = buildUiRenderSkill()
+    expect(skill).toContain("inside CoTeam's chat")
+    expect(skill).toContain("CoTeam renders a ```spec code block")
+    expect(skill).not.toMatch(/\b[Dd]odoer\b/)
+  })
 })

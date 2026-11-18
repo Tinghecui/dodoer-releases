@@ -138,7 +138,7 @@ describe("CoworkAccountMenu", () => {
     await userEvent.click(screen.getByRole("button", { name: "Account" }))
     await userEvent.click(
       await screen.findByRole("menuitem", {
-        name: "Cowork 0.9.0 is available — upgrade in the portal",
+        name: "CoTeam 0.9.0 is available — upgrade in the portal",
       })
     )
     expect(upgrade.openCoworkUpgrade).toHaveBeenCalledWith(upgrade.hint)
@@ -284,7 +284,7 @@ describe("CoworkAccountMenu", () => {
     await userEvent.click(screen.getByRole("button", { name: "账户" }))
     expect(
       await screen.findByRole("menuitem", {
-        name: "Cowork 0.9.0 可以升级，去门户升级",
+        name: "CoTeam 0.9.0 可以升级，去门户升级",
       })
     ).toHaveAttribute("aria-disabled", "true")
   })

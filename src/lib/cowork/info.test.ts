@@ -110,7 +110,7 @@ describe("normalizeCoworkInfo", () => {
   })
   it("tolerates missing / wrong fields", () => {
     expect(normalizeCoworkInfo({ projectsRoot: " ", portal: "yes" })).toEqual({
-      product: "Cowork",
+      product: "CoTeam",
       projectsRoot: null,
       portal: false,
       updateDisabled: false,

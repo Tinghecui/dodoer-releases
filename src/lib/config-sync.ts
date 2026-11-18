@@ -213,7 +213,7 @@ export async function exportConfigToFile(): Promise<ConfigExportSummary | null> 
   const { save } = await import("@tauri-apps/plugin-dialog")
   const destPath = await save({
     defaultPath: fileName,
-    filters: [{ name: "dodoer config", extensions: ["json"] }],
+    filters: [{ name: "CoTeam config", extensions: ["json"] }],
   })
   if (!destPath) return null
   return getTransport().call<ConfigExportSummary>("config_sync_export_file", {
@@ -239,7 +239,7 @@ export async function pickConfigFileToImport(): Promise<PickedConfigImport | nul
   const picked = await open({
     multiple: false,
     directory: false,
-    filters: [{ name: "dodoer config", extensions: ["json"] }],
+    filters: [{ name: "CoTeam config", extensions: ["json"] }],
   })
   const srcPath = typeof picked === "string" ? picked : null
   if (!srcPath) return null

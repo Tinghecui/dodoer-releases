@@ -317,7 +317,7 @@ pub fn client_config() -> Option<ClientTelemetry>;
 
 **记什么**：每次升级一条非致命的事件，`kind=update`。
 
-- `level`：换上成功（`applied`）是 `info`，等了很久都没换上（`waiting_long`）是 `warning`，其余是 `error`。成功的也报：晋级稳定版要靠「抢先版的设备确认换上了新版」当证据。
+- `level`：换上成功（`applied`）是 `info`，等了很久都没换上（`waiting_long`）是 `warning`，其余是 `error`；下载（或下载前的检查）因为网络失败的（`download_failed` 且 `error_kind` 是 `network` / `source_unreachable`）也是 `warning`：那是这台电脑到发布站之间的网络，下次检查会再试，不该按故障发提醒（2026-11-18 起）。成功的也报：晋级稳定版要靠「抢先版的设备确认换上了新版」当证据。
 - `release`：`applied` 用新版本 `dodoer-desktop@<新版本>`，其余用正在运行的版本。
 - 标签：除了固定的 `surface=desktop-native`、`kind`、`fatal`、`os`，再带
   - `update_result`：`applied` / `download_failed` / `install_failed` / `boot_unconfirmed` / `waiting_long`；

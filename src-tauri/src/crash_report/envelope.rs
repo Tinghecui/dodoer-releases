@@ -50,6 +50,9 @@ fn level(report: &Report) -> &'static str {
         return match report.tags.get("update_result").map(String::as_str) {
             Some("applied") => "info",
             Some("waiting_long") => "warning",
+            // The network between this machine and the release host, not the
+            // app: it tries again at the next check.
+            Some("download_failed") if download_blocked_by_network(report) => "warning",
             _ => "error",
         };
     }
@@ -58,6 +61,15 @@ fn level(report: &Report) -> &'static str {
         (Kind::Panic, false) => "error",
         (_, false) => "warning",
     }
+}
+
+/// A download (or the check before it) that failed on the way to the release
+/// host: `error_kind` is `network` or `source_unreachable`.
+fn download_blocked_by_network(report: &Report) -> bool {
+    matches!(
+        report.details.get("error_kind").and_then(Value::as_str),
+        Some("network" | "source_unreachable")
+    )
 }
 
 fn exception_type(kind: Kind) -> &'static str {
@@ -236,6 +248,31 @@ mod tests {
             assert_eq!(event["release"], "dodoer-desktop@1.6.41");
             assert_eq!(event["exception"]["values"][0]["type"], "Update");
         }
+        // A download the network stopped is a warning; one that failed for
+        // any other reason, or for none that was recognised, stays an error.
+        update.tags = [("update_result".to_string(), "download_failed".to_string())]
+            .into_iter()
+            .collect();
+        for (error_kind, level) in [
+            ("network", "warning"),
+            ("source_unreachable", "warning"),
+            ("signature", "error"),
+            ("disk", "error"),
+            ("unknown", "error"),
+        ] {
+            update
+                .details
+                .insert("error_kind".to_string(), json!(error_kind));
+            assert_eq!(event(&update, &target())["level"], level, "{error_kind}");
+        }
+        // The network failing an install is not excused.
+        update.tags = [("update_result".to_string(), "install_failed".to_string())]
+            .into_iter()
+            .collect();
+        update
+            .details
+            .insert("error_kind".to_string(), json!("network"));
+        assert_eq!(event(&update, &target())["level"], "error");
         // Other kinds carry the four fixed tags only.
         let tags = event(&report(), &target())["tags"].clone();
         assert_eq!(tags.as_object().unwrap().len(), 4);

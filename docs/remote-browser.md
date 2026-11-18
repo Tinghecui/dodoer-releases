@@ -71,7 +71,7 @@
 3. 发出 `host_call`；
 4. 等结果。
 
-各种失败都和 `HostBridgeClient` 一样，退回 `NoBrowserTabs` 的答案，只是把 note 换成「请在 dodoer 桌面 app 里打开这个工作区，并共享要用的标签」。
+各种失败都和 `HostBridgeClient` 一样，退回 `NoBrowserTabs` 的答案，只是把 note 换成「请在 CoTeam 桌面 app 里打开这个工作区，并共享要用的标签」。
 
 超时设置：
 
@@ -156,8 +156,8 @@ companion 的 feature 在智能体启动时就定死了（`companion_features_ar
 方案见 `docs/agent-chrome.md`（2026-11-14 用户定的方向：接管日常用的那个 Chrome）。要点：
 
 - Chrome 136 起不允许用启动参数在默认数据目录上开调试端口或管道，所以不走那条路。
-- Chrome 144 起有官方入口：用户在 `chrome://inspect/#remote-debugging` 打开开关，外部程序连接时 Chrome 弹窗让用户允许。dodoer 走这个入口，标签作为第三种 surface 进同一个注册表，再经本文档的通道借给服务器。
-- 这个入口在用户的机器上连不上时，退路是 Chrome 扩展：页面侧复用 `browser-agent/` 的快照和动作脚本作为 content script，扩展和 dodoer 之间走 Native Messaging，不开本地端口。
+- Chrome 144 起有官方入口：用户在 `chrome://inspect/#remote-debugging` 打开开关，外部程序连接时 Chrome 弹窗让用户允许。CoTeam 走这个入口，标签作为第三种 surface 进同一个注册表，再经本文档的通道借给服务器。
+- 这个入口在用户的机器上连不上时，退路是 Chrome 扩展：页面侧复用 `browser-agent/` 的快照和动作脚本作为 content script，扩展和 CoTeam 之间走 Native Messaging，不开本地端口。
 
 ## 9. 验收
 

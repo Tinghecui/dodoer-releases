@@ -33,7 +33,7 @@
 - 用户行为分析（哪些功能没人用、哪一步放弃）和录屏。那是另一类工具（PostHog）的事，等有了多个真实用户再接；前端留了统一的入口，到时不用再改各处调用。
 - 机器指标（CPU、内存、磁盘）的长期曲线。侧栏的资源表已经能看当前值。
 - 手机 App。桌面端的远端窗口跑的是同一份前端，自动带上；桌面端自己的崩溃和卡死、本机工作区（app 自带的 `codeg-server` 和本机窗口）2026-11-15 起也报（第 5.11 节）。
-- 桌面端「内嵌 daemon」模式（`CODEG_DESKTOP_DAEMON=embedded`，以及开了「随 app 启动网页服务」时）：daemon 在 app 自己的进程里，桌面主程序不链接 Sentry，这种模式下本机后端不报（崩溃和卡死照样报，前提是连着一台会上报的 Cowork 服务器）。
+- 桌面端「内嵌 daemon」模式（`CODEG_DESKTOP_DAEMON=embedded`，以及开了「随 app 启动网页服务」时）：daemon 在 app 自己的进程里，桌面主程序不链接 Sentry，这种模式下本机后端不报（崩溃和卡死照样报，前提是连着一台会上报的 CoTeam 服务器）。
 
 ## 3. 一句话方案
 
@@ -58,7 +58,7 @@
 - 日志怎么建的：`src-tauri/src/logging/init.rs` 的 `build_subscriber` 是所有二进制共用的唯一入口；`codeg-server` 的 `main` 是同步的，自己建 tokio runtime，环境变量在 `cowork::init_process_env` 里读、读完从进程环境里删掉。
 - 接口请求已经有一层中间件给每个请求开 `http` span（method、path、request_id），在 `web/router.rs` 末尾。接口报错统一经 `web/handlers/error.rs` 的 `IntoResponse for AppCommandError` 变成响应。
 - 前端所有接口调用都过 `Transport.call(command, args)`：网页版是 `WebTransport`（直接 `fetch`），桌面端的远端窗口是 `RemoteDesktopTransport`（经桌面端 Rust 代理转发）。实时连接的建立、断开、重连都在 `WebTransport.connectWs` / `scheduleReconnect` / `setConnState` 里。
-- 前端已经有「这是不是 Cowork 服务器」的一次性询问：`src/lib/cowork/info.ts` 的 `loadCoworkInfo()`，对应服务端 `cowork.rs` 的 `CoworkInfo`。
+- 前端已经有「这是不是 CoTeam 服务器」的一次性询问：`src/lib/cowork/info.ts` 的 `loadCoworkInfo()`，对应服务端 `cowork.rs` 的 `CoworkInfo`。
 - 前端是静态导出（`output: "export"`），没有 CSP，现在的包里不带源码映射文件。全局只有一段内联脚本过滤 ResizeObserver 报错，没有渲染错误的兜底页。
 - 服务端的发行版本不在二进制里（`CARGO_PKG_VERSION` 是上游的版本号），在安装目录的 `COWORK-VERSION` 文件里；前端构建时已经把它编进了 `CODEG_RELEASE_VERSION`。
 - 用量：按一个真实用户一周的访问日志折算，每月约 117 万次接口调用，其中 85% 是三个轮询接口（`acp_touch_connection`、`get_git_head`、`get_codeg_mcp_service_status`）。去掉轮询每人每月约 17 万次。
@@ -278,16 +278,16 @@ pub fn client_config() -> Option<ClientTelemetry>;
 ### 5.11 桌面端
 
 - 远端窗口：跑的是同一份前端，问的是它连的那台服务器的 `cowork_info`，上报经 Rust 代理走同一个转发接口。追踪头暂时带不过去（代理自己组请求头），两头的记录靠时间和 request_id 对。开不开、报到哪，跟着那台服务器走，不受桌面端的开关影响。
-- 本机工作区（2026-11-15 起）：本机后端是 app 带着的 `codeg-server` 子进程（`local_daemon.rs`，默认的 child 模式），它启动时照第 5.1 节的规则开遥测——发版的包里有内置地址，所以默认开，environment `desktop-local`，用户是安装编号，release 是 app 用 `CODEG_TELEMETRY_RELEASE` 交给它的 `dodoer-desktop@<桌面版本>`（和崩溃报告同名，桌面包里没有 `COWORK-VERSION`；2026-11-17 以前是上游的 `codeg@0.43.0`），本机窗口经 `cowork_info.telemetry.release` 用同一个。本机窗口只问它要 `cowork_info.telemetry` 这一项（`loadLocalDaemonTelemetry`，`cowork_info` 的其他内容不用，本机工作区不因此变成 Cowork 工作区），有就启动前端遥测（`surface=desktop-local`），信封经子进程的 `/api/telemetry_envelope` 转发，和远端窗口走同一个代理。内嵌 daemon 模式不报（第 2 节）。
+- 本机工作区（2026-11-15 起）：本机后端是 app 带着的 `codeg-server` 子进程（`local_daemon.rs`，默认的 child 模式），它启动时照第 5.1 节的规则开遥测——发版的包里有内置地址，所以默认开，environment `desktop-local`，用户是安装编号，release 是 app 用 `CODEG_TELEMETRY_RELEASE` 交给它的 `dodoer-desktop@<桌面版本>`（和崩溃报告同名，桌面包里没有 `COWORK-VERSION`；2026-11-17 以前是上游的 `codeg@0.43.0`），本机窗口经 `cowork_info.telemetry.release` 用同一个。本机窗口只问它要 `cowork_info.telemetry` 这一项（`loadLocalDaemonTelemetry`，`cowork_info` 的其他内容不用，本机工作区不因此变成 CoTeam 工作区），有就启动前端遥测（`surface=desktop-local`），信封经子进程的 `/api/telemetry_envelope` 转发，和远端窗口走同一个代理。内嵌 daemon 模式不报（第 2 节）。
 - 桌面端自己的进程：崩溃和卡死、软件更新的记录，见下面。Rust 代理的连接断开还没做。
 
-**开关**：设置 → 通用 →「发送诊断数据（崩溃、卡死、报错）」，桌面端的总开关，**默认开**。存在 `~/.codeg/preferences.json` 的 `diagnostics`：没有这一项 = 开，只有用户自己关掉才写 `false`。关掉时：崩溃和卡死不记、不发，攒着的删掉（立刻生效）；app 下次启动子进程时给它 `CODEG_TELEMETRY=off`，本机后端和本机窗口都不报（下次启动 dodoer 后生效，开关下面写着）。#290 的 `crash_reports` 那一项不再读：它默认是 `false`，存过任何设置的文件里都有，分不出是不是用户自己关的。
+**开关**：设置 → 通用 →「发送诊断数据（崩溃、卡死、报错）」，桌面端的总开关，**默认开**。存在 `~/.codeg/preferences.json` 的 `diagnostics`：没有这一项 = 开，只有用户自己关掉才写 `false`。关掉时：崩溃和卡死不记、不发，攒着的删掉（立刻生效）；app 下次启动子进程时给它 `CODEG_TELEMETRY=off`，本机后端和本机窗口都不报（下次启动 CoTeam 后生效，开关下面写着）。#290 的 `crash_reports` 那一项不再读：它默认是 `false`，存过任何设置的文件里都有，分不出是不是用户自己关的。
 
 #### 桌面端自己的进程：崩溃和卡死（2026-11-15）
 
-起因：2026-11-15 dodoer 在 macOS 上应用内升级完以后卡死，两次都要强制退出，遥测里什么都没有，是靠 `/Library/Logs/DiagnosticReports/codeg_*.hang` 和 app 日志查出来的（tokio worker 被 `AppHandle::restart()` 卡住，#271 修了）。那是用户自己的电脑，所以单独征得同意。
+起因：2026-11-15 CoTeam 在 macOS 上应用内升级完以后卡死，两次都要强制退出，遥测里什么都没有，是靠 `/Library/Logs/DiagnosticReports/codeg_*.hang` 和 app 日志查出来的（tokio worker 被 `AppHandle::restart()` 卡住，#271 修了）。那是用户自己的电脑，所以单独征得同意。
 
-**开关**：上面那个总开关（最初是单独的「发送桌面端崩溃和卡死报告」，默认关）。存在 `~/.codeg/preferences.json`（和「关闭硬件加速」同一个文件，启动时不用等数据库就能读）。本机窗口和远端窗口里都有（调的是桌面端自己的命令，不经服务器）。开关下面写明：默认开、可以关；发什么（崩溃、卡死、报错的类型、脱敏后的报错和代码位置、macOS 上卡死时主线程停在哪些函数、耗时、当时是否在升级或退出、版本、系统类型、安装编号；2026-11 起加上每次软件更新的结果，见下面「软件更新的记录」），发到哪（连着的 Cowork 服务器或 app 自带的本机后端，由它转给 Sentry），不发什么（对话内容、代码和文件内容、文件路径、网址、终端输出、用户名）。关掉时把本机攒着的记录全删掉。
+**开关**：上面那个总开关（最初是单独的「发送桌面端崩溃和卡死报告」，默认关）。存在 `~/.codeg/preferences.json`（和「关闭硬件加速」同一个文件，启动时不用等数据库就能读）。本机窗口和远端窗口里都有（调的是桌面端自己的命令，不经服务器）。开关下面写明：默认开、可以关；发什么（崩溃、卡死、报错的类型、脱敏后的报错和代码位置、macOS 上卡死时主线程停在哪些函数、耗时、当时是否在升级或退出、版本、系统类型、安装编号；2026-11 起加上每次软件更新的结果，见下面「软件更新的记录」），发到哪（连着的 CoTeam 服务器或 app 自带的本机后端，由它转给 Sentry），不发什么（对话内容、代码和文件内容、文件路径、网址、终端输出、用户名）。关掉时把本机攒着的记录全删掉。
 
 **采什么**（都在下次启动时补报，崩溃、卡死的那一刻发不出去）。记录放在数据目录下的 `crash-reports/`（调试构建用 `crash-reports-dev/`，和装好的版本互不干扰），开关关着时什么都不写。
 
@@ -326,7 +326,7 @@ pub fn client_config() -> Option<ClientTelemetry>;
   - `update_channel`：这次升级走的更新通道，`stable`（稳定版）/ `early`（抢先版）（2026-11 起，#413）；记通道之前留下的升级记录不带。稳定版能不能晋级，看的就是抢先版设备的这些记录；
   - `update_trigger`：`auto`（后台自动开始的下载）、`manual`（用户点的）、`rollback`（回退到上一版）；
   - `update_how`：怎么换上的，`idle`（空闲时自己重启）、`click`（用户点「重启以更新」）、`launch`（下次启动时换上），没到这一步就不带；
-  - `install`：设备编号（`host_device::device_id`）的 SHA-256 前 12 位十六进制，用来区分设备、又不发设备编号本身。经远端 Cowork 服务器上报时用户标识是那台服务器给的用户名，两台 Mac 会是同一个，所以要这个标签。
+  - `install`：设备编号（`host_device::device_id`）的 SHA-256 前 12 位十六进制，用来区分设备、又不发设备编号本身。经远端 CoTeam 服务器上报时用户标识是那台服务器给的用户名，两台 Mac 会是同一个，所以要这个标签。
 - 上下文（`contexts.desktop`）：各步花了多久——下载（`download_ms`）、下好到开始换上（`wait_ms`）、安装（`install_ms`）、开始换上到新版本确认在跑（`boot_ms`）；包的大小（`bytes`）、是不是用了上次存在磁盘上的包（`reused_package`）、新版本启动了几次（`boots`）、空闲时自动重启被什么挡住过几次（`blocked`：本机在跑的回合、终端、借出的设备、有人在用、问不到）；失败时的错误类别（`error_kind`：网络、下载源、签名、权限、磁盘、别的）和脱敏后的报错（过 `telemetry::scrub::scrub_text`）。
 - 指纹：`desktop-native` / `update` / 结果 / 错误类别（没有就是 `-`），同一种结果、同一类错误归成一个问题。
 
@@ -334,7 +334,7 @@ pub fn client_config() -> Option<ClientTelemetry>;
 
 **自动退回（`rolled_back`，2026-11 起，#413）**：macOS 上新版本换上以后连着两次 60 秒内异常退出（正常退出不算），第 3 次启动时自动换回换上之前留的旧应用包，报一条 `rolled_back`：`error` 级别，指纹 `desktop-native` / `update` / `rolled_back` / `-`，`contexts.desktop` 带 `boots`（新版本启动了几次）。退回的那一刻记进本机日志，退回到的旧版本起来以后发。没起来的那一版之后不再自动下载、自动安装（手动点升级照常能装）。换不回去（没有留旧包、目录不可写、换的时候出错）时不退回，照常报 `boot_unconfirmed`。下载失败只报后台自动开始的，24 小时内最多一条；用户自己点的下载失败界面上已经看得到，不报。记录放进待发以后本次运行里就发（有发送对象时 1 分钟内），不用等下次启动。
 
-**和崩溃报告共用**：同一个开关（「发送诊断数据」，关着时只写本机日志，不记、不放待发、不发）；同一个发送通道（经连着的 Cowork 服务器或 app 自带的本机后端的 `/api/telemetry_envelope`，见上一小节「怎么发」），桌面主程序不另带上报地址。待发名额单独算：升级记录最多留 3 条，超了丢最旧的升级记录，不占崩溃报告那 5 条，谁也不挤谁。
+**和崩溃报告共用**：同一个开关（「发送诊断数据」，关着时只写本机日志，不记、不放待发、不发）；同一个发送通道（经连着的 CoTeam 服务器或 app 自带的本机后端的 `/api/telemetry_envelope`，见上一小节「怎么发」），桌面主程序不另带上报地址。待发名额单独算：升级记录最多留 3 条，超了丢最旧的升级记录，不占崩溃报告那 5 条，谁也不挤谁。
 
 **不记什么**：下载地址以外的网址、任何路径、用户名、设备编号本身；对话内容、代码和文件内容、终端输出照旧不碰。不报每天「在跑哪一版」。
 
@@ -427,7 +427,7 @@ pub fn client_config() -> Option<ClientTelemetry>;
 - **生产机不变**：`/etc/cowork/telemetry.env` 两个地址都配了，按第 5.1 节第 2 条用环境变量的，environment 和用户标识的默认值也照旧（`production`、登录名）。
 - **一半配了另一半没配就不掺内置的**（第 5.1 节第 4 条）：配了自己 Sentry 的部署（AI QA、以后别的团队），没配的那一半不会悄悄报到我们的项目里。
 - **桌面端的开关**从「崩溃和卡死报告」改成总开关「发送诊断数据」，偏好换了个键（`diagnostics`，三态：没有 = 开）。旧键 `crash_reports` 不读：它默认 `false`，分不出是不是用户关的；#290 才发了一天，按「没设过」处理。
-- **运行中切换**：崩溃报告立刻生效；本机后端和本机窗口下次启动 dodoer 才生效（子进程的环境在启动时定）。没做成重启子进程：重启会打断正在跑的对话，为一个开关不值得。
+- **运行中切换**：崩溃报告立刻生效；本机后端和本机窗口下次启动 CoTeam 才生效（子进程的环境在启动时定）。没做成重启子进程：重启会打断正在跑的对话，为一个开关不值得。
 - **代价：地址等于公开。** 编进公开发行的程序里，谁解包都能拿到，可以往这两个 Sentry 项目里灌假数据、刷掉免费额度。兜底：转发接口自己的额度（每进程每分钟 60 个信封、带报错的另 30 个，第 5.4 节）只管经我们服务器转发的那部分，直接拿地址往 Sentry 发的拦不住；所以还要靠 Sentry 自己的项目限额。前端那个地址本来就会经 `cowork_info` 给到浏览器，服务端那个地址以前只在生产机上。要是被滥用了，换一个地址（Sentry 里给项目新建 Client Key、停掉旧的，改 secret、发一版），旧版本的包就报不进来了。
 - **待办（要人在 Sentry 后台做）**：两个项目（服务端、前端）都打开 Spike Protection；在 Client Keys 里给内置的那两个 key 设速率限制（比如每分钟几百条）；确认「不存 IP」和数据清洗（第 5.7 节）在两个项目里都开着；Inbound Filters 按 environment 看一下 `community` / `desktop-local` 的量，必要时单独限。生产机用的 key 最好和内置的分开（各一个 Client Key），被刷的时候只停内置那个。
 - **放弃的方案**：

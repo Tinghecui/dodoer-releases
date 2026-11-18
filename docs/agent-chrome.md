@@ -4,7 +4,7 @@
 
 ## 1. 问题
 
-智能体现在能用的浏览器只有 dodoer 的内置浏览器（本机工作区直接用，服务器上的智能体经 `docs/remote-browser.md` 的通道借用）。用户的目标是让智能体自动填表、填信息、把事情做完，内置浏览器离这个目标差三件事：
+智能体现在能用的浏览器只有 CoTeam 的内置浏览器（本机工作区直接用，服务器上的智能体经 `docs/remote-browser.md` 的通道借用）。用户的目标是让智能体自动填表、填信息、把事情做完，内置浏览器离这个目标差三件事：
 
 - **登录状态要重新来一遍**。用户的账户都登在日常用的 Chrome 里，内置浏览器是另一套 Cookie。
 - **人不好接手**。登录、验证码、付款确认这些要人来做的步骤，用户习惯在自己的 Chrome 里做；智能体干到一半，人接一下，再交回去，最好就在同一个浏览器里。
@@ -14,7 +14,7 @@
 
 ## 2. 目标
 
-- dodoer 桌面 app 连上用户正在用的 Google Chrome，用 Chrome DevTools Protocol（CDP）驱动它。
+- CoTeam 桌面 app 连上用户正在用的 Google Chrome，用 Chrome DevTools Protocol（CDP）驱动它。
 - Chrome 的标签和内置浏览器的标签出现在同一套 `browser_*` 工具里：`browser_list_tabs` 里标明来源，读、点、输入、截图、控制台都照旧。智能体不用学新工具。
 - 人随时能接手：智能体的页面就开在用户的 Chrome 里；用户自己开的页面也能交给智能体接着做；一个开关能让智能体立刻停手。
 - 服务器上的智能体经现有的借浏览器通道（`/ws/events`、`host_bridge_ws`）同样能用。**服务器不用升级**：协议和工具定义都不变，改动全在桌面端。
@@ -22,13 +22,13 @@
 不做：
 
 - 替用户打开 Chrome 的远程调试开关，或绕过 Chrome 的允许弹窗。这两步都必须是用户自己做的。
-- 无头模式、dodoer 自带浏览器。
+- 无头模式、CoTeam 自带浏览器。
 - Windows、Linux。第一版只做 macOS（现在只发 macOS 的桌面包）。
 - ~~文件上传、下载的专门工具。内置浏览器现在也没有，以后一起做。~~ 第二轮 G 给用户的 Chrome 做了（13.7）；内置浏览器还是没有。
 
 ## 3. 一句话方案
 
-Chrome 144 起，用户在 `chrome://inspect/#remote-debugging` 打开开关后，外部程序可以连上正在运行的 Chrome，每次连接 Chrome 弹窗问用户是否允许。dodoer 走这条官方入口连上去。Chrome 的每个标签在 dodoer 里是 **第三种 surface**：和内嵌 webview（`Child`）、独立窗口（`Window`）并列，登记在同一个 `BrowserRegistry` 里。这样共享级别、每次读写前的检查、活动记录，全部走现有的 `agent_*_core`，不另写一套。
+Chrome 144 起，用户在 `chrome://inspect/#remote-debugging` 打开开关后，外部程序可以连上正在运行的 Chrome，每次连接 Chrome 弹窗问用户是否允许。CoTeam 走这条官方入口连上去。Chrome 的每个标签在 CoTeam 里是 **第三种 surface**：和内嵌 webview（`Child`）、独立窗口（`Window`）并列，登记在同一个 `BrowserRegistry` 里。这样共享级别、每次读写前的检查、活动记录，全部走现有的 `agent_*_core`，不另写一套。
 
 ```
 智能体（本机，或服务器经 /ws/events）
@@ -59,27 +59,27 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 
 ### 5.1 连上 Chrome
 
-- **用户做两件事**：在 Chrome 里打开 `chrome://inspect/#remote-debugging` 的开关（一次）；dodoer 连上来时在 Chrome 的弹窗里点「允许」。dodoer 的设置页写清这两步，并给一个「连接 Chrome」按钮；点了之后提示「请到 Chrome 里点允许」。
-- **怎么找到它**：开关打开后 Chrome 在数据目录写 `DevToolsActivePort`（macOS：`~/Library/Application Support/Google/Chrome/DevToolsActivePort`），第一行是端口，第二行是浏览器端点的路径。dodoer 读它，连 `ws://127.0.0.1:<端口><路径>`。**只读，不删、不改这个文件**（有别的工具在等用户点允许时超时就删它，把正常的 Chrome 弄坏过）。
-- **macOS 还有一道权限**：macOS 27 起，别的 app 读不了 Chrome 的数据目录（实测 `cat` 这个文件回 `Operation not permitted`，系统不弹窗问，直接拒绝）。所以 dodoer 读 `DevToolsActivePort` 之前，用户要在「系统设置 → 隐私与安全性 → 文件与文件夹」里给 dodoer 打开「Google Chrome」。dodoer 读到 `EPERM` 时说的是「macOS 不让读」并给出去系统设置的按钮，不能说成「Chrome 没开开关」（上游工具就是把这两种情况混成一句，害人查错方向）。
-- **权限给不上时的手动办法**：Chrome 自己读得了这个文件。设置页里留一个输入框：用户在 Chrome 里打开 `file:///Users/<用户>/Library/Application Support/Google/Chrome/DevToolsActivePort`，把第二行（`/devtools/browser/…`）贴进来，dodoer 用它连。这串东西每次 Chrome 重启都换，所以只是退路。实测就是这么连上的。
+- **用户做两件事**：在 Chrome 里打开 `chrome://inspect/#remote-debugging` 的开关（一次）；CoTeam 连上来时在 Chrome 的弹窗里点「允许」。CoTeam 的设置页写清这两步，并给一个「连接 Chrome」按钮；点了之后提示「请到 Chrome 里点允许」。
+- **怎么找到它**：开关打开后 Chrome 在数据目录写 `DevToolsActivePort`（macOS：`~/Library/Application Support/Google/Chrome/DevToolsActivePort`），第一行是端口，第二行是浏览器端点的路径。CoTeam 读它，连 `ws://127.0.0.1:<端口><路径>`。**只读，不删、不改这个文件**（有别的工具在等用户点允许时超时就删它，把正常的 Chrome 弄坏过）。
+- **macOS 还有一道权限**：macOS 27 起，别的 app 读不了 Chrome 的数据目录（实测 `cat` 这个文件回 `Operation not permitted`，系统不弹窗问，直接拒绝）。所以 CoTeam 读 `DevToolsActivePort` 之前，用户要在「系统设置 → 隐私与安全性 → 文件与文件夹」里给 CoTeam（系统里显示为 dodoer）打开「Google Chrome」。CoTeam 读到 `EPERM` 时说的是「macOS 不让读」并给出去系统设置的按钮，不能说成「Chrome 没开开关」（上游工具就是把这两种情况混成一句，害人查错方向）。
+- **权限给不上时的手动办法**：Chrome 自己读得了这个文件。设置页里留一个输入框：用户在 Chrome 里打开 `file:///Users/<用户>/Library/Application Support/Google/Chrome/DevToolsActivePort`，把第二行（`/devtools/browser/…`）贴进来，CoTeam 用它连。这串东西每次 Chrome 重启都换，所以只是退路。实测就是这么连上的。
 - **保持一条连接**：连上后不断开，所有标签的会话都在这一条连接上（`Target.attachToTarget`，flatten）。这样用户只在连接时点一次允许，不是每个操作点一次。实测：每条新连接 Chrome 都弹一次窗，断开再连也要再点。
-- **断了怎么办**：Chrome 退出、重启、用户关了开关，连接就断，Chrome 的标签从 `list_tabs` 里消失。**不自动重连**（重连会让 Chrome 再弹窗，没人在等的弹窗只会吓人）：状态变成「未连接」，智能体下次要用 Chrome 时回一句「Chrome 没连上，请用户在 dodoer 里点连接 Chrome」，用户点了再连。dodoer 启动时也不自动连。
+- **断了怎么办**：Chrome 退出、重启、用户关了开关，连接就断，Chrome 的标签从 `list_tabs` 里消失。**不自动重连**（重连会让 Chrome 再弹窗，没人在等的弹窗只会吓人）：状态变成「未连接」，智能体下次要用 Chrome 时回一句「Chrome 没连上，请用户在 CoTeam 里点连接 Chrome」，用户点了再连。CoTeam 启动时也不自动连。
 - **文件是旧的**（Chrome 退出后文件还在、端口没人听）：连不上就按「未连接」处理，提示用户先打开 Chrome。
 - Chrome 版本低于 144、没有这个文件：设置页说明要升级 Chrome 或打开开关。
 
-### 5.2 Chrome 的标签怎么进 dodoer
+### 5.2 Chrome 的标签怎么进 CoTeam
 
 分两层（第 2 步写的时候定的，原来的写法是所有标签都进注册表）：
 
-- **列表**（`browser/chrome/tabs.rs`，第 2 步）：连上后 `Target.setDiscoverTargets`，Chrome 里每个 `page` 类型、地址是 http(s) 的 target 记一项，给面板看。只记标题和主机名往外发，路径和查询串不出后端（登录链接、令牌在那里）。每项一个 dodoer 自己发的 uuid，CDP 的 target id 不出后端。不 attach、不开任何 CDP 域，页面察觉不到。**这一层不进 `BrowserRegistry`**：智能体的工具都从注册表取标签，没进注册表的标签它们连编号都拿不到，比在 `browser_list_tabs` 里加一道过滤牢靠（查代码时发现现在的 `summarize_tab` 会把没共享的标签连域名一起列给本机智能体）。
+- **列表**（`browser/chrome/tabs.rs`，第 2 步）：连上后 `Target.setDiscoverTargets`，Chrome 里每个 `page` 类型、地址是 http(s) 的 target 记一项，给面板看。只记标题和主机名往外发，路径和查询串不出后端（登录链接、令牌在那里）。每项一个 CoTeam 自己发的 uuid，CDP 的 target id 不出后端。不 attach、不开任何 CDP 域，页面察觉不到。**这一层不进 `BrowserRegistry`**：智能体的工具都从注册表取标签，没进注册表的标签它们连编号都拿不到，比在 `browser_list_tabs` 里加一道过滤牢靠（查代码时发现现在的 `summarize_tab` 会把没共享的标签连域名一起列给本机智能体）。
 - **注册表**（第 3 步起）：用户把标签交给智能体、或者智能体自己开了标签，这个标签才登记进 `BrowserRegistry`，下面几条说的是它：
 
 - `BrowserSurface` 加一种 `External(ExternalHandle)`，`SurfaceKind` 加 `external`。`ExternalHandle` 里是 CDP 的 target id 和 session。内嵌 webview 才有的操作（位置、显示隐藏、缩放、冻结画面、查找）对它是空操作。
 - 登记时沿用列表里那个 uuid 当标签 id，和内置标签一个样子。
 - 每个标签记一个来源：**智能体开的**（经 `browser_open_tab` 建的）还是 **用户开的**（其余全部）。
 - 状态同步：`Page.frameNavigated`（主框架）、`Page.loadEventFired`、`Target.targetInfoChanged` 更新 `BrowserTabState` 的 `url` / `origin` / `title` / `loading`，走 `browser/hooks.rs` 里内置标签用的同一组函数。
-- `owner_window` 填固定的 `chrome`：它不属于任何 dodoer 窗口。
+- `owner_window` 填固定的 `chrome`：它不属于任何 CoTeam 窗口。
 - **只接要用的标签**：没共享的用户标签只在列表里、不进注册表、不 attach，不在它上面开任何 CDP 域，对那个页面没有任何影响；共享了才登记、才 attach。共享收回时从注册表里拿掉。
 - `browser_list_tabs`：**用户开的、没共享的标签不列出来**（内置浏览器会列出域名，但那里的标签本来就是给工作用的；用户日常 Chrome 里开着什么网站不该让智能体知道）。按上面的分层，它们本来就不在注册表里。列出来的每一项加一个可选字段 `browser: "chrome"`。老服务器不认识这个字段，会丢掉，不影响别的。
 
@@ -102,7 +102,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 用户定的规则（2026-11-14）：
 
 - **智能体开的标签**：按浏览器设置里的「默认共享级别」自动共享（出厂「读取并操作」），和内置浏览器一个设置。名单拦的网站除外。
-- **用户开的标签**：默认不共享，用户在 dodoer 的面板里点了才交给智能体（选「读取」或「读取并操作」）。共享绑在域名上，页面离开这个域名就收回（现有规则）。
+- **用户开的标签**：默认不共享，用户在 CoTeam 的面板里点了才交给智能体（选「读取」或「读取并操作」）。共享绑在域名上，页面离开这个域名就收回（现有规则）。
 - **`browser_eval`（执行智能体自己写的代码）**：Chrome 上单独一个开关「在 Chrome 里执行代码」，出厂关。点击、输入、读页面都不需要它。内置浏览器的那个开关不管 Chrome。
 
 内置标签的共享是「前端读设置、向后端申请」，由标签所在的窗口来做。Chrome 的标签不在任何窗口里，所以默认共享级别由前端启动时和改动时推给后端（和站点规则 `browser_set_host_rules` 同一种做法），后端在智能体开的标签每次落到一个新域名时按它共享；用户在面板里对某个标签点了「停止共享」，这个标签在这个域名上不再自动共享（`applyDefaultAgentGrant` 的那套记忆规则，搬到后端）。
@@ -113,7 +113,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 
 **这是唯一真正管用的边界。** 智能体自己新开的标签也带着用户全部的登录状态，「只让它碰自己开的标签」挡不住它打开邮箱。所以 Chrome 有一张自己的名单（和内置浏览器的站点规则分开存，因为内置的规则连用户自己的浏览一起拦，这里只拦智能体）：
 
-- 名单上的域名：智能体打不开、跳不过去（`browser_blocked`）；标签不管怎么到了那里（点链接、重定向），共享立刻收回，也不会自动再给；用户也不能把这样的标签共享出去。**用户自己在 Chrome 里照常访问，dodoer 不拦人。**
+- 名单上的域名：智能体打不开、跳不过去（`browser_blocked`）；标签不管怎么到了那里（点链接、重定向），共享立刻收回，也不会自动再给；用户也不能把这样的标签共享出去。**用户自己在 Chrome 里照常访问，CoTeam 不拦人。**
 - 默认名单 52 个网站，后端按类别分成五组（`sensitive.rs` 的 `site_groups`，界面按这个顺序显示）：邮箱（`mail.google.com`、`outlook.live.com`、`mail.qq.com` 等 15 个）、密码和账号（密码管理器的网页版和能重置别的账户的账号，8 个）、支付（`paypal.com`、`alipay.com` 等 5 个）、银行（21 个）、交易所（3 个）。用户在设置里一个个放开、整组放开，或者加自己的网站（13.3）。原来想的「第一次打开『连接 Chrome』时给一份建议名单让用户勾」没做，现在就是默认名单 + 设置里改。
 - **暂停拦截**：名单有一个总开关（2026-11-16 用户定的，13.8）。暂停时智能体可以操作所有网站，默认名单里的和用户自己加的都一样；名单原样留着，一直暂停到用户自己打开，打开后和暂停前一样。暂停只能由用户在 app 的界面上拨（设置页、侧栏的 Chrome 面板），智能体、MCP、server 的路由都改不了。
 - 名单按域名匹配（含子域名）。它拦的是顶层页面；页面里嵌的别的域名的框架本来就读不到（快照只读主框架所在的文档，现有行为）。
@@ -122,12 +122,12 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 
 - **看得见**：智能体开的标签放在 **单独的 Chrome 窗口** 里，不往用户正在用的窗口里塞标签、不抢用户的当前标签。用户想看就切到那个窗口。实测（第 10 节第二轮）定下来的做法：
   - 第一个标签用 `Target.createTarget` 带 `newWindow` 开，得到智能体的窗口。
-  - 窗口里留一个 dodoer 自己的起始标签（写一句「这个窗口是 dodoer 的智能体在用」）。之后每开一个标签，**先把起始标签切到前面（`Target.activateTarget`），再 `Target.createTarget`（不带 `newWindow`）**：不带 `newWindow` 的新标签落在 Chrome 最后用的那个窗口，切过一下，最后用的就是智能体的窗口（第 10 节第四轮实测落对了）。CDP 没有「开到指定窗口」的参数，只能这样。如果用户恰好在这两步之间点了自己的窗口，标签会落到那边，照样归智能体、面板里照样标着；开完对一下两个标签的窗口号，不一样就记一条日志。
+  - 窗口里留一个 CoTeam 自己的起始标签（写一句「这个窗口是 CoTeam 的智能体在用」）。之后每开一个标签，**先把起始标签切到前面（`Target.activateTarget`），再 `Target.createTarget`（不带 `newWindow`）**：不带 `newWindow` 的新标签落在 Chrome 最后用的那个窗口，切过一下，最后用的就是智能体的窗口（第 10 节第四轮实测落对了）。CDP 没有「开到指定窗口」的参数，只能这样。如果用户恰好在这两步之间点了自己的窗口，标签会落到那边，照样归智能体、面板里照样标着；开完对一下两个标签的窗口号，不一样就记一条日志。
   - **不再用 `window.open`**（2026-11-15 前是从起始标签上 `window.open`）：在用户日常的 Chrome 上（154 和 157）它每次都让 Chrome 崩掉，崩在 Chrome 自己对「打开新页面的那个页面」的一条检查上（第 10 节第四轮）；`Target.createTarget` 开的标签是 Chrome 自己开的，后面没有页面，走不到那条检查。
-  - 窗口**最小化着也能干活**：点击和截图都正常。但 dodoer 不替用户把它收起来（用户 2026-11-14 定的：人能随时看到智能体在干什么更重要）；用户自己收起来也不影响智能体。
+  - 窗口**最小化着也能干活**：点击和截图都正常。但 CoTeam 不替用户把它收起来（用户 2026-11-14 定的：人能随时看到智能体在干什么更重要）；用户自己收起来也不影响智能体。
   - **开这个窗口时 Chrome 会跳到前面，躲不掉**：第三轮试了让窗口一出生就最小化（`windowState: "minimized"`），Chrome 没照做，照样跳了出来。所以窗口一条连接只开一次（智能体第一次在 Chrome 里开网页时），之后一直复用，**开出来就让它留在前面，不收起来**。这一跳正好也是告诉用户「智能体开始在 Chrome 里干活了」。用户 Chrome 全屏用的时候（用户平时就是），新窗口也是全屏的、在单独的一屏里；用户说目前问题不大。之后每**新开**一个标签 Chrome 也会到前面（先切到智能体的窗口才落得对，2026-11-15 在用户 Mac 上实测确认会跳，13.1）；所以从第二轮起，智能体已经有自己的标签时，`browser_open_tab` 不再新开，而是在那个标签上换网页（`Page.navigate`，实测不跳），只有智能体明确要第二个标签（`newTab: true`）才新开、才跳（13.1）。
   - 退路：标签直接开在用户窗口的后台（开了焦点模拟后那里也收得到点击，不跳出来）。代价是智能体的标签和用户的混在一起，Chrome 里又做不了记号。
-- **人来做一步**：碰到登录、验证码、付款确认，智能体照现在的办法在对话里问用户（侧栏「等你回答」）。dodoer 的面板里每个标签有「跳到这个标签」（`Target.activateTarget` + 把 Chrome 提到前面），用户做完回对话里说一声，智能体接着干。
+- **人来做一步**：碰到登录、验证码、付款确认，智能体照现在的办法在对话里问用户（侧栏「等你回答」）。CoTeam 的面板里每个标签有「跳到这个标签」（`Target.activateTarget` + 把 Chrome 提到前面），用户做完回对话里说一声，智能体接着干。
 - **把自己的页面交给智能体**：面板里列出 Chrome 现在开着的标签（标题和域名，只给用户看），点「交给智能体」。
 - **立刻停手**：面板顶上一个「暂停」开关。打开后所有 Chrome 标签的读和操作一律拒绝（回「用户暂停了对 Chrome 的操作」），共享状态不动，关掉就恢复。断开连接是更彻底的停。
 - **事后看**：每次读、点、输入都记在活动记录里（现有的 `emit_agent_activity`），在面板里按标签看。
@@ -152,7 +152,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 
 ## 6. 安全
 
-- **连接要用户点头两次**：开关是用户在 Chrome 里开的，每次连接是用户在 Chrome 的弹窗里允许的。dodoer 只在用户点了「连接 Chrome」时发起连接，所以弹窗出现的时刻用户知道是谁在连。**开关开着时，本机别的程序也能来请求连接**，同样会弹窗；设置页写明：不是自己刚点了连接时出现的弹窗，一律点拒绝。
+- **连接要用户点头两次**：开关是用户在 Chrome 里开的，每次连接是用户在 Chrome 的弹窗里允许的。CoTeam 只在用户点了「连接 Chrome」时发起连接，所以弹窗出现的时刻用户知道是谁在连。**开关开着时，本机别的程序也能来请求连接**，同样会弹窗；设置页写明：不是自己刚点了连接时出现的弹窗，一律点拒绝。
 - **检查都在原处**：读之前看共享级别、读完再核对地址、操作前核对 ref 是否过期，全是现有的 `agent_*_core`。Chrome 没有绕过它们的路径。
 - **风险说在前面**：用户日常的 Chrome 里是真实账户。网页上的文字可以诱导智能体（提示注入）；智能体开的标签默认是「读取并操作」，它能在名单之外的任何登录着的网站上替用户点和填。能挡住的只有 5.5 的名单和 5.6 的暂停。设置页打开这个功能时把这段话摆出来，让用户勾完名单再连。
 - **不该碰的不碰**：没共享的用户标签不 attach、不列给智能体；`chrome://`、扩展页、`devtools://` 这些非 http(s) 的页面不登记。
@@ -180,7 +180,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 3. **把标签交给智能体：读和操作**。已写。
    - 面板里每个标签一个「交给智能体」：只读 / 读取并操作 / 收回。新命令 `browser_chrome_share(tabId, level)`，只在 app 里，智能体调不到。
    - `browser/chrome/page.rs`：交出去的标签 attach 上（flatten session），开 `Page`、`Runtime`、焦点模拟。`codeg` 隔离 world 现建现用，文档换了就重建；回的信封和其他平台一样（`{"ok":true,"value":…}`），所以 snapshot / act / capture 这些 core 一行没改。真点击是 `Input.dispatchMouseEvent`（`supports_trusted_input` 为真），截图是 `Page.captureScreenshot` 的 png。页面那边说的话（主框架换文档、加载完、同文档换地址、标题、控制台）变成 `PageEvent`。
-   - `browser/surface_external.rs`：`BrowserSurface::External`。其他 surface 在主线程上同步回答，这里只能等 CDP 回来，所以地址、在不在加载、能不能后退用页面最后报的；导航、刷新这些发出去就返回，结果由页面事件报回来。摆位置、缩放、查找、开发者工具、冻结画面对它什么也不做；`eval`（往页面里画东西用的）也什么都不做，dodoer 不往用户的页面里写东西。`close()` 只是 detach，**永远不关用户的 Chrome 标签**。
+   - `browser/surface_external.rs`：`BrowserSurface::External`。其他 surface 在主线程上同步回答，这里只能等 CDP 回来，所以地址、在不在加载、能不能后退用页面最后报的；导航、刷新这些发出去就返回，结果由页面事件报回来。摆位置、缩放、查找、开发者工具、冻结画面对它什么也不做；`eval`（往页面里画东西用的）也什么都不做，CoTeam 不往用户的页面里写东西。`close()` 只是 detach，**永远不关用户的 Chrome 标签**。
    - `browser/chrome_share.rs`：交出去时登记进 `BrowserRegistry`（`owner_window: "chrome"`、`surface: external`、不属于任何 profile），用列表里的同一个编号；页面事件接到 `hooks::page_load` / `title_changed` 和 `channel::handle_message`（控制台、同文档换地址走 helper 的 `nav-state` 那一支），共享收回、离开交出去时的网站（`revoke_if_departed`）、Chrome 关了这个标签、连接断了，都把它从注册表拿掉（= detach）。
    - 智能体这边：`browser_eval`（执行智能体自己写的代码）对 Chrome 标签一律拒绝——确认框挂在标签所属的窗口上，`chrome` 不是窗口，弹不出来；Chrome 自己的那个开关（5.4）以后再做。`browser_close_tab` 对 Chrome 标签拒绝：那是用户的标签。远端窗口的智能体看不到（`scoped` 只认自己窗口的标签），第 5 步再借。
    - 没做：智能体在 Chrome 里开新标签（第 4 步，和单独窗口、名单一起）；`browser_list_tabs` 里的 `browser: "chrome"` 字段（`AgentTabSummary` 在测试里有四处字面量，留给第 5 步一起改）；页面弹的 `alert` / `confirm`（5.3 那一行）。
@@ -193,8 +193,8 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 **4+5（一个开关）**：第 3 步出了测试版后用户说「我一直以为有一个开关就可以直接给你调用了」——用户平时用的是服务器上的智能体，第 3 步只给本机智能体，对用户等于没用；一个个标签交出去也比用户想的麻烦。所以把第 4、5 步里「智能体用得上」的部分合在一起先做，暂停、执行代码开关、名单可编辑、页面对话框留到后面。已写：
 
 - **开关**：Chrome 面板顶上「让智能体用我的 Chrome」，每个范围一个——本机窗口共用一个（app 自己的智能体），每个远端窗口一个（那台服务器的智能体）。出厂关。后端只记在内存里（`ChromeLending`，`browser/chrome/lending.rs`），前端按范围记在 `localStorage`（`chrome:agents:<范围>`），窗口打开时交回给后端。新命令 `browser_chrome_agents` / `browser_chrome_set_agents`，按调用的窗口算范围，一个窗口只能改自己的。
-- **开着时智能体开网页**（`browser_open_tab`，工具定义不改，老服务器照样能用）：网址是公网的就开到 Chrome，回环和内网地址（`localhost`、`*.localhost`、`127.x`、`10.x`、`192.168.x`、`100.64/10`、单段主机名、`.local` 等）照旧开在内置浏览器——远端窗口的智能体说的是服务器自己的开发服务。Chrome 没连上时直接回「Chrome 没连上，请用户在 dodoer 左下角连上」，不悄悄退回内置浏览器（5.8）。
-- **单独的窗口**（`browser/chrome/agent_window.rs`，5.6 的做法）：第一次开网页时 `Target.createTarget { newWindow: true }` 开一个起始页（`data:` 页面，写着「这个窗口是 dodoer 的智能体在用」）；每个网页先 `Target.activateTarget` 起始页、等 300 毫秒，再 `Target.createTarget { url }`，`Browser.getWindowForTarget` 对一下落在哪个窗口（不对只记日志）。起始页被关了（切不过去）、换了连接就重开一个窗口。一次只开一个（锁住），两个智能体同时开网页不会开出两个窗口，也不会一个刚切好窗口另一个的标签插进来。2026-11-15 前这里是在起始页里 `window.open`，会让用户的 Chrome 崩掉，见第 10 节第四轮。
+- **开着时智能体开网页**（`browser_open_tab`，工具定义不改，老服务器照样能用）：网址是公网的就开到 Chrome，回环和内网地址（`localhost`、`*.localhost`、`127.x`、`10.x`、`192.168.x`、`100.64/10`、单段主机名、`.local` 等）照旧开在内置浏览器——远端窗口的智能体说的是服务器自己的开发服务。Chrome 没连上时直接回「Chrome 没连上，请用户在 CoTeam 左下角连上」，不悄悄退回内置浏览器（5.8）。
+- **单独的窗口**（`browser/chrome/agent_window.rs`，5.6 的做法）：第一次开网页时 `Target.createTarget { newWindow: true }` 开一个起始页（`data:` 页面，写着「这个窗口是 CoTeam 的智能体在用」）；每个网页先 `Target.activateTarget` 起始页、等 300 毫秒，再 `Target.createTarget { url }`，`Browser.getWindowForTarget` 对一下落在哪个窗口（不对只记日志）。起始页被关了（切不过去）、换了连接就重开一个窗口。一次只开一个（锁住），两个智能体同时开网页不会开出两个窗口，也不会一个刚切好窗口另一个的标签插进来。2026-11-15 前这里是在起始页里 `window.open`，会让用户的 Chrome 崩掉，见第 10 节第四轮。
 - **登记**：标签编号由 target id 推出来（`tabs::tab_id`，sha256 取前 16 字节当 uuid），面板的列表和开标签的这边不用互相问就对得上，也推不回 target id。`owner_window` 是 `chrome@<范围>`。登记后按「读取并操作」共享；页面跳到别的网站（点链接、登录跳转）时重新共享，**跳到敏感网站就放手**（detach，标签留在 Chrome 里）。没有照浏览器设置里的「默认共享级别」，固定是读取并操作。
 - **谁看得到**（`lending::reaches`，`McpBrowserTools` 的列表和每个工具的范围检查都走它）：本机的智能体看得到内置浏览器的全部标签、用户交出去的 Chrome 标签、本机智能体开的 Chrome 网页；远端窗口的智能体看得到这个窗口自己的标签、这个窗口的智能体开的 Chrome 网页，开关开着时再加上用户交出去的 Chrome 标签。别的范围的智能体开的网页谁也看不到。开关关掉：这个范围的智能体开的网页全部放手。
 - **敏感网站名单**（`browser/chrome/sensitive.rs`）：邮箱、支付、密码管理、能重置账户的账户页、常见银行和交易所，按主机名匹配（含子域名）。智能体在 Chrome 里打不开、`browser_navigate` 过不去（`browser_blocked`，并说「请用户自己做这一步」）；用户也交不出去这些网站的标签。只管 Chrome，不管内置浏览器（那里没有用户的登录）。名单现在写死，以后让用户改。
@@ -207,9 +207,9 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 
 ## 8. 验收
 
-在 Mac 上，Chrome 里打开远程调试开关，dodoer 设置里勾好名单：
+在 Mac 上，Chrome 里打开远程调试开关，CoTeam 设置里勾好名单：
 
-1. 点「连接 Chrome」：Chrome 弹窗，点允许，dodoer 显示已连接。之后的操作不再弹窗。
+1. 点「连接 Chrome」：Chrome 弹窗，点允许，CoTeam 显示已连接。之后的操作不再弹窗。
 2. 智能体调 `browser_list_tabs`：看不到用户开着的任何标签。
 3. 面板里把一个登录着的网站的标签「交给智能体」（读取）：智能体看到它（带 `browser: "chrome"`），`browser_snapshot` 读到登录后的页面；要点击时回 `browser_control_required`。
 4. 「新标签开在：Chrome」，让智能体打开一个要登录的网站并填一个表单：标签开在单独的 Chrome 窗口里，是登录后的页面，提交时页面收到的点击 `isTrusted` 为真；用户当前的窗口和标签没被动过。
@@ -218,7 +218,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 7. 页面弹 `confirm`：智能体的这次操作回「页面弹了对话框」，对话框留在 Chrome 里。
 8. 面板里点「跳到这个标签」：Chrome 到前面，切到那个标签。
 9. 远端窗口里（服务器上的智能体）：第 3、4 步同样成立。关掉「也借给远端工作区」后看不到 Chrome 的标签。
-10. 退出再打开 Chrome：dodoer 变成未连接，智能体用 Chrome 时被告知要用户重新连接；不点「连接 Chrome」就不弹窗。
+10. 退出再打开 Chrome：CoTeam 变成未连接，智能体用 Chrome 时被告知要用户重新连接；不点「连接 Chrome」就不弹窗。
 11. 没共享的用户标签：在 Chrome 的 DevTools 里看不到它被附加过调试会话。
 
 ## 9. 已经定的事
@@ -237,7 +237,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 
 用户 2026-11-14 看了第三轮实测后定的：
 
-- 智能体的窗口开出来留在前面，dodoer 不把它收起来：人能随时看到、随时接手更重要。Chrome 全屏时新窗口占一屏、会跳过去，用户说目前问题不大。
+- 智能体的窗口开出来留在前面，CoTeam 不把它收起来：人能随时看到、随时接手更重要。Chrome 全屏时新窗口占一屏、会跳过去，用户说目前问题不大。
 
 用户 2026-11-14 试了第 3 步的测试版之前定的（「可以，按这个开始写吧」）：
 
@@ -287,15 +287,15 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 | 最小化的窗口里点击、截图 | 正常（和第二轮一样） |
 | 「正受到控制」的提示 | 连着时有，断开后没了 |
 
-由此定的：开窗口时跳出来躲不掉，窗口一条连接只开一次、开了就复用（5.6）；dodoer 一直连着，所以这条提示会一直在，连接没断用户就看得见（第 11 节）。
+由此定的：开窗口时跳出来躲不掉，窗口一条连接只开一次、开了就复用（5.6）；CoTeam 一直连着，所以这条提示会一直在，连接没断用户就看得见（第 11 节）。
 
-第四轮（2026-11-15，同一台机器；dodoer 1.6.7 第一次真在用户的 Chrome 里开网页）：
+第四轮（2026-11-15，同一台机器；CoTeam 1.6.7 第一次真在用户的 Chrome 里开网页）：
 
 | 问题 | 结果 |
 |---|---|
-| dodoer 的做法：`newWindow` 开起始页，attach，马上在起始页里 `window.open` | **Chrome 崩了**，两次都是：12:55 在 154.0.8037.98 上（开了 40 天、157 的更新已下好），13:12 在刚启动的 157.0.8103.51 上。崩溃报告（`~/Library/Logs/DiagnosticReports/Google Chrome-2026-11-15-*.ips`）都是 `CrBrowserMain` 上的 `EXC_BREAKPOINT` |
+| CoTeam 的做法：`newWindow` 开起始页，attach，马上在起始页里 `window.open` | **Chrome 崩了**，两次都是：12:55 在 154.0.8037.98 上（开了 40 天、157 的更新已下好），13:12 在刚启动的 157.0.8103.51 上。崩溃报告（`~/Library/Logs/DiagnosticReports/Google Chrome-2026-11-15-*.ips`）都是 `CrBrowserMain` 上的 `EXC_BREAKPOINT` |
 | 崩在哪 | Google 不公开 Mac 版 Chrome 的符号，在 Mac 上用 lldb 反汇编各层、拿里面的字符串对 Chromium 154 的源码：`FrameHost::CreateNewWindow` → `WebContentsImpl::CreateNewWindow` / `CreateWithOpener` → `FrameTree::Init` → `RenderFrameHostImpl::SetOriginDependentStateOfNewFrame` 里的 `CHECK(rfs_document_data_from_creator)`：打开新页面的那个页面（起始页）身上没有 `RuntimeFeatureStateDocumentData`。157 上同一处、同样的调用顺序 |
-| 同样的步骤在干净的 Chrome 157 上 | 不崩：临时配置目录，无界面和有界面都试了，dodoer 一模一样的起始页、马上开和抢着导航时开，7 次都没崩。所以要再加上用户那个 Chrome 本身的什么（扩展、设置，或 chrome://inspect 授权的连接方式），没再缩小 |
+| 同样的步骤在干净的 Chrome 157 上 | 不崩：临时配置目录，无界面和有界面都试了，CoTeam 一模一样的起始页、马上开和抢着导航时开，7 次都没崩。所以要再加上用户那个 Chrome 本身的什么（扩展、设置，或 chrome://inspect 授权的连接方式），没再缩小 |
 | 用户的 Chrome 上只用 `Target.createTarget`：`newWindow` 开第一个网页 | 开在新窗口，不崩，登录状态是用户的（用户看过） |
 | 先 `Target.activateTarget` 这个窗口里的标签、等 300 毫秒，再 `Target.createTarget`（不带 `newWindow`） | 落在同一个窗口（`Browser.getWindowForTarget` 对过），不崩 |
 
@@ -304,27 +304,27 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 
 还没测的（要等桌面包在用户的 Mac 上试，不挡开工）：
 
-- dodoer（一个有界面的 app，不是终端）第一次读那个文件时，系统设置的「文件与文件夹」里会不会出现 dodoer 的「Google Chrome」开关；不出现的话只能让用户给「完全磁盘访问权限」或用手动贴端点。
+- CoTeam（一个有界面的 app，不是终端）第一次读那个文件时，系统设置的「文件与文件夹」里会不会出现 CoTeam（系统里显示为 dodoer）的「Google Chrome」开关；不出现的话只能让用户给「完全磁盘访问权限」或用手动贴端点。
 - 前端收到 `surface: "external"`、`owner_window: "chrome"` 的 `browser://state` 时现有的标签 store 怎么处理（预期是没有对应的工作区标签、存了但没人用；不行就不向标签 store 广播，只给面板）。
 
 ## 11. 已知局限
 
 - 只有 macOS、只认 Google Chrome，要 144 以上，要用户自己开开关。
 - Chrome 每次重启都要重新点一次「连接 Chrome」和「允许」。
-- 连着的时候 Chrome 顶上一直有「正受到控制」的提示（Chrome 自己加的，dodoer 去不掉）。好处是用户一眼看得出 dodoer 还连着；不想看到它就断开。
+- 连着的时候 Chrome 顶上一直有「正受到控制」的提示（Chrome 自己加的，CoTeam 去不掉）。好处是用户一眼看得出 CoTeam 还连着；不想看到它就断开。
 - 智能体第一次在 Chrome 里开网页时，Chrome 会跳到前面（开智能体自己的窗口时躲不掉）。不是「只有第一次」：智能体每**新开**一个标签（`browser_open_tab` 带 `newTab: true`，或者它在 Chrome 里没有自己还连着、还能操作的标签时）Chrome 也会跳到前面（2026-11-15 实测，13.1）；在已有的标签上换网页（默认）不跳。
-- macOS 27 起要先在系统设置里给 dodoer 读 Chrome 数据目录的权限；这一步 dodoer 替不了用户。
+- macOS 27 起要先在系统设置里给 CoTeam（系统里显示为 dodoer）读 Chrome 数据目录的权限；这一步 CoTeam 替不了用户。
 - 真点击靠焦点模拟送到后台和最小化的标签上（实测可行）；交给智能体的标签开着它，页面以为自己一直在前台，收回时随 detach 一起去掉。
 - 交出去的标签开了 `Runtime` 域（控制台和隔离 world 要用）。有的风控脚本靠这个认出「有调试器连着」；没交出去的标签不受影响。
-- Chrome 里有多个用户（头像菜单里的）时，它们在同一个进程里，dodoer 都看得到；第一版不区分，面板里一起列出来。
-- 标签没法在 Chrome 里做记号：哪些标签交给了智能体，只能在 dodoer 的面板里看。
+- Chrome 里有多个用户（头像菜单里的）时，它们在同一个进程里，CoTeam 都看得到；第一版不区分，面板里一起列出来。
+- 标签没法在 Chrome 里做记号：哪些标签交给了智能体，只能在 CoTeam 的面板里看。
 - 反爬严的网站（看 CDP 痕迹的那类风控）可能认出来；这个方案不承诺过得了它们。
 - 打印对话框、Chrome 自己的权限弹窗（定位、通知）智能体处理不了，要人在 Chrome 里点。文件上传、下载第二轮做了（13.7），但只认上传目录里的文件，Chrome 设成「下载前询问保存位置」时那个保存窗口也要人点。
 - 远程调试开关是 Chrome 的新功能，行为可能随版本变。CDP 的方法尽量用标了稳定的；焦点模拟（`Emulation.setFocusEmulationEnabled`）和窗口那几个（`Browser.getWindowForTarget`、`Browser.setWindowBounds`、`Target.createTarget` 的 `windowState`）是试验性的，Chrome 改了要跟着改。
 
 ## 12. 放弃或推后的方案
 
-- **另开一个单独数据目录的 AI Chrome**（本文档的上一版）。登录状态要重新来，人接手也要换一个浏览器，用户不要。以后要做的话，标签这一层完全一样，只是 5.1 换成「dodoer 自己用 `--user-data-dir` + `--remote-debugging-pipe` 启动」，共享规则可以更宽。
+- **另开一个单独数据目录的 AI Chrome**（本文档的上一版）。登录状态要重新来，人接手也要换一个浏览器，用户不要。以后要做的话，标签这一层完全一样，只是 5.1 换成「CoTeam 自己用 `--user-data-dir` + `--remote-debugging-pipe` 启动」，共享规则可以更宽。
 - **Chrome 扩展 + Native Messaging**。不依赖 Chrome 的版本和那个开关，也不用过 macOS 的目录权限，标签上还能做记号、能用标签组；但要多写一个扩展、一个 Native Messaging 程序，还要解决扩展的分发。实测官方入口连得上，所以不走；以后那个入口变了再说。
 - **用启动参数给日常 Chrome 开调试端口**。Chrome 136 起默认数据目录上的 `--remote-debugging-port` / `--remote-debugging-pipe` 不生效。
 - **另写一个 `BrowserToolAccess` 实现，和内置的并排**。对上游文件的改动最少，但读前检查、读后核对地址、活动记录这些安全逻辑要抄一份，两份迟早不一致。
@@ -340,15 +340,15 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 - **现状**：`agent_window.rs` 每开一个网页都先 `Target.activateTarget` 起始页、等 300 毫秒、再 `Target.createTarget { url }`（5.6）。`activateTarget` 会把 Chrome 整个提到前面、抢走键盘焦点；用户的 Chrome 是全屏的，智能体的窗口在单独的一屏，于是每开一页 macOS 都切一次桌面。用户正在打字的东西会被打断。分屏、放到第二块屏幕挡不住抢焦点。
 - **要的结果**：只有第一次开智能体的窗口时 Chrome 跳一下（5.6 已经说了躲不掉，也正好告诉用户智能体开始用 Chrome 了），之后智能体开网页、换网页都在后台，用户可以把那个窗口放到别的屏幕或别的桌面，接着干自己的事。
 - **候选**：
-  - (a) **复用智能体的标签**：智能体窗口里已经有它开的标签时，`browser_open_tab` 不再新开，而是在这个范围最近用过的那个智能体标签上 `Page.navigate`（`page.rs` 已有，换地址不需要切窗口）。只有起始页的窗口里，第一个网页直接在起始页上 `Page.navigate`（起始页本来就是 dodoer 开的；它换走以后，窗口里就没有「dodoer 的智能体在用」那句话了，见下面的代价）。**语义变了**：工具说明里「开一个新标签」变成「在智能体的标签里打开」，同一个智能体同时开两个网页时前一个被换掉。回给智能体的结果照旧是这个标签的 `tabId`（编号不变），说明里写清「前一个页面已经换掉；要同时开着两个页面，先读完前一个」。
+  - (a) **复用智能体的标签**：智能体窗口里已经有它开的标签时，`browser_open_tab` 不再新开，而是在这个范围最近用过的那个智能体标签上 `Page.navigate`（`page.rs` 已有，换地址不需要切窗口）。只有起始页的窗口里，第一个网页直接在起始页上 `Page.navigate`（起始页本来就是 CoTeam 开的；它换走以后，窗口里就没有「CoTeam 的智能体在用」那句话了，见下面的代价）。**语义变了**：工具说明里「开一个新标签」变成「在智能体的标签里打开」，同一个智能体同时开两个网页时前一个被换掉。回给智能体的结果照旧是这个标签的 `tabId`（编号不变），说明里写清「前一个页面已经换掉；要同时开着两个页面，先读完前一个」。
   - (b) **`Target.createTarget { url, background: true }`**：新标签在后台开，不切过去。但「落在哪个窗口」仍按 Chrome 最后用的窗口算，不先切到智能体的窗口，标签就落在用户的窗口里（第 10 节第二轮）。只有「最后用的窗口恰好就是智能体的窗口」时才对，所以只能当 (a) 之外的补充：要开第二个标签时，先看最后用的窗口（`Browser.getWindowForTarget` 对一下用户当前的标签做不到——CDP 不告诉我们哪个窗口有焦点），不行就退回 activate。
   - (c) **只在第一次开窗口时 activate**，之后不 activate、直接 `createTarget`：标签会落进用户的窗口，等于退回 5.6 的「退路」，智能体的标签和用户的混在一起。不选。
   - (d) **每页一个新窗口但不聚焦**（`newWindow: true, background: true`）：第三轮试过 `windowState: "minimized"`，Chrome 不照做；`background` 对新窗口管不管用没测过，大概率一样跳出来。
 - **推荐**：默认 (a)。智能体一次要开着两个网页的时候（很少），先在对话里说一声，再走现在的 activate + createTarget，这一次照样跳一下。
-- **代价**：起始页被换走以后，窗口里没有那句「这个窗口是 dodoer 的智能体在用」。补法：标签标题前不能加记号（dodoer 不往用户的页面里写东西，5.3），所以靠面板里「智能体开的」和 Chrome 顶上「正受到控制」的提示；用户把智能体的标签关光了，下次再开一个带起始页的窗口（现在的逻辑）。
+- **代价**：起始页被换走以后，窗口里没有那句「这个窗口是 CoTeam 的智能体在用」。补法：标签标题前不能加记号（CoTeam 不往用户的页面里写东西，5.3），所以靠面板里「智能体开的」和 Chrome 顶上「正受到控制」的提示；用户把智能体的标签关光了，下次再开一个带起始页的窗口（现在的逻辑）。
 - **实测（2026-11-15 10:4x UTC，用户的 Mac，Chrome 157，用 osascript 查前台 app）**：
   1. 第一次 `browser_open_tab`（开出智能体的窗口）：Chrome 跳到前台。和 5.6 说的一样，躲不掉。
-  2. dodoer 在前台时，对智能体已有的标签 `browser_navigate`（`Page.navigate`）：**Chrome 不跳**，dodoer 一直在前台。(a) 成立。
+  2. CoTeam 在前台时，对智能体已有的标签 `browser_navigate`（`Page.navigate`）：**Chrome 不跳**，CoTeam 一直在前台。(a) 成立。
   3. Chrome 在后台时 `browser_snapshot` 正常。
   4. 当时的写法再 `browser_open_tab` 第二个网页（`Target.activateTarget` + `createTarget`）：**Chrome 又跳到前台**。所以 5.6 和第 11 节原来「只有第一次会跳」的说法不对，已改。
   - 没测：Chrome 全屏、智能体的窗口在另一个桌面时，`Page.navigate` 会不会切桌面（预期不会，和第 2 条同理）；`createTarget { background: true }` 不 activate 落在哪、跳不跳（候选 (b)）；`newWindow` + `background`（候选 (d)）；最小化时换网页后再读、点。
@@ -395,7 +395,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 - **存在哪**：后端，app 数据目录下的一个文件（`chrome-sites.json`：`{ "blocked": [...], "allowed": [...], "paused": false }`；`paused` 缺了当 `false`，文件坏了、读不出来也按没暂停算）。不放前端的 `localStorage`：名单管的是这台 Mac 上的 Chrome，和是哪个窗口、哪个远端无关；放在后端，启动时就有，不用等某个窗口推过来（`browser_set_host_rules` 那种做法在没开窗口时是空的）。暂停和名单同一个文件，理由一样。
 - **谁能改**：命令 `browser_chrome_sites` / `browser_chrome_set_sites`，只走 `getShellTransport()`（本地 Tauri），在 `local-daemon-routing` 的 `SHELL_ONLY_COMMANDS` 里（「只在 app 里」），不进 MCP、不进 server 的路由。远端窗口里也能看能改（改的是这台 Mac 的名单），智能体调不到。回答是 `{ defaults, blocked, allowed, paused, groups }`：`defaults` 仍是 52 个的平铺列表，`groups` 是同样这些网站按类别分的五组（`{ id, sites }`，合起来和 `defaults` 不重不漏）。`browser_chrome_set_sites` 的 `paused` 是可选参数（Rust 里 `Option<bool>`）：不带时暂停状态不变，老界面只发 `blocked`、`allowed` 也不会把暂停悄悄关掉或打开；新界面只在拨总开关时才带它。
 - **生效**：`SiteEdits::blocks_host` 是 `(默认 - allowed) ∪ blocked`，暂停时对任何地址都不拦；`is_sensitive` 的调用方都经过它，不用改。改了以后（包括从暂停改回不暂停），已经交出去 / 智能体开着的标签如果落在名单上，立刻放手（和跳到敏感网站同一条路）；改成暂停不收回任何标签。每次改完向 app 的所有窗口发 `browser://chrome-sites`（`SITES_EVENT`，带上和 `browser_chrome_sites` 一样的回答），设置页和侧栏的 Chrome 面板靠它互相跟着变。
-- **验收**：加 `example.com` 后智能体打不开它、已开着的 `example.com` 标签被放手；点 `mail.163.com` 的方块就放开（不确认），智能体能打开；关掉「邮箱」一组的开关，整组都能打开；关掉总开关后智能体什么网站都能打开，侧栏图标带琥珀色点，重新打开后名单和暂停前一样、智能体开着的名单上的标签被放手；重启 dodoer 名单和暂停状态都还在；智能体没有任何工具能改它。
+- **验收**：加 `example.com` 后智能体打不开它、已开着的 `example.com` 标签被放手；点 `mail.163.com` 的方块就放开（不确认），智能体能打开；关掉「邮箱」一组的开关，整组都能打开；关掉总开关后智能体什么网站都能打开，侧栏图标带琥珀色点，重新打开后名单和暂停前一样、智能体开着的名单上的标签被放手；重启 CoTeam 名单和暂停状态都还在；智能体没有任何工具能改它。
 
 ### 13.4 面板里的活动记录（D）
 
@@ -412,7 +412,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
 - **现状**：`agent_eval_core` 对 `SurfaceKind::External` 一律拒绝；内置浏览器的执行代码开关（`browser_tools.rs` 的 `is_eval_enabled`）不管 Chrome（5.4）。
 - **做法**：「我自己的 Chrome」卡片和 Chrome 面板里一个开关「允许智能体在 Chrome 里执行代码」，**出厂关**，后端只记在内存里、前端记在 `localStorage`（和「让智能体用我的 Chrome」同一种做法），新命令同样只走本地 Tauri。开着时：
   - 只在「读取并操作」的标签上放行，在页面自己的 world 里跑（`Runtime.evaluate` 不带 `contextId`），检查顺序照内置的 `agent_eval_core`（读前、读后各核对一次地址）。
-  - 不弹逐条确认框（Chrome 不是 dodoer 的窗口，挂不上；而且内置浏览器已经因为「逐条确认被随手点掉」改成了靠开关，见 `eval.rs` 开头）。
+  - 不弹逐条确认框（Chrome 不是 CoTeam 的窗口，挂不上；而且内置浏览器已经因为「逐条确认被随手点掉」改成了靠开关，见 `eval.rs` 开头）。
   - 每次执行进活动记录（`Eval`），面板里能展开看执行的代码（前 4000 字，和 `MAX_EVAL_CODE_CHARS` 一样）。
 - **风险**（开关下面直接写出来）：执行代码能读到这个网站上的一切，包括页面能读到的登录信息（不含 HttpOnly 的 Cookie），能替你发任何这个网站允许的请求。点击和填写够用时不要打开。
 - **验收**：开关关着时 `browser_eval` 对 Chrome 标签回 `eval_disabled`（说明里指到这个开关，不是内置浏览器那个）；打开后在「读取并操作」的标签上能跑、在只读标签上被拒；面板里看得到执行过的代码。
@@ -454,7 +454,7 @@ McpBrowserTools ──► BrowserRegistry ──► BrowserSurface
     - 回答里写给了页面哪几个文件（`ActionOutcome.uploaded`）；活动记录一条 `upload`（字段名照快照里的名字）。
   - **下载**：
     - 第一次有智能体在某个 Chrome 标签上点击时（每个连接一次），才发 `Browser.setDownloadBehavior { behavior: "default", eventsEnabled: true }`（`files::download_events_params`，单测查了没有 `downloadPath`、没有 `browserContextId`），之后跟 `Browser.downloadWillBegin` / `downloadProgress`（`chrome_share::follow_downloads`）。不在连上时就开：连上的流程和它的测试都不用动，没人点就一条也不多发。
-    - **断开时不用复位**：查了 Chromium 的 `content/browser/devtools/protocol/browser_handler.cc`，会话结束时 `BrowserHandler::Disable()` 会清掉这个会话设过的下载行为（`download_behavior_overrides_.clear()`）并 `SetDownloadEventsEnabled(false)`；`behavior: "default"` 在 `DevToolsDownloadManagerDelegate` 里也是直接交给 Chrome 自己的下载代理（位置、「每次询问」都照用户的设置）。dodoer 断开、Chrome 断开都是会话结束，所以不另发 `eventsEnabled: false`（`CdpClient::close` 是立刻关 socket，发了也不一定出得去）。只关「让智能体用我的 Chrome」而不断开时事件还开着，但行为是 default，用户感觉不到。
+    - **断开时不用复位**：查了 Chromium 的 `content/browser/devtools/protocol/browser_handler.cc`，会话结束时 `BrowserHandler::Disable()` 会清掉这个会话设过的下载行为（`download_behavior_overrides_.clear()`）并 `SetDownloadEventsEnabled(false)`；`behavior: "default"` 在 `DevToolsDownloadManagerDelegate` 里也是直接交给 Chrome 自己的下载代理（位置、「每次询问」都照用户的设置）。CoTeam 断开、Chrome 断开都是会话结束，所以不另发 `eventsEnabled: false`（`CdpClient::close` 是立刻关 socket，发了也不一定出得去）。只关「让智能体用我的 Chrome」而不断开时事件还开着，但行为是 default，用户感觉不到。
     - 哪些下载算智能体的：智能体点击某个 Chrome 标签之前，先记下这个标签的 frame id（target id 和主 frame id），10 秒内从这些 frame 开始的下载算这次点击的；别的（用户自己在任何标签里的下载、智能体点了 10 秒以后才开始的）一概不看。子 frame（iframe）里发起的下载认不出来。
     - 点击的回答：点完最多等 0.8 秒看有没有下载开始，开始了就最多等 20 秒到完成。完成了说文件名和 Chrome 报的 `filePath`（Chromium 现在完成时会带）；没报路径就说「在用户 Chrome 的下载目录，默认 `~/Downloads/<文件名>`，Chrome 没说确切路径」；20 秒还没完就说「还在下，或者 Chrome 在问保存到哪，只有用户能点」，等这个标签上下一次动作的回答再告诉它（`ActionOutcome.downloads`，每个下载每种状态只说一次）。没加新工具，`browser_list_tabs` 也没带「最近的下载」。
     - 活动记录：智能体的下载结束（完成或取消）时记一条 `download`，名字是文件名，记在点击的那个范围下。

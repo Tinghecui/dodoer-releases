@@ -27,6 +27,7 @@ import { AssistantAvatar } from "@/components/assistants/assistant-avatar"
 import { useDelegationIdentityLabel } from "@/components/message/delegation-identity"
 import { useAssistant } from "@/stores/assistants-store"
 import { ConversationStatusDot } from "./conversation-status-dot"
+import { useConversationStatusLabel } from "./conversation-status-label"
 
 interface SessionDetailsContentProps {
   summary: DbConversationSummary
@@ -76,6 +77,7 @@ export function SessionIdentityChips({
   agentType,
   status,
   model,
+  statusLabel,
 }: {
   agentType: AgentType
   /** Omit to drop the status chip. */
@@ -83,6 +85,9 @@ export function SessionIdentityChips({
   /** Omit (or pass empty) to drop the model chip. The RAW id as recorded — the
    *  chip renders whatever the agent calls it when that is known. */
   model?: string | null
+  /** 状态的文字；不给就照 `Folder.statusLabels` 翻（#652：会话详情传
+   *  `useConversationStatusLabel` 算好的，cancelled 才和侧栏说法一致）。 */
+  statusLabel?: string
 }) {
   const tStatus = useTranslations("Folder.statusLabels")
   const modelLabel = useModelLabels(agentType)
@@ -123,7 +128,7 @@ export function SessionIdentityChips({
             status={isKnownStatus(status) ? status : null}
             size="sm"
           />
-          {isKnownStatus(status) ? tStatus(status) : status}
+          {statusLabel ?? (isKnownStatus(status) ? tStatus(status) : status)}
         </span>
       )}
     </div>
@@ -380,12 +385,11 @@ export function SessionDetailsCard({
   model: string | null
 }) {
   const t = useTranslations("Folder.sessionDetails")
-  const tStatus = useTranslations("Folder.statusLabels")
   const modelLabel = useModelLabels(summary.agent_type)
   const displayModel = modelLabel(model ?? summary.model ?? null)
   const title = formatConversationTitle(summary.title) || t("untitled")
   const knownStatus = isKnownStatus(summary.status) ? summary.status : null
-  const statusLabel = knownStatus ? tStatus(knownStatus) : summary.status
+  const statusLabel = useConversationStatusLabel(summary)
   const agentLabel = getAgentLabel(summary.agent_type)
   const hasExtraLine = summary.parent_id != null || summary.assistant_id != null
 
@@ -581,6 +585,7 @@ export function SessionDetailsContent({
   // their models with an account-internal key, so show what the agent's own
   // picker calls it (unknown ids fall through unchanged).
   const modelLabel = useModelLabels(summary.agent_type)
+  const statusLabel = useConversationStatusLabel(summary)
   const displayModel = modelLabel(rawModel)
 
   const dateFormatter = useMemo(
@@ -649,6 +654,7 @@ export function SessionDetailsContent({
         <SessionIdentityChips
           agentType={summary.agent_type}
           status={summary.status}
+          statusLabel={statusLabel}
         />
       </div>
 

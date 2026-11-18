@@ -2,7 +2,7 @@
 
 import { forwardRef, useMemo } from "react"
 import { useTranslations } from "next-intl"
-import { formatTokenCount } from "@/lib/token-format"
+import { formatTokensCompact } from "@/lib/token-format"
 import {
   CACHE_HIT_RATE_DIGITS,
   cacheHitRate,
@@ -754,7 +754,7 @@ export const ShareCard = forwardRef<HTMLDivElement, ShareCardProps>(
                   key={m.key}
                   rank={i + 1}
                   label={m.key === "__unknown__" ? t("unknownModel") : m.label}
-                  value={formatTokenCount(m.total_tokens)}
+                  value={formatTokensCompact(m.total_tokens)}
                   share={modelTotal > 0 ? m.total_tokens / modelTotal : 0}
                   theme={theme}
                 />
@@ -777,7 +777,7 @@ export const ShareCard = forwardRef<HTMLDivElement, ShareCardProps>(
                   key={p.key}
                   rank={i + 1}
                   label={p.label}
-                  value={formatTokenCount(p.total_tokens)}
+                  value={formatTokensCompact(p.total_tokens)}
                   share={projectTotal > 0 ? p.total_tokens / projectTotal : 0}
                   theme={theme}
                 />

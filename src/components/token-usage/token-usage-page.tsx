@@ -55,7 +55,7 @@ import { toErrorMessage } from "@/lib/app-error"
 import { getAgentLabel, isCustomAgentType } from "@/lib/custom-agents"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { subscribe } from "@/lib/platform"
-import { formatTokenCount } from "@/lib/token-format"
+import { formatTokensCompact } from "@/lib/token-format"
 import {
   averagePerActiveDay,
   averagePerConversation,
@@ -1284,7 +1284,7 @@ export function TokenUsagePage() {
                           value={totals.conversation_count.toLocaleString(
                             locale
                           )}
-                          hint={`${t("avgPerSession")} ${formatTokenCount(
+                          hint={`${t("avgPerSession")} ${formatTokensCompact(
                             Math.round(averagePerConversation(totals))
                           )}`}
                         />
@@ -1309,7 +1309,7 @@ export function TokenUsagePage() {
                           className="border-s border-t lg:border-t-0"
                           label={t("tileGenTime")}
                           value={formatDuration(totals.duration_ms)}
-                          hint={`${t("avgPerActiveDay")} ${formatTokenCount(
+                          hint={`${t("avgPerActiveDay")} ${formatTokensCompact(
                             Math.round(averagePerActiveDay(totals))
                           )}`}
                         />
@@ -1373,7 +1373,7 @@ export function TokenUsagePage() {
                                 {": "}
                                 <span className="font-medium text-foreground">
                                   {formatBucketLabel(peak.bucket_key)} ·{" "}
-                                  {formatTokenCount(peak.total_tokens)}
+                                  {formatTokensCompact(peak.total_tokens)}
                                 </span>
                               </span>
                             )}
@@ -1440,7 +1440,7 @@ export function TokenUsagePage() {
                               t("heatmapCell", {
                                 weekday: weekdayLabels[weekday],
                                 hour: String(hour).padStart(2, "0"),
-                                value: formatTokenCount(value),
+                                value: formatTokensCompact(value),
                               })
                             }
                           />
@@ -1488,29 +1488,34 @@ export function TokenUsagePage() {
                             {t("topSessionsEmpty")}
                           </p>
                         ) : (
-                          <ol className="divide-y divide-border">
+                          // One grid, each row a subgrid of it: the folder,
+                          // agent and value columns line up row to row
+                          // however long a title or name is. The folder
+                          // column is a fixed width and leaves the grid on
+                          // narrow screens.
+                          <ol className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] gap-x-3 divide-y divide-border sm:grid-cols-[auto_minmax(0,1fr)_10rem_auto_auto]">
                             {report.top_conversations.map((c, i) => (
                               <li
                                 key={c.conversation_id}
-                                className="flex items-center gap-3 py-2 first:pt-0 last:pb-0"
+                                className="col-span-full grid grid-cols-subgrid items-center py-2 first:pt-0 last:pb-0"
                               >
                                 <span
                                   aria-hidden="true"
-                                  className="w-5 shrink-0 font-mono text-[0.625rem] tabular-nums text-muted-foreground/70"
+                                  className="w-5 font-mono text-[0.625rem] tabular-nums text-muted-foreground/70"
                                 >
                                   {String(i + 1).padStart(2, "0")}
                                 </span>
-                                <span className="min-w-0 flex-1 truncate text-[0.8125rem]">
+                                <span className="min-w-0 truncate text-[0.8125rem]">
                                   {c.title || t("untitledSession")}
                                 </span>
-                                <span className="hidden shrink-0 truncate text-xs text-muted-foreground sm:block sm:max-w-[10rem]">
+                                <span className="hidden min-w-0 truncate text-xs text-muted-foreground sm:block">
                                   {c.folder_label}
                                 </span>
-                                <span className="shrink-0 text-xs text-muted-foreground">
+                                <span className="whitespace-nowrap text-xs text-muted-foreground">
                                   {getAgentLabel(c.agent_type as AgentType)}
                                 </span>
-                                <span className="shrink-0 font-mono text-xs tabular-nums">
-                                  {formatTokenCount(c.total_tokens)}
+                                <span className="text-right font-mono text-xs tabular-nums">
+                                  {formatTokensCompact(c.total_tokens)}
                                 </span>
                               </li>
                             ))}

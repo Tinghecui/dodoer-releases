@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { useElementWidth } from "@/hooks/use-element-width"
-import { formatTokenCount } from "@/lib/token-format"
+import { formatTokensCompact } from "@/lib/token-format"
 import { formatTokensPrecise } from "@/lib/token-usage"
 
 /**
@@ -265,7 +265,7 @@ export function TrendChart({
             y={TREND_PAD_TOP - 4}
             className="fill-muted-foreground text-[0.6875rem]"
           >
-            {formatTokenCount(max)}
+            {formatTokensCompact(max)}
           </text>
         </svg>
       )}
@@ -299,7 +299,7 @@ export function TrendChart({
                 {cacheLabel}
               </span>
               <span className="font-mono tabular-nums">
-                {formatTokenCount(hovered.cache)}
+                {formatTokensCompact(hovered.cache)}
               </span>
             </div>
             <div className="flex items-center justify-between gap-3 text-muted-foreground">
@@ -312,7 +312,7 @@ export function TrendChart({
                 {freshLabel}
               </span>
               <span className="font-mono tabular-nums">
-                {formatTokenCount(hovered.fresh)}
+                {formatTokensCompact(hovered.fresh)}
               </span>
             </div>
             {hovered.detail.map((d) => (
@@ -451,43 +451,60 @@ export function RankedBars({
       </p>
     )
   }
+  // One grid for the whole list, every row a subgrid of it, so the hint,
+  // value and share columns line up row to row however long the label is.
+  // Spacing sits on the cells (not a column gap) so a hint column that is
+  // hidden on narrow screens collapses to nothing.
+  const hasHint = data.some((d) => d.hint)
+  const hasShare = data.some((d) => d.share !== null)
+  const columns = [
+    "minmax(0,1fr)",
+    hasHint && "auto",
+    "auto",
+    hasShare && "auto",
+  ]
+    .filter(Boolean)
+    .join(" ")
   return (
-    <ul className={cn("space-y-2.5", className)}>
+    <ul
+      className={cn("grid gap-y-2.5", className)}
+      style={{ gridTemplateColumns: columns }}
+    >
       {data.map((d, i) => {
         const pct = max > 0 ? (d.value / max) * 100 : 0
         const fill = d.color ?? ACCENT
         const row = (
           <>
-            <div className="flex items-baseline gap-3">
-              <span className="flex min-w-0 flex-1 items-baseline gap-2">
-                {showRank && (
-                  <span
-                    aria-hidden="true"
-                    className="w-5 shrink-0 font-mono text-[0.625rem] tabular-nums text-muted-foreground/70"
-                  >
-                    {String(i + 1).padStart(2, "0")}
-                  </span>
-                )}
-                <span className="truncate text-[0.8125rem]">{d.label}</span>
-              </span>
-              {d.hint ? (
-                <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
-                  {d.hint}
-                </span>
-              ) : null}
-              <span className="shrink-0 font-mono text-xs tabular-nums">
-                {formatTokenCount(d.value)}
-              </span>
-              {d.share !== null && (
-                <span className="w-10 shrink-0 text-right font-mono text-[0.6875rem] tabular-nums text-muted-foreground">
-                  {`${(d.share * 100).toFixed(1)}%`}
+            <span className="flex min-w-0 items-baseline gap-2">
+              {showRank && (
+                <span
+                  aria-hidden="true"
+                  className="w-5 shrink-0 font-mono text-[0.625rem] tabular-nums text-muted-foreground/70"
+                >
+                  {String(i + 1).padStart(2, "0")}
                 </span>
               )}
-            </div>
+              <span className="truncate text-[0.8125rem]">{d.label}</span>
+            </span>
+            {hasHint && (
+              /* The cell stays in the grid when the hint is hidden, or the
+                 value would slide into the hint column. */
+              <span className="whitespace-nowrap text-right text-xs text-muted-foreground sm:ps-3">
+                <span className="hidden sm:inline">{d.hint}</span>
+              </span>
+            )}
+            <span className="whitespace-nowrap ps-3 text-right font-mono text-xs tabular-nums">
+              {formatTokensCompact(d.value)}
+            </span>
+            {hasShare && (
+              <span className="whitespace-nowrap ps-3 text-right font-mono text-[0.6875rem] tabular-nums text-muted-foreground">
+                {d.share !== null ? `${(d.share * 100).toFixed(1)}%` : null}
+              </span>
+            )}
             <div
               className={cn(
-                "mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted/70",
-                showRank && "ms-7 w-auto"
+                "col-span-full mt-1 h-1.5 overflow-hidden rounded-full bg-muted/70",
+                showRank && "ms-7"
               )}
             >
               <div
@@ -500,18 +517,22 @@ export function RankedBars({
             </div>
           </>
         )
+        const cell = "col-span-full grid grid-cols-subgrid items-baseline"
         return (
-          <li key={d.key}>
+          <li key={d.key} className="col-span-full grid grid-cols-subgrid">
             {onSelect ? (
               <button
                 type="button"
                 onClick={() => onSelect(d.key)}
-                className="w-full rounded-md px-1 py-0.5 text-left outline-none transition-colors hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring"
+                className={cn(
+                  cell,
+                  "rounded-md px-1 py-0.5 text-left outline-none transition-colors hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring"
+                )}
               >
                 {row}
               </button>
             ) : (
-              <div className="px-1 py-0.5">{row}</div>
+              <div className={cn(cell, "px-1 py-0.5")}>{row}</div>
             )}
           </li>
         )
@@ -736,7 +757,7 @@ export function ActivityHeatmap({
               {String(hover.hour).padStart(2, "0")}:00
             </div>
             <div className="mt-0.5 text-end font-mono tabular-nums text-muted-foreground">
-              {formatTokenCount(hover.value)}
+              {formatTokensCompact(hover.value)}
             </div>
           </div>
         </>

@@ -5635,6 +5635,7 @@
     "fileHint": "Writes one JSON file you can carry to another machine. Importing adds or updates entries; existing ones that are missing from the file are kept.",
     "webdavTitle": "WebDAV sync",
     "webdavHint": "Upload the configuration snapshot to your own WebDAV server.",
+    "credentialsMissingHint": "Fill in the server address and username to test and sync.",
     "presetLabel": "Server",
     "preset": {
       "jianguoyun": "Jianguoyun",
@@ -5735,6 +5736,7 @@
       "unauthorized": "The WebDAV server rejected the username or password.",
       "forbidden": "The WebDAV server denied access to this folder.",
       "remotePath": "The remote folder or profile name is not valid.",
+      "invalidUrl": "The server address is not valid. Enter a full address starting with http:// or https://.",
       "quota": "The WebDAV server has no space left.",
       "network": "Could not reach the WebDAV server.",
       "server": "The WebDAV server returned an error ({status}).",

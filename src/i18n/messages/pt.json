@@ -5635,6 +5635,7 @@
     "fileHint": "Grava um único arquivo JSON que você pode levar para outra máquina. A importação adiciona ou atualiza itens; os itens existentes que não estiverem no arquivo são mantidos.",
     "webdavTitle": "Sincronização WebDAV",
     "webdavHint": "Envia o instantâneo de configuração para o seu próprio servidor WebDAV.",
+    "credentialsMissingHint": "Preencha o endereço do servidor e o nome de utilizador para testar e sincronizar.",
     "presetLabel": "Servidor",
     "preset": {
       "jianguoyun": "Jianguoyun",
@@ -5735,6 +5736,7 @@
       "unauthorized": "O servidor WebDAV recusou o usuário ou a senha.",
       "forbidden": "O servidor WebDAV negou acesso a esta pasta.",
       "remotePath": "A pasta remota ou o nome do perfil não é válido.",
+      "invalidUrl": "O endereço do servidor não é válido. Introduza um endereço completo que comece por http:// ou https://.",
       "quota": "O servidor WebDAV não tem mais espaço.",
       "network": "Não foi possível alcançar o servidor WebDAV.",
       "server": "O servidor WebDAV retornou um erro ({status}).",

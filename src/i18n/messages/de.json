@@ -5635,6 +5635,7 @@
     "fileHint": "Schreibt eine einzelne JSON-Datei, die du auf ein anderes Gerät mitnehmen kannst. Beim Import werden Einträge ergänzt oder aktualisiert; vorhandene Einträge, die in der Datei fehlen, bleiben erhalten.",
     "webdavTitle": "WebDAV-Synchronisierung",
     "webdavHint": "Lädt den Konfigurations-Snapshot auf deinen eigenen WebDAV-Server.",
+    "credentialsMissingHint": "Gib Serveradresse und Benutzernamen ein, um zu testen und zu synchronisieren.",
     "presetLabel": "Server",
     "preset": {
       "jianguoyun": "Jianguoyun",
@@ -5735,6 +5736,7 @@
       "unauthorized": "Der WebDAV-Server hat Benutzername oder Passwort abgelehnt.",
       "forbidden": "Der WebDAV-Server hat den Zugriff auf diesen Ordner verweigert.",
       "remotePath": "Der entfernte Ordner oder der Profilname ist ungültig.",
+      "invalidUrl": "Die Serveradresse ist ungültig. Gib eine vollständige Adresse ein, die mit http:// oder https:// beginnt.",
       "quota": "Auf dem WebDAV-Server ist kein Speicherplatz mehr frei.",
       "network": "Der WebDAV-Server war nicht erreichbar.",
       "server": "Der WebDAV-Server hat einen Fehler zurückgegeben ({status}).",

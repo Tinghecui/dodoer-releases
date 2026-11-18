@@ -75,6 +75,7 @@ import {
   listConfigRollbacks,
   peekRemoteConfig,
   pickConfigFileToImport,
+  testConfigSyncConnection,
   updateConfigSyncSettings,
 } from "@/lib/config-sync"
 
@@ -257,6 +258,38 @@ describe("ConfigSyncSettings — credentials", () => {
     await renderLoaded()
     expect(screen.getByRole("button", { name: t.saveButton })).toBeDisabled()
     expect(screen.getByRole("button", { name: t.uploadButton })).toBeDisabled()
+    // 按钮灰着要说清缺什么（#743）
+    expect(screen.getByText(t.credentialsMissingHint)).toBeInTheDocument()
+  })
+
+  it("hides the missing-fields hint once server and user are filled in", async () => {
+    await renderLoaded()
+    expect(screen.queryByText(t.credentialsMissingHint)).not.toBeInTheDocument()
+  })
+
+  /// #743：地址不合法时，提示要说地址，不能说成远程目录；地址框标红，改了就恢复。
+  it("blames the server address when the backend says the URL is invalid", async () => {
+    vi.mocked(testConfigSyncConnection).mockRejectedValue({
+      code: "invalid_input",
+      message: "invalid WebDAV server URL",
+      i18n_key: "configSync.error.invalidUrl",
+    })
+    const { container } = await renderLoaded()
+    const url = container.querySelector("#config-sync-url") as HTMLInputElement
+    fireEvent.change(url, { target: { value: "not a url" } })
+    fireEvent.click(screen.getByRole("button", { name: t.testButton }))
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        enMessages.configSync.error.invalidUrl
+      )
+    )
+    expect(toastError).not.toHaveBeenCalledWith(
+      enMessages.configSync.error.remotePath
+    )
+    expect(url).toHaveAttribute("aria-invalid", "true")
+
+    fireEvent.change(url, { target: { value: "https://dav.example.com/" } })
+    expect(url).not.toHaveAttribute("aria-invalid", "true")
   })
 })
 

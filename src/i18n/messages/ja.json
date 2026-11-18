@@ -5635,6 +5635,7 @@
     "fileHint": "他のマシンに持ち運べる JSON ファイルを 1 つ作成します。読み込みでは項目を追加・更新し、ファイルにない既存項目は残ります。",
     "webdavTitle": "WebDAV 同期",
     "webdavHint": "設定スナップショットを自分の WebDAV サーバーにアップロードします。",
+    "credentialsMissingHint": "テストと同期には、サーバーアドレスとユーザー名を入力してください。",
     "presetLabel": "サーバー",
     "preset": {
       "jianguoyun": "Jianguoyun",
@@ -5735,6 +5736,7 @@
       "unauthorized": "WebDAV サーバーがユーザー名またはパスワードを拒否しました。",
       "forbidden": "WebDAV サーバーがこのフォルダーへのアクセスを拒否しました。",
       "remotePath": "リモートフォルダーまたはプロファイル名が無効です。",
+      "invalidUrl": "サーバーアドレスが無効です。http:// または https:// で始まる完全なアドレスを入力してください。",
       "quota": "WebDAV サーバーの空き容量がありません。",
       "network": "WebDAV サーバーに接続できませんでした。",
       "server": "WebDAV サーバーがエラーを返しました（{status}）。",

@@ -5635,6 +5635,7 @@
     "fileHint": "匯出為單一 JSON 檔案，可複製到另一台裝置。匯入時依項目新增或更新，檔案中沒有的本機項目會保留。",
     "webdavTitle": "WebDAV 同步",
     "webdavHint": "將設定快照上傳到你自己的 WebDAV 伺服器。",
+    "credentialsMissingHint": "填好伺服器位址和使用者名稱後才能測試和同步。",
     "presetLabel": "服務商",
     "preset": {
       "jianguoyun": "堅果雲",
@@ -5735,6 +5736,7 @@
       "unauthorized": "WebDAV 伺服器拒絕了該使用者名稱或密碼。",
       "forbidden": "WebDAV 伺服器拒絕存取該目錄。",
       "remotePath": "遠端目錄或設定集名稱無效。",
+      "invalidUrl": "伺服器位址無效，請填寫以 http:// 或 https:// 開頭的完整位址。",
       "quota": "WebDAV 伺服器已無可用空間。",
       "network": "無法連線到 WebDAV 伺服器。",
       "server": "WebDAV 伺服器回傳錯誤（{status}）。",

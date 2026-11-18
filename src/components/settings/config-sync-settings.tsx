@@ -49,6 +49,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import {
+  extractAppCommandError,
   toLocalizedErrorMessage,
   type AppErrorTranslator,
 } from "@/lib/app-error"
@@ -78,6 +79,8 @@ import {
 /** Fixed choices instead of a free number field: the interval only has to be
  *  "how stale may the remote copy be", and an open input invites 0 or 99999. */
 const INTERVAL_OPTIONS = [5, 15, 30, 60] as const
+// 和 src-tauri/src/app_error.rs 的 CONFIG_SYNC_I18N_KEY_INVALID_URL 一致
+const INVALID_URL_I18N_KEY = "configSync.error.invalidUrl"
 
 const SCOPE_INCLUDED = [
   "providers",
@@ -158,6 +161,8 @@ export function ConfigSyncSettings() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [enabled, setEnabled] = useState(false)
   const [serverUrl, setServerUrl] = useState("")
+  // 后端说地址不合法时把地址框标红，改了地址就恢复
+  const [serverUrlInvalid, setServerUrlInvalid] = useState(false)
   const [preset, setPreset] = useState<PresetId>("custom")
   const [username, setUsername] = useState("")
   // Always starts empty. Submitting an empty field means "keep the stored
@@ -416,6 +421,12 @@ export function ConfigSyncSettings() {
       await testConfigSyncConnection(currentInput())
       if (mounted.current) toast.success(t("testSucceeded"))
     } catch (err) {
+      if (
+        mounted.current &&
+        extractAppCommandError(err)?.i18n_key === INVALID_URL_I18N_KEY
+      ) {
+        setServerUrlInvalid(true)
+      }
       toast.error(localize(err))
     } finally {
       if (mounted.current) setBusy(null)
@@ -795,7 +806,10 @@ export function ConfigSyncSettings() {
                     variant={preset === item.id ? "secondary" : "outline"}
                     onClick={() => {
                       setPreset(item.id)
-                      if (item.url) setServerUrl(item.url)
+                      if (item.url) {
+                        setServerUrl(item.url)
+                        setServerUrlInvalid(false)
+                      }
                     }}
                     disabled={busy !== null}
                   >
@@ -820,8 +834,10 @@ export function ConfigSyncSettings() {
                 value={serverUrl}
                 onChange={(e) => {
                   setServerUrl(e.target.value)
+                  setServerUrlInvalid(false)
                   setPreset(presetFromUrl(e.target.value))
                 }}
+                aria-invalid={serverUrlInvalid || undefined}
                 placeholder="https://dav.example.com/dav/"
                 autoComplete="off"
                 spellCheck={false}
@@ -986,6 +1002,11 @@ export function ConfigSyncSettings() {
               </Select>
             </div>
 
+            {credentialsIncomplete ? (
+              <p className="text-2xs text-muted-foreground">
+                {t("credentialsMissingHint")}
+              </p>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"

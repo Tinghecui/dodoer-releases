@@ -20,9 +20,9 @@ use std::time::Duration;
 use reqwest::{Client, Method, Response, StatusCode, Url};
 
 use crate::app_error::{
-    AppCommandError, CONFIG_SYNC_I18N_KEY_FORBIDDEN, CONFIG_SYNC_I18N_KEY_NETWORK,
-    CONFIG_SYNC_I18N_KEY_QUOTA, CONFIG_SYNC_I18N_KEY_REMOTE_PATH, CONFIG_SYNC_I18N_KEY_SERVER,
-    CONFIG_SYNC_I18N_KEY_UNAUTHORIZED,
+    AppCommandError, CONFIG_SYNC_I18N_KEY_FORBIDDEN, CONFIG_SYNC_I18N_KEY_INVALID_URL,
+    CONFIG_SYNC_I18N_KEY_NETWORK, CONFIG_SYNC_I18N_KEY_QUOTA, CONFIG_SYNC_I18N_KEY_REMOTE_PATH,
+    CONFIG_SYNC_I18N_KEY_SERVER, CONFIG_SYNC_I18N_KEY_UNAUTHORIZED,
 };
 
 /// Credentials and reachability: short, because a wrong URL should fail while
@@ -80,7 +80,7 @@ impl From<WebdavError> for AppCommandError {
         let message = err.to_string();
         match err {
             WebdavError::InvalidUrl => AppCommandError::invalid_input(message)
-                .with_i18n(CONFIG_SYNC_I18N_KEY_REMOTE_PATH, Default::default()),
+                .with_i18n(CONFIG_SYNC_I18N_KEY_INVALID_URL, Default::default()),
             WebdavError::Unauthorized => AppCommandError::network(message)
                 .with_i18n(CONFIG_SYNC_I18N_KEY_UNAUTHORIZED, Default::default()),
             WebdavError::Forbidden => AppCommandError::network(message)
@@ -389,6 +389,18 @@ mod tests {
                 Ok(_) => panic!("{raw:?} should not be accepted as a WebDAV base URL"),
             }
         }
+    }
+
+    /// 地址填错要指到地址框，不能说成远程目录（#743）。
+    #[test]
+    fn an_invalid_url_points_at_the_server_address() {
+        use crate::app_error::AppErrorCode;
+        let err = AppCommandError::from(WebdavError::InvalidUrl);
+        assert!(matches!(err.code, AppErrorCode::InvalidInput), "{err:?}");
+        assert_eq!(
+            err.i18n_key.as_deref(),
+            Some(CONFIG_SYNC_I18N_KEY_INVALID_URL)
+        );
     }
 
     /// A missing remote folder or a full share is a setting for the user to

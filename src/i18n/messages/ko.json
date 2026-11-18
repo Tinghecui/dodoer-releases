@@ -5635,6 +5635,7 @@
     "fileHint": "다른 기기로 옮길 수 있는 JSON 파일 하나를 만듭니다. 가져올 때는 항목을 추가하거나 업데이트하며, 파일에 없는 기존 항목은 그대로 남습니다.",
     "webdavTitle": "WebDAV 동기화",
     "webdavHint": "설정 스냅샷을 직접 운영하는 WebDAV 서버에 업로드합니다.",
+    "credentialsMissingHint": "테스트하고 동기화하려면 서버 주소와 사용자 이름을 입력하세요.",
     "presetLabel": "서버",
     "preset": {
       "jianguoyun": "Jianguoyun",
@@ -5735,6 +5736,7 @@
       "unauthorized": "WebDAV 서버가 사용자 이름 또는 비밀번호를 거부했습니다.",
       "forbidden": "WebDAV 서버가 이 폴더에 대한 접근을 거부했습니다.",
       "remotePath": "원격 폴더 또는 프로필 이름이 올바르지 않습니다.",
+      "invalidUrl": "서버 주소가 올바르지 않습니다. http:// 또는 https://로 시작하는 전체 주소를 입력하세요.",
       "quota": "WebDAV 서버에 남은 공간이 없습니다.",
       "network": "WebDAV 서버에 연결할 수 없습니다.",
       "server": "WebDAV 서버가 오류를 반환했습니다({status}).",

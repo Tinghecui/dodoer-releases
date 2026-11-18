@@ -5635,6 +5635,7 @@
     "fileHint": "导出为单个 JSON 文件，可拷贝到另一台设备。导入时按条目新增或更新，文件中没有的本地条目会保留。",
     "webdavTitle": "WebDAV 同步",
     "webdavHint": "把配置快照上传到你自己的 WebDAV 服务器。",
+    "credentialsMissingHint": "填好服务器地址和用户名后才能测试和同步。",
     "presetLabel": "服务商",
     "preset": {
       "jianguoyun": "坚果云",
@@ -5735,6 +5736,7 @@
       "unauthorized": "WebDAV 服务器拒绝了该用户名或密码。",
       "forbidden": "WebDAV 服务器拒绝访问该目录。",
       "remotePath": "远程目录或配置集名称无效。",
+      "invalidUrl": "服务器地址无效，请填写以 http:// 或 https:// 开头的完整地址。",
       "quota": "WebDAV 服务器已无可用空间。",
       "network": "无法连接到 WebDAV 服务器。",
       "server": "WebDAV 服务器返回错误（{status}）。",

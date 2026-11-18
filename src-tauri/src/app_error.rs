@@ -90,6 +90,8 @@ pub const CONFIG_SYNC_I18N_KEY_UNAUTHORIZED: &str = "configSync.error.unauthoriz
 pub const CONFIG_SYNC_I18N_KEY_FORBIDDEN: &str = "configSync.error.forbidden";
 /// The configured remote directory does not exist and could not be created.
 pub const CONFIG_SYNC_I18N_KEY_REMOTE_PATH: &str = "configSync.error.remotePath";
+/// The WebDAV server URL is empty, unparsable or not http(s).
+pub const CONFIG_SYNC_I18N_KEY_INVALID_URL: &str = "configSync.error.invalidUrl";
 /// The share is out of quota (507).
 pub const CONFIG_SYNC_I18N_KEY_QUOTA: &str = "configSync.error.quota";
 /// The request never reached the server (DNS, TLS, timeout, offline).

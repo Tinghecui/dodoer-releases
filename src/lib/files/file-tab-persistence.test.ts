@@ -12,9 +12,12 @@ import {
   fileTabsStorageKey,
   forgetPersistedFileTabPaths,
   readPersistedFileTabs,
+  readSharedFileTabs,
   samePersistedFileTabs,
+  sharedFileTabsStorageKey,
   snapshotFileTabs,
   writePersistedFileTabs,
+  writeSharedFileTabs,
 } from "./file-tab-persistence"
 
 function tab(
@@ -48,6 +51,52 @@ describe("file-tab-persistence", () => {
   beforeEach(() => {
     localStorage.clear()
     transport.remoteId = null
+  })
+
+  it("共用的那一排单独一条：没记过是 null，记了空的读回空的，划掉别的项目的标签时不动它", () => {
+    expect(sharedFileTabsStorageKey()).toBe(
+      "workspace:file-tabs:v1:local:shared"
+    )
+    expect(readSharedFileTabs()).toBeNull()
+    writeSharedFileTabs({ paths: ["/r/a.ts", "/s/b.ts"], active: "/s/b.ts" })
+    forgetPersistedFileTabPaths(["/r/a.ts"], "local", 1)
+    expect(readSharedFileTabs()).toEqual({
+      paths: ["/r/a.ts", "/s/b.ts"],
+      active: "/s/b.ts",
+      owners: new Map(),
+    })
+    writeSharedFileTabs({ paths: [], active: null })
+    expect(readSharedFileTabs()).toEqual({
+      paths: [],
+      active: null,
+      owners: new Map(),
+    })
+    transport.remoteId = 5
+    expect(readSharedFileTabs()).toBeNull()
+  })
+
+  it("共用的那一排记下每个文件在哪些项目里开着（可以几个），按项目的记录不带它", () => {
+    writeSharedFileTabs(
+      { paths: ["/r/a.ts", "/s/b.ts", "/t/c.ts"], active: "/r/a.ts" },
+      "local",
+      new Map([
+        ["/r/a.ts", [1, 2]],
+        ["/s/b.ts", [2]],
+      ])
+    )
+    expect(readSharedFileTabs("local")).toEqual({
+      paths: ["/r/a.ts", "/s/b.ts", "/t/c.ts"],
+      active: "/r/a.ts",
+      owners: new Map([
+        ["/r/a.ts", [1, 2]],
+        ["/s/b.ts", [2]],
+      ]),
+    })
+    writePersistedFileTabs(1, { paths: ["/r/a.ts"], active: null }, "local")
+    expect(readPersistedFileTabs(1, "local")).toEqual({
+      paths: ["/r/a.ts"],
+      active: null,
+    })
   })
 
   it("存了再读回来，顺序和选中项不变", () => {

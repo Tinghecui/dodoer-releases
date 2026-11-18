@@ -189,6 +189,13 @@ interface ActionBubble {
 const BRANCH_TOKEN_MARK = "\u0000"
 const BRANCH_TOKEN_SPLIT = /\u0000(\d+)\u0000/
 
+/** 标签的一段：字面文字，或第 nameIndex 个分支名（0 = 被操作的分支，1 = 当前分支）。 */
+export type BranchLabelPart = {
+  text: string
+  isBranch: boolean
+  nameIndex?: number
+}
+
 /**
  * Split a translated label whose values were `branchToken(i)` sentinels into
  * literal text and branch-name parts (in the translation's own word order).
@@ -196,13 +203,14 @@ const BRANCH_TOKEN_SPLIT = /\u0000(\d+)\u0000/
 export function splitBranchLabel(
   formatted: string,
   names: readonly string[]
-): Array<{ text: string; isBranch: boolean }> {
+): BranchLabelPart[] {
   const pieces = formatted.split(BRANCH_TOKEN_SPLIT)
-  const parts: Array<{ text: string; isBranch: boolean }> = []
+  const parts: BranchLabelPart[] = []
   pieces.forEach((piece, index) => {
     // `split` with a capture group alternates literal, index, literal, …
     if (index % 2 === 1) {
-      parts.push({ text: names[Number(piece)] ?? "", isBranch: true })
+      const nameIndex = Number(piece)
+      parts.push({ text: names[nameIndex] ?? "", isBranch: true, nameIndex })
     } else if (piece) {
       parts.push({ text: piece, isBranch: false })
     }
@@ -456,10 +464,7 @@ export function BranchSelectorList({
   // (literal words never shrink), so a long source branch can't push the verb
   // and the target branch out of view; the full text stays in the tooltip.
   const leafActionLabelParts = useCallback(
-    (
-      action: BranchLeafAction,
-      fullName: string
-    ): Array<{ text: string; isBranch: boolean }> | null => {
+    (action: BranchLeafAction, fullName: string): BranchLabelPart[] | null => {
       const names = [fullName, branch ?? "-"]
       switch (action) {
         case "merge":
@@ -950,9 +955,13 @@ export function BranchSelectorList({
                         <span
                           key={partIndex}
                           className={
-                            part.isBranch
-                              ? "min-w-0 truncate"
-                              : "shrink-0 whitespace-pre"
+                            !part.isBranch
+                              ? "shrink-0 whitespace-pre"
+                              : part.nameIndex === 1
+                                ? // 当前分支（通常很短，如 main）不跟着长分支名一起收缩，
+                                  // 只在它自己特别长时限到 40% 宽再截断
+                                  "max-w-[40%] shrink-0 truncate"
+                                : "min-w-0 truncate"
                           }
                         >
                           {part.text}

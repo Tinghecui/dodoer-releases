@@ -237,11 +237,24 @@ describe("BranchSelectorList — long branch names in the action bubble", () => 
     const parts = Array.from(merge.querySelectorAll("span > span")).map(
       (el) => [el.textContent, el.className]
     )
+    // Only the operated-on branch shrinks; the current branch keeps its full
+    // width (capped) so a short "main" never collapses into an ellipsis.
     expect(parts).toEqual([
       ["Merge ", "shrink-0 whitespace-pre"],
       [LONG, "min-w-0 truncate"],
       [" into ", "shrink-0 whitespace-pre"],
-      ["main", "min-w-0 truncate"],
+      ["main", "max-w-[40%] shrink-0 truncate"],
+    ])
+
+    const rebase = within(bubble).getByRole("menuitem", { name: /^Rebase/ })
+    const rebaseParts = Array.from(rebase.querySelectorAll("span > span")).map(
+      (el) => [el.textContent, el.className]
+    )
+    expect(rebaseParts).toEqual([
+      ["Rebase ", "shrink-0 whitespace-pre"],
+      ["main", "max-w-[40%] shrink-0 truncate"],
+      [" onto ", "shrink-0 whitespace-pre"],
+      [LONG, "min-w-0 truncate"],
     ])
 
     // Plain single-string actions keep the old single truncated span.
@@ -259,10 +272,24 @@ describe("splitBranchLabel", () => {
         "main",
       ])
     ).toEqual([
-      { text: "main", isBranch: true },
+      { text: "main", isBranch: true, nameIndex: 1 },
       { text: " を ", isBranch: false },
-      { text: "feat/x", isBranch: true },
+      { text: "feat/x", isBranch: true, nameIndex: 0 },
       { text: " にリベース", isBranch: false },
+    ])
+  })
+
+  it("tags each branch part with which name it is", () => {
+    expect(
+      splitBranchLabel("Merge \u00000\u0000 into \u00001\u0000", [
+        "feat/x",
+        "main",
+      ])
+    ).toEqual([
+      { text: "Merge ", isBranch: false },
+      { text: "feat/x", isBranch: true, nameIndex: 0 },
+      { text: " into ", isBranch: false },
+      { text: "main", isBranch: true, nameIndex: 1 },
     ])
   })
 })

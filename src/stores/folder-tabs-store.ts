@@ -23,6 +23,8 @@ export function shouldSeedConversation(enabled: boolean, hasNoTabs: boolean) {
 
 interface FolderTabsState {
   enabled: boolean
+  /** 开关的值从本机读出来了没有（hydratePreference 跑过）。没读出来之前 enabled 不作数。 */
+  preferenceHydrated: boolean
   scope: TabScope
   // References own view membership; the workspace provider still owns ONE
   // buffer per normalized absolute path, including when several scopes use it.
@@ -67,6 +69,7 @@ export function fileOpeningScope(
 
 const initialState = () => ({
   enabled: false,
+  preferenceHydrated: false,
   scope: "global" as TabScope,
   fileRefs: {} as Record<string, string[]>,
   fileSelection: {} as Record<string, string | null>,
@@ -84,6 +87,8 @@ export const useFolderTabsStore = create<FolderTabsState>()((set, get) => ({
     } catch {
       // Storage is optional (private windows, SSR, quota failures).
     }
+    // 读不出来也算读完了：按 enabled 眼下的值走。
+    set({ preferenceHydrated: true })
   },
   // The active folder is NOT written here: the tab store's subscriber runs
   // synchronously inside `set` and syncs it from the scope's restored active

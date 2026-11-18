@@ -6,7 +6,9 @@
 //
 // 只存在本机（localStorage），一个服务器的一个项目一个 key
 // （`workspace:file-tabs:v1:<server>:<folderId>`，server 是 `local` 或桌面端连着的
-// `remote-<连接编号>`：不同服务器的项目编号会重，不能共用一条），不进服务器、不跨设备。这里只有纯函数；什么时候存、什么时候读回来见
+// `remote-<连接编号>`：不同服务器的项目编号会重，不能共用一条），不进服务器、不跨设备。
+// 标签不跟随项目时标签栏是各项目共用的一排，这一整排另记一条
+// （`workspace:file-tabs:v1:<server>:shared`），刷新后原样恢复。这里只有纯函数；什么时候存、什么时候读回来见
 // `components/files/file-tabs-persistence`。
 
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
@@ -22,9 +24,16 @@ export interface PersistedFileTabs {
   active: string | null
 }
 
+/** 共用的那一排：另记每个文件是在哪个项目里开的，刷新后开回那个项目的标签组。 */
+export interface SharedFileTabs extends PersistedFileTabs {
+  /** 路径 → 项目编号（同一个文件可以同时在几个项目里开着，全记下）；没记的（旧记录、
+   *  不在哪个项目里开的）不在里面。 */
+  owners: Map<string, number[]>
+}
+
 interface StoredShape {
   version: number
-  tabs: { kind: "file"; path: string }[]
+  tabs: { kind: "file"; path: string; folderIds?: number[] }[]
   active: string | null
 }
 
@@ -41,6 +50,13 @@ export function fileTabsStorageKey(
   return `${KEY_PREFIX}${server}:${folderId}`
 }
 
+/** 标签不跟随项目时共用的那一排记在哪：一个服务器一条。 */
+export function sharedFileTabsStorageKey(
+  server: string = fileTabsServerKey()
+): string {
+  return `${KEY_PREFIX}${server}:shared`
+}
+
 const EMPTY: PersistedFileTabs = { paths: [], active: null }
 
 /** 读回某个项目记下的文件标签。坏数据、旧版本、读不了 localStorage 都当成没有，
@@ -49,14 +65,24 @@ export function readPersistedFileTabs(
   folderId: number,
   server?: string
 ): PersistedFileTabs {
-  if (typeof window === "undefined") return EMPTY
+  const stored = readStored(fileTabsStorageKey(folderId, server))
+  return stored ? { paths: stored.paths, active: stored.active } : EMPTY
+}
+
+/** 读回共用的那一排；没记过（或坏了）是 null，和「记的是空的」分开。 */
+export function readSharedFileTabs(server?: string): SharedFileTabs | null {
+  return readStored(sharedFileTabsStorageKey(server))
+}
+
+function readStored(key: string): SharedFileTabs | null {
+  if (typeof window === "undefined") return null
   let raw: string | null
   try {
-    raw = localStorage.getItem(fileTabsStorageKey(folderId, server))
+    raw = localStorage.getItem(key)
   } catch {
-    return EMPTY
+    return null
   }
-  if (!raw) return EMPTY
+  if (!raw) return null
   try {
     const parsed = JSON.parse(raw) as Partial<StoredShape> | null
     if (
@@ -65,25 +91,37 @@ export function readPersistedFileTabs(
       parsed.version !== FILE_TABS_STORAGE_VERSION ||
       !Array.isArray(parsed.tabs)
     ) {
-      return EMPTY
+      return null
     }
     const paths: string[] = []
     const seen = new Set<string>()
+    const owners = new Map<string, number[]>()
     for (const entry of parsed.tabs as unknown[]) {
       if (!entry || typeof entry !== "object") continue
-      const { kind, path } = entry as Record<string, unknown>
+      const { kind, path, folderIds } = entry as Record<string, unknown>
       if (kind !== "file" || typeof path !== "string" || path === "") continue
       if (seen.has(path)) continue
       seen.add(path)
       paths.push(path)
+      if (Array.isArray(folderIds)) {
+        const ids = [
+          ...new Set(
+            folderIds.filter(
+              (id): id is number =>
+                typeof id === "number" && Number.isInteger(id)
+            )
+          ),
+        ]
+        if (ids.length > 0) owners.set(path, ids)
+      }
     }
     const active =
       typeof parsed.active === "string" && seen.has(parsed.active)
         ? parsed.active
         : null
-    return { paths, active }
+    return { paths, active, owners }
   } catch {
-    return EMPTY
+    return null
   }
 }
 
@@ -105,6 +143,34 @@ export function writePersistedFileTabs(
       active: state.active,
     }
     localStorage.setItem(key, JSON.stringify(stored))
+  } catch {
+    /* 配额满了、隐私模式：这次的标签就不留了 */
+  }
+}
+
+/** 记下共用的那一排。全关了也记一条空的：刷新后是空的，不退回去读某个项目的记录。
+ *  owners 是每个文件在哪些项目里开着的（没有的不记）。 */
+export function writeSharedFileTabs(
+  state: PersistedFileTabs,
+  server?: string,
+  owners?: ReadonlyMap<string, readonly number[]>
+): void {
+  if (typeof window === "undefined") return
+  try {
+    const stored: StoredShape = {
+      version: FILE_TABS_STORAGE_VERSION,
+      tabs: state.paths.map((path) => {
+        const folderIds = owners?.get(path)
+        return folderIds?.length
+          ? { kind: "file" as const, path, folderIds: [...folderIds] }
+          : { kind: "file" as const, path }
+      }),
+      active: state.active,
+    }
+    localStorage.setItem(
+      sharedFileTabsStorageKey(server),
+      JSON.stringify(stored)
+    )
   } catch {
     /* 配额满了、隐私模式：这次的标签就不留了 */
   }

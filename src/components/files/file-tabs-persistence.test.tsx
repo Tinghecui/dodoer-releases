@@ -88,7 +88,9 @@ vi.mock("@/contexts/workspace-context", () => ({
 import {
   fileTabsStorageKey,
   readPersistedFileTabs,
+  readSharedFileTabs,
   writePersistedFileTabs,
+  writeSharedFileTabs,
 } from "@/lib/files/file-tab-persistence"
 import {
   clearFileTabEvictionMarks,
@@ -96,7 +98,9 @@ import {
   resetFileTabEvictionsForTests,
 } from "@/lib/files/file-tab-evictions"
 import { pickTabsToEvict, TabRecency } from "@/lib/tab-limit"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
+  openingScope,
   resetFolderTabsStore,
   useFolderTabsStore,
 } from "@/stores/folder-tabs-store"
@@ -332,6 +336,8 @@ describe("FileTabsPersistence", () => {
     resetFileTabsPersistenceForTests()
     resetFileTabEvictionsForTests()
     resetFolderTabsStore()
+    // 开关的值默认当成已经读出来了；要测「还没读出来」的单独改回去。
+    useFolderTabsStore.setState({ preferenceHydrated: true })
     mocks.folderId = 7
     mocks.remoteId = null
     mocks.fileTabs = []
@@ -578,19 +584,17 @@ describe("FileTabsPersistence", () => {
       active: null,
     })
 
-    // 回到项目 7：剩下的接着恢复，选中记下的那个，记录不变
+    // 回到项目 7：标签不跟随项目时标签栏是共用的一排，已经恢复过了，切回来原样
+    // 不动，不补开 7 剩下的（项目 8 的 x 比读得慢的 a 先进标签栏）；记录不变
     mocks.folderId = 7
     mocks.rerender?.()
     await flush()
     await flush()
-    // 项目 8 的 x 比读得慢的 a 先进标签栏
     expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
       "/other/x.ts",
       "/repo/a.ts",
-      "/repo/b.ts",
-      "/repo/c.ts",
     ])
-    expect(mocks.activeFileTabId).toBe(fileTab("/repo/c.ts").id)
+    expect(mocks.switchFileTab).not.toHaveBeenCalled()
     await act(async () => {
       vi.advanceTimersByTime(1000)
     })
@@ -702,7 +706,7 @@ describe("FileTabsPersistence", () => {
     ).toHaveLength(1)
   })
 
-  it("标签不跟随项目：切到别的项目也把它记下的标签加回来", async () => {
+  it("标签不跟随项目：切到别的项目，共用那排原样不动，不补开那个项目以前记下的", async () => {
     writePersistedFileTabs(7, { paths: ["/repo/a.ts"], active: "/repo/a.ts" })
     writePersistedFileTabs(8, {
       paths: ["/other/x.ts", "/other/y.ts"],
@@ -716,16 +720,16 @@ describe("FileTabsPersistence", () => {
     await flush()
     await flush()
 
-    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
-      "/repo/a.ts",
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual(["/repo/a.ts"])
+    expect(mocks.activeFileTabId).toBe(fileTab("/repo/a.ts").id)
+    expect(mocks.openFilePreview).not.toHaveBeenCalledWith(
       "/other/x.ts",
-      "/other/y.ts",
-    ])
-    expect(mocks.activeFileTabId).toBe(fileTab("/other/x.ts").id)
+      expect.anything()
+    )
     await act(async () => {
       vi.advanceTimersByTime(1000)
     })
-    // 只是换项目恢复出来的，不改两个项目的记录
+    // 只是换项目，不改两个项目的记录
     expect(readPersistedFileTabs(8)).toEqual({
       paths: ["/other/x.ts", "/other/y.ts"],
       active: "/other/x.ts",
@@ -734,6 +738,518 @@ describe("FileTabsPersistence", () => {
       paths: ["/repo/a.ts"],
       active: "/repo/a.ts",
     })
+  })
+
+  it("标签不跟随项目：各项目只记自己开的文件；刷新后开回各自的项目，打开跟随后各组只有自己的", async () => {
+    // 和真实的工作区一样：开文件时登记到它所在项目的标签组
+    const register = (path: string, folderId?: number) =>
+      useFolderTabsStore
+        .getState()
+        .addFile(fileTab(path).id, openingScope(folderId), false)
+    const base = mocks.openFilePreview.getMockImplementation()!
+    mocks.openFilePreview.mockImplementation(
+      async (path: string, options?: { folderId?: number }) => {
+        register(path, options?.folderId)
+        return base(path, options)
+      }
+    )
+    useAppWorkspaceStore.setState({ activeFolderId: 7 })
+    const first = mount()
+    await flush()
+    await flush()
+    // 在 A 里开 a.ts
+    const a = fileTab("/repo/a.ts")
+    await act(async () => {
+      register(a.path!)
+      mocks.fileTabs = [a]
+      mocks.activeFileTabId = a.id
+      mocks.rerender?.()
+    })
+    // 到 B 里开 x.ts，共用那排是 a、x
+    useAppWorkspaceStore.setState({ activeFolderId: 8 })
+    mocks.folderId = 8
+    mocks.rerender?.()
+    await flush()
+    const x = fileTab("/other/x.ts")
+    await act(async () => {
+      register(x.path!)
+      mocks.fileTabs = [a, x]
+      mocks.activeFileTabId = x.id
+      mocks.rerender?.()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(readPersistedFileTabs(7).paths).toEqual(["/repo/a.ts"])
+    expect(readPersistedFileTabs(8)).toEqual({
+      paths: ["/other/x.ts"],
+      active: "/other/x.ts",
+    })
+    first.unmount()
+    // 卸掉的那个不能再 rerender（不然刷新后第一个打开的会当成打不开）
+    mocks.rerender = null
+
+    // 刷新：回到 A，共用那排原样回来，每个文件开回它自己的项目
+    resetFileTabsPersistenceForTests()
+    resetFolderTabsStore()
+    useFolderTabsStore.setState({ preferenceHydrated: true })
+    useAppWorkspaceStore.setState({ activeFolderId: 7 })
+    mocks.folderId = 7
+    mocks.fileTabs = []
+    mocks.activeFileTabId = null
+    const second = mount()
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/repo/a.ts",
+      "/other/x.ts",
+    ])
+    expect(mocks.activeFileTabId).toBe(x.id)
+    // 打开跟随：A 的组里只有 a，B 的组里只有 x
+    const refs = useFolderTabsStore.getState().fileRefs
+    expect(refs[7]).toEqual([a.id])
+    expect(refs[8]).toEqual([x.id])
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    second.unmount()
+    mocks.rerender = null
+
+    // 真的打开跟随再刷新：A 只恢复出 a，切到 B 只恢复出 x
+    resetFileTabsPersistenceForTests()
+    resetFolderTabsStore()
+    useFolderTabsStore.setState({
+      preferenceHydrated: true,
+      enabled: true,
+      scope: 7,
+    })
+    useAppWorkspaceStore.setState({ activeFolderId: 7 })
+    mocks.folderId = 7
+    mocks.openFilePreview.mockReset()
+    const tabs = useScopedTabs()
+    mocks.fileTabs = []
+    mocks.activeFileTabId = null
+    mount()
+    await flush()
+    await flush()
+    expect(tabs.paths(7)).toEqual(["/repo/a.ts"])
+    await tabs.switchTo(8)
+    await flush()
+    await flush()
+    expect(tabs.paths(8)).toEqual(["/other/x.ts"])
+    expect(tabs.paths(7)).toEqual(["/repo/a.ts"])
+  })
+
+  it("标签不跟随项目：同一个文件在几个项目里都开着，刷新后开回每一个项目", async () => {
+    const register = (path: string, folderId?: number) =>
+      useFolderTabsStore
+        .getState()
+        .addFile(fileTab(path).id, openingScope(folderId), false)
+    const base = mocks.openFilePreview.getMockImplementation()!
+    mocks.openFilePreview.mockImplementation(
+      async (path: string, options?: { folderId?: number }) => {
+        register(path, options?.folderId)
+        return base(path, options)
+      }
+    )
+    useAppWorkspaceStore.setState({ activeFolderId: 7 })
+    const first = mount()
+    await flush()
+    await flush()
+    // 在 A 里开 shared.ts
+    const shared = fileTab("/shared/shared.ts")
+    await act(async () => {
+      register(shared.path!)
+      mocks.fileTabs = [shared]
+      mocks.activeFileTabId = shared.id
+      mocks.rerender?.()
+    })
+    // 到 B 里又开了一次 shared.ts（登记进 B 的组），再开 x.ts
+    useAppWorkspaceStore.setState({ activeFolderId: 8 })
+    mocks.folderId = 8
+    mocks.rerender?.()
+    await flush()
+    const x = fileTab("/other/x.ts")
+    await act(async () => {
+      register(shared.path!)
+      register(x.path!)
+      mocks.fileTabs = [shared, x]
+      mocks.activeFileTabId = x.id
+      mocks.rerender?.()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    first.unmount()
+    // 卸掉的那个不能再 rerender（不然刷新后第一个打开的会当成打不开）
+    mocks.rerender = null
+
+    // 刷新：回到 A
+    resetFileTabsPersistenceForTests()
+    resetFolderTabsStore()
+    useFolderTabsStore.setState({ preferenceHydrated: true })
+    useAppWorkspaceStore.setState({ activeFolderId: 7 })
+    mocks.folderId = 7
+    mocks.fileTabs = []
+    mocks.activeFileTabId = null
+    mount()
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/shared/shared.ts",
+      "/other/x.ts",
+    ])
+    // A、B 两个组里都有 shared.ts：打开跟随后 B 不会少了它
+    const refs = useFolderTabsStore.getState().fileRefs
+    expect(refs[7]).toEqual([shared.id])
+    expect(refs[8]).toEqual([shared.id, x.id])
+  })
+
+  it("标签不跟随项目：在 B 里点开 A 开着、正选中的文件，标签栏没变也记下它在 B 里开着", async () => {
+    const register = (path: string, folderId?: number) =>
+      useFolderTabsStore
+        .getState()
+        .addFile(fileTab(path).id, openingScope(folderId), false)
+    useAppWorkspaceStore.setState({ activeFolderId: 7 })
+    mount()
+    await flush()
+    await flush()
+    const a = fileTab("/repo/a.ts")
+    await act(async () => {
+      register(a.path!)
+      mocks.fileTabs = [a]
+      mocks.activeFileTabId = a.id
+      mocks.rerender?.()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    useAppWorkspaceStore.setState({ activeFolderId: 8 })
+    mocks.folderId = 8
+    mocks.rerender?.()
+    await flush()
+    // 在 B 里点开 a.ts：只登记进 B 的组，标签栏和选中项都不变
+    await act(async () => {
+      register(a.path!)
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(readSharedFileTabs()?.owners.get("/repo/a.ts")).toEqual([7, 8])
+  })
+
+  it("标签不跟随项目：在 B 里点开 A 开着、正选中的文件，B 的记录也记上它；打开跟随再刷新，B 里有它", async () => {
+    const register = (path: string, folderId?: number) =>
+      useFolderTabsStore
+        .getState()
+        .addFile(fileTab(path).id, openingScope(folderId), false)
+    useAppWorkspaceStore.setState({ activeFolderId: 7 })
+    const first = mount()
+    await flush()
+    await flush()
+    const a = fileTab("/repo/a.ts")
+    await act(async () => {
+      register(a.path!)
+      mocks.fileTabs = [a]
+      mocks.activeFileTabId = a.id
+      mocks.rerender?.()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    useAppWorkspaceStore.setState({ activeFolderId: 8 })
+    mocks.folderId = 8
+    mocks.rerender?.()
+    await flush()
+    // 在 B 里点开 a.ts：只登记进 B 的组，标签栏和选中项都不变
+    await act(async () => {
+      register(a.path!)
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(readPersistedFileTabs(8)).toEqual({
+      paths: ["/repo/a.ts"],
+      active: "/repo/a.ts",
+    })
+    first.unmount()
+    mocks.rerender = null
+
+    // 打开跟随，在 B 里刷新：B 恢复它自己的记录，里面有 a.ts
+    resetFileTabsPersistenceForTests()
+    resetFolderTabsStore()
+    useFolderTabsStore.setState({
+      preferenceHydrated: true,
+      enabled: true,
+      scope: 8,
+    })
+    useAppWorkspaceStore.setState({ activeFolderId: 8 })
+    mocks.folderId = 8
+    const tabs = useScopedTabs()
+    mocks.fileTabs = []
+    mocks.activeFileTabId = null
+    mount()
+    await flush()
+    await flush()
+    expect(tabs.paths(8)).toEqual(["/repo/a.ts"])
+    expect(tabs.active(8)).toBe(a.id)
+  })
+
+  it("标签不跟随项目：在两个项目间点开对方的文件，再打开跟随刷新，每个项目自己的文件都在（被上限挤掉的也在）", async () => {
+    const register = (path: string, folderId?: number) =>
+      useFolderTabsStore
+        .getState()
+        .addFile(fileTab(path).id, openingScope(folderId), false)
+    // 和真实的工作区一样：点开标签时登记进当前项目的组，再选中它
+    mocks.switchFileTab.mockImplementation((id: string) => {
+      useFolderTabsStore.getState().addFile(id, openingScope(), true)
+      mocks.activeFileTabId = id
+      mocks.rerender?.()
+    })
+    const save = async () => {
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+    }
+    useAppWorkspaceStore.setState({ activeFolderId: 7 })
+    const first = mount()
+    await flush()
+    await flush()
+    // docs-site（7）里开 index.md、intro.md
+    const index = fileTab("/docs/index.md")
+    const intro = fileTab("/docs/intro.md")
+    await act(async () => {
+      register(index.path!)
+      register(intro.path!)
+      mocks.fileTabs = [index, intro]
+      mocks.activeFileTabId = intro.id
+      mocks.rerender?.()
+    })
+    await save()
+    // 到 demo（8）里开 package.json、version.ts：最多三个，index.md 被上限挤掉
+    useAppWorkspaceStore.setState({ activeFolderId: 8 })
+    mocks.folderId = 8
+    mocks.rerender?.()
+    await flush()
+    const pkg = fileTab("/demo/package.json")
+    const version = fileTab("/demo/version.ts")
+    await act(async () => {
+      register(pkg.path!)
+      mocks.fileTabs = [index, intro, pkg]
+      mocks.activeFileTabId = pkg.id
+      mocks.rerender?.()
+    })
+    await act(async () => {
+      register(version.path!)
+      markFileTabsEvictedByCap([index.path!])
+      useFolderTabsStore.getState().forgetFile(index.id)
+      mocks.fileTabs = [intro, pkg, version]
+      mocks.activeFileTabId = version.id
+      mocks.rerender?.()
+    })
+    await save()
+    // 回 docs-site，点开 demo 的 package.json
+    useAppWorkspaceStore.setState({ activeFolderId: 7 })
+    mocks.folderId = 7
+    mocks.rerender?.()
+    await flush()
+    await act(async () => {
+      mocks.switchFileTab(pkg.id)
+    })
+    await save()
+    // 到 demo，点开 docs-site 的 intro.md
+    useAppWorkspaceStore.setState({ activeFolderId: 8 })
+    mocks.folderId = 8
+    mocks.rerender?.()
+    await flush()
+    await act(async () => {
+      mocks.switchFileTab(intro.id)
+    })
+    await save()
+    expect(readPersistedFileTabs(7).paths).toEqual([
+      "/docs/index.md",
+      "/docs/intro.md",
+      "/demo/package.json",
+    ])
+    first.unmount()
+    mocks.rerender = null
+
+    // 打开跟随，在 docs-site 里刷新：它自己开过的都回来，切到 demo 也是
+    resetFileTabsPersistenceForTests()
+    resetFolderTabsStore()
+    useFolderTabsStore.setState({
+      preferenceHydrated: true,
+      enabled: true,
+      scope: 7,
+    })
+    useAppWorkspaceStore.setState({ activeFolderId: 7 })
+    mocks.folderId = 7
+    mocks.openFilePreview.mockReset()
+    mocks.switchFileTab.mockReset()
+    const tabs = useScopedTabs()
+    mocks.fileTabs = []
+    mocks.activeFileTabId = null
+    mount()
+    await flush()
+    await flush()
+    expect(tabs.paths(7)).toEqual([
+      "/docs/index.md",
+      "/docs/intro.md",
+      "/demo/package.json",
+    ])
+    await tabs.switchTo(8)
+    await flush()
+    await flush()
+    expect(tabs.paths(8)).toEqual([
+      "/docs/intro.md",
+      "/demo/package.json",
+      "/demo/version.ts",
+    ])
+  })
+
+  it("标签不跟随项目：聊天会话和项目都开着同一个文件，刷新后聊天会话里也还有它", async () => {
+    const register = (path: string, folderId?: number) =>
+      useFolderTabsStore
+        .getState()
+        .addFile(fileTab(path).id, openingScope(folderId), false)
+    const base = mocks.openFilePreview.getMockImplementation()!
+    mocks.openFilePreview.mockImplementation(
+      async (path: string, options?: { folderId?: number }) => {
+        register(path, options?.folderId)
+        return base(path, options)
+      }
+    )
+    // 9 是聊天会话的隐藏项目：它的标签在全局范围里
+    useAppWorkspaceStore.setState({
+      activeFolderId: 9,
+      allFolders: [{ id: 9, kind: "chat" }] as never,
+    })
+    mocks.folderId = 9
+    const first = mount()
+    await flush()
+    await flush()
+    const shared = fileTab("/shared/notes.md")
+    await act(async () => {
+      register(shared.path!)
+      mocks.fileTabs = [shared]
+      mocks.activeFileTabId = shared.id
+      mocks.rerender?.()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    // 到项目 7 里又点开它
+    useAppWorkspaceStore.setState({ activeFolderId: 7 })
+    mocks.folderId = 7
+    mocks.rerender?.()
+    await flush()
+    await act(async () => {
+      register(shared.path!)
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    first.unmount()
+    mocks.rerender = null
+
+    // 刷新：在项目 7 里，共用那排开回项目 7 和聊天会话两边
+    resetFileTabsPersistenceForTests()
+    resetFolderTabsStore()
+    useFolderTabsStore.setState({ preferenceHydrated: true })
+    useAppWorkspaceStore.setState({ activeFolderId: 7 })
+    mocks.fileTabs = []
+    mocks.activeFileTabId = null
+    mount()
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual(["/shared/notes.md"])
+    const refs = useFolderTabsStore.getState().fileRefs
+    expect(refs[7]).toEqual([shared.id])
+    expect(refs.global).toEqual([shared.id])
+    useAppWorkspaceStore.setState({ allFolders: [] })
+  })
+
+  it("标签不跟随项目：恢复几个项目都开着的文件时，开进第一个项目后就换了项目，新项目接着把它开进其余项目", async () => {
+    const register = (path: string, folderId?: number) =>
+      useFolderTabsStore
+        .getState()
+        .addFile(fileTab(path).id, openingScope(folderId), false)
+    const shared = fileTab("/shared/shared.ts")
+    writeSharedFileTabs(
+      { paths: [shared.path!, "/other/x.ts"], active: shared.path! },
+      undefined,
+      new Map([
+        [shared.path!, [7, 8]],
+        ["/other/x.ts", [8]],
+      ])
+    )
+    const base = mocks.openFilePreview.getMockImplementation()!
+    mocks.openFilePreview.mockImplementation(
+      async (path: string, options?: { folderId?: number }) => {
+        register(path, options?.folderId)
+        return base(path, options)
+      }
+    )
+    // 开进项目 7 的那一次：标签已经出来、登记进了 7，还没返回时用户换到了项目 8
+    let releaseFirst: () => void = () => {}
+    mocks.openFilePreview.mockImplementationOnce(
+      (path: string, options?: { folderId?: number }) => {
+        register(path, options?.folderId)
+        const opened = base(path, options)
+        return new Promise((resolve) => {
+          releaseFirst = () => resolve(opened)
+        })
+      }
+    )
+    useAppWorkspaceStore.setState({ activeFolderId: 7 })
+    mount()
+    await flush()
+    mocks.folderId = 8
+    mocks.rerender?.()
+    await flush()
+    await act(async () => {
+      releaseFirst()
+    })
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/shared/shared.ts",
+      "/other/x.ts",
+    ])
+    const refs = useFolderTabsStore.getState().fileRefs
+    expect(refs[7]).toEqual([shared.id])
+    expect(refs[8]).toEqual([shared.id, fileTab("/other/x.ts").id])
+  })
+
+  it("标签不跟随项目：切到别的项目后就在那里打开跟随，不用切走再回来就恢复它自己的标签", async () => {
+    writePersistedFileTabs(7, { paths: ["/repo/a.ts"], active: "/repo/a.ts" })
+    writePersistedFileTabs(8, {
+      paths: ["/other/x.ts", "/other/y.ts"],
+      active: "/other/y.ts",
+    })
+    mount()
+    await flush()
+    await flush()
+    // 开关关着切到 8：共用那排不动
+    mocks.folderId = 8
+    mocks.rerender?.()
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual(["/repo/a.ts"])
+
+    // 就在 8 里打开跟随：看到的是 8 自己的组（还是空的）
+    await act(async () => {
+      useFolderTabsStore.setState({ enabled: true, scope: 8 })
+      mocks.fileTabs = []
+      mocks.activeFileTabId = null
+      mocks.rerender?.()
+    })
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/other/x.ts",
+      "/other/y.ts",
+    ])
   })
 
   it("恢复过程中用户开、关、选中的标签也记下来，选中的不被记下的那个抢走", async () => {
@@ -1060,10 +1576,6 @@ describe("FileTabsPersistence", () => {
 
   it("标签不跟随项目：在项目 B 里关掉从 A 恢复出来的标签，切回 A 不再补开", async () => {
     writePersistedFileTabs(7, { paths: ["/repo/a.ts"], active: "/repo/a.ts" })
-    writePersistedFileTabs(8, {
-      paths: ["/other/x.ts"],
-      active: "/other/x.ts",
-    })
     mount()
     await flush()
     await flush()
@@ -1071,6 +1583,13 @@ describe("FileTabsPersistence", () => {
     mocks.rerender?.()
     await flush()
     await flush()
+    // 在 8 里开 x
+    await act(async () => {
+      const x = fileTab("/other/x.ts")
+      mocks.fileTabs = [...mocks.fileTabs, x]
+      mocks.activeFileTabId = x.id
+      mocks.rerender?.()
+    })
     expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
       "/repo/a.ts",
       "/other/x.ts",
@@ -1150,6 +1669,229 @@ describe("FileTabsPersistence", () => {
     await flush()
     await flush()
     expect(mocks.fileTabs.map((tab) => tab.path)).toEqual(["/repo/a.ts"])
+  })
+
+  it("标签不跟随项目：在 B 里开了文件后刷新、回到 A，标签栏还是刷新前共用的那一排", async () => {
+    // A 很早以前记下的三个；B 没有记录
+    writePersistedFileTabs(7, {
+      paths: ["/demo/package.json", "/demo/version.ts", "/demo/live.txt"],
+      active: "/demo/live.txt",
+    })
+    const first = mount()
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/demo/package.json",
+      "/demo/version.ts",
+      "/demo/live.txt",
+    ])
+
+    // 到 B 里开 index.md：上限挤掉了 live.txt，共用的一排是 index、package、version
+    mocks.folderId = 8
+    mocks.rerender?.()
+    await flush()
+    const [pkg, version] = mocks.fileTabs
+    const index = fileTab("/docs/index.md")
+    await act(async () => {
+      mocks.fileTabs = [index, pkg, version]
+      mocks.activeFileTabId = index.id
+      mocks.rerender?.()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    first.unmount()
+
+    // 刷新：活动项目回到 A
+    resetFileTabsPersistenceForTests()
+    mocks.folderId = 7
+    mocks.fileTabs = []
+    mocks.activeFileTabId = null
+    mount()
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/docs/index.md",
+      "/demo/package.json",
+      "/demo/version.ts",
+    ])
+    expect(mocks.activeFileTabId).toBe(index.id)
+  })
+
+  it("标签不跟随项目：会话标签全关掉、没有当前项目时改了共用那排，刷新后还是那一排", async () => {
+    writePersistedFileTabs(7, {
+      paths: ["/repo/a.ts", "/repo/b.ts"],
+      active: "/repo/a.ts",
+    })
+    const first = mount()
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/repo/a.ts",
+      "/repo/b.ts",
+    ])
+
+    // 会话标签全关掉：没有当前项目了，共用那排还开着文件；接着开一个、关一个、选一个
+    mocks.folderId = null
+    mocks.rerender?.()
+    await flush()
+    const [, b] = mocks.fileTabs
+    const c = fileTab("/repo/c.ts")
+    await act(async () => {
+      mocks.fileTabs = [b, c]
+      mocks.activeFileTabId = c.id
+      mocks.rerender?.()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    first.unmount()
+    expect(readSharedFileTabs()).toMatchObject({
+      paths: ["/repo/b.ts", "/repo/c.ts"],
+      active: "/repo/c.ts",
+    })
+
+    // 刷新：还是没有当前项目，共用那排原样回来
+    resetFileTabsPersistenceForTests()
+    mocks.fileTabs = []
+    mocks.activeFileTabId = null
+    mount()
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/repo/b.ts",
+      "/repo/c.ts",
+    ])
+    expect(mocks.activeFileTabId).toBe(c.id)
+  })
+
+  it("标签不跟随项目：刷新后恢复共用那排还没做完就换了项目，新项目接着恢复共用那排，不把它冲掉", async () => {
+    writeSharedFileTabs({
+      paths: ["/docs/index.md", "/demo/package.json", "/demo/version.ts"],
+      active: "/docs/index.md",
+    })
+    writePersistedFileTabs(7, {
+      paths: ["/demo/package.json", "/demo/version.ts", "/demo/live.txt"],
+      active: "/demo/live.txt",
+    })
+    writePersistedFileTabs(8, { paths: ["/other/old.ts"], active: null })
+    // 第一个文件开得慢：开完之前用户换到了项目 8
+    let releaseFirst: () => void = () => {}
+    const base = mocks.openFilePreview.getMockImplementation()!
+    mocks.openFilePreview.mockImplementationOnce(
+      (path: string, options?: unknown) =>
+        new Promise((resolve) => {
+          releaseFirst = () => resolve(base(path, options))
+        })
+    )
+    const first = mount()
+    await flush()
+    mocks.folderId = 8
+    mocks.rerender?.()
+    await flush()
+    await act(async () => {
+      releaseFirst()
+    })
+    await flush()
+    await flush()
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/docs/index.md",
+      "/demo/package.json",
+      "/demo/version.ts",
+    ])
+    first.unmount()
+
+    // 再刷新：还是那一排
+    resetFileTabsPersistenceForTests()
+    mocks.folderId = 7
+    mocks.fileTabs = []
+    mocks.activeFileTabId = null
+    mount()
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/docs/index.md",
+      "/demo/package.json",
+      "/demo/version.ts",
+    ])
+    expect(mocks.activeFileTabId).toBe(fileTab("/docs/index.md").id)
+  })
+
+  it("标签不跟随项目：刷新后恢复共用那排的途中打开了跟随，剩下的不再开进这个项目，改恢复它自己的", async () => {
+    writeSharedFileTabs({
+      paths: ["/docs/index.md", "/demo/package.json", "/demo/version.ts"],
+      active: "/docs/index.md",
+    })
+    writePersistedFileTabs(7, { paths: ["/repo/a.ts"], active: "/repo/a.ts" })
+    const tabs = useScopedTabs()
+    const base = mocks.openFilePreview.getMockImplementation()!
+    // 共用那排的第一个刚开出来，用户就打开了「标签页跟随文件夹」
+    mocks.openFilePreview.mockImplementation(
+      async (path: string, options?: { folderId?: number }) => {
+        const resolved = await base(path, options)
+        if (path === "/docs/index.md") {
+          useFolderTabsStore.setState({ enabled: true, scope: 7 })
+          mocks.rerender?.()
+        }
+        return resolved
+      }
+    )
+    mount()
+    await flush()
+    await flush()
+    await flush()
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(tabs.paths(7)).not.toContain("/demo/package.json")
+    expect(tabs.paths(7)).not.toContain("/demo/version.ts")
+    expect(tabs.paths(7)).toContain("/repo/a.ts")
+  })
+
+  it("刷新时先挂载、后读出开关为开：不读共用的那一排，只恢复这个项目自己的", async () => {
+    writeSharedFileTabs({
+      paths: ["/docs/index.md", "/demo/package.json", "/demo/version.ts"],
+      active: "/docs/index.md",
+    })
+    writePersistedFileTabs(7, { paths: ["/repo/a.ts"], active: "/repo/a.ts" })
+    // 新文档：开关还没从本机读出来（enabled 还是初始的 false）
+    useFolderTabsStore.setState({ preferenceHydrated: false })
+    const tabs = useScopedTabs()
+    mount()
+    await flush()
+    await flush()
+    // 读出来是开（没存过就是默认的开）
+    await act(async () => {
+      useFolderTabsStore.getState().hydratePreference()
+      // 真实页面里范围由活动项目决定；这里的假工作区没有，直接给上
+      useFolderTabsStore.setState({ scope: 7 })
+      mocks.rerender?.()
+    })
+    await flush()
+    await flush()
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(useFolderTabsStore.getState().enabled).toBe(true)
+    expect(tabs.paths(7)).toEqual(["/repo/a.ts"])
+    expect(mocks.openFilePreview).not.toHaveBeenCalledWith(
+      "/docs/index.md",
+      expect.anything()
+    )
+  })
+
+  it("标签跟随项目时不读共用的那一排，照旧恢复这个项目自己的", async () => {
+    writeSharedFileTabs({ paths: ["/docs/index.md"], active: "/docs/index.md" })
+    writePersistedFileTabs(7, { paths: ["/repo/a.ts"], active: "/repo/a.ts" })
+    useFolderTabsStore.setState({ enabled: true, scope: 7 })
+    const tabs = useScopedTabs()
+    mount()
+    await flush()
+    await flush()
+    expect(tabs.paths(7)).toEqual(["/repo/a.ts"])
   })
 
   it("有没保存的标签让合计一直超过三个：用户自己关掉的标签不当成上限挤掉的，不再冒出来", async () => {

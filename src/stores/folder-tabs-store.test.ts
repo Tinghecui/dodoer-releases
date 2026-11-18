@@ -295,9 +295,12 @@ describe("Folder-tabs conversation scope", () => {
       .mockImplementation(() => {
         throw new Error("denied")
       })
+    expect(useFolderTabsStore.getState().preferenceHydrated).toBe(false)
     expect(() =>
       useFolderTabsStore.getState().hydratePreference()
     ).not.toThrow()
+    // 读不出来也算读完了，等着它的恢复不会一直卡住
+    expect(useFolderTabsStore.getState().preferenceHydrated).toBe(true)
     expect(() => useFolderTabsStore.getState().setEnabled(true)).not.toThrow()
     expect(useFolderTabsStore.getState().enabled).toBe(true)
     get.mockRestore()
@@ -314,6 +317,7 @@ describe("Folder-tabs default preference", () => {
     localStorage.setItem("workspace:tabs-follow-folder:local", "false")
     useFolderTabsStore.getState().hydratePreference()
     expect(useFolderTabsStore.getState().enabled).toBe(false)
+    expect(useFolderTabsStore.getState().preferenceHydrated).toBe(true)
   })
 })
 

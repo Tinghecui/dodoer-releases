@@ -13,6 +13,12 @@ const api = vi.hoisted(() => ({
   readFilePreview: vi.fn<
     (path: string, file: string) => Promise<{ content: string }>
   >(async () => ({ content: "" })),
+  gitShowFile: vi.fn<(path: string, file: string) => Promise<string>>(
+    async () => ""
+  ),
+  gitRollbackFile: vi.fn<(path: string, file: string) => Promise<void>>(
+    async () => {}
+  ),
 }))
 
 vi.mock("@/lib/api", () => ({
@@ -20,8 +26,8 @@ vi.mock("@/lib/api", () => ({
   gitCommit: api.gitCommit,
   gitListRemotes: api.gitListRemotes,
   gitPush: api.gitPush,
-  gitRollbackFile: vi.fn(),
-  gitShowFile: vi.fn(async () => ""),
+  gitRollbackFile: api.gitRollbackFile,
+  gitShowFile: api.gitShowFile,
   gitStatus: api.gitStatus,
   deleteFileTreeEntry: vi.fn(),
   readFilePreview: api.readFilePreview,
@@ -32,6 +38,14 @@ vi.mock("@/contexts/git-credential-context", () => ({
   }),
 }))
 vi.mock("@/components/diff/diff-viewer", () => ({ DiffViewer: () => null }))
+// 图片预览走 image-diff，单独 mock 掉，好断言它收到的新旧两个名字（#527）。
+const imageDiff = vi.hoisted(() => ({
+  loadImageDiffSides: vi.fn(async () => ({
+    original: { kind: "absent" as const },
+    modified: { kind: "absent" as const },
+  })),
+}))
+vi.mock("@/lib/image-diff", () => imageDiff)
 vi.mock("@/components/diff/image-diff-view", () => ({
   ImageDiffView: () => null,
 }))
@@ -69,6 +83,9 @@ beforeEach(() => {
   api.gitPush.mockClear()
   api.gitListRemotes.mockReset()
   api.readFilePreview.mockClear()
+  api.gitShowFile.mockClear()
+  api.gitRollbackFile.mockClear()
+  imageDiff.loadImageDiffSides.mockClear()
   toast.warning.mockClear()
   toast.error.mockClear()
 })
@@ -363,5 +380,233 @@ describe("CommitWorkspace opened for a directory or a scope", () => {
     ])
 
     await screen.findByRole("button", { name: "Commit (200)" })
+  })
+})
+
+// #527: git reports a staged rename as one "old -> new" line. The window lists,
+// ticks and commits the new name, and previews the old side under the old name.
+describe("CommitWorkspace with a renamed file", () => {
+  const STATUS: GitStatusEntry[] = [
+    { status: "R", file: "docs/old name.md -> docs/新 name.md" },
+    { status: "M", file: "notes.md" },
+  ]
+
+  function renderWorkspace(initialPaths?: string[]) {
+    api.gitStatus.mockResolvedValueOnce(STATUS).mockResolvedValue([])
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <CommitWorkspace
+          folderPath="/repo"
+          folderId={1}
+          initialPaths={initialPaths}
+        />
+      </NextIntlClientProvider>
+    )
+  }
+
+  it("ticks the renamed file it was opened for by its new name", async () => {
+    renderWorkspace(["docs/新 name.md"])
+
+    await screen.findByRole("button", { name: "Commit (1)" })
+    expect(screen.queryByText(/have no changes|has no changes/)).toBeNull()
+    expect(screen.getByText("新 name.md")).toBeInTheDocument()
+    expect(screen.queryByText(/ -> /)).toBeNull()
+  })
+
+  it("commits the new name, not the whole rename line", async () => {
+    renderWorkspace(["docs/新 name.md"])
+
+    const commit = await screen.findByRole("button", { name: "Commit (1)" })
+    fireEvent.change(screen.getByPlaceholderText("Enter commit message..."), {
+      target: { value: "rename" },
+    })
+    fireEvent.click(commit)
+
+    await waitFor(() => expect(api.gitCommit).toHaveBeenCalledTimes(1))
+    expect(api.gitCommit).toHaveBeenCalledWith(
+      "/repo",
+      "rename",
+      ["docs/新 name.md"],
+      1
+    )
+  })
+
+  it("reads the old side under the old name and the new side under the new name", async () => {
+    renderWorkspace(["docs/新 name.md"])
+
+    await screen.findByRole("button", { name: "Commit (1)" })
+    await waitFor(() =>
+      expect(api.gitShowFile).toHaveBeenCalledWith("/repo", "docs/old name.md")
+    )
+    expect(api.readFilePreview).toHaveBeenCalledWith("/repo", "docs/新 name.md")
+    expect(api.gitShowFile).not.toHaveBeenCalledWith("/repo", "docs/新 name.md")
+  })
+
+  it("ticks the renamed file by its new name when opened without paths", async () => {
+    renderWorkspace()
+
+    const commit = await screen.findByRole("button", { name: "Commit (2)" })
+    fireEvent.change(screen.getByPlaceholderText("Enter commit message..."), {
+      target: { value: "all" },
+    })
+    fireEvent.click(commit)
+
+    await waitFor(() => expect(api.gitCommit).toHaveBeenCalledTimes(1))
+    expect(api.gitCommit).toHaveBeenCalledWith(
+      "/repo",
+      "all",
+      expect.arrayContaining(["docs/新 name.md", "notes.md"]),
+      1
+    )
+    const calls = api.gitCommit.mock.calls as unknown as [
+      string,
+      string,
+      string[],
+      number,
+    ][]
+    expect(calls[0][2]).toHaveLength(2)
+  })
+
+  it("reads the old side of a renamed image under the old name", async () => {
+    api.gitStatus
+      .mockResolvedValueOnce([
+        { status: "R", file: "img/old logo.png -> img/新 logo.png" },
+      ])
+      .mockResolvedValue([])
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <CommitWorkspace
+          folderPath="/repo"
+          folderId={1}
+          initialPaths={["img/新 logo.png"]}
+        />
+      </NextIntlClientProvider>
+    )
+
+    await screen.findByRole("button", { name: "Commit (1)" })
+    await waitFor(() =>
+      expect(imageDiff.loadImageDiffSides).toHaveBeenCalledWith(
+        "/repo",
+        "img/新 logo.png",
+        expect.objectContaining({ kind: "ref", ref: "HEAD" }),
+        { kind: "worktree" },
+        "img/old logo.png"
+      )
+    )
+  })
+
+  it("keeps a plain file whose name contains the separator whole", async () => {
+    api.gitStatus
+      .mockResolvedValueOnce([{ status: "M", file: "docs/a -> b.md" }])
+      .mockResolvedValue([])
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <CommitWorkspace
+          folderPath="/repo"
+          folderId={1}
+          initialPaths={["docs/a -> b.md"]}
+        />
+      </NextIntlClientProvider>
+    )
+
+    const commit = await screen.findByRole("button", { name: "Commit (1)" })
+    expect(screen.queryByText(/have no changes|has no changes/)).toBeNull()
+    await waitFor(() =>
+      expect(api.gitShowFile).toHaveBeenCalledWith("/repo", "docs/a -> b.md")
+    )
+    expect(api.readFilePreview).toHaveBeenCalledWith("/repo", "docs/a -> b.md")
+    fireEvent.change(screen.getByPlaceholderText("Enter commit message..."), {
+      target: { value: "edit" },
+    })
+    fireEvent.click(commit)
+
+    await waitFor(() => expect(api.gitCommit).toHaveBeenCalledTimes(1))
+    expect(api.gitCommit).toHaveBeenCalledWith(
+      "/repo",
+      "edit",
+      ["docs/a -> b.md"],
+      1
+    )
+  })
+
+  it("rolls back the old name too when rolling back a renamed file", async () => {
+    renderWorkspace(["docs/新 name.md"])
+
+    await screen.findByRole("button", { name: "Commit (1)" })
+    fireEvent.contextMenu(screen.getByText("新 name.md"))
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rollback" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm" }))
+
+    await waitFor(() => expect(api.gitRollbackFile).toHaveBeenCalledTimes(2))
+    expect(api.gitRollbackFile.mock.calls).toEqual([
+      ["/repo", "docs/old name.md"],
+      ["/repo", "docs/新 name.md"],
+    ])
+  })
+
+  it("does not restore an old name that a new untracked file occupies", async () => {
+    api.gitStatus
+      .mockResolvedValueOnce([
+        { status: "R", file: "a.md -> b.md" },
+        { status: "??", file: "a.md" },
+      ])
+      .mockResolvedValue([])
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <CommitWorkspace
+          folderPath="/repo"
+          folderId={1}
+          initialPaths={["b.md"]}
+        />
+      </NextIntlClientProvider>
+    )
+
+    await screen.findByRole("button", { name: "Commit (1)" })
+    fireEvent.contextMenu(screen.getByText("b.md"))
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rollback" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm" }))
+
+    await waitFor(() => expect(api.gitRollbackFile).toHaveBeenCalled())
+    expect(api.gitRollbackFile.mock.calls).toEqual([["/repo", "b.md"]])
+  })
+
+  it("keeps a leading space in the new name of a rename", async () => {
+    api.gitStatus
+      .mockResolvedValueOnce([{ status: "R", file: "a.md ->  b.md" }])
+      .mockResolvedValue([])
+    api.gitCommit.mockResolvedValue({ committed_files: 1 })
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <CommitWorkspace
+          folderPath="/repo"
+          folderId={1}
+          initialPaths={[" b.md"]}
+        />
+      </NextIntlClientProvider>
+    )
+
+    await screen.findByRole("button", { name: "Commit (1)" })
+  })
+
+  it("rolls back the old name outside a directory that holds the new name", async () => {
+    api.gitStatus
+      .mockResolvedValueOnce([{ status: "R", file: "src/a.md -> dst/b.md" }])
+      .mockResolvedValue([])
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <CommitWorkspace folderPath="/repo" folderId={1} />
+      </NextIntlClientProvider>
+    )
+
+    await screen.findByRole("button", { name: "Commit (1)" })
+    fireEvent.contextMenu(screen.getByText("dst"))
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rollback" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm" }))
+
+    await waitFor(() => expect(api.gitRollbackFile).toHaveBeenCalledTimes(2))
+    expect(api.gitRollbackFile.mock.calls).toEqual([
+      ["/repo", "src/a.md"],
+      ["/repo", "dst"],
+    ])
   })
 })

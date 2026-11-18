@@ -141,15 +141,19 @@ async function loadSide(
  * Read both sides of an image diff. Sides load in parallel and settle
  * independently — an added or deleted file resolves one side to `absent`
  * instead of failing the pair.
+ *
+ * `originalFile` is the before side's path when the file was renamed (#527);
+ * it defaults to `file`.
  */
 export async function loadImageDiffSides(
   folderPath: string,
   file: string,
   original: ImageDiffSource,
-  modified: ImageDiffSource
+  modified: ImageDiffSource,
+  originalFile: string = file
 ): Promise<ImageDiffSides> {
   const [originalSide, modifiedSide] = await Promise.all([
-    loadSide(folderPath, file, original),
+    loadSide(folderPath, originalFile, original),
     loadSide(folderPath, file, modified),
   ])
   return { original: originalSide, modified: modifiedSide }

@@ -3173,10 +3173,11 @@ pub async fn git_commit(
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn git_rollback_file(path: String, file: String) -> Result<(), AppCommandError> {
-    let target = file.trim();
-    if target.is_empty() {
+    // 只用 trim 判断是不是空的，路径本身原样用：名字首尾可以是空格（#527）
+    if file.trim().is_empty() {
         return Err(AppCommandError::invalid_input("File path cannot be empty"));
     }
+    let target = file.as_str();
 
     let literal_file = to_git_literal_pathspec(target);
     let restore_output = crate::process::tokio_command("git")
@@ -9473,6 +9474,33 @@ branch refs/heads/main";
                 ("R", "d/旧.txt -> d/新.txt"),
             ]
         );
+    }
+
+    /// 回滚按原名恢复，不去掉名字首尾的空格：提交窗口回滚一次改名时，
+    /// 旧名、新名带首尾空格也要都恢复到位，不能对着去掉空格的路径恢复（#527）。
+    #[tokio::test]
+    async fn git_rollback_file_keeps_spaces_at_the_ends_of_a_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        init_quoting_fixture(root);
+        std::fs::write(root.join("a.md"), "1\n2\n3\n").expect("write");
+        git_run(root, &["add", "-A"]);
+        git_run(root, &["commit", "-q", "-m", "base"]);
+        git_run(root, &["mv", "a.md", " b.md"]);
+        let repo = root.to_str().expect("utf-8 path").to_string();
+
+        // 提交窗口的顺序：先旧名、再新名。
+        git_rollback_file(repo.clone(), "a.md".to_string())
+            .await
+            .expect("rollback old name");
+        git_rollback_file(repo.clone(), " b.md".to_string())
+            .await
+            .expect("rollback new name");
+
+        assert!(root.join("a.md").exists());
+        assert!(!root.join(" b.md").exists());
+        let entries = git_status(repo, Some(true)).await.expect("status");
+        assert!(entries.is_empty(), "left behind: {entries:?}");
     }
 
     /// The diff overviews (working tree, branch, commit) list their files by

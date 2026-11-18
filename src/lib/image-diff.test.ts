@@ -261,4 +261,46 @@ describe("loadImageDiffSides", () => {
       MAX_SIDE_BYTES
     )
   })
+
+  it("reads the old side of a rename under the old name", async () => {
+    gitShowFileBase64Mock.mockResolvedValue({
+      exists: true,
+      ref_missing: false,
+      data: "QUJD",
+      byte_size: 3,
+      too_large: false,
+    })
+    readFileBase64Mock.mockResolvedValue("REVG")
+
+    const sides = await loadImageDiffSides(
+      "/repo",
+      "img/new.png",
+      { kind: "ref", ref: "HEAD" },
+      { kind: "worktree" },
+      "img/old.gif"
+    )
+
+    expect(gitShowFileBase64Mock).toHaveBeenCalledWith(
+      "/repo",
+      "img/old.gif",
+      "HEAD",
+      MAX_SIDE_BYTES
+    )
+    expect(gitShowFileBase64Mock).not.toHaveBeenCalledWith(
+      "/repo",
+      "img/new.png",
+      "HEAD",
+      MAX_SIDE_BYTES
+    )
+    expect(readFileBase64Mock).toHaveBeenCalledWith(
+      "/repo/img/new.png",
+      MAX_SIDE_BYTES
+    )
+    // 旧版本的图片类型按旧名判断。
+    expect(sides.original).toEqual({
+      kind: "image",
+      src: "data:image/gif;base64,QUJD",
+      byteSize: 3,
+    })
+  })
 })

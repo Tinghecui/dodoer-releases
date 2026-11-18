@@ -62,6 +62,11 @@ import {
   type GitRemoteHint,
 } from "@/contexts/git-credential-context"
 import type { GitStatusEntry } from "@/lib/types"
+import {
+  isRenameStatus,
+  rollbackPaths,
+  splitGitStatusRename,
+} from "@/lib/git-status-path"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { DiffViewer } from "@/components/diff/diff-viewer"
@@ -213,6 +218,21 @@ function findFirstFile(nodes: TreeNode[]): string | undefined {
   return undefined
 }
 
+/** 改名的一行（#527）：file 是新名，originalFile 是旧名，预览旧版本时用。 */
+type CommitEntry = GitStatusEntry & { originalFile?: string }
+
+/**
+ * 把状态里的「旧名 -> 新名」拆开，勾选、提交、对路径都用新名。只拆改名、复制的
+ * 行；普通文件名里本来带「 -> 」的原样保留。
+ */
+function toCommitEntries(result: GitStatusEntry[]): CommitEntry[] {
+  return result.map((entry) => {
+    if (!isRenameStatus(entry.status)) return entry
+    const { file, originalFile } = splitGitStatusRename(entry.file)
+    return originalFile ? { ...entry, file, originalFile } : entry
+  })
+}
+
 /** `paths` 里的文件本身，或者 `paths` 里某个目录下面的文件。 */
 function matchesInitialPaths(file: string, paths: readonly string[]) {
   return paths.some((raw) => {
@@ -268,7 +288,7 @@ export function CommitWorkspace({
   const tCommon = useTranslations("Folder.common")
   const tGenerate = useTranslations("CommitMessageGeneration")
   const { withCredentialRetry } = useGitCredential()
-  const [entries, setEntries] = useState<GitStatusEntry[]>([])
+  const [entries, setEntries] = useState<CommitEntry[]>([])
   const containerRef = useRef<HTMLDivElement>(null)
   const [containerWidth, setContainerWidth] = useState(0)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -355,7 +375,7 @@ export function CommitWorkspace({
 
   // Shared diff loading logic — extracted to avoid duplication
   const loadDiff = useCallback(
-    async (file: string, allEntries?: GitStatusEntry[]) => {
+    async (file: string, allEntries?: CommitEntry[]) => {
       if (!folderPath) return
       const requestId = ++diffRequestRef.current
       setDiffFile(file)
@@ -367,8 +387,10 @@ export function CommitWorkspace({
 
       try {
         const statusSource = allEntries ?? entriesRef.current
-        const isUntracked =
-          statusSource.find((e) => e.file === file)?.status === UNTRACKED_STATUS
+        const statusEntry = statusSource.find((e) => e.file === file)
+        const isUntracked = statusEntry?.status === UNTRACKED_STATUS
+        // 改名的文件，旧版本要按旧名去取（#527）。
+        const originalFile = statusEntry?.originalFile ?? file
 
         if (isBinaryImageFile(file)) {
           // An untracked file has no blob at HEAD either way, so the ref read
@@ -377,7 +399,8 @@ export function CommitWorkspace({
             folderPath,
             file,
             { kind: "ref", ref: "HEAD", missingRefIsAbsent: true },
-            { kind: "worktree" }
+            { kind: "worktree" },
+            originalFile
           )
           if (diffRequestRef.current !== requestId) return
           setDiffImage({ file, sides })
@@ -387,7 +410,7 @@ export function CommitWorkspace({
         const [originalContent, modifiedContent] = await Promise.all([
           isUntracked
             ? Promise.resolve("")
-            : gitShowFile(folderPath, file).catch(() => ""),
+            : gitShowFile(folderPath, originalFile).catch(() => ""),
           readFilePreview(folderPath, file)
             .then((r) => r.content)
             .catch(() => ""),
@@ -412,7 +435,7 @@ export function CommitWorkspace({
     setLoadingStatus(true)
     setError(null)
     try {
-      const result = await gitStatus(folderPath, true)
+      const result = toCommitEntries(await gitStatus(folderPath, true))
       setEntries(result)
       const tracked = result.filter(
         (entry) => entry.status !== UNTRACKED_STATUS
@@ -694,7 +717,10 @@ export function CommitWorkspace({
           void (async () => {
             if (!folderPath) return
             try {
-              await gitRollbackFile(folderPath, file)
+              // 改名的新名要连同旧名一起恢复，不然新名被删、旧名留着暂存的删除（#527）
+              for (const target of rollbackPaths(file, entriesRef.current)) {
+                await gitRollbackFile(folderPath, target)
+              }
               toast.success(t("toasts.fileRolledBack"), { description: file })
               if (diffFileRef.current === file) {
                 setDiffFile(null)
@@ -732,7 +758,10 @@ export function CommitWorkspace({
           void (async () => {
             if (!folderPath) return
             try {
-              await gitRollbackFile(folderPath, dirPath)
+              // 目录里改名过来的文件，旧名在目录外的也要恢复（#527）
+              for (const target of rollbackPaths(dirPath, entriesRef.current)) {
+                await gitRollbackFile(folderPath, target)
+              }
               toast.success(t("toasts.dirRolledBack"), {
                 description: label,
               })

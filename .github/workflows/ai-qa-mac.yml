@@ -1,0 +1,70 @@
+# 公开镜像 Tinghecui/dodoer-releases：macOS 桌面 app 的改动验收（源仓库 .cowork/ai-qa/mac/，设计见那里的 README.md）。
+# 和 ai-qa.yml 一样只是个壳：克隆源仓库、exec mac/sealed.sh；输出全进文件、传回源仓库的 Release「ai-qa-artifacts」，
+# 这份日志里只有 AIQA-BEGIN、每个阶段一行进度、AIQA-END，运行结束后 ai-qa-seal.yml 核对。
+# GitHub 自带的 macos-15 机器有图形登录，bash / osascript 预先有「辅助功能」「屏幕录制」授权（2026-11-18 试过：截图、按键、读界面元素、cliclick 都行）。
+name: ai-qa-mac
+run-name: "${{ format('ai-qa-mac {0} {1}', inputs.batch, inputs.changes) }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      changes:
+        description: "要验收的 PR 号，逗号分隔"
+        required: true
+      batch:
+        description: "批次名（只用在报告里）"
+        default: ""
+      version:
+        description: "被测的桌面版 tag，如 v1.6.93（空 = 最新 Release）"
+        default: ""
+      from_version:
+        description: "先装这个旧版、再让它自己升级（测更新链用，如 v1.6.90；空 = 直接装被测版）"
+        default: ""
+      max_turns:
+        default: "600"
+      minutes:
+        description: "测试员最多跑多少分钟"
+        default: "200"
+      model:
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  qa:
+    runs-on: macos-15
+    environment: ai-qa
+    timeout-minutes: 300
+    env:
+      SOURCE_REPO: Tinghecui/cowork-codeg
+      PUBLIC_REPO: ${{ github.repository }}
+      W: /Users/runner/ai-qa-work
+      CHANGES: ${{ inputs.changes }}
+      BATCH: ${{ inputs.batch }}
+      APP_VERSION: ${{ inputs.version }}
+      FROM_VERSION: ${{ inputs.from_version }}
+      MAX_TURNS: ${{ inputs.max_turns || '600' }}
+      MINUTES: ${{ inputs.minutes || '200' }}
+      MODEL: ${{ inputs.model || vars.AIQA_MODEL || 'claude-opus-5-5' }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: run
+        env:
+          AIQA_PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+          PUBLIC_TOKEN: ${{ github.token }}
+          AIQA_CCR_CREDENTIALS: ${{ secrets.AIQA_CCR_CREDENTIALS }}
+          AIQA_CCR_INSTALL_URL: ${{ secrets.AIQA_CCR_INSTALL_URL }}
+          AIQA_VERIFY: ${{ secrets.AIQA_VERIFY }}
+          AIQA_VERIFY_ACCOUNTS: ${{ secrets.AIQA_VERIFY_ACCOUNTS }}
+        run: |
+          set -euo pipefail
+          url="https://x-access-token:${AIQA_PRIVATE_TOKEN}@github.com/${SOURCE_REPO}.git"
+          git init -q .
+          git fetch -q --depth 1 "$url" HEAD 2>/dev/null || { echo "fetch failed"; exit 1; }
+          git checkout -q --detach FETCH_HEAD
+          exec bash .cowork/ai-qa/mac/sealed.sh

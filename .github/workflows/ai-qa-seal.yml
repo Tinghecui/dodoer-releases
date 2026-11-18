@@ -10,7 +10,7 @@ run-name: "ai-qa-seal ${{ inputs.run || github.event.workflow_run.name }}"
 on:
   workflow_run:
     # 加了新的封口 workflow 就加在这里（按 name）
-    workflows: [ai-qa, autopilot-fix, autopilot-review, autopilot-tick]
+    workflows: [ai-qa, ai-qa-mac, autopilot-fix, autopilot-review, autopilot-tick]
     types: [completed]
   workflow_dispatch:
     inputs:

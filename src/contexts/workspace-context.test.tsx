@@ -1336,6 +1336,8 @@ interface BackgroundProbeSnapshot {
     content: string
     isDirty: boolean
     stale: boolean
+    loading: boolean
+    saveState: string
   }>
 }
 
@@ -1361,6 +1363,8 @@ function BackgroundReloadProbe({
       content: tab.content,
       isDirty: Boolean(tab.isDirty),
       stale: Boolean(tab.stale),
+      loading: tab.loading,
+      saveState: tab.saveState ?? "idle",
     })),
   })
   return (
@@ -1603,6 +1607,72 @@ describe("background reload + stale semantics", () => {
     expect(tabA?.content).toBe("dirty-local")
     expect(tabA?.stale).toBe(true)
     expect(mockedApi.readFileForEdit.mock.calls.length).toBe(callsBefore + 1)
+  })
+
+  it("stops after one failed reload when a stale background tab's file is gone", async () => {
+    mockedApi.readFileForEdit
+      .mockResolvedValueOnce({
+        path: "a.ts",
+        content: "a-v1",
+        etag: "ea1",
+        mtime_ms: 1,
+        readonly: false,
+        line_ending: "lf",
+      })
+      .mockResolvedValueOnce({
+        path: "b.ts",
+        content: "b-v1",
+        etag: "eb1",
+        mtime_ms: 1,
+        readonly: false,
+        line_ending: "lf",
+      })
+      .mockRejectedValue(
+        new Error(
+          JSON.stringify({
+            code: "not_found",
+            message: "Folder does not exist",
+          })
+        )
+      )
+
+    let snap: BackgroundProbeSnapshot = { activeId: null, tabs: [] }
+    render(
+      <WorkspaceProvider>
+        <BackgroundReloadProbe onCapture={(s) => (snap = s)} />
+      </WorkspaceProvider>
+    )
+
+    await act(async () => {
+      screen.getByText("open-a").click()
+    })
+    await act(async () => {
+      screen.getByText("open-b").click()
+    })
+    // 文件夹在外面被删：后台的 A 被标成过期
+    await act(async () => {
+      screen.getByText("stale-a").click()
+    })
+    const callsBefore = mockedApi.readFileForEdit.mock.calls.length
+
+    // 点 A 的标签：重读失败一次就该停下，不能一直重试
+    await act(async () => {
+      screen.getByText("switch-a").click()
+    })
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0))
+      })
+    }
+
+    expect(snap.activeId).toBe(fileTabId("/repo/a.ts"))
+    expect(mockedApi.readFileForEdit.mock.calls.length).toBe(callsBefore + 1)
+    const tabA = snap.tabs.find((t) => t.id === fileTabId("/repo/a.ts"))
+    expect(tabA?.saveState).toBe("error")
+    expect(tabA?.stale).toBe(false)
+    expect(tabA?.loading).toBe(false)
+    // 不用后端原文，给一句「已删除或移走」
+    expect(tabA?.content).not.toContain("Folder does not exist")
   })
 
   it("reloadOpenFileBackground is a no-op when the path is not open", async () => {

@@ -3556,6 +3556,7 @@
       "confirmCloseOtherDirtyTabs": "未保存の変更がある他のタブを閉じますか？",
       "confirmCloseAllDirtyTabs": "未保存の変更があるすべてのタブを閉じますか？",
       "unableLoadContent": "内容を読み込めません。\n\n{message}",
+      "fileNoLongerExists": "ファイルは削除または移動されました。",
       "previewRequestTimedOut": "プレビュー要求がタイムアウトしました",
       "diffRequestTimedOut": "Diff 要求がタイムアウトしました",
       "branchCompareRequestTimedOut": "ブランチ比較要求がタイムアウトしました",

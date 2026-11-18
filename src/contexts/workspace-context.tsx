@@ -1799,6 +1799,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                 ...tab,
                 saveState: "error",
                 saveError: errorMessage,
+                // 和 rejectFileTab 一样清掉过期标记：读失败本身就是这次核对的
+                // 结果。不清的话，激活中的过期标签会被监视钩子当成要重读的，
+                // 失败了又重读，无限循环（文件被删后点它的后台标签）。
+                ...(tab.kind === "file" ? { stale: false } : {}),
               }
             : tab
         )
@@ -2299,7 +2303,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
               prev && prev.path === absPath ? null : prev
             )
           }
-          rejectTab(tabId, toErrorMessage(error))
+          // 文件（或它所在的文件夹）已经不在了：给一句人话，不用后端原文
+          rejectTab(
+            tabId,
+            isNotFoundError(error)
+              ? t("fileNoLongerExists")
+              : toErrorMessage(error)
+          )
         }
       })()
       return absPath

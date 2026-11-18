@@ -3556,6 +3556,7 @@
       "confirmCloseOtherDirtyTabs": "Close other tabs with unsaved changes?",
       "confirmCloseAllDirtyTabs": "Close all tabs with unsaved changes?",
       "unableLoadContent": "Unable to load content.\n\n{message}",
+      "fileNoLongerExists": "The file was deleted or moved.",
       "previewRequestTimedOut": "Preview request timed out",
       "diffRequestTimedOut": "Diff request timed out",
       "branchCompareRequestTimedOut": "Branch compare request timed out",

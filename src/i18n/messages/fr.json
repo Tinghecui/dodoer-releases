@@ -3556,6 +3556,7 @@
       "confirmCloseOtherDirtyTabs": "Fermer les autres onglets avec des modifications non enregistrées ?",
       "confirmCloseAllDirtyTabs": "Fermer tous les onglets avec des modifications non enregistrées ?",
       "unableLoadContent": "Impossible de charger le contenu.\n\n{message}",
+      "fileNoLongerExists": "Le fichier a été supprimé ou déplacé.",
       "previewRequestTimedOut": "La requête de prévisualisation a expiré",
       "diffRequestTimedOut": "La requête Diff a expiré",
       "branchCompareRequestTimedOut": "La requête de comparaison de branches a expiré",

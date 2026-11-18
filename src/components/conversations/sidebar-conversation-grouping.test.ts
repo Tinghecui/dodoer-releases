@@ -24,6 +24,7 @@ import {
   selectPinnedWithReuse,
   selectRecentConversationsWithReuse,
   worktreeChildrenByParent,
+  withQueuedFirst,
   worktreeHeaderAlias,
   type ConversationRow,
   type SidebarRow,
@@ -2422,5 +2423,60 @@ describe("compareByAttention with background work", () => {
     const unread = conv(2, 10, { status: "pending_review" })
     const sorted = [unread, running].sort(compareByAttention(() => true))
     expect(sorted.map((c) => c.id)).toEqual([1, 2])
+  })
+})
+
+// #650 第 11 次返工（收件箱 #716 的 P2）：只有失败排队消息的会话（消息没发出去、
+// 智能体也没在跑）和刚建的会话一样排在前面：「最近」的第一页、文件夹的
+// 「再显示 N 条」之前都看得到。不算进运行中，只影响排序。
+describe("withQueuedFirst", () => {
+  const isUnread = (c: DbConversationSummary) => c.id >= 100
+  const queuedId = 5
+  const sortsFirst = withQueuedFirst(
+    isConversationActiveDefault,
+    (c) => c.id === queuedId
+  )
+  function isConversationActiveDefault(c: DbConversationSummary) {
+    return c.status === "in_progress"
+  }
+
+  it("puts a conversation with only failed queued messages on Recent's first page", () => {
+    const unread = Array.from({ length: RECENT_PAGE_SIZE + 2 }, (_, i) =>
+      conv(100 + i, 1, { status: "completed" })
+    )
+    const queued = conv(queuedId, 1, { status: "pending_review" })
+    const list = selectRecentConversationsWithReuse(
+      [...unread, queued],
+      true,
+      new Set([1]),
+      [],
+      "all",
+      isUnread,
+      () => false,
+      sortsFirst
+    )
+    expect(list.slice(0, RECENT_PAGE_SIZE).map((c) => c.id)).toContain(queuedId)
+    expect(list[0].id).toBe(queuedId)
+  })
+
+  it("puts it ahead of its folder's other sessions", () => {
+    const others = Array.from({ length: FOLDER_PAGE_SIZE + 2 }, (_, i) =>
+      conv(100 + i, 1, { status: "completed" })
+    )
+    const queued = conv(queuedId, 1, { status: "pending_review" })
+    const grouped = groupByFolderWithReuse(
+      [...others, queued],
+      "created",
+      new Map(),
+      undefined,
+      isUnread,
+      sortsFirst
+    )
+    expect(grouped.get(1)?.[0].id).toBe(queuedId)
+  })
+
+  it("leaves everything else to the running test", () => {
+    expect(sortsFirst(conv(7, 1, { status: "in_progress" }))).toBe(true)
+    expect(sortsFirst(conv(8, 1, { status: "pending_review" }))).toBe(false)
   })
 })

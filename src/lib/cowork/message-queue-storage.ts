@@ -46,6 +46,15 @@ export function messageQueueStorageKey(conversationId: number): string {
   return `${STORAGE_PREFIX}:${scope}:${conversationId}`
 }
 
+/** A draft tab's queue before its conversation exists (#650). The draft tab
+ *  comes back after a reload under the same id, and so does what it queued;
+ *  once the conversation is created the queue moves to its key. */
+export function draftMessageQueueStorageKey(tabId: string): string {
+  const remoteId = getActiveRemoteConnectionId()
+  const scope = remoteId == null ? "local" : `remote-${remoteId}`
+  return `${STORAGE_PREFIX}:${scope}:draft-${tabId}`
+}
+
 /** How often a window that holds a claim refreshes it. */
 export const CLAIM_REFRESH_MS = 20_000
 /** A claim not refreshed for this long belongs to a window that is gone.
@@ -215,12 +224,68 @@ export function readStoredQueue(key: string): QueuedMessage[] {
   return items
 }
 
+// #650 第 11 次返工（收件箱 #716 的 P2）：侧栏把存着排队消息的会话排在前面，
+// 存的东西一变就要重排。本窗口写的在 `writeStoredQueue` 里通知，别的窗口
+// 写的靠 `storage` 事件。
+let storedQueuesVer = 0
+const storedQueueListeners = new Set<() => void>()
+let storageEventArmed = false
+
+function noteStoredQueuesChanged(): void {
+  storedQueuesVer += 1
+  for (const listener of [...storedQueueListeners]) listener()
+}
+
+/** 存着的排队消息变了就调 `listener`（给 useSyncExternalStore 用）。 */
+export function subscribeStoredQueues(listener: () => void): () => void {
+  storedQueueListeners.add(listener)
+  if (!storageEventArmed && typeof window !== "undefined") {
+    storageEventArmed = true
+    window.addEventListener("storage", (e) => {
+      if (e.key == null || e.key.startsWith(STORAGE_PREFIX)) {
+        noteStoredQueuesChanged()
+      }
+    })
+  }
+  return () => {
+    storedQueueListeners.delete(listener)
+  }
+}
+
+/** 每变一次加一（给 useSyncExternalStore 当快照）。 */
+export function storedQueuesVersion(): number {
+  return storedQueuesVer
+}
+
+/** 当前后端上 `conversationId` 这条会话存着排队消息（没发出去的、失败的）。 */
+export function hasStoredQueue(conversationId: number): boolean {
+  const store = storage()
+  if (!store) return false
+  try {
+    return store.getItem(messageQueueStorageKey(conversationId)) != null
+  } catch {
+    return false
+  }
+}
+
 /** Mirror `queue` into `key`; an empty queue removes the entry. Never
  *  throws: storage full or unavailable only loses the restart copy. Only the
  *  window holding the claim (`claimStoredQueue`) calls this. */
 export function writeStoredQueue(key: string, queue: QueuedMessage[]): void {
   const store = storage()
   if (!store) return
+  try {
+    writeStoredQueueTo(store, key, queue)
+  } finally {
+    noteStoredQueuesChanged()
+  }
+}
+
+function writeStoredQueueTo(
+  store: Storage,
+  key: string,
+  queue: QueuedMessage[]
+): void {
   try {
     if (queue.length === 0) {
       store.removeItem(key)

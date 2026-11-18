@@ -359,9 +359,13 @@ describe("useMessageQueue across a reload", () => {
     await settle()
     act(() => result.current.enqueue(draft("A"), null))
     expect(window.localStorage.getItem(KEY)).not.toBeNull()
+    let sentId = ""
     act(() => {
-      result.current.dequeue()
+      sentId = result.current.dequeue()?.id ?? ""
     })
+    // #650 第 10 次返工：出队后、后端收下前还留着，收下了才清
+    expect(window.localStorage.getItem(KEY)).not.toBeNull()
+    act(() => result.current.settle(sentId))
     expect(window.localStorage.getItem(KEY)).toBeNull()
     unmount()
   })
@@ -417,6 +421,295 @@ describe("useMessageQueue across a reload", () => {
     // whatever their failure kind (A came back as "auth").
     expect(texts(result.current.queue)).toEqual(["A", "D"])
     expect(window.localStorage.getItem(KEY)).not.toContain('"displayText":"D"')
+    unmount()
+  })
+
+  // #650：草稿先按标签存，会话建好后换成按会话号存，标签那份要清掉，
+  // 不然刷新回来草稿标签还会读出一份。
+  it("moves the stored copy when the key changes", async () => {
+    const DRAFT_KEY = "cowork:message-queue:v1:local:draft-tab-1"
+    const { result, rerender, unmount } = renderHook(
+      ({ storageKey }: { storageKey: string | null }) =>
+        useMessageQueue(storageKey),
+      { initialProps: { storageKey: DRAFT_KEY as string | null } }
+    )
+    await settle()
+    act(() => result.current.enqueue(draft("A"), null))
+    expect(window.localStorage.getItem(DRAFT_KEY)).toContain(
+      '"displayText":"A"'
+    )
+    rerender({ storageKey: KEY })
+    await settle()
+    expect(window.localStorage.getItem(KEY)).toContain('"displayText":"A"')
+    expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull()
+    expect(texts(result.current.queue)).toEqual(["A"])
+    unmount()
+    // 卸载不清会话号那份：刷新回来要读它。
+    expect(window.localStorage.getItem(KEY)).toContain('"displayText":"A"')
+  })
+
+  // #650：刷新回来的草稿标签在认领确认之前就绑上了找回的会话，
+  // 草稿标签那份也要读回来，挪到会话号下，不能丢。
+  it("reads the draft copy back when the key changes before the claim settles", async () => {
+    const DRAFT_KEY = "cowork:message-queue:v1:local:draft-tab-2"
+    const before = renderHook(() => useMessageQueue(DRAFT_KEY))
+    await settle()
+    act(() => before.result.current.enqueue(draft("A"), null))
+    before.unmount()
+
+    const { result, rerender, unmount } = renderHook(
+      ({ storageKey }: { storageKey: string | null }) =>
+        useMessageQueue(storageKey),
+      { initialProps: { storageKey: DRAFT_KEY as string | null } }
+    )
+    rerender({ storageKey: KEY })
+    await settle()
+    expect(texts(result.current.queue)).toEqual(["A"])
+    expect(result.current.queue[0].failed).toBe(true)
+    expect(window.localStorage.getItem(KEY)).toContain('"displayText":"A"')
+    expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull()
+    unmount()
+  })
+
+  // #650 第 7 次返工（P1）：认领要等 150 毫秒才确认，这期间按回车再刷新，
+  // 消息不能只在内存里。下面三条都不等认领确认就去看存储。
+  it("stores a message queued before the claim settles", () => {
+    const DRAFT_KEY = "cowork:message-queue:v1:local:draft-tab-3"
+    const { result, unmount } = renderHook(() => useMessageQueue(DRAFT_KEY))
+    act(() => result.current.enqueue(draft("A"), null))
+    expect(window.localStorage.getItem(DRAFT_KEY)).toContain(
+      '"displayText":"A"'
+    )
+    unmount()
+    // 刷新（卸载）后还在
+    expect(window.localStorage.getItem(DRAFT_KEY)).toContain(
+      '"displayText":"A"'
+    )
+  })
+
+  it("keeps what was stored when queueing before the claim settles", async () => {
+    await storedABC()
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    act(() => result.current.enqueue(draft("D"), null))
+    const stored = window.localStorage.getItem(KEY) ?? ""
+    for (const text of ["A", "B", "C", "D"]) {
+      expect(stored).toContain(`"displayText":"${text}"`)
+    }
+    await settle()
+    expect(texts(result.current.queue)).toEqual(["A", "B", "C", "D"])
+    unmount()
+  })
+
+  it("does not read back what left the queue before the claim settled", async () => {
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    act(() => result.current.enqueue(draft("A"), null))
+    act(() => {
+      // #650 第 10 次返工：出队的那条要等有了着落（settle）才从存储里拿掉
+      const sent = result.current.dequeue()
+      if (sent) result.current.settle?.(sent.id)
+    })
+    expect(window.localStorage.getItem(KEY)).toBeNull()
+    await settle()
+    expect(result.current.queue).toEqual([])
+    unmount()
+  })
+
+  it("has the conversation's key hold the queue the moment the key changes", async () => {
+    const DRAFT_KEY = "cowork:message-queue:v1:local:draft-tab-4"
+    const { result, rerender, unmount } = renderHook(
+      ({ storageKey }: { storageKey: string | null }) =>
+        useMessageQueue(storageKey),
+      { initialProps: { storageKey: DRAFT_KEY as string | null } }
+    )
+    await settle()
+    act(() => result.current.enqueue(draft("A"), null))
+    rerender({ storageKey: KEY })
+    // 会话一建好就刷新：刷新回来按会话号读，这一刻会话号那份就得有
+    expect(window.localStorage.getItem(KEY)).toContain('"displayText":"A"')
+    unmount()
+    expect(window.localStorage.getItem(KEY)).toContain('"displayText":"A"')
+  })
+
+  // #650 第 8 次返工：回车当下（排队的这一刻、React 的 effect 还没跑）就要
+  // 写进存储，不能等下一次渲染后的 effect；这时刷新也不丢。
+  it("stores a queued message before any effect runs", async () => {
+    const DRAFT_KEY = "cowork:message-queue:v1:local:draft-tab-5"
+    const { result, unmount } = renderHook(() => useMessageQueue(DRAFT_KEY))
+    let seen: string | null = null
+    act(() => {
+      result.current.enqueue(draft("A"), null)
+      seen = window.localStorage.getItem(DRAFT_KEY)
+    })
+    expect(seen).toContain('"displayText":"A"')
+    await settle()
+    let afterClaim: string | null = null
+    act(() => {
+      result.current.enqueue(draft("B"), null)
+      afterClaim = window.localStorage.getItem(DRAFT_KEY)
+    })
+    expect(afterClaim).toContain('"displayText":"B"')
+    unmount()
+  })
+
+  // #650 第 8 次返工：标签绑上会话以后、排队区还没挪到会话号下就刷新，
+  // 刷新回来的标签按会话号读；标签那份也要一起读回来，挪到会话号下。
+  it("reads the tab's draft copy back for a tab already bound", async () => {
+    const DRAFT_KEY = "cowork:message-queue:v1:local:draft-tab-6"
+    const before = renderHook(() => useMessageQueue(DRAFT_KEY))
+    await settle()
+    act(() => before.result.current.enqueue(draft("A"), null))
+    before.unmount()
+
+    const { result, unmount } = renderHook(() =>
+      useMessageQueue(KEY, { alsoReadKey: DRAFT_KEY })
+    )
+    await settle()
+    expect(texts(result.current.queue)).toEqual(["A"])
+    expect(result.current.queue[0].failed).toBe(true)
+    expect(window.localStorage.getItem(KEY)).toContain('"displayText":"A"')
+    expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull()
+    unmount()
+  })
+
+  // #650 第 9 次返工：刷新回来的已绑标签 id 是按会话号重新生成的
+  // （conv-…），不是原来的草稿标签 id，按标签读不回草稿那份。绑上会话的
+  // 那一刻就把排队区挪到会话号下（moveStorageTo），刷新在 key 跟着渲染
+  // 换过来之前也读得回来。
+  it("moves the queue to the conversation key the moment the tab binds", async () => {
+    const DRAFT_KEY = "cowork:message-queue:v1:local:draft-new-1-abc"
+    const RESTORED_TAB_DRAFT_KEY =
+      "cowork:message-queue:v1:local:draft-conv-3-codex-42"
+    const before = renderHook(() => useMessageQueue(DRAFT_KEY))
+    // 认领还没确认（回车后马上建好会话）
+    act(() => before.result.current.enqueue(draft("A"), null))
+    act(() => before.result.current.moveStorageTo(KEY))
+    expect(window.localStorage.getItem(KEY)).toContain('"displayText":"A"')
+    expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull()
+    // 认领确认晚到，也不把草稿那份写回去
+    await settle()
+    expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull()
+    // 渲染还没换 key 就刷新
+    before.unmount()
+
+    const { result, unmount } = renderHook(() =>
+      useMessageQueue(KEY, { alsoReadKey: RESTORED_TAB_DRAFT_KEY })
+    )
+    await settle()
+    expect(texts(result.current.queue)).toEqual(["A"])
+    expect(result.current.queue[0].failed).toBe(true)
+    unmount()
+  })
+
+  // 刷新回来、存储里的草稿那份还没读回内存就绑上了找回的会话：挪的时候
+  // 存储里那份也要一起带过去。
+  it("carries the stored draft copy along when it was not read back yet", async () => {
+    const DRAFT_KEY = "cowork:message-queue:v1:local:draft-new-2-def"
+    const first = renderHook(() => useMessageQueue(DRAFT_KEY))
+    await settle()
+    act(() => first.result.current.enqueue(draft("A"), null))
+    first.unmount()
+
+    const second = renderHook(() => useMessageQueue(DRAFT_KEY))
+    act(() => second.result.current.moveStorageTo(KEY))
+    expect(window.localStorage.getItem(KEY)).toContain('"displayText":"A"')
+    expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull()
+    second.unmount()
+  })
+
+  // #650 第 10 次返工：连上以后自动发送把消息出了队，后端还没收下就刷新，
+  // 消息不能丢：刷新回来读回成失败、带重试。
+  it("keeps a message the flush took out stored until the send settles", async () => {
+    const first = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    act(() => first.result.current.enqueue(draft("A"), null))
+    act(() => {
+      first.result.current.dequeue()
+    })
+    expect(first.result.current.queue).toEqual([])
+    // 发送请求还在路上就刷新
+    first.unmount()
+
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    expect(texts(result.current.queue)).toEqual(["A"])
+    expect(result.current.queue[0].failed).toBe(true)
+    unmount()
+  })
+
+  it("keeps the in-flight message stored when the key moves to the conversation", async () => {
+    const DRAFT_KEY = "cowork:message-queue:v1:local:draft-new-3-ghi"
+    const first = renderHook(() => useMessageQueue(DRAFT_KEY))
+    act(() => first.result.current.enqueue(draft("A"), null))
+    act(() => {
+      first.result.current.dequeue()
+    })
+    act(() => first.result.current.moveStorageTo?.(KEY))
+    first.unmount()
+
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    expect(texts(result.current.queue)).toEqual(["A"])
+    unmount()
+  })
+
+  // 第 12 次返工：连上了、排队区是空的，回车直接发；建会话和发送请求都还在
+  // 路上就刷新，这条也要读得回来。
+  it("keeps a direct send stored while it is on its way", async () => {
+    const DRAFT_KEY = "cowork:message-queue:v1:local:draft-new-4-jkl"
+    const first = renderHook(() => useMessageQueue(DRAFT_KEY))
+    let heldId = ""
+    act(() => {
+      heldId = first.result.current.hold?.(draft("A"), null) ?? ""
+    })
+    // 不进排队区（主区显示的是这条消息本身）
+    expect(first.result.current.queue).toEqual([])
+    expect(first.result.current.getQueueLength()).toBe(0)
+    first.unmount()
+
+    const second = renderHook(() => useMessageQueue(DRAFT_KEY))
+    await settle()
+    expect(texts(second.result.current.queue)).toEqual(["A"])
+    expect(second.result.current.queue[0].failed).toBe(true)
+    second.unmount()
+    expect(heldId).not.toBe("")
+  })
+
+  it("drops a held direct send once it settles, and carries it when the key moves", async () => {
+    const DRAFT_KEY = "cowork:message-queue:v1:local:draft-new-5-mno"
+    const first = renderHook(() => useMessageQueue(DRAFT_KEY))
+    await settle()
+    let heldId = ""
+    act(() => {
+      heldId = first.result.current.hold?.(draft("A"), null) ?? ""
+    })
+    act(() => first.result.current.moveStorageTo?.(KEY))
+    act(() => first.result.current.hold?.(draft("B"), null))
+    act(() => first.result.current.settle?.(heldId))
+    first.unmount()
+
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    expect(texts(result.current.queue)).toEqual(["B"])
+    unmount()
+  })
+
+  it("drops the stored copy once the send is accepted, and keeps the rest", async () => {
+    const first = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    act(() => {
+      first.result.current.enqueue(draft("A"), null)
+      first.result.current.enqueue(draft("B"), null)
+    })
+    let sentId = ""
+    act(() => {
+      sentId = first.result.current.dequeue()?.id ?? ""
+    })
+    act(() => first.result.current.settle?.(sentId))
+    first.unmount()
+
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    expect(texts(result.current.queue)).toEqual(["B"])
     unmount()
   })
 })

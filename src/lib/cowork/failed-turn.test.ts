@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest"
 
 import type { LiveContentBlock } from "@/contexts/acp-connections-context"
-import { failedTurnRequeueKind, turnHadAgentOutput } from "./failed-turn"
+import {
+  failedTurnRequeueKind,
+  lostTurnRequeueKind,
+  turnHadAgentOutput,
+} from "./failed-turn"
 
 const turnError: LiveContentBlock = {
   type: "turn_error",
@@ -56,5 +60,22 @@ describe("turnHadAgentOutput", () => {
         turnError,
       ])
     ).toBe(false)
+  })
+})
+
+// 第 11 次返工（#650，收件箱 #716）：智能体进程在回合里退出、什么都没回，
+// 也没有 turn_error 这一行时，消息不能跟着这一轮消失，要放回排队区带重试。
+describe("lostTurnRequeueKind", () => {
+  it("puts the message back when the agent went away before answering", () => {
+    expect(lostTurnRequeueKind([], "disconnected")).toBe("turn_failed")
+    expect(lostTurnRequeueKind(null, "error")).toBe("turn_failed")
+  })
+
+  it("keeps a message the agent already answered out of the queue", () => {
+    expect(lostTurnRequeueKind([toolCall], "disconnected")).toBeNull()
+  })
+
+  it("does nothing for a turn that ended normally", () => {
+    expect(lostTurnRequeueKind([], "connected")).toBeNull()
   })
 })

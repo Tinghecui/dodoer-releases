@@ -10,8 +10,14 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type Ref,
 } from "react"
+import {
+  hasStoredQueue,
+  storedQueuesVersion,
+  subscribeStoredQueues,
+} from "@/lib/cowork/message-queue-storage"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { Virtualizer, type VirtualizerHandle } from "virtua"
@@ -143,6 +149,7 @@ import {
   selectChatConversationsWithReuse,
   selectPinnedWithReuse,
   selectRecentConversationsWithReuse,
+  withQueuedFirst,
   worktreeChildrenByParent,
   worktreeHeaderAlias,
   type DragSlot,
@@ -1560,6 +1567,18 @@ export function SidebarConversationList({
       isConversationActive(backgroundState, conv),
     [backgroundState]
   )
+  // Cowork fork（#650 第 11 次返工，收件箱 #716 的 P2）：只有失败排队消息的
+  // 会话（消息没发出去、智能体也没在跑）排序时和在跑的一样排在前面，「最近」
+  // 和文件夹里都看得到。只给排序用，不算进运行中。存的排队消息一变就重排。
+  const storedQueuesVer = useSyncExternalStore(
+    subscribeStoredQueues,
+    storedQueuesVersion,
+    storedQueuesVersion
+  )
+  const sortsFirst = useMemo(() => {
+    void storedQueuesVer
+    return withQueuedFirst(isActive, (conv) => hasStoredQueue(conv.id))
+  }, [isActive, storedQueuesVer])
 
   // Flat "Recent" bucket: every reachable conversation — folder-bound and chat
   // alike — most recently active first, gated on the folder still being open so
@@ -1578,7 +1597,7 @@ export function SidebarConversationList({
       recentFilter,
       isUnread,
       isAwaiting,
-      isActive
+      sortsFirst
     )
     recentConvsRef.current = next
     return next
@@ -1589,7 +1608,7 @@ export function SidebarConversationList({
     recentFilter,
     isUnread,
     isAwaiting,
-    isActive,
+    sortsFirst,
   ])
 
   // Maps each open worktree child folder → its (open) root folder. A child is
@@ -1628,11 +1647,17 @@ export function SidebarConversationList({
       byFolderRef.current,
       displayChildToParent,
       isUnread,
-      isActive
+      sortsFirst
     )
     byFolderRef.current = grouped
     return grouped
-  }, [folderConversations, sortMode, displayChildToParent, isUnread, isActive])
+  }, [
+    folderConversations,
+    sortMode,
+    displayChildToParent,
+    isUnread,
+    sortsFirst,
+  ])
 
   // Counts the unfiltered-but-non-pinned conversations per display group, so the
   // empty-hint renderer distinguishes a truly empty folder from one whose rows

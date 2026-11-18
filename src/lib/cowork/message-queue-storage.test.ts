@@ -21,9 +21,13 @@ import {
   MAX_STORED_CHARS,
   canClaimStoredQueue,
   claimStoredQueue,
+  draftMessageQueueStorageKey,
+  hasStoredQueue,
   messageQueueStorageKey,
   readStoredQueue,
   releaseStoredQueue,
+  storedQueuesVersion,
+  subscribeStoredQueues,
   writeStoredQueue,
 } from "./message-queue-storage"
 
@@ -49,6 +53,19 @@ describe("messageQueueStorageKey", () => {
     expect(messageQueueStorageKey(7)).toBe("cowork:message-queue:v1:local:7")
     h.remoteId = 3
     expect(messageQueueStorageKey(7)).toBe("cowork:message-queue:v1:remote-3:7")
+  })
+})
+
+// #650：还没建会话的草稿按标签存，刷新回来草稿标签还在，排队的消息也在。
+describe("draftMessageQueueStorageKey", () => {
+  it("is per draft tab and per backend, apart from conversation keys", () => {
+    expect(draftMessageQueueStorageKey("tab-a")).toBe(
+      "cowork:message-queue:v1:local:draft-tab-a"
+    )
+    h.remoteId = 3
+    expect(draftMessageQueueStorageKey("tab-a")).toBe(
+      "cowork:message-queue:v1:remote-3:draft-tab-a"
+    )
   })
 })
 
@@ -231,5 +248,32 @@ describe("acquireStoredQueue", () => {
     const duplicate = await otherPage()
     expect(duplicate.canClaimStoredQueue(KEY)).toBe(false)
     await expect(duplicate.acquireStoredQueue(KEY)).resolves.toBe(false)
+  })
+})
+
+// #650 第 11 次返工（收件箱 #716 的 P2）：只有失败排队消息的会话要排在侧栏
+// 前面，侧栏得知道哪些会话存着排队消息，存的东西变了要重排。
+describe("hasStoredQueue", () => {
+  beforeEach(() => localStorage.clear())
+
+  it("tells which conversations keep queued messages", () => {
+    expect(hasStoredQueue(31)).toBe(false)
+    writeStoredQueue(messageQueueStorageKey(31), [item("A")])
+    expect(hasStoredQueue(31)).toBe(true)
+    expect(hasStoredQueue(32)).toBe(false)
+    writeStoredQueue(messageQueueStorageKey(31), [])
+    expect(hasStoredQueue(31)).toBe(false)
+  })
+
+  it("tells the subscribers each time a stored queue changes", () => {
+    const seen = vi.fn()
+    const stop = subscribeStoredQueues(seen)
+    const before = storedQueuesVersion()
+    writeStoredQueue(messageQueueStorageKey(31), [item("A")])
+    expect(seen).toHaveBeenCalledTimes(1)
+    expect(storedQueuesVersion()).not.toBe(before)
+    stop()
+    writeStoredQueue(messageQueueStorageKey(31), [])
+    expect(seen).toHaveBeenCalledTimes(1)
   })
 })

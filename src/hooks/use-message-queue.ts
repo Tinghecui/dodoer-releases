@@ -1,18 +1,28 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react"
 import type { PromptDraft } from "@/lib/types"
 import { randomUUID } from "@/lib/utils"
 import {
   CLAIM_REFRESH_MS,
   acquireStoredQueue,
+  canClaimStoredQueue,
   claimStoredQueue,
   readStoredQueue,
   releaseStoredQueue,
   writeStoredQueue,
 } from "@/lib/cowork/message-queue-storage"
 
-export { messageQueueStorageKey } from "@/lib/cowork/message-queue-storage"
+export {
+  draftMessageQueueStorageKey,
+  messageQueueStorageKey,
+} from "@/lib/cowork/message-queue-storage"
 
 export interface QueuedMessage {
   id: string
@@ -95,8 +105,21 @@ export interface UseMessageQueueReturn {
    * second call in the same tick finds none and changes nothing.
    */
   retryAll: () => number
-  /** Returns nothing while the head is a failed item: it waits for retry. */
+  /**
+   * Returns nothing while the head is a failed item: it waits for retry.
+   * #650 第 10 次返工：出队的那条从排队区拿掉，但存储里还留着（「在路上」），
+   * 直到调用方 `settle(id)`：后端收下了、或者已经按别的 id 放回排队区。
+   * 发送途中刷新，刷新回来它读回成失败、带重试，不会丢。
+   */
   dequeue: () => QueuedMessage | undefined
+  /** #650：`dequeue` 出去的那条有了着落，从存储里拿掉。别的 id 不做事。 */
+  settle: (id: string) => void
+  /**
+   * #650 第 12 次返工：不进排队区、直接发出去的这条，当场按「在路上」存下
+   * （和 `dequeue` 出去的那条一样），返回它的 id，有了着落以后 `settle(id)`。
+   * 新会话回车直接发、建会话途中刷新，刷新回来读回成失败、带重试。
+   */
+  hold: (draft: PromptDraft, modeId: string | null) => string
   remove: (id: string) => void
   reorder: (items: QueuedMessage[]) => void
   /** Prioritize a still-queued item using its latest draft and mode. */
@@ -110,9 +133,50 @@ export interface UseMessageQueueReturn {
    * (which lags a render).
    */
   getQueueLength: () => number
+  /**
+   * #650 第 9 次返工：当场把排队区（内存里的和 `storageKey` 存着、还没读回的）
+   * 挪到 `key` 下，之后改队列都写 `key`，不等调用方下一次渲染换 key。草稿
+   * 标签绑上会话时用：刷新回来的标签 id 按会话号重新生成，按标签读不回。
+   * 别的窗口占着 `key` 的不挪。
+   */
+  moveStorageTo: (key: string) => void
   editingItemId: string | null
   startEditing: (id: string) => void
   cancelEditing: () => void
+}
+
+/**
+ * 把 `queue` 写进 `key` 的存储。返回 false 表示认领是这个窗口的、但已经被
+ * 别的窗口拿走了（调用方 loseClaim）。
+ * #650 第 7 次返工：认领还没确认（挂载或换 key 后 150 毫秒内），这时排进来
+ * 的消息也要马上落进存储，不然按回车后、会话刚建好时刷新就丢了。别的
+ * 窗口占着的不写；存着、还没读回来的那些原样留在前面，确认后照常读回。
+ * 这期间写进去、后来又出了队（发出去、删了）的，要从存储里拿掉，不然
+ * 确认后会被当成刷新前没发的读回来。
+ */
+function persistQueue(
+  key: string | null,
+  queue: QueuedMessage[],
+  ownedKey: string | null,
+  earlyWrittenRef: { current: { key: string | null; ids: Set<string> } }
+): boolean {
+  if (!key) return true
+  if (ownedKey !== key) {
+    const early = earlyWrittenRef.current
+    const mine = early.key === key ? early.ids : new Set<string>()
+    if (queue.length === 0 && mine.size === 0) return true
+    if (!canClaimStoredQueue(key)) return true
+    const ids = new Set(queue.map((item) => item.id))
+    const stored = readStoredQueue(key).filter(
+      (item) => !ids.has(item.id) && !mine.has(item.id)
+    )
+    writeStoredQueue(key, [...stored, ...queue])
+    earlyWrittenRef.current = { key, ids }
+    return true
+  }
+  if (!claimStoredQueue(key)) return false
+  writeStoredQueue(key, queue)
+  return true
 }
 
 /**
@@ -123,8 +187,16 @@ export interface UseMessageQueueReturn {
  * writes it (dodoer #416); another window's queue stays in memory.
  */
 export function useMessageQueue(
-  storageKey?: string | null
+  storageKey?: string | null,
+  opts?: {
+    /**
+     * #650 第 8 次返工：第一次读回时也读这个 key 存的那份，读完清掉（草稿
+     * 标签的那份：标签刚绑上会话、排队区还没挪过去就刷新，刷新回来按会话号读）。
+     */
+    alsoReadKey?: string | null
+  }
 ): UseMessageQueueReturn {
+  const alsoReadKey = opts?.alsoReadKey ?? null
   // What `storageKey` stored is read once its claim is confirmed (below).
   const [queue, setQueue] = useState<QueuedMessage[]>([])
   const [editingItemId, setEditingItemIdState] = useState<string | null>(null)
@@ -143,12 +215,34 @@ export function useMessageQueue(
   // render). Without this, a bounce that re-queues a draft leaves a window
   // where a caller still sees an empty queue.
   const queueRef = useRef<QueuedMessage[]>(queue)
+  // #650 第 10 次返工：出了队、还没有着落的（见 `dequeue` / `settle`）。不在
+  // 排队区里显示，但跟着排队区一起存，排在前面。
+  const inFlightRef = useRef<QueuedMessage[]>([])
 
   // Update the authoritative ref first, then schedule the render. A plain value
   // (not a functional updater) is correct because `queueRef.current` is always
   // the latest committed value.
+  // #650 第 8 次返工：每次改队列当场写存储（见 `persistQueue`），不等渲染后的
+  // effect：按回车到 effect 跑之间刷新也不丢。key 跟着渲染在 layout effect 里更新。
+  const storageKeyRef = useRef<string | null>(storageKey ?? null)
+  useLayoutEffect(() => {
+    storageKeyRef.current = storageKey ?? null
+  }, [storageKey])
+  const ownedKeyRef = useRef<string | null>(null)
+  // #650：认领确认前写进存储的条目（见 `persistQueue`）。
+  const earlyWrittenRef = useRef<{ key: string | null; ids: Set<string> }>({
+    key: null,
+    ids: new Set(),
+  })
   const commit = useCallback((next: QueuedMessage[]) => {
     queueRef.current = next
+    // 认领丢了的情况留给下面的 effect 处理（它会 loseClaim）
+    persistQueue(
+      storageKeyRef.current,
+      [...inFlightRef.current, ...next],
+      ownedKeyRef.current,
+      earlyWrittenRef
+    )
     setQueue(next)
   }, [])
 
@@ -158,9 +252,15 @@ export function useMessageQueue(
   // was queued meanwhile. A key held by another window stays theirs for this
   // mount. Losing the claim later stops the mirror and drops the copies read
   // back and not yet retried — they are the other window's now.
-  const ownedKeyRef = useRef<string | null>(null)
   const restoredIdsRef = useRef<Set<string>>(new Set())
   const readBackRef = useRef(true)
+  // #650：上一个认领到的 key。key 换了（草稿按标签存的那份换成按会话号存）、
+  // 新 key 认领到以后，清掉旧 key 那份，不然刷新回来旧的那份还会被读出来。
+  // 卸载时不清（刷新要靠它读回）。
+  const lastOwnedKeyRef = useRef<string | null>(null)
+  // #650：这次挂载第一个 key。刷新回来的草稿标签可能在认领确认之前就绑上了
+  // 找回的会话，第一次读回时这个 key 存的那份也要一起读进来。
+  const firstKeyRef = useRef<string | null>(null)
   const loseClaim = useCallback(() => {
     ownedKeyRef.current = null
     const restoredIds = restoredIdsRef.current
@@ -175,19 +275,46 @@ export function useMessageQueue(
   useEffect(() => {
     ownedKeyRef.current = null
     if (!storageKey) return
+    firstKeyRef.current ??= storageKey
     let cancelled = false
     let refresh: ReturnType<typeof setInterval> | undefined
     void acquireStoredQueue(storageKey).then((owned) => {
-      if (cancelled || !owned) return
+      // 第 9 次返工：已经挪到别的 key 下（moveStorageTo），这个 key 不再读写
+      if (cancelled || !owned || storageKeyRef.current !== storageKey) return
       ownedKeyRef.current = storageKey
-      const live = new Set(queueRef.current.map((item) => item.id))
-      const back = readBackRef.current
-        ? readStoredQueue(storageKey).filter((item) => !live.has(item.id))
-        : []
+      const first = firstKeyRef.current
+      const extra = [first, alsoReadKey].filter(
+        (key, i, all): key is string =>
+          !!key &&
+          key !== storageKey &&
+          all.indexOf(key) === i &&
+          canClaimStoredQueue(key)
+      )
+      const sources = readBackRef.current ? [...extra, storageKey] : []
+      const seen = new Set(
+        [...inFlightRef.current, ...queueRef.current].map((item) => item.id)
+      )
+      const back: QueuedMessage[] = []
+      for (const key of sources) {
+        for (const item of readStoredQueue(key)) {
+          if (seen.has(item.id)) continue
+          seen.add(item.id)
+          back.push(item)
+        }
+      }
       readBackRef.current = false
       restoredIdsRef.current = new Set(back.map((item) => item.id))
       if (back.length > 0) commit([...back, ...queueRef.current])
-      else writeStoredQueue(storageKey, queueRef.current)
+      else
+        writeStoredQueue(storageKey, [
+          ...inFlightRef.current,
+          ...queueRef.current,
+        ])
+      const stale = new Set([lastOwnedKeyRef.current, ...sources])
+      lastOwnedKeyRef.current = storageKey
+      for (const key of stale) {
+        if (key && key !== storageKey) writeStoredQueue(key, [])
+      }
       refresh = setInterval(() => {
         if (!claimStoredQueue(storageKey)) loseClaim()
       }, CLAIM_REFRESH_MS)
@@ -198,16 +325,54 @@ export function useMessageQueue(
       ownedKeyRef.current = null
       releaseStoredQueue(storageKey)
     }
+    // alsoReadKey 只在第一次读回时用，变了不重新认领
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storageKey, commit, loseClaim])
 
   // Mirror every committed queue while the claim is ours (the key arriving
   // later — a draft that just got saved — writes what is queued once it is
   // claimed).
   useEffect(() => {
-    if (!storageKey || ownedKeyRef.current !== storageKey) return
-    if (claimStoredQueue(storageKey)) writeStoredQueue(storageKey, queue)
-    else loseClaim()
+    if (!storageKey) return
+    // 第 9 次返工：已经挪到别的 key 下（moveStorageTo），不再写旧 key
+    if (storageKeyRef.current !== storageKey) return
+    if (
+      !persistQueue(
+        storageKey,
+        [...inFlightRef.current, ...queue],
+        ownedKeyRef.current,
+        earlyWrittenRef
+      )
+    )
+      loseClaim()
   }, [storageKey, queue, loseClaim])
+
+  const moveStorageTo = useCallback((key: string) => {
+    const from = storageKeyRef.current
+    if (from === key || !canClaimStoredQueue(key)) return
+    const memory = [...inFlightRef.current, ...queueRef.current]
+    const memoryIds = new Set(memory.map((item) => item.id))
+    // 旧 key 存着、还没读回内存的（刷新回来认领还没确认）一起带过去
+    const fromStored =
+      from && (ownedKeyRef.current === from || canClaimStoredQueue(from))
+        ? readStoredQueue(from)
+        : []
+    const seen = new Set(memoryIds)
+    const stored: QueuedMessage[] = []
+    for (const item of [...readStoredQueue(key), ...fromStored]) {
+      if (seen.has(item.id)) continue
+      seen.add(item.id)
+      stored.push(item)
+    }
+    writeStoredQueue(key, [...stored, ...memory])
+    earlyWrittenRef.current = { key, ids: memoryIds }
+    storageKeyRef.current = key
+    if (!from) return
+    // 新 key 确实存下了才清旧 key（超出存储上限时旧的那份留着）
+    const landed = new Set(readStoredQueue(key).map((item) => item.id))
+    if ([...fromStored, ...memory].every((item) => landed.has(item.id)))
+      writeStoredQueue(from, [])
+  }, [])
 
   const enqueue = useCallback(
     (
@@ -291,9 +456,42 @@ export function useMessageQueue(
   const dequeue = useCallback((): QueuedMessage | undefined => {
     const current = queueRef.current
     if (current.length === 0 || current[0].failed) return undefined
+    inFlightRef.current = [...inFlightRef.current, current[0]]
     commit(current.slice(1))
     return current[0]
   }, [commit])
+
+  const hold = useCallback(
+    (draft: PromptDraft, modeId: string | null): string => {
+      const item: QueuedMessage = { id: randomUUID(), draft, modeId }
+      inFlightRef.current = [...inFlightRef.current, item]
+      // 排队区本身没变，只是让存储当场写上这一条
+      commit(queueRef.current)
+      return item.id
+    },
+    [commit]
+  )
+
+  const settle = useCallback((id: string) => {
+    const before = inFlightRef.current
+    if (!before.some((item) => item.id === id)) return
+    inFlightRef.current = before.filter((item) => item.id !== id)
+    const key = storageKeyRef.current
+    if (!key) return
+    if (ownedKeyRef.current === key) {
+      if (claimStoredQueue(key))
+        writeStoredQueue(key, [...inFlightRef.current, ...queueRef.current])
+      return
+    }
+    // 认领还没确认、或者已经卸载：只拿掉这一条，别的原样留着
+    if (!canClaimStoredQueue(key)) return
+    const stored = readStoredQueue(key)
+    if (stored.some((item) => item.id === id))
+      writeStoredQueue(
+        key,
+        stored.filter((item) => item.id !== id)
+      )
+  }, [])
 
   const remove = useCallback(
     (id: string) => {
@@ -375,11 +573,14 @@ export function useMessageQueue(
     retry,
     retryAll,
     dequeue,
+    settle,
+    hold,
     remove,
     reorder,
     moveToFront,
     updateItem,
     getQueueLength,
+    moveStorageTo,
     editingItemId,
     startEditing,
     cancelEditing,

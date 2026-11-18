@@ -70,6 +70,7 @@ import {
 } from "@/lib/ask-selection-handoff"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import {
+  draftMessageQueueStorageKey,
   messageQueueStorageKey,
   useMessageQueue,
   type QueuedMessage,
@@ -134,8 +135,11 @@ import {
   createChatConversation,
   createChatDir,
   createConversation,
+  getFolder,
   getFolderConversation,
+  listAllConversations,
   openSettingsWindow,
+  updateConversationStatus,
 } from "@/lib/api"
 import { createConversationWorktreeWatchingSetup } from "@/lib/conversation-worktree-setup"
 import { isWindowedDetail } from "@/lib/turn-window"
@@ -157,7 +161,22 @@ import {
   createSessionLostRetry,
   sessionLostRetryRoute,
 } from "@/lib/cowork/session-lost-retry"
-import { failedTurnRequeueKind } from "@/lib/cowork/failed-turn"
+import {
+  failedTurnRequeueKind,
+  lostTurnRequeueKind,
+} from "@/lib/cowork/failed-turn"
+import { readStoredQueue } from "@/lib/cowork/message-queue-storage"
+import { markConversationSeen } from "@/stores/conversation-seen-store"
+import {
+  clearDraftCreateTicket,
+  createOrAdoptDraftConversation,
+  noteDraftCreateIntent,
+  queuedDraftNeedsEarlyCreate,
+  recoverDraftConversation,
+  sessionIdForBoundDraft,
+  startDraftCreateEarly,
+  type DraftCreateDeps,
+} from "@/lib/cowork/draft-early-create"
 import { blockingPrompts } from "@/lib/blocking-prompts"
 import { notify } from "@/lib/notify"
 import {
@@ -309,6 +328,25 @@ function buildUserTurnFromMessageBlocks(
     blocks: contentBlocksFromUserMessage(blocks),
     timestamp: new Date().toISOString(),
   }
+}
+
+// #650 第 2 次返工：新草稿建会话都经 createOrAdoptDraftConversation，
+// 刷新前那次已经建好的行找回来用，不再建一个。
+const DRAFT_CREATE_DEPS: DraftCreateDeps = {
+  listAllConversations: (params) => listAllConversations(params),
+  getFolder: (id) => getFolder(id),
+  createConversation: (folder, agent, title) =>
+    createConversation(folder, agent, title),
+  createChatConversation: (agent, title, dir) =>
+    createChatConversation(agent, title, dir),
+  // 第 5 次返工：后端建行时记成「进行中」，消息发出去之前标成「待复查」
+  // （回合结束后的状态，表示轮到用户）；真发消息时后端再标回「进行中」。
+  // 第 7 次返工：改状态会更新会话的时间，侧栏会把它当成「已完成，尚未查看」；
+  // 这条会话还没开始，标完记成看过。
+  markConversationNotRunning: async (id) => {
+    await updateConversationStatus(id, "pending_review")
+    markConversationSeen(id)
+  },
 }
 
 function buildVirtualConversationId(seed: string): number {
@@ -753,6 +791,10 @@ const ConversationTabView = memo(function ConversationTabView({
   // briefly exposes the previous folder's path to the ACP auto-connect
   // effect, and the connection sticks with the wrong cwd.
   const workingDirForConnection = workingDir ?? folder?.path
+  // #650 第 11 次返工：挂载时找回会话那一步做完时连接所在的目录（那一步的
+  // 闭包是挂载时的），见 sessionIdForBoundDraft。
+  const workingDirForConnectionRef = useRef(workingDirForConnection)
+  workingDirForConnectionRef.current = workingDirForConnection
 
   const {
     conn,
@@ -796,8 +838,15 @@ const ConversationTabView = memo(function ConversationTabView({
   const { status: connStatus, sessionId: connSessionId } = conn
   // Cowork fork: the queue outlives a reload of the page (#159), keyed by the
   // saved conversation; a draft's queue is kept once the draft is saved.
+  // #650：还没有会话号的草稿按标签存（草稿标签刷新后还在），会话建好后
+  // 换成按会话号存，标签那份由 useMessageQueue 清掉。
+  // 第 8 次返工：标签绑上会话、排队区还没挪到会话号下就刷新的，刷新回来
+  // 第一次读回时把标签那份也读进来（alsoReadKey）。
   const messageQueue = useMessageQueue(
-    dbConversationId != null ? messageQueueStorageKey(dbConversationId) : null
+    dbConversationId != null
+      ? messageQueueStorageKey(dbConversationId)
+      : draftMessageQueueStorageKey(tabId),
+    { alsoReadKey: draftMessageQueueStorageKey(tabId) }
   )
   const {
     queue: msgQueue,
@@ -808,7 +857,10 @@ const ConversationTabView = memo(function ConversationTabView({
     retry: mqRetry,
     retryAll: mqRetryAll,
     getQueueLength: mqGetQueueLength,
+    moveStorageTo: moveQueueStorageTo,
     dequeue: mqDequeue,
+    settle: mqSettle,
+    hold: mqHold,
     remove: mqRemove,
     reorder: mqReorder,
     moveToFront: mqMoveToFront,
@@ -1026,7 +1078,11 @@ const ConversationTabView = memo(function ConversationTabView({
     // a tool call) the message reached it and may have run in part, so it is
     // not put back — retrying would run it again. The transcript keeps the
     // turn's failure line.
-    const requeueKind = failedTurnRequeueKind(liveContent, authFailed)
+    // #650 第 11 次返工：回合里智能体进程退出、什么都没回的，也放回排队区，
+    // 消息不能跟着这一轮消失（收件箱 #716）。
+    const requeueKind =
+      failedTurnRequeueKind(liveContent, authFailed) ??
+      lostTurnRequeueKind(liveContent, connStatus)
     if (sent && requeueKind) {
       mqRequeueFailed(sent.draft, sent.modeId, requeueKind)
       // #423：智能体不认这个会话了，第一次失败时记下这条，旧连接退下去以后
@@ -1145,7 +1201,7 @@ const ConversationTabView = memo(function ConversationTabView({
     (
       draft: PromptDraft,
       modeId?: string | null,
-      opts?: { fromQueueFlush?: boolean }
+      opts?: { fromQueueFlush?: boolean; queueItemId?: string }
     ) => void
   >(() => {})
   // Timestamp of the last send that bounced with TurnBusyError. The flush below
@@ -1162,6 +1218,13 @@ const ConversationTabView = memo(function ConversationTabView({
   // round-trip is enough, and cannot strand the queue: `handleQueueSteer`
   // always clears this in a `finally`, which re-runs the flush effect.
   const [queueSteerInFlight, setQueueSteerInFlight] = useState(false)
+  // #650：提前建会话失败的次数。建会话期间连接先好了的话，自动发送被单飞
+  // 挡回队首（队列长度不变）；失败以后没有别的状态变化，要靠它让自动发送
+  // 再跑一次，由发送那条路重新建会话。
+  const [earlyCreateFailures, setEarlyCreateFailures] = useState(0)
+  // #650 第 5 次返工：挂载时找回刷新前建好的会话这一步做完了。找的时候
+  // 自动发送被单飞挡回队首，做完要让它再跑一次。
+  const [draftRecoveryDone, setDraftRecoveryDone] = useState(false)
   const queueHeadFailed = msgQueue[0]?.failed === true
   const queueHeadEditing =
     mqEditingItemId != null && msgQueue[0]?.id === mqEditingItemId
@@ -1225,15 +1288,21 @@ const ConversationTabView = memo(function ConversationTabView({
         handleSendRef.current(
           next.draft,
           next.adoptSendTimeMode ? selectedModeIdRef.current : next.modeId,
-          { fromQueueFlush: true }
+          // #650 第 10 次返工：出队的这条在存储里留到有着落（见 settle）
+          { fromQueueFlush: true, queueItemId: next.id }
         )
       }
     }, wait)
     return () => clearTimeout(timer)
     // `connectionReady` subsumes connStatus, the connection's cwd and its agent,
     // so it is the only connection dependency this effect needs.
+    // Cowork fork（#650）：提前建会话期间连接先好了，自动发送会被单飞挡回
+    // 队首（队列长度不变）；会话号到了要再跑一次。
   }, [
     connectionReady,
+    dbConversationId,
+    earlyCreateFailures,
+    draftRecoveryDone,
     runtimeSyncState,
     msgQueue.length,
     queueHeadFailed,
@@ -1445,6 +1514,151 @@ const ConversationTabView = memo(function ConversationTabView({
     [tBranch, mqFailHead]
   )
 
+  // Cowork fork（AI QA #650）：智能体还没连上时新草稿按了回车，当场把会话
+  // 建出来、绑到这个标签上：侧栏马上有它，排队的消息随即按会话号存进
+  // localStorage（排队区的存储），刷新不丢。这里只建会话不发消息，连上以后由排队区的
+  // 自动发送照已有会话发出。和发送那条路共用 createConversationPendingRef
+  // 的单飞，连按几次只建一个；建失败只记日志，消息还在排队区，连上以后
+  // 发送那条路会再建一次，失败时在欢迎页上报错。
+  const createDraftConversationEarly = useCallback(
+    (draft: PromptDraft) => {
+      const chat = ownTab?.isChat === true
+      const chatDir = ownTab?.workingDir
+      const agent = selectedAgent
+      const title = promptDraftTitleSeed(draft, sharedT("attachedResources"))
+      // 第 7 次返工：按回车这一刻就记下要建会话（chat 临时目录还没好、这次
+      // 先不建的也记），建会话的请求发出去之前刷新，刷新回来也会去建。
+      if (dbConvIdRef.current == null)
+        noteDraftCreateIntent({ tabId, chat, agent, title, folderId, chatDir })
+      void startDraftCreateEarly(
+        createConversationPendingRef,
+        { persisted: dbConvIdRef.current != null, isChat: chat, chatDir },
+        async () => {
+          let newConversationId: number
+          if (chat) {
+            const res = await createOrAdoptDraftConversation(
+              { tabId, chat: true, agent, title, folderId, chatDir },
+              DRAFT_CREATE_DEPS
+            )
+            if (res.folder == null || res.folderId == null)
+              throw new Error("chat conversation without its folder")
+            newConversationId = res.conversationId
+            dbConvIdRef.current = newConversationId
+            // 第 11 次返工：会话在刷新前的临时目录里的，连接要换目录重连，
+            // 不留新目录里的会话号（见 sessionIdForBoundDraft）。
+            const keptSessionId = sessionIdForBoundDraft({
+              boundDir: res.folder.path,
+              connectionDir: chatDir,
+              liveSessionId: sessionIdRef.current,
+            })
+            if (keptSessionId == null) sessionIdRef.current = null
+            setExternalId(effectiveConversationId, keptSessionId)
+            setDbConversationId(effectiveConversationId, newConversationId)
+            if (!mountedRef.current) {
+              setPendingCleanup(effectiveConversationId, true)
+              clearDraftCreateTicket(tabId)
+              refreshConversations()
+              return
+            }
+            upsertFolder(res.folder)
+            setCreatedConversationId(newConversationId)
+            // 第 9 次返工：刷新回来的已绑标签 id 按会话号重新生成，绑之前
+            // 就把排队区挪到会话号下，不然按标签那份读不回来。
+            moveQueueStorageTo(messageQueueStorageKey(newConversationId))
+            bindConversationTab(
+              tabId,
+              newConversationId,
+              agent,
+              title,
+              effectiveConversationId,
+              res.folderId,
+              res.folder.path
+            )
+          } else {
+            const res = await createOrAdoptDraftConversation(
+              { tabId, chat: false, agent, title, folderId, chatDir },
+              DRAFT_CREATE_DEPS
+            )
+            newConversationId = res.conversationId
+            dbConvIdRef.current = newConversationId
+            setExternalId(effectiveConversationId, sessionIdRef.current ?? null)
+            setDbConversationId(effectiveConversationId, newConversationId)
+            if (!mountedRef.current) {
+              setPendingCleanup(effectiveConversationId, true)
+              clearDraftCreateTicket(tabId)
+              refreshConversations()
+              return
+            }
+            setCreatedConversationId(newConversationId)
+            // 第 9 次返工：刷新回来的已绑标签 id 按会话号重新生成，绑之前
+            // 就把排队区挪到会话号下，不然按标签那份读不回来。
+            moveQueueStorageTo(messageQueueStorageKey(newConversationId))
+            bindConversationTab(
+              tabId,
+              newConversationId,
+              agent,
+              title,
+              effectiveConversationId
+            )
+          }
+          clearDraftCreateTicket(tabId)
+          // 主区离开欢迎页，消息列表不显示空状态：这条消息在路上了。
+          setHasSentMessage(true)
+          clearMessageInputDraft(buildNewConversationDraftStorageKey(tabId))
+          refreshConversations()
+        },
+        (e) => {
+          console.error("[ConversationTabView] early create conversation:", e)
+          if (mountedRef.current) setEarlyCreateFailures((n) => n + 1)
+        }
+      )
+    },
+    [
+      bindConversationTab,
+      effectiveConversationId,
+      folderId,
+      moveQueueStorageTo,
+      ownTab,
+      refreshConversations,
+      selectedAgent,
+      setDbConversationId,
+      setExternalId,
+      setPendingCleanup,
+      sharedT,
+      tabId,
+      upsertFolder,
+    ]
+  )
+
+  // #650 返工：chat 草稿回车时临时目录还没好，没能当场建会话；目录好了、
+  // 消息还在排队等连接时补建一次。判断在 `queuedDraftNeedsEarlyCreate`，
+  // 单飞和别的条件在 `startDraftCreateEarly` 里。提前建会话失败过就不再
+  // 自动补建（不然标签每变一次就重试一次），交给连上以后的发送那条路。
+  const chatDraftDir = isChatDraft ? ownTab?.workingDir : undefined
+  useEffect(() => {
+    if (earlyCreateFailures > 0) return
+    if (
+      !queuedDraftNeedsEarlyCreate({
+        connectionReady,
+        persisted: dbConversationId != null,
+        queueLength: msgQueue.length,
+        headFailed: queueHeadFailed,
+        pendingWorktree: pendingWorktree != null,
+      })
+    )
+      return
+    createDraftConversationEarly(msgQueue[0].draft)
+  }, [
+    chatDraftDir,
+    connectionReady,
+    dbConversationId,
+    earlyCreateFailures,
+    msgQueue,
+    queueHeadFailed,
+    pendingWorktree,
+    createDraftConversationEarly,
+  ])
+
   const handleSend = useCallback(
     (
       draft: PromptDraft,
@@ -1454,7 +1668,7 @@ const ConversationTabView = memo(function ConversationTabView({
       // input send (no flag) must NOT jump ahead of already-queued items: when
       // a queue exists it tail-enqueues instead of sending, and on a bounce it
       // re-queues at the TAIL.
-      opts?: { fromQueueFlush?: boolean }
+      opts?: { fromQueueFlush?: boolean; queueItemId?: string }
     ) => {
       // Capture the tab's chat-draft state + eager scratch dir synchronously,
       // before any await. A folderless chat draft is NOT special-cased here:
@@ -1469,9 +1683,19 @@ const ConversationTabView = memo(function ConversationTabView({
       // return below must keep the message — in the queue, where it stays
       // visible, editable and deletable. A queue-flush item goes back to the
       // FRONT (it was the head); a direct send joins the tail.
+      // #650 第 10 次返工：排队区出队的这条，存储里一直留着，直到后端收下
+      // （onSendAccepted）或者已经按新 id 放回排队区，才从存储里拿掉。发送
+      // 途中刷新，刷新回来读回成失败、带重试。先放回再拿掉，存储里一直有。
+      // 第 12 次返工：新会话回车直接发的那条，建会话之前用 mqHold 存下，
+      // 也走这里拿掉。
+      let queueItemId = opts?.queueItemId
+      const settleQueued = () => {
+        if (queueItemId) mqSettle(queueItemId)
+      }
       const keepInQueue = () => {
         if (opts?.fromQueueFlush) {
           mqRequeueFront(draft, selectedModeIdArg ?? null)
+          settleQueued()
         } else {
           mqEnqueue(draft, selectedModeIdArg ?? null)
         }
@@ -1551,6 +1775,8 @@ const ConversationTabView = memo(function ConversationTabView({
         keepInQueue()
         const status = connStatusRef.current
         if (status === "error" || status === "disconnected") handleFocus()
+        // Cowork fork（#650）：新草稿不等连上，当场建会话，消息才存得住。
+        createDraftConversationEarly(draft)
         return
       }
 
@@ -1626,6 +1852,7 @@ const ConversationTabView = memo(function ConversationTabView({
         } else {
           mqEnqueue(draft, selectedModeIdArg ?? null)
         }
+        settleQueued()
       }
 
       // Any OTHER send failure (413, image-hydration failure, network drop):
@@ -1644,6 +1871,7 @@ const ConversationTabView = memo(function ConversationTabView({
         lastSentRef.current = null
         removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
         mqRequeueFailed(draft, selectedModeIdArg ?? null)
+        settleQueued()
       }
 
       // Pin the tab if it was a temporary preview (single-click opened)
@@ -1665,6 +1893,7 @@ const ConversationTabView = memo(function ConversationTabView({
           clientMessageId: optimisticTurn.id,
           onTurnInProgress,
           onSendFailed,
+          onSendAccepted: settleQueued,
         })
         return
       }
@@ -1683,6 +1912,10 @@ const ConversationTabView = memo(function ConversationTabView({
         return
       }
       createConversationPendingRef.current = true
+      // #650 第 12 次返工：连上了、排队区空着时回车直接发，建会话和发送请求
+      // 都要一会儿；这条当场按「在路上」存进这个标签的排队存储，绑上会话时
+      // 跟着挪过去，后端收下或放回排队区以后才拿掉。期间刷新读回成失败、带重试。
+      queueItemId ??= mqHold(draft, selectedModeIdArg ?? null)
       const title = promptDraftTitleSeed(draft, sharedT("attachedResources"))
       const chatSend = sendOwnTab?.isChat === true
       const chatExistingDir = sendOwnTab?.workingDir
@@ -1690,25 +1923,46 @@ const ConversationTabView = memo(function ConversationTabView({
       void (async () => {
         try {
           let newConversationId: number
+          // #650 第 11 次返工：找回的 chat 会话在刷新前的临时目录里时，连接要
+          // 换目录重连，这一条不在旧连接上发，放回排队区，连上以后自动发出。
+          let movesConnection = false
           // The send's folderId defaults to the active folder; a chat send
           // overrides it with the backend-created hidden chat folder.
           let sendFolderId = folderId
           if (chatSend) {
-            const res = await createChatConversation(
-              selectedAgent,
-              title,
-              chatExistingDir
+            // #650：刷新前那次已经建好的行找回来用（见 createOrAdoptDraftConversation）。
+            const res = await createOrAdoptDraftConversation(
+              {
+                tabId,
+                chat: true,
+                agent: selectedAgent,
+                title,
+                folderId,
+                chatDir: chatExistingDir,
+              },
+              DRAFT_CREATE_DEPS
             )
+            if (res.folder == null || res.folderId == null)
+              throw new Error("chat conversation without its folder")
             newConversationId = res.conversationId
             sendFolderId = res.folderId
             dbConvIdRef.current = newConversationId
-            setExternalId(effectiveConversationId, sessionIdRef.current ?? null)
+            // 第 11 次返工：见 sessionIdForBoundDraft。
+            const keptSessionId = sessionIdForBoundDraft({
+              boundDir: res.folder.path,
+              connectionDir: chatExistingDir,
+              liveSessionId: sessionIdRef.current,
+            })
+            if (keptSessionId == null) sessionIdRef.current = null
+            movesConnection = res.folder.path !== chatExistingDir
+            setExternalId(effectiveConversationId, keptSessionId)
             // Bind the DB id BEFORE the prompt goes out. The mirror effect
             // below also binds, but only after a re-render — this closes that
             // window and covers the unmounted-early return just under it.
             setDbConversationId(effectiveConversationId, newConversationId)
             if (!mountedRef.current) {
               setPendingCleanup(effectiveConversationId, true)
+              clearDraftCreateTicket(tabId)
               refreshConversations()
               return
             }
@@ -1718,6 +1972,9 @@ const ConversationTabView = memo(function ConversationTabView({
             // cwd does not move and no reconnect is triggered.
             upsertFolder(res.folder)
             setCreatedConversationId(newConversationId)
+            // 第 9 次返工：刷新回来的已绑标签 id 按会话号重新生成，绑之前
+            // 就把排队区挪到会话号下，不然按标签那份读不回来。
+            moveQueueStorageTo(messageQueueStorageKey(newConversationId))
             bindConversationTab(
               tabId,
               newConversationId,
@@ -1728,11 +1985,19 @@ const ConversationTabView = memo(function ConversationTabView({
               res.folder.path
             )
           } else {
-            newConversationId = await createConversation(
-              folderId,
-              selectedAgent,
-              title
-            )
+            newConversationId = (
+              await createOrAdoptDraftConversation(
+                {
+                  tabId,
+                  chat: false,
+                  agent: selectedAgent,
+                  title,
+                  folderId,
+                  chatDir: null,
+                },
+                DRAFT_CREATE_DEPS
+              )
+            ).conversationId
             dbConvIdRef.current = newConversationId
             // Set external ID on the stable virtual session (no migration needed —
             // effectiveConversationId never changes, so the session stays in place).
@@ -1745,10 +2010,14 @@ const ConversationTabView = memo(function ConversationTabView({
               // Component unmounted while creating — mark for deferred cleanup
               // so the background turn_complete handler can clean up later.
               setPendingCleanup(effectiveConversationId, true)
+              clearDraftCreateTicket(tabId)
               refreshConversations()
               return
             }
             setCreatedConversationId(newConversationId)
+            // 第 9 次返工：刷新回来的已绑标签 id 按会话号重新生成，绑之前
+            // 就把排队区挪到会话号下，不然按标签那份读不回来。
+            moveQueueStorageTo(messageQueueStorageKey(newConversationId))
             bindConversationTab(
               tabId,
               newConversationId,
@@ -1757,8 +2026,13 @@ const ConversationTabView = memo(function ConversationTabView({
               effectiveConversationId
             )
           }
+          clearDraftCreateTicket(tabId)
           clearMessageInputDraft(buildNewConversationDraftStorageKey(tabId))
           refreshConversations()
+          if (movesConnection) {
+            onTurnInProgress()
+            return
+          }
 
           // Now that the row exists, kick off the actual prompt with the
           // conversation_id pinned so the backend adopts our row instead of
@@ -1769,6 +2043,7 @@ const ConversationTabView = memo(function ConversationTabView({
             clientMessageId: optimisticTurn.id,
             onTurnInProgress,
             onSendFailed,
+            onSendAccepted: settleQueued,
           })
         } catch (e) {
           console.error("[ConversationTabView] create conversation:", e)
@@ -1789,6 +2064,7 @@ const ConversationTabView = memo(function ConversationTabView({
           setSyncState(effectiveConversationId, "idle")
           setHasSentMessage(false)
           mqRequeueFailed(draft, selectedModeIdArg ?? null)
+          settleQueued()
           if (mountedRef.current) {
             setAgentConnectError(tWelcome("createConversationFailed"))
           }
@@ -1806,11 +2082,15 @@ const ConversationTabView = memo(function ConversationTabView({
       setBranch,
       tBranch,
       mqRequeueFailed,
+      mqSettle,
+      mqHold,
       failWorktreeStart,
       mqGetQueueLength,
+      moveQueueStorageTo,
       bindConversationTab,
       canAutoConnect,
       connectionReady,
+      createDraftConversationEarly,
       effectiveConversationId,
       folderId,
       handleFocus,
@@ -1835,6 +2115,83 @@ const ConversationTabView = memo(function ConversationTabView({
   useEffect(() => {
     handleSendRef.current = handleSend
   }, [handleSend])
+
+  // #650 第 5 次返工：刷新回来的草稿标签，刷新前按回车建会话的请求可能已经
+  // 在后端建出了行、浏览器没收到会话号。挂载时按票据找回那一行（见
+  // `recoverDraftConversation`），找到就当场绑上：标签变成那条会话，排队区
+  // 换成按会话号存（消息是失败状态，点重试发进这条会话），新会话页不再带着它。
+  // 第 7 次返工：没找到隔一会儿再找；请求没发出去或者一直没有，消息还在就
+  // 当场建一条再绑上（人定的：回车后那条会话就是消息的归宿）。
+  // 和建会话共用 createConversationPendingRef 的单飞，找的时候点重试不会另建。
+  // 只在挂载时跑一次：之后的建会话各自会找回。
+  useEffect(() => {
+    if (dbConvIdRef.current != null) return
+    if (pendingWorktree) return
+    if (createConversationPendingRef.current) return
+    createConversationPendingRef.current = true
+    void (async () => {
+      try {
+        const res = await recoverDraftConversation(tabId, DRAFT_CREATE_DEPS, {
+          // 第 7 次返工：找不到那次建出来的行时，消息还在才当场建。刚挂载时
+          // 排队区还没从存储读回来，看存储里这个标签那份。
+          hasQueued: () =>
+            messageQueue.getQueueLength() > 0 ||
+            readStoredQueue(draftMessageQueueStorageKey(tabId)).length > 0,
+        })
+        if (!res || dbConvIdRef.current != null || !mountedRef.current) return
+        dbConvIdRef.current = res.conversationId
+        setDbConversationId(effectiveConversationId, res.conversationId)
+        if (res.folder != null && res.folderId != null) {
+          // 第 11 次返工：刷新后草稿换了临时目录、连上了新会话，找回的会话在
+          // 刷新前的目录里：绑上后连接换目录重连，不留新目录里的会话号。
+          const keptSessionId = sessionIdForBoundDraft({
+            boundDir: res.folder.path,
+            connectionDir: workingDirForConnectionRef.current,
+            liveSessionId: sessionIdRef.current,
+          })
+          if (keptSessionId == null) sessionIdRef.current = null
+          setExternalId(effectiveConversationId, keptSessionId)
+          upsertFolder(res.folder)
+          setCreatedConversationId(res.conversationId)
+          // 第 9 次返工：刷新回来的已绑标签 id 按会话号重新生成，绑之前
+          // 就把排队区挪到会话号下，不然按标签那份读不回来。
+          moveQueueStorageTo(messageQueueStorageKey(res.conversationId))
+          bindConversationTab(
+            tabId,
+            res.conversationId,
+            res.agent,
+            res.title,
+            effectiveConversationId,
+            res.folderId,
+            res.folder.path
+          )
+        } else {
+          setCreatedConversationId(res.conversationId)
+          // 第 9 次返工：刷新回来的已绑标签 id 按会话号重新生成，绑之前
+          // 就把排队区挪到会话号下，不然按标签那份读不回来。
+          moveQueueStorageTo(messageQueueStorageKey(res.conversationId))
+          bindConversationTab(
+            tabId,
+            res.conversationId,
+            res.agent,
+            res.title,
+            effectiveConversationId
+          )
+        }
+        clearDraftCreateTicket(tabId)
+        setHasSentMessage(true)
+        clearMessageInputDraft(buildNewConversationDraftStorageKey(tabId))
+        refreshConversations()
+      } catch (e) {
+        console.error("[ConversationTabView] recover draft conversation:", e)
+      } finally {
+        createConversationPendingRef.current = false
+        if (mountedRef.current) setDraftRecoveryDone(true)
+      }
+    })()
+    // 只在挂载时跑一次（见上）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // "Fork from here": fork at a rendered assistant turn, sending nothing. The
   // ONLY fork entry point — the composer's fork-and-send was removed once this

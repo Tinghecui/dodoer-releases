@@ -126,6 +126,19 @@ export function compareByAttention(
 }
 
 /**
+ * #650 第 11 次返工（收件箱 #716 的 P2）：侧栏排序用的「排在最前」：在跑的
+ * （`isActive`），加上存着排队消息的（消息没发出去、等用户点重试）。后者和
+ * 刚建的会话一样排在前面，「最近」的第一页、文件夹「再显示 N 条」之前都看得到。
+ * 只给排序用，不算进运行中的计数、不转圈。
+ */
+export function withQueuedFirst(
+  isActive: (conv: DbConversationSummary) => boolean,
+  hasQueued: (conv: DbConversationSummary) => boolean
+): (conv: DbConversationSummary) => boolean {
+  return (conv) => isActive(conv) || hasQueued(conv)
+}
+
+/**
  * Relative time label (e.g. "5m", "3h", "2d"). `now` is passed in rather than
  * read from `Date.now()` so a whole render tick shares one value: every
  * unchanged row then produces an identical label string and the card `memo`

@@ -177,8 +177,9 @@ describe("a failed head says what to do about it", () => {
       "const messageQueue = useMessageQueue(",
       "const {\n    queue: msgQueue,"
     )
+    // 没有会话号的草稿按标签存（#650），见下面那组。
     expect(hook).toContain(
-      "dbConversationId != null ? messageQueueStorageKey(dbConversationId) : null"
+      "dbConversationId != null\n      ? messageQueueStorageKey(dbConversationId)"
     )
   })
 
@@ -243,6 +244,321 @@ describe("a lost session retries the message once", () => {
     // 切到别的会话以后：自己清掉失败标记、在后台重连。
     expect(effect).toContain(
       "mqRetry(queueHead.id)\n    reconnectInBackground()"
+    )
+  })
+})
+
+// #650：刷新后新会话的智能体还没连上就按了回车，会话当场建出来，
+// 排队的消息按这个会话号存起来，刷新不丢。判断和单飞在
+// `draft-early-create`（单测在它旁边），这里守着它接在面板上。
+describe("a draft sent before the agent is ready is saved at once", () => {
+  it("starts the create from the not-ready branch, after queueing", () => {
+    const block = between(
+      "if (!connectionReady) {",
+      "const fromQueueFlush = opts?.fromQueueFlush ?? false"
+    )
+    const queuedAt = block.indexOf("keepInQueue()")
+    const createAt = block.indexOf("createDraftConversationEarly(draft)")
+    expect(queuedAt).toBeGreaterThan(-1)
+    expect(createAt).toBeGreaterThan(queuedAt)
+  })
+
+  it("shares the send path's single-flight and binds the tab", () => {
+    const early = between(
+      "const createDraftConversationEarly = useCallback(",
+      "const handleSend = useCallback("
+    )
+    expect(early).toContain("startDraftCreateEarly(")
+    expect(early).toContain("createConversationPendingRef,")
+    // 两条分支都经 createOrAdoptDraftConversation 建（第 2 次返工，见下面）。
+    expect(early.split("createOrAdoptDraftConversation(").length).toBe(3)
+    expect(early).toContain("bindConversationTab(")
+    expect(early).toContain("setCreatedConversationId(newConversationId)")
+    expect(early).toContain("refreshConversations()")
+    // 不在这里发消息：连上以后由排队区自动发出。
+    expect(early).not.toContain("lifecycleSend(")
+  })
+
+  it("re-runs the queue flush once the row is bound", () => {
+    // 建会话期间连接先好了，自动发送会被单飞挡回队首（长度不变）；
+    // 会话号到了要再跑一次，不然消息停在队列里。
+    const start = source.indexOf("// Flush queued messages whenever the agent")
+    const deps = source.slice(
+      source.indexOf("}, [", source.indexOf("clearTimeout(timer)", start)),
+      source.indexOf("])", source.indexOf("clearTimeout(timer)", start))
+    )
+    expect(deps).toMatch(/\bdbConversationId\b/)
+  })
+
+  // 返工：请求返回前刷新也不能丢。没有会话号时按标签存。
+  it("keeps a draft's queue under its tab until the row exists", () => {
+    const hook = between(
+      "const messageQueue = useMessageQueue(",
+      "const {\n    queue: msgQueue,"
+    )
+    expect(hook).toContain("messageQueueStorageKey(dbConversationId)")
+    expect(hook).toContain("draftMessageQueueStorageKey(tabId)")
+  })
+
+  // 第 8 次返工：绑上会话以后、排队区挪过去之前刷新，回来按会话号读，
+  // 标签那份也要读回来。
+  it("reads the tab's draft copy back once bound", () => {
+    const hook = between(
+      "const messageQueue = useMessageQueue(",
+      "const {\n    queue: msgQueue,"
+    )
+    expect(hook).toContain("alsoReadKey: draftMessageQueueStorageKey(tabId)")
+  })
+
+  // 第 9 次返工：刷新回来的已绑标签 id 按会话号重新生成，按标签读不回；
+  // 每处把草稿标签绑上会话之前，先把排队区挪到会话号下。
+  it("moves the queue to the conversation key before every bind", () => {
+    const binds = source.split("bindConversationTab(").slice(1)
+    expect(binds.length).toBe(6)
+    let from = 0
+    for (let i = 0; i < binds.length; i += 1) {
+      const at = source.indexOf("bindConversationTab(\n", from)
+      const lead = source.slice(Math.max(0, at - 400), at)
+      expect(lead).toMatch(
+        /moveQueueStorageTo\(\s*messageQueueStorageKey\([^)]*\)\s*\)/
+      )
+      from = at + 1
+    }
+  })
+
+  // 第 10 次返工：连上以后自动发送出队的那条，存储里留到后端收下，或者
+  // 按新 id 放回排队区以后才拿掉；发送途中刷新读得回来。
+  // 第 12 次返工：连上了、排队区空着，新会话回车直接发，建会话之前就存下来。
+  it("stores a direct first send before the create starts", () => {
+    const send = between(
+      "const handleSend = useCallback(",
+      "handleSendRef.current = handleSend"
+    )
+    const unbound = send.slice(
+      send.indexOf("createConversationPendingRef.current = true")
+    )
+    const held = unbound.indexOf(
+      "queueItemId ??= mqHold(draft, selectedModeIdArg ?? null)"
+    )
+    expect(held).toBeGreaterThan(-1)
+    expect(held).toBeLessThan(unbound.indexOf("void (async () => {"))
+    expect(send).toMatch(/let queueItemId = opts\?\.queueItemId/)
+  })
+
+  it("keeps the flushed message stored until the send settles", () => {
+    expect(source).toContain("{ fromQueueFlush: true, queueItemId: next.id }")
+    const send = between(
+      "const handleSend = useCallback(",
+      "handleSendRef.current = handleSend"
+    )
+    expect(send).toMatch(/if \(queueItemId\) mqSettle\(queueItemId\)/)
+    // 两条真正发出去的路都在后端收下后才拿掉
+    expect(send.split("onSendAccepted: settleQueued").length - 1).toBe(2)
+    // 放回排队区（keepInQueue、撞上忙、发送失败、建会话失败）以后才拿掉
+    const keep = send.slice(
+      send.indexOf("const keepInQueue = () => {"),
+      send.indexOf("if (!hasPersistedConversation && !canAutoConnect)")
+    )
+    expect(keep).toMatch(/mqRequeueFront\([^)]*\)\s*settleQueued\(\)/)
+    expect(send).toMatch(
+      /const onTurnInProgress = \(\) => \{[\s\S]*?settleQueued\(\)\s*\}/
+    )
+    expect(
+      send.match(/mqRequeueFailed\([^)]*\)\s*settleQueued\(\)/g)
+    ).toHaveLength(2)
+    const lifecycle = readFileSync(
+      join(__dirname, "..", "..", "hooks", "use-connection-lifecycle.ts"),
+      "utf8"
+    )
+    expect(lifecycle).toMatch(
+      /await sendPrompt\(draft\.blocks, opts\)\s*opts\?\.onSendAccepted\?\.\(\)/
+    )
+  })
+
+  it("re-runs the queue flush after a failed early create", () => {
+    const early = between(
+      "const createDraftConversationEarly = useCallback(",
+      "const handleSend = useCallback("
+    )
+    expect(early).toContain("setEarlyCreateFailures((n) => n + 1)")
+    const start = source.indexOf("// Flush queued messages whenever the agent")
+    const deps = source.slice(
+      source.indexOf("}, [", source.indexOf("clearTimeout(timer)", start)),
+      source.indexOf("])", source.indexOf("clearTimeout(timer)", start))
+    )
+    expect(deps).toMatch(/\bearlyCreateFailures\b/)
+  })
+
+  it("marks the session for cleanup when the view is gone", () => {
+    const early = between(
+      "const createDraftConversationEarly = useCallback(",
+      "const handleSend = useCallback("
+    )
+    const parts = early.split("if (!mountedRef.current) {")
+    // chat 和普通两条分支都要标。
+    expect(parts.length).toBe(3)
+    for (const part of parts.slice(1)) {
+      expect(part.slice(0, 300)).toContain(
+        "setPendingCleanup(effectiveConversationId, true)"
+      )
+    }
+  })
+
+  it("creates once a chat draft's scratch dir is ready", () => {
+    const effect = between(
+      "queuedDraftNeedsEarlyCreate({",
+      "createDraftConversationEarly(msgQueue[0].draft)"
+    )
+    expect(effect).toContain("connectionReady")
+    expect(source).toMatch(
+      /\}, \[[^\]]*chatDraftDir[^\]]*createDraftConversationEarly/
+    )
+  })
+})
+
+// #650 第 2 次返工：按回车后马上刷新，建会话请求可能已经在后端成功、浏览器
+// 没收到会话号。刷新回来点重试要找回那一行，不再建一个。找回的逻辑在
+// `createOrAdoptDraftConversation`（单测在 draft-early-create 旁边），
+// 这里守着面板上建会话的四个地方都经它走、绑好以后清掉票据。
+describe("a retried draft reuses the row an interrupted create made", () => {
+  const early = () =>
+    between(
+      "const createDraftConversationEarly = useCallback(",
+      "const handleSend = useCallback("
+    )
+  const sendCreate = () =>
+    between(
+      "if (createConversationPendingRef.current) {\n        keepInQueue()",
+      '} catch (e) {\n          console.error("[ConversationTabView] create conversation:"'
+    )
+
+  for (const [name, block] of [
+    ["early create", early],
+    ["send path", sendCreate],
+  ] as const) {
+    it(`${name}: chat and normal both create through the ticket`, () => {
+      const b = block()
+      expect(b.split("createOrAdoptDraftConversation(").length).toBe(3)
+      expect(b).not.toMatch(/await createChatConversation\(/)
+      expect(b).not.toMatch(/await createConversation\(/)
+    })
+
+    it(`${name}: clears the ticket once bound, mounted or not`, () => {
+      const b = block()
+      for (const part of b.split("if (!mountedRef.current) {").slice(1)) {
+        expect(part.slice(0, 300)).toContain("clearDraftCreateTicket(tabId)")
+      }
+      const binds = b.split("bindConversationTab(").length - 1
+      expect(binds).toBe(2)
+      expect(b.split("clearDraftCreateTicket(tabId)").length - 1).toBe(3)
+    })
+  }
+})
+
+// #650 第 5 次返工（人定的）：按回车后建好的那条会话就是这条消息的归宿。
+// 刷新回来，草稿标签要当场绑上刷新前那次建出来的会话（排队区随之换成按
+// 会话号存），不等点重试；建好或找回的行不能一直算「进行中」。找回和标记的
+// 逻辑在 `recoverDraftConversation` / `createOrAdoptDraftConversation`
+// （单测在 draft-early-create 旁边），这里守着它们接在面板上。
+describe("a reloaded draft lands on the conversation its Enter made", () => {
+  const recovery = () =>
+    between(
+      "recoverDraftConversation(tabId, DRAFT_CREATE_DEPS",
+      "// 只在挂载时跑一次（见上）。"
+    )
+
+  it("marks created rows not running through the status write", () => {
+    const deps = between(
+      "const DRAFT_CREATE_DEPS: DraftCreateDeps = {",
+      "function buildVirtualConversationId"
+    )
+    expect(deps).toContain("markConversationNotRunning:")
+    expect(deps).toContain('updateConversationStatus(id, "pending_review")')
+  })
+
+  it("looks the row up once on mount, for a draft only", () => {
+    const effect = between(
+      "// #650 第 5 次返工：刷新回来的草稿标签",
+      "recoverDraftConversation(tabId, DRAFT_CREATE_DEPS"
+    )
+    expect(effect).toContain("dbConvIdRef.current != null")
+    expect(effect).toContain("pendingWorktree")
+    // 和建会话共用单飞：找的时候点重试不会另建一个。
+    expect(effect).toContain("createConversationPendingRef.current = true")
+  })
+
+  it("binds the tab to the found row and leaves the welcome page", () => {
+    const b = recovery()
+    expect(b).toContain("setCreatedConversationId(res.conversationId)")
+    expect(b).toContain("bindConversationTab(")
+    expect(b).toContain("upsertFolder(res.folder)")
+    expect(b).toContain("clearDraftCreateTicket(tabId)")
+    expect(b).toContain("setHasSentMessage(true)")
+    expect(b).toContain("createConversationPendingRef.current = false")
+    expect(b).toContain("setDraftRecoveryDone(true)")
+  })
+
+  it("re-runs the queue flush once the lookup is done", () => {
+    const start = source.indexOf("// Flush queued messages whenever the agent")
+    const deps = source.slice(
+      source.indexOf("}, [", source.indexOf("clearTimeout(timer)", start)),
+      source.indexOf("])", source.indexOf("clearTimeout(timer)", start))
+    )
+    expect(deps).toMatch(/\bdraftRecoveryDone\b/)
+  })
+  // 第 7 次返工（P1）：找不到时当场建，但只在这个标签还有排队的消息时；
+  // 刚挂载时排队区还没读回来，要看存储里那份。
+  it("tells the lookup whether a message is waiting under the tab", () => {
+    const b = recovery()
+    expect(b).toContain("hasQueued:")
+    expect(b).toContain("readStoredQueue(draftMessageQueueStorageKey(tabId))")
+  })
+
+  // 第 7 次返工（P1）：按回车那一刻就记下要建会话，请求发出去之前刷新也知道。
+  it("notes the create the moment Enter is pressed", () => {
+    const early = between(
+      "const createDraftConversationEarly = useCallback(",
+      "startDraftCreateEarly("
+    )
+    expect(early).toContain("noteDraftCreateIntent(")
+  })
+
+  // 第 7 次返工（P2）：标成「待复查」会改更新时间，不能因此显示「已完成，尚未查看」。
+  it("keeps a row it marks not running from reading unread", () => {
+    const deps = between(
+      "const DRAFT_CREATE_DEPS: DraftCreateDeps = {",
+      "function buildVirtualConversationId"
+    )
+    expect(deps).toContain("markConversationSeen(id)")
+  })
+})
+
+// 第 11 次返工（收件箱 #716 的 P1）：聊天模式回车后 0.3～0.8 秒刷新再点重试，
+// 会话卡在「进行中」、最后消息消失。判断在 `sessionIdForBoundDraft`、
+// `lostTurnRequeueKind`（各自有单测），这里查它们接在面板上。
+describe("a chat draft bound after a reload retries on a fresh session", () => {
+  it("drops the new dir's session in every chat bind", () => {
+    const calls = source.match(/sessionIdForBoundDraft\(\{/g) ?? []
+    // 提前建会话、发送那条路、挂载时找回，三处 chat 绑定
+    expect(calls.length).toBe(3)
+    expect(source).not.toContain(
+      "setExternalId(effectiveConversationId, sessionIdRef.current ?? null)\n            setDbConversationId(effectiveConversationId, newConversationId)\n            if (!mountedRef.current) {\n              setPendingCleanup(effectiveConversationId, true)\n              clearDraftCreateTicket(tabId)\n              refreshConversations()\n              return\n            }\n            upsertFolder(res.folder)"
+    )
+  })
+
+  it("clears the session before the recovered chat row is bound", () => {
+    const recover = between(
+      "const res = await recoverDraftConversation(",
+      "clearDraftCreateTicket(tabId)"
+    )
+    const keep = recover.indexOf("sessionIdForBoundDraft(")
+    expect(keep).toBeGreaterThan(-1)
+    expect(recover.indexOf("bindConversationTab(", keep)).toBeGreaterThan(keep)
+  })
+
+  it("puts the message back when the agent quits mid-turn", () => {
+    expect(source).toContain(
+      "failedTurnRequeueKind(liveContent, authFailed) ??\n      lostTurnRequeueKind(liveContent, connStatus)"
     )
   })
 })

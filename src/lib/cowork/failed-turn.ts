@@ -39,3 +39,17 @@ export function failedTurnRequeueKind(
   if (!failed || turnHadAgentOutput(content)) return null
   return authFailed ? "auth" : "turn_failed"
 }
+
+/**
+ * 回合进行中连接没了（智能体进程退出、连接出错），智能体什么都没回、也没有
+ * `turn_error` 这一行时，消息放回排队区用的失败类型；不放回给 null（#650
+ * 第 11 次返工，收件箱 #716：用户的消息任何情况下都不能消失）。
+ * 智能体已经有输出的照 #424 不放回。
+ */
+export function lostTurnRequeueKind(
+  content: readonly LiveContentBlock[] | null | undefined,
+  connStatus: string | null | undefined
+): QueueFailureKind | null {
+  if (connStatus !== "disconnected" && connStatus !== "error") return null
+  return turnHadAgentOutput(content) ? null : "turn_failed"
+}

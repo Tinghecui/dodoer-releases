@@ -94,6 +94,11 @@ export interface UseConnectionLifecycleReturn {
        * deterministic failure would otherwise retry forever.
        */
       onSendFailed?: (error: unknown) => void
+      /**
+       * #650：后端收下了这条（发送请求成功返回）。排队区发出去的那条到这时
+       * 才从存储里拿掉，发送途中刷新还读得回来。
+       */
+      onSendAccepted?: () => void
     }
   ) => void
   handleSetConfigOption: (configId: string, valueId: string) => void
@@ -539,6 +544,7 @@ export function useConnectionLifecycle({
         clientMessageId?: string | null
         onTurnInProgress?: () => void
         onSendFailed?: (error: unknown) => void
+        onSendAccepted?: () => void
       }
     ) => {
       touchActivity(contextKey)
@@ -553,6 +559,7 @@ export function useConnectionLifecycle({
           modeIdRef.current = modeId
         }
         await sendPrompt(draft.blocks, opts)
+        opts?.onSendAccepted?.()
       })().catch((e: unknown) => {
         if (e instanceof TurnBusyError) {
           // A turn was already in flight on the connection (another

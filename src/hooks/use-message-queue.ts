@@ -4,7 +4,11 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type { PromptDraft } from "@/lib/types"
 import { randomUUID } from "@/lib/utils"
 import {
+  CLAIM_REFRESH_MS,
+  acquireStoredQueue,
+  claimStoredQueue,
   readStoredQueue,
+  releaseStoredQueue,
   writeStoredQueue,
 } from "@/lib/cowork/message-queue-storage"
 
@@ -43,7 +47,8 @@ export interface QueuedMessage {
    * Cowork fork: what kind of failure it was, when the panel knows and the
    * queue's hint has something to offer for it. `auth` — the agent refused
    * the turn for credentials, so the hint links to where the agent signs in.
-   * `restored` — read back after a page reload (`message-queue-storage.ts`):
+   * `restored` — read back after a page reload or an app restart
+   * (`message-queue-storage.ts`):
    * it may or may not have been about to go, so it waits for the user.
    * `turn_failed` — it went out, but the turn failed before the agent
    * answered anything (#424): retrying sends it again.
@@ -111,16 +116,17 @@ export interface UseMessageQueueReturn {
 }
 
 /**
- * `storageKey` (Cowork fork, #159): keep the queue across a page reload under
- * this key (`messageQueueStorageKey`); null / omitted keeps it in memory only.
- * The queue read back at mount is all failed — see `message-queue-storage.ts`.
+ * `storageKey` (Cowork fork, #159): keep the queue across a page reload and an
+ * app restart under this key (`messageQueueStorageKey`); null / omitted keeps
+ * it in memory only. The queue read back at mount is all failed — see
+ * `message-queue-storage.ts`. Only the window that claims the key reads and
+ * writes it (dodoer #416); another window's queue stays in memory.
  */
 export function useMessageQueue(
   storageKey?: string | null
 ): UseMessageQueueReturn {
-  const [queue, setQueue] = useState<QueuedMessage[]>(() =>
-    storageKey ? readStoredQueue(storageKey) : []
-  )
+  // What `storageKey` stored is read once its claim is confirmed (below).
+  const [queue, setQueue] = useState<QueuedMessage[]>([])
   const [editingItemId, setEditingItemIdState] = useState<string | null>(null)
   // Cowork fork: same-tick copy of `editingItemId` for `retryAll`, which must
   // skip the item under edit even before React commits the new id.
@@ -138,12 +144,6 @@ export function useMessageQueue(
   // where a caller still sees an empty queue.
   const queueRef = useRef<QueuedMessage[]>(queue)
 
-  // Cowork fork: mirror every committed queue (the key arriving later — a
-  // draft that just got saved — writes what is queued by then).
-  useEffect(() => {
-    if (storageKey) writeStoredQueue(storageKey, queue)
-  }, [storageKey, queue])
-
   // Update the authoritative ref first, then schedule the render. A plain value
   // (not a functional updater) is correct because `queueRef.current` is always
   // the latest committed value.
@@ -151,6 +151,63 @@ export function useMessageQueue(
     queueRef.current = next
     setQueue(next)
   }, [])
+
+  // Hold the claim on `storageKey` while mounted (refreshed so it does not
+  // lapse), and let it go on unmount (dodoer #416). Once the first claim of
+  // this mount is confirmed, what is stored there comes back in front of what
+  // was queued meanwhile. A key held by another window stays theirs for this
+  // mount. Losing the claim later stops the mirror and drops the copies read
+  // back and not yet retried — they are the other window's now.
+  const ownedKeyRef = useRef<string | null>(null)
+  const restoredIdsRef = useRef<Set<string>>(new Set())
+  const readBackRef = useRef(true)
+  const loseClaim = useCallback(() => {
+    ownedKeyRef.current = null
+    const restoredIds = restoredIdsRef.current
+    restoredIdsRef.current = new Set()
+    // A read-back item still failed was never retried here (retry clears
+    // `failed`); whatever its failure kind, the other window owns it now.
+    const kept = queueRef.current.filter(
+      (item) => !(restoredIds.has(item.id) && item.failed)
+    )
+    if (kept.length !== queueRef.current.length) commit(kept)
+  }, [commit])
+  useEffect(() => {
+    ownedKeyRef.current = null
+    if (!storageKey) return
+    let cancelled = false
+    let refresh: ReturnType<typeof setInterval> | undefined
+    void acquireStoredQueue(storageKey).then((owned) => {
+      if (cancelled || !owned) return
+      ownedKeyRef.current = storageKey
+      const live = new Set(queueRef.current.map((item) => item.id))
+      const back = readBackRef.current
+        ? readStoredQueue(storageKey).filter((item) => !live.has(item.id))
+        : []
+      readBackRef.current = false
+      restoredIdsRef.current = new Set(back.map((item) => item.id))
+      if (back.length > 0) commit([...back, ...queueRef.current])
+      else writeStoredQueue(storageKey, queueRef.current)
+      refresh = setInterval(() => {
+        if (!claimStoredQueue(storageKey)) loseClaim()
+      }, CLAIM_REFRESH_MS)
+    })
+    return () => {
+      cancelled = true
+      clearInterval(refresh)
+      ownedKeyRef.current = null
+      releaseStoredQueue(storageKey)
+    }
+  }, [storageKey, commit, loseClaim])
+
+  // Mirror every committed queue while the claim is ours (the key arriving
+  // later — a draft that just got saved — writes what is queued once it is
+  // claimed).
+  useEffect(() => {
+    if (!storageKey || ownedKeyRef.current !== storageKey) return
+    if (claimStoredQueue(storageKey)) writeStoredQueue(storageKey, queue)
+    else loseClaim()
+  }, [storageKey, queue, loseClaim])
 
   const enqueue = useCallback(
     (

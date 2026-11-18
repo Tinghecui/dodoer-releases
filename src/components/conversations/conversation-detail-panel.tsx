@@ -2870,8 +2870,8 @@ const ConversationTabView = memo(function ConversationTabView({
         },
       }
     }
-    // Read back after a reload (#159): it may or may not have been about to
-    // go; the user decides, so it is never sent twice.
+    // Read back after a reload or an app restart (#159): it may or may not
+    // have been about to go; the user decides, so it is never sent twice.
     if (queueHeadFailure === "restored") {
       return { reason: coworkT("queueRestoredReason") }
     }

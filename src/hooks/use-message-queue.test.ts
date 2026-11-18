@@ -1,7 +1,12 @@
-import { describe, it, expect } from "vitest"
+import { beforeEach, describe, it, expect } from "vitest"
 import { act, renderHook } from "@testing-library/react"
 import { useMessageQueue } from "./use-message-queue"
 import type { PromptDraft } from "@/lib/types"
+import { CLAIM_SETTLE_MS } from "@/lib/cowork/message-queue-storage"
+
+/** Wait out the claim confirmation (`acquireStoredQueue`). */
+const settle = () =>
+  act(() => new Promise((resolve) => setTimeout(resolve, CLAIM_SETTLE_MS * 2)))
 
 function draft(text: string): PromptDraft {
   return { blocks: [{ type: "text", text }], displayText: text }
@@ -274,21 +279,34 @@ describe("useMessageQueue failure kind", () => {
   })
 })
 
-// Cowork fork (AI QA #159): a reload used to drop the whole queue.
+// Cowork fork (AI QA #159): a reload used to drop the whole queue, and an
+// app restart still did (dodoer #416). What is stored comes back once the
+// claim on it is confirmed (`CLAIM_SETTLE_MS` later).
 describe("useMessageQueue across a reload", () => {
   const KEY = "cowork:message-queue:v1:local:42"
 
-  it("reads the queue back after a remount, all failed, and sends nothing on its own", () => {
+  beforeEach(() => {
+    window.localStorage.clear()
     window.sessionStorage.clear()
+  })
+
+  async function storedABC() {
     const first = renderHook(() => useMessageQueue(KEY))
+    await settle()
     act(() => {
       first.result.current.requeueFailed(draft("A"), null, "auth")
       first.result.current.enqueue(draft("B"), null)
       first.result.current.enqueue(draft("C"), "plan")
     })
     first.unmount()
+  }
 
-    const { result } = renderHook(() => useMessageQueue(KEY))
+  it("reads the queue back after a remount, all failed, and sends nothing on its own", async () => {
+    await storedABC()
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    // Nothing before the claim is confirmed.
+    expect(result.current.queue).toEqual([])
+    await settle()
     expect(texts(result.current.queue)).toEqual(["A", "B", "C"])
     expect(result.current.queue.every((item) => item.failed)).toBe(true)
     expect(result.current.queue.map((item) => item.failure)).toEqual([
@@ -313,36 +331,93 @@ describe("useMessageQueue across a reload", () => {
       sent = result.current.dequeue()
     })
     expect(sent!).toBeUndefined()
+    unmount()
   })
 
-  it("forgets the stored queue once it is empty", () => {
+  it("reads the queue back after an app restart (sessionStorage empty)", async () => {
+    await storedABC()
     window.sessionStorage.clear()
-    const { result } = renderHook(() => useMessageQueue(KEY))
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    expect(texts(result.current.queue)).toEqual(["A", "B", "C"])
+    expect(result.current.queue[1].failure).toBe("restored")
+    unmount()
+  })
+
+  it("puts what comes back in front of what was queued meanwhile", async () => {
+    await storedABC()
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    act(() => result.current.enqueue(draft("D"), null))
+    await settle()
+    expect(texts(result.current.queue)).toEqual(["A", "B", "C", "D"])
+    expect(window.localStorage.getItem(KEY)).toContain('"displayText":"D"')
+    unmount()
+  })
+
+  it("forgets the stored queue once it is empty", async () => {
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
     act(() => result.current.enqueue(draft("A"), null))
-    expect(window.sessionStorage.getItem(KEY)).not.toBeNull()
+    expect(window.localStorage.getItem(KEY)).not.toBeNull()
     act(() => {
       result.current.dequeue()
     })
-    expect(window.sessionStorage.getItem(KEY)).toBeNull()
+    expect(window.localStorage.getItem(KEY)).toBeNull()
+    unmount()
   })
 
   it("stores nothing without a key (a draft not saved yet)", () => {
-    window.sessionStorage.clear()
     const { result } = renderHook(() => useMessageQueue())
     act(() => result.current.enqueue(draft("A"), null))
-    expect(window.sessionStorage.length).toBe(0)
+    expect(window.localStorage.length).toBe(0)
   })
 
-  it("starts storing once the key arrives", () => {
-    window.sessionStorage.clear()
-    const { result, rerender } = renderHook(
+  it("starts storing once the key arrives", async () => {
+    const { result, rerender, unmount } = renderHook(
       ({ storageKey }: { storageKey: string | null }) =>
         useMessageQueue(storageKey),
       { initialProps: { storageKey: null as string | null } }
     )
     act(() => result.current.enqueue(draft("A"), null))
     rerender({ storageKey: KEY })
-    expect(window.sessionStorage.getItem(KEY)).toContain('"displayText":"A"')
+    await settle()
+    expect(window.localStorage.getItem(KEY)).toContain('"displayText":"A"')
+    expect(texts(result.current.queue)).toEqual(["A"])
+    unmount()
+  })
+
+  it("a second window neither shows nor overwrites the first one's queue", async () => {
+    await storedABC()
+    // Another window holds the claim (it is still open).
+    window.localStorage.setItem(
+      `${KEY}:claim`,
+      JSON.stringify({ owner: "page:other-window", at: Date.now() })
+    )
+    const second = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    expect(second.result.current.queue).toEqual([])
+    act(() => second.result.current.enqueue(draft("D"), null))
+    expect(window.localStorage.getItem(KEY)).toContain('"displayText":"A"')
+    expect(window.localStorage.getItem(KEY)).not.toContain('"displayText":"D"')
+    second.unmount()
+  })
+
+  it("losing the claim drops the copies read back and stops the mirror", async () => {
+    await storedABC()
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    act(() => result.current.retry(result.current.queue[0].id))
+    // Another window took the claim over (this one stopped refreshing it).
+    window.localStorage.setItem(
+      `${KEY}:claim`,
+      JSON.stringify({ owner: "page:other-window", at: Date.now() })
+    )
+    act(() => result.current.enqueue(draft("D"), null))
+    // A, retried here, stays; B and C, untouched, are the other window's —
+    // whatever their failure kind (A came back as "auth").
+    expect(texts(result.current.queue)).toEqual(["A", "D"])
+    expect(window.localStorage.getItem(KEY)).not.toContain('"displayText":"D"')
+    unmount()
   })
 })
 
@@ -421,10 +496,11 @@ describe("useMessageQueue retryAll", () => {
     expect(result.current.queue).toBe(afterFirst)
   })
 
-  it("keeps failed rows in send order across a reload, a retry and a second failure", () => {
-    window.sessionStorage.clear()
+  it("keeps failed rows in send order across a reload, a retry and a second failure", async () => {
+    window.localStorage.clear()
     const KEY = "cowork:message-queue:v1:local:retry-all"
     const first = renderHook(() => useMessageQueue(KEY))
+    await settle()
     act(() => {
       first.result.current.enqueue(draft("A"), null)
       first.result.current.enqueue(draft("B"), null)
@@ -432,7 +508,9 @@ describe("useMessageQueue retryAll", () => {
     })
     first.unmount()
 
-    const { result } = renderHook(() => useMessageQueue(KEY))
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    expect(texts(result.current.queue)).toEqual(["A", "B", "C"])
     expect(result.current.queue.every((item) => item.failed)).toBe(true)
     act(() => {
       result.current.retryAll()
@@ -467,6 +545,7 @@ describe("useMessageQueue retryAll", () => {
     }
     expect(order).toEqual(["A", "B", "C"])
     expect(result.current.queue).toEqual([])
+    unmount()
   })
 
   it("puts a send that failed back ahead of a head flagged while it was out", () => {

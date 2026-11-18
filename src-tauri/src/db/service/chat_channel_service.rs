@@ -46,7 +46,7 @@ pub async fn update(
     let model = chat_channel::Entity::find_by_id(id)
         .one(conn)
         .await?
-        .ok_or_else(|| DbError::Migration(format!("chat channel not found: {id}")))?;
+        .ok_or_else(|| DbError::NotFound(format!("chat channel not found: {id}")))?;
 
     let mut active = model.into_active_model();
     if let Some(v) = name {

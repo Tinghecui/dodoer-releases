@@ -65,7 +65,7 @@ pub async fn update(
     let row = quick_message::Entity::find_by_id(id)
         .one(conn)
         .await?
-        .ok_or_else(|| DbError::Migration(format!("QuickMessage {} not found", id)))?;
+        .ok_or_else(|| DbError::NotFound(format!("QuickMessage {} not found", id)))?;
 
     let mut active = row.into_active_model();
     if let Some(t) = title {

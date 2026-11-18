@@ -93,6 +93,148 @@ mod tests {
         );
     }
 
+    fn status_of(err: impl Into<AppCommandError>) -> StatusCode {
+        status_for_app_error_code(err.into().code)
+    }
+
+    /// ACP 的错误按种类回状态码：调用方的错是 4xx，agent 或服务器自己的错才是 500。
+    #[test]
+    fn acp_errors_get_their_status() {
+        use crate::acp::error::AcpError;
+        assert_eq!(
+            status_of(AcpError::ConnectionNotFound("c1".into())),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(status_of(AcpError::TurnInProgress), StatusCode::CONFLICT);
+        assert_eq!(
+            status_of(AcpError::invalid_input("skill id cannot be empty")),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            status_of(AcpError::ConversationMoved {
+                conversation_id: 1,
+                folder_id: 2,
+            }),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(status_of(AcpError::NoActiveTurn), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            status_of(AcpError::SdkNotInstalled("x is not installed".into())),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            status_of(AcpError::PiProjectTrustRequired("trust".into())),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status_of(AcpError::ProcessExited),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            status_of(AcpError::SessionLost),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            status_of(AcpError::agent_auth_required("relay token expired")),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn terminal_errors_get_their_status() {
+        use crate::terminal::error::TerminalError;
+        assert_eq!(
+            status_of(TerminalError::NotFound("t1".into())),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_of(TerminalError::AlreadyExists("t1".into())),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status_of(TerminalError::WriteFailed("pipe".into())),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    /// 改的那 7 处「找不到」：不存在的 id，经 `From` 和 `db()` 都是 404。
+    #[tokio::test]
+    async fn a_missing_row_is_404() {
+        use crate::db::error::DbError;
+        use crate::db::service::{
+            agent_setting_service, chat_channel_service, folder_command_service,
+            model_provider_service, quick_message_service,
+        };
+        use crate::models::agent::AgentType;
+        use sea_orm::EntityTrait;
+
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let conn = &db.conn;
+        crate::db::entities::agent_setting::Entity::delete_many()
+            .exec(conn)
+            .await
+            .expect("clear agent settings");
+
+        let missing: Vec<(&str, DbError)> = vec![
+            (
+                "get_folder_core",
+                crate::commands::folders::get_folder_core(&db, 4242)
+                    .await
+                    .expect_err("no folder 4242"),
+            ),
+            (
+                "agent_setting update",
+                agent_setting_service::update(
+                    conn,
+                    AgentType::ClaudeCode,
+                    agent_setting_service::AgentSettingsUpdate {
+                        enabled: true,
+                        env_json: None,
+                        model_provider_id: None,
+                    },
+                )
+                .await
+                .expect_err("no agent setting row"),
+            ),
+            (
+                "agent_setting update_preferences",
+                agent_setting_service::update_preferences(conn, AgentType::ClaudeCode, true, None)
+                    .await
+                    .expect_err("no agent setting row"),
+            ),
+            (
+                "chat_channel update",
+                chat_channel_service::update(conn, 4242, None, None, None, None, None, None)
+                    .await
+                    .expect_err("no chat channel 4242"),
+            ),
+            (
+                "folder_command update",
+                folder_command_service::update(conn, 4242, None, None, None, None)
+                    .await
+                    .expect_err("no folder command 4242"),
+            ),
+            (
+                "model_provider update",
+                model_provider_service::update(conn, 4242, None, None, None, None, None)
+                    .await
+                    .expect_err("no model provider 4242"),
+            ),
+            (
+                "quick_message update",
+                quick_message_service::update(conn, 4242, None, None)
+                    .await
+                    .expect_err("no quick message 4242"),
+            ),
+        ];
+        for (what, err) in missing {
+            let text = err.to_string();
+            assert!(text.contains("not found"), "{what}: {text}");
+            assert!(matches!(err, DbError::NotFound(_)), "{what}: {err:?}");
+            assert_eq!(status_of(err), StatusCode::NOT_FOUND, "{what}: {text}");
+        }
+    }
+
     /// Every code, in declaration order. `index` has no catch-all, so a new
     /// code does not compile until it is given a place there, and then here.
     fn every_code() -> Vec<AppErrorCode> {

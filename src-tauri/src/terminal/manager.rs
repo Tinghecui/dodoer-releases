@@ -447,10 +447,7 @@ impl TerminalManager {
             let mut spawning = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
             if terminals.contains_key(&opts.terminal_id) || spawning.contains_key(&opts.terminal_id)
             {
-                return Err(TerminalError::SpawnFailed(format!(
-                    "terminal id '{}' already exists",
-                    opts.terminal_id
-                )));
+                return Err(TerminalError::AlreadyExists(opts.terminal_id.clone()));
             }
             // Usually an explicit tab close is followed by a still-pending
             // spawn request. Reject before starting the child when possible.
@@ -1504,6 +1501,29 @@ mod tests {
 
         manager.kill(id).expect("close");
         assert!(!manager.snapshot(id).exists);
+    }
+
+    /// 同一个 id 起第二次是 `AlreadyExists`（409），文字照旧带 `already exists`。
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn a_second_spawn_with_the_same_id_already_exists() {
+        let manager = TerminalManager::new();
+        let id = uuid::Uuid::new_v4().to_string();
+        manager
+            .spawn_with_id(sleeping_shell(&id, "sleep 30"), EventEmitter::Noop)
+            .expect("first spawn");
+        let err = manager
+            .spawn_with_id(sleeping_shell(&id, "sleep 30"), EventEmitter::Noop)
+            .expect_err("second spawn");
+        let _ = manager.kill(&id);
+        assert!(
+            matches!(&err, super::TerminalError::AlreadyExists(dup) if dup == &id),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            format!("failed to spawn terminal: terminal id '{id}' already exists")
+        );
     }
 
     /// 测试里起的子进程：不管测试成败，结束时都强制结束它，不在机器上留进程。

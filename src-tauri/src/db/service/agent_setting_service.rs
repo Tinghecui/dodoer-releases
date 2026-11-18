@@ -229,7 +229,7 @@ pub async fn update(
         .filter(agent_setting::Column::AgentType.eq(agent_type_str.clone()))
         .one(conn)
         .await?
-        .ok_or_else(|| DbError::Migration(format!("agent setting not found: {agent_type_str}")))?;
+        .ok_or_else(|| DbError::NotFound(format!("agent setting not found: {agent_type_str}")))?;
 
     let mut active = model.into_active_model();
     active.enabled = Set(patch.enabled);
@@ -258,7 +258,7 @@ pub async fn update_preferences(
         .exec(conn)
         .await?;
     if updated.rows_affected == 0 {
-        return Err(DbError::Migration(format!(
+        return Err(DbError::NotFound(format!(
             "agent setting not found: {agent_type_str}"
         )));
     }

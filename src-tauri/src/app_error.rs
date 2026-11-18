@@ -128,7 +128,7 @@ pub const AUTOMATION_I18N_KEY_CRON_INVALID_VALUE: &str = "cronErrorInvalidValue"
 /// The expression parses but no date ever matches it. No params.
 pub const AUTOMATION_I18N_KEY_CRON_NEVER_FIRES: &str = "cronErrorNeverFires";
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppErrorCode {
     InvalidInput,
@@ -200,6 +200,12 @@ impl AppCommandError {
         match err {
             // The user typed it: a 400 the editor can explain, not a 500.
             DbError::InvalidCron(problem) => Self::invalid_cron(problem),
+            // 和 `From<DbError>` 一样：行不在是 404，`detail` 照旧是 Display。
+            // Validation / Conflict 仍落到 `database_error`（见 `From` 的注释）。
+            DbError::NotFound(msg) => {
+                let detail = format!("not found: {msg}");
+                Self::not_found(msg).with_detail(detail)
+            }
             other => Self::new(AppErrorCode::DatabaseError, "Database operation failed")
                 .with_detail(other.to_string()),
         }
@@ -276,7 +282,10 @@ impl AppCommandError {
 
     pub fn io(err: std::io::Error) -> Self {
         let code = match err.kind() {
-            std::io::ErrorKind::NotFound => AppErrorCode::NotFound,
+            // 路径中间有一段不是目录，和「不存在」是一回事。
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
+                AppErrorCode::NotFound
+            }
             std::io::ErrorKind::PermissionDenied => AppErrorCode::PermissionDenied,
             std::io::ErrorKind::AlreadyExists => AppErrorCode::AlreadyExists,
             _ => AppErrorCode::IoError,
@@ -373,5 +382,51 @@ mod tests {
         );
         let err = AppCommandError::from(DbError::Migration("boom".into()));
         assert!(matches!(err.code, AppErrorCode::DatabaseError), "{err:?}");
+        let err = AppCommandError::from(DbError::Conflict("already bound".into()));
+        assert!(matches!(err.code, AppErrorCode::DatabaseError), "{err:?}");
+        assert_eq!(err.detail.as_deref(), Some("conflict: already bound"));
+    }
+
+    /// `db()` 和 `From<DbError>` 一样认「找不到」：行不在是调用方的事，不是数据库坏了。
+    #[test]
+    fn db_helper_maps_not_found_like_from_does() {
+        let err = AppCommandError::db(DbError::NotFound("remote connection 9".into()));
+        assert_eq!(err.code, AppErrorCode::NotFound, "{err:?}");
+        assert_eq!(err.message, "remote connection 9");
+        assert_eq!(
+            err.detail.as_deref(),
+            Some("not found: remote connection 9")
+        );
+        let from = AppCommandError::from(DbError::NotFound("remote connection 9".into()));
+        assert_eq!(from.code, err.code);
+        assert_eq!(from.message, err.message);
+        assert_eq!(from.detail, err.detail);
+    }
+
+    /// `Validation` / `Conflict` 经 `db()` 仍是 `database_error`：前端在这个 code
+    /// 下从 `detail` 里读标记（见 2026-11-13 的设计日志）。
+    #[test]
+    fn db_helper_keeps_validation_and_conflict_as_database_error() {
+        let err = AppCommandError::db(DbError::Validation("duplicate_active_source".into()));
+        assert_eq!(err.code, AppErrorCode::DatabaseError, "{err:?}");
+        assert_eq!(err.message, "Database operation failed");
+        assert_eq!(
+            err.detail.as_deref(),
+            Some("validation error: duplicate_active_source")
+        );
+        let err = AppCommandError::db(DbError::Conflict("taken".into()));
+        assert_eq!(err.code, AppErrorCode::DatabaseError, "{err:?}");
+        let err = AppCommandError::db(DbError::InvalidCron(CronProblem::FieldCount(2)));
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+    }
+
+    /// 路径中间有一段是文件（`ENOTDIR`）和「不存在」是一回事，不是服务器出错。
+    #[test]
+    fn io_not_a_directory_is_not_found() {
+        let err = AppCommandError::io(std::io::Error::from(std::io::ErrorKind::NotADirectory));
+        assert_eq!(err.code, AppErrorCode::NotFound, "{err:?}");
+        assert_eq!(err.message, "Resource not found");
+        let err = AppCommandError::io(std::io::Error::other("disk on fire"));
+        assert_eq!(err.code, AppErrorCode::IoError, "{err:?}");
     }
 }

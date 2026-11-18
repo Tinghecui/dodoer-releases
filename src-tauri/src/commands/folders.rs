@@ -613,7 +613,7 @@ async fn estimate_push_commit_count(path: &str, branch: Option<&str>) -> usize {
 pub async fn get_folder_core(db: &AppDatabase, folder_id: i32) -> Result<FolderDetail, DbError> {
     folder_service::get_folder_by_id(&db.conn, folder_id)
         .await?
-        .ok_or_else(|| DbError::Migration(format!("Folder {} not found", folder_id)))
+        .ok_or_else(|| DbError::NotFound(format!("Folder {} not found", folder_id)))
 }
 
 /// Emit a `folder://changed` Upsert so every client inserts-or-replaces the

@@ -44,7 +44,7 @@ pub async fn update(
     let model_row = model_provider::Entity::find_by_id(id)
         .one(conn)
         .await?
-        .ok_or_else(|| DbError::Migration(format!("model provider not found: {id}")))?;
+        .ok_or_else(|| DbError::NotFound(format!("model provider not found: {id}")))?;
 
     let mut active = model_row.into_active_model();
     if let Some(v) = name {

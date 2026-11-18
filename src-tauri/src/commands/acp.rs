@@ -10253,13 +10253,15 @@ fn scope_rank(scope: AgentSkillScope) -> u8 {
 pub(crate) fn validate_skill_id(raw: &str) -> Result<String, AcpError> {
     let id = raw.trim();
     if id.is_empty() {
-        return Err(AcpError::protocol("skill id cannot be empty"));
+        return Err(AcpError::invalid_input("skill id cannot be empty"));
     }
     if id.starts_with('.') {
-        return Err(AcpError::protocol("skill id cannot start with a dot (.)"));
+        return Err(AcpError::invalid_input(
+            "skill id cannot start with a dot (.)",
+        ));
     }
     if id.contains('/') || id.contains('\\') || id.contains("..") {
-        return Err(AcpError::protocol(
+        return Err(AcpError::invalid_input(
             "skill id cannot contain path separators",
         ));
     }
@@ -10267,7 +10269,7 @@ pub(crate) fn validate_skill_id(raw: &str) -> Result<String, AcpError> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
     {
-        return Err(AcpError::protocol(
+        return Err(AcpError::invalid_input(
             "skill id can only include letters, numbers, '-', '_' and '.'",
         ));
     }

@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use crate::app_error::{AppCommandError, AppErrorCode};
+
 #[derive(Debug, thiserror::Error)]
 pub enum AcpError {
     #[error("agent process failed to spawn: {0}")]
@@ -99,6 +101,10 @@ pub enum AcpError {
         conversation_id: i32,
         folder_id: i32,
     },
+    /// 调用方给的参数不对（如技能 id 带路径分隔符）。和 `Protocol` 分开，
+    /// 是为了网页接口能回 400 而不是 500；文字原样显示，没有前缀。
+    #[error("{0}")]
+    InvalidInput(String),
     /// The images in one prompt would not fit in one message to the agent:
     /// the Claude and Codex adapters drop the connection on a message over
     /// 32 MiB, and the user saw only "Broken pipe". Refused before anything is
@@ -129,6 +135,11 @@ impl AcpError {
         }
 
         Self::Protocol(sanitized)
+    }
+
+    /// [`Self::InvalidInput`]，和 [`Self::protocol`] 一样去掉启动元数据。
+    pub fn invalid_input(raw: impl Into<String>) -> Self {
+        Self::InvalidInput(sanitize_protocol_message(&raw.into()))
     }
 
     /// [`Self::McpRejectedByAgent`] with the same sanitization
@@ -185,8 +196,42 @@ impl AcpError {
             Self::ConversationMoved { .. } => Some("conversation_moved"),
             Self::PromptImagesTooLarge(_) => Some("prompt_images_too_large"),
             Self::SessionLost => Some("session_lost"),
-            Self::Protocol(_) => None,
+            Self::Protocol(_) | Self::InvalidInput(_) => None,
         }
+    }
+}
+
+/// 网页接口按种类回状态码。`match` 写全、不用 `_`：以后加了变体，编译器逼着选。
+/// `message` 一律是 Display 原文，前端有几处按文字认错误。
+impl From<AcpError> for AppCommandError {
+    fn from(err: AcpError) -> Self {
+        let code = match &err {
+            AcpError::ConnectionNotFound(_) => AppErrorCode::NotFound,
+            AcpError::TurnInProgress => AppErrorCode::TurnInProgress,
+            AcpError::NoActiveTurn
+            | AcpError::FeedbackDisabled
+            | AcpError::InvalidFeedback(_)
+            | AcpError::InvalidInput(_)
+            // 一条消息里的图片太大是调用方发的东西不行，发之前就拒了。
+            | AcpError::PromptImagesTooLarge(_)
+            | AcpError::ConversationMoved { .. } => AppErrorCode::InvalidInput,
+            AcpError::SdkNotInstalled(_)
+            | AcpError::PlatformNotSupported(_)
+            | AcpError::AgentRuntimeOutdated(_) => AppErrorCode::DependencyMissing,
+            AcpError::PiProjectTrustRequired(_) => AppErrorCode::PermissionDenied,
+            // agent 登录失效（如中继令牌过期）留 500：这是要在 Sentry 里看得见的事。
+            AcpError::SpawnFailed(_)
+            | AcpError::Protocol(_)
+            | AcpError::ProcessExited
+            // 智能体那边的会话没了（#423）：是智能体自己的事，和 ProcessExited 一样留 500。
+            | AcpError::SessionLost
+            | AcpError::DownloadFailed(_)
+            | AcpError::InitializeTimeout
+            | AcpError::ProbeTimedOut
+            | AcpError::McpRejectedByAgent(_)
+            | AcpError::AgentAuthRequired(_) => AppErrorCode::TaskExecutionFailed,
+        };
+        AppCommandError::new(code, err.to_string())
     }
 }
 
@@ -290,6 +335,90 @@ mod tests {
                 r#"{"error":"boom","spawned_at":"2026-11-06T01:02:03Z"}"#
             )),
             r#"{"error":"boom"}"#
+        );
+    }
+
+    fn kind(err: AcpError) -> (AppErrorCode, String) {
+        let message = err.to_string();
+        let converted = AppCommandError::from(err);
+        assert_eq!(converted.message, message, "message 必须是 Display 原文");
+        (converted.code, converted.message)
+    }
+
+    #[test]
+    fn caller_side_acp_errors_are_client_codes() {
+        assert_eq!(
+            kind(AcpError::ConnectionNotFound("c1".into())),
+            (AppErrorCode::NotFound, "connection not found: c1".into())
+        );
+        assert_eq!(
+            kind(AcpError::TurnInProgress).0,
+            AppErrorCode::TurnInProgress
+        );
+        for err in [
+            AcpError::NoActiveTurn,
+            AcpError::FeedbackDisabled,
+            AcpError::InvalidFeedback("empty".into()),
+            AcpError::invalid_input("skill id cannot be empty"),
+            AcpError::prompt_images_too_large(40 * 1024 * 1024, 30 * 1024 * 1024),
+            AcpError::ConversationMoved {
+                conversation_id: 3,
+                folder_id: 4,
+            },
+        ] {
+            let label = format!("{err:?}");
+            assert_eq!(kind(err).0, AppErrorCode::InvalidInput, "{label}");
+        }
+        for err in [
+            AcpError::SdkNotInstalled("claude is not installed".into()),
+            AcpError::PlatformNotSupported("plan9".into()),
+            AcpError::AgentRuntimeOutdated("upgrade pi".into()),
+        ] {
+            let label = format!("{err:?}");
+            assert_eq!(kind(err).0, AppErrorCode::DependencyMissing, "{label}");
+        }
+        assert_eq!(
+            kind(AcpError::PiProjectTrustRequired("trust it first".into())).0,
+            AppErrorCode::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn server_and_agent_side_acp_errors_stay_task_execution_failed() {
+        for err in [
+            AcpError::SpawnFailed("boom".into()),
+            AcpError::protocol("boom"),
+            AcpError::ProcessExited,
+            AcpError::DownloadFailed("offline".into()),
+            AcpError::InitializeTimeout,
+            AcpError::ProbeTimedOut,
+            AcpError::mcp_rejected("no mcp"),
+            AcpError::agent_auth_required("relay token expired"),
+        ] {
+            let label = format!("{err:?}");
+            assert_eq!(kind(err).0, AppErrorCode::TaskExecutionFailed, "{label}");
+        }
+    }
+
+    #[test]
+    fn invalid_input_has_no_stable_code_and_no_prefix() {
+        let err = AcpError::invalid_input("skill id cannot be empty");
+        assert_eq!(err.code(), None);
+        assert_eq!(err.to_string(), "skill id cannot be empty");
+    }
+
+    #[test]
+    fn a_bad_skill_id_is_invalid_input() {
+        for raw in ["", "  ", ".hidden", "../x", "a/b", "a b"] {
+            let err = crate::commands::acp::validate_skill_id(raw).expect_err(raw);
+            assert!(matches!(err, AcpError::InvalidInput(_)), "{raw:?}: {err:?}");
+            assert_eq!(AppCommandError::from(err).code, AppErrorCode::InvalidInput);
+        }
+        let err = crate::commands::acp::validate_skill_id("").unwrap_err();
+        assert_eq!(err.to_string(), "skill id cannot be empty");
+        assert_eq!(
+            crate::commands::acp::validate_skill_id(" ok-skill_1 ").unwrap(),
+            "ok-skill_1"
         );
     }
 }

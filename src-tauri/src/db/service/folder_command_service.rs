@@ -143,7 +143,7 @@ pub async fn update(
     let row = folder_command::Entity::find_by_id(id)
         .one(conn)
         .await?
-        .ok_or_else(|| DbError::Migration(format!("FolderCommand {} not found", id)))?;
+        .ok_or_else(|| DbError::NotFound(format!("FolderCommand {} not found", id)))?;
 
     let mut active = row.into_active_model();
     if let Some(n) = name {

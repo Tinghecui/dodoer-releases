@@ -37,6 +37,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::acp::types::AgentSkillScope;
+use crate::app_error::{AppCommandError, AppErrorCode};
 use crate::commands::acp::{
     preferred_scope_skill_dir, remove_skill_entry, scoped_skill_dirs, skill_storage_spec,
     validate_skill_id,
@@ -75,6 +76,29 @@ pub enum ScienceError {
     Metadata(String),
     #[error("central science store is unavailable: {0}")]
     CentralUnavailable(String),
+    /// 技能 id 不合法（`validate_skill_id` 拒的）：调用方给的不对，400。
+    #[error("{0}")]
+    InvalidId(String),
+}
+
+// 网页接口按错误种类回状态码：找不到 404、重名 409、调用方给的不对 400，只有服务器自己的毛病才 500。
+// `match` 写全、不用 `_`：以后加变体，编译器会逼着选它算哪一类。message 一律是 Display。
+impl From<ScienceError> for AppCommandError {
+    fn from(err: ScienceError) -> Self {
+        let code = match &err {
+            ScienceError::NotFound(_) => AppErrorCode::NotFound,
+            ScienceError::UnsupportedAgent(_) | ScienceError::InvalidId(_) => {
+                AppErrorCode::InvalidInput
+            }
+            ScienceError::NameCollision { .. } | ScienceError::ForeignLink { .. } => {
+                AppErrorCode::AlreadyExists
+            }
+            ScienceError::Io(_)
+            | ScienceError::Metadata(_)
+            | ScienceError::CentralUnavailable(_) => AppErrorCode::TaskExecutionFailed,
+        };
+        AppCommandError::new(code, err.to_string())
+    }
 }
 
 impl Serialize for ScienceError {
@@ -580,7 +604,7 @@ pub async fn science_get_install_status(
     skill_id: String,
 ) -> Result<Vec<ExpertInstallStatus>, ScienceError> {
     let skill_id =
-        validate_skill_id(&skill_id).map_err(|e| ScienceError::Metadata(e.to_string()))?;
+        validate_skill_id(&skill_id).map_err(|e| ScienceError::InvalidId(e.to_string()))?;
     let _ = find_metadata(&skill_id)?; // ensure it exists in the bundle
     let expected = science_central_path(&skill_id);
     let agents = supported_agents();
@@ -655,7 +679,8 @@ fn link_one_locked(
     skill_id: &str,
     agent_type: AgentType,
 ) -> Result<ExpertInstallStatus, ScienceError> {
-    let skill_id = validate_skill_id(skill_id).map_err(|e| ScienceError::Metadata(e.to_string()))?;
+    let skill_id =
+        validate_skill_id(skill_id).map_err(|e| ScienceError::InvalidId(e.to_string()))?;
     let _ = find_metadata(&skill_id)?;
     let central = science_central_path(&skill_id);
     if !central.exists() {
@@ -737,7 +762,8 @@ pub async fn science_unlink_from_agent(
 /// Remove one science skill's link from one agent's skill dirs. **Assumes the
 /// mutation lock is already held** (see `link_one_locked`).
 fn unlink_one_locked(skill_id: &str, agent_type: AgentType) -> Result<(), ScienceError> {
-    let skill_id = validate_skill_id(skill_id).map_err(|e| ScienceError::Metadata(e.to_string()))?;
+    let skill_id =
+        validate_skill_id(skill_id).map_err(|e| ScienceError::InvalidId(e.to_string()))?;
 
     // Scan ALL global dirs for this agent to handle shared-dir agents — most
     // built-ins also point at the cross-agent `~/.agents/skills/` store, so the
@@ -854,7 +880,7 @@ pub async fn science_list_all_install_statuses() -> Result<Vec<ExpertInstallStat
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn science_read_content(skill_id: String) -> Result<String, ScienceError> {
     let skill_id =
-        validate_skill_id(&skill_id).map_err(|e| ScienceError::Metadata(e.to_string()))?;
+        validate_skill_id(&skill_id).map_err(|e| ScienceError::InvalidId(e.to_string()))?;
     let _ = find_metadata(&skill_id)?;
     let path = science_central_path(&skill_id).join("SKILL.md");
     if !path.exists() {
@@ -1083,5 +1109,67 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 转成接口错误后的 code、HTTP 状态码，并确认 message 还是原来的 Display。
+    fn web_status_of(err: ScienceError) -> (AppErrorCode, u16) {
+        let text = err.to_string();
+        let app = AppCommandError::from(err);
+        assert_eq!(app.message, text);
+        let code = app.code;
+        (
+            code,
+            axum::response::IntoResponse::into_response(app)
+                .status()
+                .as_u16(),
+        )
+    }
+
+    #[test]
+    fn science_errors_map_to_their_kind() {
+        use AppErrorCode::*;
+        let s = || "x".to_string();
+        let cases = [
+            (ScienceError::NotFound(s()), NotFound, 404),
+            (
+                ScienceError::UnsupportedAgent(AgentType::ClaudeCode),
+                InvalidInput,
+                400,
+            ),
+            (ScienceError::InvalidId(s()), InvalidInput, 400),
+            (
+                ScienceError::NameCollision { path: s() },
+                AlreadyExists,
+                409,
+            ),
+            (
+                ScienceError::ForeignLink {
+                    path: s(),
+                    found: s(),
+                },
+                AlreadyExists,
+                409,
+            ),
+            (ScienceError::Io(s()), TaskExecutionFailed, 500),
+            (ScienceError::Metadata(s()), TaskExecutionFailed, 500),
+            (
+                ScienceError::CentralUnavailable(s()),
+                TaskExecutionFailed,
+                500,
+            ),
+        ];
+        for (err, code, status) in cases {
+            let label = format!("{err:?}");
+            assert_eq!(web_status_of(err), (code, status), "{label}");
+        }
+    }
+
+    #[tokio::test]
+    async fn reading_a_malformed_science_id_is_a_bad_request() {
+        let err = science_read_content("../x".into())
+            .await
+            .expect_err("a path is not a skill id");
+        assert_eq!(err.to_string(), "skill id cannot start with a dot (.)");
+        assert_eq!(web_status_of(err), (AppErrorCode::InvalidInput, 400));
     }
 }

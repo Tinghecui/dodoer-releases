@@ -18,6 +18,7 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 
 use crate::acp::types::AgentSkillScope;
+use crate::app_error::{AppCommandError, AppErrorCode};
 use crate::commands::acp::{
     preferred_scope_skill_dir, remove_skill_entry, resolve_command_on_path, scoped_skill_dirs,
     skill_storage_spec, validate_skill_id,
@@ -26,7 +27,6 @@ use crate::commands::experts::{
     central_experts_dir, classify_link, create_link_raw, path_is_symlink, read_link_target,
     ExpertInstallStatus, ExpertLinkState, LinkOp, LinkOpResult,
 };
-use crate::app_error::AppCommandError;
 use crate::commands::folders::resolve_tree_path;
 use crate::models::agent::AgentType;
 use crate::process::{collect_lines_lossy, tokio_command};
@@ -50,6 +50,35 @@ pub enum OfficeToolsError {
     Io(String),
     #[error("command failed: {0}")]
     CommandFailed(String),
+    /// 调用方给的不对（技能 id 不合法、路径越界、不是 Office 文件）：400。
+    #[error("{0}")]
+    InvalidInput(String),
+    /// 要找的根目录或文件不在了（比如打开一个已经删掉的 Office 文件）：404。
+    #[error("{0}")]
+    Missing(String),
+}
+
+// 网页接口按错误种类回状态码：找不到 404、重名 409、调用方给的不对 400，只有服务器自己的毛病才 500。
+// `match` 写全、不用 `_`：以后加变体，编译器会逼着选它算哪一类。message 一律是 Display。
+impl From<OfficeToolsError> for AppCommandError {
+    fn from(err: OfficeToolsError) -> Self {
+        let code = match &err {
+            OfficeToolsError::NotInstalled => AppErrorCode::DependencyMissing,
+            OfficeToolsError::SkillNotFound(_) | OfficeToolsError::Missing(_) => {
+                AppErrorCode::NotFound
+            }
+            OfficeToolsError::UnsupportedAgent(_) | OfficeToolsError::InvalidInput(_) => {
+                AppErrorCode::InvalidInput
+            }
+            OfficeToolsError::NameCollision { .. } | OfficeToolsError::ForeignLink { .. } => {
+                AppErrorCode::AlreadyExists
+            }
+            OfficeToolsError::Io(_) | OfficeToolsError::CommandFailed(_) => {
+                AppErrorCode::TaskExecutionFailed
+            }
+        };
+        AppCommandError::new(code, err.to_string())
+    }
 }
 
 impl Serialize for OfficeToolsError {
@@ -1087,7 +1116,8 @@ fn link_one_locked(
     skill_id: &str,
     agent_type: AgentType,
 ) -> Result<ExpertInstallStatus, OfficeToolsError> {
-    let skill_id = validate_skill_id(skill_id).map_err(|e| OfficeToolsError::Io(e.to_string()))?;
+    let skill_id =
+        validate_skill_id(skill_id).map_err(|e| OfficeToolsError::InvalidInput(e.to_string()))?;
     let _ = find_skill_def(&skill_id)
         .ok_or_else(|| OfficeToolsError::SkillNotFound(skill_id.clone()))?;
 
@@ -1168,7 +1198,8 @@ pub async fn officecli_skill_unlink_from_agent(
 /// Remove one office skill's link from one agent's skill dirs. **Assumes the
 /// mutation lock is already held** (see `link_one_locked`).
 fn unlink_one_locked(skill_id: &str, agent_type: AgentType) -> Result<(), OfficeToolsError> {
-    let skill_id = validate_skill_id(skill_id).map_err(|e| OfficeToolsError::Io(e.to_string()))?;
+    let skill_id =
+        validate_skill_id(skill_id).map_err(|e| OfficeToolsError::InvalidInput(e.to_string()))?;
     let _ = find_skill_def(&skill_id)
         .ok_or_else(|| OfficeToolsError::SkillNotFound(skill_id.clone()))?;
 
@@ -1209,7 +1240,8 @@ fn unlink_one_locked(skill_id: &str, agent_type: AgentType) -> Result<(), Office
 pub async fn officecli_skill_get_install_status(
     skill_id: String,
 ) -> Result<Vec<ExpertInstallStatus>, OfficeToolsError> {
-    let skill_id = validate_skill_id(&skill_id).map_err(|e| OfficeToolsError::Io(e.to_string()))?;
+    let skill_id =
+        validate_skill_id(&skill_id).map_err(|e| OfficeToolsError::InvalidInput(e.to_string()))?;
     let _ = find_skill_def(&skill_id)
         .ok_or_else(|| OfficeToolsError::SkillNotFound(skill_id.clone()))?;
 
@@ -1311,7 +1343,8 @@ pub async fn officecli_skill_list_all_install_statuses(
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn officecli_skill_read_content(skill_id: String) -> Result<String, OfficeToolsError> {
-    let skill_id = validate_skill_id(&skill_id).map_err(|e| OfficeToolsError::Io(e.to_string()))?;
+    let skill_id =
+        validate_skill_id(&skill_id).map_err(|e| OfficeToolsError::InvalidInput(e.to_string()))?;
     let _ = find_skill_def(&skill_id)
         .ok_or_else(|| OfficeToolsError::SkillNotFound(skill_id.clone()))?;
 
@@ -1350,29 +1383,53 @@ pub async fn officecli_render_html(
     path: String,
 ) -> Result<String, OfficeToolsError> {
     let root = PathBuf::from(&root_path);
-    if !root.is_dir() {
-        return Err(OfficeToolsError::Io(
-            "workspace root does not exist".to_string(),
-        ));
+    // 根目录不在（或那里是个文件）是 404；读不出它的信息（比如上级目录没权限）是服务器读文件出错，照旧 500。
+    match fs::metadata(&root) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            return Err(OfficeToolsError::Missing(
+                "workspace root does not exist".to_string(),
+            ));
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Err(OfficeToolsError::Missing(
+                "workspace root does not exist".to_string(),
+            ));
+        }
+        Err(e) => return Err(OfficeToolsError::from(e)),
     }
 
-    let target =
-        resolve_tree_path(&root, &path).map_err(|e| OfficeToolsError::Io(e.to_string()))?;
+    let target = resolve_tree_path(&root, &path)
+        .map_err(|e| OfficeToolsError::InvalidInput(e.to_string()))?;
 
     // Canonicalize + confine within the workspace root (defense in depth: the
     // path comes from an open file tab, but never render outside the root).
     let canonical_root = fs::canonicalize(&root)?;
-    let canonical_target = fs::canonicalize(&target)?;
+    // 文件已经不在（标签页还开着、文件被删了）是 404，不是服务器出错。
+    let canonical_target = fs::canonicalize(&target).map_err(|e| {
+        if e.kind() == io::ErrorKind::NotFound {
+            OfficeToolsError::Missing(format!("{path} does not exist"))
+        } else {
+            OfficeToolsError::from(e)
+        }
+    })?;
     if !canonical_target.starts_with(&canonical_root) {
-        return Err(OfficeToolsError::Io(
+        return Err(OfficeToolsError::InvalidInput(
             "path is outside workspace root".to_string(),
         ));
     }
     if !canonical_target.is_file() {
-        return Err(OfficeToolsError::Io("path is not a file".to_string()));
+        return Err(OfficeToolsError::InvalidInput(
+            "path is not a file".to_string(),
+        ));
     }
     if !is_office_path(&canonical_target) {
-        return Err(OfficeToolsError::Io(
+        return Err(OfficeToolsError::InvalidInput(
             "not a supported office file (.docx/.xlsx/.pptx)".to_string(),
         ));
     }
@@ -1813,4 +1870,124 @@ mod tests {
         assert!(tail.chars().skip(1).all(|c| c == 'あ'));
     }
 
+    /// 转成接口错误后的 code、HTTP 状态码，并确认 message 还是原来的 Display。
+    fn web_status_of(err: OfficeToolsError) -> (AppErrorCode, u16) {
+        let text = err.to_string();
+        let app = AppCommandError::from(err);
+        assert_eq!(app.message, text);
+        let code = app.code;
+        (
+            code,
+            axum::response::IntoResponse::into_response(app)
+                .status()
+                .as_u16(),
+        )
+    }
+
+    #[test]
+    fn office_tools_errors_map_to_their_kind() {
+        use AppErrorCode::*;
+        let s = || "x".to_string();
+        let cases = [
+            (OfficeToolsError::NotInstalled, DependencyMissing, 422),
+            (OfficeToolsError::SkillNotFound(s()), NotFound, 404),
+            (OfficeToolsError::Missing(s()), NotFound, 404),
+            (
+                OfficeToolsError::UnsupportedAgent(AgentType::ClaudeCode),
+                InvalidInput,
+                400,
+            ),
+            (OfficeToolsError::InvalidInput(s()), InvalidInput, 400),
+            (
+                OfficeToolsError::NameCollision { path: s() },
+                AlreadyExists,
+                409,
+            ),
+            (
+                OfficeToolsError::ForeignLink {
+                    path: s(),
+                    found: s(),
+                },
+                AlreadyExists,
+                409,
+            ),
+            (OfficeToolsError::Io(s()), TaskExecutionFailed, 500),
+            (
+                OfficeToolsError::CommandFailed(s()),
+                TaskExecutionFailed,
+                500,
+            ),
+        ];
+        for (err, code, status) in cases {
+            let label = format!("{err:?}");
+            assert_eq!(web_status_of(err), (code, status), "{label}");
+        }
+    }
+
+    #[tokio::test]
+    async fn rendering_what_is_not_there_is_not_a_server_fault() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().to_string();
+
+        // 根目录不存在：404。
+        let gone = dir.path().join("gone").to_string_lossy().to_string();
+        let err = officecli_render_html(gone, "a.docx".into())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, OfficeToolsError::Missing(_)), "{err:?}");
+        assert_eq!(err.to_string(), "workspace root does not exist");
+        assert_eq!(web_status_of(err).1, 404);
+
+        // 文件已经删了：404，文字里带着路径。
+        let err = officecli_render_html(root.clone(), "deleted.docx".into())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, OfficeToolsError::Missing(_)), "{err:?}");
+        assert_eq!(err.to_string(), "deleted.docx does not exist");
+        assert_eq!(web_status_of(err).1, 404);
+
+        // 不是 Office 文件：400，文字照旧、不带 `io error: `。
+        fs::write(dir.path().join("notes.txt"), "hi").unwrap();
+        let err = officecli_render_html(root.clone(), "notes.txt".into())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "not a supported office file (.docx/.xlsx/.pptx)"
+        );
+        assert_eq!(web_status_of(err), (AppErrorCode::InvalidInput, 400));
+
+        // 是目录不是文件：400。
+        fs::create_dir(dir.path().join("folder.docx")).unwrap();
+        let err = officecli_render_html(root, "folder.docx".into())
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "path is not a file");
+        assert_eq!(web_status_of(err).1, 400);
+    }
+
+    /// 根目录读不出来（上级目录没权限）是服务器读文件出错，不能报成「不存在」。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unreadable_root_is_a_server_fault_not_missing() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        let root = locked.join("ws");
+        fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        // 以 root 跑时权限拦不住，这个测试没意义。
+        if fs::metadata(&root).is_ok() {
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        let err = officecli_render_html(root.to_string_lossy().into_owned(), "a.docx".into())
+            .await
+            .unwrap_err();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(err, OfficeToolsError::Io(_)), "{err:?}");
+        assert_eq!(web_status_of(err).1, 500);
+    }
 }

@@ -31,6 +31,7 @@ use tokio::sync::Mutex;
 
 use crate::acp::registry::all_acp_agents;
 use crate::acp::types::{AgentSkillLayout, AgentSkillScope};
+use crate::app_error::{AppCommandError, AppErrorCode};
 use crate::commands::acp::{
     locate_existing_skill_across_dirs, preferred_scope_skill_dir, read_skill_description,
     remove_skill_entry, scoped_skill_dirs, skill_storage_spec, validate_skill_id, SkillStorageSpec,
@@ -65,6 +66,30 @@ pub enum CustomSkillsError {
     Io(String),
     #[error("metadata error: {0}")]
     Metadata(String),
+    /// 技能 id 不合法（`validate_skill_id` 拒的）：调用方给的不对，400。
+    #[error("{0}")]
+    InvalidId(String),
+}
+
+// 网页接口按错误种类回状态码：找不到 404、重名 409、调用方给的不对 400，只有服务器自己的毛病才 500。
+// `match` 写全、不用 `_`：以后加变体，编译器会逼着选它算哪一类。message 一律是 Display。
+impl From<CustomSkillsError> for AppCommandError {
+    fn from(err: CustomSkillsError) -> Self {
+        let code = match &err {
+            CustomSkillsError::NotFound(_) => AppErrorCode::NotFound,
+            CustomSkillsError::AlreadyExists(_)
+            | CustomSkillsError::NameCollision { .. }
+            | CustomSkillsError::ForeignLink { .. } => AppErrorCode::AlreadyExists,
+            CustomSkillsError::ReservedId(_)
+            | CustomSkillsError::UnsupportedAgent(_)
+            | CustomSkillsError::InvalidSource(_)
+            | CustomSkillsError::InvalidId(_) => AppErrorCode::InvalidInput,
+            CustomSkillsError::Io(_) | CustomSkillsError::Metadata(_) => {
+                AppErrorCode::TaskExecutionFailed
+            }
+        };
+        AppCommandError::new(code, err.to_string())
+    }
 }
 
 impl Serialize for CustomSkillsError {
@@ -173,7 +198,7 @@ fn reserved_ids() -> BTreeSet<String> {
 /// Validate an id AND require it to be free of any built-in pack. Used by every
 /// authoring mutation (create/save/duplicate/import/delete).
 fn ensure_custom_id(raw: &str) -> Result<String, CustomSkillsError> {
-    let id = validate_skill_id(raw).map_err(|e| CustomSkillsError::Metadata(e.to_string()))?;
+    let id = validate_skill_id(raw).map_err(|e| CustomSkillsError::InvalidId(e.to_string()))?;
     if reserved_ids().contains(&id) {
         return Err(CustomSkillsError::ReservedId(id));
     }
@@ -335,7 +360,7 @@ pub async fn custom_list_all_install_statuses() -> Result<Vec<ExpertInstallStatu
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn custom_read_skill(id: String) -> Result<String, CustomSkillsError> {
-    let id = validate_skill_id(&id).map_err(|e| CustomSkillsError::Metadata(e.to_string()))?;
+    let id = validate_skill_id(&id).map_err(|e| CustomSkillsError::InvalidId(e.to_string()))?;
     let path = skill_md_path(&id);
     if !path.is_file() {
         return Err(CustomSkillsError::NotFound(id));
@@ -351,7 +376,7 @@ fn link_one_locked(
     id: &str,
     agent_type: AgentType,
 ) -> Result<ExpertInstallStatus, CustomSkillsError> {
-    let id = validate_skill_id(id).map_err(|e| CustomSkillsError::Metadata(e.to_string()))?;
+    let id = validate_skill_id(id).map_err(|e| CustomSkillsError::InvalidId(e.to_string()))?;
     let central = custom_central_path(&id);
     if !central.exists() {
         return Err(CustomSkillsError::NotFound(id));
@@ -409,7 +434,7 @@ fn link_one_locked(
 /// handle shared-dir agents (`~/.agents/skills`). Only ever removes OUR links
 /// (LinkedToCodeg / Broken) — foreign links and real dirs are left untouched.
 fn unlink_one_locked(id: &str, agent_type: AgentType) -> Result<(), CustomSkillsError> {
-    let id = validate_skill_id(id).map_err(|e| CustomSkillsError::Metadata(e.to_string()))?;
+    let id = validate_skill_id(id).map_err(|e| CustomSkillsError::InvalidId(e.to_string()))?;
     let dirs = scoped_skill_dirs(agent_type, AgentSkillScope::Global, None)
         .map_err(|_| CustomSkillsError::UnsupportedAgent(agent_type))?;
     let central = custom_central_path(&id);
@@ -525,7 +550,7 @@ pub async fn custom_duplicate_skill(
 ) -> Result<CustomSkillItem, CustomSkillsError> {
     let _guard = mutation_lock().lock().await;
     let source_id =
-        validate_skill_id(&source_id).map_err(|e| CustomSkillsError::Metadata(e.to_string()))?;
+        validate_skill_id(&source_id).map_err(|e| CustomSkillsError::InvalidId(e.to_string()))?;
     let source = custom_central_path(&source_id);
     if !source.join("SKILL.md").is_file() {
         return Err(CustomSkillsError::NotFound(source_id));
@@ -1361,5 +1386,68 @@ mod tests {
             assert_eq!(fs::read_to_string(&sentinel).unwrap(), "keep me");
         })
         .await;
+    }
+
+    /// 转成接口错误后的 code、HTTP 状态码，并确认 message 还是原来的 Display。
+    fn web_status_of(err: CustomSkillsError) -> (AppErrorCode, u16) {
+        let text = err.to_string();
+        let app = AppCommandError::from(err);
+        assert_eq!(app.message, text);
+        let code = app.code;
+        (
+            code,
+            axum::response::IntoResponse::into_response(app)
+                .status()
+                .as_u16(),
+        )
+    }
+
+    #[tokio::test]
+    async fn reading_a_malformed_id_is_a_bad_request() {
+        let err = custom_read_skill("bad id".into())
+            .await
+            .expect_err("a space is not allowed in a skill id");
+        assert_eq!(
+            err.to_string(),
+            "skill id can only include letters, numbers, '-', '_' and '.'"
+        );
+        assert_eq!(web_status_of(err), (AppErrorCode::InvalidInput, 400));
+    }
+
+    #[test]
+    fn custom_skill_errors_map_to_their_kind() {
+        use AppErrorCode::*;
+        let s = || "x".to_string();
+        let cases = [
+            (CustomSkillsError::NotFound(s()), NotFound, 404),
+            (CustomSkillsError::AlreadyExists(s()), AlreadyExists, 409),
+            (
+                CustomSkillsError::NameCollision { path: s() },
+                AlreadyExists,
+                409,
+            ),
+            (
+                CustomSkillsError::ForeignLink {
+                    path: s(),
+                    found: s(),
+                },
+                AlreadyExists,
+                409,
+            ),
+            (CustomSkillsError::ReservedId(s()), InvalidInput, 400),
+            (
+                CustomSkillsError::UnsupportedAgent(AgentType::ClaudeCode),
+                InvalidInput,
+                400,
+            ),
+            (CustomSkillsError::InvalidSource(s()), InvalidInput, 400),
+            (CustomSkillsError::InvalidId(s()), InvalidInput, 400),
+            (CustomSkillsError::Io(s()), TaskExecutionFailed, 500),
+            (CustomSkillsError::Metadata(s()), TaskExecutionFailed, 500),
+        ];
+        for (err, code, status) in cases {
+            let label = format!("{err:?}");
+            assert_eq!(web_status_of(err), (code, status), "{label}");
+        }
     }
 }

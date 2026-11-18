@@ -28,7 +28,7 @@ pub struct ApplyLinksParams {
 pub async fn experts_list() -> Result<Json<Vec<ExpertListItem>>, AppCommandError> {
     let result = experts_commands::experts_list()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -37,7 +37,7 @@ pub async fn experts_get_install_status(
 ) -> Result<Json<Vec<ExpertInstallStatus>>, AppCommandError> {
     let result = experts_commands::experts_get_install_status(params.expert_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -45,7 +45,7 @@ pub async fn experts_list_all_install_statuses(
 ) -> Result<Json<Vec<ExpertInstallStatus>>, AppCommandError> {
     let result = experts_commands::experts_list_all_install_statuses()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -54,7 +54,7 @@ pub async fn experts_link_to_agent(
 ) -> Result<Json<ExpertInstallStatus>, AppCommandError> {
     let result = experts_commands::experts_link_to_agent(params.expert_id, params.agent_type)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -63,7 +63,7 @@ pub async fn experts_apply_links(
 ) -> Result<Json<Vec<LinkOpResult>>, AppCommandError> {
     let result = experts_commands::experts_apply_links(params.ops)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -72,7 +72,7 @@ pub async fn experts_unlink_from_agent(
 ) -> Result<Json<()>, AppCommandError> {
     experts_commands::experts_unlink_from_agent(params.expert_id, params.agent_type)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -81,13 +81,13 @@ pub async fn experts_read_content(
 ) -> Result<Json<String>, AppCommandError> {
     let result = experts_commands::experts_read_content(params.expert_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
 pub async fn experts_open_central_dir() -> Result<Json<String>, AppCommandError> {
     let result = experts_commands::experts_open_central_dir()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }

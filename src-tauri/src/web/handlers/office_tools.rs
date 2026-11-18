@@ -54,14 +54,14 @@ pub async fn officecli_install(
     let emitter = state.emitter.clone();
     let result = ot::officecli_install_core(params.task_id, &emitter)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
 pub async fn officecli_uninstall() -> Result<Json<OfficecliInfo>, AppCommandError> {
     let result = ot::officecli_uninstall()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -73,7 +73,7 @@ pub async fn officecli_list_skills() -> Result<Json<Vec<OfficecliSkill>>, AppCom
 pub async fn officecli_sync_skills() -> Result<Json<SkillSyncReport>, AppCommandError> {
     let result = ot::officecli_sync_skills()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -82,7 +82,7 @@ pub async fn officecli_skill_link_to_agent(
 ) -> Result<Json<ExpertInstallStatus>, AppCommandError> {
     let result = ot::officecli_skill_link_to_agent(params.skill_id, params.agent_type)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -91,7 +91,7 @@ pub async fn officecli_skill_unlink_from_agent(
 ) -> Result<Json<()>, AppCommandError> {
     ot::officecli_skill_unlink_from_agent(params.skill_id, params.agent_type)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -100,7 +100,7 @@ pub async fn officecli_skill_get_install_status(
 ) -> Result<Json<Vec<ExpertInstallStatus>>, AppCommandError> {
     let result = ot::officecli_skill_get_install_status(params.skill_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -108,7 +108,7 @@ pub async fn officecli_skill_list_all_install_statuses(
 ) -> Result<Json<Vec<ExpertInstallStatus>>, AppCommandError> {
     let result = ot::officecli_skill_list_all_install_statuses()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -117,7 +117,7 @@ pub async fn officecli_skill_apply_links(
 ) -> Result<Json<Vec<LinkOpResult>>, AppCommandError> {
     let result = ot::officecli_skill_apply_links(params.ops)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -126,7 +126,7 @@ pub async fn officecli_skill_read_content(
 ) -> Result<Json<String>, AppCommandError> {
     let result = ot::officecli_skill_read_content(params.skill_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -135,7 +135,7 @@ pub async fn officecli_render_html(
 ) -> Result<Json<String>, AppCommandError> {
     let result = ot::officecli_render_html(params.root_path, params.path)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 

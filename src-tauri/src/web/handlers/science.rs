@@ -29,7 +29,7 @@ pub struct ApplyLinksParams {
 pub async fn science_list() -> Result<Json<Vec<ScienceListItem>>, AppCommandError> {
     let result = science_commands::science_list()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -38,7 +38,7 @@ pub async fn science_get_install_status(
 ) -> Result<Json<Vec<ExpertInstallStatus>>, AppCommandError> {
     let result = science_commands::science_get_install_status(params.skill_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -46,7 +46,7 @@ pub async fn science_list_all_install_statuses(
 ) -> Result<Json<Vec<ExpertInstallStatus>>, AppCommandError> {
     let result = science_commands::science_list_all_install_statuses()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -55,7 +55,7 @@ pub async fn science_link_to_agent(
 ) -> Result<Json<ExpertInstallStatus>, AppCommandError> {
     let result = science_commands::science_link_to_agent(params.skill_id, params.agent_type)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -64,7 +64,7 @@ pub async fn science_apply_links(
 ) -> Result<Json<Vec<LinkOpResult>>, AppCommandError> {
     let result = science_commands::science_apply_links(params.ops)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -73,7 +73,7 @@ pub async fn science_unlink_from_agent(
 ) -> Result<Json<()>, AppCommandError> {
     science_commands::science_unlink_from_agent(params.skill_id, params.agent_type)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
@@ -82,13 +82,13 @@ pub async fn science_read_content(
 ) -> Result<Json<String>, AppCommandError> {
     let result = science_commands::science_read_content(params.skill_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
 pub async fn science_open_central_dir() -> Result<Json<String>, AppCommandError> {
     let result = science_commands::science_open_central_dir()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }

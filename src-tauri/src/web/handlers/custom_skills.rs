@@ -57,7 +57,7 @@ pub struct CustomDeleteParams {
 pub async fn custom_list() -> Result<Json<Vec<CustomSkillItem>>, AppCommandError> {
     let result = custom_skills_commands::custom_list()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -65,7 +65,7 @@ pub async fn custom_list_all_install_statuses(
 ) -> Result<Json<Vec<ExpertInstallStatus>>, AppCommandError> {
     let result = custom_skills_commands::custom_list_all_install_statuses()
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -74,7 +74,7 @@ pub async fn custom_apply_links(
 ) -> Result<Json<Vec<LinkOpResult>>, AppCommandError> {
     let result = custom_skills_commands::custom_apply_links(params.ops)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -83,7 +83,7 @@ pub async fn custom_read_skill(
 ) -> Result<Json<String>, AppCommandError> {
     let result = custom_skills_commands::custom_read_skill(params.id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -92,7 +92,7 @@ pub async fn custom_create_skill(
 ) -> Result<Json<CustomSkillItem>, AppCommandError> {
     let result = custom_skills_commands::custom_create_skill(params.id, params.content)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -101,7 +101,7 @@ pub async fn custom_save_skill(
 ) -> Result<Json<CustomSkillItem>, AppCommandError> {
     let result = custom_skills_commands::custom_save_skill(params.id, params.content)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -110,7 +110,7 @@ pub async fn custom_duplicate_skill(
 ) -> Result<Json<CustomSkillItem>, AppCommandError> {
     let result = custom_skills_commands::custom_duplicate_skill(params.source_id, params.new_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -119,17 +119,16 @@ pub async fn custom_import_skill(
 ) -> Result<Json<CustomSkillItem>, AppCommandError> {
     let result = custom_skills_commands::custom_import_skill(params.source_path, params.id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
 pub async fn custom_import_from_agent(
     Json(params): Json<CustomImportFromAgentParams>,
 ) -> Result<Json<Vec<CustomImportResult>>, AppCommandError> {
-    let result =
-        custom_skills_commands::custom_import_from_agent(params.agent_type, params.ids)
-            .await
-            .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    let result = custom_skills_commands::custom_import_from_agent(params.agent_type, params.ids)
+        .await
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 
@@ -138,6 +137,6 @@ pub async fn custom_delete_skills(
 ) -> Result<Json<Vec<CustomDeleteResult>>, AppCommandError> {
     let result = custom_skills_commands::custom_delete_skills(params.ids)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }

@@ -102,3 +102,27 @@ export function shouldRejectDuplicateCreate(
 ): boolean {
   return !hasPersistedId && createPending
 }
+
+/**
+ * #792：回车时连接还没就绪，按连接状态决定怎么把它推向就绪。
+ *
+ * - `reconnect`：断了 / 出错，重连一次（handleFocus）。
+ * - `retarget`：已经连上，但连的是别的目录或智能体（刚用完上一个会话就新建
+ *   聊天时会遇到）。这时 handleFocus 什么都不做，要按这个标签现在的参数再
+ *   请求一次连接，connect 会断开旧的、按新目录重连。
+ * - `wait`：正在连 / 正在回复，等它自己就绪。
+ */
+export function notReadyRecovery(
+  connStatus: string | null | undefined
+): "reconnect" | "retarget" | "wait" {
+  if (connStatus === "error" || connStatus === "disconnected")
+    return "reconnect"
+  if (connStatus === "connected") return "retarget"
+  return "wait"
+}
+
+/**
+ * #792：「已经连上、但连的不是这个标签要的目录 / 智能体」持续这么久还没就绪，
+ * 就再请求一次连接，并把排队区队首标成失败、带重试，不再一直显示「正在等待就绪」。
+ */
+export const STALE_TARGET_FAIL_MS = 15_000

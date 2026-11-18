@@ -146,6 +146,7 @@ import { isWindowedDetail } from "@/lib/turn-window"
 import {
   flushRetryDelayMs,
   isConnectionReady,
+  notReadyRecovery,
   shouldQueueDirectSend,
   shouldRejectDuplicateCreate,
 } from "@/lib/queue-flush"
@@ -218,6 +219,7 @@ import { contentBlocksFromUserMessage } from "@/lib/user-message-blocks"
 import { getAgentLabel } from "@/lib/custom-agents"
 import { saveModePreference } from "@/lib/selector-prefs-storage"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
+import { useStaleTargetFail } from "@/hooks/use-stale-target-fail"
 import { draftAgentSettled } from "@/lib/draft-auto-connect"
 import {
   adoptLegacyNewConversationDraft,
@@ -804,6 +806,7 @@ const ConversationTabView = memo(function ConversationTabView({
     autoConnectError,
     handleFocus,
     reconnectInBackground,
+    retargetConnection,
     handleSend: lifecycleSend,
     handleSetConfigOption: lifecycleSetConfigOption,
     handleCancel,
@@ -1325,6 +1328,23 @@ const ConversationTabView = memo(function ConversationTabView({
     mqFailHead()
   }, [agentUnavailable, msgQueue.length, queueHeadFailed, mqFailHead])
 
+  // Cowork fork（#792）：连上了、但连的还是别的目录 / 智能体（刚用完上一个
+  // 会话就新建聊天），这种「没就绪」不算不可用，上面那条不管；换目录的重连
+  // 要是没触发，排队的消息就一直写「正在等待就绪」。等满 STALE_TARGET_FAIL_MS
+  // 还没就绪：再请求一次连接，并把队首标成失败、带重试。
+  // 计时不随排队条数、回调引用变化清零（见 useStaleTargetFail）。
+  const staleConnectedTarget = connStatus === "connected" && !connectionReady
+  useStaleTargetFail({
+    stale: staleConnectedTarget,
+    queueLength: msgQueue.length,
+    headFailed: queueHeadFailed,
+    isReady: () => connectionReadyRef.current,
+    onTimeout: () => {
+      retargetConnection()
+      mqFailHead()
+    },
+  })
+
   // Mirror the connection's liveMessage into the runtime session OUTSIDE React.
   // The connection dispatch invokes this sink synchronously whenever liveMessage
   // changes (streaming deltas, tool updates, the prompt-start reset), so the
@@ -1773,8 +1793,11 @@ const ConversationTabView = memo(function ConversationTabView({
       // or dropped connection is retried right away.
       if (!connectionReady) {
         keepInQueue()
-        const status = connStatusRef.current
-        if (status === "error" || status === "disconnected") handleFocus()
+        // #792：已经连上、但连的是别的目录 / 智能体时，handleFocus 不管，
+        // 按这个标签现在的参数再请求一次连接。
+        const recovery = notReadyRecovery(connStatusRef.current)
+        if (recovery === "reconnect") handleFocus()
+        else if (recovery === "retarget") retargetConnection()
         // Cowork fork（#650）：新草稿不等连上，当场建会话，消息才存得住。
         createDraftConversationEarly(draft)
         return
@@ -2094,6 +2117,7 @@ const ConversationTabView = memo(function ConversationTabView({
       effectiveConversationId,
       folderId,
       handleFocus,
+      retargetConnection,
       hasPersistedConversation,
       lifecycleSend,
       pinTab,

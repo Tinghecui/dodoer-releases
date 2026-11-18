@@ -106,3 +106,48 @@ describe("useConnectionLifecycle reconnectInBackground", () => {
     expect(conn.connect).not.toHaveBeenCalled()
   })
 })
+
+// #792：连上了、但连的还是上一个会话的目录时，handleFocus 和
+// reconnectInBackground 都不管（状态是 connected），一直等不来就绪。
+// retargetConnection 不看状态，按当前参数再请求一次（同参数的由 connect 去重）。
+describe("useConnectionLifecycle retargetConnection", () => {
+  beforeEach(() => {
+    conn.status = null
+    conn.connect.mockClear()
+  })
+
+  function renderActiveTab() {
+    return renderHook(() =>
+      useConnectionLifecycle({
+        contextKey: "tab-3",
+        agentType: "claude_code",
+        isActive: true,
+        workingDir: "/tmp/new-chat",
+        sessionId: undefined,
+        conversationId: undefined,
+      })
+    )
+  }
+
+  it("re-requests the connection even while it reads connected", () => {
+    conn.status = "connected"
+    const { result } = renderActiveTab()
+    conn.connect.mockClear()
+    result.current.handleFocus()
+    expect(conn.connect).not.toHaveBeenCalled()
+    result.current.retargetConnection()
+    expect(conn.connect).toHaveBeenCalledWith(
+      "claude_code",
+      "/tmp/new-chat",
+      undefined,
+      undefined
+    )
+  })
+
+  it("does nothing for a background tab", () => {
+    conn.status = "connected"
+    const { result } = renderBackgroundTab()
+    result.current.retargetConnection()
+    expect(conn.connect).not.toHaveBeenCalled()
+  })
+})

@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest"
 import {
   flushRetryDelayMs,
   isConnectionReady,
+  notReadyRecovery,
   QUEUE_FLUSH_RETRY_BACKOFF_MS,
+  STALE_TARGET_FAIL_MS,
   shouldQueueDirectSend,
   shouldRejectDuplicateCreate,
 } from "./queue-flush"
@@ -122,5 +124,27 @@ describe("shouldRejectDuplicateCreate", () => {
   it("never single-flights a persisted conversation (it allows concurrent queued sends)", () => {
     expect(shouldRejectDuplicateCreate(true, true)).toBe(false)
     expect(shouldRejectDuplicateCreate(true, false)).toBe(false)
+  })
+})
+
+// #792：已经连上、但连的是上一个会话的目录 / 智能体时，排队的消息不能一直等。
+describe("notReadyRecovery", () => {
+  it("reconnects a dropped or failed connection", () => {
+    expect(notReadyRecovery("error")).toBe("reconnect")
+    expect(notReadyRecovery("disconnected")).toBe("reconnect")
+  })
+
+  it("re-requests a connection that is up but bound to another target", () => {
+    expect(notReadyRecovery("connected")).toBe("retarget")
+  })
+
+  it("leaves a connection that is still coming up alone", () => {
+    expect(notReadyRecovery("connecting")).toBe("wait")
+    expect(notReadyRecovery("prompting")).toBe("wait")
+    expect(notReadyRecovery(null)).toBe("wait")
+  })
+
+  it("gives the stale-target wait a bounded timeout", () => {
+    expect(STALE_TARGET_FAIL_MS).toBe(15_000)
   })
 })

@@ -71,6 +71,12 @@ export interface UseConnectionLifecycleReturn {
    * 能连（`isActive` 里合进去的那些准备条件）。
    */
   reconnectInBackground: () => void
+  /**
+   * Cowork 加的（#792）：不看连接状态，按当前参数再请求一次连接。给「已经连上、
+   * 但连的是上一个会话的目录 / 智能体」用：handleFocus 只在断了 / 出错时才连，
+   * 这种情况它不管。参数相同的请求由 connect 自己去重，不会重复起进程。
+   */
+  retargetConnection: () => void
   handleSend: (
     draft: PromptDraft,
     modeId?: string | null,
@@ -513,6 +519,27 @@ export function useConnectionLifecycle({
     )
   }, [agentType, workingDir, sessionId, conversationId, status, connConnect])
 
+  const retargetConnection = useCallback(() => {
+    if (!isActive || !workingDir) return
+    touchActivity(contextKey)
+    connConnect(agentType, workingDir, sessionId, conversationId).catch(
+      (e: unknown) => {
+        if (!isExpectedConnectError(e)) {
+          console.error("[ConnLifecycle] retarget connect:", e)
+        }
+      }
+    )
+  }, [
+    isActive,
+    agentType,
+    workingDir,
+    sessionId,
+    conversationId,
+    connConnect,
+    contextKey,
+    touchActivity,
+  ])
+
   // Why connecting failed, for the composer's inline banner. The auto-connect's
   // own rejection says it first; a request parked behind another in-flight
   // connect never rejects to it (its promise resolves at once, and the run
@@ -672,6 +699,7 @@ export function useConnectionLifecycle({
     autoConnectError,
     handleFocus,
     reconnectInBackground,
+    retargetConnection,
     handleSend,
     handleSetConfigOption,
     handleCancel,

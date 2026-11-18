@@ -562,3 +562,30 @@ describe("a chat draft bound after a reload retries on a fresh session", () => {
     )
   })
 })
+
+// #792：连上了、但连的还是上一个会话的目录时，排队的消息不能一直等就绪。
+describe("a connection bound to another target does not hold the queue forever", () => {
+  it("re-requests the connection from the send path", () => {
+    const start = source.indexOf("if (!connectionReady) {")
+    const block = source.slice(start, start + 600)
+    expect(block).toContain("notReadyRecovery(connStatusRef.current)")
+    expect(block).toContain('recovery === "retarget"')
+    expect(block).toContain("retargetConnection()")
+  })
+
+  it("fails the head after the stale-target timeout", () => {
+    const effect = between(
+      "const staleConnectedTarget =",
+      "// Mirror the connection's liveMessage"
+    )
+    expect(effect).toContain('connStatus === "connected" && !connectionReady')
+    // 计时本身（满 15 秒、加消息不清零）由 use-stale-target-fail.test.ts 跑
+    expect(effect).toContain("useStaleTargetFail({")
+    expect(effect).toContain("stale: staleConnectedTarget")
+    expect(effect).toContain("queueLength: msgQueue.length")
+    expect(effect).toContain("headFailed: queueHeadFailed")
+    expect(effect).toContain("isReady: () => connectionReadyRef.current")
+    expect(effect).toContain("retargetConnection()")
+    expect(effect).toContain("mqFailHead()")
+  })
+})

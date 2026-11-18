@@ -167,6 +167,37 @@ export function estimateChangedLineStats(
   }
 }
 
+/**
+ * 字符串替换式编辑（Edit 的 old_string / new_string）的两段片段，后面接的
+ * 是文件里同一段内容。只有一边以换行结尾时（「y」改成「y\n」），切行时
+ * 结尾的换行被去掉，两边都是 ["y"]，比不出差别；这时给两边各补一个换行再比，
+ * 多出的那个空行才算得出来。两边都以换行结尾或都不以换行结尾的，切行对两边
+ * 一样，不补（补了会在 diff 里多出一行空的公共上下文，块头行数和正文对不上）。
+ * 有一边是空的（新建、整段删除）也不补，按原样比。
+ *
+ * 片段看不出文件原来最后一行有没有换行：没有的话，「y」改成「y\n」其实只是
+ * 补上结尾换行，这里仍按多了一个空行算（文件一般以换行结尾，按常见情况）。
+ */
+export function editFragmentTexts(
+  oldText: string,
+  newText: string
+): { oldText: string; newText: string } {
+  if (!oldText || !newText) return { oldText, newText }
+  if (oldText.endsWith("\n") === newText.endsWith("\n")) {
+    return { oldText, newText }
+  }
+  return { oldText: `${oldText}\n`, newText: `${newText}\n` }
+}
+
+/** 字符串替换式编辑的增删行数：`editFragmentTexts` 补齐后再比。 */
+export function estimateEditFragmentStats(
+  oldText: string,
+  newText: string
+): LineChangeStats {
+  const padded = editFragmentTexts(oldText, newText)
+  return estimateChangedLineStats(padded.oldText, padded.newText)
+}
+
 const UNIFIED_HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/
 
 export function countUnifiedDiffLineChanges(text: string): LineChangeStats {

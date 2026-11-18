@@ -297,6 +297,34 @@ describe("extractLiveEditStats", () => {
     })
   })
 
+  it("counts an Edit that only appends a blank line as +1", () => {
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(
+          JSON.stringify({
+            file_path: "two.txt",
+            old_string: "x",
+            new_string: "x\n",
+          })
+        ),
+      ])
+    )
+    expect(stats).toEqual({ files: 1, additions: 1, deletions: 0 })
+  })
+
+  it("counts a changes-shaped edit that only appends a blank line as +1", () => {
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(
+          JSON.stringify({
+            changes: { "two.txt": { old_string: "x", new_string: "x\n" } },
+          })
+        ),
+      ])
+    )
+    expect(stats).toEqual({ files: 1, additions: 1, deletions: 0 })
+  })
+
   it("still counts an approved write", () => {
     const approved = toolBlock(writeInput("a", "ok.txt"))
     if (approved.type !== "tool_call") throw new Error("fixture")

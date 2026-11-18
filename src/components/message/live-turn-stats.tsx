@@ -17,7 +17,7 @@ import {
   applyPatchHunks,
   applyTextEdits,
   countUnifiedDiffLineChanges,
-  estimateChangedLineStats,
+  estimateEditFragmentStats,
   textEditsLineDelta,
   type TextEdit,
 } from "@/lib/line-change-stats"
@@ -327,7 +327,7 @@ function extractEditStats(parsed: Record<string, unknown>): LineChangeStats & {
           (typeof record.newText === "string" && record.newText) ||
           (typeof record.new_string === "string" && record.new_string) ||
           ""
-        stats = estimateChangedLineStats(oldString, newString)
+        stats = estimateEditFragmentStats(oldString, newString)
         edit = { oldText: oldString, newText: newString }
       }
       additions += stats.additions
@@ -356,7 +356,7 @@ function extractEditStats(parsed: Record<string, unknown>): LineChangeStats & {
     ""
 
   return {
-    ...estimateChangedLineStats(oldString, newString),
+    ...estimateEditFragmentStats(oldString, newString),
     perFile: null,
     edits:
       oldString || newString

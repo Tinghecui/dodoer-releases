@@ -4,7 +4,8 @@ import {
   applyPatchHunks,
   applyTextEdits,
   countUnifiedDiffLineChanges,
-  estimateChangedLineStats,
+  editFragmentTexts,
+  estimateEditFragmentStats,
   splitNormalizedLines,
   textEditsLineDelta,
   type TextEdit,
@@ -269,12 +270,15 @@ function countDiffLines(text: string): DiffStat {
 
 const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/
 
+// 只用于字符串替换式编辑的两段片段：只有一边以换行结尾时两边补齐再比，末尾只加
+// 空行的编辑才生成得出 diff（见 editFragmentTexts）
 function buildUnifiedDiff(
   filePath: string,
   oldText: string,
   newText: string
 ): string | null {
-  return generateUnifiedDiff(oldText, newText, filePath)
+  const padded = editFragmentTexts(oldText, newText)
+  return generateUnifiedDiff(padded.oldText, padded.newText, filePath)
 }
 
 function parseEditChangeValue(value: unknown): EditChangePreview | null {
@@ -691,7 +695,7 @@ function computeLineDiff(
             continue
           }
 
-          const estimated = estimateChangedLineStats(
+          const estimated = estimateEditFragmentStats(
             change.oldText,
             change.newText
           )
@@ -712,7 +716,7 @@ function computeLineDiff(
 
     if (!oldStr && !newStr) return null
 
-    return estimateChangedLineStats(oldStr, newStr)
+    return estimateEditFragmentStats(oldStr, newStr)
   }
 
   if (op === "write") {

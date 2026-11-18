@@ -931,3 +931,34 @@ describe("整篇写入已经存在的文件算修改", () => {
     expect(group.files.reduce((sum, f) => sum + f.additions, 0)).toBe(3)
   })
 })
+
+describe("Edit 只在末尾加一个空行", () => {
+  it("改动统计是 +1 -0，导航有 diff", () => {
+    const [file] = extractReplyFileChanges([
+      editTurn("a1", "t1", "/repo/two.txt", "y", "y\n"),
+    ])
+    expect(file.additions).toBe(1)
+    expect(file.deletions).toBe(0)
+    expect(file.diff).toBeTruthy()
+    expect(file.diff).toMatch(/^\+$/m)
+
+    const [group] = extractSessionFilesGrouped([
+      userTurn("u1", "go"),
+      editTurn("a1", "t1", "/repo/two.txt", "y", "y\n"),
+    ])
+    expect(group.files[0].additions).toBe(1)
+    expect(group.files[0].diff).toBeTruthy()
+  })
+})
+
+describe("两段都以换行结尾的普通编辑", () => {
+  it("diff 的块头行数和正文对得上，不多出空的上下文行", () => {
+    const [file] = extractReplyFileChanges([
+      editTurn("a1", "t1", "/repo/two.txt", "a\n", "b\n"),
+    ])
+    expect(file.additions).toBe(1)
+    expect(file.deletions).toBe(1)
+    expect(file.diff).toContain("@@ -1,1 +1,1 @@")
+    expect(file.diff?.trimEnd().endsWith("+b")).toBe(true)
+  })
+})

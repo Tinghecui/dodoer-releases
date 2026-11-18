@@ -368,7 +368,8 @@ export function selectChatConversationsWithReuse(
   conversations: readonly DbConversationSummary[],
   showCompleted: boolean,
   prev: DbConversationSummary[],
-  isAwaiting: (conv: DbConversationSummary) => boolean = () => false
+  isAwaiting: (conv: DbConversationSummary) => boolean = () => false,
+  sortsFirst: (conv: DbConversationSummary) => boolean = () => false
 ): DbConversationSummary[] {
   const next: DbConversationSummary[] = []
   for (const conv of conversations) {
@@ -377,7 +378,13 @@ export function selectChatConversationsWithReuse(
     if (hiddenAsCompleted(conv, showCompleted, isAwaiting)) continue
     next.push(conv)
   }
-  next.sort(compareByUpdatedAtDesc)
+  // #768：和「最近」、文件夹一样，`sortsFirst`（在跑的、存着发送失败排队
+  // 消息的，见 withQueuedFirst）排在最前，其余照旧按最后活动时间。
+  next.sort(
+    (a, b) =>
+      Number(sortsFirst(b)) - Number(sortsFirst(a)) ||
+      compareByUpdatedAtDesc(a, b)
+  )
   return arraysShallowEqual(prev, next) ? prev : next
 }
 

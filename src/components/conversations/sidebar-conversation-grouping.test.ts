@@ -2475,6 +2475,35 @@ describe("withQueuedFirst", () => {
     expect(grouped.get(1)?.[0].id).toBe(queuedId)
   })
 
+  it("puts it first in the Chat section too, like Recent and folders (#768)", () => {
+    const chats = [101, 102, 103].map((id) =>
+      conv(id, 99, { kind: "chat", status: "completed" })
+    )
+    const queued = conv(queuedId, 99, {
+      kind: "chat",
+      status: "pending_review",
+    })
+    const list = selectChatConversationsWithReuse(
+      [...chats, queued],
+      true,
+      [],
+      () => false,
+      sortsFirst
+    )
+    expect(list.map((c) => c.id)).toEqual([queuedId, 103, 102, 101])
+    const recent = selectRecentConversationsWithReuse(
+      [...chats, queued],
+      true,
+      new Set(),
+      [],
+      "chats",
+      () => false,
+      () => false,
+      sortsFirst
+    )
+    expect(recent.map((c) => c.id)).toEqual(list.map((c) => c.id))
+  })
+
   it("leaves everything else to the running test", () => {
     expect(sortsFirst(conv(7, 1, { status: "in_progress" }))).toBe(true)
     expect(sortsFirst(conv(8, 1, { status: "pending_review" }))).toBe(false)

@@ -1504,21 +1504,6 @@ export function SidebarConversationList({
     return base.filter((c) => !hiddenAsCompleted(c, showCompleted, isAwaiting))
   }, [shownConversations, showCompleted, isAwaiting])
 
-  // Flat "Chat" bucket: folderless chat-mode conversations, most-recently-updated
-  // first, with reference reuse (so an unrelated status event doesn't rebuild it
-  // and defeat the section's memo). Pinned chats live in the Pinned section.
-  const chatConvsRef = useRef<DbConversationSummary[]>([])
-  const chatConversations = useMemo(() => {
-    const next = selectChatConversationsWithReuse(
-      shownConversations,
-      showCompleted,
-      chatConvsRef.current,
-      isAwaiting
-    )
-    chatConvsRef.current = next
-    return next
-  }, [shownConversations, showCompleted, isAwaiting])
-
   // Pinned bucket: the FULL conversation list (ignores "Show completed" — a
   // pinned conversation stays visible regardless), sorted most-recently-pinned
   // first, with reference reuse so an unrelated status event doesn't rebuild it.
@@ -1579,6 +1564,23 @@ export function SidebarConversationList({
     void storedQueuesVer
     return withQueuedFirst(isActive, (conv) => hasStoredQueue(conv.id))
   }, [isActive, storedQueuesVer])
+
+  // Flat "Chat" bucket: folderless chat-mode conversations, most-recently-updated
+  // first, with reference reuse (so an unrelated status event doesn't rebuild it
+  // and defeat the section's memo). Pinned chats live in the Pinned section.
+  // #768：和「最近」、文件夹一样，在跑的、存着失败排队消息的排在最前。
+  const chatConvsRef = useRef<DbConversationSummary[]>([])
+  const chatConversations = useMemo(() => {
+    const next = selectChatConversationsWithReuse(
+      shownConversations,
+      showCompleted,
+      chatConvsRef.current,
+      isAwaiting,
+      sortsFirst
+    )
+    chatConvsRef.current = next
+    return next
+  }, [shownConversations, showCompleted, isAwaiting, sortsFirst])
 
   // Flat "Recent" bucket: every reachable conversation — folder-bound and chat
   // alike — most recently active first, gated on the folder still being open so

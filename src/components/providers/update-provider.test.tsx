@@ -55,6 +55,12 @@ let desktop = false
 // What the desktop app reports as its own version, and the release its
 // `check_app_update` finds (null = up to date).
 let desktopVersion = "1.1.23"
+// The update channel the desktop check reports (issue #413).
+let desktopChannel: "stable" | "early" = "stable"
+// Holds a desktop check after it has read the channel, so a test can change
+// channel while that check is still in flight; and makes it fail.
+let desktopCheckGate: Promise<void> | null = null
+let desktopCheckFails = false
 let desktopRelease: {
   version: string
   body: string
@@ -83,9 +89,9 @@ const call = vi.fn(async (endpoint: string) => {
   if (endpoint === "check_app_update") {
     // Desktop: the app's own channel check (Cowork fork, issue #413).
     if (desktop) {
-      return {
+      const answer = {
         currentVersion: desktopVersion,
-        channel: "stable",
+        channel: desktopChannel,
         update: desktopRelease && {
           version: desktopRelease.version,
           notes: desktopRelease.body,
@@ -93,6 +99,10 @@ const call = vi.fn(async (endpoint: string) => {
         },
         blocked: false,
       }
+      const fails = desktopCheckFails
+      if (desktopCheckGate) await desktopCheckGate
+      if (fails) throw new Error("manifest unreachable")
+      return answer
     }
     return checkResult()
   }
@@ -181,6 +191,9 @@ beforeEach(() => {
   desktop = false
   desktopVersion = "1.1.23"
   desktopRelease = null
+  desktopChannel = "stable"
+  desktopCheckGate = null
+  desktopCheckFails = false
   checkResult = () => ({
     currentVersion: "0.21.7",
     update: null,
@@ -322,6 +335,7 @@ describe("UpdateProvider", () => {
 // ─── Availability ──────────────────────────────────────────────────────────
 
 const LAST_CHECK_KEY = "codeg.updateCheck.last"
+const CHANNEL_CHANGED_KEY = "codeg.updateCheck.channelChangedAt"
 const DISMISSED_KEY = "codeg.updateCheck.dismissedVersion"
 
 let ctx: ReturnType<typeof useAppUpdate> = null
@@ -1415,6 +1429,275 @@ describe("UpdateProvider — cross-window dismissal", () => {
 })
 
 // ─── Automatic download (desktop) ─────────────────────────────────────────
+
+describe("UpdateProvider — update channel (desktop)", () => {
+  beforeEach(() => {
+    desktop = true
+  })
+
+  it("passes on the channel the last check was on", async () => {
+    render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    expect(ctx!.channel).toBeNull()
+
+    desktopChannel = "early"
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(ctx!.channel).toBe("early")
+
+    desktopChannel = "stable"
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(ctx!.channel).toBe("stable")
+  })
+
+  it("checks again after a channel change instead of reusing a check on the old channel", async () => {
+    updateModeResult = () => ({ mode: "off" })
+    render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    const before = checkCalls()
+
+    // A check on Stable is still running when the user picks Early.
+    let open!: () => void
+    desktopCheckGate = new Promise<void>((r) => {
+      open = r
+    })
+    desktopRelease = { version: "1.1.24", body: "stable", date: null }
+    let oldCheck!: Promise<void>
+    act(() => {
+      oldCheck = ctx!.checkNow()
+    })
+    await waitFor(() => expect(checkCalls()).toBe(before + 1))
+
+    desktopChannel = "early"
+    desktopRelease = { version: "1.2.0", body: "early", date: null }
+    let channelCheck!: Promise<void>
+    act(() => {
+      channelCheck = ctx!.checkNow({ silent: true, fresh: true })
+    })
+    await act(async () => {
+      open()
+      await oldCheck
+      await channelCheck
+    })
+
+    expect(checkCalls()).toBe(before + 2)
+    expect(ctx!.channel).toBe("early")
+    expect(screen.getByTestId("available").textContent).toBe("1.2.0")
+  })
+
+  it("drops the old channel's offer when the check after a channel change fails", async () => {
+    updateModeResult = () => ({ mode: "off" })
+    desktopRelease = { version: "1.1.24", body: "stable", date: null }
+    render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(screen.getByTestId("available").textContent).toBe("1.1.24")
+
+    desktopChannel = "early"
+    desktopCheckFails = true
+    await act(async () => {
+      await ctx!.checkNow({ silent: true, fresh: true })
+    })
+
+    expect(screen.getByTestId("available").textContent).toBe("none")
+    expect(ctx!.channel).toBeNull()
+    expect(ctx!.checkError).toContain("manifest unreachable")
+  })
+
+  it("does not bring the old channel's offer back from the cache after a reload", async () => {
+    updateModeResult = () => ({ mode: "off" })
+    desktopRelease = { version: "1.1.24", body: "stable", date: null }
+    const first = render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(localStorage.getItem(LAST_CHECK_KEY)).not.toBeNull()
+
+    desktopChannel = "early"
+    desktopCheckFails = true
+    await act(async () => {
+      await ctx!.checkNow({ silent: true, fresh: true })
+    })
+    // 存着的是旧通道查到的，换了通道就不能再拿来用
+    expect(localStorage.getItem(LAST_CHECK_KEY)).toBeNull()
+
+    first.unmount()
+    ctx = null
+    render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    expect(screen.getByTestId("available").textContent).toBe("none")
+    expect(ctx!.lastCheckedAt).toBeNull()
+  })
+
+  it("drops the old channel's offer when another window changes the channel", async () => {
+    updateModeResult = () => ({ mode: "off" })
+    desktopRelease = { version: "1.1.24", body: "stable", date: null }
+    render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(screen.getByTestId("available").textContent).toBe("1.1.24")
+
+    // 另一个窗口换了通道：它把存着的结果删掉，这个窗口收到 storage 事件
+    const oldValue = localStorage.getItem(LAST_CHECK_KEY)
+    localStorage.removeItem(LAST_CHECK_KEY)
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: LAST_CHECK_KEY,
+          oldValue,
+          newValue: null,
+        })
+      )
+    })
+
+    expect(screen.getByTestId("available").textContent).toBe("none")
+    expect(ctx!.channel).toBeNull()
+  })
+
+  it("discards its own check on the old channel when another window changes the channel", async () => {
+    updateModeResult = () => ({ mode: "off" })
+    render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    const before = checkCalls()
+
+    // 这个窗口正在查稳定版（答案已经是旧通道的了）
+    let open!: () => void
+    desktopCheckGate = new Promise<void>((r) => {
+      open = r
+    })
+    desktopRelease = { version: "1.1.24", body: "stable", date: null }
+    let oldCheck!: Promise<void>
+    act(() => {
+      oldCheck = ctx!.checkNow()
+    })
+    await waitFor(() => expect(checkCalls()).toBe(before + 1))
+
+    // 另一个窗口这时换到抢先版：把存着的结果删了，再发换通道的信号
+    desktopChannel = "early"
+    desktopRelease = { version: "1.2.0", body: "early", date: null }
+    const oldValue = localStorage.getItem(LAST_CHECK_KEY)
+    localStorage.removeItem(LAST_CHECK_KEY)
+    localStorage.setItem(CHANNEL_CHANGED_KEY, "1-a")
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: LAST_CHECK_KEY,
+          oldValue,
+          newValue: null,
+        })
+      )
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: CHANNEL_CHANGED_KEY,
+          oldValue: null,
+          newValue: "1-a",
+        })
+      )
+    })
+    await act(async () => {
+      open()
+      await oldCheck
+    })
+    await waitFor(() => expect(checkCalls()).toBe(before + 2))
+    await waitFor(() => expect(ctx!.checking).toBe(false))
+
+    // 旧通道的 1.1.24 没有写回缓存，也没有显示出来
+    const stored = localStorage.getItem(LAST_CHECK_KEY)
+    expect(stored === null || !stored.includes("1.1.24")).toBe(true)
+    expect(screen.getByTestId("available").textContent).toBe("1.2.0")
+    expect(ctx!.channel).toBe("early")
+  })
+
+  it("tells the other windows about a channel change even with nothing cached", async () => {
+    updateModeResult = () => ({ mode: "off" })
+    render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    expect(localStorage.getItem(LAST_CHECK_KEY)).toBeNull()
+    expect(localStorage.getItem(CHANNEL_CHANGED_KEY)).toBeNull()
+
+    await act(async () => {
+      await ctx!.checkNow({ silent: true, fresh: true })
+    })
+    const first = localStorage.getItem(CHANNEL_CHANGED_KEY)
+    expect(first).not.toBeNull()
+
+    // 再换一次也要换一个值，不然别的窗口收不到 storage 事件
+    await act(async () => {
+      await ctx!.checkNow({ silent: true, fresh: true })
+    })
+    const second = localStorage.getItem(CHANNEL_CHANGED_KEY)
+    expect(second).not.toBeNull()
+    expect(second).not.toBe(first)
+  })
+
+  it("discards its first check when another window changes the channel before anything was cached", async () => {
+    updateModeResult = () => ({ mode: "off" })
+    let open!: () => void
+    desktopCheckGate = new Promise<void>((r) => {
+      open = r
+    })
+    desktopRelease = { version: "1.1.24", body: "stable", date: null }
+    render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    const before = checkCalls()
+    let firstCheck!: Promise<void>
+    act(() => {
+      firstCheck = ctx!.checkNow()
+    })
+    await waitFor(() => expect(checkCalls()).toBe(before + 1))
+    // 这个窗口的第一次检查还没回来，缓存里什么都没有
+    expect(localStorage.getItem(LAST_CHECK_KEY)).toBeNull()
+
+    // 另一个窗口换到抢先版：删一个本来就没有的缓存不发事件，只有换通道的信号
+    desktopChannel = "early"
+    desktopRelease = { version: "1.2.0", body: "early", date: null }
+    localStorage.setItem(CHANNEL_CHANGED_KEY, "1-a")
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: CHANNEL_CHANGED_KEY,
+          oldValue: null,
+          newValue: "1-a",
+        })
+      )
+    })
+    await act(async () => {
+      open()
+      await firstCheck
+    })
+    await waitFor(() => expect(checkCalls()).toBe(before + 2))
+    await waitFor(() => expect(ctx!.checking).toBe(false))
+
+    const stored = localStorage.getItem(LAST_CHECK_KEY)
+    expect(stored === null || !stored.includes("1.1.24")).toBe(true)
+    expect(screen.getByTestId("available").textContent).toBe("1.2.0")
+    expect(ctx!.channel).toBe("early")
+  })
+
+  it("has no channel on a server", async () => {
+    desktop = false
+    render(availabilityTree())
+    await waitFor(() => expect(ctx).not.toBeNull())
+    await act(async () => {
+      await ctx!.checkNow()
+    })
+    expect(ctx!.channel).toBeNull()
+  })
+})
 
 describe("UpdateProvider — automatic download (desktop)", () => {
   const release = (version: string) => ({ version, body: "notes", date: null })

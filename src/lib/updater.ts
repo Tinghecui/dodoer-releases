@@ -226,6 +226,53 @@ export async function setUpdateMode(mode: UpdateMode): Promise<UpdateMode> {
   return parseUpdateMode(saved?.mode ?? mode)
 }
 
+/** Cowork fork（issue #413）：不认识的值算稳定版（和后端
+ * `UpdateChannel::parse` 一样）。 */
+export function parseUpdateChannel(value: unknown): UpdateChannel {
+  return value === "early" ? "early" : "stable"
+}
+
+/** 桌面主程序存着的更新通道，和这个构建有没有通道（更新源不是 GitHub
+ * Release 的构建没有，两档查的是同一个地址）。 */
+export interface UpdateChannelPreference {
+  channel: UpdateChannel
+  channelsAvailable: boolean
+}
+
+type StoredUpdatePreferences = {
+  update_channel?: unknown
+  channels_available?: unknown
+} | null
+
+function toChannelPreference(
+  prefs: StoredUpdatePreferences,
+  fallback: UpdateChannel = "stable"
+): UpdateChannelPreference {
+  return {
+    channel: parseUpdateChannel(prefs?.update_channel ?? fallback),
+    channelsAvailable: prefs?.channels_available === true,
+  }
+}
+
+/** 读更新通道。读不到时调用方自己按「不显示」处理。 */
+export async function getUpdateChannel(): Promise<UpdateChannelPreference> {
+  const prefs = await getShellTransport().call<StoredUpdatePreferences>(
+    "get_update_preferences"
+  )
+  return toChannelPreference(prefs)
+}
+
+/** 存更新通道（「自动更新」那一档不带，后端保持原样），回的是后端实际存下的。 */
+export async function setUpdateChannel(
+  channel: UpdateChannel
+): Promise<UpdateChannelPreference> {
+  const saved = await getShellTransport().call<StoredUpdatePreferences>(
+    "update_update_preferences",
+    { settings: { update_channel: channel } }
+  )
+  return toChannelPreference(saved, channel)
+}
+
 /** 下好的这一版空闲时还会不会自己重启换上（macOS 桌面主程序回答：自动安装、
  * 不是回退、这一版自动重启还没试满）。 */
 export async function restartsWhenIdle(): Promise<boolean> {

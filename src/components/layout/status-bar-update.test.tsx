@@ -56,6 +56,7 @@ function makeCtx(overrides: Partial<UpdateContextValue>): UpdateContextValue {
     isBusy: false,
     available: null,
     currentVersion: "0.21.7",
+    channel: null,
     checking: false,
     checkError: null,
     lastCheckedAt: new Date("2026-07-24T10:00:00Z"),

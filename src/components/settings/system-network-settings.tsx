@@ -23,6 +23,10 @@ import { useAppI18n } from "@/components/i18n-provider"
 import { CliAccessSettings } from "@/components/settings/cli-access-settings"
 import { DataSyncSettings } from "@/components/settings/data-sync-settings"
 import { AutoUpdateModeSetting } from "@/components/settings/auto-update-mode"
+import {
+  UpdateChannelBadge,
+  UpdateChannelSetting,
+} from "@/components/settings/update-channel"
 import { DesktopRollback } from "@/components/settings/desktop-rollback"
 import { ReleaseNotes } from "@/components/settings/release-notes"
 import { SettingsSection } from "@/components/shared/settings-section"
@@ -166,6 +170,7 @@ export function SystemNetworkSettings() {
     isBusy,
     available: availableUpdate,
     currentVersion,
+    channel: updateChannel,
     checking: checkingUpdate,
     checkError,
     lastCheckedAt,
@@ -530,6 +535,7 @@ export function SystemNetworkSettings() {
               <p className="text-muted-foreground">
                 {t("currentVersion")}：
                 {currentVersion ? `v${currentVersion}` : "-"}
+                <UpdateChannelBadge channel={updateChannel} />
               </p>
               {checkingUpdate ? (
                 <Button
@@ -701,6 +707,20 @@ export function SystemNetworkSettings() {
             )}
 
             <DesktopRollback />
+
+            {/* Cowork fork（issue #413）：「更新通道」，桌面窗口、这个构建
+                有通道时才显示；换了以后立刻按新通道再查一次（fresh：不沿用
+                还在跑的旧通道检查，旧通道的结果马上清掉）。 */}
+            <UpdateChannelSetting
+              onChanged={() => {
+                checkNow({ silent: true, fresh: true }).catch((err) => {
+                  console.error(
+                    "[Settings] check after channel change failed:",
+                    err
+                  )
+                })
+              }}
+            />
 
             {/* Cowork fork：「自动更新」三档，只在 macOS 桌面窗口显示。 */}
             <AutoUpdateModeSetting />

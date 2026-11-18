@@ -37,10 +37,12 @@ import {
   getRunningServerVersion,
   getAppUpdateState,
   getServerUpdateStatus,
+  getUpdateChannel,
   isOwnServerRestartRunning,
   normalizeAppUpdateError,
   readServerVersionStrict,
   restartApp,
+  setUpdateChannel,
   startAppUpdate,
   subscribeAppUpdateState,
   subscribeOwnServerRestart,
@@ -250,6 +252,50 @@ describe("waitForServerHealthy", () => {
 
     expect(healthy).toBe(false)
     expect(call.mock.calls.length).toBeGreaterThan(0)
+  })
+})
+
+describe("update channel preference", () => {
+  beforeEach(() => {
+    call.mockReset()
+    shellCall.mockReset()
+  })
+
+  it("reads the channel and whether this build has channels from the desktop app", async () => {
+    shellCall.mockResolvedValueOnce({
+      mode: "auto",
+      update_channel: "early",
+      channels_available: true,
+    })
+    await expect(getUpdateChannel()).resolves.toEqual({
+      channel: "early",
+      channelsAvailable: true,
+    })
+    expect(shellCall).toHaveBeenCalledWith("get_update_preferences")
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it("treats a missing or unknown channel as stable, and no flag as no channels", async () => {
+    shellCall.mockResolvedValueOnce({ mode: "auto", update_channel: "nightly" })
+    await expect(getUpdateChannel()).resolves.toEqual({
+      channel: "stable",
+      channelsAvailable: false,
+    })
+  })
+
+  it("saves only the channel, leaving the automatic-update mode alone", async () => {
+    shellCall.mockResolvedValueOnce({
+      mode: "download",
+      update_channel: "early",
+      channels_available: true,
+    })
+    await expect(setUpdateChannel("early")).resolves.toEqual({
+      channel: "early",
+      channelsAvailable: true,
+    })
+    expect(shellCall).toHaveBeenCalledWith("update_update_preferences", {
+      settings: { update_channel: "early" },
+    })
   })
 })
 

@@ -30,6 +30,10 @@ const DISMISSED_VERSION_KEY = "codeg.updateCheck.dismissedVersion"
 // Cowork fork：上一次**自动**开始下载的时间（epoch 毫秒）。自动下载 6 小时
 // 最多一次，手动点的不记、不看它。只有桌面窗口会自动下载，桌面上不分连接。
 const LAST_AUTO_DOWNLOAD_KEY = "codeg.updateCheck.lastAutoDownloadAt"
+// Cowork fork (issue #413)：换通道的信号。每次换都写一个新值，别的窗口靠它的
+// storage 事件知道「在跑的旧通道检查要作废」。不能只靠删 LAST_CHECK_KEY：
+// 缓存本来就没有时（比如刚启动、第一次检查还没回来），删除不发事件。
+const CHANNEL_CHANGED_KEY = "codeg.updateCheck.channelChangedAt"
 
 export interface CachedUpdateCheck {
   /** Epoch ms when the check completed. */
@@ -103,6 +107,25 @@ export function clearLastCheck(): void {
   if (typeof window === "undefined") return
   try {
     localStorage.removeItem(scoped(LAST_CHECK_KEY))
+  } catch {
+    /* ignore */
+  }
+}
+
+/** The key `announceChannelChange` writes to, for `storage`-event listeners. */
+export function channelChangeStorageKey(): string {
+  return scoped(CHANNEL_CHANGED_KEY)
+}
+
+/** Tell the other windows the update channel just changed. The value is new
+ * every time (a repeated value would not fire `storage`). */
+export function announceChannelChange(): void {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(
+      scoped(CHANNEL_CHANGED_KEY),
+      `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    )
   } catch {
     /* ignore */
   }

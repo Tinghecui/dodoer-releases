@@ -34,13 +34,16 @@ import {
   awaitUpdateConfirmation,
   restartsWhenIdle as askRestartsWhenIdle,
   UPDATE_MODE_CHANGED_EVENT,
+  type UpdateChannel,
   type UpdateMode,
   parseUpdateMode,
   usesTauriUpdater,
   waitForServerHealthy,
 } from "@/lib/updater"
 import {
+  announceChannelChange,
   type CachedUpdateCheck,
+  channelChangeStorageKey,
   clearLastCheck,
   dismissedVersionStorageKey,
   lastCheckStorageKey,
@@ -127,6 +130,9 @@ export interface UpdateContextValue {
   available: AppUpdateInfo | null
   /** The running version, from the last check (or "" before the first one). */
   currentVersion: string
+  /** Cowork fork (issue #413): the update channel the last desktop check was
+   * on. Null on a server and before the first check in this window. */
+  channel: UpdateChannel | null
   /** A check is in flight. */
   checking: boolean
   /** Raw failure message from the last check; classify with
@@ -163,8 +169,12 @@ export interface UpdateContextValue {
   restartsWhenIdle: boolean | null
   /** Ask the release source now. De-duplicated: a second call while one is in
    * flight attaches to it. `silent` (the default) reports failures only through
-   * {@link checkError}; pass false for a user-initiated check that should toast. */
-  checkNow: (opts?: { silent?: boolean }) => Promise<void>
+   * {@link checkError}; pass false for a user-initiated check that should toast.
+   * Cowork fork (issue #413): `fresh` is for right after the update channel
+   * changed — it drops the current offer and channel at once, throws away the
+   * answer of a check still in flight (that one asked the old channel) and runs
+   * a new check after it instead of attaching to it. */
+  checkNow: (opts?: { silent?: boolean; fresh?: boolean }) => Promise<void>
   /** Stop surfacing the badge for the currently-available version. */
   dismissAvailable: () => void
   /** Re-read the LOCAL facts (version, capability, rollback availability)
@@ -245,6 +255,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   // ─── Availability ───────────────────────────────────────────────────────
   const [available, setAvailable] = useState<AppUpdateInfo | null>(null)
   const [currentVersion, setCurrentVersion] = useState("")
+  const [channel, setChannel] = useState<UpdateChannel | null>(null)
   const [checking, setChecking] = useState(false)
   const [checkError, setCheckError] = useState<string | null>(null)
   const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null)
@@ -327,6 +338,17 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     if (last) adoptCached(last)
   }, [adoptCached, syncDismissed])
 
+  // Cowork fork (issue #413)：通道换了，手上旧通道查到的结果（显示的、已应用
+  // 结果的水位、上次检查时间）一起丢掉。
+  const dropShownCheck = useCallback(() => {
+    appliedAtRef.current = 0
+    appliedOfferRef.current = null
+    appliedBaselineRef.current = null
+    setLastCheckedAt(null)
+    setAvailable(null)
+    setChannel(null)
+  }, [])
+
   // `storage` fires in the OTHER windows of this origin, so what one workspace
   // window learns reaches its siblings right away instead of at whatever point
   // they next run a check. Belt-and-braces with the reads in `adoptCached`:
@@ -335,6 +357,18 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
       const key = event.key
+      // Cowork fork (issue #413)：别的窗口换了通道。缓存本来没有时删除不发
+      // 事件，所以「作废在跑的旧通道检查」认的是这个信号，不是缓存被删。
+      if (key !== null && key === channelChangeStorageKey()) {
+        if (event.newValue === null) return
+        dropShownCheck()
+        // 这个窗口自己要是还有一次检查在跑，问的多半是旧通道：作废它的结果
+        // （不写缓存、不显示、不自动下载），等它结束后按新通道再查一次。
+        if (inFlightCheckRef.current) {
+          void freshCheckRef.current(false)
+        }
+        return
+      }
       // A null key means storage was cleared wholesale — that touches both.
       if (
         key !== null &&
@@ -353,10 +387,16 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       const last = readLastCheck()
       if (last) adoptCached(last)
       else syncDismissed()
+      // Cowork fork (issue #413)：别的窗口换了通道，把存着的结果删了。这个
+      // 窗口内存里的也是旧通道查到的，一起丢掉，不然状态栏还挂着旧的升级提示。
+      // 在跑的检查由上面换通道的信号作废，这里只清显示的。
+      if (key === lastCheckStorageKey() && event.newValue === null && !last) {
+        dropShownCheck()
+      }
     }
     window.addEventListener("storage", onStorage)
     return () => window.removeEventListener("storage", onStorage)
-  }, [adoptCached, syncDismissed])
+  }, [adoptCached, syncDismissed, dropShownCheck])
 
   // Mirror state into a ref so the action callbacks read the latest snapshot
   // without being re-created on every transition.
@@ -634,8 +674,15 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     Promise.resolve()
   )
 
+  // Cowork fork (issue #413): bumped by a `fresh` check (the channel changed).
+  // A check that started before the bump publishes nothing — its answer and
+  // its error belong to the old channel.
+  const checkGenerationRef = useRef(0)
+
   const runCheck = useCallback(
     async (silent: boolean) => {
+      const generation = checkGenerationRef.current
+      const stale = () => generation !== checkGenerationRef.current
       setChecking(true)
       try {
         // Read what would block installing an update before asking whether
@@ -647,8 +694,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         await refreshLocalStatusRef.current().catch(() => {})
         if (!mountedRef.current) return
         const result = await checkAppUpdateInfo()
-        if (!mountedRef.current) return
+        if (!mountedRef.current || stale()) return
         setCurrentVersion(result.currentVersion)
+        setChannel(result.channel ?? null)
         setAvailable(result.update)
         setSelfUpdateSupported(result.selfUpdateSupported ?? false)
         setLiveProgress(result.liveProgress ?? false)
@@ -680,6 +728,10 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         // the release that is now running.
         if (result.update) void autoStartUpdate(result.update.version)
       } catch (err) {
+        if (stale()) {
+          console.debug("[Update] check on the old channel failed:", err)
+          return
+        }
         const { rawMessage } = normalizeAppUpdateError(err)
         if (mountedRef.current) setCheckError(rawMessage)
         if (!silent) {
@@ -698,18 +750,52 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     [t, autoStartUpdate]
   )
 
-  const checkNow = useCallback(
-    (opts?: { silent?: boolean }) => {
+  // `announce`：要不要告诉别的窗口通道换了。本窗口换的要告诉；收到别的窗口
+  // 的信号而作废自己在跑的检查时不再转告，不然几个窗口会互相来回作废。
+  const startCheck = useCallback(
+    (silent: boolean, fresh: boolean, announce: boolean) => {
       const existing = inFlightCheckRef.current
-      if (existing) return existing
-      const p = runCheck(opts?.silent ?? true).finally(() => {
-        inFlightCheckRef.current = null
+      if (fresh) {
+        // 换了通道：旧通道的结果马上不要了。新通道查失败时也不能留着旧的
+        // 「升级到 vX」——那个按钮装的会是按新通道重新查到的版本。
+        checkGenerationRef.current += 1
+        // 存着的上次结果也是旧通道的：不清掉的话，新通道查失败后一刷新、
+        // 重开窗口，旧的「升级到 vX」又会从缓存回来，缓存没过期还会跳过检查。
+        clearLastCheck()
+        // 缓存本来没有时上面的删除不发 storage 事件，别的窗口靠这个信号作废
+        // 它们在跑的旧通道检查。
+        if (announce) announceChannelChange()
+        dropShownCheck()
+        setCheckError(null)
+      } else if (existing) {
+        return existing
+      }
+      // 还有一次在跑（问的是旧通道）：等它结束再查，它的结果上面已经作废。
+      const run = existing
+        ? existing.catch(() => {}).then(() => runCheck(silent))
+        : runCheck(silent)
+      const p: Promise<void> = run.finally(() => {
+        if (inFlightCheckRef.current === p) inFlightCheckRef.current = null
       })
       inFlightCheckRef.current = p
       return p
     },
-    [runCheck]
+    [runCheck, dropShownCheck]
   )
+
+  const checkNow = useCallback(
+    (opts?: { silent?: boolean; fresh?: boolean }) =>
+      startCheck(opts?.silent ?? true, opts?.fresh ?? false, true),
+    [startCheck]
+  )
+
+  // 给上面 storage 事件里用：别的窗口换了通道，作废本窗口在跑的检查、不转告。
+  const freshCheckRef = useRef<(silent: boolean) => Promise<void>>(() =>
+    Promise.resolve()
+  )
+  useEffect(() => {
+    freshCheckRef.current = (silent: boolean) => startCheck(silent, true, false)
+  }, [startCheck])
 
   // Mirrored into a ref so the scheduler below can mount once — re-arming it on
   // every lifecycle transition would keep resetting the interval and the
@@ -1194,6 +1280,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       isBusy,
       available,
       currentVersion,
+      channel,
       checking,
       checkError,
       lastCheckedAt,
@@ -1224,6 +1311,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       isBusy,
       available,
       currentVersion,
+      channel,
       checking,
       checkError,
       lastCheckedAt,

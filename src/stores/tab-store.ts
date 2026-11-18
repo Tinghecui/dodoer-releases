@@ -4156,9 +4156,75 @@ useFolderTabsStore.subscribe((next, previous) => {
     useTabStore.setState({ activeTabId: after.rawTabs[0]?.id ?? null })
   }
   applyGroupInvariants()
-  if (previous.enabled && !next.enabled) closeBlankDraftsPerGroup()
+  if (previous.enabled && !next.enabled) {
+    closeBlankDraftsPerGroup()
+    if (previous.scope !== "global") keepFolderOnScreen(previous.scope)
+  }
   useTabStore.getState().syncActiveFolderId()
 })
+
+/**
+ * 关掉「标签页跟随文件夹」时，原来停着的项目（`folderId`）还留在屏幕上。
+ * 普通模式由当前标签决定项目：当前标签不在这个项目里，就换成它的第一个标签；
+ * 这个项目一个标签都没有（跟随模式下撑着它的是 scope），就在当前分组里给它
+ * 开一个空草稿。不走 `openNewConversationTab`：那条路会把分组里别的项目的草稿
+ * 改挂到这个项目、还会把主区切回会话面板，用户只是取消了一个勾。
+ */
+function keepFolderOnScreen(folderId: number) {
+  const st = useTabStore.getState()
+  const inFolder = (tab: TabItemInternal) =>
+    folderScope(tab.folderId) === folderId
+  const active = st.rawTabs.find((t) => t.id === st.activeTabId)
+  if (active && inFolder(active)) return
+  const first = st.rawTabs.find(inFolder)
+  if (first) {
+    focusTab(first.id)
+    return
+  }
+  const folder = useAppWorkspaceStore
+    .getState()
+    .folders.find((f) => f.id === folderId)
+  if (!folder) return
+  const group = resolveTargetGroup(st)
+  const { agentType, provisional } = resolveAgentForFolder(folder.id, null)
+  const tabId = makeNewConversationTabId()
+  useTabStore.setState({
+    rawTabs: [
+      ...st.rawTabs,
+      {
+        id: tabId,
+        kind: "conversation",
+        folderId: folder.id,
+        conversationId: null,
+        agentType,
+        title: runtime.labels.newConversation,
+        isPinned: true,
+        workingDir: folder.path,
+        agentTypeProvisional: provisional,
+      },
+    ],
+    activeTabId: tabId,
+    groupOf: { ...st.groupOf, [tabId]: group },
+  })
+  recomputeTabs()
+  // 一个分组一个草稿：同组里别的项目的空草稿关掉；有内容的留着（两个草稿
+  // 好过丢掉用户打的字）。
+  for (const tab of useTabStore.getState().rawTabs) {
+    if (
+      tab.id !== tabId &&
+      tab.conversationId == null &&
+      isBlankDraft(tab) &&
+      groupOfTab(
+        useTabStore.getState().groupOf,
+        useTabStore.getState().groupLayout,
+        tab.id
+      ) === group
+    ) {
+      useTabStore.getState().closeTab(tab.id, { recordForReopen: false })
+    }
+  }
+  applyGroupInvariants()
+}
 
 /** The stored mode came back off at hydration: folder views parked from the
  *  last session's blob are stale by now, so they go (turning the mode on later

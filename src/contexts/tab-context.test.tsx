@@ -3524,6 +3524,72 @@ it("leaves an empty folder scope empty after the final tab closes", async () => 
   expect(useTabStore.getState().activeTabId).toBeNull()
 })
 
+describe("关掉「标签页跟随文件夹」时留在当前项目（#799）", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    saveOpenedTabsMock.mockResolvedValue({
+      accepted: true,
+      version: 1,
+      tabs: [],
+    })
+    getFolderConversationMock.mockReset()
+    getFolderConversationMock.mockReturnValue(new Promise(() => {}))
+    subscribeMock.mockImplementation(() => Promise.resolve(() => {}))
+    onTransportReconnectMock.mockReturnValue(() => {})
+    loadLastActiveContextMock.mockReturnValue(null)
+    listOpenedTabsMock.mockReturnValue(new Promise(() => {}))
+  })
+
+  // 停在第二个项目（other），第一个项目（repo）排在前面：恢复逻辑默认会挑它。
+  function followFolderWithoutTabs(openOtherFolderTab: boolean) {
+    seedWorkspaceStore()
+    setActiveFolderIdMock.mockImplementation((id: number | null) => {
+      useAppWorkspaceStore.setState({ activeFolderId: id })
+    })
+    renderTabs()
+    act(() => {
+      if (openOtherFolderTab)
+        useTabStore.getState().openTab(1, 1, "codex", true)
+      useTabStore.setState({ tabsHydrated: true })
+      useFolderTabsStore.getState().setEnabled(true)
+      // 点了一个没开会话的项目：标签栏空着，撑着它的是 scope。
+      useFolderTabsStore.getState().activateScope(2)
+    })
+    expect(useAppWorkspaceStore.getState().activeFolderId).toBe(2)
+    activateConversationPaneMock.mockClear()
+  }
+
+  function expectStillOnFolderTwo() {
+    const st = useTabStore.getState()
+    const active = st.rawTabs.find((t) => t.id === st.activeTabId)
+    expect(useAppWorkspaceStore.getState().activeFolderId).toBe(2)
+    expect(active).toMatchObject({ folderId: 2, conversationId: null })
+    expect(st.rawTabs.some((t) => t.isChat === true)).toBe(false)
+    // 主区留在原来看的文件上，不切回会话面板。
+    expect(activateConversationPaneMock).not.toHaveBeenCalled()
+  }
+
+  it("别的项目有会话标签时，不切到那个项目", async () => {
+    followFolderWithoutTabs(true)
+    await act(async () => {
+      useFolderTabsStore.getState().setEnabled(false)
+    })
+    expectStillOnFolderTwo()
+    // 别的项目的会话标签还在。
+    expect(
+      useTabStore.getState().rawTabs.some((t) => t.id === "conv-1-codex-1")
+    ).toBe(true)
+  })
+
+  it("一个标签都没有时，不跳到聊天模式或别的项目", async () => {
+    followFolderWithoutTabs(false)
+    await act(async () => {
+      useFolderTabsStore.getState().setEnabled(false)
+    })
+    expectStillOnFolderTwo()
+  })
+})
+
 describe("TabProvider: a conversation moved to another project", () => {
   const chatFolder: FolderDetail = {
     id: 42,

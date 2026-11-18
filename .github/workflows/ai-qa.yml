@@ -60,9 +60,10 @@ on:
       # AI QA 自己的几个角色的凭证：空 = 这个仓库的变量 AIQA_CLAUDE_AUTH，没有就 oauth（订阅令牌）；api = API key（实际扣费）
       claude_auth:
         default: ""
+      # verify = 不在这台机器上搭环境，测验收机上装着的版本（源仓库 .cowork/ai-qa/design.md「验收机」）；要 secret AIQA_VERIFY、AIQA_VERIFY_ACCOUNTS
       env:
         type: choice
-        options: [cowork, bare]
+        options: [cowork, bare, verify]
         default: cowork
       setup_only:
         type: boolean
@@ -72,8 +73,9 @@ permissions:
   contents: read
   actions: read
 
+# 验收机的轮次单独一组：它不在这台机器上搭环境，和现搭环境的轮次不抢东西；会开 issue 的轮次之间照旧由 run.sh 的 s_wait_others 排先后
 concurrency:
-  group: ai-qa-${{ inputs.pr && format('pr-{0}', inputs.pr) || (inputs.setup_only && 'setup' || 'run') }}
+  group: ai-qa-${{ inputs.pr && format('pr-{0}', inputs.pr) || (inputs.setup_only && 'setup' || (inputs.env == 'verify' && 'verify' || 'run')) }}
   cancel-in-progress: false
 
 jobs:
@@ -125,6 +127,9 @@ jobs:
           # 预发的自检结果（生产机的 aiqa-staging check 写）。放 secret 不放变量：变量的值会原样打进公开的运行日志
           AIQA_STAGING: ${{ secrets.AIQA_STAGING }}
           AIQA_STAGING_ACCOUNTS: ${{ secrets.AIQA_STAGING_ACCOUNTS }}
+          # 验收机的自检结果和账户（生产机的 AIQA_STAGING_CONF=~/.config/aiqa-verify aiqa-staging check / seed 写）
+          AIQA_VERIFY: ${{ secrets.AIQA_VERIFY }}
+          AIQA_VERIFY_ACCOUNTS: ${{ secrets.AIQA_VERIFY_ACCOUNTS }}
         run: |
           set -euo pipefail
           src="${PR:+refs/pull/$PR/merge}"; src="${src:-${REF:-HEAD}}"

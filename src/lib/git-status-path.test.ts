@@ -183,6 +183,28 @@ describe("scopeGitStatusEntriesForDirectory", () => {
     ])
   })
 
+  it("finds the files of a new directory only when git expands it", () => {
+    // #795: -unormal 只给 `?? newdir/`，筛完是空的；-uall 逐个列出文件。
+    expect(
+      scopeGitStatusEntriesForDirectory(
+        [{ status: "??", file: "newdir/" }],
+        "newdir"
+      )
+    ).toEqual([])
+    expect(
+      scopeGitStatusEntriesForDirectory(
+        [
+          { status: "??", file: "newdir/a.md" },
+          { status: "??", file: "newdir/x -> y.md" },
+        ],
+        "newdir"
+      )
+    ).toEqual([
+      { path: "newdir/a.md", status: "??" },
+      { path: "newdir/x -> y.md", status: "??" },
+    ])
+  })
+
   it("drops the trailing slash of an untracked directory", () => {
     expect(
       scopeGitStatusEntriesForDirectory([{ status: "??", file: "new/" }], "")

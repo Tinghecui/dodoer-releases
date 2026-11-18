@@ -2269,7 +2269,9 @@ export function FileTreeTab() {
       setDirectoryGitLoading(true)
 
       try {
-        const statusEntries = await gitStatus(folder.path)
+        // 传 true（-uall）：未跟踪的新目录要展开成里面的文件，否则只有一行
+        // `?? dir/`，按目录筛不出候选（#795）。
+        const statusEntries = await gitStatus(folder.path, true)
         // Bail if the folder switched while this request was in flight — writing
         // now would clobber (or, on an empty result, close) a dialog reopened
         // under the new folder.

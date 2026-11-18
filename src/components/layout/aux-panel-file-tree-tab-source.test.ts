@@ -439,3 +439,15 @@ describe("aux file tree load error state", () => {
     )
   })
 })
+
+describe("aux file tree directory Git action expands untracked dirs", () => {
+  // #795: 右键新建目录 →「添加到 VCS」时，git status 不带 -uall 只给一行
+  // `?? newdir/`，按目录筛不出里面的文件，于是只弹「没有可添加的文件」。
+  // 必须和变更面板一样传 showAllUntracked=true，让 git 把目录展开成文件。
+  it("asks gitStatus to list every untracked file", () => {
+    const start = auxSource.indexOf("const openDirectoryGitActionDialog")
+    expect(start).toBeGreaterThan(-1)
+    const handler = auxSource.slice(start, start + 1500)
+    expect(handler).toMatch(/gitStatus\(folder\.path,\s*true\)/)
+  })
+})

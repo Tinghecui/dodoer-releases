@@ -1,6 +1,6 @@
 #!/bin/bash
 # 把本仓库的一个提交同步成公开仓库 Tinghecui/dodoer-releases 的一个干净提交（规则见 COWORK.md「公开镜像」）：
-# 导出该提交的文件 → 删掉 .github/public/exclude.txt 列的 → .github/public/workflows 挪到 .github/workflows →
+# 导出该提交的文件 → 删掉 .github/public/exclude.txt 列的 → .github/public/workflows 挪到 .github/workflows、.github/public/readme 换掉根目录的 README →
 # 按 denylist.txt / allowlist.txt 扫一遍，命中就不推 → 在公开仓库里做一个提交（作者固定、信息只带主题行；推 main 时再列上合进来的 PR）推上去。
 # 公开仓库的历史和本仓库无关：main 是一条线，每个提交对应本仓库 product 分支的一次推送；PR 分支 pr/<n> 是 main 上的一个提交。
 # 推 main 时提交说明里列出上一次同步以来合进来的 PR（「- 标题（#号）」，标题也过 denylist），公开那边的 release-train.yml 拿它写更新说明。
@@ -68,6 +68,11 @@ export_tree() {
     mkdir -p "$out/.github"
     rm -rf "$out/.github/workflows"
     mv "$out/.github/public/workflows" "$out/.github/workflows"
+  fi
+  # 公开仓库自己的 README（中英两份）：根目录的 README 是上游 Codeg 的原文，留着不改免得合上游冲突，公开那边换成这两份
+  if [[ -d "$out/.github/public/readme" ]]; then
+    cp "$out/.github/public/readme/README.md" "$out/README.md"
+    cp "$out/.github/public/readme/README.en.md" "$out/README.en.md"
   fi
   rm -rf "$out/.github/public"
   [[ -f "$out/package.json" && -d "$out/src-tauri" ]] || fail "导出的目录不像 codeg 的代码：$out"

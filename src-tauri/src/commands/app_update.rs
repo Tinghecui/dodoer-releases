@@ -81,11 +81,16 @@ pub fn app_update_state(state: tauri::State<'_, AppUpdateStateHandle>) -> AppUpd
 struct JournalHome {
     path: PathBuf,
     running: String,
+    /// The data directory: the local daemon's too (`restart-intent.json`).
+    data_dir: PathBuf,
 }
 
 static JOURNAL_HOME: OnceLock<JournalHome> = OnceLock::new();
 /// Around every read-change-write of the journal.
 static JOURNAL_LOCK: Mutex<()> = Mutex::new(());
+
+/// 本进程写过的重启意图，退出时还算不算数（[`forget_restart_intent_on_quit`]）。
+static RESTART_INTENT_EXIT: journal::RestartIntentExit = journal::RestartIntentExit::new();
 /// Opened once the start confirmation of this run is over
 /// ([`confirm_when_running`]); [`take_update_announcement`] waits for it.
 static CONFIRM_GATE: journal::ConfirmGate = journal::ConfirmGate::new();
@@ -178,6 +183,7 @@ fn init_journal(app: &tauri::AppHandle, data_dir: &Path) {
     let home = JournalHome {
         path: journal::path(data_dir),
         running: app.package_info().version.to_string(),
+        data_dir: data_dir.to_path_buf(),
     };
     if JOURNAL_HOME.set(home).is_err() {
         return;
@@ -774,6 +780,8 @@ fn updater(
     let quitting = app.clone();
     let mut builder = app.updater_builder().on_before_exit(move || {
         quit.store(true, Ordering::SeqCst);
+        // 安装器接手的退出是更新的：重启意图留给 daemon。
+        RESTART_INTENT_EXIT.note_upgrade_exit();
         // `install` runs on a blocking thread (see `install_and_quit`),
         // where this is a plain call. On a runtime worker it would not
         // be, and `shut_down`'s `block_on`s would panic.
@@ -935,17 +943,23 @@ async fn restart_into_update(
     // genuinely staged — same authority check as the server `restart_impl`.
     // Guards a stale window / direct IPC call from relaunching during
     // idle/error/downloading/installing, and serializes concurrent clicks.
-    if !transition(&handle, || {
-        update_state::try_claim_restart(&handle, &emitter)
-    }) {
+    // The claim clears the staged version from the snapshot: take it from
+    // the claim itself, for the restart intent.
+    let Some(claimed) = transition(&handle, || {
+        update_state::try_claim_restart_version(&handle, &emitter)
+    }) else {
         return Err(AppCommandError::invalid_input(
             "No staged update to restart into",
         ));
-    }
+    };
     journal_event(|j, _| {
         j.apply_started(how, now());
         None
     });
+    write_restart_intent(
+        journal::RestartIntentMoment::BeforeInstall,
+        claimed.version.as_deref(),
+    );
     if INSTALL_AT_RESTART {
         return install_and_quit(app, handle, emitter).await;
     }
@@ -981,9 +995,59 @@ async fn restart_into_update(
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         tracing::info!("[update] relaunching into the installed update");
+        RESTART_INTENT_EXIT.note_upgrade_exit();
         app.request_restart();
     });
     Ok(())
+}
+
+/// Cowork fork (issue #412): restarting for an update on macOS and Windows,
+/// leave the local daemon a restart intent (`crate::restart_resume`), so the
+/// turns this restart interrupts carry on by themselves in the new version.
+/// Only this exit writes it: quitting, a crash and the launch apply do not.
+/// A failure is only a warning.
+///
+/// Called at both moments ([`journal::writes_restart_intent_at`]): both
+/// platforms write it once the restart is claimed, before the install starts
+/// (Windows' installer ends the app inside the install). macOS writes it again
+/// once the install worked, with a fresh time: the install may have waited on
+/// an administrator password prompt for longer than the intent stays valid.
+fn write_restart_intent(moment: journal::RestartIntentMoment, to: Option<&str>) {
+    if !journal::writes_restart_intent_at(restart_install::CURRENT_PLATFORM, moment) {
+        return;
+    }
+    let (Some(home), Some(to)) = (JOURNAL_HOME.get(), to) else {
+        return;
+    };
+    match journal::write_restart_intent(&home.data_dir, &home.running, to, now()) {
+        Ok(()) => {
+            RESTART_INTENT_EXIT.note_written();
+            tracing::info!("[update] restart intent written for {to}");
+        }
+        Err(e) => tracing::warn!("[update] could not write the restart intent: {e}"),
+    }
+}
+
+/// The install failed and the app carries on: the restart intent
+/// ([`write_restart_intent`]) must not make a later restart look planned.
+fn remove_restart_intent() {
+    let Some(home) = JOURNAL_HOME.get() else {
+        return;
+    };
+    match journal::remove_restart_intent(&home.data_dir) {
+        Ok(()) => RESTART_INTENT_EXIT.note_removed(),
+        Err(e) => tracing::warn!("[update] could not remove the restart intent: {e}"),
+    }
+}
+
+/// 从 `lib::shut_down` 最前面调（daemon 停机读意图之前）：本进程为更新写过重启意图，
+/// 这次退出却不是更新要的（比如 macOS 安装停在管理员密码框时用户自己退出），
+/// 就把意图删掉，被打断的回合照常等人点「继续」（完成标准 34）。
+pub(crate) fn forget_restart_intent_on_quit() {
+    if RESTART_INTENT_EXIT.take_removal_at_exit() {
+        tracing::info!("[update] quitting outside the update restart; removing the restart intent");
+        remove_restart_intent();
+    }
 }
 
 /// The restart on Windows and macOS: installs the package the download left.
@@ -1014,6 +1078,7 @@ async fn install_and_quit(
     else {
         let message = "No downloaded update to install";
         journal_event(|j, running| j.install_failed(running, message, now()));
+        remove_restart_intent();
         transition(&handle, || {
             update_state::set_error(&handle, &emitter, message)
         });
@@ -1040,7 +1105,12 @@ async fn install_and_quit(
             });
             // Not `restart()`, which would park this tokio worker for good (see
             // `restart_app`).
+            write_restart_intent(
+                journal::RestartIntentMoment::AfterInstall,
+                Some(version.as_str()),
+            );
             tracing::info!("[update] installed {version}, relaunching into it");
+            RESTART_INTENT_EXIT.note_upgrade_exit();
             app.request_restart();
             return Ok(());
         }
@@ -1057,6 +1127,7 @@ async fn install_and_quit(
         app.request_restart();
         return Ok(());
     }
+    remove_restart_intent();
     tracing::error!("[update] the update could not be installed: {message}");
     transition(&handle, || {
         update_state::set_error(&handle, &emitter, message.clone())

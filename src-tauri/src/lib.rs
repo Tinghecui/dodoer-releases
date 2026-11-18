@@ -196,6 +196,8 @@ mod tauri_app {
         if APP_QUITTING.swap(true, Ordering::Relaxed) {
             return;
         }
+        // 在 daemon 停机读重启意图之前：不是更新要的退出，就删掉本进程为更新写的意图。
+        crate::commands::app_update::forget_restart_intent_on_quit();
         crate::crash_report::note_quitting();
         // First, while every window is still standing: remember which
         // workspace windows are open, and stop recording before the shutdown

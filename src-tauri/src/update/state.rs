@@ -169,7 +169,25 @@ pub fn snapshot(handle: &AppUpdateStateHandle) -> AppUpdateState {
 /// one `update_state` critical section, it also serializes concurrent restart
 /// clicks and excludes a racing rollback/perform (whoever claims first wins).
 pub fn try_claim_restart(handle: &AppUpdateStateHandle, emitter: &EventEmitter) -> bool {
+    claim_restarting(handle, emitter, &[AppUpdateLifecycle::ReadyToRestart]).is_some()
+}
+
+/// Cowork fork (issue #412): [`try_claim_restart`], and the version that was
+/// staged. The claim clears `version` from the snapshot, so a caller that
+/// needs it (the desktop restart writes it into the restart intent) gets it
+/// here, read in the same critical section. `None`: not claimed.
+pub fn try_claim_restart_version(
+    handle: &AppUpdateStateHandle,
+    emitter: &EventEmitter,
+) -> Option<ClaimedRestart> {
     claim_restarting(handle, emitter, &[AppUpdateLifecycle::ReadyToRestart])
+}
+
+/// What [`try_claim_restart_version`] claimed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedRestart {
+    /// The staged version the restart goes into, if the state had one.
+    pub version: Option<String>,
 }
 
 /// Atomically claim the single system-op slot for a rollback: transition to
@@ -184,25 +202,29 @@ pub fn try_claim_rollback(handle: &AppUpdateStateHandle, emitter: &EventEmitter)
         emitter,
         &[AppUpdateLifecycle::Idle, AppUpdateLifecycle::Error],
     )
+    .is_some()
 }
 
 fn claim_restarting(
     handle: &AppUpdateStateHandle,
     emitter: &EventEmitter,
     allowed_from: &[AppUpdateLifecycle],
-) -> bool {
-    let snap = {
+) -> Option<ClaimedRestart> {
+    let (snap, claimed) = {
         let mut g = handle.write().unwrap_or_else(|p| p.into_inner());
         if !allowed_from.contains(&g.status) {
-            return false;
+            return None;
         }
+        let claimed = ClaimedRestart {
+            version: g.version.clone(),
+        };
         g.seq += 1;
         g.clear_operation_fields();
         g.status = AppUpdateLifecycle::Restarting;
-        g.clone()
+        (g.clone(), claimed)
     };
     emit_event(emitter, APP_UPDATE_STATE_CHANNEL, &snap);
-    true
+    Some(claimed)
 }
 
 /// Apply `f` under the write lock, bump `seq`, then emit the resulting
@@ -541,6 +563,28 @@ mod tests {
         );
         // …and a second (concurrent) restart click can no longer claim it.
         assert!(!try_claim_restart(&h, &e));
+    }
+
+    #[test]
+    fn the_restart_claim_hands_over_the_staged_version_it_clears() {
+        let h = new_handle();
+        let e = EventEmitter::Noop;
+        // 没有下好的包：认领不到。
+        assert_eq!(try_claim_restart_version(&h, &e), None);
+        try_begin(&h, &e);
+        set_ready(&h, &e, Some("1.6.41".to_string()), None, None, None);
+        // 认领到了：拿到的是下好的版本，快照里的版本已经清空。
+        assert_eq!(
+            try_claim_restart_version(&h, &e),
+            Some(ClaimedRestart {
+                version: Some("1.6.41".to_string())
+            })
+        );
+        let snap = snapshot(&h);
+        assert_eq!(snap.status, AppUpdateLifecycle::Restarting);
+        assert_eq!(snap.version, None);
+        // 第二次点：认领不到。
+        assert_eq!(try_claim_restart_version(&h, &e), None);
     }
 
     #[test]

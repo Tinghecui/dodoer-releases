@@ -686,6 +686,34 @@ describe("ConfigSyncSettings — load failure", () => {
     })
   })
 
+  it("hides the form while a reload is pending and after it fails", async () => {
+    const view = await renderLoaded()
+
+    // A new translator (locale switch) reads the settings again.
+    let fail!: (err: Error) => void
+    vi.mocked(getConfigSyncSettings).mockReturnValueOnce(
+      new Promise((_, reject) => (fail = reject))
+    )
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={{ ...enMessages }}>
+        <ConfigSyncSettings />
+      </NextIntlClientProvider>
+    )
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: t.saveButton })
+      ).not.toBeInTheDocument()
+    )
+    expect(screen.getByRole("switch", { name: t.webdavTitle })).toBeDisabled()
+
+    await act(async () => fail(new Error("server unreachable")))
+    await screen.findByRole("alert")
+    expect(
+      screen.queryByRole("button", { name: t.saveButton })
+    ).not.toBeInTheDocument()
+    expect(updateConfigSyncSettings).not.toHaveBeenCalled()
+  })
+
   it("shows no failure notice and keeps saving when the read succeeds", async () => {
     await renderLoaded()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()

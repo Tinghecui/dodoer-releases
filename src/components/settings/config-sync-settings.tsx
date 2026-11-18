@@ -776,9 +776,10 @@ export function ConfigSyncSettings() {
           </div>
         ) : null}
 
-        {/* A failed read (also a retry after an earlier good one) leaves
-            stale or default values here; the banner above offers the retry. */}
-        {enabled && loadError === null ? (
+        {/* Shown only while what is read stands: during a reload (or a
+            retry) and after a failed one the fields hold stale or default
+            values, and saving them would overwrite the stored settings. */}
+        {enabled && loaded ? (
           <div className="space-y-3">
             {/* Pure address templates — no provider-specific logic anywhere. */}
             <div className="space-y-2">

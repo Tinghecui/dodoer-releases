@@ -15,7 +15,14 @@ cd "$(git rev-parse --show-toplevel)"
 base_branch=${1:-product/v0.40.0}
 base_ref=$(git for-each-ref --format='%(refname:short)' "refs/remotes/*/$base_branch" | head -1)
 base_ref=${base_ref:-$base_branch}
-base=$(git merge-base HEAD "$base_ref" 2>/dev/null) || { echo "找不到 $base_branch，先 git fetch"; exit 2; }
+if ! base=$(git merge-base HEAD "$base_ref" 2>/dev/null); then
+  # 自动驾驶执行员的机器：检出的就是基准分支的提交（分离 HEAD），没有这个分支名，改动都还没提交。
+  # 这时跟 HEAD 比；在分支上找不到基准还是照旧让人先 fetch。
+  git symbolic-ref -q HEAD >/dev/null && { echo "找不到 $base_branch，先 git fetch"; exit 2; }
+  echo "找不到 $base_branch，HEAD 是分离的：只查没提交的改动"
+  base_ref=HEAD
+  base=$(git rev-parse HEAD)
+fi
 
 # 和基准比改了的（工作区里的，包括没提交的）+ 新建还没 add 的；删掉的不算
 mapfile -t files < <({ git diff --name-only "$base"; git ls-files --others --exclude-standard; } | sort -u |

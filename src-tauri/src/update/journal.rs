@@ -787,7 +787,15 @@ pub fn take_announcement_once_confirmed(
 /// 为更新重启时，在本机 daemon 的数据目录里写的重启意图
 /// （`crate::restart_resume` 的 `restart-intent.json`，#411 的格式）：daemon 停机时
 /// 据此记下被打断的回合，新版本起来以后自己接上。
-pub fn upgrade_restart_intent(from: &str, to: &str, now: DateTime<Utc>) -> serde_json::Value {
+///
+/// `resume` 为假是还不算数的那份（[`RestartIntentFlow::claimed`]）：daemon 停机时
+/// 照样记下名单，起来以后不接（`restart_resume::resume_after_restart`）。
+pub fn upgrade_restart_intent(
+    from: &str,
+    to: &str,
+    now: DateTime<Utc>,
+    resume: bool,
+) -> serde_json::Value {
     serde_json::json!({
         "reason": "upgrade",
         "from": format!("dodoer-desktop@{from}"),
@@ -795,7 +803,7 @@ pub fn upgrade_restart_intent(from: &str, to: &str, now: DateTime<Utc>) -> serde
         "requested_at": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "waited_secs": 0,
         "forced": true,
-        "resume": true,
+        "resume": resume,
     })
 }
 
@@ -805,40 +813,15 @@ pub const fn writes_restart_intent(platform: super::restart_install::DesktopPlat
     super::restart_install::installs_at_restart(platform)
 }
 
-/// 为更新重启时，重启意图在哪个时刻写。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RestartIntentMoment {
-    /// 认领重启以后、开始安装之前（完成标准 33）：写意图的平台都在这里写。
-    /// Windows 的安装器在 `install` 里面就把 app 关了，装完再写来不及。
-    BeforeInstall,
-    /// 装好以后、请求重启之前：只有 macOS 再写一遍，把 `requested_at` 换成现在。
-    /// macOS 的安装可能要等管理员密码框，等多久都有可能，安装前写的那份
-    /// 可能已经过了意图的有效期（`restart_resume` 的 15 分钟）。
-    AfterInstall,
-}
-
-/// 这个平台在这个时刻写不写重启意图（[`RestartIntentMoment`]）。
-pub const fn writes_restart_intent_at(
-    platform: super::restart_install::DesktopPlatform,
-    moment: RestartIntentMoment,
-) -> bool {
-    if !writes_restart_intent(platform) {
-        return false;
-    }
-    match moment {
-        RestartIntentMoment::BeforeInstall => true,
-        RestartIntentMoment::AfterInstall => !super::restart_install::installer_ends_app(platform),
-    }
-}
-
 /// 写重启意图（[`upgrade_restart_intent`]）：先写临时文件再改名。
 pub fn write_restart_intent(
     data_dir: &Path,
     from: &str,
     to: &str,
     now: DateTime<Utc>,
+    resume: bool,
 ) -> io::Result<()> {
-    let bytes = serde_json::to_vec_pretty(&upgrade_restart_intent(from, to, now))
+    let bytes = serde_json::to_vec_pretty(&upgrade_restart_intent(from, to, now, resume))
         .map_err(io::Error::other)?;
     let path = data_dir.join(crate::restart_resume::INTENT_FILE);
     let tmp = path.with_extension("json.tmp");
@@ -846,48 +829,97 @@ pub fn write_restart_intent(
     std::fs::rename(&tmp, &path)
 }
 
-/// 本进程写过的重启意图，在退出时还算不算数。
+/// 本进程为更新重启写的重启意图，从认领到退出的整个过程。
 ///
-/// 安装前就写了意图（完成标准 33），可 macOS 的安装可能停在管理员密码框，
-/// 用户这时自己退出 app，意图还在，daemon 停机时会把这次退出当成升级重启
-/// （完成标准 34 要求自己退出只标成被打断）。所以记两件事：本进程写过意图、
-/// 这次退出是不是更新自己要的重启；退出时写过但不是更新的退出，就删掉。
-#[derive(Debug, Default)]
-pub struct RestartIntentExit {
-    written: std::sync::atomic::AtomicBool,
-    upgrade_exit: std::sync::atomic::AtomicBool,
+/// - 认领重启以后、开始安装之前（完成标准 33）写一份**还不算数**的（`resume` 为假）。
+///   安装里 app 崩了、或者停在 macOS 管理员密码框时被强制结束，退出清理都不会跑，
+///   子进程 daemon 读到 stdin EOF 照常停机、读到的是这份：只标成被打断，不自动接
+///   （完成标准 34）。
+/// - 这次退出确定是更新要的（macOS 装好以后请求重启之前、Windows 安装器接手时）：
+///   换成算数的，时间换成现在（等管理员密码框可能超过意图的 15 分钟有效期）。
+/// - 安装失败、app 接着跑：删掉。
+/// - 退出流程最前面（`lib::shut_down`）：写过、又不是更新要的退出，就删掉。
+///
+/// 只碰本进程写的那份：没写过时什么都不做（意图可能是别人写的）。
+#[derive(Debug)]
+pub struct RestartIntentFlow {
+    platform: super::restart_install::DesktopPlatform,
+    state: std::sync::Mutex<RestartIntentState>,
 }
 
-impl RestartIntentExit {
-    pub const fn new() -> Self {
+#[derive(Debug, Default)]
+struct RestartIntentState {
+    /// 本进程写着的意图（版本从哪到哪），删掉以后是 `None`。
+    written: Option<(String, String)>,
+    /// 这次退出是更新要的。
+    upgrade_exit: bool,
+}
+
+impl RestartIntentFlow {
+    pub const fn new(platform: super::restart_install::DesktopPlatform) -> Self {
         Self {
-            written: std::sync::atomic::AtomicBool::new(false),
-            upgrade_exit: std::sync::atomic::AtomicBool::new(false),
+            platform,
+            state: std::sync::Mutex::new(RestartIntentState {
+                written: None,
+                upgrade_exit: false,
+            }),
         }
     }
 
-    /// 本进程写了重启意图。
-    pub fn note_written(&self) {
-        self.written
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+    fn state(&self) -> std::sync::MutexGuard<'_, RestartIntentState> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// 意图删掉了（安装失败、不重开）：之后退出不用再删。
-    pub fn note_removed(&self) {
-        self.written
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+    /// 认领了重启（要装 `to`）：写意图的平台写一份还不算数的。写了回 true。
+    pub fn claimed(
+        &self,
+        data_dir: &Path,
+        from: &str,
+        to: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> io::Result<bool> {
+        let Some(to) = to.filter(|_| writes_restart_intent(self.platform)) else {
+            return Ok(false);
+        };
+        let mut state = self.state();
+        write_restart_intent(data_dir, from, to, now, false)?;
+        state.written = Some((from.to_string(), to.to_string()));
+        state.upgrade_exit = false;
+        Ok(true)
     }
 
-    /// 接下来的退出是更新要的（请求重启、Windows 安装器接手）。
-    pub fn note_upgrade_exit(&self) {
-        self.upgrade_exit
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+    /// 接下来的退出是更新要的：写着意图就换成算数的，时间换成现在，
+    /// 退出时也不再删。换了回 true。
+    pub fn upgrade_exit(&self, data_dir: &Path, now: DateTime<Utc>) -> io::Result<bool> {
+        let mut state = self.state();
+        state.upgrade_exit = true;
+        let Some((from, to)) = state.written.as_ref() else {
+            return Ok(false);
+        };
+        write_restart_intent(data_dir, from, to, now, true)?;
+        Ok(true)
     }
 
-    /// 退出时调一次：要删意图回 true（写过、又不是更新的退出），只回一次。
-    pub fn take_removal_at_exit(&self) -> bool {
-        use std::sync::atomic::Ordering;
-        !self.upgrade_exit.load(Ordering::SeqCst) && self.written.swap(false, Ordering::SeqCst)
+    /// 安装失败、app 接着跑：写着意图就删掉，之后的重启不会被当成计划内的。
+    pub fn install_failed(&self, data_dir: &Path) -> io::Result<()> {
+        let mut state = self.state();
+        state.upgrade_exit = false;
+        if state.written.is_some() {
+            remove_restart_intent(data_dir)?;
+            state.written = None;
+        }
+        Ok(())
+    }
+
+    /// 退出流程最前面调：写着意图、这次退出又不是更新要的，就删掉。删了回 true，只删一次。
+    pub fn quitting(&self, data_dir: &Path) -> io::Result<bool> {
+        let mut state = self.state();
+        if state.upgrade_exit || state.written.is_none() {
+            return Ok(false);
+        }
+        remove_restart_intent(data_dir)?;
+        state.written = None;
+        Ok(true)
     }
 }
 
@@ -1636,7 +1668,7 @@ mod tests {
     #[test]
     fn the_upgrade_restart_intent_is_one_the_daemon_accepts() {
         let now = at(0);
-        let value = upgrade_restart_intent("1.6.40", "1.6.41", now);
+        let value = upgrade_restart_intent("1.6.40", "1.6.41", now, true);
         assert_eq!(
             value,
             serde_json::json!({
@@ -1660,18 +1692,23 @@ mod tests {
         assert_eq!(intent.waited_secs, 0);
         assert!(intent.forced);
         assert!(intent.resume);
+        // 还不算数的那份：daemon 也认，只是起来以后不接。
+        let raw =
+            serde_json::to_string(&upgrade_restart_intent("1.6.40", "1.6.41", now, false)).unwrap();
+        let (_, intent) = crate::restart_resume::parse_valid_intent(&raw, now).expect("valid");
+        assert!(!intent.resume);
     }
 
     #[test]
     fn the_restart_intent_is_written_where_the_daemon_reads_it_and_removed() {
         let dir = tempfile::tempdir().unwrap();
         let now = at(0);
-        write_restart_intent(dir.path(), "1.6.40", "1.6.41", now).unwrap();
+        write_restart_intent(dir.path(), "1.6.40", "1.6.41", now, true).unwrap();
         let file = dir.path().join(crate::restart_resume::INTENT_FILE);
         let raw = std::fs::read_to_string(&file).unwrap();
         let (value, _) = crate::restart_resume::parse_valid_intent(&raw, at(30))
             .expect("the written intent is valid");
-        assert_eq!(value, upgrade_restart_intent("1.6.40", "1.6.41", now));
+        assert_eq!(value, upgrade_restart_intent("1.6.40", "1.6.41", now, true));
         // 没留下临时文件。
         let names: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
@@ -1696,69 +1733,126 @@ mod tests {
         assert!(!writes_restart_intent(DesktopPlatform::Linux));
     }
 
-    #[test]
-    fn the_restart_intent_is_written_before_the_install_and_refreshed_on_macos() {
-        use super::super::restart_install::DesktopPlatform;
-        use RestartIntentMoment::{AfterInstall, BeforeInstall};
-        // 完成标准 33：认领以后、开始安装之前写，macOS 和 Windows 都是。
-        assert!(writes_restart_intent_at(
-            DesktopPlatform::MacOs,
-            BeforeInstall
-        ));
-        assert!(writes_restart_intent_at(
-            DesktopPlatform::Windows,
-            BeforeInstall
-        ));
-        // macOS 可能等过管理员密码框：装好以后再写一遍，时间换成现在。
-        assert!(writes_restart_intent_at(
-            DesktopPlatform::MacOs,
-            AfterInstall
-        ));
-        // Windows 的安装器在安装里就把 app 关了，到不了装好以后。
-        assert!(!writes_restart_intent_at(
-            DesktopPlatform::Windows,
-            AfterInstall
-        ));
-        assert!(!writes_restart_intent_at(
-            DesktopPlatform::Linux,
-            BeforeInstall
-        ));
-        assert!(!writes_restart_intent_at(
-            DesktopPlatform::Linux,
-            AfterInstall
-        ));
+    /// daemon 停机那一刻看到的：没有有效的意图是 `None`，有就是它的 `resume`
+    /// （为真才在新版本起来以后自动接上）。
+    fn daemon_sees(dir: &Path, now: DateTime<Utc>) -> Option<bool> {
+        let raw = std::fs::read_to_string(dir.join(crate::restart_resume::INTENT_FILE)).ok()?;
+        crate::restart_resume::parse_valid_intent(&raw, now).map(|(_, intent)| intent.resume)
     }
 
     #[test]
-    fn a_quit_after_the_restart_intent_was_written_removes_it() {
+    fn a_crash_during_the_install_does_not_resume_the_interrupted_turns() {
+        use super::super::restart_install::DesktopPlatform;
+        // 认领以后、安装之前写下意图，app 在安装里崩了：退出清理没跑，
+        // 子进程 daemon 读到 stdin EOF 照常停机、读意图。不能当成升级重启。
+        for platform in [DesktopPlatform::MacOs, DesktopPlatform::Windows] {
+            let dir = tempfile::tempdir().unwrap();
+            let flow = RestartIntentFlow::new(platform);
+            assert!(flow
+                .claimed(dir.path(), "1.6.40", Some("1.6.41"), at(0))
+                .unwrap());
+            // 完成标准 33：安装前就有这份文件，只是不算数。
+            assert_eq!(daemon_sees(dir.path(), at(30)), Some(false), "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn a_macos_restart_resumes_once_the_install_worked() {
+        use super::super::restart_install::DesktopPlatform;
+        let dir = tempfile::tempdir().unwrap();
+        let flow = RestartIntentFlow::new(DesktopPlatform::MacOs);
+        // 认领 → 安装（等了 20 分钟的管理员密码框）→ 装好、请求重启 → 退出流程。
+        flow.claimed(dir.path(), "1.6.40", Some("1.6.41"), at(0))
+            .unwrap();
+        assert!(flow.upgrade_exit(dir.path(), at(20 * 60)).unwrap());
+        assert!(
+            !flow.quitting(dir.path()).unwrap(),
+            "the upgrade exit keeps it"
+        );
+        // 时间换成了装好的那一刻，daemon 停机时还在有效期里，起来以后接上。
+        assert_eq!(daemon_sees(dir.path(), at(20 * 60 + 5)), Some(true));
+        let raw =
+            std::fs::read_to_string(dir.path().join(crate::restart_resume::INTENT_FILE)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            value,
+            upgrade_restart_intent("1.6.40", "1.6.41", at(20 * 60), true)
+        );
+    }
+
+    #[test]
+    fn a_windows_restart_resumes_once_the_installer_takes_over() {
+        use super::super::restart_install::DesktopPlatform;
+        let dir = tempfile::tempdir().unwrap();
+        let flow = RestartIntentFlow::new(DesktopPlatform::Windows);
+        // 认领 → 安装里插件调 on_before_exit：先标成更新要的退出，再走退出流程。
+        flow.claimed(dir.path(), "1.6.40", Some("1.6.41"), at(0))
+            .unwrap();
+        assert!(flow.upgrade_exit(dir.path(), at(10)).unwrap());
+        assert!(!flow.quitting(dir.path()).unwrap());
+        assert_eq!(daemon_sees(dir.path(), at(12)), Some(true));
+    }
+
+    #[test]
+    fn a_failed_install_removes_the_restart_intent() {
+        use super::super::restart_install::DesktopPlatform;
+        let dir = tempfile::tempdir().unwrap();
+        let flow = RestartIntentFlow::new(DesktopPlatform::MacOs);
+        flow.claimed(dir.path(), "1.6.40", Some("1.6.41"), at(0))
+            .unwrap();
+        flow.install_failed(dir.path()).unwrap();
+        assert_eq!(daemon_sees(dir.path(), at(30)), None);
+        // app 接着跑，之后用户自己退出：没有东西可删，也不会再写。
+        assert!(!flow.quitting(dir.path()).unwrap());
+        assert_eq!(daemon_sees(dir.path(), at(60)), None);
+
+        // 失败以后再点一次重启，这次装好了：照常写、照常算数。
+        flow.claimed(dir.path(), "1.6.40", Some("1.6.41"), at(100))
+            .unwrap();
+        flow.upgrade_exit(dir.path(), at(110)).unwrap();
+        assert!(!flow.quitting(dir.path()).unwrap());
+        assert_eq!(daemon_sees(dir.path(), at(120)), Some(true));
+    }
+
+    #[test]
+    fn a_quit_during_the_install_removes_the_restart_intent() {
+        use super::super::restart_install::DesktopPlatform;
         // 写了意图、在安装（比如等管理员密码框）时用户自己退出：删掉，只删一次。
-        let exit = RestartIntentExit::new();
-        exit.note_written();
-        assert!(exit.take_removal_at_exit());
-        assert!(!exit.take_removal_at_exit());
+        let dir = tempfile::tempdir().unwrap();
+        let flow = RestartIntentFlow::new(DesktopPlatform::MacOs);
+        flow.claimed(dir.path(), "1.6.40", Some("1.6.41"), at(0))
+            .unwrap();
+        assert!(flow.quitting(dir.path()).unwrap());
+        assert_eq!(daemon_sees(dir.path(), at(30)), None);
+        assert!(!flow.quitting(dir.path()).unwrap());
+    }
 
-        // 更新自己要的退出（装好请求重启、Windows 安装器接手）：留着给 daemon 读。
-        let exit = RestartIntentExit::new();
-        exit.note_written();
-        exit.note_upgrade_exit();
-        assert!(!exit.take_removal_at_exit());
+    #[test]
+    fn the_restart_intent_is_left_alone_when_this_process_did_not_write_it() {
+        use super::super::restart_install::DesktopPlatform;
+        // 别人（比如 Cowork 的 root 进程）写的意图：本进程的退出、安装失败、
+        // 更新要的退出都不碰它。
+        let dir = tempfile::tempdir().unwrap();
+        let theirs = br#"{"reason": "upgrade", "requested_at": "2025-11-13T02:13:20Z"}"#;
+        let file = dir.path().join(crate::restart_resume::INTENT_FILE);
+        std::fs::write(&file, theirs).unwrap();
+        let flow = RestartIntentFlow::new(DesktopPlatform::MacOs);
+        assert!(!flow.quitting(dir.path()).unwrap());
+        flow.install_failed(dir.path()).unwrap();
+        assert!(!flow.upgrade_exit(dir.path(), at(0)).unwrap());
+        assert_eq!(std::fs::read(&file).unwrap(), theirs);
 
-        // 没写过（本进程没为更新重启，意图可能是别人的）：不碰。
-        let exit = RestartIntentExit::new();
-        assert!(!exit.take_removal_at_exit());
-
-        // 安装失败已经删了：退出时不用再删。
-        let exit = RestartIntentExit::new();
-        exit.note_written();
-        exit.note_removed();
-        assert!(!exit.take_removal_at_exit());
-
-        // 删过以后又为下一次重启写了：照常按退出的种类决定。
-        let exit = RestartIntentExit::new();
-        exit.note_written();
-        exit.note_removed();
-        exit.note_written();
-        assert!(exit.take_removal_at_exit());
+        // Linux 不写意图（认领时不写，更新要的退出也没东西可换）；没有要装的版本也不写。
+        let dir = tempfile::tempdir().unwrap();
+        let flow = RestartIntentFlow::new(DesktopPlatform::Linux);
+        assert!(!flow
+            .claimed(dir.path(), "1.6.40", Some("1.6.41"), at(0))
+            .unwrap());
+        assert!(!flow.upgrade_exit(dir.path(), at(1)).unwrap());
+        assert_eq!(daemon_sees(dir.path(), at(2)), None);
+        let flow = RestartIntentFlow::new(DesktopPlatform::Windows);
+        assert!(!flow.claimed(dir.path(), "1.6.40", None, at(0)).unwrap());
+        assert_eq!(daemon_sees(dir.path(), at(2)), None);
     }
 
     #[test]

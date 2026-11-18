@@ -190,6 +190,30 @@ fn upload_io_error(what: &str, e: std::io::Error) -> AppCommandError {
     }
 }
 
+/// 提交上传（hard_link 不支持、退回 rename 也失败）时的错误：目标位置被别的
+/// 文件或目录占了、路径中间有一段是文件、没有权限，都是调用方的事，不报成
+/// 服务器出错；其余照旧是 I/O 故障。
+fn upload_commit_error(hard_link_err: &std::io::Error, e: std::io::Error) -> AppCommandError {
+    let detail = format!("hard_link_err={hard_link_err} rename_err={e}");
+    match e.kind() {
+        std::io::ErrorKind::AlreadyExists => {
+            AppCommandError::already_exists("A file with this name already exists")
+                .with_detail(detail)
+        }
+        std::io::ErrorKind::IsADirectory | std::io::ErrorKind::DirectoryNotEmpty => {
+            AppCommandError::invalid_input(
+                "Refusing to overwrite an existing directory with a file",
+            )
+            .with_detail(detail)
+        }
+        std::io::ErrorKind::NotADirectory => {
+            AppCommandError::invalid_input(UPLOAD_PATH_BLOCKED).with_detail(detail)
+        }
+        std::io::ErrorKind::PermissionDenied => AppCommandError::io(e).with_detail(detail),
+        _ => AppCommandError::io_error("Failed to commit upload").with_detail(detail),
+    }
+}
+
 /// 上传路径上有一段已经是文件、不是目录。
 const UPLOAD_PATH_BLOCKED: &str = "A file is in the way of the upload path";
 
@@ -457,10 +481,7 @@ pub async fn upload_workspace_file(
                     Err(hard_link_err) => {
                         if let Err(e) = tokio::fs::rename(&staging_path, &final_abs).await {
                             let _ = tokio::fs::remove_file(&staging_path).await;
-                            return Err(AppCommandError::io_error("Failed to commit upload")
-                                .with_detail(format!(
-                                    "hard_link_err={hard_link_err} rename_err={e}"
-                                )));
+                            return Err(upload_commit_error(&hard_link_err, e));
                         }
                         commit_method = "rename";
                     }
@@ -1147,11 +1168,20 @@ mod tests {
         let denied = std::fs::create_dir(locked.join("sub"));
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
             .expect("chmod back");
-        // 以 root 跑时权限不起作用，这一段跳过。
+        // 以 root 跑时权限不起作用，真建目录拿不到这个错误，这一段跳过；
+        // 映射本身用下面构造的 PermissionDenied 错误照样验，不受用户身份影响。
         if let Err(e) = denied {
             let err = upload_io_error("Failed to create upload directory", e);
             assert_eq!(err.code, AppErrorCode::PermissionDenied);
+        } else {
+            eprintln!("以 root 运行：真实的只读目录不报权限错误，只验构造的错误");
         }
+        let err = upload_io_error(
+            "Failed to create staging file",
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert_eq!(err.code, AppErrorCode::PermissionDenied);
+        assert!(err.detail.is_some());
 
         // 路径穿过一个文件：调用方的错，400。
         std::fs::write(root.path().join("afile"), b"x").expect("file");
@@ -1178,5 +1208,218 @@ mod tests {
         );
         assert_eq!(err.code, AppErrorCode::IoError);
         assert_eq!(err.message, "Failed to create staging file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_blocked_commit_rename_is_not_a_server_fault() {
+        use crate::app_error::AppErrorCode;
+
+        let root = tempfile::tempdir().expect("tempdir root");
+        let staging = root.path().join(".codeg-upload-x.part");
+        std::fs::write(&staging, b"x").expect("staging");
+        let hard_link_err = std::io::Error::from(std::io::ErrorKind::Unsupported);
+
+        // 目标位置上有个非空目录挡着：rename 失败，调用方的错，400。
+        let dir = root.path().join("taken");
+        std::fs::create_dir(&dir).expect("dir");
+        std::fs::write(dir.join("inner"), b"y").expect("inner");
+        let e = std::fs::rename(&staging, &dir).expect_err("a directory is in the way");
+        let err = upload_commit_error(&hard_link_err, e);
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+        assert_eq!(
+            err.message,
+            "Refusing to overwrite an existing directory with a file"
+        );
+
+        // 路径中间有一段是文件：400。
+        std::fs::write(root.path().join("afile"), b"z").expect("file");
+        let e = std::fs::rename(&staging, root.path().join("afile").join("x"))
+            .expect_err("a file is in the way");
+        let err = upload_commit_error(&hard_link_err, e);
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+        assert_eq!(err.message, "A file is in the way of the upload path");
+
+        // 没有权限：403；其余照旧是服务器的 I/O 故障，两个错误都留在 detail 里。
+        let err = upload_commit_error(
+            &hard_link_err,
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert_eq!(err.code, AppErrorCode::PermissionDenied);
+        let err = upload_commit_error(&hard_link_err, std::io::Error::other("disk on fire"));
+        assert_eq!(err.code, AppErrorCode::IoError);
+        assert_eq!(err.message, "Failed to commit upload");
+        let detail = err.detail.expect("detail");
+        assert!(detail.contains("hard_link_err=") && detail.contains("disk on fire"));
+    }
+
+    // ---- 完整上传请求：从 multipart 解析到落盘的接线 ----
+
+    const BOUNDARY: &str = "codegtestboundary";
+
+    async fn upload_state() -> (Arc<AppState>, tempfile::TempDir) {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().expect("data dir");
+        let state = Arc::new(AppState::new_for_test(db, dir.path().to_path_buf()));
+        (state, dir)
+    }
+
+    async fn multipart_of(body: String) -> Multipart {
+        use axum::extract::FromRequest;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            )
+            .body(Body::from(body))
+            .expect("request");
+        Multipart::from_request(req, &()).await.expect("multipart")
+    }
+
+    fn text_part(name: &str, value: &str) -> String {
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+        )
+    }
+
+    fn file_head(file_name: &str) -> String {
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; \
+             filename=\"{file_name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+    }
+
+    async fn upload(
+        state: &Arc<AppState>,
+        body: String,
+    ) -> Result<UploadWorkspaceFileResult, AppCommandError> {
+        upload_workspace_file(Extension(state.clone()), multipart_of(body).await)
+            .await
+            .map(|Json(r)| r)
+    }
+
+    fn leftover_staging(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|it| {
+                it.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.starts_with(".codeg-upload-"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn a_complete_upload_request_lands_the_file() {
+        let (state, _data) = upload_state().await;
+        let root = tempfile::tempdir().expect("root");
+        let root_str = root.path().to_string_lossy().into_owned();
+        let body = format!(
+            "{}{}{}hello\r\n--{BOUNDARY}--\r\n",
+            text_part("root_path", &root_str),
+            text_part("target_path", "new/dir"),
+            file_head("a.txt"),
+        );
+        let r = upload(&state, body).await.expect("upload succeeds");
+        assert_eq!(r.path, "new/dir/a.txt");
+        assert_eq!(r.size, 5);
+        let dir = root.path().join("new").join("dir");
+        assert_eq!(std::fs::read(dir.join("a.txt")).expect("landed"), b"hello");
+        assert!(leftover_staging(&dir).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_garbled_upload_request_is_400() {
+        use crate::app_error::AppErrorCode;
+        let (state, _data) = upload_state().await;
+        let err = upload(&state, "this is not multipart at all".to_string())
+            .await
+            .map(|_| ())
+            .expect_err("garbled body");
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+        assert_eq!(err.message, "Invalid multipart upload");
+    }
+
+    #[tokio::test]
+    async fn a_truncated_file_part_is_400_and_leaves_no_staging_file() {
+        use crate::app_error::AppErrorCode;
+        let (state, _data) = upload_state().await;
+        let root = tempfile::tempdir().expect("root");
+        let root_str = root.path().to_string_lossy().into_owned();
+        // 文件那一段没有结尾的 boundary：读数据块时出错。
+        let body = format!(
+            "{}{}partial bytes",
+            text_part("root_path", &root_str),
+            file_head("a.txt"),
+        );
+        let err = upload(&state, body)
+            .await
+            .map(|_| ())
+            .expect_err("truncated");
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+        assert_eq!(err.message, "Failed to read upload chunk");
+        assert!(!root.path().join("a.txt").exists());
+        assert!(leftover_staging(root.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn uploading_through_a_file_is_400() {
+        use crate::app_error::AppErrorCode;
+        let (state, _data) = upload_state().await;
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("afile"), b"x").expect("file");
+        let root_str = root.path().to_string_lossy().into_owned();
+        let body = format!(
+            "{}{}{}hello\r\n--{BOUNDARY}--\r\n",
+            text_part("root_path", &root_str),
+            text_part("target_path", "afile/sub"),
+            file_head("a.txt"),
+        );
+        let err = upload(&state, body)
+            .await
+            .map(|_| ())
+            .expect_err("a file is in the way");
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+        assert_eq!(err.message, "A file is in the way of the upload path");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uploading_into_a_read_only_folder_is_403() {
+        use crate::app_error::AppErrorCode;
+        use std::os::unix::fs::PermissionsExt;
+        let (state, _data) = upload_state().await;
+        let root = tempfile::tempdir().expect("root");
+        let locked = root.path().join("locked");
+        std::fs::create_dir(&locked).expect("locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+        // 以 root 跑时权限不起作用，这个请求会成功，没法验 403。
+        let probe = std::fs::create_dir(locked.join("probe"));
+        if probe.is_ok() {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod back");
+            eprintln!("以 root 运行：只读目录不起作用，跳过请求级的 403 验证");
+            return;
+        }
+        let root_str = root.path().to_string_lossy().into_owned();
+        let upload_into = |target: &str| {
+            format!(
+                "{}{}{}hello\r\n--{BOUNDARY}--\r\n",
+                text_part("root_path", &root_str),
+                text_part("target_path", target),
+                file_head("a.txt"),
+            )
+        };
+        // 建暂存文件那一步没有权限。
+        let staging = upload(&state, upload_into("locked")).await.map(|_| ());
+        // 建目录那一步没有权限。
+        let mkdir = upload(&state, upload_into("locked/sub")).await.map(|_| ());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod back");
+        let err = staging.expect_err("staging file denied");
+        assert_eq!(err.code, AppErrorCode::PermissionDenied, "{err:?}");
+        let err = mkdir.expect_err("mkdir denied");
+        assert_eq!(err.code, AppErrorCode::PermissionDenied, "{err:?}");
     }
 }

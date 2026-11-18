@@ -417,3 +417,118 @@ fn resolve_upload(state: &AppState, upload_id: &str) -> Result<PathBuf, AppComma
     }
     Ok(path)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_error::AppErrorCode;
+    use axum::body::Body;
+    use axum::extract::FromRequest;
+
+    const BOUNDARY: &str = "codegbackupboundary";
+
+    async fn test_state() -> (Arc<AppState>, tempfile::TempDir) {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().expect("data dir");
+        let state = Arc::new(AppState::new_for_test(db, dir.path().to_path_buf()));
+        (state, dir)
+    }
+
+    async fn multipart_of(body: String) -> Multipart {
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            )
+            .body(Body::from(body))
+            .expect("request");
+        Multipart::from_request(req, &()).await.expect("multipart")
+    }
+
+    fn file_head() -> String {
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; \
+             filename=\"backup.codeg\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+    }
+
+    /// 上传暂存目录里留下的文件。
+    fn leftovers(state: &AppState) -> Vec<PathBuf> {
+        std::fs::read_dir(state.data_dir.join(RESTORE_UPLOAD_DIR))
+            .map(|it| it.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+            .unwrap_or_default()
+    }
+
+    async fn upload(state: &Arc<AppState>, body: String) -> Result<UploadResult, AppCommandError> {
+        backup_upload(Extension(state.clone()), multipart_of(body).await)
+            .await
+            .map(|Json(r)| r)
+    }
+
+    #[tokio::test]
+    async fn a_complete_backup_upload_is_kept_for_the_restore_flow() {
+        let (state, _dir) = test_state().await;
+        let body = format!("{}archive-bytes\r\n--{BOUNDARY}--\r\n", file_head());
+        let r = upload(&state, body).await.expect("upload succeeds");
+        assert_eq!(r.file_name, "backup.codeg");
+        let path = resolve_upload(&state, &r.upload_id).expect("upload is resolvable");
+        assert_eq!(std::fs::read(path).expect("read"), b"archive-bytes");
+    }
+
+    #[tokio::test]
+    async fn a_garbled_backup_upload_is_400() {
+        let (state, _dir) = test_state().await;
+        let err = upload(&state, "this is not multipart at all".to_string())
+            .await
+            .map(|_| ())
+            .expect_err("garbled body");
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+        assert_eq!(err.message, "Invalid multipart upload");
+        assert!(leftovers(&state).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_truncated_backup_upload_is_400_and_leaves_nothing_behind() {
+        let (state, _dir) = test_state().await;
+        // 文件那一段没有结尾的 boundary：读数据块时出错。
+        let body = format!("{}partial archive", file_head());
+        let err = upload(&state, body)
+            .await
+            .map(|_| ())
+            .expect_err("truncated");
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+        assert_eq!(err.message, "Failed to read upload chunk");
+        assert!(leftovers(&state).is_empty(), "{:?}", leftovers(&state));
+    }
+
+    #[tokio::test]
+    async fn a_backup_upload_without_a_file_field_is_400() {
+        let (state, _dir) = test_state().await;
+        let body = format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"other\"\r\n\r\nx\r\n--{BOUNDARY}--\r\n"
+        );
+        let err = upload(&state, body)
+            .await
+            .map(|_| ())
+            .expect_err("no file field");
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+        assert_eq!(err.message, "Multipart upload is missing the `file` field");
+    }
+
+    #[tokio::test]
+    async fn a_backup_upload_over_the_size_cap_is_400() {
+        let dir = tempfile::tempdir().expect("dir");
+        let dest = dir.path().join("x.bin");
+        let body = format!("{}0123456789\r\n--{BOUNDARY}--\r\n", file_head());
+        let err = receive_upload(&mut multipart_of(body).await, &dest, Some(4))
+            .await
+            .map(|_| ())
+            .expect_err("over the cap");
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+        assert_eq!(
+            err.message,
+            "Uploaded backup exceeds the configured size limit"
+        );
+    }
+}

@@ -735,13 +735,30 @@ fn sanitize_upload_file_name(raw: &str) -> String {
     }
 }
 
+/// 上传内容超过大小上限：是调用方给的东西太大，回 `InvalidInput`（和服务器
+/// 上传的「太大」一致），不报成 `IoError`。这几条命令前端走本机 IPC
+/// （`getShellTransport()`），不经过远程代理那层的遥测，改的只是错误类别。
+/// `detail` 里写实际比较的上限（base64 预检时是编码后的长度）；给界面
+/// 文案的 `limit` 参数始终是原始字节上限。
+fn upload_too_large_error(message: &str, size: u64, detail_limit: u64) -> AppCommandError {
+    AppCommandError::invalid_input(message)
+        .with_detail(format!("size={size} limit={detail_limit}"))
+        .with_i18n(
+            UPLOAD_I18N_KEY_TOO_LARGE,
+            upload_i18n_params([
+                ("size", size.to_string()),
+                ("limit", UPLOAD_MAX_BYTES.to_string()),
+            ]),
+        )
+}
+
 /// Stream a local file into a base64-wrapped JSON envelope ready to be
 /// passed to `remote_upload_attachment`. Two callers need this today: the
 /// Tauri-native drag-drop path (which receives OS paths from the webview
 /// drag handler) and a future "attach this local path" command palette.
 ///
 /// Rejects anything larger than `UPLOAD_MAX_BYTES` with a structured
-/// `IoError` carrying the limit in `detail` so the frontend can format an
+/// `InvalidInput` carrying the limit in `detail` so the frontend can format an
 /// `attachUploadTooLarge` toast without round-tripping through the actual
 /// upload endpoint.
 #[derive(serde::Serialize)]
@@ -775,17 +792,11 @@ pub async fn read_local_file_for_upload(
     }
     let size = metadata.len();
     if size > UPLOAD_MAX_BYTES {
-        return Err(
-            AppCommandError::io_error("Local file exceeds the upload size limit")
-                .with_detail(format!("size={size} limit={UPLOAD_MAX_BYTES}"))
-                .with_i18n(
-                    UPLOAD_I18N_KEY_TOO_LARGE,
-                    upload_i18n_params([
-                        ("size", size.to_string()),
-                        ("limit", UPLOAD_MAX_BYTES.to_string()),
-                    ]),
-                ),
-        );
+        return Err(upload_too_large_error(
+            "Local file exceeds the upload size limit",
+            size,
+            UPLOAD_MAX_BYTES,
+        ));
     }
     let bytes = tokio::fs::read(&path_buf).await.map_err(|e| {
         AppCommandError::io_error("Failed to read local file for upload")
@@ -838,20 +849,11 @@ pub async fn remote_upload_attachment(
     // padding slack` so a legitimate maximum-sized file (which encodes
     // to exactly `ceil(UPLOAD_MAX_BYTES / 3) * 4` bytes) always passes.
     if data_base64.len() > REMOTE_UPLOAD_MAX_BASE64_LEN {
-        return Err(
-            AppCommandError::io_error("Upload payload exceeds the size limit")
-                .with_detail(format!(
-                    "size={} limit={REMOTE_UPLOAD_MAX_BASE64_LEN}",
-                    data_base64.len()
-                ))
-                .with_i18n(
-                    UPLOAD_I18N_KEY_TOO_LARGE,
-                    upload_i18n_params([
-                        ("size", data_base64.len().to_string()),
-                        ("limit", UPLOAD_MAX_BYTES.to_string()),
-                    ]),
-                ),
-        );
+        return Err(upload_too_large_error(
+            "Upload payload exceeds the size limit",
+            data_base64.len() as u64,
+            REMOTE_UPLOAD_MAX_BASE64_LEN as u64,
+        ));
     }
     let bytes = STANDARD.decode(data_base64.as_bytes()).map_err(|e| {
         AppCommandError::io_error("Failed to decode upload payload").with_detail(e.to_string())
@@ -860,17 +862,11 @@ pub async fn remote_upload_attachment(
     // The base64 check above is a fast pre-filter; this guarantees that
     // any padding quirks can't squeeze through.
     if bytes.len() as u64 > UPLOAD_MAX_BYTES {
-        return Err(
-            AppCommandError::io_error("Upload payload exceeds the size limit")
-                .with_detail(format!("size={} limit={UPLOAD_MAX_BYTES}", bytes.len()))
-                .with_i18n(
-                    UPLOAD_I18N_KEY_TOO_LARGE,
-                    upload_i18n_params([
-                        ("size", bytes.len().to_string()),
-                        ("limit", UPLOAD_MAX_BYTES.to_string()),
-                    ]),
-                ),
-        );
+        return Err(upload_too_large_error(
+            "Upload payload exceeds the size limit",
+            bytes.len() as u64,
+            UPLOAD_MAX_BYTES,
+        ));
     }
 
     let mime = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
@@ -4016,26 +4012,45 @@ mod tests {
         // shape). If serde ever drops `i18n_key` / `i18n_params` from
         // the wire format, the frontend silently demotes to the
         // generic-failure toast — this test pins the contract.
-        let err = AppCommandError::io_error("Local file exceeds the upload size limit")
-            .with_detail("size=41943040 limit=20971520")
-            .with_i18n(
-                UPLOAD_I18N_KEY_TOO_LARGE,
-                upload_i18n_params([
-                    ("size", "41943040".to_string()),
-                    ("limit", UPLOAD_MAX_BYTES.to_string()),
-                ]),
-            );
+        let err = upload_too_large_error(
+            "Local file exceeds the upload size limit",
+            41943040,
+            UPLOAD_MAX_BYTES,
+        );
 
         let json = serde_json::to_value(&err).expect("serialize");
         assert_eq!(json["i18n_key"], "errors.upload.tooLarge");
         assert_eq!(json["i18n_params"]["size"], "41943040");
         assert_eq!(json["i18n_params"]["limit"], UPLOAD_MAX_BYTES.to_string());
-        assert_eq!(json["code"], "io_error");
+        assert_eq!(json["code"], "invalid_input");
 
         let parsed: AppCommandError = serde_json::from_value(json).expect("deserialize");
         assert_eq!(parsed.i18n_key.as_deref(), Some("errors.upload.tooLarge"));
         let params = parsed.i18n_params.expect("params");
         assert_eq!(params.get("size").map(String::as_str), Some("41943040"));
+        assert_eq!(
+            params.get("limit").map(String::as_str),
+            Some(UPLOAD_MAX_BYTES.to_string().as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_local_file_over_the_cap_is_the_callers_fault() {
+        // 选了超过上限的本地文件是调用方的输入问题，要回 invalid_input，
+        // 和服务器上传的「太大」一致；回 io_error 会被遥测算成服务器出错。
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("big.bin");
+        let file = std::fs::File::create(&path).expect("create");
+        file.set_len(UPLOAD_MAX_BYTES + 1).expect("set_len");
+        drop(file);
+
+        let err = match read_local_file_for_upload(path.display().to_string()).await {
+            Ok(_) => panic!("oversized file must be rejected"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+        assert_eq!(err.i18n_key.as_deref(), Some(UPLOAD_I18N_KEY_TOO_LARGE));
+        let params = err.i18n_params.expect("params");
         assert_eq!(
             params.get("limit").map(String::as_str),
             Some(UPLOAD_MAX_BYTES.to_string().as_str())

@@ -4,7 +4,7 @@
 //! `cowork_info` hands out; nothing else in it is checked.
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use super::report::{Kind, Report};
 
@@ -81,8 +81,23 @@ fn exception_type(kind: Kind) -> &'static str {
     }
 }
 
+/// The stack of the hang a report is about (`details.hang.stack`,
+/// `report::with_stack`), taken out of the details and turned into the frames
+/// of a Sentry stack trace: outermost first, as it was sampled.
+fn take_hang_stack(details: &mut Map<String, Value>) -> Option<Value> {
+    let stack = details.get_mut("hang")?.as_object_mut()?.remove("stack")?;
+    let frames: Vec<Value> = stack
+        .as_array()?
+        .iter()
+        .map(|frame| json!({ "function": frame["function"], "package": frame["image"] }))
+        .collect();
+    (!frames.is_empty()).then(|| json!({ "frames": frames }))
+}
+
 /// The event's JSON.
 pub fn event(report: &Report, target: &Target) -> Value {
+    let mut details = report.details.clone();
+    let stacktrace = take_hang_stack(&mut details);
     let mut event = json!({
         "event_id": report.event_id,
         "timestamp": report.at,
@@ -108,9 +123,12 @@ pub fn event(report: &Report, target: &Target) -> Value {
         "contexts": {
             "os": { "name": report.os },
             "app": { "app_version": report.version },
-            "desktop": report.details,
+            "desktop": details,
         },
     });
+    if let Some(stacktrace) = stacktrace {
+        event["exception"]["values"][0]["stacktrace"] = stacktrace;
+    }
     // The tags of this kind (only update reports have any) go beside the
     // fixed four, which they never replace.
     if let Some(tags) = event["tags"].as_object_mut() {
@@ -216,6 +234,35 @@ mod tests {
             ..target()
         };
         assert!(super::event(&report(), &anonymous).get("user").is_none());
+    }
+
+    #[test]
+    fn a_sampled_hang_shows_its_stack_as_the_stack_trace() {
+        let mut hang = report();
+        hang.details.insert(
+            "hang".to_string(),
+            json!({
+                "side": "main",
+                "stuck_secs": 15,
+                "stack": [
+                    { "function": "main", "image": "codeg" },
+                    { "function": "mach_msg2_trap", "image": "libsystem_kernel.dylib" },
+                ],
+            }),
+        );
+        let event = event(&hang, &target());
+        let frames = &event["exception"]["values"][0]["stacktrace"]["frames"];
+        assert_eq!(frames.as_array().unwrap().len(), 2);
+        assert_eq!(frames[0]["function"], "main");
+        assert_eq!(frames[0]["package"], "codeg");
+        assert_eq!(frames[1]["function"], "mach_msg2_trap");
+        // Shown once: not in the details as well.
+        assert_eq!(event["contexts"]["desktop"]["hang"]["stuck_secs"], 15);
+        assert!(event["contexts"]["desktop"]["hang"].get("stack").is_none());
+
+        // A hang that was not sampled has no stack trace.
+        let plain = super::event(&report(), &target());
+        assert!(plain["exception"]["values"][0].get("stacktrace").is_none());
     }
 
     #[test]

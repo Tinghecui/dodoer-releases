@@ -12,7 +12,8 @@
 //!   quit (`shut_down` calls [`note_clean_exit`]);
 //! * a "hung" marker while the main thread or the tokio runtime has not
 //!   answered the [`watchdog`]'s heartbeat for 10 s, and a record of each hang
-//!   that ended on its own;
+//!   that ended on its own — on macOS with where the main thread was
+//!   ([`stack`]);
 //! * a record of each panic, from a hook chained after
 //!   `logging::panic_hook`'s.
 //!
@@ -27,6 +28,7 @@ mod macos_reports;
 mod report;
 #[cfg(feature = "tauri-runtime")]
 mod send;
+mod stack;
 mod store;
 #[cfg(feature = "tauri-runtime")]
 mod watchdog;
@@ -227,7 +229,16 @@ fn write_run_marker(phase: &Phase) {
     });
 }
 
-fn write_hang_marker(sides: Vec<String>, stuck_secs: u64, phase: &Phase) {
+/// This run's `crash-reports/`, while the switch is on.
+#[cfg(feature = "tauri-runtime")]
+fn run_dir() -> Option<PathBuf> {
+    if !enabled() || stopped() {
+        return None;
+    }
+    RUN.get().map(|run| run.dir.clone())
+}
+
+fn write_hang_marker(sides: Vec<String>, stuck_secs: u64, phase: &Phase, stack: Vec<stack::Frame>) {
     with_files(|run| {
         let marker = Record::Hang(HangMarker {
             run: run.id.clone(),
@@ -236,6 +247,7 @@ fn write_hang_marker(sides: Vec<String>, stuck_secs: u64, phase: &Phase) {
             sides,
             stuck_secs,
             phase: phase.clone(),
+            stack,
         });
         log_write_error(
             "hang marker",
@@ -248,7 +260,7 @@ fn remove_hang_marker() {
     with_files(|run| store::remove(&run.dir, &store::hang_file(&run.id)));
 }
 
-fn write_recovered(side: &str, stuck_secs: u64, phase: &Phase) {
+fn write_recovered(side: &str, stuck_secs: u64, phase: &Phase, stack: Vec<stack::Frame>) {
     with_files(|run| {
         let n = RECOVERED.fetch_add(1, Ordering::SeqCst);
         if n >= report::MAX_PER_RUN {
@@ -261,6 +273,7 @@ fn write_recovered(side: &str, stuck_secs: u64, phase: &Phase) {
             side: side.to_string(),
             stuck_secs,
             phase: phase.clone(),
+            stack,
         });
         log_write_error(
             "hang record",

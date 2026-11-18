@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::report::{Kind, Report};
+use super::stack::Frame;
 
 /// Finished reports waiting to be sent, one file each.
 const PENDING_DIR: &str = "pending";
@@ -74,6 +75,10 @@ pub struct HangMarker {
     pub stuck_secs: u64,
     #[serde(default)]
     pub phase: Phase,
+    /// The main thread's stack while it hung, outermost frame first; empty
+    /// when it was not the main thread, or it could not be sampled.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stack: Vec<Frame>,
 }
 
 /// A hang that ended on its own.
@@ -86,6 +91,9 @@ pub struct RecoveredHang {
     pub stuck_secs: u64,
     #[serde(default)]
     pub phase: Phase,
+    /// As [`HangMarker::stack`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stack: Vec<Frame>,
 }
 
 /// A panic, as the hook saw it. Not scrubbed yet: that happens when the report

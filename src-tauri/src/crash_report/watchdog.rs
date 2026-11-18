@@ -8,15 +8,19 @@
 //! worker that drove the timers was the one stuck in `AppHandle::restart()`
 //! (#271).
 //!
+//! When the main thread is found hung, its stack is sampled once, on a thread
+//! of its own ([`super::stack`]), and goes with that hang's marker and record.
+//!
 //! It also keeps the running marker fresh: rewritten every minute, and as
 //! soon as what the app is doing changes (an update, the quit).
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
 
+use super::stack::Frame;
 use super::store::Phase;
 use crate::update::state::AppUpdateLifecycle;
 
@@ -30,6 +34,8 @@ const ALIVE_EVERY: Duration = Duration::from_secs(60);
 /// A tick this late means this thread was not running either — the computer
 /// slept — and what was in flight did not wait that long.
 const SLEPT: Duration = Duration::from_secs(5);
+/// At most this many hangs of a run have the main thread's stack sampled.
+const MAX_SAMPLES: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Beat {
@@ -89,6 +95,57 @@ impl Side {
     }
 }
 
+/// The main thread's stack for the hang it is in now. A hang that ends takes
+/// what was sampled and moves on to the next number, so a sample that
+/// finishes late is not taken for a later hang's.
+#[derive(Default)]
+struct Sampled {
+    hang: u64,
+    frames: Vec<Frame>,
+}
+
+#[derive(Clone, Default)]
+struct MainStack(Arc<Mutex<Sampled>>);
+
+impl MainStack {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Sampled> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The main thread was just found hung: sample it, off this thread.
+    fn sample(&self) {
+        let Some(dir) = super::run_dir() else {
+            return;
+        };
+        let hang = self.lock().hang;
+        let slot = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("crash-report-sample".to_string())
+            .spawn(move || {
+                let frames = super::stack::sample_main_thread(&dir);
+                let mut sampled = slot.lock();
+                if sampled.hang == hang {
+                    sampled.frames = frames;
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::debug!("[crash-report] could not sample the main thread: {e}");
+        }
+    }
+
+    /// What was sampled so far, for the hung marker.
+    fn so_far(&self) -> Vec<Frame> {
+        self.lock().frames.clone()
+    }
+
+    /// The hang ended: what was sampled of it.
+    fn take(&self) -> Vec<Frame> {
+        let mut sampled = self.lock();
+        sampled.hang += 1;
+        std::mem::take(&mut sampled.frames)
+    }
+}
+
 pub fn spawn(app: AppHandle) {
     let spawned = std::thread::Builder::new()
         .name("crash-report-watchdog".to_string())
@@ -119,6 +176,8 @@ fn watch(app: AppHandle) {
     let mut written: Option<(Phase, Instant)> = None;
     // When the hung marker was last written; `None` = there is none.
     let mut hang_written: Option<Instant> = None;
+    let main_stack = MainStack::default();
+    let mut samples = 0;
     loop {
         std::thread::sleep(TICK);
         if super::stopped() {
@@ -132,6 +191,7 @@ fn watch(app: AppHandle) {
             sides = [Side::new(Beat::Main), Side::new(Beat::Tokio)];
             written = None;
             hang_written = None;
+            main_stack.take();
             continue;
         }
         if gap > SLEPT {
@@ -153,13 +213,24 @@ fn watch(app: AppHandle) {
             match answered {
                 Some(true) => {
                     if side.hung {
-                        super::write_recovered(side.beat.name(), waited.as_secs(), &phase);
+                        let stack = match side.beat {
+                            Beat::Main => main_stack.take(),
+                            Beat::Tokio => Vec::new(),
+                        };
+                        super::write_recovered(side.beat.name(), waited.as_secs(), &phase, stack);
                     }
                     side.sent = None;
                     side.hung = false;
                 }
-                Some(false) => side.hung = side.hung || waited > HANG_AFTER,
-                None => {}
+                Some(false) if !side.hung && waited > HANG_AFTER => {
+                    side.hung = true;
+                    let main = cfg!(target_os = "macos") && side.beat == Beat::Main;
+                    if main && samples < MAX_SAMPLES {
+                        samples += 1;
+                        main_stack.sample();
+                    }
+                }
+                Some(false) | None => {}
             }
             if side.sent.is_none() {
                 side.sent = side.beat.send(&app).map(|flag| (now, flag));
@@ -181,7 +252,12 @@ fn watch(app: AppHandle) {
                 .filter_map(|side| side.waited(now))
                 .max()
                 .unwrap_or_default();
-            super::write_hang_marker(names, stuck.as_secs(), &phase);
+            let stack = if hung.iter().any(|side| side.beat == Beat::Main) {
+                main_stack.so_far()
+            } else {
+                Vec::new()
+            };
+            super::write_hang_marker(names, stuck.as_secs(), &phase, stack);
             hang_written = Some(now);
         }
 

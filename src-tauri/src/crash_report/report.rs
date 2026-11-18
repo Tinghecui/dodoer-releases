@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use super::macos_reports::OsReport;
+use super::stack::Frame;
 use super::store::{HangMarker, PanicRecord, Phase, Record, RecoveredHang, RunMarker};
 use crate::telemetry::scrub::scrub_text;
 #[cfg(test)]
@@ -194,9 +195,22 @@ fn panic_report(panic: &PanicRecord, fatal: bool, os: &str) -> Report {
     }
 }
 
+/// `value` (a hang's details) with the main thread's stack, when there is
+/// one. Only the hang a report is about carries its stack: the event shows it
+/// as that hang's stack trace (`envelope::event`).
+fn with_stack(mut value: Value, stack: &[Frame]) -> Value {
+    if !stack.is_empty() {
+        value["stack"] = serde_json::to_value(stack).unwrap_or(Value::Null);
+    }
+    value
+}
+
 fn recovered_report(hang: &RecoveredHang, os: &str) -> Report {
     let mut details = Map::new();
-    details.insert("hang".to_string(), recovered_value(hang));
+    details.insert(
+        "hang".to_string(),
+        with_stack(recovered_value(hang), &hang.stack),
+    );
     details.insert("recovered".to_string(), Value::Bool(true));
     Report {
         event_id: new_event_id(),
@@ -235,14 +249,12 @@ fn unclean_report(marker: &RunMarker, left: &RunLeft, os: &str) -> Report {
 
     let fatal_panic = left.panics.iter().rev().find(|p| p.main_thread);
     let mut report = if let Some(hang) = &left.hang {
-        details.insert(
-            "hang".to_string(),
-            json!({
-                "sides": hang.sides,
-                "stuck_secs": hang.stuck_secs,
-                "phase": phase_value(&hang.phase),
-            }),
-        );
+        let value = json!({
+            "sides": hang.sides,
+            "stuck_secs": hang.stuck_secs,
+            "phase": phase_value(&hang.phase),
+        });
+        details.insert("hang".to_string(), with_stack(value, &hang.stack));
         Report {
             event_id: new_event_id(),
             kind: Kind::Hang,
@@ -357,6 +369,7 @@ pub fn collect(
                         side,
                         stuck_secs: hang.stuck_secs,
                         phase: hang.phase.clone(),
+                        stack: hang.stack.clone(),
                     };
                     reports.push(recovered_report(&recovered, os));
                 }
@@ -698,6 +711,19 @@ mod tests {
         })
     }
 
+    fn frames() -> Vec<Frame> {
+        vec![
+            Frame {
+                function: "main".to_string(),
+                image: "codeg".to_string(),
+            },
+            Frame {
+                function: "mach_msg2_trap".to_string(),
+                image: "libsystem_kernel.dylib".to_string(),
+            },
+        ]
+    }
+
     fn quitting_for_update() -> Phase {
         Phase {
             update: Some("restarting".to_string()),
@@ -766,6 +792,7 @@ mod tests {
                 sides: vec!["tokio".to_string()],
                 stuck_secs: 45,
                 phase: quitting_for_update(),
+                stack: Vec::new(),
             }),
             panic("1-1", 200, false),
             Record::Recovered(RecoveredHang {
@@ -775,6 +802,7 @@ mod tests {
                 side: "main".to_string(),
                 stuck_secs: 12,
                 phase: Phase::default(),
+                stack: frames(),
             }),
         ];
         let reports = collect(records, "2-2", &[], "macos");
@@ -790,6 +818,10 @@ mod tests {
         assert_eq!(r.details["phase"]["update"], "restarting");
         assert_eq!(r.details["panics"].as_array().unwrap().len(), 1);
         assert_eq!(r.details["recovered_hangs"][0]["side"], "main");
+        // The tokio side was not sampled, and a hang that only goes along
+        // with the report leaves its stack behind.
+        assert!(r.details["hang"].get("stack").is_none());
+        assert!(r.details["recovered_hangs"][0].get("stack").is_none());
         let text = serde_json::to_string(r).unwrap();
         assert!(!text.contains("someone"), "{text}");
         assert!(!text.contains("secret"), "{text}");
@@ -837,6 +869,7 @@ mod tests {
                 side: "main".to_string(),
                 stuck_secs: 11,
                 phase: Phase::default(),
+                stack: frames(),
             }),
             Record::Hang(HangMarker {
                 run: "1-1".to_string(),
@@ -848,6 +881,7 @@ mod tests {
                     update: None,
                     quitting: true,
                 },
+                stack: frames(),
             }),
         ];
         let reports = collect(records, "2-2", &[], "macos");
@@ -858,6 +892,11 @@ mod tests {
         assert!(hangs
             .iter()
             .all(|r| r.details["recovered"].as_bool() == Some(true)));
+        for hang in hangs {
+            let stack = &hang.details["hang"]["stack"];
+            assert_eq!(stack[0]["function"], "main");
+            assert_eq!(stack[1]["image"], "libsystem_kernel.dylib");
+        }
     }
 
     #[test]

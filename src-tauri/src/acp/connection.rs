@@ -17128,8 +17128,21 @@ fn inject_start_line(value: &mut serde_json::Value, cwd: Option<&str>) -> bool {
         .or_else(|| obj.get("oldString"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let new_str = obj
+        .get("new_string")
+        .or_else(|| obj.get("newString"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     if let (Some(fp), Some(old_str)) = (fp, old_str) {
-        if let Some(sl) = find_string_start_line(&fp, &old_str, cwd) {
+        // 编辑已经落盘的帧（claude 的完成帧按 hunk 重建输入）里 old_string
+        // 在磁盘上找不到了，改找 new_string：它在新文件里的起始行就是 hunk 的
+        // 起始行（hunk 以上下文开头，新旧起始行相同）。只认唯一出现的，免得标错。
+        let sl = find_string_start_line(&fp, &old_str, cwd).or_else(|| {
+            new_str
+                .as_deref()
+                .and_then(|n| find_unique_string_start_line(&fp, n, cwd))
+        });
+        if let Some(sl) = sl {
             obj.insert("_start_line".to_string(), serde_json::json!(sl));
             return true;
         }
@@ -17137,14 +17150,42 @@ fn inject_start_line(value: &mut serde_json::Value, cwd: Option<&str>) -> bool {
     false
 }
 
+/// 和 `find_string_start_line` 一样，但 `needle` 在文件里出现不止一次时返回 `None`。
+/// 重叠的出现也算（连续三行相同、needle 是其中两行，就是两处）。
+fn find_unique_string_start_line(path: &str, needle: &str, cwd: Option<&str>) -> Option<u64> {
+    let needle = needle.replace("\r\n", "\n");
+    let first_char_len = needle.chars().next()?.len_utf8();
+    let file_content = load_file_content_for_line_lookup(path, cwd)?;
+    let byte_offset = file_content.find(&needle)?;
+    if file_content[byte_offset + first_char_len..].contains(&needle) {
+        return None;
+    }
+    Some(file_content[..byte_offset].matches('\n').count() as u64 + 1)
+}
+
+/// 读文件原文、把 CRLF 统一成 LF，用来按片段找行号。保留文件末尾的换行：
+/// 片段以换行结尾、又正好到文件末尾时也找得到。
+fn load_file_content_for_line_lookup(path: &str, cwd: Option<&str>) -> Option<String> {
+    let p = std::path::Path::new(path);
+    let content = if p.is_absolute() {
+        std::fs::read_to_string(p).ok()
+    } else {
+        None
+    }
+    .or_else(|| {
+        cwd.and_then(|base| std::fs::read_to_string(std::path::Path::new(base).join(path)).ok())
+    })?;
+    Some(content.replace("\r\n", "\n"))
+}
+
 /// Find the 1-based start line of `needle` in the file at `path`.
 fn find_string_start_line(path: &str, needle: &str, cwd: Option<&str>) -> Option<u64> {
     if needle.is_empty() {
         return None;
     }
-    let file_lines = crate::parsers::load_file_lines(path, cwd)?;
-    let file_content = file_lines.join("\n");
-    let byte_offset = file_content.find(needle)?;
+    let needle = needle.replace("\r\n", "\n");
+    let file_content = load_file_content_for_line_lookup(path, cwd)?;
+    let byte_offset = file_content.find(&needle)?;
     Some(file_content[..byte_offset].matches('\n').count() as u64 + 1)
 }
 
@@ -39588,6 +39629,80 @@ mod tests {
         });
         assert!(!inject_start_line(&mut absent, None));
         assert!(absent.get("_start_line").is_none());
+    }
+
+    /// claude-agent-acp 的完成帧按 structuredPatch 的 hunk（带前后 3 行上下文）
+    /// 发 diff 块，输入是从它重建的；这时编辑已经落盘，old_string 在磁盘上找不到，
+    /// 以前这一帧没有 _start_line，前端就从第 1 行编号。改完的文件里能找到
+    /// new_string，它的起始行就是 hunk 的起始行。
+    #[test]
+    fn live_start_line_falls_back_to_new_string_after_edit_is_applied() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("README.md");
+        // 改完以后的样子：第 6 行的 notes 已经换成 docs。
+        std::fs::write(
+            &file,
+            "# demo\n\nintro\n- `src/` code\n- `tests/` tests\n- `docs/` docs\n- `bin/` tools\nend\n",
+        )
+        .expect("write");
+
+        let mut applied = serde_json::json!({
+            "file_path": file.to_string_lossy(),
+            "old_string": "intro\n- `src/` code\n- `tests/` tests\n- `docs/` notes\n",
+            "new_string": "intro\n- `src/` code\n- `tests/` tests\n- `docs/` docs\n",
+        });
+        assert!(inject_start_line(&mut applied, None));
+        assert_eq!(applied["_start_line"], serde_json::json!(3));
+
+        // new_string 在文件里出现不止一次时，不猜。
+        let mut ambiguous = serde_json::json!({
+            "file_path": file.to_string_lossy(),
+            "old_string": "not-in-the-file",
+            "new_string": "- `",
+        });
+        assert!(!inject_start_line(&mut ambiguous, None));
+        assert!(ambiguous.get("_start_line").is_none());
+
+        // old_string 还在磁盘上（编辑前那一帧）时照旧按 old_string 找。
+        let mut before = serde_json::json!({
+            "file_path": file.to_string_lossy(),
+            "old_string": "- `bin/` tools",
+            "new_string": "intro",
+        });
+        assert!(inject_start_line(&mut before, None));
+        assert_eq!(before["_start_line"], serde_json::json!(7));
+    }
+
+    /// hunk 一直延伸到文件末尾、new_string 以换行结尾时，也要找得到（文件末尾的换行不能丢）。
+    #[test]
+    fn live_start_line_new_string_fallback_keeps_trailing_newline() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("README.md");
+        std::fs::write(&file, "# demo\n\nintro\n- `docs/` docs\nend\n").expect("write");
+
+        let mut applied = serde_json::json!({
+            "file_path": file.to_string_lossy(),
+            "old_string": "intro\n- `docs/` notes\nend\n",
+            "new_string": "intro\n- `docs/` docs\nend\n",
+        });
+        assert!(inject_start_line(&mut applied, None));
+        assert_eq!(applied["_start_line"], serde_json::json!(3));
+    }
+
+    /// 连续三行相同、new_string 是其中两行：重叠的两处都算，不唯一就不猜。
+    #[test]
+    fn live_start_line_new_string_fallback_counts_overlapping_matches() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("list.txt");
+        std::fs::write(&file, "head\nsame\nsame\nsame\ntail\n").expect("write");
+
+        let mut overlapping = serde_json::json!({
+            "file_path": file.to_string_lossy(),
+            "old_string": "not-in-the-file",
+            "new_string": "same\nsame\n",
+        });
+        assert!(!inject_start_line(&mut overlapping, None));
+        assert!(overlapping.get("_start_line").is_none());
     }
 
     #[test]

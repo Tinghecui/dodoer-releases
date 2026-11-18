@@ -114,11 +114,12 @@ export const SYSTEM_APP_NAME = SOURCE_PRODUCT_NAME
 
 /**
  * 后端评论末尾实际写的名字（`src-tauri/src/cowork.rs` 的 PRODUCT_NAME，
- * `forge/deliver.rs` 的 comment_footer 用它）。设置页说「每条评论末尾加上
- * “🤖 Generated with …”」，这里写的必须和真发出去的一样，不能跟着显示名走。
- * 后端改名时一起改（brand.test.ts 会拿它和 cowork.rs 对）。
+ * 指向 `src-tauri/src/brand.rs` 的 DISPLAY_NAME；`forge/deliver.rs` 的
+ * comment_footer 用它）。设置页说「每条评论末尾加上“🤖 Generated with …”」，
+ * 这里写的必须和真发出去的一样，不能跟着显示名走。
+ * 后端改名时一起改（brand.test.ts 会拿它和 brand.rs 对）。
  */
-export const COMMENT_FOOTER_NAME = "Cowork"
+export const COMMENT_FOOTER_NAME = "CoTeam"
 
 /** 设置页里引用评论署名原文的那一条。 */
 const COMMENT_FOOTER_KEY = "Forge.settingsCommentFooterHint"

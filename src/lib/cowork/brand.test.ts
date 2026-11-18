@@ -279,13 +279,19 @@ describe("brand overlay", () => {
     expect(b.LoginPage.brand).toBe("CoTeam")
   })
 
-  // 设置页引用的评论署名必须和后端真发出去的一样（cowork.rs 的 PRODUCT_NAME）。
+  // 设置页引用的评论署名必须和后端真发出去的一样：cowork.rs 的 PRODUCT_NAME
+  // 指向 brand.rs 的 DISPLAY_NAME，字面量在 brand.rs 里。
   it("quotes the comment footer the backend actually posts", () => {
-    const rust = readFileSync(
-      resolve(__dirname, "../../../src-tauri/src/cowork.rs"),
-      "utf8"
+    const src = resolve(__dirname, "../../../src-tauri/src")
+    const cowork = readFileSync(resolve(src, "cowork.rs"), "utf8")
+    expect(cowork).toMatch(
+      /pub const PRODUCT_NAME: &str = crate::brand::DISPLAY_NAME;/
     )
-    const backend = /pub const PRODUCT_NAME: &str = "([^"]+)";/.exec(rust)?.[1]
+    const brandRs = readFileSync(resolve(src, "brand.rs"), "utf8")
+    const backend = /pub const DISPLAY_NAME: &str = "([^"]+)";/.exec(
+      brandRs
+    )?.[1]
+    expect(backend).toBe("CoTeam")
     expect(COMMENT_FOOTER_NAME).toBe(backend)
     for (const catalog of [en, zhCN]) {
       const b = brandMessages(

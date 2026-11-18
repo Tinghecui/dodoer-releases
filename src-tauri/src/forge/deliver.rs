@@ -1813,7 +1813,7 @@ mod tests {
             full,
             "The cause was X.\n\nFixed in `a.rs`.\n\n\
              Delivered in https://github.com/acme/app/pull/42 (1 file, +1/-0).\n\n\
-             ---\n🤖 Generated with Cowork"
+             ---\n🤖 Generated with CoTeam"
         );
         let no_footer =
             writeback_comment_body(gh, issue, &delivered, None, &[], Some("Done."), false);

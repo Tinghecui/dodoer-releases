@@ -65,7 +65,8 @@ use crate::models::FolderDetail;
 use crate::web::shutdown::ShutdownSignal;
 
 /// User-visible product name reported to the web UI.
-pub const PRODUCT_NAME: &str = "Cowork";
+/// 显示名只在 `brand::DISPLAY_NAME` 一处定义，这里指向它。
+pub const PRODUCT_NAME: &str = crate::brand::DISPLAY_NAME;
 
 /// What the web UI shows in place of the real token (settings page) and what
 /// the SSO'd browser sends; Cowork's nginx overwrites it with the real one.
@@ -1938,6 +1939,14 @@ mod tests {
         );
     }
 
+    /// 产品名只从 `brand::DISPLAY_NAME` 一处来：升级失败的报错、智能体开的 PR
+    /// 的署名、报给界面的产品名都是 CoTeam。
+    #[test]
+    fn product_name_is_the_display_name() {
+        assert_eq!(PRODUCT_NAME, crate::brand::DISPLAY_NAME);
+        assert_eq!(PRODUCT_NAME, "CoTeam");
+    }
+
     #[test]
     fn info_serializes_in_the_contract_shape() {
         let s = CoworkSettings {
@@ -1950,7 +1959,7 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "product": "Cowork",
+                "product": "CoTeam",
                 "projectsRoot": "/home/cw-a/work",
                 "portal": true,
                 "updateDisabled": true

@@ -3062,7 +3062,9 @@
         "branchNameAutoPlaceholder": "空欄なら最初のメッセージから名前を付けます",
         "baseLabel": "開始元",
         "baseCurrent": "{branch}（現在）",
-        "branchNameInvalid": "ブランチ名が正しくありません。空白、「..」、~ ^ : ? * [ \\ は使えません。- や / で始めること、/、.、.lock で終えることもできません。"
+        "branchNameInvalid": "ブランチ名が正しくありません。空白、「..」、~ ^ : ? * [ \\ は使えません。- や / で始めること、/、.、.lock で終えることもできません。",
+        "branchNameExists": "ブランチ {name} はすでに存在します。別の名前にしてください。",
+        "branchListUnavailable": "既存のブランチを読み込めないため、この名前を確認できません。もう一度試すか、名前を空のままにしてください。"
       },
       "conflict": {
         "title": "マージコンフリクト",

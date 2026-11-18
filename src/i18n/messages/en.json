@@ -3062,7 +3062,9 @@
         "branchNameAutoPlaceholder": "Leave empty to name it from your first message",
         "baseLabel": "Start from",
         "baseCurrent": "{branch} (current)",
-        "branchNameInvalid": "Not a valid branch name. It cannot contain spaces, \"..\", ~ ^ : ? * [ or \\; start with - or /; or end with /, . or .lock."
+        "branchNameInvalid": "Not a valid branch name. It cannot contain spaces, \"..\", ~ ^ : ? * [ or \\; start with - or /; or end with /, . or .lock.",
+        "branchNameExists": "A branch named {name} already exists. Pick another name.",
+        "branchListUnavailable": "Couldn't read the existing branches, so this name can't be checked. Try again, or leave the name empty."
       },
       "conflict": {
         "title": "Merge Conflicts",

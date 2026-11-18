@@ -3062,7 +3062,9 @@
         "branchNameAutoPlaceholder": "Déjalo vacío para nombrarla a partir de tu primer mensaje",
         "baseLabel": "Punto de partida",
         "baseCurrent": "{branch} (actual)",
-        "branchNameInvalid": "Nombre de rama no válido. No puede contener espacios, «..», ~ ^ : ? * [ ni \\; ni empezar por - o /; ni terminar en /, . o .lock."
+        "branchNameInvalid": "Nombre de rama no válido. No puede contener espacios, «..», ~ ^ : ? * [ ni \\; ni empezar por - o /; ni terminar en /, . o .lock.",
+        "branchNameExists": "Ya existe una rama llamada {name}. Elige otro nombre.",
+        "branchListUnavailable": "No se pudieron leer las ramas existentes, así que no se puede comprobar este nombre. Inténtalo de nuevo o deja el nombre vacío."
       },
       "conflict": {
         "title": "Conflictos de fusión",

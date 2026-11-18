@@ -3062,7 +3062,9 @@
         "branchNameAutoPlaceholder": "Deixe vazio para nomeá-la a partir da sua primeira mensagem",
         "baseLabel": "Ponto de partida",
         "baseCurrent": "{branch} (atual)",
-        "branchNameInvalid": "Nome de branch inválido. Não pode conter espaços, «..», ~ ^ : ? * [ ou \\, nem começar com - ou /, nem terminar com /, . ou .lock."
+        "branchNameInvalid": "Nome de branch inválido. Não pode conter espaços, «..», ~ ^ : ? * [ ou \\, nem começar com - ou /, nem terminar com /, . ou .lock.",
+        "branchNameExists": "Já existe um branch chamado {name}. Escolha outro nome.",
+        "branchListUnavailable": "Não foi possível ler as branches existentes, então este nome não pode ser verificado. Tente novamente ou deixe o nome vazio."
       },
       "conflict": {
         "title": "Conflitos de merge",

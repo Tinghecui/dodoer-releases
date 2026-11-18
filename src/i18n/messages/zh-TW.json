@@ -3062,7 +3062,9 @@
         "branchNameAutoPlaceholder": "留空則由 AI 根據第一則訊息命名",
         "baseLabel": "起點",
         "baseCurrent": "{branch}（目前）",
-        "branchNameInvalid": "分支名稱不合法：不能包含空格、「..」、~ ^ : ? * [ 或 \\，不能以 - 或 / 開頭，也不能以 /、. 或 .lock 結尾。"
+        "branchNameInvalid": "分支名稱不合法：不能包含空格、「..」、~ ^ : ? * [ 或 \\，不能以 - 或 / 開頭，也不能以 /、. 或 .lock 結尾。",
+        "branchNameExists": "分支 {name} 已存在，請換一個名稱。",
+        "branchListUnavailable": "讀不到現有的分支，無法確認這個名稱是否已被使用。請重試，或將名稱留空。"
       },
       "conflict": {
         "title": "合併衝突",

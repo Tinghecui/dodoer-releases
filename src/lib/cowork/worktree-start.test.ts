@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest"
 
 import { defaultConversationBranch } from "@/lib/worktree-slug"
 
-import { commandErrorReason, isValidBranchName } from "./worktree-start"
+import {
+  branchNameProblem,
+  commandErrorReason,
+  isValidBranchName,
+} from "./worktree-start"
 
 // Each verdict below was checked against `git check-ref-format --branch`
 // (git 2.43), except `@` and `@{…}`: git expands those to another branch's
@@ -111,5 +115,24 @@ describe("commandErrorReason", () => {
   it("falls back to the plain text of anything else", () => {
     expect(commandErrorReason(new Error("network down"))).toBe("network down")
     expect(commandErrorReason("boom")).toBe("boom")
+  })
+})
+
+describe("branchNameProblem", () => {
+  const local = ["main", "feature/x"]
+
+  it("refuses a name that is already a local branch", () => {
+    expect(branchNameProblem("main", local)).toBe("exists")
+    expect(branchNameProblem("feature/x", local)).toBe("exists")
+  })
+
+  it("refuses a name git would refuse, before looking at the list", () => {
+    expect(branchNameProblem("bad name..~", local)).toBe("invalid")
+  })
+
+  it("takes a new valid name, and an empty one (named from the first message)", () => {
+    expect(branchNameProblem("cv/tidy-fox", local)).toBeNull()
+    expect(branchNameProblem("Main", local)).toBeNull()
+    expect(branchNameProblem("", local)).toBeNull()
   })
 })

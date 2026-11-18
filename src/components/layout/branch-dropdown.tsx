@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ChevronDown,
   FolderGit2,
@@ -75,7 +75,10 @@ import type {
   GitBranchList,
 } from "@/lib/types"
 import { defaultConversationBranch } from "@/lib/worktree-slug"
-import { isValidBranchName } from "@/lib/cowork/worktree-start"
+import {
+  branchNameProblem,
+  type BranchNameProblem,
+} from "@/lib/cowork/worktree-start"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { useGitCredential } from "@/contexts/git-credential-context"
@@ -131,6 +134,9 @@ interface GitPushSucceededEventPayload {
   pushed_commits: number
   upstream_set: boolean
 }
+
+// Cowork fork: what `loadAllBranches` hands back; `null` when git failed.
+type MaybeBranchList = GitBranchList | null
 
 interface BranchDropdownProps {
   /** The row's OWN folder (each conversation tile passes its own), not the
@@ -229,9 +235,17 @@ export function BranchDropdown({
   // "Start in a new worktree" (drafts only): just records the choice on the
   // draft; the first send creates the branch and worktree.
   const [startWorktreeOpen, setStartWorktreeOpen] = useState(false)
+  // Cowork fork: bumped whenever the user edits, cancels or reopens the
+  // "adjust new worktree" dialog, so a confirm still waiting on the branch
+  // list knows it was overtaken and does not plan the name it started with.
+  const startCheckRef = useRef(0)
   const [startBranchName, setStartBranchName] = useState("")
-  // Cowork fork: the name typed into the dialog is one git would refuse.
-  const [startBranchInvalid, setStartBranchInvalid] = useState(false)
+  // Cowork fork: why the name typed into the dialog is refused — one git would
+  // refuse, or one a local branch already has.
+  // "unchecked": the branch list could not be read, so it is unknown.
+  const [startBranchProblem, setStartBranchProblem] = useState<
+    BranchNameProblem | "unchecked" | null
+  >(null)
   const [startBase, setStartBase] = useState("")
 
   // Task running, credential retry, pull/fetch/window openers and the
@@ -382,19 +396,25 @@ export function BranchDropdown({
     }
   }, [folderId, refresh, t])
 
-  const loadAllBranches = useCallback(async () => {
-    if (!folderPath) return
+  // Cowork fork: also hands back the list it loaded, so the worktree dialog
+  // can check a name against it without waiting for a re-render. `null` when
+  // it could not be read: the dialog must not mistake that for "no branches".
+  const loadAllBranches = useCallback(async (): Promise<MaybeBranchList> => {
+    const empty: GitBranchList = {
+      local: [],
+      remote: [],
+      worktree_branches: [],
+      main_worktree_branch: null,
+    }
+    if (!folderPath) return null
     setBranchLoading(true)
     try {
       const list = await gitListAllBranches(folderPath)
       setBranchList(list)
+      return list
     } catch {
-      setBranchList({
-        local: [],
-        remote: [],
-        worktree_branches: [],
-        main_worktree_branch: null,
-      })
+      setBranchList(empty)
+      return null
     } finally {
       setBranchLoading(false)
     }
@@ -454,21 +474,41 @@ export function BranchDropdown({
     if (pendingWorktree?.kind !== "branch_off") return
     setStartBranchName(pendingWorktree.auto_name ? "" : pendingWorktree.branch)
     setStartBase(pendingWorktree.base ?? branch ?? "")
-    setStartBranchInvalid(false)
+    setStartBranchProblem(null)
+    startCheckRef.current += 1
     // The base picker lists every branch; the popup may not have loaded them
     // yet (the operation can be reached by keyboard before the list renders).
     if (branchList.local.length === 0) void loadAllBranches()
     setStartWorktreeOpen(true)
   }
 
-  function handleStartWorktree() {
+  async function handleStartWorktree() {
     if (!draftTabId) return
     const name = startBranchName.trim()
-    // Cowork fork: refuse a name git would refuse while the dialog is still
-    // open. The backend only checks it when the first message is sent, long
-    // after the name was typed, and by then the message is already on its way.
-    if (name && !isValidBranchName(name)) {
-      setStartBranchInvalid(true)
+    // Cowork fork: refuse a name git would refuse, or one a local branch
+    // already has, while the dialog is still open. The backend only checks
+    // them when the first message is sent, long after the name was typed, and
+    // by then the message is already on its way. The list may not have loaded
+    // yet (confirmed by keyboard right after opening): load it first. When it
+    // cannot be read at all, refuse a typed name rather than let one that may
+    // already exist through; an empty name (agent names it) needs no check.
+    // The list is always read again here: one loaded when the menu opened may
+    // predate a branch made since. While it loads the user may edit or cancel
+    // (`startCheckRef` moves on): then this confirm is dropped.
+    let local: string[] = []
+    if (name && !branchNameProblem(name, [])) {
+      const attempt = ++startCheckRef.current
+      const loaded = await loadAllBranches()
+      if (attempt !== startCheckRef.current) return
+      if (!loaded) {
+        setStartBranchProblem("unchecked")
+        return
+      }
+      local = loaded.local
+    }
+    const problem = branchNameProblem(name, local)
+    if (problem) {
+      setStartBranchProblem(problem)
       return
     }
     const base = startBase.trim() || null
@@ -914,7 +954,13 @@ export function BranchDropdown({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={startWorktreeOpen} onOpenChange={setStartWorktreeOpen}>
+      <Dialog
+        open={startWorktreeOpen}
+        onOpenChange={(open) => {
+          startCheckRef.current += 1
+          setStartWorktreeOpen(open)
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{t("dialogs.startWorktreeTitle")}</DialogTitle>
@@ -933,32 +979,45 @@ export function BranchDropdown({
                 value={startBranchName}
                 onChange={(e) => {
                   setStartBranchName(e.target.value)
-                  setStartBranchInvalid(false)
+                  setStartBranchProblem(null)
+                  startCheckRef.current += 1
                 }}
-                aria-invalid={startBranchInvalid || undefined}
+                aria-invalid={startBranchProblem ? true : undefined}
                 aria-describedby={
-                  startBranchInvalid ? "start-wt-branch-error" : undefined
+                  startBranchProblem ? "start-wt-branch-error" : undefined
                 }
                 {...ime.props}
                 onKeyDown={(e) => {
                   if (ime.isComposing(e)) return
-                  if (e.key === "Enter") handleStartWorktree()
+                  if (e.key === "Enter") void handleStartWorktree()
                 }}
                 autoFocus
               />
-              {startBranchInvalid ? (
+              {startBranchProblem ? (
                 <p
                   id="start-wt-branch-error"
                   role="alert"
                   className="text-xs text-destructive"
                 >
-                  {t("dialogs.branchNameInvalid")}
+                  {startBranchProblem === "exists"
+                    ? t("dialogs.branchNameExists", {
+                        name: startBranchName.trim(),
+                      })
+                    : startBranchProblem === "unchecked"
+                      ? t("dialogs.branchListUnavailable")
+                      : t("dialogs.branchNameInvalid")}
                 </p>
               ) : null}
             </div>
             <div className="space-y-2">
               <Label htmlFor="start-wt-base">{t("dialogs.baseLabel")}</Label>
-              <Select value={startBase} onValueChange={setStartBase}>
+              <Select
+                value={startBase}
+                onValueChange={(value) => {
+                  startCheckRef.current += 1
+                  setStartBase(value)
+                }}
+              >
                 <SelectTrigger id="start-wt-base" className="w-full">
                   <SelectValue placeholder={branch ?? "HEAD"} />
                 </SelectTrigger>
@@ -987,11 +1046,16 @@ export function BranchDropdown({
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setStartWorktreeOpen(false)}
+              onClick={() => {
+                startCheckRef.current += 1
+                setStartWorktreeOpen(false)
+              }}
             >
               {tCommon("cancel")}
             </Button>
-            <Button onClick={handleStartWorktree}>{tCommon("confirm")}</Button>
+            <Button onClick={() => void handleStartWorktree()}>
+              {tCommon("confirm")}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

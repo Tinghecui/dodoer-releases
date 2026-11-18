@@ -1104,6 +1104,424 @@ describe("TabProvider cross-client sync", () => {
     expect(screen.getByTestId("active")).toHaveTextContent("conv-2-codex-3")
   })
 
+  it("刷新时新会话还没存上服务器：补回标签并停在它上面（#626）", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true), tabItem(1, 2)],
+      version: 1,
+    })
+    // 第一个页面的保存一直没回来（刷新抢在 500ms 防抖或请求之前）。
+    saveOpenedTabsMock.mockReturnValue(new Promise(() => {}))
+    const first = renderTabs()
+    await waitFor(() => expect(useTabStore.getState().tabsHydrated).toBe(true))
+    act(() => {
+      latestContext?.openNewConversationTab(1, "/repo")
+    })
+    const draftId = latestContext?.activeTabId ?? ""
+    expect(draftId).toMatch(/^new-/)
+    act(() => {
+      latestContext?.bindConversationTab(draftId, 9, "codex", "Running", -1)
+    })
+    const blob = JSON.parse(localStorage.getItem("workspace:tab-groups:v1")!)
+    expect(blob.activeConversation).toBe("conv-1-codex-9")
+
+    first.unmount()
+    act(() => {
+      resetTabStore()
+    })
+    saveOpenedTabsMock.mockClear()
+    saveOpenedTabsMock.mockResolvedValue({
+      accepted: true,
+      version: 2,
+      tabs: [],
+    })
+    // 服务器上仍然只有旧的两个会话，is_active 还是上一个。
+    await renderHydrated()
+
+    expect(screen.getByTestId("tabs")).toHaveTextContent("conv-1-codex-9")
+    expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-9")
+    // 补回来的标签要存上服务器。
+    await waitFor(() => expect(saveOpenedTabsMock).toHaveBeenCalled(), {
+      timeout: 2000,
+    })
+    const items = saveOpenedTabsMock.mock.calls[0][0] as OpenedTab[]
+    expect(items.map((it) => it.conversation_id)).toContain(9)
+    expect(items.find((it) => it.is_active)?.conversation_id).toBe(9)
+  })
+
+  it("服务器确认过的会话后来在别处关掉了，刷新不把它补回来（#626）", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true), tabItem(1, 2)],
+      version: 1,
+    })
+    saveOpenedTabsMock.mockResolvedValue({
+      accepted: true,
+      version: 2,
+      tabs: [tabItem(1, 1), tabItem(1, 2), tabItem(1, 9, true)],
+    })
+    const first = renderTabs()
+    await waitFor(() => expect(useTabStore.getState().tabsHydrated).toBe(true))
+    act(() => {
+      latestContext?.openNewConversationTab(1, "/repo")
+    })
+    const draftId = latestContext?.activeTabId ?? ""
+    act(() => {
+      latestContext?.bindConversationTab(draftId, 9, "codex", "Running", -1)
+    })
+    await waitFor(() => expect(saveOpenedTabsMock).toHaveBeenCalled(), {
+      timeout: 2000,
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    first.unmount()
+    act(() => {
+      resetTabStore()
+    })
+    // 另一台设备把会话 9 关了。
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true), tabItem(1, 2)],
+      version: 3,
+    })
+    await renderHydrated()
+
+    expect(screen.getByTestId("tabs")).not.toHaveTextContent("conv-1-codex-9")
+    expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-1")
+  })
+
+  it("刷新后首次读取标签失败，之后的重新读取成功时仍补回未确认的新会话（#626）", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true), tabItem(1, 2)],
+      version: 1,
+    })
+    saveOpenedTabsMock.mockReturnValue(new Promise(() => {}))
+    const first = renderTabs()
+    await waitFor(() => expect(useTabStore.getState().tabsHydrated).toBe(true))
+    act(() => {
+      latestContext?.openNewConversationTab(1, "/repo")
+    })
+    const draftId = latestContext?.activeTabId ?? ""
+    act(() => {
+      latestContext?.bindConversationTab(draftId, 9, "codex", "Running", -1)
+    })
+
+    first.unmount()
+    act(() => {
+      resetTabStore()
+    })
+    saveOpenedTabsMock.mockClear()
+    saveOpenedTabsMock.mockResolvedValue({
+      accepted: true,
+      version: 2,
+      tabs: [],
+    })
+    // 刷新后第一次读取失败，订阅后的重新读取拿到服务器上的旧标签。
+    listOpenedTabsMock.mockRejectedValueOnce(new Error("backend down"))
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true), tabItem(1, 2)],
+      version: 1,
+    })
+    renderTabs()
+    await act(async () => {})
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    expect(screen.getByTestId("tabs")).toHaveTextContent("conv-1-codex-9")
+    expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-9")
+    await waitFor(() => expect(saveOpenedTabsMock).toHaveBeenCalled(), {
+      timeout: 2000,
+    })
+    const calls = saveOpenedTabsMock.mock.calls
+    const items = calls[calls.length - 1][0] as OpenedTab[]
+    expect(items.map((it) => it.conversation_id)).toEqual(
+      expect.arrayContaining([1, 2, 9])
+    )
+  })
+
+  it("首次读取失败后补回的未确认标签，重新读取成功时留在原来的位置（#626）", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true), tabItem(1, 2)],
+      version: 1,
+    })
+    saveOpenedTabsMock.mockReturnValue(new Promise(() => {}))
+    const first = renderTabs()
+    await waitFor(() => expect(useTabStore.getState().tabsHydrated).toBe(true))
+    act(() => {
+      latestContext?.openNewConversationTab(1, "/repo")
+    })
+    const draftId = latestContext?.activeTabId ?? ""
+    act(() => {
+      latestContext?.bindConversationTab(draftId, 9, "codex", "Running", -1)
+    })
+
+    first.unmount()
+    act(() => {
+      resetTabStore()
+    })
+    saveOpenedTabsMock.mockClear()
+    saveOpenedTabsMock.mockResolvedValue({
+      accepted: true,
+      version: 3,
+      tabs: [],
+    })
+    // 刷新后第一次读取失败；重新读取时服务器上多了别的设备打开的会话 3。
+    listOpenedTabsMock.mockRejectedValueOnce(new Error("backend down"))
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true), tabItem(1, 2), tabItem(1, 3)],
+      version: 2,
+    })
+    renderTabs()
+    await act(async () => {})
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    // 会话 9 原来在 2 后面，补回后仍在 2 后面，不被挤到最后。
+    expect(useTabStore.getState().rawTabs.map((t) => t.id)).toEqual([
+      "conv-1-codex-1",
+      "conv-1-codex-2",
+      "conv-1-codex-9",
+      "conv-1-codex-3",
+    ])
+    expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-9")
+  })
+
+  it("未确认的预览标签刷新后补回来仍是预览，不被固定（#626）", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true)],
+      version: 1,
+    })
+    saveOpenedTabsMock.mockReturnValue(new Promise(() => {}))
+    const first = renderTabs()
+    await waitFor(() => expect(useTabStore.getState().tabsHydrated).toBe(true))
+    act(() => {
+      latestContext?.openTab(1, 9, "codex", false, "Preview")
+    })
+    expect(
+      useTabStore.getState().rawTabs.find((t) => t.id === "conv-1-codex-9")
+        ?.isPinned
+    ).toBe(false)
+
+    first.unmount()
+    act(() => {
+      resetTabStore()
+    })
+    await renderHydrated()
+
+    const restored = useTabStore
+      .getState()
+      .rawTabs.find((t) => t.id === "conv-1-codex-9")
+    expect(restored).toBeDefined()
+    expect(restored?.isPinned).toBe(false)
+  })
+
+  // 刷新前：会话 1、草稿、未确认的新会话 9、会话 2。
+  async function setupDraftBetweenUnsynced(): Promise<string> {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true), tabItem(1, 2)],
+      version: 1,
+    })
+    saveOpenedTabsMock.mockReturnValue(new Promise(() => {}))
+    const first = renderTabs()
+    await waitFor(() => expect(useTabStore.getState().tabsHydrated).toBe(true))
+    act(() => {
+      latestContext?.openNewConversationTab(1, "/repo")
+    })
+    const boundDraft = latestContext?.activeTabId ?? ""
+    act(() => {
+      latestContext?.bindConversationTab(boundDraft, 9, "codex", "Running", -1)
+    })
+    // 每组只有一个草稿：第一个绑定以后再开一个。
+    act(() => {
+      latestContext?.openNewConversationTab(1, "/repo")
+    })
+    const keptDraft = latestContext?.activeTabId ?? ""
+    expect(keptDraft).not.toBe(boundDraft)
+    act(() => {
+      const byId = new Map(useTabStore.getState().rawTabs.map((t) => [t.id, t]))
+      useTabStore.setState({
+        rawTabs: [
+          "conv-1-codex-1",
+          keptDraft,
+          boundDraft,
+          "conv-1-codex-2",
+        ].map((id) => byId.get(id)!),
+      })
+    })
+    // 焦点回到新会话 9 上（顺带把调整后的顺序写进 blob）。
+    act(() => {
+      latestContext?.switchTab(boundDraft)
+    })
+    const blob = JSON.parse(localStorage.getItem("workspace:tab-groups:v1")!)
+    expect(blob.unsyncedConversations?.[0]?.index).toBe(2)
+    expect(blob.drafts?.[0]?.index).toBe(1)
+
+    first.unmount()
+    act(() => {
+      resetTabStore()
+    })
+    saveOpenedTabsMock.mockClear()
+    saveOpenedTabsMock.mockResolvedValue({
+      accepted: true,
+      version: 3,
+      tabs: [],
+    })
+    return keptDraft
+  }
+
+  it("草稿和未确认的会话标签一起按原来的位置补回，不互相挤乱（#626）", async () => {
+    const keptDraft = await setupDraftBetweenUnsynced()
+    await renderHydrated()
+
+    expect(useTabStore.getState().rawTabs.map((t) => t.id)).toEqual([
+      "conv-1-codex-1",
+      keptDraft,
+      "conv-1-codex-9",
+      "conv-1-codex-2",
+    ])
+    expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-9")
+  })
+
+  it("首次读取失败时补回的草稿和未确认标签，重新读取成功后也留在原来的位置（#626）", async () => {
+    const keptDraft = await setupDraftBetweenUnsynced()
+    listOpenedTabsMock.mockRejectedValueOnce(new Error("backend down"))
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true), tabItem(1, 2)],
+      version: 2,
+    })
+    renderTabs()
+    await act(async () => {})
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    expect(useTabStore.getState().rawTabs.map((t) => t.id)).toEqual([
+      "conv-1-codex-1",
+      keptDraft,
+      "conv-1-codex-9",
+      "conv-1-codex-2",
+    ])
+  })
+
+  it("补回的预览标签替掉同组里快照带来的另一个预览，不留两个预览（#626）", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true)],
+      version: 1,
+    })
+    saveOpenedTabsMock.mockReturnValue(new Promise(() => {}))
+    const first = renderTabs()
+    await waitFor(() => expect(useTabStore.getState().tabsHydrated).toBe(true))
+    act(() => {
+      latestContext?.openTab(1, 9, "codex", false, "Preview")
+    })
+
+    first.unmount()
+    act(() => {
+      resetTabStore()
+    })
+    saveOpenedTabsMock.mockClear()
+    saveOpenedTabsMock.mockResolvedValue({
+      accepted: true,
+      version: 3,
+      tabs: [],
+    })
+    // 另一台设备在同一组开了预览标签 5，先存上了服务器。
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true), { ...tabItem(1, 5), is_pinned: false }],
+      version: 2,
+    })
+    await renderHydrated()
+
+    const previews = useTabStore
+      .getState()
+      .rawTabs.filter((t) => !t.isPinned)
+      .map((t) => t.id)
+    expect(previews).toEqual(["conv-1-codex-9"])
+    expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-9")
+  })
+
+  it("普通视图里补回的预览也替掉同组里别的项目的预览（#626）", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true)],
+      version: 1,
+    })
+    saveOpenedTabsMock.mockReturnValue(new Promise(() => {}))
+    const first = renderTabs()
+    await waitFor(() => expect(useTabStore.getState().tabsHydrated).toBe(true))
+    act(() => {
+      latestContext?.openTab(1, 9, "codex", false, "Preview")
+    })
+
+    first.unmount()
+    act(() => {
+      resetTabStore()
+    })
+    saveOpenedTabsMock.mockClear()
+    saveOpenedTabsMock.mockResolvedValue({
+      accepted: true,
+      version: 3,
+      tabs: [],
+    })
+    // 另一台设备在同一组开了另一个项目的预览标签，先存上了服务器。
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true), { ...tabItem(2, 5), is_pinned: false }],
+      version: 2,
+    })
+    await renderHydrated()
+
+    const previews = useTabStore
+      .getState()
+      .rawTabs.filter((t) => !t.isPinned)
+      .map((t) => t.id)
+    expect(previews).toEqual(["conv-1-codex-9"])
+  })
+
+  it("首次读取失败、服务器标签还不知道时，本机开关标签不往服务器存（#626）", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true)],
+      version: 1,
+    })
+    saveOpenedTabsMock.mockReturnValue(new Promise(() => {}))
+    const first = renderTabs()
+    await waitFor(() => expect(useTabStore.getState().tabsHydrated).toBe(true))
+    act(() => {
+      latestContext?.openNewConversationTab(1, "/repo")
+    })
+    const draftId = latestContext?.activeTabId ?? ""
+    act(() => {
+      latestContext?.bindConversationTab(draftId, 9, "codex", "Running", -1)
+    })
+
+    first.unmount()
+    act(() => {
+      resetTabStore()
+    })
+    saveOpenedTabsMock.mockClear()
+    saveOpenedTabsMock.mockResolvedValue({
+      accepted: true,
+      version: 1,
+      tabs: [],
+    })
+    // 刷新后读取一直失败，服务器上有哪些标签不知道。
+    listOpenedTabsMock.mockRejectedValue(new Error("backend down"))
+    renderTabs()
+    await act(async () => {})
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(screen.getByTestId("tabs")).toHaveTextContent("conv-1-codex-9")
+
+    // 用户接着打开一个会话：不能拿不完整的本机列表去盖服务器上的标签。
+    act(() => {
+      latestContext?.openTab(1, 3, "codex", true, "Other")
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 700))
+    })
+    expect(saveOpenedTabsMock).not.toHaveBeenCalled()
+  })
+
   it("cancels a pending local save when a remote snapshot supersedes it", async () => {
     listOpenedTabsMock.mockResolvedValue({
       items: [tabItem(1, 1, true), tabItem(1, 2)],

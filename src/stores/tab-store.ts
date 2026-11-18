@@ -455,6 +455,14 @@ let pendingRestoreActiveDraft: string | null = null
 // The canonical id of the conversation tab this device last focused (Cowork:
 // focus is per device, see `hydrate`).
 let pendingRestoreActiveConversation: string | null = null
+// 本机已绑定、但服务器还没确认过的会话标签（#626）：首条消息发出后马上刷新，
+// 防抖中的保存还没落地，服务器快照里没有它。只补这些，服务器确认过、后来在
+// 别处关掉的标签不在里面，不会被复活。
+let pendingRestoreUnsynced: PersistedUnsyncedConversation[] = []
+// 首次读取失败时补回的本机标签（未确认的会话标签和草稿）→ blob 里记下的位置
+// （#626）。那时还没有服务器快照，标签排不回原位；第一个快照落地时
+// applyRemoteSnapshot 按这里的位置把它们插回去，用完即清。
+let restoredLocalIndex = new Map<string, number>()
 let orphanDraftPruneRan = false
 // True once a tab snapshot has actually been read from the backend (hydration,
 // a refetch, or a remote change). Until then the open-tab set is UNKNOWN — a
@@ -464,6 +472,9 @@ let orphanDraftPruneRan = false
 // backend hiccup). Both the invariant prune and the blob write wait for it; the
 // session self-heals the moment any snapshot lands.
 let tabsSnapshotLoaded = false
+// 刷新后第一次读取服务器标签失败了、还没有快照落地（#626）。这段时间里本机
+// 列表不完整（只有草稿和补回的未确认标签），版本号也可能还是默认的 0，不能保存。
+let snapshotReadFailed = false
 const childSummaryInFlight = new Set<number>()
 const childSeedBuffer = new Map<
   number,
@@ -824,6 +835,123 @@ interface PersistedDraft {
   pendingWorktree?: ConversationWorktreeSpec
 }
 
+interface PersistedUnsyncedConversation {
+  folderId: number
+  agentType: AgentType
+  conversationId: number
+  index: number
+  // 预览标签（未固定）补回来也得是预览，不然以后打开别的预览不会替换它。
+  isPinned: boolean
+}
+
+function sanitizeUnsynced(value: unknown): PersistedUnsyncedConversation[] {
+  if (!Array.isArray(value)) return []
+  const out: PersistedUnsyncedConversation[] = []
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue
+    const e = entry as Record<string, unknown>
+    if (typeof e.folderId !== "number" || !Number.isFinite(e.folderId)) continue
+    if (
+      typeof e.conversationId !== "number" ||
+      !Number.isFinite(e.conversationId)
+    )
+      continue
+    if (typeof e.agentType !== "string" || e.agentType.length === 0) continue
+    const index =
+      typeof e.index === "number" && Number.isFinite(e.index) && e.index >= 0
+        ? Math.floor(e.index)
+        : out.length
+    out.push({
+      folderId: e.folderId,
+      agentType: e.agentType as AgentType,
+      conversationId: e.conversationId,
+      index,
+      isPinned: typeof e.isPinned === "boolean" ? e.isPinned : true,
+    })
+  }
+  return out
+}
+
+/** 刷新后补回的本机标签和它在 blob 里记下的位置（#626）。 */
+interface RestoredLocalEntry {
+  tab: TabItemInternal
+  index: number
+}
+
+/**
+ * 取出 blob 里记下的、服务器还没确认的会话标签（#626），只消费一次（列表随即
+ * 清空）。快照里已有的、服务器确认过的都跳过。
+ */
+function collectRestoredUnsynced(present: Set<string>): RestoredLocalEntry[] {
+  const pending = pendingRestoreUnsynced
+  pendingRestoreUnsynced = []
+  const out: RestoredLocalEntry[] = []
+  for (const entry of pending) {
+    const key = conversationSyncKey(entry.agentType, entry.conversationId)
+    if (serverKnownTabKeys.has(key)) continue
+    const id = makeConversationTabId(
+      entry.folderId,
+      entry.agentType,
+      entry.conversationId
+    )
+    if (present.has(id)) continue
+    present.add(id)
+    out.push({
+      index: entry.index,
+      tab: {
+        id,
+        kind: "conversation",
+        folderId: entry.folderId,
+        conversationId: entry.conversationId,
+        agentType: entry.agentType,
+        title: runtime.labels.loadingConversation,
+        isPinned: entry.isPinned,
+      },
+    })
+  }
+  return out
+}
+
+/**
+ * 补回来的预览标签（未固定）占了它那一组的预览位置：同组、同一视图范围里别的
+ * 预览标签（服务器快照带来的、另一台设备开的）去掉，和本机当时打开它时替换掉
+ * 旧预览一样，不然同一组会留下两个预览（#626）。
+ */
+function dropRivalPreviews(
+  tabs: TabItemInternal[],
+  restored: TabItemInternal[]
+): TabItemInternal[] {
+  const st = useTabStore.getState()
+  // 和 openTab 替换预览的范围一致：普通视图里同组的预览不分项目，互相替换；
+  // 标签跟随文件夹时只在同一个项目里替换。
+  const followFolder = useFolderTabsStore.getState().enabled
+  const groupKey = (tab: TabItemInternal) => {
+    const group = groupOfTab(st.groupOf, st.groupLayout, tab.id)
+    return followFolder ? `${group}|${folderScope(tab.folderId)}` : group
+  }
+  const restoredIds = new Set(restored.map((tab) => tab.id))
+  const claimed = new Set(
+    restored.filter((tab) => !tab.isPinned).map((tab) => groupKey(tab))
+  )
+  if (claimed.size === 0) return tabs
+  return tabs.filter(
+    (tab) =>
+      tab.isPinned || restoredIds.has(tab.id) || !claimed.has(groupKey(tab))
+  )
+}
+
+/** 按 blob 里记下的位置从小到大插回，几种本机标签一起排，互相不挤乱。 */
+function spliceAtRecordedIndex(
+  tabs: TabItemInternal[],
+  entries: RestoredLocalEntry[]
+): TabItemInternal[] {
+  const out = [...tabs]
+  for (const { tab, index } of [...entries].sort((a, b) => a.index - b.index)) {
+    out.splice(Math.min(index, out.length), 0, tab)
+  }
+  return out
+}
+
 /** Shape-check a persisted `pendingWorktree`; anything else is dropped. */
 function sanitizeWorktreeSpec(
   value: unknown
@@ -892,6 +1020,8 @@ function readPersistedGroupState(): {
   pendingRestoreDrafts = []
   pendingRestoreActiveDraft = null
   pendingRestoreActiveConversation = null
+  pendingRestoreUnsynced = []
+  restoredLocalIndex = new Map()
   const fallback = () => ({
     groupLayout: singleGroupLayout() as LayoutNode,
     groupOf: {} as Record<string, string>,
@@ -914,6 +1044,7 @@ function readPersistedGroupState(): {
           typeof parsed.activeConversation === "string"
             ? parsed.activeConversation
             : null
+        pendingRestoreUnsynced = sanitizeUnsynced(parsed.unsyncedConversations)
         return {
           groupLayout: parsed.layout,
           groupOf: sanitizeStringRecord(parsed.assignments),
@@ -967,10 +1098,21 @@ function persistGroupState() {
   }
   const assignments: Record<string, string> = {}
   const drafts: PersistedDraft[] = []
+  const unsynced: PersistedUnsyncedConversation[] = []
   st.rawTabs.forEach((tab, index) => {
     const group = groupOfTab(normal.groupOf, normal.layout, tab.id)
     if (tab.conversationId != null) {
       assignments[canonicalId(tab)] = group
+      const key = tabSyncKey(tab)
+      if (key != null && !serverKnownTabKeys.has(key)) {
+        unsynced.push({
+          folderId: tab.folderId,
+          agentType: tab.agentType,
+          conversationId: tab.conversationId,
+          index,
+          isPinned: tab.isPinned,
+        })
+      }
       return
     }
     drafts.push({
@@ -1028,6 +1170,7 @@ function persistGroupState() {
       activeTab && activeTab.conversationId != null
         ? canonicalId(activeTab)
         : null,
+    ...(unsynced.length > 0 ? { unsyncedConversations: unsynced } : {}),
     ...(Object.keys(folderViews).length > 0 ? { views: folderViews } : {}),
   })
   if (blob === lastGroupBlob) return
@@ -1045,22 +1188,28 @@ function persistGroupState() {
  * once (the pending list is cleared), so a later refetch/reconnect never
  * resurrects a draft the user closed.
  *
+ * 服务器还没确认的会话标签（#626）也在这里一起补回；返回它们的 id（调用方据此
+ * 定保存基线）和每个补回标签记下的位置（首次读取失败时留给第一个快照用）。
+ *
  * The agent is re-resolved exactly like any new draft unless the blob carried an
  * explicit (non-provisional) choice; the title comes from the current locale's
  * label rather than the stale persisted one.
  */
-function mergeRestoredDrafts(restored: TabItemInternal[]): {
+function mergeRestoredLocalTabs(restored: TabItemInternal[]): {
   tabs: TabItemInternal[]
   groupOf: Record<string, string>
+  unsyncedIds: Set<string>
+  recordedIndex: Map<string, number>
 } {
   const pending = pendingRestoreDrafts
   pendingRestoreDrafts = []
-  if (pending.length === 0) return { tabs: restored, groupOf: {} }
-
-  const tabs = [...restored]
   const groupOf: Record<string, string> = {}
   const seen = new Set(restored.map((tab) => tab.id))
-  for (const draft of [...pending].sort((a, b) => a.index - b.index)) {
+  // 服务器还没确认的会话标签（#626）和草稿一起按 blob 位置插回：分两趟各插
+  // 各的，会话 A、草稿、新会话、会话 B 会被排成 A、草稿、B、新会话。
+  const unsynced = collectRestoredUnsynced(seen)
+  const entries: RestoredLocalEntry[] = [...unsynced]
+  for (const draft of pending) {
     if (seen.has(draft.id)) continue
     seen.add(draft.id)
     const resolved = draft.agentType
@@ -1081,10 +1230,28 @@ function mergeRestoredDrafts(restored: TabItemInternal[]): {
         ? { pendingWorktree: draft.pendingWorktree }
         : {}),
     }
-    tabs.splice(Math.min(draft.index, tabs.length), 0, tab)
+    entries.push({ tab, index: draft.index })
     groupOf[draft.id] = draft.group
   }
-  return { tabs, groupOf }
+  if (entries.length === 0) {
+    return {
+      tabs: restored,
+      groupOf,
+      unsyncedIds: new Set(),
+      recordedIndex: new Map(),
+    }
+  }
+  const unsyncedTabs = unsynced.map((entry) => entry.tab)
+  const tabs = spliceAtRecordedIndex(
+    dropRivalPreviews(restored, unsyncedTabs),
+    entries
+  )
+  return {
+    tabs,
+    groupOf,
+    unsyncedIds: new Set(unsyncedTabs.map((tab) => tab.id)),
+    recordedIndex: new Map(entries.map((entry) => [entry.tab.id, entry.index])),
+  }
 }
 
 /** Trailing-debounced persist for divider drags (per-frame ratio writes). */
@@ -2793,7 +2960,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         tabsSnapshotLoaded = true
         version = snap.version
         serverKnownTabKeys = snapshotSyncKeys(snap.items)
-        const restored: TabItemInternal[] = snap.items.map((it) => ({
+        const snapshotTabs: TabItemInternal[] = snap.items.map((it) => ({
           id:
             it.conversation_id != null
               ? makeConversationTabId(
@@ -2825,8 +2992,13 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         // Splice the device-local drafts back in (same frame as the conversation
         // tabs, so the first invariant pass sees complete groups and can't
         // collapse a draft-only one).
-        const { tabs: withDrafts, groupOf: draftGroups } =
-          mergeRestoredDrafts(restored)
+        // 服务器还没确认的会话标签（#626）一起按原来的位置插回去；分组沿用
+        // blob 的 assignments（按规范 id 记的）。
+        const {
+          tabs: withDrafts,
+          groupOf: draftGroups,
+          unsyncedIds: restoredUnsyncedIds,
+        } = mergeRestoredLocalTabs(snapshotTabs)
         // Cowork: this device's own last focus wins over the server's
         // `is_active` (which is whatever any client focused last), so opening
         // the app here never lands on what another computer was looking at.
@@ -2852,26 +3024,41 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         // so restoring focus onto a draft simply means no tab carries
         // `is_active`. Seeding that as the baseline keeps the restore free of a
         // CAS save (and of the focus broadcast that would follow it).
+        // 补回来的标签不算进基线，让紧接着的保存把它们存上服务器。
         lastSavedPayload = JSON.stringify(
-          buildPersistItems(withDrafts, restoredActive)
+          buildPersistItems(
+            withDrafts.filter((tab) => !restoredUnsyncedIds.has(tab.id)),
+            restoredActive
+          )
         )
       } catch (err) {
         console.error("[TabStore] listOpenedTabs failed:", err)
         if (!cancelled) {
+          snapshotReadFailed = true
           // The snapshot is the CONVERSATION half only; the drafts are
           // device-local and still valid, so restore them rather than starting
           // blank. Everything that could destroy on-disk state — the invariant
           // prune, the blob write, the composer-key sweep — stays parked behind
           // `tabsSnapshotLoaded` until a snapshot actually lands (the refetch
           // that follows the subscription usually rescues it seconds later).
-          const { tabs: draftsOnly, groupOf: draftGroups } =
-            mergeRestoredDrafts(get().rawTabs)
+          // 服务器还没确认的会话标签（#626）也是本机才知道的，一起补回来：
+          // 留到之后的快照再补就没人读它了，blob 也会被改写掉。它们算进下面的
+          // 基线，快照落地前不往服务器推；快照到了以后 applyRemoteSnapshot
+          // 把它们当作服务器没见过的本机新增保留下来、再推上去。
+          const {
+            tabs: draftsOnly,
+            groupOf: draftGroups,
+            recordedIndex,
+          } = mergeRestoredLocalTabs(get().rawTabs)
+          restoredLocalIndex = recordedIndex
           if (draftsOnly.length > 0) {
             const focus =
-              pendingRestoreActiveDraft != null &&
-              draftsOnly.some((tab) => tab.id === pendingRestoreActiveDraft)
-                ? pendingRestoreActiveDraft
-                : draftsOnly[0].id
+              [
+                pendingRestoreActiveDraft,
+                pendingRestoreActiveConversation,
+              ].find(
+                (id) => id != null && draftsOnly.some((tab) => tab.id === id)
+              ) ?? draftsOnly[0].id
             set({
               rawTabs: draftsOnly,
               activeTabId: focus,
@@ -2882,6 +3069,8 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
           // Drafts contribute nothing to the payload, so this baseline is the
           // empty list — which stops the save effect from pushing an empty tab
           // set at the server just because the read failed.
+          // 补回的未确认会话标签也在基线里，读取失败时同样不推（版本号未知，
+          // 推上去可能盖掉服务器上的标签）。
           lastSavedPayload = JSON.stringify(
             buildPersistItems(get().rawTabs, get().activeTabId)
           )
@@ -2928,6 +3117,16 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   runSaveEffect: () => {
     const st = get()
     if (!st.tabsHydrated) return
+    // 首次读取失败、服务器的标签还不知道时不保存（#626）：本机列表不完整，
+    // 版本号也可能还是默认的 0，推上去可能被接受、盖掉服务器上原有的标签。
+    // 快照落地后 applyRemoteSnapshot 会保留本机新增的，再由下一次保存推上去。
+    if (snapshotReadFailed) {
+      if (saveTimer) {
+        clearTimeout(saveTimer)
+        saveTimer = null
+      }
+      return
+    }
 
     // A remote snapshot just mutated rawTabs/focus — consume the one-shot guard
     // so we don't echo it back (which would re-broadcast and ping-pong).
@@ -2974,6 +3173,8 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
           // recorded the fresher truth and must not be walked back.
           if (res.version === version) {
             serverKnownTabKeys = snapshotSyncKeys(res.tabs)
+            // 服务器确认了，把它们从 blob 的 unsyncedConversations 里去掉。
+            persistGroupState()
           }
           const current = JSON.stringify(
             buildPersistItems(get().rawTabs, get().activeTabId)
@@ -3141,6 +3342,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       if (change.version > version) {
         version = change.version
         serverKnownTabKeys = snapshotSyncKeys(change.tabs)
+        persistGroupState()
       }
       return
     }
@@ -3634,6 +3836,7 @@ export function resetTabStore() {
   recoveryRan = false
   orphanDraftPruneRan = false
   tabsSnapshotLoaded = false
+  snapshotReadFailed = false
   conversationTabRecency.clear()
   runtime = defaultRuntime()
   lastConversations = useAppWorkspaceStore.getState().conversations
@@ -3660,6 +3863,7 @@ function applyRemoteSnapshot(change: TabsChanged) {
   // An authoritative tab set just landed: if hydration had failed, this is what
   // un-parks the invariant prune and the blob write (see `tabsSnapshotLoaded`).
   tabsSnapshotLoaded = true
+  snapshotReadFailed = false
   // A newer remote truth supersedes any debounced local save still waiting.
   if (saveTimer) {
     clearTimeout(saveTimer)
@@ -3754,15 +3958,47 @@ function applyRemoteSnapshot(change: TabsChanged) {
   // Keep every device-local draft (one per split group) that's a folderless
   // chat draft or whose real folder still exists. Never yank the user off an
   // in-progress draft.
-  const nextTabs = [...remoteTabs, ...unsyncedLocal]
-  for (const localDraft of prev.rawTabs) {
-    if (localDraft.conversationId != null) continue
-    if (
-      localDraft.isChat === true ||
-      folders.some((f) => f.id === localDraft.folderId)
-    ) {
-      nextTabs.push(localDraft)
+  // 本机新增的标签插回它原来的位置，不追加到最后（#626）：首次读取失败时补回
+  // 的（未确认的会话标签和草稿）一起按 blob 里记下的位置插回，补回的预览标签
+  // 替掉同组里快照带来的预览；其余本机新增的会话标签紧跟在本机顺序里排它前面、
+  // 且仍保留的那个标签后面。
+  const restoredIndex = restoredLocalIndex
+  restoredLocalIndex = new Map()
+  const keptDrafts = prev.rawTabs.filter(
+    (tb) =>
+      tb.conversationId == null &&
+      (tb.isChat === true || folders.some((f) => f.id === tb.folderId))
+  )
+  const recordedEntries: RestoredLocalEntry[] = []
+  for (const tab of [...unsyncedLocal, ...keptDrafts]) {
+    const index = restoredIndex.get(tab.id)
+    if (index != null) recordedEntries.push({ tab, index })
+  }
+  const nextTabs = spliceAtRecordedIndex(
+    dropRivalPreviews(
+      remoteTabs,
+      recordedEntries
+        .map((entry) => entry.tab)
+        .filter((tab) => tab.conversationId != null)
+    ),
+    recordedEntries
+  )
+  for (const tab of unsyncedLocal) {
+    if (restoredIndex.has(tab.id)) continue
+    const prevIndex = prev.rawTabs.indexOf(tab)
+    let insertAt = 0
+    for (let i = prevIndex - 1; i >= 0; i--) {
+      const at = nextTabs.findIndex((tb) => tb.id === prev.rawTabs[i].id)
+      if (at !== -1) {
+        insertAt = at + 1
+        break
+      }
     }
+    nextTabs.splice(insertAt, 0, tab)
+  }
+  for (const localDraft of keptDrafts) {
+    if (restoredIndex.has(localDraft.id)) continue
+    nextTabs.push(localDraft)
   }
 
   // Never leave the workspace blank: synthesize a draft when empty.

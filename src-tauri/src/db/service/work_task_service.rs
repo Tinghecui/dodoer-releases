@@ -524,7 +524,7 @@ pub async fn create(
         ));
     }
     let config_str = serde_json::to_string(&draft.config)
-        .map_err(|e| DbError::Validation(format!("config not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("config not serializable: {e}")))?;
     let now = Utc::now();
     let max_order = work_task::Entity::find()
         .filter(work_task::Column::FolderId.eq(draft.folder_id))
@@ -610,7 +610,7 @@ pub async fn create_from_forge_by(
         ));
     }
     let config_str = serde_json::to_string(&draft.config)
-        .map_err(|e| DbError::Validation(format!("config not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("config not serializable: {e}")))?;
     let now = Utc::now();
     let max_order = work_task::Entity::find()
         .filter(work_task::Column::FolderId.eq(draft.folder_id))
@@ -865,7 +865,7 @@ async fn insert_todo_row<C: ConnectionTrait>(
     let source_meta = source
         .map(|s| {
             serde_json::to_string(&s.meta)
-                .map_err(|e| DbError::Validation(format!("source meta not serializable: {e}")))
+                .map_err(|e| DbError::Internal(format!("source meta not serializable: {e}")))
         })
         .transpose()?;
     let active = work_task::ActiveModel {
@@ -983,7 +983,7 @@ pub async fn update(
         }
     }
     let config_str = serde_json::to_string(&config)
-        .map_err(|e| DbError::Validation(format!("config not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("config not serializable: {e}")))?;
     let mut active = row.into_active_model();
     active.folder_id = Set(draft.folder_id);
     active.title = Set(draft.title.trim().to_string());
@@ -1946,13 +1946,13 @@ pub async fn set_writeback(
     // Edited as a JSON object rather than through `ForgeSourceMeta`, so keys a
     // newer build wrote survive the round trip.
     let mut meta: serde_json::Value = serde_json::from_str(&old_meta)
-        .map_err(|e| DbError::Validation(format!("unreadable source snapshot: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("unreadable source snapshot: {e}")))?;
     let Some(object) = meta.as_object_mut() else {
-        return Err(DbError::Validation("unreadable source snapshot".to_string()));
+        return Err(DbError::Internal("unreadable source snapshot".to_string()));
     };
     object.insert("writeback".to_string(), serde_json::Value::Bool(writeback));
     let new_meta = serde_json::to_string(&meta)
-        .map_err(|e| DbError::Validation(format!("source snapshot not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("source snapshot not serializable: {e}")))?;
     let res = work_task::Entity::update_many()
         .col_expr(work_task::Column::SourceMeta, Expr::value(Some(new_meta)))
         .col_expr(
@@ -2144,7 +2144,7 @@ pub async fn begin_merge(
     expect_pending_merge: Option<&str>,
 ) -> Result<Option<i32>, DbError> {
     let state_json = serde_json::to_string(state)
-        .map_err(|e| DbError::Validation(format!("merge state not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("merge state not serializable: {e}")))?;
     let now = Utc::now();
     let txn = conn.begin().await?;
     let mut update = work_task::Entity::update_many()
@@ -2269,7 +2269,7 @@ pub async fn queue_merge(
     expect_pending_merge: Option<&str>,
 ) -> Result<bool, DbError> {
     let intent_json = serde_json::to_string(intent)
-        .map_err(|e| DbError::Validation(format!("merge intent not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("merge intent not serializable: {e}")))?;
     let now = Utc::now();
     let txn = conn.begin().await?;
     let mut update = work_task::Entity::update_many()
@@ -2396,7 +2396,7 @@ pub async fn begin_delivery_recording(
     source_meta: Option<(Option<&str>, &str)>,
 ) -> Result<Option<i32>, DbError> {
     let state_json = serde_json::to_string(state)
-        .map_err(|e| DbError::Validation(format!("merge state not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("merge state not serializable: {e}")))?;
     let now = Utc::now();
     let txn = conn.begin().await?;
     let mut update = work_task::Entity::update_many();
@@ -2840,7 +2840,7 @@ pub async fn set_preflight(
     preflight: &crate::models::WorkTaskPreflight,
 ) -> Result<bool, DbError> {
     let json = serde_json::to_string(preflight)
-        .map_err(|e| DbError::Validation(format!("preflight not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("preflight not serializable: {e}")))?;
     let now = Utc::now();
     let txn = conn.begin().await?;
     let res = work_task::Entity::update_many()
@@ -3310,7 +3310,7 @@ pub async fn settings_set(
     settings: &WorkTaskFolderSettings,
 ) -> Result<(), DbError> {
     let config = serde_json::to_string(settings)
-        .map_err(|e| DbError::Validation(format!("settings not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("settings not serializable: {e}")))?;
     let now = Utc::now();
     let existing = work_task_settings::Entity::find()
         .filter(work_task_settings::Column::FolderId.eq(folder_id))
@@ -3378,7 +3378,7 @@ pub async fn template_save(
         return Err(DbError::Validation("template config must be an object".into()));
     }
     let config = serde_json::to_string(&draft.config)
-        .map_err(|e| DbError::Validation(format!("template config not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("template config not serializable: {e}")))?;
     let now = Utc::now();
     let existing = work_task_template::Entity::find()
         .filter(work_task_template::Column::Name.eq(name))

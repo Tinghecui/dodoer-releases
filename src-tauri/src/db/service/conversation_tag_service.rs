@@ -536,7 +536,7 @@ pub async fn set_branch_tag(
         color: normalize_tag_color(color)?,
     };
     let encoded = serde_json::to_string(&setting)
-        .map_err(|e| DbError::Validation(format!("branch tag not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("branch tag not serializable: {e}")))?;
     app_metadata_service::upsert_value(conn, BRANCH_TAG_KEY, &encoded).await?;
     Ok(setting)
 }

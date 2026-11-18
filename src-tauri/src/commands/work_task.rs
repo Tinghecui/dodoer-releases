@@ -21,7 +21,7 @@ use crate::web::event_bridge::{
 
 fn engine() -> Result<std::sync::Arc<crate::work_task::TaskEngine>, DbError> {
     crate::work_task::engine()
-        .ok_or_else(|| DbError::Validation("task engine not running".to_string()))
+        .ok_or_else(|| DbError::Internal("task engine not running".to_string()))
 }
 
 /// Best-effort pump nudge so an auto_process folder reacts to creates, edits,
@@ -461,7 +461,7 @@ pub async fn work_task_reorder_core(
 }
 
 pub async fn work_task_start_core(id: i32) -> Result<(), DbError> {
-    engine()?.start(id).await.map_err(DbError::Validation)
+    engine()?.start(id).await.map_err(DbError::Internal)
 }
 
 /// `folder_id: None` = the global sweep — every folder holding todos.
@@ -469,7 +469,7 @@ pub async fn work_task_start_all_core(folder_id: Option<i32>) -> Result<u32, DbE
     engine()?
         .start_all(folder_id)
         .await
-        .map_err(DbError::Validation)
+        .map_err(DbError::Internal)
 }
 
 /// failed → queued, optionally with a note explaining what to do differently.
@@ -484,7 +484,7 @@ pub async fn work_task_retry_core(
     engine()?
         .retry(id, note, blocks, allow_duplicate_source)
         .await
-        .map_err(DbError::Validation)
+        .map_err(DbError::Internal)
 }
 
 /// canceled → todo. Pure DB (no engine needed) — the user starts it again
@@ -572,7 +572,7 @@ pub async fn work_task_return_core(
     engine()?
         .return_task(id, intent, feedback, blocks)
         .await
-        .map_err(DbError::Validation)
+        .map_err(DbError::Internal)
 }
 
 /// Stop a task. `reason` is the user's optional note about WHY — it lands on
@@ -608,7 +608,7 @@ pub async fn work_task_cancel_core(
     discard_uncommitted: bool,
 ) -> Result<(), DbError> {
     let engine = engine()?;
-    engine.cancel(id, reason).await.map_err(DbError::Validation)?;
+    engine.cancel(id, reason).await.map_err(DbError::Internal)?;
     if delete_worktree {
         if let Err(blocked) = engine.cleanup_task(id, discard_uncommitted).await {
             tracing::warn!(
@@ -639,7 +639,7 @@ pub async fn work_task_merge_core(
         .merge_task(id, message, delete_worktree, instructions, false)
         .await
         .map(|dispatch| dispatch.is_queued())
-        .map_err(DbError::Validation)
+        .map_err(DbError::Internal)
 }
 
 /// Withdraw a merge that is waiting in the folder's queue (the task stays in
@@ -705,7 +705,7 @@ pub async fn work_task_deliver_pr_core(
             closes,
         )
         .await
-        .map_err(DbError::Validation)
+        .map_err(DbError::Internal)
 }
 
 /// Finish a reviewed task that has nothing to land (review → done, no merge),
@@ -715,7 +715,7 @@ pub async fn work_task_complete_core(id: i32, delete_worktree: bool) -> Result<(
     engine()?
         .complete_task(id, delete_worktree)
         .await
-        .map_err(DbError::Validation)
+        .map_err(DbError::Internal)
 }
 
 /// The user's answer about the thread comment of a forge-sourced task in

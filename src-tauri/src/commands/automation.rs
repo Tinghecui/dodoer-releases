@@ -27,6 +27,10 @@ pub fn automation_error(e: DbError) -> AppCommandError {
     match e {
         DbError::NotFound(msg) => AppCommandError::not_found(msg),
         DbError::Validation(msg) => AppCommandError::invalid_input(msg),
+        // 服务器自己的失败（引擎没起来、引擎报上来的错、配置序列化失败）照旧
+        // 500；文字和它们还是 `Validation` 时一样，只放 `message`、不带
+        // `validation error: ` 前缀的 `detail`（界面先取 `detail`）。
+        DbError::Internal(msg) => AppCommandError::database_error(msg),
         other => AppCommandError::from(other),
     }
 }
@@ -216,18 +220,18 @@ pub async fn automation_compute_next_run(
 /// run id. Routes through the process-global engine (spawned in both modes).
 pub async fn automation_run_now_core(automation_id: i32) -> Result<i32, DbError> {
     let engine = crate::automation::engine()
-        .ok_or_else(|| DbError::Validation("automation engine not running".to_string()))?;
+        .ok_or_else(|| DbError::Internal("automation engine not running".to_string()))?;
     engine
         .run_automation(automation_id, "manual", None)
         .await
-        .map_err(DbError::Validation)
+        .map_err(DbError::Internal)
 }
 
 /// Cancel an in-flight (or clear a wedged) run.
 pub async fn automation_cancel_run_core(run_id: i32) -> Result<(), DbError> {
     let engine = crate::automation::engine()
-        .ok_or_else(|| DbError::Validation("automation engine not running".to_string()))?;
-    engine.cancel_run(run_id).await.map_err(DbError::Validation)
+        .ok_or_else(|| DbError::Internal("automation engine not running".to_string()))?;
+    engine.cancel_run(run_id).await.map_err(DbError::Internal)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -262,6 +266,16 @@ mod tests {
         )));
         assert!(matches!(err.code, AppErrorCode::InvalidInput));
         assert_eq!(err.i18n_key.as_deref(), Some("cronErrorNeverFires"));
+    }
+
+    #[test]
+    fn internal_failure_stays_500_with_the_same_text() {
+        // 引擎没起来、引擎报上来的错（如上一次还在跑）是服务器这边的，照旧
+        // 500；界面看到的文字和改成 Internal 之前一样，不带 `validation error: `。
+        let err = automation_error(DbError::Internal("previous run still active".into()));
+        assert_eq!(err.code, AppErrorCode::DatabaseError);
+        assert_eq!(err.message, "previous run still active");
+        assert_eq!(err.detail, None);
     }
 
     #[test]

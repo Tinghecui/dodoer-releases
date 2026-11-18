@@ -200,14 +200,30 @@ impl AppCommandError {
         match err {
             // The user typed it: a 400 the editor can explain, not a 500.
             DbError::InvalidCron(problem) => Self::invalid_cron(problem),
-            // 和 `From<DbError>` 一样：行不在是 404，`detail` 照旧是 Display。
-            // Validation / Conflict 仍落到 `database_error`（见 `From` 的注释）。
+            // 行不在是 404，`detail` 照旧是 Display。
             DbError::NotFound(msg) => {
                 let detail = format!("not found: {msg}");
                 Self::not_found(msg).with_detail(detail)
             }
-            other => Self::new(AppErrorCode::DatabaseError, "Database operation failed")
-                .with_detail(other.to_string()),
+            // 调用方给的内容不对是 400、和别的行冲突是 409（2026-11-17）。`detail`
+            // 照旧是 Display：界面先取 `detail`，前端也从里面认标记
+            // （`task-restart-guard` 的 `duplicate_active_source:`）。
+            DbError::Validation(msg) => {
+                let detail = format!("validation error: {msg}");
+                Self::invalid_input(msg).with_detail(detail)
+            }
+            DbError::Conflict(msg) => {
+                let detail = format!("conflict: {msg}");
+                Self::already_exists(msg).with_detail(detail)
+            }
+            // 服务器自己的失败。变体写全、不用 `_`：以后加变体编译器会逼着选。
+            err @ (DbError::Internal(_)
+            | DbError::Migration(_)
+            | DbError::Database(_)
+            | DbError::Io(_)) => {
+                Self::new(AppErrorCode::DatabaseError, "Database operation failed")
+                    .with_detail(err.to_string())
+            }
         }
     }
 
@@ -312,18 +328,10 @@ impl AppCommandError {
 
 impl From<DbError> for AppCommandError {
     fn from(value: DbError) -> Self {
-        // A missing (or soft-deleted) row is the caller asking for something
-        // that is not there, not a database failure: surface it as `not_found`
-        // (HTTP 404) so a client can tell "gone" from "broken". `detail` keeps
-        // the exact text `db()` would have put there, for anything that reads
-        // it.
-        if let DbError::NotFound(msg) = &value {
-            return Self::not_found(msg.clone()).with_detail(value.to_string());
-        }
-        // Validation / Conflict stay `database_error` on purpose: the frontend
-        // reads their markers out of `detail` under that code (task restart
-        // guard). A bad cron is `DbError::InvalidCron`, which `db()` turns into
-        // a localizable `invalid_input`.
+        // 和 `db()` 完全一样：行不在是 404，调用方给的内容不对是 400，和别的行
+        // 冲突是 409，坏的 cron 是带 i18n 的 400；服务器自己的（`Internal`、
+        // `Migration`、`Database`、`Io`）是 `database_error`。`detail` 一律是
+        // `DbError` 的 Display，前端从里面读标记（task restart guard）。
         Self::db(value)
     }
 }
@@ -373,18 +381,10 @@ mod tests {
 
     #[test]
     fn other_db_errors_stay_database_error() {
-        let err = AppCommandError::from(DbError::Validation("title is required".into()));
-        assert!(matches!(err.code, AppErrorCode::DatabaseError), "{err:?}");
-        assert_eq!(err.message, "Database operation failed");
-        assert_eq!(
-            err.detail.as_deref(),
-            Some("validation error: title is required")
-        );
         let err = AppCommandError::from(DbError::Migration("boom".into()));
         assert!(matches!(err.code, AppErrorCode::DatabaseError), "{err:?}");
-        let err = AppCommandError::from(DbError::Conflict("already bound".into()));
-        assert!(matches!(err.code, AppErrorCode::DatabaseError), "{err:?}");
-        assert_eq!(err.detail.as_deref(), Some("conflict: already bound"));
+        assert_eq!(err.message, "Database operation failed");
+        assert_eq!(err.detail.as_deref(), Some("migration error: boom"));
     }
 
     /// `db()` 和 `From<DbError>` 一样认「找不到」：行不在是调用方的事，不是数据库坏了。
@@ -403,21 +403,69 @@ mod tests {
         assert_eq!(from.detail, err.detail);
     }
 
-    /// `Validation` / `Conflict` 经 `db()` 仍是 `database_error`：前端在这个 code
-    /// 下从 `detail` 里读标记（见 2026-11-13 的设计日志）。
+    /// 第 5 行（2026-11-17）：`Validation` 是调用方的错（400），`Conflict` 是重复
+    /// （409），`detail` 照旧是 Display；服务器自己的 `Internal` 仍是 `database_error`。
     #[test]
-    fn db_helper_keeps_validation_and_conflict_as_database_error() {
-        let err = AppCommandError::db(DbError::Validation("duplicate_active_source".into()));
+    fn db_helper_maps_validation_and_conflict_to_client_errors() {
+        let err = AppCommandError::db(DbError::Validation("title is required".into()));
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+        assert_eq!(err.message, "title is required");
+        assert_eq!(
+            err.detail.as_deref(),
+            Some("validation error: title is required")
+        );
+        assert_eq!(err.i18n_key, None);
+
+        let err = AppCommandError::db(DbError::Conflict("already bound".into()));
+        assert_eq!(err.code, AppErrorCode::AlreadyExists, "{err:?}");
+        assert_eq!(err.message, "already bound");
+        assert!(
+            err.detail
+                .as_deref()
+                .is_some_and(|d| d.starts_with("conflict: ")),
+            "{err:?}"
+        );
+
+        let err = AppCommandError::db(DbError::Internal("config not serializable: x".into()));
         assert_eq!(err.code, AppErrorCode::DatabaseError, "{err:?}");
         assert_eq!(err.message, "Database operation failed");
         assert_eq!(
             err.detail.as_deref(),
-            Some("validation error: duplicate_active_source")
+            Some("validation error: config not serializable: x")
         );
-        let err = AppCommandError::db(DbError::Conflict("taken".into()));
-        assert_eq!(err.code, AppErrorCode::DatabaseError, "{err:?}");
+
         let err = AppCommandError::db(DbError::InvalidCron(CronProblem::FieldCount(2)));
         assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+    }
+
+    /// `From<DbError>` 和 `db()` 对这三种给出同样的 code、message、detail。
+    #[test]
+    fn from_db_error_matches_db_helper() {
+        let make: [fn() -> DbError; 3] = [
+            || DbError::Validation("title is required".into()),
+            || DbError::Conflict("already bound".into()),
+            || DbError::Internal("config not serializable: x".into()),
+        ];
+        for make in make {
+            let via_db = AppCommandError::db(make());
+            let via_from = AppCommandError::from(make());
+            assert_eq!(via_from.code, via_db.code);
+            assert_eq!(via_from.message, via_db.message);
+            assert_eq!(via_from.detail, via_db.detail);
+        }
+    }
+
+    /// 前端 `task-restart-guard.ts` 从 `detail` 里认 `duplicate_active_source:` 这一段，
+    /// 改成 `invalid_input` 以后这段文字还得原样在。
+    #[test]
+    fn duplicate_active_source_marker_survives_in_detail() {
+        let marker = "duplicate_active_source: task #7 (Fix login) is already active";
+        let err = AppCommandError::from(DbError::Validation(marker.into()));
+        assert_eq!(err.code, AppErrorCode::InvalidInput, "{err:?}");
+        assert!(
+            err.detail.as_deref().is_some_and(|d| d.contains(marker)),
+            "{err:?}"
+        );
     }
 
     /// 路径中间有一段是文件（`ENOTDIR`）和「不存在」是一回事，不是服务器出错。

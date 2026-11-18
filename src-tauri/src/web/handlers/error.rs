@@ -97,6 +97,25 @@ mod tests {
         status_for_app_error_code(err.into().code)
     }
 
+    /// 第 5 行（2026-11-17）：数据库的「内容不合规」是 400、「和别的行冲突」是 409，
+    /// 服务器自己的 `Internal` 照旧 500。
+    #[test]
+    fn db_validation_and_conflict_are_client_errors() {
+        use crate::db::error::DbError;
+        assert_eq!(
+            status_of(DbError::Validation("title is required".into())),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            status_of(DbError::Conflict("already bound".into())),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status_of(DbError::Internal("task engine not running".into())),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
     /// ACP 的错误按种类回状态码：调用方的错是 4xx，agent 或服务器自己的错才是 500。
     #[test]
     fn acp_errors_get_their_status() {

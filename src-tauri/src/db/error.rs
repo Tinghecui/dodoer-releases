@@ -23,6 +23,15 @@ pub enum DbError {
     /// treat it as a benign no-op.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// 服务器自己造成的、或者分不清是不是调用方造成的失败：数据序列化失败、
+    /// 任务引擎或自动化引擎没起来、存着的快照读不出，以及两个引擎用一句话
+    /// 报上来的失败（里面调用方的错和真故障分不开）。和 `Validation` 分开只为
+    /// 状态码：`Validation` 是调用方的错（400），它照旧是 `database_error`（500），
+    /// 好让真故障还报给 Sentry。Display 和 `Validation` 一样（像 `InvalidCron`），
+    /// 界面、CLI、MCP 工具上看到的文字一个字不变。吸收 upstream 时这些行冲突，
+    /// 保留 `Internal`（2026-11-17，见设计日志 db-validation-conflict-4xx）。
+    #[error("validation error: {0}")]
+    Internal(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

@@ -326,7 +326,7 @@ pub async fn create(
     let now = Utc::now();
     let next_run_at = next_run_for(&draft, now)?;
     let config_str = serde_json::to_string(&draft.config)
-        .map_err(|e| DbError::Validation(format!("config not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("config not serializable: {e}")))?;
 
     let active = automation::ActiveModel {
         id: NotSet,
@@ -363,7 +363,7 @@ pub async fn update(
     let now = Utc::now();
     let next_run_at = next_run_for(&draft, now)?;
     let config_str = serde_json::to_string(&draft.config)
-        .map_err(|e| DbError::Validation(format!("config not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("config not serializable: {e}")))?;
 
     let mut active = row.into_active_model();
     active.name = Set(draft.name.trim().to_string());

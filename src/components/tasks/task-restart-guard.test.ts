@@ -60,6 +60,20 @@ describe("duplicateActiveSource", () => {
     ).toEqual({ id: 7, title: "Fix login" })
   })
 
+  it("reads the marker once the server answers invalid_input (HTTP 400)", () => {
+    // 2026-11-17 起 DbError::Validation 回 invalid_input：message 是那句话本身，
+    // detail 照旧是 DbError 的 Display。判断不看 code，只看文字。
+    expect(
+      duplicateActiveSource({
+        code: "invalid_input",
+        message:
+          "duplicate_active_source: task #7 (Fix login) is already active",
+        detail:
+          "validation error: duplicate_active_source: task #7 (Fix login) is already active",
+      })
+    ).toEqual({ id: 7, title: "Fix login" })
+  })
+
   it("is not fooled into hanging by a hostile issue title", () => {
     // Titles come from the forge and become task titles verbatim. The capture
     // is greedy with an anchored suffix; a title built to backtrack must

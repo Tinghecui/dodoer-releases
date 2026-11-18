@@ -524,7 +524,7 @@ pub async fn save(
     let mut store = load(conn).await?;
     store.apply(folder_id, settings, Utc::now())?;
     let encoded = serde_json::to_string(&store)
-        .map_err(|e| DbError::Validation(format!("settings not serializable: {e}")))?;
+        .map_err(|e| DbError::Internal(format!("settings not serializable: {e}")))?;
     app_metadata_service::upsert_value(conn, SETTINGS_KEY, &encoded).await?;
     Ok(store)
 }

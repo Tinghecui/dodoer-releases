@@ -2936,6 +2936,7 @@
       "officeNotInstalledHint": "Install OfficeCLI under Settings → Office Tools to preview Word, Excel, and PowerPoint files.",
       "officeOpenSettings": "Open Settings",
       "officeWatchFailed": "Couldn't start the live preview",
+      "officeFileNotFound": "This file doesn't exist or has been deleted",
       "officeWatchRetry": "Retry",
       "officeServerInstallHint": "OfficeCLI must be installed on the server host. Run this command there, then retry:",
       "officeRemoteDesktopUnsupported": "Live preview isn't available in a remote-desktop window. Open this workspace in the server's web UI to preview Office files."

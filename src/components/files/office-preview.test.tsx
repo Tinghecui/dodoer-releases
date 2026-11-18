@@ -331,6 +331,22 @@ describe("OfficePreview", () => {
     )
   })
 
+  it("NOT_FOUND: says the file is gone without the raw io error, keeps retry", async () => {
+    mockIsDesktop.mockReturnValue(false)
+    mockStart.mockRejectedValueOnce({
+      code: "not_found",
+      message: "io error: No such file or directory (os error 2)",
+      i18n_params: { watchCode: "NOT_FOUND" },
+    })
+
+    render(<OfficePreview rootPath="/root/reports" relPath="q.docx" />)
+
+    expect(await screen.findByText("officeFileNotFound")).toBeTruthy()
+    expect(screen.queryByText("officeWatchFailed")).toBeNull()
+    expect(screen.queryByText(/io error/)).toBeNull()
+    expect(screen.getByText("officeWatchRetry")).toBeTruthy()
+  })
+
   it("offers retry for a START_FAILED error and re-starts the watch", async () => {
     mockIsDesktop.mockReturnValue(false)
     mockStart.mockRejectedValueOnce({

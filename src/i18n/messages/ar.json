@@ -2936,6 +2936,7 @@
       "officeNotInstalledHint": "ثبّت OfficeCLI من الإعدادات → أدوات Office لمعاينة ملفات Word و Excel و PowerPoint.",
       "officeOpenSettings": "فتح الإعدادات",
       "officeWatchFailed": "تعذّر بدء المعاينة المباشرة",
+      "officeFileNotFound": "الملف غير موجود أو تم حذفه",
       "officeWatchRetry": "إعادة المحاولة",
       "officeServerInstallHint": "يجب تثبيت OfficeCLI على مضيف الخادم. شغّل هذا الأمر هناك ثم أعد المحاولة:",
       "officeRemoteDesktopUnsupported": "المعاينة المباشرة غير متاحة في نافذة سطح المكتب البعيد. افتح مساحة العمل هذه في واجهة الويب الخاصة بالخادم لمعاينة ملفات Office."

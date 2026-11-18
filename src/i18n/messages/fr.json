@@ -2936,6 +2936,7 @@
       "officeNotInstalledHint": "Installe OfficeCLI dans Paramètres → Outils Office pour prévisualiser les fichiers Word, Excel et PowerPoint.",
       "officeOpenSettings": "Ouvrir les paramètres",
       "officeWatchFailed": "Impossible de démarrer l'aperçu en direct",
+      "officeFileNotFound": "Le fichier n'existe pas ou a été supprimé",
       "officeWatchRetry": "Réessayer",
       "officeServerInstallHint": "OfficeCLI doit être installé sur l'hôte du serveur. Exécutez cette commande là-bas, puis réessayez :",
       "officeRemoteDesktopUnsupported": "L'aperçu en direct n'est pas disponible dans une fenêtre de bureau à distance. Ouvrez cet espace de travail dans l'interface web du serveur pour prévisualiser les fichiers Office."

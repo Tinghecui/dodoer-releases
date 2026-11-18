@@ -2936,6 +2936,7 @@
       "officeNotInstalledHint": "在 設定 → 辦公工具 中安裝 OfficeCLI，即可預覽 Word、Excel 與 PowerPoint 檔案。",
       "officeOpenSettings": "開啟設定",
       "officeWatchFailed": "無法啟動即時預覽",
+      "officeFileNotFound": "檔案不存在或已被刪除",
       "officeWatchRetry": "重試",
       "officeServerInstallHint": "OfficeCLI 需安裝在伺服器主機上。請在伺服器上執行以下指令後重試：",
       "officeRemoteDesktopUnsupported": "遠端桌面視窗暫不支援即時預覽。請在伺服器的 Web 介面中開啟此工作區以預覽 Office 檔案。"

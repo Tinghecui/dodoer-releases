@@ -2936,6 +2936,7 @@
       "officeNotInstalledHint": "Installiere OfficeCLI unter Einstellungen → Office-Tools, um Word-, Excel- und PowerPoint-Dateien vorzuschauen.",
       "officeOpenSettings": "Einstellungen öffnen",
       "officeWatchFailed": "Live-Vorschau konnte nicht gestartet werden",
+      "officeFileNotFound": "Die Datei existiert nicht oder wurde gelöscht",
       "officeWatchRetry": "Erneut versuchen",
       "officeServerInstallHint": "OfficeCLI muss auf dem Server-Host installiert sein. Führe diesen Befehl dort aus und versuche es erneut:",
       "officeRemoteDesktopUnsupported": "Die Live-Vorschau ist in einem Remote-Desktop-Fenster nicht verfügbar. Öffne diesen Arbeitsbereich in der Web-Oberfläche des Servers, um Office-Dateien anzusehen."

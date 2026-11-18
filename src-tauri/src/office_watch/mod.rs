@@ -106,6 +106,9 @@ pub enum WatchError {
     NotOffice,
     #[error("path is outside the workspace root")]
     OutsideRoot,
+    /// 要预览的文件不存在（比如打开预览后被删掉了）。
+    #[error("file does not exist")]
+    NotFound,
     #[error("failed to start officecli watch: {0}")]
     StartFailed(String),
     #[error("officecli watch did not become ready in time: {0}")]
@@ -140,6 +143,7 @@ impl WatchError {
             WatchError::NotInstalled => "NOT_INSTALLED",
             WatchError::NotOffice => "NOT_OFFICE",
             WatchError::OutsideRoot => "OUTSIDE_ROOT",
+            WatchError::NotFound => "NOT_FOUND",
             WatchError::StartFailed(_) => "START_FAILED",
             WatchError::PortTimeout(_) => "PORT_TIMEOUT",
             WatchError::NoPort => "NO_PORT",
@@ -166,6 +170,7 @@ impl From<WatchError> for AppCommandError {
             WatchError::NotOffice | WatchError::OutsideRoot => {
                 AppCommandError::invalid_input(err.to_string())
             }
+            WatchError::NotFound => AppCommandError::not_found(err.to_string()),
             _ => AppCommandError::task_execution_failed(err.to_string()),
         };
         base.with_i18n("Folder.fileWorkspacePanel.officeWatchError", params)
@@ -361,7 +366,14 @@ fn resolve_office_target(root_path: &str, rel_path: &str) -> Result<PathBuf, Wat
     }
     let target = resolve_tree_path(&root, rel_path).map_err(|e| WatchError::Io(e.to_string()))?;
     let canonical_root = std::fs::canonicalize(&root)?;
-    let canonical_target = std::fs::canonicalize(&target)?;
+    // 文件不存在单独报 NotFound（回 404），别的读写错误仍是 Io。
+    let canonical_target = std::fs::canonicalize(&target).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            WatchError::NotFound
+        } else {
+            WatchError::from(e)
+        }
+    })?;
     if !canonical_target.starts_with(&canonical_root) {
         return Err(WatchError::OutsideRoot);
     }
@@ -1374,11 +1386,26 @@ mod tests {
         assert_eq!(WatchError::NotInstalled.code(), "NOT_INSTALLED");
         assert_eq!(WatchError::NotOffice.code(), "NOT_OFFICE");
         assert_eq!(WatchError::OutsideRoot.code(), "OUTSIDE_ROOT");
+        assert_eq!(WatchError::NotFound.code(), "NOT_FOUND");
         assert_eq!(WatchError::StartFailed("x".into()).code(), "START_FAILED");
         assert_eq!(WatchError::PortTimeout("x".into()).code(), "PORT_TIMEOUT");
         assert_eq!(WatchError::NoPort.code(), "NO_PORT");
         assert_eq!(WatchError::TooMany.code(), "TOO_MANY");
         assert_eq!(WatchError::Io("x".into()).code(), "IO");
+    }
+
+    #[test]
+    fn deleted_office_file_is_not_found() {
+        // 文件已被删掉：要报「文件不存在」（404），不是 io error（500）。
+        let dir = std::env::temp_dir().join(format!("codeg-ow-gone-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.to_string_lossy().to_string();
+        let err = resolve_office_target(&root, "q.docx").unwrap_err();
+        assert_eq!(err.code(), "NOT_FOUND");
+        assert!(!err.to_string().contains("io error"), "{err}");
+        let app: AppCommandError = err.into();
+        assert!(matches!(app.code, crate::app_error::AppErrorCode::NotFound));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

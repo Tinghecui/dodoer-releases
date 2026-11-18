@@ -2936,6 +2936,7 @@
       "officeNotInstalledHint": "Instala OfficeCLI en Ajustes → Herramientas de Office para previsualizar archivos de Word, Excel y PowerPoint.",
       "officeOpenSettings": "Abrir ajustes",
       "officeWatchFailed": "No se pudo iniciar la vista previa en vivo",
+      "officeFileNotFound": "El archivo no existe o se ha eliminado",
       "officeWatchRetry": "Reintentar",
       "officeServerInstallHint": "OfficeCLI debe instalarse en el host del servidor. Ejecuta este comando allí y vuelve a intentarlo:",
       "officeRemoteDesktopUnsupported": "La vista previa en vivo no está disponible en una ventana de escritorio remoto. Abre este espacio de trabajo en la interfaz web del servidor para previsualizar archivos de Office."

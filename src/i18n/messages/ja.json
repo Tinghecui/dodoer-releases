@@ -2936,6 +2936,7 @@
       "officeNotInstalledHint": "設定 → Office ツール から OfficeCLI をインストールすると、Word・Excel・PowerPoint ファイルをプレビューできます。",
       "officeOpenSettings": "設定を開く",
       "officeWatchFailed": "ライブプレビューを開始できませんでした",
+      "officeFileNotFound": "ファイルが存在しないか、削除されています",
       "officeWatchRetry": "再試行",
       "officeServerInstallHint": "OfficeCLI はサーバーホストにインストールする必要があります。サーバーで次のコマンドを実行してから再試行してください：",
       "officeRemoteDesktopUnsupported": "リモートデスクトップウィンドウではライブプレビューを利用できません。Office ファイルをプレビューするには、サーバーの Web UI でこのワークスペースを開いてください。"

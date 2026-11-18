@@ -460,12 +460,17 @@ pub async fn activate(link: &ChromeLink, tab_id: &str) -> Result<(), AppCommandE
 }
 
 fn connected(link: &ChromeLink) -> Result<CdpClient, AppCommandError> {
-    link.client().ok_or_else(|| {
-        AppCommandError::configuration_missing(
-            "Chrome is not connected. The person connects it from the Chrome icon at the bottom left \
-             of dodoer",
-        )
-    })
+    link.client()
+        .ok_or_else(|| AppCommandError::configuration_missing(not_connected_message()))
+}
+
+/// 没连上 Chrome 时给的报错。
+fn not_connected_message() -> String {
+    format!(
+        "Chrome is not connected. The person connects it from the Chrome icon at the bottom left \
+         of {}",
+        crate::brand::DISPLAY_NAME
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -691,6 +696,14 @@ fn not_found(tab_id: &str) -> AppCommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 没连上 Chrome 时，报错让人去找 CoTeam 左下角的图标。
+    #[test]
+    fn not_connected_error_names_display_name() {
+        let message = not_connected_message();
+        assert!(message.contains("of CoTeam"), "{message}");
+        assert!(!message.contains("dodoer"), "{message}");
+    }
 
     fn tab(tab_id: &str, url: &str, surface: SurfaceKind) -> BrowserTabState {
         BrowserTabState {

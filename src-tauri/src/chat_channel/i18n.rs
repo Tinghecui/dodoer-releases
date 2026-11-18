@@ -175,16 +175,18 @@ pub fn permission_request_title(lang: Lang) -> &'static str {
 
 pub fn permission_request_body(lang: Lang) -> &'static str {
     match lang {
-        Lang::ZhCn => "智能体正在请求权限，请在 dodoer 中查看并批准。",
-        Lang::ZhTw => "智慧代理正在請求權限，請在 dodoer 中查看並批准。",
-        Lang::Ja => "エージェントが権限を要求しています。dodoer で確認して承認してください。",
-        Lang::Ko => "에이전트가 권한을 요청하고 있습니다. dodoer에서 확인하고 승인하세요.",
-        Lang::Es => "Un agente solicita permiso. Revísalo y apruébalo en dodoer.",
-        Lang::De => "Ein Agent fordert eine Berechtigung an. Bitte in dodoer prüfen und genehmigen.",
-        Lang::Fr => "Un agent demande une autorisation. Vérifiez-la et approuvez-la dans dodoer.",
-        Lang::Pt => "Um agente está solicitando permissão. Revise e aprove no dodoer.",
-        Lang::Ar => "يطلب أحد الوكلاء إذنًا. يرجى مراجعته والموافقة عليه في dodoer.",
-        Lang::En => "An agent is requesting permission. Review and approve it in dodoer.",
+        Lang::ZhCn => "智能体正在请求权限，请在 CoTeam 中查看并批准。",
+        Lang::ZhTw => "智慧代理正在請求權限，請在 CoTeam 中查看並批准。",
+        Lang::Ja => "エージェントが権限を要求しています。CoTeam で確認して承認してください。",
+        Lang::Ko => "에이전트가 권한을 요청하고 있습니다. CoTeam에서 확인하고 승인하세요.",
+        Lang::Es => "Un agente solicita permiso. Revísalo y apruébalo en CoTeam.",
+        Lang::De => {
+            "Ein Agent fordert eine Berechtigung an. Bitte in CoTeam prüfen und genehmigen."
+        }
+        Lang::Fr => "Un agent demande une autorisation. Vérifiez-la et approuvez-la dans CoTeam.",
+        Lang::Pt => "Um agente está solicitando permissão. Revise e aprove no CoTeam.",
+        Lang::Ar => "يطلب أحد الوكلاء إذنًا. يرجى مراجعته والموافقة عليه في CoTeam.",
+        Lang::En => "An agent is requesting permission. Review and approve it in CoTeam.",
     }
 }
 
@@ -239,16 +241,16 @@ pub fn question_request_title(lang: Lang) -> &'static str {
 
 pub fn question_request_body(lang: Lang) -> &'static str {
     match lang {
-        Lang::ZhCn => "智能体正在向你提问，请在 dodoer 中回答。",
-        Lang::ZhTw => "智慧代理正在向你提問，請在 dodoer 中回答。",
-        Lang::Ja => "エージェントが質問しています。dodoer で回答してください。",
-        Lang::Ko => "에이전트가 질문하고 있습니다. dodoer에서 답변하세요.",
-        Lang::Es => "Un agente te hace una pregunta. Respóndela en dodoer.",
-        Lang::De => "Ein Agent stellt eine Frage. Bitte in dodoer beantworten.",
-        Lang::Fr => "Un agent vous pose une question. Répondez-y dans dodoer.",
-        Lang::Pt => "Um agente está fazendo uma pergunta. Responda no dodoer.",
-        Lang::Ar => "يطرح أحد الوكلاء سؤالاً. يرجى الإجابة عليه في dodoer.",
-        Lang::En => "An agent is asking a question. Answer it in dodoer.",
+        Lang::ZhCn => "智能体正在向你提问，请在 CoTeam 中回答。",
+        Lang::ZhTw => "智慧代理正在向你提問，請在 CoTeam 中回答。",
+        Lang::Ja => "エージェントが質問しています。CoTeam で回答してください。",
+        Lang::Ko => "에이전트가 질문하고 있습니다. CoTeam에서 답변하세요.",
+        Lang::Es => "Un agente te hace una pregunta. Respóndela en CoTeam.",
+        Lang::De => "Ein Agent stellt eine Frage. Bitte in CoTeam beantworten.",
+        Lang::Fr => "Un agent vous pose une question. Répondez-y dans CoTeam.",
+        Lang::Pt => "Um agente está fazendo uma pergunta. Responda no CoTeam.",
+        Lang::Ar => "يطرح أحد الوكلاء سؤالاً. يرجى الإجابة عليه في CoTeam.",
+        Lang::En => "An agent is asking a question. Answer it in CoTeam.",
     }
 }
 
@@ -556,16 +558,16 @@ pub fn channel_status_title(lang: Lang) -> &'static str {
 
 pub fn help_title(lang: Lang) -> &'static str {
     match lang {
-        Lang::ZhCn => "dodoer Bot 帮助",
-        Lang::ZhTw => "dodoer Bot 幫助",
-        Lang::Ja => "dodoer Bot ヘルプ",
-        Lang::Ko => "dodoer Bot 도움말",
-        Lang::Es => "Ayuda de dodoer Bot",
-        Lang::De => "dodoer Bot Hilfe",
-        Lang::Fr => "Aide dodoer Bot",
-        Lang::Pt => "Ajuda do dodoer Bot",
-        Lang::Ar => "مساعدة dodoer Bot",
-        Lang::En => "dodoer Bot Help",
+        Lang::ZhCn => "CoTeam Bot 帮助",
+        Lang::ZhTw => "CoTeam Bot 幫助",
+        Lang::Ja => "CoTeam Bot ヘルプ",
+        Lang::Ko => "CoTeam Bot 도움말",
+        Lang::Es => "Ayuda de CoTeam Bot",
+        Lang::De => "CoTeam Bot Hilfe",
+        Lang::Fr => "Aide CoTeam Bot",
+        Lang::Pt => "Ajuda do CoTeam Bot",
+        Lang::Ar => "مساعدة CoTeam Bot",
+        Lang::En => "CoTeam Bot Help",
     }
 }
 
@@ -1325,31 +1327,31 @@ pub fn no_pending_permission(lang: Lang) -> &'static str {
 
 pub fn no_allow_once_option(lang: Lang) -> &'static str {
     match lang {
-        Lang::ZhCn => "这个请求没有「只允许这一次」的选项，聊天里不会替你永久放行。请在 dodoer 中处理。",
-        Lang::ZhTw => "這個請求沒有「只允許這一次」的選項，聊天裡不會替你永久放行。請在 dodoer 中處理。",
-        Lang::Ja => "このリクエストには「今回のみ許可」の選択肢がなく、チャットから恒久的に許可することはしません。dodoer で応答してください。",
-        Lang::Ko => "이 요청에는 '이번만 허용' 옵션이 없으며, 채팅에서는 영구 허용을 하지 않습니다. dodoer에서 처리하세요.",
-        Lang::Es => "Esta solicitud no ofrece permitir solo esta vez, y desde el chat no se concede un permiso permanente. Respóndela en dodoer.",
-        Lang::De => "Diese Anfrage bietet kein einmaliges Erlauben, und aus dem Chat wird keine dauerhafte Erlaubnis erteilt. Bitte in dodoer beantworten.",
-        Lang::Fr => "Cette demande ne propose pas d'autoriser une seule fois, et le chat n'accorde pas d'autorisation permanente. Répondez-y dans dodoer.",
-        Lang::Pt => "Esta solicitação não oferece permitir só desta vez, e pelo chat não se concede permissão permanente. Responda no dodoer.",
-        Lang::Ar => "لا يتضمن هذا الطلب خيار السماح لمرة واحدة، ولا تمنح الدردشة إذنًا دائمًا. يرجى الرد عليه في dodoer.",
-        Lang::En => "This request has no allow-once option, and chat won't grant a standing permission. Answer it in dodoer.",
+        Lang::ZhCn => "这个请求没有「只允许这一次」的选项，聊天里不会替你永久放行。请在 CoTeam 中处理。",
+        Lang::ZhTw => "這個請求沒有「只允許這一次」的選項，聊天裡不會替你永久放行。請在 CoTeam 中處理。",
+        Lang::Ja => "このリクエストには「今回のみ許可」の選択肢がなく、チャットから恒久的に許可することはしません。CoTeam で応答してください。",
+        Lang::Ko => "이 요청에는 '이번만 허용' 옵션이 없으며, 채팅에서는 영구 허용을 하지 않습니다. CoTeam에서 처리하세요.",
+        Lang::Es => "Esta solicitud no ofrece permitir solo esta vez, y desde el chat no se concede un permiso permanente. Respóndela en CoTeam.",
+        Lang::De => "Diese Anfrage bietet kein einmaliges Erlauben, und aus dem Chat wird keine dauerhafte Erlaubnis erteilt. Bitte in CoTeam beantworten.",
+        Lang::Fr => "Cette demande ne propose pas d'autoriser une seule fois, et le chat n'accorde pas d'autorisation permanente. Répondez-y dans CoTeam.",
+        Lang::Pt => "Esta solicitação não oferece permitir só desta vez, e pelo chat não se concede permissão permanente. Responda no CoTeam.",
+        Lang::Ar => "لا يتضمن هذا الطلب خيار السماح لمرة واحدة، ولا تمنح الدردشة إذنًا دائمًا. يرجى الرد عليه في CoTeam.",
+        Lang::En => "This request has no allow-once option, and chat won't grant a standing permission. Answer it in CoTeam.",
     }
 }
 
 pub fn no_reject_once_option(lang: Lang) -> &'static str {
     match lang {
-        Lang::ZhCn => "这个请求没有「只拒绝这一次」的选项，聊天里不会替你设永久规则。请在 dodoer 中处理。",
-        Lang::ZhTw => "這個請求沒有「只拒絕這一次」的選項，聊天裡不會替你設永久規則。請在 dodoer 中處理。",
-        Lang::Ja => "このリクエストには「今回のみ拒否」の選択肢がなく、チャットから恒久的なルールは設定しません。dodoer で応答してください。",
-        Lang::Ko => "이 요청에는 '이번만 거부' 옵션이 없으며, 채팅에서는 영구 규칙을 만들지 않습니다. dodoer에서 처리하세요.",
-        Lang::Es => "Esta solicitud no ofrece rechazar solo esta vez, y desde el chat no se crea una regla permanente. Respóndela en dodoer.",
-        Lang::De => "Diese Anfrage bietet kein einmaliges Ablehnen, und aus dem Chat wird keine dauerhafte Regel angelegt. Bitte in dodoer beantworten.",
-        Lang::Fr => "Cette demande ne propose pas de refuser une seule fois, et le chat ne crée pas de règle permanente. Répondez-y dans dodoer.",
-        Lang::Pt => "Esta solicitação não oferece recusar só desta vez, e pelo chat não se cria regra permanente. Responda no dodoer.",
-        Lang::Ar => "لا يتضمن هذا الطلب خيار الرفض لمرة واحدة، ولا تنشئ الدردشة قاعدة دائمة. يرجى الرد عليه في dodoer.",
-        Lang::En => "This request has no reject-once option, and chat won't set a standing rule. Answer it in dodoer.",
+        Lang::ZhCn => "这个请求没有「只拒绝这一次」的选项，聊天里不会替你设永久规则。请在 CoTeam 中处理。",
+        Lang::ZhTw => "這個請求沒有「只拒絕這一次」的選項，聊天裡不會替你設永久規則。請在 CoTeam 中處理。",
+        Lang::Ja => "このリクエストには「今回のみ拒否」の選択肢がなく、チャットから恒久的なルールは設定しません。CoTeam で応答してください。",
+        Lang::Ko => "이 요청에는 '이번만 거부' 옵션이 없으며, 채팅에서는 영구 규칙을 만들지 않습니다. CoTeam에서 처리하세요.",
+        Lang::Es => "Esta solicitud no ofrece rechazar solo esta vez, y desde el chat no se crea una regla permanente. Respóndela en CoTeam.",
+        Lang::De => "Diese Anfrage bietet kein einmaliges Ablehnen, und aus dem Chat wird keine dauerhafte Regel angelegt. Bitte in CoTeam beantworten.",
+        Lang::Fr => "Cette demande ne propose pas de refuser une seule fois, et le chat ne crée pas de règle permanente. Répondez-y dans CoTeam.",
+        Lang::Pt => "Esta solicitação não oferece recusar só desta vez, e pelo chat não se cria regra permanente. Responda no CoTeam.",
+        Lang::Ar => "لا يتضمن هذا الطلب خيار الرفض لمرة واحدة، ولا تنشئ الدردشة قاعدة دائمة. يرجى الرد عليه في CoTeam.",
+        Lang::En => "This request has no reject-once option, and chat won't set a standing rule. Answer it in CoTeam.",
     }
 }
 
@@ -1635,5 +1637,51 @@ pub fn agent_responding(lang: Lang, agent_label: &str) -> String {
         // bidi reordering stays predictable across Telegram/Lark/WeiXin clients.
         Lang::Ar => format!("\u{2068}{agent_label}\u{2069} يستجيب..."),
         Lang::En => format!("{agent_label} is responding..."),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::brand::DISPLAY_NAME;
+
+    const ALL_LANGS: [Lang; 10] = [
+        Lang::En,
+        Lang::ZhCn,
+        Lang::ZhTw,
+        Lang::Ja,
+        Lang::Ko,
+        Lang::Es,
+        Lang::De,
+        Lang::Fr,
+        Lang::Pt,
+        Lang::Ar,
+    ];
+
+    /// 聊天软件里提到产品名的几句，十种语言都写 CoTeam，不再是 CoTeam。
+    #[test]
+    fn product_name_in_chat_messages_is_display_name() {
+        let texts: [fn(Lang) -> &'static str; 5] = [
+            permission_request_body,
+            question_request_body,
+            help_title,
+            no_allow_once_option,
+            no_reject_once_option,
+        ];
+        for text in texts {
+            for lang in ALL_LANGS {
+                let s = text(lang);
+                assert!(s.contains(DISPLAY_NAME), "{lang:?}: {s}");
+                assert!(!s.to_lowercase().contains("CoTeam"), "{lang:?}: {s}");
+            }
+        }
+    }
+
+    /// 只换名字，名字后面的助词和空格照旧。
+    #[test]
+    fn name_keeps_its_particles() {
+        assert!(permission_request_body(Lang::Ko).contains("CoTeam에서"));
+        assert!(permission_request_body(Lang::Ja).contains("CoTeam で"));
+        assert!(permission_request_body(Lang::ZhCn).contains("在 CoTeam 中"));
     }
 }

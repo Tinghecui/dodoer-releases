@@ -1495,7 +1495,10 @@ fn owner_label_for(channel_id: i32, sender_id: &str, target: &ChannelMessageTarg
 
 fn truncate_topic_title(task_description: &str) -> String {
     let title = truncate_title(task_description);
-    format!("dodoer: {title}").chars().take(128).collect()
+    format!("{}: {title}", crate::brand::DISPLAY_NAME)
+        .chars()
+        .take(128)
+        .collect()
 }
 
 async fn build_chat_session_runtime_env(
@@ -1734,6 +1737,15 @@ mod tests {
     use crate::chat_channel::session_bridge::PendingPermission;
     use crate::db::service::{agent_setting_service, chat_channel_service, sender_context_service};
     use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
+
+    /// 聊天软件里开的话题，标题前面挂的是产品的显示名。
+    #[test]
+    fn topic_title_is_prefixed_with_display_name() {
+        assert_eq!(
+            truncate_topic_title("Fix the login"),
+            "CoTeam: Fix the login"
+        );
+    }
 
     async fn seed_chat_channel(db: &crate::db::AppDatabase) -> i32 {
         chat_channel_service::create(

@@ -4796,6 +4796,18 @@ mod tests {
 
     use super::*;
 
+    /// 工具说明里当产品名用的 dodoer / Codeg 都写成 CoTeam；上传目录
+    /// `~/Downloads/dodoer-uploads/` 是路径，照旧。
+    #[test]
+    fn tool_schema_names_product_display_name() {
+        let without_paths = TOOL_SCHEMA_JSON.replace("dodoer-uploads", "");
+        assert!(!without_paths.contains("dodoer"));
+        assert!(!without_paths.contains("Codeg"));
+        assert!(TOOL_SCHEMA_JSON.contains("the CoTeam desktop app"));
+        assert!(TOOL_SCHEMA_JSON.contains("plan approval in CoTeam"));
+        assert!(TOOL_SCHEMA_JSON.contains("~/Downloads/dodoer-uploads/"));
+    }
+
     fn ctx() -> CompanionContext {
         // Delegation-only by default so the existing delegation-focused tests
         // keep seeing exactly the three delegation tools.

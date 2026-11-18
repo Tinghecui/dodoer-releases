@@ -44,14 +44,14 @@ const SETTLE: Duration = Duration::from_millis(300);
 
 /// The start page, which says whose window this is.
 const START_HTML: &str = concat!(
-    "<!doctype html><meta charset=\"utf-8\"><title>dodoer · 智能体的窗口</title>",
+    "<!doctype html><meta charset=\"utf-8\"><title>CoTeam · 智能体的窗口</title>",
     "<body style=\"font:15px/1.6 -apple-system,system-ui,sans-serif;color:#555;",
     "max-width:34em;margin:20vh auto;padding:0 1em\">",
-    "<h1 style=\"font-size:18px;color:#222\">这个窗口是 dodoer 的智能体在用</h1>",
+    "<h1 style=\"font-size:18px;color:#222\">这个窗口是 CoTeam 的智能体在用</h1>",
     "<p>智能体打开的网页都在这个窗口里，你随时可以看、可以接手。",
-    "要让它停下，在 dodoer 左下角的 Chrome 图标里关掉「让智能体用我的 Chrome」。</p>",
-    "<p lang=\"en\">dodoer's agents open their pages in this window. ",
-    "To stop them, turn agents off from the Chrome icon in dodoer.</p>",
+    "要让它停下，在 CoTeam 左下角的 Chrome 图标里关掉「让智能体用我的 Chrome」。</p>",
+    "<p lang=\"en\">CoTeam's agents open their pages in this window. ",
+    "To stop them, turn agents off from the Chrome icon in CoTeam.</p>",
     "<p>这个标签关掉也没关系，智能体下次开网页时会再开一个窗口。</p>",
 );
 
@@ -243,6 +243,14 @@ mod tests {
 
     const URL: &str = "https://example.com/form";
     const NEXT: &str = "https://example.org/next";
+
+    /// 智能体窗口的起始页写的是 CoTeam，不再是 dodoer。
+    #[test]
+    fn start_page_names_display_name() {
+        assert!(START_HTML.contains("<title>CoTeam · 智能体的窗口</title>"));
+        assert!(START_HTML.contains("CoTeam's agents"));
+        assert!(!START_HTML.contains("dodoer"));
+    }
 
     async fn connected() -> (CdpClient, FakeChrome) {
         let (mut connections, port) = chrome().await;

@@ -31,6 +31,8 @@ pub mod appimage_env;
 pub mod automation;
 pub mod backgrounds;
 pub mod boot;
+// Cowork fork: 用户看得见的产品名（CoTeam），见 brand.rs。
+pub mod brand;
 /// Built-in browser. Only its wire types and its grant rules compile in server
 /// mode — see `browser/mod.rs` for why those two, and only those two.
 pub mod browser;

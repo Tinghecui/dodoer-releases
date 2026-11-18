@@ -772,11 +772,9 @@ fn json_scalar_to_string(value: &serde_json::Value) -> Option<String> {
 
 fn telegram_topic_title(title: &str) -> String {
     let title = title.trim();
-    let title = if title.is_empty() {
-        "dodoer session"
-    } else {
-        title
-    };
+    if title.is_empty() {
+        return format!("{} session", crate::brand::DISPLAY_NAME);
+    }
     title.chars().take(128).collect()
 }
 
@@ -899,6 +897,13 @@ fn escape_markdown(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 空标题的话题用产品的显示名起名。
+    #[test]
+    fn empty_topic_title_uses_display_name() {
+        assert_eq!(telegram_topic_title("  "), "CoTeam session");
+        assert_eq!(telegram_topic_title(" Fix it "), "Fix it");
+    }
 
     #[test]
     fn redact_token_scrubs_token_from_error_url() {

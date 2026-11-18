@@ -15656,7 +15656,27 @@ async fn run_conversation_loop(
                                     break;
                                 }
                                 Err(e) if lost_the_connection(&e) => {
-                                    return Err(defer_to_connection_report(e).await)
+                                    // Cowork 加的（#706）：这一轮智能体一个字都没回过
+                                    // （进程早就没了，连接还当它连着，prompt 一发出去
+                                    // 运行时就回 transport closed）。这一轮没开始，按
+                                    // `session_lost` 结束，前端重连、自动重发一次，
+                                    // 不把运行时的英文原文给用户。回过东西的（这一轮
+                                    // 中途断的）照旧，不自动重发。
+                                    let nothing_arrived = !probe.saw_agent_output
+                                        && !probe.saw_metadata_update
+                                        && probe.dropped == 0;
+                                    let e = defer_to_connection_report(e).await;
+                                    if nothing_arrived {
+                                        tracing::warn!(
+                                            "[ACP] session/prompt hit a closed transport ({e}) \
+                                             before the agent answered anything; ending the \
+                                             connection as session_lost"
+                                        );
+                                        return Err(agent_client_protocol::util::internal_error(
+                                            SESSION_LOST_SENTINEL,
+                                        ));
+                                    }
+                                    return Err(e);
                                 }
                                 // Cowork 加的（#423）：智能体不认这个会话了，这一轮
                                 // 没开始。连接照旧结束，但带上标记：前端拿到
@@ -52706,6 +52726,115 @@ mod tests {
         let shown = error.to_string();
         assert!(!shown.contains("sessionId"), "{shown}");
         assert!(!shown.contains("Resource not found"), "{shown}");
+    }
+
+    /// #706：智能体进程已经没了（被杀），连接还当它连着；下一条消息一发出去，
+    /// 运行时当场回 Incoming transport closed。这一轮什么都没收到、根本没开始，
+    /// 和 #423 一样以固定代码 `session_lost` 结束（前端自动重连重发一次），
+    /// 不把「Incoming transport closed: {"reason": …}」原文交给前端。
+    #[tokio::test]
+    async fn a_prompt_on_a_connection_whose_agent_is_gone_ends_as_session_lost() {
+        let (client_end, agent_end) = agent_client_protocol::Channel::duplex();
+        let agent = tokio::spawn(async move {
+            let _ = Agent
+                .builder()
+                .on_receive_request(
+                    async |_req: NewSessionRequest,
+                           responder: Responder<NewSessionResponse>,
+                           _cx: ConnectionTo<Client>| {
+                        responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+                    },
+                    on_receive_request!(),
+                )
+                .connect_with(agent_end, async |_cx: ConnectionTo<Client>| {
+                    std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                })
+                .await;
+        });
+
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-gone".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "win".to_string(),
+            None,
+        )));
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let loop_state = Arc::clone(&state);
+        let (attached_tx, attached_rx) = tokio::sync::oneshot::channel::<()>();
+        let (done_tx, done_rx) =
+            tokio::sync::oneshot::channel::<Result<(), agent_client_protocol::Error>>();
+        let client = tokio::spawn(async move {
+            let _ = Client
+                .builder()
+                .connect_with(client_end, async move |cx: ConnectionTo<Agent>| {
+                    let raw = cx
+                        .send_request_to(
+                            Agent,
+                            UntypedMessage::new("session/new", NewSessionRequest::new("/tmp"))?,
+                        )
+                        .block_task()
+                        .await?;
+                    let response: NewSessionResponse = serde_json::from_value(raw)
+                        .map_err(agent_client_protocol::Error::into_internal_error)?;
+                    let mut session = AgentSession::attach(&cx, response)?;
+                    let _ = attached_tx.send(());
+                    let perms = PendingPermissions::default();
+                    let ledger = background_watch::PromptLedger::shared();
+                    let stderr_tail = Arc::new(StderrTail::new());
+                    let result = run_conversation_loop(
+                        &mut session,
+                        "conn-gone",
+                        &EventEmitter::Noop,
+                        &loop_state,
+                        AgentType::ClaudeCode,
+                        &perms,
+                        &mut cmd_rx,
+                        Arc::new(TerminalRuntime::with_base_env(BTreeMap::new())),
+                        "/tmp",
+                        false,
+                        &[],
+                        &ledger,
+                        None,
+                        &stderr_tail,
+                    )
+                    .await;
+                    let _ = done_tx.send(result.map(|_| ()));
+                    Ok(())
+                })
+                .await;
+        });
+
+        // 会话开好以后智能体那头整个没了（进程被杀，输出流关掉）。
+        tokio::time::timeout(std::time::Duration::from_secs(5), attached_rx)
+            .await
+            .expect("the session opens")
+            .expect("the client attached");
+        agent.abort();
+        let _ = agent.await;
+
+        state.write().await.turn_in_flight = true;
+        cmd_tx
+            .send(ConnectionCommand::Prompt {
+                blocks: vec![PromptInputBlock::Text {
+                    text: "cat or dog".into(),
+                }],
+                user_message: None,
+                internal_suffix: Vec::new(),
+            })
+            .await
+            .expect("the loop is running");
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(10), done_rx)
+            .await
+            .expect("the loop ends on the lost transport")
+            .expect("the loop reports how it ended");
+        client.abort();
+
+        let error = connection_failure(ended.expect_err("the connection cannot go on"));
+        assert_eq!(error.code(), Some("session_lost"), "{error}");
+        let shown = error.to_string();
+        assert!(!shown.contains("transport closed"), "{shown}");
+        assert!(!shown.contains("incoming_transport_closed"), "{shown}");
     }
 }
 

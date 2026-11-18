@@ -776,7 +776,9 @@ export function ConfigSyncSettings() {
           </div>
         ) : null}
 
-        {enabled ? (
+        {/* A failed read (also a retry after an earlier good one) leaves
+            stale or default values here; the banner above offers the retry. */}
+        {enabled && loadError === null ? (
           <div className="space-y-3">
             {/* Pure address templates — no provider-specific logic anywhere. */}
             <div className="space-y-2">

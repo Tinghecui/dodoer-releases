@@ -154,6 +154,13 @@ describe("WebServiceSettings", () => {
     expect(portInput()).toBeDisabled()
     expect(screen.getByRole("combobox")).toBeDisabled()
     expect(tokenInput()).toBeDisabled()
+    // Starting persists what it is given: the defaults, while unread.
+    const start = screen.getByRole("button", {
+      name: enMessages.WebServiceSettings.start,
+    })
+    expect(start).toBeDisabled()
+    fireEvent.click(start)
+    expect(api.startWebServer).not.toHaveBeenCalled()
     fireEvent.click(autoStart)
     await act(() => new Promise((r) => setTimeout(r, 700)))
     expect(api.updateWebServiceConfig).not.toHaveBeenCalled()
@@ -167,6 +174,9 @@ describe("WebServiceSettings", () => {
     expect(portInput()).not.toBeDisabled()
     expect(portInput().value).toBe("4123")
     expect(tokenInput()).not.toBeDisabled()
+    expect(
+      screen.getByRole("button", { name: enMessages.WebServiceSettings.start })
+    ).not.toBeDisabled()
     expect(screen.getByRole("switch")).toBeChecked()
 
     fireEvent.click(screen.getByRole("switch"))

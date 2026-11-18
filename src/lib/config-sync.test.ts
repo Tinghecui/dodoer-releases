@@ -105,6 +105,20 @@ describe("local file transfer picks its runtime", () => {
     expect(call).not.toHaveBeenCalledWith("config_sync_export_content", {})
   })
 
+  // 系统文件对话框里的类型名是用户看得见的产品名，和界面一样写 CoTeam。
+  it("names the file type CoTeam in the native save and open dialogs", async () => {
+    desktop.mockReturnValue(true)
+    save.mockResolvedValue(null)
+    open.mockResolvedValue(null)
+
+    await exportConfigToFile()
+    await pickConfigFileToImport()
+
+    const filters = [{ name: "CoTeam config", extensions: ["json"] }]
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ filters }))
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ filters }))
+  })
+
   it("does not call the backend at all when the save dialog is dismissed", async () => {
     desktop.mockReturnValue(true)
     save.mockResolvedValue(null)

@@ -1,8 +1,9 @@
 import type { AbstractIntlMessages } from "next-intl"
 import { describe, expect, it } from "vitest"
 
-import { afterEach, vi } from "vitest"
+import { afterEach, beforeAll, vi } from "vitest"
 import { readFileSync } from "node:fs"
+import { createRequire } from "node:module"
 import { resolve } from "node:path"
 
 import ar from "@/i18n/messages/ar.json"
@@ -23,6 +24,7 @@ import {
   COWORK_BUILD,
   isCoworkBuild,
   PRODUCT_NAME,
+  SYSTEM_NAME_KEYS,
 } from "./brand"
 
 // 换了 NEXT_PUBLIC_PRODUCT_NAME 以后重新加载 brand.ts，看两种构建下导出的值。
@@ -333,6 +335,78 @@ describe("brand overlay", () => {
       number: [["n", 4, "percent"], " of Cowork"],
     })
     expect(Array.isArray(branded.arg)).toBe(true)
+  })
+
+  // 应用实际加载的是 next-intl 预编译过的目录（带参数的消息是数组）。
+  // 用同一个编译器（icu-minify，next-intl 的依赖）把真目录编一遍再换名，
+  // 系统里的名字「CoTeam (dodoer)」和评论署名原文在这种结构下也要保住，
+  // 而且整本目录换出来的结果要和「先换名再编译」一模一样。
+  describe("on the precompiled catalogs the app loads", () => {
+    type Compile = (message: string) => unknown
+    let compile: Compile
+    const compileTree = (node: unknown): unknown =>
+      typeof node === "string"
+        ? compile(node)
+        : Object.fromEntries(
+            Object.entries(node as object).map(([k, v]) => [k, compileTree(v)])
+          )
+    const at = (tree: unknown, path: string): unknown =>
+      path.split(".").reduce((n, k) => (n as Record<string, unknown>)[k], tree)
+    const textOf = (compiled: unknown): string =>
+      typeof compiled === "string"
+        ? compiled
+        : Array.isArray(compiled)
+          ? compiled.map(textOf).join("")
+          : ""
+
+    beforeAll(async () => {
+      const fromHere = createRequire(import.meta.url)
+      const fromNextIntl = createRequire(fromHere.resolve("next-intl"))
+      compile = (await import(fromNextIntl.resolve("icu-minify/compile")))
+        .default as Compile
+    })
+
+    it("keeps the system's app name and the comment footer", () => {
+      // identityDegradedHint 带 {bundleId}，编译后是数组
+      expect(
+        Array.isArray(
+          at(
+            compileTree(en),
+            "DesktopNotificationSettings.identityDegradedHint"
+          )
+        )
+      ).toBe(true)
+      for (const catalog of [en, zhCN]) {
+        const branded = brandMessages(
+          compileTree(catalog) as AbstractIntlMessages
+        )
+        for (const key of SYSTEM_NAME_KEYS) {
+          expect(textOf(at(branded, key)), key).toContain("CoTeam (dodoer)")
+        }
+        expect(
+          textOf(at(branded, "Forge.settingsCommentFooterHint"))
+        ).toContain(`🤖 Generated with ${COMMENT_FOOTER_NAME}`)
+      }
+    })
+
+    for (const [locale, catalog] of [
+      ["en", en],
+      ["zh-CN", zhCN],
+      ["zh-TW", zhTW],
+      ["ja", ja],
+      ["ko", ko],
+      ["es", es],
+      ["de", de],
+      ["fr", fr],
+      ["pt", pt],
+      ["ar", ar],
+    ] as const) {
+      it(`brands the precompiled ${locale} catalog like the raw one`, () => {
+        expect(
+          brandMessages(compileTree(catalog) as AbstractIntlMessages)
+        ).toEqual(compileTree(brandMessages(catalog as AbstractIntlMessages)))
+      })
+    }
   })
 
   it("builds document titles", () => {

@@ -163,16 +163,35 @@ fn resolve_upload_chain(root: &Path, target: &Path) -> Result<PathBuf, AppComman
                     // Continue from the real directory so the rest of the chain
                     // is validated against it rather than through the link.
                     current = resolved;
+                } else if !md.is_dir() {
+                    // 路径上的这一段是个文件：调用方给的路径走不通，不是服务器出错。
+                    return Err(AppCommandError::invalid_input(UPLOAD_PATH_BLOCKED)
+                        .with_detail(current.to_string_lossy().to_string()));
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 reached_missing = true;
             }
-            Err(e) => return Err(AppCommandError::io(e)),
+            Err(e) => return Err(upload_io_error("I/O operation failed", e)),
         }
     }
     Ok(current)
 }
+
+/// 上传时文件系统报的错，按是谁的错分开：路径上挡着一个文件是调用方的错
+/// （400），没有权限是 403，其余才算服务器自己的 I/O 故障（500）。
+fn upload_io_error(what: &str, e: std::io::Error) -> AppCommandError {
+    match e.kind() {
+        std::io::ErrorKind::NotADirectory | std::io::ErrorKind::AlreadyExists => {
+            AppCommandError::invalid_input(UPLOAD_PATH_BLOCKED).with_detail(e.to_string())
+        }
+        std::io::ErrorKind::PermissionDenied => AppCommandError::io(e),
+        _ => AppCommandError::io_error(what.to_string()).with_detail(e.to_string()),
+    }
+}
+
+/// 上传路径上有一段已经是文件、不是目录。
+const UPLOAD_PATH_BLOCKED: &str = "A file is in the way of the upload path";
 
 /// Strip cross-platform-hostile characters from a single path segment.
 /// Empty / all-dots input collapses to `"file"` so the rename can succeed
@@ -274,25 +293,25 @@ pub async fn upload_workspace_file(
     let mut result: Option<UploadWorkspaceFileResult> = None;
 
     while let Some(mut field) = multipart.next_field().await.map_err(|e| {
-        AppCommandError::io_error("Invalid multipart upload").with_detail(e.to_string())
+        AppCommandError::invalid_input("Invalid multipart upload").with_detail(e.to_string())
     })? {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "root_path" | "rootPath" => {
                 root_path = Some(field.text().await.map_err(|e| {
-                    AppCommandError::io_error("Failed to read root_path field")
+                    AppCommandError::invalid_input("Failed to read root_path field")
                         .with_detail(e.to_string())
                 })?);
             }
             "target_path" | "targetPath" => {
                 target_path = Some(field.text().await.map_err(|e| {
-                    AppCommandError::io_error("Failed to read target_path field")
+                    AppCommandError::invalid_input("Failed to read target_path field")
                         .with_detail(e.to_string())
                 })?);
             }
             "relative_path" | "relativePath" => {
                 relative_path = Some(field.text().await.map_err(|e| {
-                    AppCommandError::io_error("Failed to read relative_path field")
+                    AppCommandError::invalid_input("Failed to read relative_path field")
                         .with_detail(e.to_string())
                 })?);
             }
@@ -339,10 +358,7 @@ pub async fn upload_workspace_file(
                     let resolved_parent = resolve_upload_chain(&root, parent)?;
                     tokio::fs::create_dir_all(&resolved_parent)
                         .await
-                        .map_err(|e| {
-                            AppCommandError::io_error("Failed to create upload directory")
-                                .with_detail(e.to_string())
-                        })?;
+                        .map_err(|e| upload_io_error("Failed to create upload directory", e))?;
                     let canonical_parent =
                         std::fs::canonicalize(&resolved_parent).map_err(AppCommandError::io)?;
                     if !crate::commands::folders::is_within_workspace(
@@ -382,15 +398,12 @@ pub async fn upload_workspace_file(
                     .create_new(true)
                     .open(&staging_path)
                     .await
-                    .map_err(|e| {
-                        AppCommandError::io_error("Failed to create staging file")
-                            .with_detail(e.to_string())
-                    })?;
+                    .map_err(|e| upload_io_error("Failed to create staging file", e))?;
 
                 let mut written: u64 = 0;
                 let stream_result: Result<(), AppCommandError> = async {
                     while let Some(chunk) = field.chunk().await.map_err(|e| {
-                        AppCommandError::io_error("Failed to read upload chunk")
+                        AppCommandError::invalid_input("Failed to read upload chunk")
                             .with_detail(e.to_string())
                     })? {
                         let new_total = written.saturating_add(chunk.len() as u64);
@@ -1117,5 +1130,53 @@ mod tests {
             resolve_upload_chain(root.path(), &root.path().join("api").join("sub")).is_err(),
             "unlinking must revoke upload access too"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uploading_where_it_cannot_go_is_not_a_server_fault() {
+        use crate::app_error::AppErrorCode;
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir root");
+
+        // 只读目录下建目录：没权限，403，不是服务器出错。
+        let locked = root.path().join("locked");
+        std::fs::create_dir(&locked).expect("locked dir");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+        let denied = std::fs::create_dir(locked.join("sub"));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod back");
+        // 以 root 跑时权限不起作用，这一段跳过。
+        if let Err(e) = denied {
+            let err = upload_io_error("Failed to create upload directory", e);
+            assert_eq!(err.code, AppErrorCode::PermissionDenied);
+        }
+
+        // 路径穿过一个文件：调用方的错，400。
+        std::fs::write(root.path().join("afile"), b"x").expect("file");
+        let e = std::fs::create_dir_all(root.path().join("afile").join("sub"))
+            .expect_err("a file is in the way");
+        let err = upload_io_error("Failed to create upload directory", e);
+        assert_eq!(err.code, AppErrorCode::InvalidInput);
+        assert_eq!(err.message, "A file is in the way of the upload path");
+        assert!(err.detail.is_some());
+
+        // 走查路径时遇到这个文件，也是 400。
+        let err = resolve_upload_chain(
+            root.path(),
+            &root.path().join("afile").join("sub").join("deeper"),
+        )
+        .expect_err("a file is in the way");
+        assert_eq!(err.code, AppErrorCode::InvalidInput);
+        assert_eq!(err.message, "A file is in the way of the upload path");
+
+        // 其余的照旧是服务器的 I/O 故障。
+        let err = upload_io_error(
+            "Failed to create staging file",
+            std::io::Error::other("disk on fire"),
+        );
+        assert_eq!(err.code, AppErrorCode::IoError);
+        assert_eq!(err.message, "Failed to create staging file");
     }
 }

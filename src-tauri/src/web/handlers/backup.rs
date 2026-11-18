@@ -190,7 +190,7 @@ async fn receive_upload(
     let mut received = false;
     let mut written: u64 = 0;
     while let Some(mut field) = multipart.next_field().await.map_err(|e| {
-        AppCommandError::io_error("Invalid multipart upload").with_detail(e.to_string())
+        AppCommandError::invalid_input("Invalid multipart upload").with_detail(e.to_string())
     })? {
         if field.name() != Some("file") {
             continue;
@@ -200,7 +200,7 @@ async fn receive_upload(
             .await
             .map_err(AppCommandError::io)?;
         while let Some(chunk) = field.chunk().await.map_err(|e| {
-            AppCommandError::io_error("Failed to read upload chunk").with_detail(e.to_string())
+            AppCommandError::invalid_input("Failed to read upload chunk").with_detail(e.to_string())
         })? {
             written = written.saturating_add(chunk.len() as u64);
             if let Some(limit) = max_bytes {

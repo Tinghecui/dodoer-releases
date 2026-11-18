@@ -894,7 +894,7 @@ async fn reserve_upload_quota(
             params.insert("used".to_string(), used.to_string());
             params.insert("limit".to_string(), cap.to_string());
             Err(
-                AppCommandError::io_error("Upload quota exceeded for this server")
+                AppCommandError::invalid_input("Upload quota exceeded for this server")
                     .with_detail(format!("used={used} limit={cap}"))
                     .with_i18n(UPLOAD_I18N_KEY_QUOTA_EXCEEDED, params),
             )
@@ -908,7 +908,7 @@ pub(crate) fn upload_too_large(size: u64) -> AppCommandError {
     let mut params = BTreeMap::new();
     params.insert("size".to_string(), size.to_string());
     params.insert("limit".to_string(), UPLOAD_MAX_BYTES.to_string());
-    AppCommandError::io_error("Upload exceeds the maximum allowed size")
+    AppCommandError::invalid_input("Upload exceeds the maximum allowed size")
         .with_detail(format!("size={size} limit={UPLOAD_MAX_BYTES}"))
         .with_i18n(UPLOAD_I18N_KEY_TOO_LARGE, params)
 }
@@ -1008,13 +1008,13 @@ async fn stream_and_finalize(
     let mut file_seen = false;
 
     while let Some(mut field) = multipart.next_field().await.map_err(|e| {
-        AppCommandError::io_error("Invalid multipart upload").with_detail(e.to_string())
+        AppCommandError::invalid_input("Invalid multipart upload").with_detail(e.to_string())
     })? {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "session_id" | "sessionId" => {
                 let value = field.text().await.map_err(|e| {
-                    AppCommandError::io_error("Failed to read session_id field")
+                    AppCommandError::invalid_input("Failed to read session_id field")
                         .with_detail(e.to_string())
                 })?;
                 let trimmed = value.trim();
@@ -1024,7 +1024,7 @@ async fn stream_and_finalize(
             }
             "file" => {
                 if file_seen {
-                    return Err(AppCommandError::io_error(
+                    return Err(AppCommandError::invalid_input(
                         "Multiple `file` fields are not supported per request",
                     ));
                 }
@@ -1039,7 +1039,7 @@ async fn stream_and_finalize(
                             .with_detail(e.to_string())
                     })?;
                 while let Some(chunk) = field.chunk().await.map_err(|e| {
-                    AppCommandError::io_error("Failed to read upload chunk")
+                    AppCommandError::invalid_input("Failed to read upload chunk")
                         .with_detail(e.to_string())
                 })? {
                     let new_total = written.saturating_add(chunk.len() as u64);
@@ -1072,7 +1072,7 @@ async fn stream_and_finalize(
     }
 
     if !file_seen {
-        return Err(AppCommandError::io_error(
+        return Err(AppCommandError::invalid_input(
             "Missing `file` field in multipart upload",
         ));
     }
@@ -1101,7 +1101,7 @@ async fn finalize_staged_upload(
     written: u64,
 ) -> Result<UploadAttachmentResult, AppCommandError> {
     if written == 0 {
-        return Err(AppCommandError::io_error("Uploaded file is empty"));
+        return Err(AppCommandError::invalid_input("Uploaded file is empty"));
     }
 
     let safe_name = sanitize_upload_filename(raw_name.unwrap_or("file"));
@@ -1310,6 +1310,8 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(empty.message, "Uploaded file is empty");
+        // 空文件是调用方的错，回 400，不报成服务器出错。
+        assert_eq!(empty.code, crate::app_error::AppErrorCode::InvalidInput);
 
         let big = vec![0u8; UPLOAD_MAX_BYTES as usize + 1];
         let too_large = store_attachment_bytes_in(root.path(), "big.bin", None, None, &big)
@@ -1319,6 +1321,7 @@ mod tests {
             too_large.i18n_key.as_deref(),
             Some(UPLOAD_I18N_KEY_TOO_LARGE)
         );
+        assert_eq!(too_large.code, crate::app_error::AppErrorCode::InvalidInput);
 
         // Neither left a file anywhere under the root.
         let staged = std::fs::read_dir(root.path().join(".tmp")).unwrap().count();

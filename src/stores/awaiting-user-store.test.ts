@@ -6,6 +6,7 @@ import {
   awaitingUserOf,
   publishAwaitingUser,
   publishTaskAwaiting,
+  replaceServerAwaitingUser,
   useAwaitingUser,
   useAwaitingUserStore,
 } from "./awaiting-user-store"
@@ -40,6 +41,7 @@ function conn(
     pendingPermission: null,
     pendingAskQuestion: null,
     pendingPlanApproval: null,
+    status: "connected",
     ...over,
   }
 }
@@ -50,6 +52,8 @@ beforeEach(() => {
   useAwaitingUserStore.setState({
     bySession: new Map(),
     byTaskConversation: new Set(),
+    byConversation: new Map(),
+    attachedSessions: new Set(),
   })
 })
 
@@ -325,5 +329,120 @@ describe("useAwaitingUser with the task source", () => {
     act(() => publishTaskAwaiting([parkedMerge(2)]))
     const { result } = renderHook(() => useAwaitingUser("sess-10", 10))
     expect(result.current).toBeNull()
+  })
+})
+
+describe("useAwaitingUser with the server source (#707)", () => {
+  const exitPlanMode = {
+    toolCallId: "t1",
+    _meta: { claudeCode: { toolName: "ExitPlanMode" } },
+  }
+
+  it("marks a row this window holds no connection to, after a reload", () => {
+    const a = renderHook(() => useAwaitingUser("sess-a", 1))
+    const b = renderHook(() => useAwaitingUser("sess-b", 2))
+    act(() =>
+      replaceServerAwaitingUser([
+        { conversation_id: 1, external_id: "sess-a", kind: "question" },
+        { conversation_id: 2, external_id: "sess-b", kind: "question" },
+      ])
+    )
+    expect(a.result.current).toBe("question")
+    expect(b.result.current).toBe("question")
+  })
+
+  it("reads a permission that is a plan approval as plan", () => {
+    act(() =>
+      replaceServerAwaitingUser([
+        { conversation_id: 1, kind: "permission", tool_call: exitPlanMode },
+        { conversation_id: 2, kind: "permission", tool_call: { title: "ls" } },
+      ])
+    )
+    expect(renderHook(() => useAwaitingUser(null, 1)).result.current).toBe(
+      "plan"
+    )
+    expect(renderHook(() => useAwaitingUser(null, 2)).result.current).toBe(
+      "permission"
+    )
+  })
+
+  it("lets an attached connection win, even once it waits on nobody", () => {
+    act(() =>
+      replaceServerAwaitingUser([
+        { conversation_id: 1, external_id: "sess-a", kind: "question" },
+      ])
+    )
+    const { result } = renderHook(() => useAwaitingUser("sess-a", 1))
+    act(() =>
+      publishAwaitingUser([
+        conn("c", "sess-a", { pendingPermission: permission }),
+      ])
+    )
+    expect(result.current).toBe("permission")
+    // Answered here: the server's earlier listing must not bring it back.
+    act(() => publishAwaitingUser([conn("c", "sess-a")]))
+    expect(result.current).toBeNull()
+  })
+
+  it("lets the server speak for a session whose connection here dropped", () => {
+    act(() =>
+      publishAwaitingUser([conn("c", "sess-a", { status: "disconnected" })])
+    )
+    act(() =>
+      replaceServerAwaitingUser([
+        { conversation_id: 1, external_id: "sess-a", kind: "question" },
+      ])
+    )
+    expect(renderHook(() => useAwaitingUser("sess-a", 1)).result.current).toBe(
+      "question"
+    )
+    act(() => publishAwaitingUser([conn("c", "sess-a", { status: "error" })]))
+    expect(renderHook(() => useAwaitingUser("sess-a", 1)).result.current).toBe(
+      "question"
+    )
+  })
+
+  it("drops a dropped connection's stale prompt once the server has none", () => {
+    act(() =>
+      publishAwaitingUser([
+        conn("c", "sess-a", {
+          status: "disconnected",
+          pendingAskQuestion: question(),
+        }),
+      ])
+    )
+    act(() => replaceServerAwaitingUser([]))
+    expect(
+      renderHook(() => useAwaitingUser("sess-a", 1)).result.current
+    ).toBeNull()
+    act(() =>
+      publishAwaitingUser([
+        conn("c", "sess-a", { status: "error", pendingPermission: permission }),
+      ])
+    )
+    expect(
+      renderHook(() => useAwaitingUser("sess-a", 1)).result.current
+    ).toBeNull()
+  })
+
+  it("drops a row the next listing no longer has", () => {
+    act(() =>
+      replaceServerAwaitingUser([
+        { conversation_id: 1, kind: "question" },
+        { conversation_id: 2, kind: "question" },
+      ])
+    )
+    const a = renderHook(() => useAwaitingUser(null, 1))
+    const b = renderHook(() => useAwaitingUser(null, 2))
+    act(() => replaceServerAwaitingUser([{ conversation_id: 2, kind: "plan" }]))
+    expect(a.result.current).toBeNull()
+    expect(b.result.current).toBe("plan")
+  })
+
+  it("is a no-op (same reference) when the listing did not change", () => {
+    act(() => replaceServerAwaitingUser([{ conversation_id: 1, kind: "plan" }]))
+    const before = useAwaitingUserStore.getState().byConversation
+    replaceServerAwaitingUser([{ conversation_id: 1, kind: "plan" }])
+    expect(useAwaitingUserStore.getState().byConversation).toBe(before)
   })
 })

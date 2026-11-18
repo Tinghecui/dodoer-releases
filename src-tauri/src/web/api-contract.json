@@ -60,6 +60,7 @@
     "POST /api/acp_list_agent_runtime_skills": "web",
     "POST /api/acp_list_agent_skills": "web",
     "POST /api/acp_list_agents": "web",
+    "POST /api/acp_list_awaiting_user": "web",
     "POST /api/acp_list_background_pending": "web",
     "POST /api/acp_list_connections": "web",
     "POST /api/acp_list_custom_agents": "web",

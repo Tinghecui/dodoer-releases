@@ -3583,7 +3583,9 @@ function awaitingUserChanged(
       before.pendingPlanApproval !== conn.pendingPlanApproval ||
       before.sessionId !== conn.sessionId ||
       before.connectionId !== conn.connectionId ||
-      before.parentConnectionId !== conn.parentConnectionId
+      before.parentConnectionId !== conn.parentConnectionId ||
+      // Cowork fork (#707): a dropped connection stops speaking for its row.
+      before.status !== conn.status
     ) {
       return true
     }

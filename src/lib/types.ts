@@ -877,6 +877,20 @@ export interface BackgroundPendingTask {
 
 export const BACKGROUND_PENDING_EVENT = "conversation://background"
 
+/** Cowork fork (#707): a conversation parked on the user — a permission
+ *  request, a question, a plan approval — as the server reads its live
+ *  connection. Mirrors the Rust `AwaitingUserEntry`; listed by
+ *  `acp_list_awaiting_user` for sidebar rows this client holds no connection
+ *  to (after a reload only the open conversation re-attaches). `tool_call`
+ *  rides along on a permission so a plan approval asked through one can be
+ *  told apart. */
+export interface AwaitingUserEntry {
+  conversation_id: number
+  external_id?: string | null
+  kind: "permission" | "question" | "plan"
+  tool_call?: unknown
+}
+
 /** Why `moveConversations` left a conversation where it was. Mirrors the Rust
  *  `MoveSkipReason`. */
 export type MoveSkipReason =

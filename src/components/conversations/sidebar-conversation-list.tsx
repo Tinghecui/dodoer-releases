@@ -1476,6 +1476,8 @@ export function SidebarConversationList({
     useShallow((s) => ({
       bySession: s.bySession,
       byTaskConversation: s.byTaskConversation,
+      byConversation: s.byConversation,
+      attachedSessions: s.attachedSessions,
     }))
   )
   const isAwaiting = useCallback(

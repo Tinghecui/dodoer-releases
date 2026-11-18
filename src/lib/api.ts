@@ -100,6 +100,7 @@ import type {
   AgentStats,
   SidebarData,
   ConnectionInfo,
+  AwaitingUserEntry,
   BackgroundPendingEntry,
   ConversationConnectionInfo,
   LiveSessionSnapshot,
@@ -529,6 +530,12 @@ export async function acpListBackgroundPending(): Promise<
   BackgroundPendingEntry[]
 > {
   return getTransport().call("acp_list_background_pending")
+}
+
+/** Cowork fork (#707): the conversations parked on the user on the server,
+ *  for the sidebar's "waiting for you" on rows with no connection here. */
+export async function acpListAwaitingUser(): Promise<AwaitingUserEntry[]> {
+  return getTransport().call("acp_list_awaiting_user")
 }
 
 export async function acpGetSessionSnapshot(

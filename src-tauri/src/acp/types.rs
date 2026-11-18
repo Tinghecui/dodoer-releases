@@ -1086,6 +1086,31 @@ impl BackgroundPendingEntry {
     }
 }
 
+/// Cowork 加的（#707）：停在用户身上的对话——权限请求、提问、计划审批，侧栏「等你回答」
+/// 那一行用。`acp_list_awaiting_user` 列出来，给刚加载、没接入这条连接的客户端：
+/// 刷新以后只有打开的那个会话会重新接入，别的行要靠它才不退回「运行中」。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AwaitingUserEntry {
+    pub conversation_id: i32,
+    /// 智能体的会话 id（`conversation.external_id`），可能还没有。
+    #[serde(default)]
+    pub external_id: Option<String>,
+    pub kind: AwaitingUserKind,
+    /// `kind` 是 `permission` 时这条请求的工具调用（原样），前端拿它认出其实是计划审批的
+    /// 权限请求（Claude Code 的 ExitPlanMode、codex 的计划评审）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call: Option<serde_json::Value>,
+}
+
+/// Cowork 加的（#707）：[`AwaitingUserEntry::kind`]，和前端 `AwaitingUserKind` 一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AwaitingUserKind {
+    Permission,
+    Question,
+    Plan,
+}
+
 /// Cowork 加的：[`BackgroundPendingEntry::state`] 的三个值。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

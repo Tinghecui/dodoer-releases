@@ -3597,6 +3597,58 @@ impl ConnectionManager {
         entries
     }
 
+    /// Cowork 加的（#707）：停在用户身上的对话，给侧栏「等你回答」。每个对话看最新那条
+    /// 没断开的连接（和 [`Self::list_background_pending`] 一样），几个提示同时在时按前端
+    /// 叠的顺序：权限请求、提问、计划审批。按对话 id 排序。
+    pub async fn list_awaiting_user(&self) -> Vec<crate::acp::types::AwaitingUserEntry> {
+        use crate::acp::types::{AwaitingUserEntry, AwaitingUserKind};
+        let connections = self.connections.lock().await;
+        // 每个对话最新那条活连接的编号和它的条目（什么都没等就是 `None`）。
+        let mut by_conversation: HashMap<i32, (u64, Option<AwaitingUserEntry>)> = HashMap::new();
+        for conn in connections.values() {
+            let state = conn.state.read().await;
+            if state.status == ConnectionStatus::Disconnected {
+                continue;
+            }
+            let Some(conversation_id) = state.conversation_id else {
+                continue;
+            };
+            let newer = by_conversation
+                .get(&conversation_id)
+                .is_none_or(|(have, _)| state.generation > *have);
+            if !newer {
+                continue;
+            }
+            // 一个问题都没有的提问不出卡片，和前端 `blockingPrompts` 一样不算。
+            let question = state
+                .pending_question
+                .as_ref()
+                .is_some_and(|q| !q.questions.is_empty());
+            let found = if let Some(p) = state.pending_permission.as_ref() {
+                Some((AwaitingUserKind::Permission, Some(p.tool_call.clone())))
+            } else if question {
+                Some((AwaitingUserKind::Question, None))
+            } else if state.pending_plan_approval.is_some() {
+                Some((AwaitingUserKind::Plan, None))
+            } else {
+                None
+            };
+            let entry = found.map(|(kind, tool_call)| AwaitingUserEntry {
+                conversation_id,
+                external_id: state.external_id.clone(),
+                kind,
+                tool_call,
+            });
+            by_conversation.insert(conversation_id, (state.generation, entry));
+        }
+        let mut entries: Vec<_> = by_conversation
+            .into_values()
+            .filter_map(|(_, entry)| entry)
+            .collect();
+        entries.sort_by_key(|e| e.conversation_id);
+        entries
+    }
+
     /// Cowork 加的：计划内重启停机时记「后台任务会被杀」的对话（`restart_resume`）。
     /// 和侧栏的 [`Self::list_background_pending`] 不同：任何一条活着的连接上还有后台任务，
     /// 这个对话就算，不管它是不是最新那条（#530 侧栏改成较新的连接说了算以后，
@@ -8582,6 +8634,109 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(42, 1)]
         );
+    }
+
+    /// #707：刷新后没接入的会话也要知道它停在用户身上。提问、权限请求、计划审批各一条，
+    /// 同一个对话较新的连接说了算，断开的、没绑对话的、什么都没等的不列。
+    #[tokio::test]
+    async fn list_awaiting_user_reports_prompts_of_live_connections() {
+        use crate::acp::plan_approval::PendingPlanApprovalState;
+        use crate::acp::question::PendingQuestionState;
+        use crate::acp::session_state::PendingPermissionState;
+        use crate::acp::types::AwaitingUserKind;
+        let mgr = ConnectionManager::new();
+        let question = || PendingQuestionState {
+            question_id: "q-1".into(),
+            questions: vec![serde_json::from_value(serde_json::json!({
+                "id": "q1",
+                "question": "喜欢哪种颜色？",
+                "header": "颜色",
+                "multi_select": false,
+                "options": [],
+            }))
+            .unwrap()],
+            created_at: chrono::Utc::now(),
+        };
+        let permission = || PendingPermissionState {
+            request_id: "req-1".into(),
+            tool_call_id: "tc-1".into(),
+            tool_call: serde_json::json!({ "toolCallId": "tc-1", "title": "ExitPlanMode" }),
+            options: vec![],
+            created_at: chrono::Utc::now(),
+            queued: 0,
+        };
+        {
+            let mut map = mgr.connections.lock().await;
+            let c1 = fake_connection("c1", Some(42));
+            if let Ok(mut s) = c1.state.try_write() {
+                s.external_id = Some("sess-a".into());
+                s.pending_question = Some(question());
+            }
+            map.insert("c1".into(), c1);
+            // 权限请求和提问都在：权限请求叠在前面。
+            let c2 = fake_connection("c2", Some(43));
+            if let Ok(mut s) = c2.state.try_write() {
+                s.pending_permission = Some(permission());
+                s.pending_question = Some(question());
+            }
+            map.insert("c2".into(), c2);
+            let c3 = fake_connection("c3", Some(44));
+            if let Ok(mut s) = c3.state.try_write() {
+                s.pending_plan_approval = Some(PendingPlanApprovalState {
+                    approval_id: "a-1".into(),
+                    tool_call_id: String::new(),
+                    plan_markdown: "# plan".into(),
+                    created_at: chrono::Utc::now(),
+                });
+            }
+            map.insert("c3".into(), c3);
+            // 较旧的连接在等、较新的没有：这个对话不列。
+            let old = fake_connection("c4", Some(45));
+            if let Ok(mut s) = old.state.try_write() {
+                s.pending_question = Some(question());
+            }
+            map.insert("c4".into(), old);
+            map.insert("c5".into(), fake_connection("c5", Some(45)));
+            // 断开的、没绑对话的不列。
+            let gone = fake_connection("c6", Some(46));
+            if let Ok(mut s) = gone.state.try_write() {
+                s.pending_question = Some(question());
+                s.status = ConnectionStatus::Disconnected;
+            }
+            map.insert("c6".into(), gone);
+            let unbound = fake_connection("c7", None);
+            if let Ok(mut s) = unbound.state.try_write() {
+                s.pending_question = Some(question());
+            }
+            map.insert("c7".into(), unbound);
+            // 一个问题都没有的提问不出卡片，不算在等。
+            let empty = fake_connection("c8", Some(47));
+            if let Ok(mut s) = empty.state.try_write() {
+                s.pending_question = Some(PendingQuestionState {
+                    questions: Vec::new(),
+                    ..question()
+                });
+            }
+            map.insert("c8".into(), empty);
+        }
+        let entries = mgr.list_awaiting_user().await;
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.conversation_id, e.external_id.as_deref(), e.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (42, Some("sess-a"), AwaitingUserKind::Question),
+                (43, None, AwaitingUserKind::Permission),
+                (44, None, AwaitingUserKind::Plan),
+            ]
+        );
+        // 权限请求带着工具调用，前端靠它认出计划审批；别的不带。
+        assert_eq!(
+            entries[1].tool_call.as_ref().and_then(|t| t.get("title")),
+            Some(&serde_json::json!("ExitPlanMode"))
+        );
+        assert!(entries[0].tool_call.is_none());
     }
 
     /// #530 返工：停机恢复名单不跟侧栏的「较新的连接说了算」，任何一条活连接上有后台任务

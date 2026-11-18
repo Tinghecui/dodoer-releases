@@ -56,6 +56,8 @@ export function SidebarBell({
     useShallow((s) => ({
       bySession: s.bySession,
       byTaskConversation: s.byTaskConversation,
+      byConversation: s.byConversation,
+      attachedSessions: s.attachedSessions,
     }))
   )
   // Cowork fork (#386): waiting on background work counts as running, not

@@ -1165,6 +1165,10 @@ pub fn build_router_with_proxy_auth(
             post(handlers::acp::acp_list_background_pending),
         )
         .route(
+            "/acp_list_awaiting_user",
+            post(handlers::acp::acp_list_awaiting_user),
+        )
+        .route(
             "/acp_get_session_snapshot",
             post(handlers::acp::acp_get_session_snapshot),
         )

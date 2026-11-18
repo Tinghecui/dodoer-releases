@@ -600,6 +600,13 @@ pub async fn acp_list_background_pending(
     ))
 }
 
+/// Cowork 加的（#707）：见 `ConnectionManager::list_awaiting_user`。
+pub async fn acp_list_awaiting_user(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<Vec<crate::acp::types::AwaitingUserEntry>>, AppCommandError> {
+    Ok(Json(state.connection_manager.list_awaiting_user().await))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpGetSessionSnapshotParams {

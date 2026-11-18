@@ -12698,6 +12698,16 @@ pub async fn acp_list_background_pending(
     Ok(manager.list_background_pending_with_uncertain(&web).await)
 }
 
+/// Cowork 加的（#707）：停在用户身上的对话，给侧栏「等你回答」（见
+/// `ConnectionManager::list_awaiting_user`）。
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_list_awaiting_user(
+    manager: State<'_, ConnectionManager>,
+) -> Result<Vec<crate::acp::types::AwaitingUserEntry>, AcpError> {
+    Ok(manager.list_awaiting_user().await)
+}
+
 pub(crate) async fn acp_get_session_snapshot_core(
     manager: &ConnectionManager,
     connection_id: &str,

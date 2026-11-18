@@ -552,6 +552,14 @@ export function describeEditFiles(
       str(parsed, "filePath")
     if (filePath) {
       const outputDiff = output && /^@@ /m.test(output) ? output : null
+      // 覆盖已有文件的 Write：Claude Code 的历史重建把 structuredPatch 还原成
+      // diff 放进 output，按它算，和实时那条路一样是改了已有文件；新建的
+      // 文件 structuredPatch 为空、没有 diff，才按新内容算。
+      if (toolName === "write" && outputDiff) {
+        return [
+          { ...changeFromUnifiedDiff(filePath, outputDiff), path: filePath },
+        ]
+      }
       if (toolName === "write") {
         const content = str(parsed, "content") ?? str(parsed, "new_source")
         return [
@@ -706,6 +714,11 @@ export function editDiffText(
     return raw.trim()
       ? { text: raw, numbered: NUMBERED_HUNK_RE.test(raw) }
       : null
+  }
+
+  // 覆盖已有文件的 Write，output 里是带真实行号的 diff，画它而不是从空文件生成。
+  if (name === "write" && output && NUMBERED_HUNK_RE.test(output)) {
+    return { text: output, numbered: true }
   }
 
   if (name === "write" || name === "notebookedit") {

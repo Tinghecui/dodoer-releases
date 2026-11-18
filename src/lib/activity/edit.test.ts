@@ -188,6 +188,39 @@ describe("describeEditFiles", () => {
     ).toMatchObject({ path: "/r/n.ipynb", additions: null, deletions: null })
   })
 
+  // Claude Code 的历史重建：覆盖已有文件的 Write，解析器把 structuredPatch
+  // 还原成 unified diff 放进 output，要和实时那条路一样算成改了已有文件。
+  it("counts a history Write over an existing file from its output diff", () => {
+    const output = [
+      "--- a/scratch/c2.txt",
+      "+++ b/scratch/c2.txt",
+      "@@ -1,3 +1,2 @@",
+      "-old1",
+      "-old2",
+      "-old3",
+      "+line1",
+      "+line2",
+      "",
+    ].join("\n")
+    const input = JSON.stringify({
+      file_path: "scratch/c2.txt",
+      content: "line1\nline2\n",
+    })
+    expect(describeEditFiles("write", input, output)).toEqual([
+      {
+        path: "scratch/c2.txt",
+        op: "update",
+        additions: 2,
+        deletions: 3,
+        lineRange: { start: 1, end: 2 },
+      },
+    ])
+    expect(editDiffText("write", input, output)).toEqual({
+      text: output,
+      numbered: true,
+    })
+  })
+
   it("accepts OpenCode's camelCase spelling", () => {
     const input = JSON.stringify({
       filePath: "/r/a.ts",

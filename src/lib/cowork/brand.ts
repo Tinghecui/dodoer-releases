@@ -42,15 +42,22 @@ export const COWORK_BUILD = isCoworkBuild(process.env.NEXT_PUBLIC_PRODUCT_NAME)
 
 // 名字后面可以紧跟一个 s：德语的所有格（"dodoers Fenster" = dodoer 的窗口），
 // 也是产品名，换成 "CoTeams"（捕获组 1 是这个 s）。
+// 下面四条名字后面那段判断写法一样：后面紧跟短横线的，只有短横线后面是大写字母
+// 才算产品名（德语复合词 "dodoer-Daten"、"Cowork-Server"），小写的是标识符
+// （"dodoer-managed"、"codeg-mcp"）；后面紧跟冒号的，冒号后面是空白或句末
+// 才算产品名（西/葡/阿语的 "a través de dodoer: desde"），紧跟字符的是链接或
+// 键（"dodoer://"、"dodoer:x"）。\p{Lu} 要 u 标志。
 // 大写的 "Codeg" 和下面几条一样不碰路径、命令和标识符（`/opt/Codeg/bin`、
 // `Codeg-x`、`Codeg.app`），反引号里的也不换（见 brandTextAs）。
-const UPSTREAM_NAME_RE = /(?<![-\w./~`$@:\\])Codeg(s?)(?![-\w/~`:\\]|\.\w)/g
+const UPSTREAM_NAME_RE =
+  /(?<![-\w./~`$@:\\])Codeg(s?)(?![\w/~`\\]|-(?!\p{Lu})|:(?=\S)|\.\w)/gu
 
 /**
  * The fork's own spelling, "dodoer" / "Dodoer", as a word: not inside an
  * identifier such as `dodoer-managed` or `dodoer_x`, and not a path segment.
  */
-const SOURCE_NAME_RE = /(?<![-\w./~`$@:\\])[Dd]odoer(s?)(?![-\w/~`:\\]|\.\w)/g
+const SOURCE_NAME_RE =
+  /(?<![-\w./~`$@:\\])[Dd]odoer(s?)(?![\w/~`\\]|-(?!\p{Lu})|:(?=\S)|\.\w)/gu
 
 /**
  * Lower-case "codeg" used as the product name in prose ("every codeg window",
@@ -59,7 +66,8 @@ const SOURCE_NAME_RE = /(?<![-\w./~`$@:\\])[Dd]odoer(s?)(?![-\w/~`:\\]|\.\w)/g
  * no `.` before it or `.x` after it (`~/.codeg`, `codeg.db`, `codeg-mcp`,
  * `[providers.codeg]`). A sentence-ending "codeg." still counts as prose.
  */
-const PROSE_NAME_RE = /(?<![-\w./~`$@:\\"])codeg(s?)(?![-\w/~`:\\"]|\.\w)/g
+const PROSE_NAME_RE =
+  /(?<![-\w./~`$@:\\"])codeg(s?)(?![\w/~`\\"]|-(?!\p{Lu})|:(?=\S)|\.\w)/gu
 
 /**
  * The server build's old name "Cowork" as a word, written like
@@ -67,7 +75,8 @@ const PROSE_NAME_RE = /(?<![-\w./~`$@:\\"])codeg(s?)(?![-\w/~`:\\"]|\.\w)/g
  * lower-case `cowork` command (case-sensitive), nor `Cowork-x`, `Cowork_x`,
  * `Cowork/x`, `Cowork.x`.
  */
-const COWORK_NAME_RE = /(?<![-\w./~`$@:\\])Cowork(s?)(?![-\w/~`:\\]|\.\w)/g
+const COWORK_NAME_RE =
+  /(?<![-\w./~`$@:\\])Cowork(s?)(?![\w/~`\\]|-(?!\p{Lu})|:(?=\S)|\.\w)/gu
 
 /** Replace the upstream product name in a user-visible string. */
 export function brandText(text: string, name: string = PRODUCT_NAME): string {

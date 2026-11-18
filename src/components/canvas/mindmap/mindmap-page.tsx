@@ -91,6 +91,11 @@ export function MindMapPage() {
   const openFolders = useAppWorkspaceStore((s) => s.folders)
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const conversations = useAppWorkspaceStore((s) => s.conversations)
+  // 会话列表没加载出来时，空列表不等于「项目里没有会话」。
+  const conversationsError = useAppWorkspaceStore((s) => s.conversationsError)
+  const refreshConversations = useAppWorkspaceStore(
+    (s) => s.refreshConversations
+  )
   // The folder of the conversation in front of the user. A draft does not
   // count: an empty "new chat" in a default folder says nothing of the work.
   const activeFolderId = useTabStore((s) => {
@@ -361,7 +366,25 @@ export function MindMapPage() {
         )}
 
       <div className="relative min-h-0 flex-1">
-        {project && members.length === 0 ? (
+        {project && members.length === 0 && conversationsError ? (
+          <div
+            className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center text-sm text-destructive"
+            role="alert"
+            data-mindmap-conversations-error
+          >
+            <p className="max-w-sm">
+              {t("conversationsLoadFailed", { message: conversationsError })}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => void refreshConversations()}
+            >
+              {t("retry")}
+            </Button>
+          </div>
+        ) : project && members.length === 0 ? (
           <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
             {t("emptyProject")}
           </div>

@@ -7751,6 +7751,7 @@
     "removeFromCategory": "إزالة من الفئة",
     "moveFailed": "تعذّر نقل المحادثة: {message}",
     "loadFailed": "تعذّر تحميل الخريطة الذهنية: {message}",
+    "conversationsLoadFailed": "تعذر تحميل قائمة المحادثات: {message}",
     "retry": "إعادة المحاولة",
     "emptyProject": "لا توجد محادثات في هذا المشروع بعد.",
     "noMatches": "لا يوجد ما يطابق «{query}»",

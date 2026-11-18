@@ -2078,7 +2078,7 @@
   },
   "CollaborationSettings": {
     "sectionTitle": "Zusammenarbeit",
-    "sectionDescription": "Wie Agenten zusammenarbeiten und auf welche dodoer-eigenen Werkzeuge sie innerhalb einer Unterhaltung zugreifen dürfen."
+    "sectionDescription": "Wie Agenten zusammenarbeiten und auf welche von dodoers eigenen Werkzeugen sie innerhalb einer Unterhaltung zugreifen dürfen."
   },
   "LoginPage": {
     "documentTitle": "Anmelden - dodoer",
@@ -7751,6 +7751,7 @@
     "removeFromCategory": "Aus Kategorie entfernen",
     "moveFailed": "Die Unterhaltung konnte nicht verschoben werden: {message}",
     "loadFailed": "Die Mindmap konnte nicht geladen werden: {message}",
+    "conversationsLoadFailed": "Die Unterhaltungsliste konnte nicht geladen werden: {message}",
     "retry": "Erneut versuchen",
     "emptyProject": "Dieses Projekt hat noch keine Unterhaltungen.",
     "noMatches": "Keine Treffer für „{query}“",

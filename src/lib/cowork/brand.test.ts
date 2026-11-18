@@ -100,6 +100,35 @@ describe("brand overlay", () => {
     }
   })
 
+  // 德语把名字和名词用短横线连成一个词（dodoer-Daten），西/葡/阿语的句子里
+  // 名字后面直接跟冒号再空格：这些都是产品名。冒号后面紧跟字符（dodoer://、
+  // dodoer:x）、短横线后面是小写（dodoer-managed）的还是标识符。
+  it("replaces the name before a German compound noun or a sentence colon", () => {
+    const cases: Array<[string, string]> = [
+      ["alle dodoer-Daten dieses Geräts", "alle CoTeam-Daten dieses Geräts"],
+      ["auf dem dodoer-Host läuft", "auf dem CoTeam-Host läuft"],
+      ["deine aktuelle dodoer-Datenbank", "deine aktuelle CoTeam-Datenbank"],
+      ["den verbundenen Cowork-Server", "den verbundenen CoTeam-Server"],
+      ["die Codeg-Signatur", "die CoTeam-Signatur"],
+      [
+        "a través de dodoer: desde scripts",
+        "a través de CoTeam: desde scripts",
+      ],
+      ["prompts pelo dodoer: em scripts", "prompts pelo CoTeam: em scripts"],
+      ["gerenciado pelo codeg: troque-o", "gerenciado pelo CoTeam: troque-o"],
+      ["مضيف dodoer: يُمرَّر", "مضيف CoTeam: يُمرَّر"],
+      ["ends with dodoer:", "ends with CoTeam:"],
+      ["the dodoer-managed key", "the dodoer-managed key"],
+      ["open dodoer://open", "open dodoer://open"],
+      ["dodoer:x stays", "dodoer:x stays"],
+      ["run codeg-mcp now", "run codeg-mcp now"],
+      ["the Cowork-sso cookie", "the Cowork-sso cookie"],
+    ]
+    for (const [input, expected] of cases) {
+      expect(brandText(input, "CoTeam")).toBe(expected)
+    }
+  })
+
   it("replaces the whole word Cowork, not identifiers or paths built from it", () => {
     const cases: Array<[string, string]> = [
       ["through the Cowork server", "through the CoTeam server"],
@@ -245,7 +274,7 @@ describe("brand overlay", () => {
           .replace(`Generated with ${COMMENT_FOOTER_NAME}`, "")
       )
       const word =
-        /(?<![-\w./~$@:\\"])(dodoer|Dodoer|Codeg|codeg|Cowork)s?(?![-\w/~:\\"]|\.\w)/
+        /(?<![-\w./~$@:\\"])(dodoer|Dodoer|Codeg|codeg|Cowork)s?(?![\w/~\\"]|-(?!\p{Lu})|:(?=\S)|\.\w)/u
       expect(prose.filter((s) => word.test(s))).toEqual([])
       expect(JSON.stringify(branded)).toContain("CoTeam")
       // 标识符和路径没被碰到

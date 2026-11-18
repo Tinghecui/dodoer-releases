@@ -135,6 +135,7 @@ function setWorkspace(over: {
   folders?: FolderDetail[]
   activeFolderId?: number | null
   conversations?: DbConversationSummary[]
+  conversationsError?: string | null
 }) {
   // The active folder is the active tab's: a saved conversation in it.
   setActiveTab(over.activeFolderId ?? null, over.activeFolderId ? 999 : null)
@@ -151,6 +152,7 @@ function setWorkspace(over: {
       conv(40, 4),
       conv(50, 5),
     ],
+    conversationsError: over.conversationsError ?? null,
   })
 }
 
@@ -322,6 +324,25 @@ describe("MindMapPage", () => {
         "Open a project folder to see its conversations as a mind map."
       )
     ).toBeTruthy()
+  })
+
+  it("says the conversation list failed to load instead of calling the project empty", async () => {
+    const refreshConversations = vi.fn(async () => {})
+    setWorkspace({
+      activeFolderId: 1,
+      conversations: [],
+      conversationsError: "HTTP 500",
+    })
+    useAppWorkspaceStore.setState({ refreshConversations })
+    renderPage()
+    expect(
+      await screen.findByText("Could not load the conversation list: HTTP 500")
+    ).toBeTruthy()
+    expect(
+      screen.queryByText("This project has no conversations yet.")
+    ).toBeNull()
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(refreshConversations).toHaveBeenCalledTimes(1)
   })
 
   it("hands the search to the map", async () => {

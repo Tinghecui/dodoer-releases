@@ -7751,6 +7751,7 @@
     "removeFromCategory": "Quitar de la categoría",
     "moveFailed": "No se pudo mover la conversación: {message}",
     "loadFailed": "No se pudo cargar el mapa mental: {message}",
+    "conversationsLoadFailed": "No se pudo cargar la lista de conversaciones: {message}",
     "retry": "Reintentar",
     "emptyProject": "Este proyecto aún no tiene conversaciones.",
     "noMatches": "Nada coincide con «{query}»",

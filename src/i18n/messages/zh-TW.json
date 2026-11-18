@@ -7751,6 +7751,7 @@
     "removeFromCategory": "移出分類",
     "moveFailed": "無法移動會話：{message}",
     "loadFailed": "無法載入心智圖：{message}",
+    "conversationsLoadFailed": "無法載入會話列表：{message}",
     "retry": "重試",
     "emptyProject": "這個專案還沒有會話。",
     "noMatches": "沒有與「{query}」相符的內容",

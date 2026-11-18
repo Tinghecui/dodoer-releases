@@ -258,6 +258,9 @@ mod tauri_app {
         // The child daemon (`local_daemon`): SIGTERM, so it cancels running
         // turns and closes as `codeg-server` does, then kill.
         crate::commands::local_daemon::stop_on_exit(app);
+        // Cowork fork (issue #413): a new version quit cleanly before its start
+        // confirmation: this boot does not count towards rolling it back.
+        crate::commands::app_update::note_clean_exit();
         // Last: a hang or a crash before here is still reported.
         crate::crash_report::note_clean_exit();
     }

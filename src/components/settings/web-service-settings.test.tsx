@@ -14,8 +14,8 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock("@/lib/api", () => ({
   ...api,
-  DEFAULT_WEB_SERVICE_HOST: "0.0.0.0",
-  WEB_SERVICE_HOSTS: ["0.0.0.0", "127.0.0.1"],
+  DEFAULT_WEB_SERVICE_HOST: "127.0.0.1",
+  WEB_SERVICE_HOSTS: ["127.0.0.1", "0.0.0.0"],
   WEB_SERVICE_STATUS_CHANGED_EVENT: "web-service://status-changed",
 }))
 const handlers = new Map<string, (p: unknown) => void>()
@@ -91,7 +91,21 @@ beforeEach(() => {
 
 describe("WebServiceSettings", () => {
   it("passes the chosen bind host to the start", async () => {
-    api.getWebServiceConfig.mockResolvedValue(config({ host: "127.0.0.1" }))
+    api.getWebServiceConfig.mockResolvedValue(config({ host: "0.0.0.0" }))
+    mount()
+    await screen.findByText("All interfaces (0.0.0.0)")
+    fireEvent.click(screen.getByRole("button", { name: "Start" }))
+    await waitFor(() =>
+      expect(api.startWebServer).toHaveBeenCalledWith({
+        port: 3080,
+        host: "0.0.0.0",
+        token: "secret",
+      })
+    )
+  })
+
+  /** Never chosen means the default, which is this computer only. */
+  it("starts on loopback when no bind host was ever saved", async () => {
     mount()
     await screen.findByText("This computer only (127.0.0.1)")
     fireEvent.click(screen.getByRole("button", { name: "Start" }))
@@ -213,8 +227,8 @@ describe("WebServiceSettings", () => {
         port: 3080,
         token: "secret",
         autoStart: true,
-        // A saved `host: null` reads as our default, all interfaces.
-        host: "0.0.0.0",
+        // A saved `host: null` reads as the default, this computer only.
+        host: "127.0.0.1",
       })
     )
   })

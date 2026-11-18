@@ -9,8 +9,8 @@
 //!   cannot reach it by DNS rebinding.
 //!
 //! The desktop's "Web service" is a different thing on purpose: it is off by
-//! default, binds `0.0.0.0`, and serves the whole workbench with the full
-//! token. A local script needs none of that.
+//! default, binds `127.0.0.1` unless set to every interface, and serves the
+//! whole workbench with the full token. A local script needs none of that.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};

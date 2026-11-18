@@ -52,6 +52,15 @@
 //! downloaded update is put in place on its own once the Mac has been idle
 //! for two checks a minute apart ([`start_idle_restart`]): the same way as
 //! the restart button, then reopened in the background (`open -g`).
+//!
+//! Cowork fork (issue #413, row 3): on macOS, before a new version is put in
+//! place (the restart button, the idle restart, the launch; not a rollback),
+//! the running app bundle is copied to `<data dir>/update/previous/`
+//! ([`crate::update::previous`]). When the new version then fails to be
+//! confirmed on two boots in a row, the third boot puts the copy back and
+//! relaunches into it ([`roll_back_at_launch`]); that version is no longer
+//! downloaded or installed on its own (the journal's `bad_versions`), though
+//! the user can still install it by hand.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -63,6 +72,7 @@ use crate::app_error::AppCommandError;
 use crate::update::channel::{self, UpdateChannel};
 use crate::update::idle::{self, IdleSnapshot, IdleStreak, IdleTries, IdleVerdict, UpdateMode};
 use crate::update::journal::{self, Announcement, ApplyHow, Journal, Outcome, Trigger};
+use crate::update::previous::{self, AutoRollback, RollbackCheck};
 use crate::update::restart_install::{self, RestartInstallOutcome};
 use crate::update::rollback::{self, AppRollbackTarget, ReleaseSource};
 use crate::update::staged::{self, Check, Restored, Verdict};
@@ -190,8 +200,13 @@ fn init_journal(app: &tauri::AppHandle, data_dir: &Path) {
     if JOURNAL_HOME.set(home).is_err() {
         return;
     }
-    if let Some(Some(outcome)) = with_journal(|j, running| j.on_boot(running, now())) {
-        early_outcomes().push(outcome);
+    // 自动退回的那条是没起来的那一版留下的，退回到的这一版启动时补报。
+    let found = with_journal(|j, running| {
+        let unreported = j.take_unreported();
+        (unreported, j.on_boot(running, now()))
+    });
+    if let Some((unreported, booted)) = found {
+        early_outcomes().extend(unreported.into_iter().chain(booted));
     }
 }
 
@@ -498,12 +513,27 @@ static STAGED_ROOT: OnceLock<PathBuf> = OnceLock::new();
 /// signature (`verify`). Anything else is removed ([`staged::verdict`]).
 /// Reads the package (well over 100 MB) and checks it: call it off the
 /// runtime's workers. Never goes to the network.
-fn stored_install(app: &tauri::AppHandle) -> Option<StagedInstall> {
+///
+/// Cowork fork (issue #413): with `skip_bad` (the launch, and the start
+/// making it ready to restart into), a stored version that was rolled back
+/// here before (`bad_versions`) is removed instead: it is not put in place on
+/// its own. `perform_app_update` takes it as it is.
+fn stored_install(app: &tauri::AppHandle, skip_bad: bool) -> Option<StagedInstall> {
     if !STORES_PACKAGE {
         return None;
     }
     let root = STAGED_ROOT.get()?;
     let stored = staged::read(root)?;
+    if skip_bad && with_journal(|j, _| j.is_bad(&stored.version)) == Some(true) {
+        tracing::info!(
+            "[update] removing the stored package {} (bad_version)",
+            stored.version
+        );
+        if let Err(e) = staged::clear(root) {
+            tracing::warn!("[update] could not remove the stored package: {e}");
+        }
+        return None;
+    }
     let quit = Arc::new(AtomicBool::new(false));
     // `Ok(None)`: the plugin restored it and found it no newer than this
     // version.
@@ -576,6 +606,7 @@ fn use_stored_install(
     *staged_install() = Some(install);
     journal_event(|j, running| {
         j.package_reused(running, &version, trigger, current_channel(), bytes, now());
+        forgive_on_manual(j, trigger, &version);
         None
     });
     tracing::info!("[update] using the stored package {version}, no download");
@@ -594,7 +625,7 @@ fn use_stored_install(
 pub fn restore_staged_at_start(app: &tauri::AppHandle, data_dir: &Path) {
     let _ = STAGED_ROOT.set(staged::root(data_dir));
     let left = launch_leftover().take();
-    let Some(install) = left.or_else(|| stored_install(app)) else {
+    let Some(install) = left.or_else(|| stored_install(app, true)) else {
         return;
     };
     let handle = {
@@ -616,6 +647,158 @@ static LAUNCH_LEFTOVER: Mutex<Option<StagedInstall>> = Mutex::new(None);
 
 fn launch_leftover() -> MutexGuard<'static, Option<StagedInstall>> {
     LAUNCH_LEFTOVER.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Cowork fork (issue #413): the user asked for `version` themselves (the
+/// "Update to vX" button): a version rolled back here before is theirs to try
+/// again, and put in place like any other from here on.
+fn forgive_on_manual(j: &mut Journal, trigger: Trigger, version: &str) {
+    if trigger == Trigger::Manual && j.forgive(version) {
+        tracing::info!("[update] {version} is installed by hand; no longer held back");
+    }
+}
+
+/// Whether the previous app bundle is kept before a new version goes in
+/// place: macOS only ([`previous::keeps_previous`]).
+const KEEPS_PREVIOUS: bool = previous::keeps_previous(restart_install::CURRENT_PLATFORM);
+
+/// The `.app` bundle this process runs from (macOS); None elsewhere, or when
+/// it is not running from one.
+fn running_bundle(app: &tauri::AppHandle) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::Manager;
+        let exe = tauri::process::current_binary(&app.env()).ok()?;
+        crate::relaunch::app_bundle(&exe).map(Path::to_path_buf)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        None
+    }
+}
+
+/// Cowork fork (issue #413): before a new version goes in place, copy the
+/// running bundle to `<data dir>/update/previous/<this version>.app`
+/// ([`previous::keep_previous`]), and record in the journal whether that
+/// worked (`previous_kept`). A failure is only a warning: the update goes on.
+/// Blocking (`cp`): call it off the runtime's workers.
+fn keep_previous_bundle(app: &tauri::AppHandle) {
+    let Some(home) = JOURNAL_HOME.get() else {
+        return;
+    };
+    let kept = match running_bundle(app) {
+        Some(bundle) => match previous::keep_previous(
+            Path::new(previous::CP),
+            &bundle,
+            &previous::root(&home.data_dir),
+            &home.running,
+        ) {
+            Ok(path) => {
+                tracing::info!("[update] kept the previous version at {}", path.display());
+                true
+            }
+            Err(e) => {
+                tracing::warn!("[update] could not keep the previous version: {e}");
+                false
+            }
+        },
+        None => {
+            tracing::warn!("[update] could not keep the previous version: not in an app bundle");
+            false
+        }
+    };
+    journal_event(|j, _| {
+        j.note_previous_kept(kept);
+        None
+    });
+}
+
+/// Cowork fork (issue #413): at launch, on macOS, before the launch apply
+/// (once the runtime lock is held, before the database): when this process is
+/// the new version an update put in place and its last two boots were neither
+/// confirmed nor clean exits ([`journal::ROLL_BACK_AFTER_BOOTS`]), put the
+/// bundle kept before the update back ([`previous::swap_back`]), record
+/// `rolled_back` (the version goes to `bad_versions`, the report waits for the
+/// version rolled back to) and relaunch into it, without `shut_down`. When it
+/// cannot (no kept bundle, the folder not writable, the swap failing), it
+/// starts as it is and the journal's rules of #412 carry on.
+fn roll_back_at_launch(app: &tauri::AppHandle, data_dir: &Path, sole_instance: bool) {
+    let path = journal::path(data_dir);
+    let running = app.package_info().version.to_string();
+    let guard = JOURNAL_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut journal = journal::load(&path, &running);
+    let Some(attempt) = journal.applying() else {
+        return;
+    };
+    let (from, to, boots) = (attempt.from.clone(), attempt.to.clone(), attempt.boots);
+    let previous_kept = attempt.previous_kept == Some(true);
+    let kept = previous::bundle_name(&from).map(|name| previous::root(data_dir).join(name));
+    let bundle = running_bundle(app);
+    let decision = previous::auto_rollback(RollbackCheck {
+        platform: restart_install::CURRENT_PLATFORM,
+        running: &running,
+        applying_to: Some(&to),
+        boots,
+        previous_kept,
+        previous_present: kept.as_deref().is_some_and(Path::is_dir),
+        bundle_writable: bundle.as_deref().is_some_and(staged::bundle_writable),
+        sole_instance,
+    });
+    if let AutoRollback::Skip(why) = decision {
+        if to == running && boots >= journal::ROLL_BACK_AFTER_BOOTS {
+            tracing::warn!("[update] {to} did not start {boots} times; not rolling back ({why})");
+        }
+        return;
+    }
+    let (Some(kept), Some(bundle)) = (kept, bundle) else {
+        return;
+    };
+    // 先存 rolled_back 再换包：存不上就不换（不然退回到的那一版读到的还是
+    // applying，会再自动装没起来的这一版）；换不回去就把日志恢复原样。
+    if let Err(e) = journal::roll_back_saved(
+        &mut journal,
+        &running,
+        now(),
+        |j| journal::save(&path, j),
+        || {
+            previous::swap_back(
+                Path::new(previous::CP),
+                &bundle,
+                &kept,
+                &previous::failed_root(data_dir),
+                &to,
+            )
+        },
+    ) {
+        tracing::warn!("[update] {to} did not start {boots} times; not rolled back: {e}");
+        return;
+    }
+    drop(guard);
+    tracing::warn!("[update] {to} did not start {boots} times, rolled back to {from}");
+    #[cfg(target_os = "macos")]
+    {
+        // The process ends without dropping the log guard: give the log
+        // writer a moment to get the lines above out.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // `relaunch_now` 只在起不来时才返回，返回的一定是错误。
+        let Err(e) = crate::relaunch::relaunch_now(app);
+        tracing::error!("[update] cannot start the relauncher ({e}); tauri restarts instead");
+    }
+    // The previous bundle is in place: this process must not go on as the
+    // version that did not start. On the main thread `restart()` relaunches
+    // straight away.
+    app.restart();
+}
+
+/// Cowork fork (issue #413): the end of `lib::shut_down`. A clean exit of the
+/// new version before its start confirmation takes back the boot counted for
+/// it ([`Journal::on_clean_exit`]), so opening and closing it at once is not a
+/// failed start.
+pub(crate) fn note_clean_exit() {
+    if with_journal(|j, running| j.on_clean_exit(running)) == Some(true) {
+        tracing::info!("[update] quit before the start confirmation; this boot does not count");
+    }
 }
 
 /// Whether the app bundle this process runs from, and the folder it is in,
@@ -657,9 +840,11 @@ pub fn apply_at_launch(app: &tauri::AppHandle, data_dir: &Path, sole_instance: b
     if !staged::applies_at_launch(platform) {
         return;
     }
+    // 先看要不要自动退回（issue #413）：要的话不会回来。
+    roll_back_at_launch(app, data_dir, sole_instance);
     init_journal(app, data_dir);
     let _ = STAGED_ROOT.set(staged::root(data_dir));
-    let install = stored_install(app);
+    let install = stored_install(app, true);
     let tried = with_journal(|j, _| j.launch_apply_tried.clone()).flatten();
     let earlier_outcome = !early_outcomes().is_empty();
     let decision = staged::launch_apply(staged::LaunchCheck {
@@ -710,6 +895,10 @@ pub fn apply_at_launch(app: &tauri::AppHandle, data_dir: &Path, sole_instance: b
         return;
     }
     let StagedInstall { update, bytes, .. } = install;
+    // 换上之前留一份正在运行的应用包（issue #413）。
+    if KEEPS_PREVIOUS {
+        keep_previous_bundle(app);
+    }
     tracing::info!("[update] installing {version} at launch");
     // On the main thread, before the event loop: the bundle is writable, so
     // the plugin swaps it without asking for a password (which it would show
@@ -849,7 +1038,7 @@ async fn run_download(
     if STORES_PACKAGE && downgrade.is_none() {
         let reuse = app.clone();
         if let Ok(Some(install)) =
-            tauri::async_runtime::spawn_blocking(move || stored_install(&reuse)).await
+            tauri::async_runtime::spawn_blocking(move || stored_install(&reuse, false)).await
         {
             use_stored_install(install, &handle, &emitter, trigger);
             return Ok(());
@@ -887,6 +1076,7 @@ async fn run_download(
     let version = update.version.clone();
     journal_event(|j, running| {
         j.begin_download(running, &version, trigger, update_channel, now());
+        forgive_on_manual(j, trigger, &version);
         None
     });
 
@@ -961,8 +1151,9 @@ pub struct AppUpdateCheck {
     pub channel: UpdateChannel,
     /// The newer release on the channel, or null when there is none.
     pub update: Option<CheckedUpdate>,
-    /// The release found is one that did not start here before and is not
-    /// installed on its own (issue #413, row 3); always false until then.
+    /// The release found is one that did not start here before and was rolled
+    /// back (the journal's `bad_versions`, issue #413): not downloaded or
+    /// installed on its own, though the user may still install it by hand.
     pub blocked: bool,
 }
 
@@ -988,6 +1179,12 @@ pub async fn check_app_update(app: tauri::AppHandle) -> Result<AppUpdateCheck, A
         // "timed out" is what `normalizeAppUpdateError` keys on.
         .map_err(|_| AppCommandError::network("Update check timed out"))?
         .map_err(|e| AppCommandError::network(e.to_string()))?;
+    let found = update.as_ref().map(|update| update.version.clone());
+    let blocked = tauri::async_runtime::spawn_blocking(move || {
+        with_journal(|j, _| j.blocked(found.as_deref())).unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false);
     Ok(AppUpdateCheck {
         current_version: app.package_info().version.to_string(),
         channel: update_channel,
@@ -1002,7 +1199,7 @@ pub async fn check_app_update(app: tauri::AppHandle) -> Result<AppUpdateCheck, A
                 .and_then(|date| date.as_str())
                 .map(str::to_string),
         }),
-        blocked: false,
+        blocked,
     })
 }
 
@@ -1043,6 +1240,10 @@ async fn restart_into_update(
     };
     journal_event(|j, _| {
         j.apply_started(how, now());
+        // 用户自己点了「重启以更新」：之前退回过的这一版也照装（issue #413）。
+        if let (ApplyHow::Click, Some(version)) = (how, claimed.version.as_deref()) {
+            forgive_on_manual(j, Trigger::Manual, version);
+        }
         None
     });
     restart_intent_claimed(claimed.version.as_deref());
@@ -1191,8 +1392,16 @@ async fn install_and_quit(
     // there. On macOS it may need an administrator password: the plugin then
     // shows the prompt on the main thread and waits for it on this one, so
     // this can be neither the main thread nor a runtime worker.
-    let outcome = tauri::async_runtime::spawn_blocking(move || update.install(bytes))
-        .await
+    // 换上之前留一份正在运行的应用包（issue #413）；回退下的那一版不留。
+    let keep = KEEPS_PREVIOUS && !READY_IS_ROLLBACK.load(Ordering::SeqCst);
+    let keeping = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        if keep {
+            keep_previous_bundle(&keeping);
+        }
+        update.install(bytes)
+    })
+    .await
         .map_err(|e| e.to_string())
         .and_then(|r| r.map_err(|e| e.to_string()));
     let message = match restart_install::restart_install_outcome(outcome, INSTALL_ENDS_APP) {
@@ -1444,12 +1653,17 @@ fn idle_tried_here<R>(f: impl FnOnce(&mut IdleTries) -> R) -> R {
 /// 下好的 `version` 是不是回退下的、自动重启试过几次（[`idle::watch_facts`]）。
 /// 升级日志丢了、坏了也不把回退当成普通升级，次数也照样数：内存里那份和日志
 /// 里的合起来看。
+///
+/// Cowork fork (issue #413): a version rolled back here before
+/// (`bad_versions`) counts as a rollback here, so it is not put in place on
+/// its own either.
 fn idle_watch_facts(version: &str) -> (bool, u32) {
     let journal = with_journal(|j, _| {
         let rollback = j
             .attempt
             .as_ref()
-            .is_some_and(|a| a.trigger == Trigger::Rollback);
+            .is_some_and(|a| a.trigger == Trigger::Rollback)
+            || j.is_bad(version);
         (rollback, j.idle_tries(version))
     });
     idle::watch_facts(

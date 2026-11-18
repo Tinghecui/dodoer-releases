@@ -589,6 +589,26 @@ mod tests {
     }
 
     #[test]
+    fn a_rollback_is_filed_as_a_problem_of_the_version_that_did_not_start() {
+        // 1.6.41 连着两次没起来，第 3 次启动时退回了 1.6.40（issue #413）。
+        let mut rolled_back = outcome(UpdateResult::RolledBack);
+        rolled_back.running = "1.6.41".to_string();
+        rolled_back.boots = 2;
+        let report = update_report(&rolled_back, "macos", "0123456789ab");
+        assert_eq!(
+            report.fingerprint,
+            ["desktop-native", "update", "rolled_back", "-"]
+        );
+        assert_eq!(report.tags["update_result"], "rolled_back");
+        // 换上之前的版本（退回到的那一版）和没起来的那一版。
+        assert_eq!(report.tags["update_from"], "1.6.40");
+        assert_eq!(report.tags["update_to"], "1.6.41");
+        assert_eq!(report.tags["update_channel"], "early");
+        assert_eq!(report.version, "1.6.41");
+        assert_eq!(report.details["boots"], 2);
+    }
+
+    #[test]
     fn a_failed_update_carries_its_scrubbed_error_under_the_running_version() {
         let mut failed = outcome(UpdateResult::InstallFailed);
         failed.how = None;

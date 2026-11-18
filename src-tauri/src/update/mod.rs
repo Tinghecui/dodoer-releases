@@ -26,6 +26,11 @@ pub mod journal;
 #[cfg(any(feature = "tauri-runtime", test))]
 #[cfg_attr(not(feature = "tauri-runtime"), allow(dead_code))]
 pub mod idle;
+// Cowork fork (issue #413): desktop only (`commands::app_update`); compiled
+// for the tests in every mode.
+#[cfg(any(feature = "tauri-runtime", test))]
+#[cfg_attr(not(feature = "tauri-runtime"), allow(dead_code))]
+pub mod previous;
 // Desktop only (`commands::app_update`); compiled for the tests in every mode.
 #[cfg(any(feature = "tauri-runtime", test))]
 #[cfg_attr(not(feature = "tauri-runtime"), allow(dead_code))]

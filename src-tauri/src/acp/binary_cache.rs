@@ -1235,7 +1235,7 @@ async fn download_file_with_progress(
 fn unpack_download(
     archive_url: &str,
     archive_path: &PathBuf,
-    extract_dir: &PathBuf,
+    extract_dir: &Path,
     bin_name: &str,
     on_progress: &impl Fn(&str),
 ) -> Result<(), AcpError> {
@@ -1257,34 +1257,84 @@ fn unpack_download(
     extract(archive_path, extract_dir)
 }
 
-fn extract_tar_gz(archive: &PathBuf, dest: &PathBuf) -> Result<(), AcpError> {
+fn extract_tar_gz(archive: &PathBuf, dest: &Path) -> Result<(), AcpError> {
     let file = std::fs::File::open(archive)
         .map_err(|e| AcpError::DownloadFailed(format!("failed to open archive: {e}")))?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut tar = tar::Archive::new(gz);
+    // Already tar's defaults; spelled out so a setuid/setgid/sticky bit or
+    // an xattr in a downloaded agent never reaches disk (mode & 0o777).
+    tar.set_preserve_permissions(false);
+    tar.set_unpack_xattrs(false);
     tar.unpack(dest)
         .map_err(|e| AcpError::DownloadFailed(format!("failed to extract tar.gz: {e}")))?;
     Ok(())
 }
 
-fn extract_tar_bz2(archive: &PathBuf, dest: &PathBuf) -> Result<(), AcpError> {
+fn extract_tar_bz2(archive: &PathBuf, dest: &Path) -> Result<(), AcpError> {
     let file = std::fs::File::open(archive)
         .map_err(|e| AcpError::DownloadFailed(format!("failed to open archive: {e}")))?;
     let bz = bzip2::read::BzDecoder::new(file);
     let mut tar = tar::Archive::new(bz);
+    // See `extract_tar_gz`.
+    tar.set_preserve_permissions(false);
+    tar.set_unpack_xattrs(false);
     tar.unpack(dest)
         .map_err(|e| AcpError::DownloadFailed(format!("failed to extract tar.bz2: {e}")))?;
     Ok(())
 }
 
-fn extract_zip(archive: &PathBuf, dest: &PathBuf) -> Result<(), AcpError> {
+/// Unpack a zip one entry at a time rather than with `ZipArchive::extract`,
+/// which in zip 2.x writes through symlinks it has just created, keeps
+/// setuid/setgid bits and applies permissions through symlinks
+/// (RUSTSEC-2026-0367/0368/0369/0429/0548). An entry whose path would leave
+/// `dest` (`..`, absolute) rejects the whole archive; a symlink entry is
+/// skipped, never created; a file keeps only whether it was executable
+/// (0o755 or 0o644).
+fn extract_zip(archive: &PathBuf, dest: &Path) -> Result<(), AcpError> {
     let file = std::fs::File::open(archive)
         .map_err(|e| AcpError::DownloadFailed(format!("failed to open archive: {e}")))?;
     let mut zip = zip::ZipArchive::new(file)
         .map_err(|e| AcpError::DownloadFailed(format!("failed to read zip: {e}")))?;
-    zip.extract(dest)
-        .map_err(|e| AcpError::DownloadFailed(format!("failed to extract zip: {e}")))?;
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(zip_err)?;
+        let Some(rel) = entry.enclosed_name() else {
+            return Err(AcpError::DownloadFailed(format!(
+                "failed to extract zip: unsafe path entry {:?}",
+                entry.name()
+            )));
+        };
+        if entry.is_symlink() {
+            tracing::warn!("[ACP] skipping zip symlink entry {}", rel.display());
+            continue;
+        }
+        let out = dest.join(&rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out).map_err(zip_err)?;
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).map_err(zip_err)?;
+        }
+        let executable = entry.unix_mode().is_some_and(|mode| mode & 0o111 != 0);
+        let mut w = std::fs::File::create(&out).map_err(zip_err)?;
+        std::io::copy(&mut entry, &mut w).map_err(zip_err)?;
+        drop(w);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = if executable { 0o755 } else { 0o644 };
+            std::fs::set_permissions(&out, std::fs::Permissions::from_mode(mode))
+                .map_err(zip_err)?;
+        }
+        #[cfg(not(unix))]
+        let _ = executable;
+    }
     Ok(())
+}
+
+fn zip_err(e: impl std::fmt::Display) -> AcpError {
+    AcpError::DownloadFailed(format!("failed to extract zip: {e}"))
 }
 
 fn set_executable_permissions(path: &Path) -> Result<(), AcpError> {
@@ -1951,5 +2001,103 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("zip"), "{err}");
         assert!(!extract_dir.join("agent").exists());
+    }
+
+    type MemZip = zip::ZipWriter<std::io::Cursor<Vec<u8>>>;
+
+    /// Build a zip in memory; `build` adds the entries.
+    fn zip_bytes(build: impl FnOnce(&mut MemZip)) -> Vec<u8> {
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        build(&mut w);
+        w.finish().unwrap().into_inner()
+    }
+
+    /// A `..` entry would land outside the extract dir: the whole archive is
+    /// refused and nothing is written beside it.
+    #[test]
+    fn extract_zip_refuses_an_entry_that_climbs_out() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("extracted");
+        std::fs::create_dir_all(&dest).unwrap();
+        let archive = tmp.path().join("agent.zip");
+        let opts = zip::write::SimpleFileOptions::default();
+        let bytes = zip_bytes(|w| {
+            w.start_file("../escaped", opts).unwrap();
+            w.write_all(b"x").unwrap();
+        });
+        std::fs::write(&archive, bytes).unwrap();
+
+        let err = extract_zip(&archive, &dest).unwrap_err();
+        assert!(err.to_string().contains("unsafe path"), "{err}");
+        assert!(!tmp.path().join("escaped").exists());
+    }
+
+    /// A symlink entry is never created, so a later entry under its name
+    /// cannot be written through it to a place outside the extract dir.
+    #[test]
+    fn extract_zip_skips_symlink_entries() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("extracted");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let archive = tmp.path().join("agent.zip");
+        let opts = zip::write::SimpleFileOptions::default();
+        let target = outside.to_string_lossy().into_owned();
+        let bytes = zip_bytes(|w| {
+            w.add_symlink("link", &target, opts).unwrap();
+            w.start_file("link/pwned", opts).unwrap();
+            w.write_all(b"x").unwrap();
+        });
+        std::fs::write(&archive, bytes).unwrap();
+
+        extract_zip(&archive, &dest).unwrap();
+        assert!(!outside.join("pwned").exists());
+        let link = std::fs::symlink_metadata(dest.join("link")).unwrap();
+        assert!(!link.file_type().is_symlink());
+        assert!(dest.join("link").join("pwned").is_file());
+    }
+
+    /// setuid, setgid and sticky never reach disk: a file keeps only whether
+    /// it was executable.
+    #[cfg(unix)]
+    #[test]
+    fn extract_zip_drops_setuid_and_keeps_only_the_exec_bit() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("extracted");
+        std::fs::create_dir_all(&dest).unwrap();
+        let archive = tmp.path().join("agent.zip");
+        let opts = zip::write::SimpleFileOptions::default();
+        let exec = opts.unix_permissions(0o755);
+        let plain = opts.unix_permissions(0o666);
+        let mut bytes = zip_bytes(|w| {
+            w.start_file("bin/agent", exec).unwrap();
+            w.write_all(b"#!/bin/sh\n").unwrap();
+            w.start_file("README", plain).unwrap();
+            w.write_all(b"hi").unwrap();
+        });
+        // ZipWriter masks modes to 0o777, so set setuid + setgid + sticky on
+        // the first entry by hand: its external attributes sit 38 bytes into
+        // its central directory header, the unix mode in their upper half.
+        let cd = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+        let mode: u32 = 0o107_755;
+        let attrs = (mode << 16).to_le_bytes();
+        bytes[cd + 38..cd + 42].copy_from_slice(&attrs);
+        let reader = std::io::Cursor::new(bytes.clone());
+        let mut check = zip::ZipArchive::new(reader).unwrap();
+        assert_eq!(check.by_index(0).unwrap().unix_mode(), Some(mode));
+        std::fs::write(&archive, bytes).unwrap();
+
+        extract_zip(&archive, &dest).unwrap();
+        let mode_of = |rel: &str| {
+            let meta = std::fs::metadata(dest.join(rel)).unwrap();
+            meta.permissions().mode() & 0o7777
+        };
+        assert_eq!(mode_of("bin/agent"), 0o755);
+        assert_eq!(mode_of("README"), 0o644);
     }
 }

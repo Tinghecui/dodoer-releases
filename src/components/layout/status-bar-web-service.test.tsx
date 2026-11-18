@@ -13,8 +13,8 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock("@/lib/api", () => ({
   ...api,
-  DEFAULT_WEB_SERVICE_HOST: "0.0.0.0",
-  WEB_SERVICE_HOSTS: ["0.0.0.0", "127.0.0.1"],
+  DEFAULT_WEB_SERVICE_HOST: "127.0.0.1",
+  WEB_SERVICE_HOSTS: ["127.0.0.1", "0.0.0.0"],
   WEB_SERVICE_STATUS_CHANGED_EVENT: "web-service://status-changed",
 }))
 const handlers = new Map<string, (p: unknown) => void>()
@@ -136,6 +136,7 @@ describe("StatusBarWebService", () => {
   /** Every interface means the local network: that start asks first, and
    *  nothing starts until the person confirms. */
   it("asks before a start that opens the service to the network", async () => {
+    api.getWebServiceConfig.mockResolvedValue(config({ host: "0.0.0.0" }))
     mount()
     await waitFor(() => expect(api.getWebServerStatus).toHaveBeenCalled())
     await openPopover()
@@ -195,6 +196,7 @@ describe("StatusBarWebService", () => {
   })
 
   it("starts nothing when the confirmation is cancelled", async () => {
+    api.getWebServiceConfig.mockResolvedValue(config({ host: "0.0.0.0" }))
     mount()
     await waitFor(() => expect(api.getWebServerStatus).toHaveBeenCalled())
     await openPopover()
@@ -221,6 +223,25 @@ describe("StatusBarWebService", () => {
       })
     )
     expect(screen.queryByText("Open Codeg to your network?")).toBeNull()
+  })
+
+  /** Never chosen means the default, which is this computer only. */
+  it("starts on loopback without asking when no host was ever saved", async () => {
+    api.startWebServer.mockResolvedValue(
+      info({ bindHost: "127.0.0.1", addresses: ["http://127.0.0.1:3080"] })
+    )
+    mount()
+    await waitFor(() => expect(api.getWebServerStatus).toHaveBeenCalled())
+    await openPopover()
+    await screen.findByText(/this computer only/)
+    fireEvent.click(screen.getByRole("button", { name: "Start web service" }))
+    await waitFor(() =>
+      expect(api.startWebServer).toHaveBeenCalledWith({
+        host: "127.0.0.1",
+        port: 3080,
+      })
+    )
+    expect(screen.queryByText("Open dodoer to your network?")).toBeNull()
   })
 
   it("stops without asking", async () => {

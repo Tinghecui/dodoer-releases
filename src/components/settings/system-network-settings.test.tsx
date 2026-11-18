@@ -104,6 +104,16 @@ vi.mock("react-markdown", () => ({
 }))
 vi.mock("remark-gfm", () => ({ default: () => undefined }))
 
+// The System page embeds the config-sync panel (data & sync card), which reads
+// its own settings over the transport on mount. These tests answer none of
+// those routes, and since that panel reports a failed read ("Load failed: …")
+// instead of swallowing it, its banner landed whenever the rejection beat an
+// assertion here — the `/Load failed/` checks are about the proxy card. The
+// panel is pinned by `config-sync-settings.test.tsx`.
+vi.mock("./config-sync-settings", () => ({
+  ConfigSyncSettings: () => null,
+}))
+
 import { SystemNetworkSettings } from "./system-network-settings"
 import { UpdateProvider } from "@/components/providers/update-provider"
 import arMessages from "@/i18n/messages/ar.json"

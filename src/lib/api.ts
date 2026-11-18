@@ -5683,10 +5683,11 @@ export interface WebServerInfo {
 }
 
 /** Bind hosts the desktop web service can be configured with (Rust
- *  `WEB_SERVICE_HOST_CANDIDATES`); the first is the default. */
-export const WEB_SERVICE_HOSTS = ["0.0.0.0", "127.0.0.1"] as const
+ *  `WEB_SERVICE_HOST_CANDIDATES`); the first, this machine only, is the
+ *  default. */
+export const WEB_SERVICE_HOSTS = ["127.0.0.1", "0.0.0.0"] as const
 export type WebServiceHost = (typeof WEB_SERVICE_HOSTS)[number]
-export const DEFAULT_WEB_SERVICE_HOST: WebServiceHost = "0.0.0.0"
+export const DEFAULT_WEB_SERVICE_HOST: WebServiceHost = "127.0.0.1"
 
 /** Broadcast whenever the desktop web service starts or stops, from any
  *  window or from auto-start. Carries only `running`; re-read the status. */

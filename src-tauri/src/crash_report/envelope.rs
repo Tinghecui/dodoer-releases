@@ -230,6 +230,7 @@ mod tests {
             ("download_failed", "error"),
             ("install_failed", "error"),
             ("boot_unconfirmed", "error"),
+            ("rolled_back", "error"),
         ] {
             update.tags = [
                 ("update_result".to_string(), result.to_string()),

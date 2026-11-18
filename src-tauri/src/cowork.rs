@@ -493,18 +493,15 @@ pub fn log_startup() {
 
 // ---- 优雅停机 ----
 
-/// 正在跑 turn 的连接 ID。看每个连接的 `SessionState.status`：v0.40 起 `list_connections()` 回的 `AgentConnection.status`
-/// 是建连接时的值（`Connecting`），之后不再更新，拿它筛 `Prompting` 永远是空的。
+/// 正在跑 turn 的连接 ID。`list_connections()` 的状态读的是各连接的 `SessionState.status`（上游 40c05366f 起；
+/// 之前回的是建连接时的值 `Connecting`，这里曾自己逐个读 `get_state` 绕过去）。
 async fn prompting_connections(cm: &crate::acp::manager::ConnectionManager) -> Vec<String> {
-    let mut out = Vec::new();
-    for c in cm.list_connections().await {
-        if let Some(st) = cm.get_state(&c.id).await {
-            if st.read().await.status == ConnectionStatus::Prompting {
-                out.push(c.id);
-            }
-        }
-    }
-    out
+    cm.list_connections()
+        .await
+        .into_iter()
+        .filter(|c| c.status == ConnectionStatus::Prompting)
+        .map(|c| c.id)
+        .collect()
 }
 
 /// Cowork 升级 / `systemctl restart codeg@…` 时 systemd 发 SIGTERM。上游的 server 直接退出，正在跑的 turn 没头没尾地断在
@@ -1811,7 +1808,7 @@ mod tests {
     use crate::app_error::AppErrorCode;
     use std::collections::HashMap;
 
-    // 停机找「正在跑的 turn」要看 SessionState：list_connections() 的状态是建连接时的值，不跟着变
+    // 停机找「正在跑的 turn」看的是 SessionState：list_connections() 的状态跟着它变
     #[tokio::test]
     async fn prompting_connections_reads_live_session_state() {
         use crate::acp::manager::ConnectionManager;
@@ -1825,11 +1822,11 @@ mod tests {
         let busy = cm.get_state("busy").await.unwrap();
         busy.write().await.status = ConnectionStatus::Prompting;
 
-        assert!(cm
-            .list_connections()
-            .await
-            .iter()
-            .all(|c| c.status != ConnectionStatus::Prompting));
+        let rows = cm.list_connections().await;
+        let busy_row = rows.iter().find(|c| c.id == "busy").unwrap();
+        assert_eq!(busy_row.status, ConnectionStatus::Prompting);
+        let idle_row = rows.iter().find(|c| c.id == "idle").unwrap();
+        assert_ne!(idle_row.status, ConnectionStatus::Prompting);
         assert_eq!(prompting_connections(&cm).await, vec!["busy".to_string()]);
     }
 

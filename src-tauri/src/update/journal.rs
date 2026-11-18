@@ -26,6 +26,11 @@ pub const FILE_NAME: &str = "journal.json";
 pub const WAITING_LONG_SECS: i64 = 72 * 60 * 60;
 /// 新版本启动了这么多次都没确认过，报 `boot_unconfirmed`。
 pub const MAX_BOOTS: u32 = 3;
+/// 新版本连着这么多次启动都没确认（也不是正常退出），下一次启动时自动退回
+/// 换上之前的那一版（issue #413 第 3 行）。
+pub const ROLL_BACK_AFTER_BOOTS: u32 = 2;
+/// `bad_versions` 最多留几个。
+pub const MAX_BAD_VERSIONS: usize = 5;
 /// 自动下载失败最多这么久报一条。
 pub const DOWNLOAD_FAILURE_REPORT_EVERY_SECS: i64 = 24 * 60 * 60;
 /// 新版本的 daemon 和主窗口都起来以后，再活这么久就算确认。
@@ -101,6 +106,8 @@ pub enum UpdateResult {
     DownloadFailed,
     InstallFailed,
     BootUnconfirmed,
+    /// 新版本连着起不来，自动退回了换上之前的那一版（issue #413 第 3 行）。
+    RolledBack,
     /// 不是结束：下好以后等了很久还没换上，`attempt` 继续。
     WaitingLong,
 }
@@ -112,6 +119,7 @@ impl UpdateResult {
             UpdateResult::DownloadFailed => "download_failed",
             UpdateResult::InstallFailed => "install_failed",
             UpdateResult::BootUnconfirmed => "boot_unconfirmed",
+            UpdateResult::RolledBack => "rolled_back",
             UpdateResult::WaitingLong => "waiting_long",
         }
     }
@@ -251,6 +259,10 @@ pub struct Attempt {
     pub boots: u32,
     #[serde(default)]
     pub waiting_long_reported: bool,
+    /// 换上之前留没留下旧的应用包（issue #413 第 3 行，`update::previous`）。
+    /// 没换上过、不留旧包的平台、这一项加进来之前写的日志没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_kept: Option<bool>,
 }
 
 /// 上一次升级的结果。
@@ -262,6 +274,17 @@ pub struct Last {
     /// 「已更新到…」提示过了（第 5 行的 `take_update_announcement`）。
     #[serde(default)]
     pub announced: bool,
+    /// 自动退回（`rolled_back`）时没起来的那一版；`to` 是退回到的那一版。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<String>,
+}
+
+/// 在这台电脑上没能启动、自动退回过的版本（issue #413 第 3 行）：
+/// 不再自动装，手动点升级照常能装。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BadVersion {
+    pub version: String,
+    pub at: DateTime<Utc>,
 }
 
 /// `journal.json` 的内容。
@@ -278,6 +301,13 @@ pub struct Journal {
     /// `idle::MAX_IDLE_TRIES` 次。不跟着 `attempt` 清空，安装失败以后再下好
     /// 同一版也不会接着试。
     pub idle_apply: Option<IdleApply>,
+    /// 自动退回过的版本，旧的在前，最多 [`MAX_BAD_VERSIONS`] 个（issue #413）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bad_versions: Vec<BadVersion>,
+    /// 还没上报的结果：自动退回是在没起来的那一版里、崩溃报告开始之前做的，
+    /// 做完马上重开，报告留给退回到的那一版启动时发（[`Journal::take_unreported`]）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unreported: Option<Outcome>,
 }
 
 /// 空闲时自动重启试过的那一版和次数。
@@ -287,15 +317,30 @@ pub struct IdleApply {
     pub tries: u32,
 }
 
-/// `take_update_announcement` 回给窗口的：已经换上的版本。
+/// `take_update_announcement` 回给窗口的：已经换上的版本（`applied`），
+/// 或者自动退回到的版本和没起来的那一版（`rolled_back`，issue #413）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Announcement {
     pub version: String,
+    pub result: UpdateResult,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<String>,
+}
+
+impl Announcement {
+    pub fn applied(version: String) -> Self {
+        Self {
+            version,
+            result: UpdateResult::Applied,
+            failed: None,
+        }
+    }
 }
 
 /// 一条要上报的升级记录：`crash_report` 把它做成一条非致命的报告。
-/// `error` 还没脱敏，做报告时才过 `scrub_text`。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `error` 还没脱敏，做报告时才过 `scrub_text`。存进日志的只有
+/// [`Journal::unreported`]（自动退回的那条）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outcome {
     pub result: UpdateResult,
     pub from: String,
@@ -397,6 +442,7 @@ fn new_attempt(
         install_ms: None,
         boots: 0,
         waiting_long_reported: false,
+        previous_kept: None,
     }
 }
 
@@ -426,6 +472,7 @@ impl Journal {
             finished_at: now,
             // 只有换上了的才要提示「已更新到…」。
             announced: result != UpdateResult::Applied,
+            failed: None,
         });
     }
 
@@ -576,6 +623,9 @@ impl Journal {
     ///
     /// - 正在运行的是 `to`：`boots` 加 1，等确认；加到超过 [`MAX_BOOTS`]
     ///   （启动了 3 次都没确认）就是 `boot_unconfirmed`。
+    ///   正常退出（`shut_down` 走完）的那一次由 [`Journal::on_clean_exit`]
+    ///   减回去；连着 [`ROLL_BACK_AFTER_BOOTS`] 次没确认，macOS 上第 3 次启动
+    ///   时先自动退回（[`Journal::roll_back`]），退不了才接着数。
     /// - 正在运行的还是 `from`：包没换上，`install_failed` / `not_applied`。
     /// - 都不是（中间手动装了别的版本）：当没有。
     ///
@@ -682,15 +732,155 @@ impl Journal {
     /// 上一次换上的还没提示过、这次又换了新版但没确认下来时，`last` 还是
     /// 上一次的，不能当成这次的结果提示。调用方在一次加锁里读、改、写，几个
     /// 窗口同时问只有一个拿到。
+    ///
+    /// 自动退回的（`rolled_back`，`to` 是退回到的那一版）同样只提示一次，
+    /// 带上没起来的那一版（issue #413）。
     pub fn take_announcement(&mut self, running: &str) -> Option<Announcement> {
         let last = self.last.as_mut().filter(|last| {
-            last.result == UpdateResult::Applied && !last.announced && last.to == running
+            matches!(
+                last.result,
+                UpdateResult::Applied | UpdateResult::RolledBack
+            ) && !last.announced
+                && last.to == running
         })?;
         last.announced = true;
         Some(Announcement {
             version: last.to.clone(),
+            result: last.result,
+            failed: last
+                .failed
+                .clone()
+                .filter(|_| last.result == UpdateResult::RolledBack),
         })
     }
+}
+
+/// Cowork fork (issue #413 第 3 行)：留旧包、启动数、自动退回、坏版本。
+impl Journal {
+    /// 换上之前留没留下旧的应用包：记在正在换上的那条上。
+    pub fn note_previous_kept(&mut self, kept: bool) {
+        if let Some(a) = self
+            .attempt
+            .as_mut()
+            .filter(|a| a.state == AttemptState::Applying)
+        {
+            a.previous_kept = Some(kept);
+        }
+    }
+
+    /// 正常退出（`shut_down` 走完）：这次启动是还在等确认的新版本，就把
+    /// [`Journal::on_boot`] 加的那一次减回去，打开马上又关掉不算启动失败。
+    /// 减了回 true。
+    pub fn on_clean_exit(&mut self, running: &str) -> bool {
+        if !self.awaiting_confirmation(running) {
+            return false;
+        }
+        let Some(a) = self.attempt.as_mut().filter(|a| a.boots > 0) else {
+            return false;
+        };
+        a.boots -= 1;
+        true
+    }
+
+    /// 正在换上、还没确认的那一条。
+    pub fn applying(&self) -> Option<&Attempt> {
+        self.attempt
+            .as_ref()
+            .filter(|a| a.state == AttemptState::Applying)
+    }
+
+    /// 自动退回了（应用包已经换回 `from`）：结果 `rolled_back`，`to` 进
+    /// `bad_versions`，`last` 记退回到的版本和没起来的那一版，等着提示；
+    /// 上报的那条存进 `unreported`，留给退回到的那一版启动时发。
+    pub fn roll_back(&mut self, running: &str, now: DateTime<Utc>) -> Option<Outcome> {
+        if !self.awaiting_confirmation(running) {
+            return None;
+        }
+        let attempt = self.attempt.take()?;
+        let outcome = Outcome::of(&attempt, UpdateResult::RolledBack, running, now);
+        self.add_bad_version(&attempt.to, now);
+        self.last = Some(Last {
+            to: attempt.from,
+            result: UpdateResult::RolledBack,
+            finished_at: now,
+            announced: false,
+            failed: Some(attempt.to),
+        });
+        self.unreported = Some(outcome.clone());
+        Some(outcome)
+    }
+
+    /// 拿走还没上报的那条（只拿一次）。
+    pub fn take_unreported(&mut self) -> Option<Outcome> {
+        self.unreported.take()
+    }
+
+    /// `version` 进 `bad_versions`：已经在里面的挪到最新，最多留
+    /// [`MAX_BAD_VERSIONS`] 个，丢最旧的。
+    pub fn add_bad_version(&mut self, version: &str, now: DateTime<Utc>) {
+        self.bad_versions.retain(|bad| bad.version != version);
+        self.bad_versions.push(BadVersion {
+            version: version.to_string(),
+            at: now,
+        });
+        let extra = self.bad_versions.len().saturating_sub(MAX_BAD_VERSIONS);
+        self.bad_versions.drain(..extra);
+    }
+
+    /// 用户手动装 `version`：从 `bad_versions` 里拿掉。拿掉了回 true。
+    pub fn forgive(&mut self, version: &str) -> bool {
+        let before = self.bad_versions.len();
+        self.bad_versions.retain(|bad| bad.version != version);
+        self.bad_versions.len() != before
+    }
+
+    /// `version` 是不是自动退回过、不再自动装的版本。
+    pub fn is_bad(&self, version: &str) -> bool {
+        self.bad_versions.iter().any(|bad| bad.version == version)
+    }
+
+    /// `check_app_update` 的 `blocked`：查到的更新正好是坏版本。
+    pub fn blocked(&self, found: Option<&str>) -> bool {
+        found.is_some_and(|version| self.is_bad(version))
+    }
+}
+
+/// 自动退回的两步（issue #413 完成标准 15）：先把 `rolled_back` 记进日志并
+/// 存盘（`save`），存上了才换回旧包（`swap`）。顺序反过来的话，旧包换回去了、
+/// 日志却没存上，退回到的那一版读到的还是原来的 `applying`，不知道刚才那一版
+/// 没起来，会再自动装它。
+///
+/// - 存不上：不换，`journal` 还是原样，照常启动（#412 的规矩接着算）。
+/// - 换不回去：`journal` 恢复原样再存一次（存不上只回在错误里），照常启动。
+///
+/// 成功返回 `Ok(())`，日志里是 `rolled_back`、应用包已经是旧的那一版。
+pub fn roll_back_saved(
+    journal: &mut Journal,
+    running: &str,
+    now: DateTime<Utc>,
+    mut save: impl FnMut(&Journal) -> io::Result<()>,
+    swap: impl FnOnce() -> io::Result<()>,
+) -> Result<(), String> {
+    let before = journal.clone();
+    if journal.roll_back(running, now).is_none() {
+        return Err(format!(
+            "{running} is not waiting for its start confirmation"
+        ));
+    }
+    if let Err(e) = save(journal) {
+        *journal = before;
+        return Err(format!("could not write the update journal: {e}"));
+    }
+    if let Err(e) = swap() {
+        *journal = before;
+        return Err(match save(journal) {
+            Ok(()) => format!("could not roll back: {e}"),
+            Err(back) => format!(
+                "could not roll back: {e}; and the update journal could not be put back: {back}"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// 状态变化的那行日志（`commands::app_update` 每次状态变化都打）。
@@ -1491,19 +1681,14 @@ mod tests {
         j.confirm("1.6.41", at(170)).unwrap();
         assert_eq!(
             j.take_announcement("1.6.41"),
-            Some(Announcement {
-                version: "1.6.41".to_string()
-            })
+            Some(Announcement::applied("1.6.41".to_string()))
         );
         assert!(j.last.as_ref().unwrap().announced);
         assert_eq!(j.take_announcement("1.6.41"), None);
-        // 回给窗口的格式：`{"version": "1.6.41"}`。
+        // 回给窗口的格式：`{"version": "1.6.41", "result": "applied"}`。
         assert_eq!(
-            serde_json::to_value(Announcement {
-                version: "1.6.41".to_string()
-            })
-            .unwrap(),
-            serde_json::json!({"version": "1.6.41"})
+            serde_json::to_value(Announcement::applied("1.6.41".to_string())).unwrap(),
+            serde_json::json!({"version": "1.6.41", "result": "applied"})
         );
     }
 
@@ -1537,12 +1722,7 @@ mod tests {
                 std::time::Duration::from_secs(30),
             )
         });
-        assert_eq!(
-            got,
-            Some(Announcement {
-                version: "1.6.41".to_string()
-            })
-        );
+        assert_eq!(got, Some(Announcement::applied("1.6.41".to_string())));
         assert!(load(&file, "1.6.41").last.unwrap().announced);
     }
 
@@ -1583,9 +1763,7 @@ mod tests {
         assert!(!last.announced);
         assert_eq!(
             take_announcement_at(&file, "1.6.41"),
-            Some(Announcement {
-                version: "1.6.41".to_string()
-            })
+            Some(Announcement::applied("1.6.41".to_string()))
         );
 
         // 不在等确认：立刻回。
@@ -1632,9 +1810,7 @@ mod tests {
                 &gate,
                 std::time::Duration::from_secs(30),
             ),
-            Some(Announcement {
-                version: "1.6.41".to_string()
-            })
+            Some(Announcement::applied("1.6.41".to_string()))
         );
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
 
@@ -1653,6 +1829,7 @@ mod tests {
             result: UpdateResult::Applied,
             finished_at: at(0),
             announced: false,
+            failed: None,
         });
         j.apply_started(ApplyHow::Idle, at(100));
         j.on_boot("1.6.41", at(110));
@@ -1682,9 +1859,7 @@ mod tests {
         assert_eq!(j.take_announcement("1.6.41"), None);
         assert_eq!(
             j.take_announcement("1.6.40"),
-            Some(Announcement {
-                version: "1.6.40".to_string()
-            })
+            Some(Announcement::applied("1.6.40".to_string()))
         );
     }
 
@@ -1709,9 +1884,7 @@ mod tests {
         std::fs::remove_dir(&tmp).unwrap();
         assert_eq!(
             take_announcement_at(&file, "1.6.41"),
-            Some(Announcement {
-                version: "1.6.41".to_string()
-            })
+            Some(Announcement::applied("1.6.41".to_string()))
         );
         assert_eq!(take_announcement_at(&file, "1.6.41"), None);
     }
@@ -1732,6 +1905,7 @@ mod tests {
                     finished_at: at(0),
                     // 就算没标成提示过，也不提示。
                     announced: false,
+                    failed: None,
                 }),
                 ..Default::default()
             };
@@ -2062,5 +2236,252 @@ mod tests {
             back.attempt.as_ref().unwrap().channel,
             Some(UpdateChannel::Stable)
         );
+    }
+
+    /// 1.6.40 → 1.6.41 点了「重启以更新」，换上之前留了旧包。
+    fn applying_with_previous() -> Journal {
+        let mut j = ready(Trigger::Auto);
+        j.apply_started(ApplyHow::Click, at(100));
+        j.note_previous_kept(true);
+        j.install_done(at(105));
+        j
+    }
+
+    /// 前两次启动都没确认、第 3 次启动 1.6.41 的日志。
+    fn due_for_rollback() -> Journal {
+        let mut j = applying_with_previous();
+        j.on_boot("1.6.41", at(110));
+        j.on_boot("1.6.41", at(120));
+        j
+    }
+
+    #[test]
+    fn a_rollback_is_saved_before_the_bundle_is_swapped() {
+        let mut j = due_for_rollback();
+        let saved = std::cell::RefCell::new(Vec::new());
+        let swapped = std::cell::Cell::new(false);
+        let r = roll_back_saved(
+            &mut j,
+            "1.6.41",
+            at(130),
+            |j| {
+                // 存盘时还没换。
+                assert!(!swapped.get());
+                saved.borrow_mut().push(j.clone());
+                Ok(())
+            },
+            || {
+                swapped.set(true);
+                Ok(())
+            },
+        );
+        assert_eq!(r, Ok(()));
+        assert!(swapped.get());
+        let saved = saved.into_inner();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0], j);
+        assert!(j.attempt.is_none());
+        assert!(j.is_bad("1.6.41"));
+        assert_eq!(j.last.as_ref().unwrap().result, UpdateResult::RolledBack);
+    }
+
+    #[test]
+    fn a_rollback_that_cannot_be_saved_does_not_swap_the_bundle() {
+        let before = due_for_rollback();
+        let mut j = before.clone();
+        let swapped = std::cell::Cell::new(false);
+        let r = roll_back_saved(
+            &mut j,
+            "1.6.41",
+            at(130),
+            |_| Err(io::Error::other("disk full")),
+            || {
+                swapped.set(true);
+                Ok(())
+            },
+        );
+        assert!(r.is_err());
+        assert!(
+            !swapped.get(),
+            "the bundle must stay when the journal is not saved"
+        );
+        assert_eq!(j, before);
+    }
+
+    #[test]
+    fn a_rollback_whose_swap_fails_puts_the_journal_back_and_saves_it() {
+        let before = due_for_rollback();
+        let mut j = before.clone();
+        let saved = std::cell::RefCell::new(Vec::new());
+        let r = roll_back_saved(
+            &mut j,
+            "1.6.41",
+            at(130),
+            |j| {
+                saved.borrow_mut().push(j.clone());
+                Ok(())
+            },
+            || Err(io::Error::other("busy")),
+        );
+        assert!(r.is_err());
+        assert_eq!(j, before);
+        let saved = saved.into_inner();
+        // 先存的 rolled_back，再存回原样。
+        assert_eq!(saved.len(), 2);
+        assert!(saved[0].attempt.is_none());
+        assert_eq!(saved[1], before);
+    }
+
+    #[test]
+    fn whether_the_previous_bundle_was_kept_is_recorded_on_the_applying_attempt() {
+        let mut j = ready(Trigger::Auto);
+        // 还没开始换上：不记。
+        j.note_previous_kept(true);
+        assert_eq!(j.attempt.as_ref().unwrap().previous_kept, None);
+        assert!(j.applying().is_none());
+        j.apply_started(ApplyHow::Launch, at(100));
+        j.note_previous_kept(false);
+        assert_eq!(j.attempt.as_ref().unwrap().previous_kept, Some(false));
+        let j = applying_with_previous();
+        assert_eq!(j.applying().unwrap().previous_kept, Some(true));
+        assert_eq!(j.applying().unwrap().to, "1.6.41");
+        // 写进文件的字段名照规格：`previous_kept`。
+        let raw = serde_json::to_value(&j).unwrap();
+        assert_eq!(raw["attempt"]["previous_kept"], true);
+    }
+
+    #[test]
+    fn unconfirmed_boots_count_up_and_a_clean_exit_takes_its_boot_back() {
+        let mut j = applying_with_previous();
+        // 旧版本自己为更新退出（点了「重启以更新」）：不是在等确认的那一版，不减。
+        assert!(!j.on_clean_exit("1.6.40"));
+        assert_eq!(j.attempt.as_ref().unwrap().boots, 0);
+        // 新版本起来、马上被正常关掉：加了又减回去。
+        assert_eq!(j.on_boot("1.6.41", at(110)), None);
+        assert_eq!(j.attempt.as_ref().unwrap().boots, 1);
+        assert!(j.on_clean_exit("1.6.41"));
+        assert_eq!(j.attempt.as_ref().unwrap().boots, 0);
+        // 连着三次「打开马上又关掉」都不算启动失败。
+        for _ in 0..3 {
+            j.on_boot("1.6.41", at(120));
+            j.on_clean_exit("1.6.41");
+        }
+        assert_eq!(j.attempt.as_ref().unwrap().boots, 0);
+        // 两次异常退出（没走完 `shut_down`）：留着。
+        j.on_boot("1.6.41", at(130));
+        j.on_boot("1.6.41", at(140));
+        assert_eq!(j.attempt.as_ref().unwrap().boots, 2);
+        // 确认了以后正常退出没什么可减的。
+        j.confirm("1.6.41", at(200)).unwrap();
+        assert!(!j.on_clean_exit("1.6.41"));
+    }
+
+    #[test]
+    fn a_rollback_ends_the_attempt_marks_the_version_bad_and_waits_to_be_reported_and_announced() {
+        let mut j = applying_with_previous();
+        j.on_boot("1.6.41", at(110));
+        j.on_boot("1.6.41", at(120));
+        // 不是在等确认的那一版：不退。
+        assert_eq!(j.roll_back("1.6.40", at(130)), None);
+        assert!(j.attempt.is_some());
+
+        let o = j.roll_back("1.6.41", at(130)).unwrap();
+        assert_eq!(o.result, UpdateResult::RolledBack);
+        // 上报的 `update_from` 是退回到的那一版，`update_to` 是没起来的那一版。
+        assert_eq!((o.from.as_str(), o.to.as_str()), ("1.6.40", "1.6.41"));
+        assert_eq!(o.boots, 2);
+        assert_eq!(o.how, Some(ApplyHow::Click));
+        assert_eq!(o.error_kind, None);
+        assert!(j.attempt.is_none());
+        assert_eq!(
+            j.last,
+            Some(Last {
+                to: "1.6.40".to_string(),
+                result: UpdateResult::RolledBack,
+                finished_at: at(130),
+                announced: false,
+                failed: Some("1.6.41".to_string()),
+            })
+        );
+        assert_eq!(
+            j.bad_versions,
+            vec![BadVersion {
+                version: "1.6.41".to_string(),
+                at: at(130),
+            }]
+        );
+        // 日志文件里的样子照规格。
+        let raw = serde_json::to_value(&j).unwrap();
+        assert_eq!(raw["last"]["result"], "rolled_back", "{raw}");
+        assert_eq!(raw["last"]["failed"], "1.6.41");
+        assert_eq!(raw["bad_versions"][0]["version"], "1.6.41");
+
+        // 退回到的那一版启动时拿走上报的那条，只拿一次；文件来回一趟也还在。
+        let back: Journal = serde_json::from_value(raw).unwrap();
+        assert_eq!(back, j);
+        assert_eq!(j.take_unreported(), Some(o));
+        assert_eq!(j.take_unreported(), None);
+
+        // 「启动失败，已自动退回」只在退回到的那一版里提示一次。
+        assert_eq!(j.take_announcement("1.6.41"), None);
+        let announcement = j.take_announcement("1.6.40").unwrap();
+        assert_eq!(
+            serde_json::to_value(&announcement).unwrap(),
+            serde_json::json!({"version": "1.6.40", "result": "rolled_back", "failed": "1.6.41"})
+        );
+        assert_eq!(j.take_announcement("1.6.40"), None);
+    }
+
+    #[test]
+    fn bad_versions_are_added_forgiven_and_capped() {
+        let mut j = Journal::default();
+        for (i, v) in ["1.6.41", "1.6.42", "1.6.43", "1.6.44", "1.6.45", "1.6.46"]
+            .iter()
+            .enumerate()
+        {
+            j.add_bad_version(v, at(i as i64));
+        }
+        let kept: Vec<&str> = j.bad_versions.iter().map(|b| b.version.as_str()).collect();
+        // 最多 5 个，丢最旧的。
+        assert_eq!(kept, ["1.6.42", "1.6.43", "1.6.44", "1.6.45", "1.6.46"]);
+        assert!(!j.is_bad("1.6.41"));
+        assert!(j.is_bad("1.6.44"));
+        // 又加一次已经在的：挪到最新，不重复。
+        j.add_bad_version("1.6.43", at(100));
+        let kept: Vec<&str> = j.bad_versions.iter().map(|b| b.version.as_str()).collect();
+        assert_eq!(kept, ["1.6.42", "1.6.44", "1.6.45", "1.6.46", "1.6.43"]);
+        assert_eq!(j.bad_versions.last().unwrap().at, at(100));
+        // 手动装：拿掉。
+        assert!(j.forgive("1.6.44"));
+        assert!(!j.forgive("1.6.44"));
+        assert!(!j.is_bad("1.6.44"));
+        assert_eq!(j.bad_versions.len(), 4);
+    }
+
+    #[test]
+    fn a_check_is_blocked_only_when_it_found_a_bad_version() {
+        let mut j = Journal::default();
+        assert!(!j.blocked(Some("1.6.41")));
+        j.add_bad_version("1.6.41", at(0));
+        assert!(j.blocked(Some("1.6.41")));
+        // 查到更新的版本、没查到：不受影响。
+        assert!(!j.blocked(Some("1.6.42")));
+        assert!(!j.blocked(None));
+    }
+
+    #[test]
+    fn a_journal_from_before_the_rollback_reads_with_nothing_bad() {
+        let raw = serde_json::json!({
+            "attempt": null,
+            "last": {"to": "1.6.40", "result": "applied", "finished_at": "2025-11-13T02:13:20Z"}
+        });
+        let j: Journal = serde_json::from_value(raw).unwrap();
+        assert!(j.bad_versions.is_empty());
+        assert_eq!(j.unreported, None);
+        assert_eq!(j.last.unwrap().failed, None);
+        // 没有坏版本、没有要补报的时候不往文件里写这两项。
+        let raw = serde_json::to_value(Journal::default()).unwrap();
+        assert!(raw.get("bad_versions").is_none(), "{raw}");
+        assert!(raw.get("unreported").is_none(), "{raw}");
     }
 }

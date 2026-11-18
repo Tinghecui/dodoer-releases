@@ -41,14 +41,19 @@ const WEB_SERVICE_PORT_KEY: &str = "web_service_port";
 const WEB_SERVICE_AUTO_START_KEY: &str = "web_service_auto_start";
 const WEB_SERVICE_HOST_KEY: &str = "web_service_host";
 pub const DEFAULT_WEB_SERVICE_PORT: u16 = 3080;
+/// Loopback bind: this machine only. The desktop service hands out a shared
+/// token that can read files, open terminals and start agents, so nothing on
+/// the local network reaches it unless the person chose every interface.
+pub const DEFAULT_WEB_SERVICE_HOST: &str = "127.0.0.1";
 /// Wildcard bind: every interface, so the service is reachable from the LAN.
-pub const DEFAULT_WEB_SERVICE_HOST: &str = "0.0.0.0";
+pub const ALL_INTERFACES_WEB_SERVICE_HOST: &str = "0.0.0.0";
 /// The bind hosts the desktop web service may be configured with. A closed
-/// set rather than free text: the settings page offers exactly these, and a
-/// loopback-only bind (`127.0.0.1`, e.g. behind a reverse proxy or Tailscale
-/// Serve) is the one alternative to the LAN-wide default worth naming. The
-/// standalone `codeg-server` keeps taking any host from `CODEG_HOST`.
-pub const WEB_SERVICE_HOST_CANDIDATES: &[&str] = &[DEFAULT_WEB_SERVICE_HOST, "127.0.0.1"];
+/// set rather than free text: the settings page offers exactly these, the
+/// loopback default first. A saved `0.0.0.0` keeps binding every interface;
+/// it is never rewritten. The standalone `codeg-server` keeps taking any host
+/// from `CODEG_HOST`.
+pub const WEB_SERVICE_HOST_CANDIDATES: &[&str] =
+    &[DEFAULT_WEB_SERVICE_HOST, ALL_INTERFACES_WEB_SERVICE_HOST];
 
 /// One of [`WEB_SERVICE_HOST_CANDIDATES`], or `None` for anything else.
 fn normalize_web_service_host(raw: &str) -> Option<&'static str> {
@@ -224,7 +229,7 @@ async fn resolve_web_service_port(
 }
 
 /// Resolve the desktop bind host: an explicit override (which must be one of
-/// [`WEB_SERVICE_HOST_CANDIDATES`]), else the saved choice, else the wildcard
+/// [`WEB_SERVICE_HOST_CANDIDATES`]), else the saved choice, else the loopback
 /// default. A saved value outside the set (hand-edited database) falls back to
 /// the default instead of failing every start, auto-start included.
 /// Desktop only: `codeg-server` binds whatever `CODEG_HOST` names.
@@ -518,7 +523,7 @@ fn is_advertisable_ipv4(ip: std::net::Ipv4Addr) -> bool {
 /// service. Loopback is always listed first (a safe default target), then
 /// every advertisable local IPv4 (see [`is_advertisable_ipv4`]).
 ///
-/// In the desktop settings flow the listener binds `0.0.0.0`, so each
+/// When the desktop listener binds `0.0.0.0` (every interface), each
 /// advertised address is reachable and the UI lets the user pick which one
 /// to display / open — that choice is display-only and never changes what
 /// the service binds to. If interface enumeration is unavailable we fall
@@ -1299,37 +1304,67 @@ mod web_service_host_tests {
     }
 
     #[tokio::test]
-    async fn host_defaults_to_wildcard_and_follows_the_saved_choice() {
+    async fn host_defaults_to_loopback_and_follows_the_saved_choice() {
         let db = fresh_in_memory_db().await;
-        assert_eq!(
-            resolve_web_service_host(&db.conn, None).await.unwrap(),
-            DEFAULT_WEB_SERVICE_HOST
-        );
-        assert_eq!(load_web_service_config(&db.conn).await.unwrap().host, None);
-
-        let saved = update_web_service_config_core(&db.conn, config(Some(" 127.0.0.1 ")))
-            .await
-            .unwrap();
-        assert_eq!(saved.host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(DEFAULT_WEB_SERVICE_HOST, "127.0.0.1");
         assert_eq!(
             resolve_web_service_host(&db.conn, None).await.unwrap(),
             "127.0.0.1"
         );
+        assert_eq!(load_web_service_config(&db.conn).await.unwrap().host, None);
+
+        let saved = update_web_service_config_core(&db.conn, config(Some(" 0.0.0.0 ")))
+            .await
+            .unwrap();
+        assert_eq!(saved.host.as_deref(), Some("0.0.0.0"));
+        assert_eq!(
+            resolve_web_service_host(&db.conn, None).await.unwrap(),
+            "0.0.0.0"
+        );
         // An explicit override wins over the saved choice.
         assert_eq!(
-            resolve_web_service_host(&db.conn, Some("0.0.0.0".into()))
+            resolve_web_service_host(&db.conn, Some("127.0.0.1".into()))
                 .await
                 .unwrap(),
+            "127.0.0.1"
+        );
+    }
+
+    /// An install that already saved every interface keeps binding it after
+    /// the default moved to loopback, and the saved value is not rewritten.
+    #[tokio::test]
+    async fn a_saved_wildcard_survives_the_loopback_default() {
+        let db = fresh_in_memory_db().await;
+        app_metadata_service::upsert_value(&db.conn, WEB_SERVICE_HOST_KEY, "0.0.0.0")
+            .await
+            .unwrap();
+        assert_eq!(
+            resolve_web_service_host(&db.conn, None).await.unwrap(),
             "0.0.0.0"
+        );
+        assert_eq!(
+            app_metadata_service::get_value(&db.conn, WEB_SERVICE_HOST_KEY)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("0.0.0.0")
+        );
+        assert_eq!(
+            load_web_service_config(&db.conn)
+                .await
+                .unwrap()
+                .host
+                .as_deref(),
+            Some("0.0.0.0")
         );
     }
 
     /// A client that predates the field sends no `host`; that must not reset
-    /// a loopback-only choice back to every interface.
+    /// a saved choice back to the default.
     #[tokio::test]
     async fn update_without_host_keeps_the_saved_choice() {
         let db = fresh_in_memory_db().await;
-        update_web_service_config_core(&db.conn, config(Some("127.0.0.1")))
+        update_web_service_config_core(&db.conn, config(Some("0.0.0.0")))
             .await
             .unwrap();
         let wire: WebServiceConfig = serde_json::from_value(serde_json::json!({
@@ -1341,7 +1376,7 @@ mod web_service_host_tests {
         let saved = update_web_service_config_core(&db.conn, wire)
             .await
             .unwrap();
-        assert_eq!(saved.host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(saved.host.as_deref(), Some("0.0.0.0"));
         assert!(saved.auto_start);
     }
 

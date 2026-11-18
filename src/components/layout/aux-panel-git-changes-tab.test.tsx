@@ -160,6 +160,16 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   gitRollbackFile: gitRollbackFileMock,
 }))
 
+// 生成提交信息要拿可用 agent 列表兜底（#798），这里不去连后端。
+vi.mock("@/hooks/use-sorted-available-agents", () => ({
+  useSortedAvailableAgents: () => ({
+    sortedTypes: ["claude_code"],
+    defaultOrder: ["claude_code"],
+    fresh: true,
+    refresh: async () => {},
+  }),
+}))
+
 vi.mock("@/hooks/use-workspace-state-store", () => ({
   useWorkspaceStateStore: () => ({
     rootPath: "/repo",
@@ -500,6 +510,7 @@ describe("GitChangesTab commit message box", () => {
         files: ["f0001", "f0002"],
         draft: "parser",
         fallbackAgent: null,
+        lastResortAgent: "claude_code",
       })
     )
     // Read-only while it is written, and Enter does not commit the draft.

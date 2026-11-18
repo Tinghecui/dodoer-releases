@@ -11,7 +11,8 @@
 //! Which settings: the folder's own, else its repository's (for a worktree
 //! folder), else the global ones ([`effective_settings`]). Which agent: the
 //! one picked there, else the agent of the session the user is looking at
-//! (the caller's `fallback_agent`), else the folder's default agent.
+//! (the caller's `fallback_agent`), else the folder's default agent, else the
+//! caller's first usable agent (`last_resort_agent`).
 
 pub(crate) mod prompt;
 pub(crate) mod scope;
@@ -161,6 +162,10 @@ pub struct GenerateRequest {
     /// settings name none.
     #[serde(default, deserialize_with = "lenient_agent")]
     pub fallback_agent: Option<AgentType>,
+    /// Cowork fork（#798）：前面都没有时用的 agent——调用方可用列表里排第一
+    /// 的，排在文件夹默认 agent 之后。
+    #[serde(default, deserialize_with = "lenient_agent")]
+    pub last_resort_agent: Option<AgentType>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -197,13 +202,20 @@ pub async fn generate(
         files,
         draft,
         fallback_agent,
+        last_resort_agent,
     } = request;
     // First, so a cancel for this id is honoured however early it came.
     let registration = Inflight::register(&request_id)?;
 
     let settings = effective_settings(&db.conn, folder_id).await;
-    let (agent_type, mode_id, config_values) =
-        resolve_agent(&db.conn, &settings, fallback_agent, folder_id).await?;
+    let (agent_type, mode_id, config_values) = resolve_agent(
+        &db.conn,
+        &settings,
+        fallback_agent,
+        folder_id,
+        last_resort_agent,
+    )
+    .await?;
     let scope = scope::read(&path, &files).await?;
     if scope.files.is_empty() {
         return Err(localized(
@@ -335,6 +347,7 @@ pub(crate) async fn resolve_agent(
     settings: &CommitMessageSettings,
     fallback_agent: Option<AgentType>,
     folder_id: Option<i32>,
+    last_resort_agent: Option<AgentType>,
 ) -> Result<(AgentType, Option<String>, BTreeMap<String, String>), AppCommandError> {
     if let Some(agent) = &settings.agent {
         return Ok((
@@ -357,6 +370,11 @@ pub(crate) async fn resolve_agent(
             return Ok((agent, None, BTreeMap::new()));
         }
         next = folder.parent_id;
+    }
+    // Cowork fork（#798）：没开会话、文件夹也没设默认时，用调用方给的第一个
+    // 可用的 agent，和新建会话挑 agent 的最后一步一样。
+    if let Some(agent) = last_resort_agent {
+        return Ok((agent, None, BTreeMap::new()));
     }
     Err(localized(
         AppErrorCode::ConfigurationMissing,
@@ -415,6 +433,46 @@ mod tests {
 
         let empty: CommitMessageSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, CommitMessageSettings::default());
+    }
+
+    #[tokio::test]
+    async fn without_a_session_or_folder_default_the_first_usable_agent_writes() {
+        let db = fresh_in_memory_db().await;
+        let repo = seed_folder(&db, "/tmp/cm-last-resort").await;
+        let settings = CommitMessageSettings::default();
+
+        // 没开会话、文件夹也没设默认 agent：用调用方给的第一个可用的。
+        let (agent, _, _) = resolve_agent(
+            &db.conn,
+            &settings,
+            None,
+            Some(repo),
+            Some(AgentType::ClaudeCode),
+        )
+        .await
+        .unwrap();
+        assert_eq!(agent, AgentType::ClaudeCode);
+
+        // 文件夹设了默认 agent 时，它排在兜底的前面。
+        folder_service::update_folder_default_agent(&db.conn, repo, Some(AgentType::Codex))
+            .await
+            .unwrap();
+        let (agent, _, _) = resolve_agent(
+            &db.conn,
+            &settings,
+            None,
+            Some(repo),
+            Some(AgentType::ClaudeCode),
+        )
+        .await
+        .unwrap();
+        assert_eq!(agent, AgentType::Codex);
+
+        // 什么都没有时照旧报「没有可用的 agent」。
+        let other = seed_folder(&db, "/tmp/cm-last-resort-other").await;
+        assert!(resolve_agent(&db.conn, &settings, None, Some(other), None)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

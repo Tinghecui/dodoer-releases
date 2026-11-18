@@ -108,10 +108,15 @@ async fn run(job: AutoNameJob) -> Result<Option<String>, String> {
 
     let settings = crate::commit_message::effective_settings(&conn, Some(root_folder_id)).await;
     let fallback = seed.agent.as_deref().and_then(AgentType::from_wire);
-    let (agent_type, mode_id, config_values) =
-        crate::commit_message::resolve_agent(&conn, &settings, fallback, Some(root_folder_id))
-            .await
-            .map_err(|e| format!("no agent to name the branch: {e}"))?;
+    let (agent_type, mode_id, config_values) = crate::commit_message::resolve_agent(
+        &conn,
+        &settings,
+        fallback,
+        Some(root_folder_id),
+        None,
+    )
+    .await
+    .map_err(|e| format!("no agent to name the branch: {e}"))?;
 
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let db = AppDatabase { conn: conn.clone() };

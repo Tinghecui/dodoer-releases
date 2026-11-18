@@ -68,6 +68,7 @@ pub async fn git_generate_commit_message(
     files: Vec<String>,
     draft: Option<String>,
     fallback_agent: Option<String>,
+    last_resort_agent: Option<String>,
 ) -> Result<GeneratedCommitMessage, AppCommandError> {
     use tauri::Manager;
     // The same data directory a session launch resolves (see `acp_connect`).
@@ -99,6 +100,9 @@ pub async fn git_generate_commit_message(
         files,
         draft,
         fallback_agent: fallback_agent
+            .as_deref()
+            .and_then(crate::models::agent::AgentType::from_wire),
+        last_resort_agent: last_resort_agent
             .as_deref()
             .and_then(crate::models::agent::AgentType::from_wire),
     };

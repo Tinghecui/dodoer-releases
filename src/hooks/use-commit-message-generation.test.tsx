@@ -6,12 +6,26 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 const api = vi.hoisted(() => ({
   generate: vi.fn(),
   cancel: vi.fn(async () => {}),
+  listAgents: vi.fn(),
 }))
 const toastError = vi.hoisted(() => vi.fn())
+const agents = vi.hoisted(() => ({
+  defaultOrder: [] as string[],
+  fresh: true,
+}))
 
 vi.mock("@/lib/api", () => ({
   gitGenerateCommitMessage: api.generate,
   gitGenerateCommitMessageCancel: api.cancel,
+  acpListAgents: api.listAgents,
+}))
+vi.mock("@/hooks/use-sorted-available-agents", () => ({
+  useSortedAvailableAgents: () => ({
+    sortedTypes: agents.defaultOrder,
+    defaultOrder: agents.defaultOrder,
+    fresh: agents.fresh,
+    refresh: async () => {},
+  }),
 }))
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: toastError },
@@ -44,6 +58,23 @@ function pending() {
   return { resolve, reject }
 }
 
+function agent(
+  agent_type: string,
+  {
+    enabled = true,
+    installed = true,
+  }: { enabled?: boolean; installed?: boolean } = {}
+) {
+  return {
+    agent_type,
+    enabled,
+    available: true,
+    installed_version: installed ? "1.0.0" : null,
+    sort_order: 0,
+    name: agent_type,
+  }
+}
+
 type Generated = { message: string; agent_type: string; auto_commit: boolean }
 
 const input = { files: ["a.ts"], draft: "fix it", fallbackAgent: null }
@@ -53,6 +84,9 @@ describe("useCommitMessageGeneration", () => {
     api.generate.mockReset()
     api.cancel.mockClear()
     toastError.mockClear()
+    agents.defaultOrder = []
+    agents.fresh = true
+    api.listAgents.mockReset()
   })
 
   it("hands back the message and asks for exactly the commit's files", async () => {
@@ -73,6 +107,7 @@ describe("useCommitMessageGeneration", () => {
       files: ["a.ts"],
       draft: "fix it",
       fallbackAgent: null,
+      lastResortAgent: null,
     })
     await act(async () => {
       run.resolve({
@@ -103,6 +138,113 @@ describe("useCommitMessageGeneration", () => {
       })
       expect(await message).toEqual({ message: "fix: it", autoCommit: true })
     })
+  })
+
+  it("offers the first usable agent for when no session or folder names one", () => {
+    // #798：没开会话、提交窗口里，文件夹没设默认时也要有 agent 可用。
+    agents.defaultOrder = ["claude_code", "codex"]
+    pending()
+    const { result } = renderHook(
+      () => useCommitMessageGeneration({ path: "/repo", folderId: 7 }),
+      { wrapper }
+    )
+    act(() => {
+      void result.current.generate(input)
+    })
+    const sent = api.generate.mock.calls[0][0]
+    expect(sent.fallbackAgent).toBeNull()
+    expect(sent.lastResortAgent).toBe("claude_code")
+  })
+
+  it("reads the agent list itself when it has not arrived yet", async () => {
+    // #798 返工：列表还在加载、或者上次读取失败（没有缓存）时点生成，当场读一次。
+    agents.fresh = false
+    api.listAgents.mockResolvedValueOnce([
+      agent("codex", { installed: false }),
+      agent("claude_code"),
+      agent("gemini", { enabled: false }),
+    ])
+    pending()
+    const { result } = renderHook(
+      () => useCommitMessageGeneration({ path: "/repo", folderId: 7 }),
+      { wrapper }
+    )
+    await act(async () => {
+      void result.current.generate(input)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(api.listAgents).toHaveBeenCalledTimes(1)
+    expect(api.generate.mock.calls[0][0].lastResortAgent).toBe("claude_code")
+  })
+
+  it("still asks when the list cannot be read, so the backend names the error", async () => {
+    agents.fresh = false
+    api.listAgents.mockRejectedValueOnce(new Error("offline"))
+    pending()
+    const { result } = renderHook(
+      () => useCommitMessageGeneration({ path: "/repo", folderId: 7 }),
+      { wrapper }
+    )
+    await act(async () => {
+      void result.current.generate(input)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(api.generate.mock.calls[0][0].lastResortAgent).toBeNull()
+  })
+
+  it("reads the list afresh rather than trust an old cache", async () => {
+    // #798 返工 2：本地缓存里的 agent 可能早就被停用或卸载了，列表没刷新到时不照它。
+    agents.fresh = false
+    agents.defaultOrder = ["codex"]
+    api.listAgents.mockResolvedValueOnce([
+      agent("codex", { enabled: false }),
+      agent("claude_code"),
+    ])
+    pending()
+    const { result } = renderHook(
+      () => useCommitMessageGeneration({ path: "/repo", folderId: 7 }),
+      { wrapper }
+    )
+    await act(async () => {
+      void result.current.generate(input)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(api.listAgents).toHaveBeenCalledTimes(1)
+    expect(api.generate.mock.calls[0][0].lastResortAgent).toBe("claude_code")
+  })
+
+  it("falls back to the cache when the list cannot be read afresh", async () => {
+    agents.fresh = false
+    agents.defaultOrder = ["codex"]
+    api.listAgents.mockRejectedValueOnce(new Error("offline"))
+    pending()
+    const { result } = renderHook(
+      () => useCommitMessageGeneration({ path: "/repo", folderId: 7 }),
+      { wrapper }
+    )
+    await act(async () => {
+      void result.current.generate(input)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(api.generate.mock.calls[0][0].lastResortAgent).toBe("codex")
+  })
+
+  it("does not read the list when the session names an agent", () => {
+    agents.fresh = false
+    pending()
+    const { result } = renderHook(
+      () => useCommitMessageGeneration({ path: "/repo", folderId: 7 }),
+      { wrapper }
+    )
+    act(() => {
+      void result.current.generate({ ...input, fallbackAgent: "codex" })
+    })
+    expect(api.listAgents).not.toHaveBeenCalled()
+    expect(api.generate.mock.calls[0][0].fallbackAgent).toBe("codex")
   })
 
   it("sends no draft for a box holding only whitespace", () => {

@@ -3406,6 +3406,9 @@ export async function gitGenerateCommitMessage(params: {
   files: string[]
   draft: string | null
   fallbackAgent: AgentType | null
+  /** Cowork fork (#798): used after the folder's default agent, when nothing
+   *  else names one — the first usable agent. */
+  lastResortAgent: AgentType | null
 }): Promise<GeneratedCommitMessage> {
   return getTransport().call(
     "git_generate_commit_message",
@@ -3416,6 +3419,7 @@ export async function gitGenerateCommitMessage(params: {
       files: params.files,
       draft: params.draft,
       fallbackAgent: params.fallbackAgent,
+      lastResortAgent: params.lastResortAgent,
     },
     { timeoutMs: 30 * 60_000 }
   )

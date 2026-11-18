@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import {
+  acpListAgents,
   gitGenerateCommitMessage,
   gitGenerateCommitMessageCancel,
 } from "@/lib/api"
@@ -12,6 +13,8 @@ import {
   type AppErrorTranslator,
 } from "@/lib/app-error"
 import type { AgentType } from "@/lib/types"
+import { useSortedAvailableAgents } from "@/hooks/use-sorted-available-agents"
+import { installedFirst } from "@/lib/resolve-default-agent"
 import { randomUUID } from "@/lib/utils"
 
 export interface CommitMessageGenerationInput {
@@ -56,6 +59,22 @@ export function sameFiles(a: readonly string[], b: readonly string[]): boolean {
   return b.every((file) => files.has(file))
 }
 
+/** 列表还没刷新到时（首次加载中、读取失败，或者手上只有本地旧缓存），点生成那一刻
+ *  自己读一次可用 agent，挑法和 `useSortedAvailableAgents().defaultOrder` 一样。
+ *  读到了给第一个（列表为空给 null）；读取失败给 undefined，由调用方退回缓存。 */
+async function readLastResortAgent(): Promise<AgentType | null | undefined> {
+  try {
+    const usable = (await acpListAgents())
+      .filter((a) => a.enabled && a.available)
+      .sort(
+        (a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)
+      )
+    return installedFirst(usable)[0] ?? null
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * The ✨ button's state for one commit box: at most one generation at a time,
  * stopped — never just abandoned — when the box's folder changes or the box
@@ -70,6 +89,11 @@ export function useCommitMessageGeneration(target: {
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Cowork fork (#798): with no session open (or in the commit window) and no
+  // folder default, the backend falls back to the first usable agent — the
+  // same last step a new conversation takes to pick one.
+  const { defaultOrder, fresh: agentsFresh } = useSortedAvailableAgents()
+  const lastResortAgent = defaultOrder[0] ?? null
   // The request whose answer the box is waiting for; anything else that
   // arrives is stale.
   const activeRef = useRef<string | null>(null)
@@ -112,6 +136,16 @@ export function useCommitMessageGeneration(target: {
         return true
       }
       try {
+        // 会话已经给了 agent 就用不到兜底；列表这次已经读到过（哪怕是空的）就照它。
+        // 否则手上的只是本地旧缓存（里面的 agent 可能已被停用、卸载），当场再读一次，
+        // 读取失败才退回缓存。
+        let lastResort: AgentType | null = lastResortAgent
+        if (!input.fallbackAgent && !agentsFresh) {
+          const read = await readLastResortAgent()
+          if (read !== undefined) lastResort = read
+        }
+        // 读列表的时候被停了、或者换了文件夹，就不再发请求。
+        if (activeRef.current !== requestId) return null
         const result = await gitGenerateCommitMessage({
           requestId,
           path: target.path,
@@ -119,6 +153,7 @@ export function useCommitMessageGeneration(target: {
           files: input.files,
           draft: input.draft.trim() ? input.draft : null,
           fallbackAgent: input.fallbackAgent,
+          lastResortAgent: lastResort,
         })
         return settle()
           ? { message: result.message, autoCommit: result.auto_commit }
@@ -139,7 +174,7 @@ export function useCommitMessageGeneration(target: {
         return null
       }
     },
-    [t, target.folderId, target.path]
+    [agentsFresh, lastResortAgent, t, target.folderId, target.path]
   )
 
   const elapsedSeconds =

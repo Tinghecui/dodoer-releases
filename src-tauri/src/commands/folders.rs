@@ -5827,13 +5827,19 @@ pub async fn rename_file_tree_entry(
     if next_path == target {
         return Ok(path);
     }
+    // 大小写不敏感的盘上只改大小写时，「已存在」的就是要改的这个文件自己，照常改名。
     if next_path.exists() {
-        return Err(AppCommandError::already_exists(
-            "A file with this name already exists",
-        ));
+        if !is_case_only_rename_of_itself(&target, &next_path) {
+            return Err(AppCommandError::already_exists(
+                "A file with this name already exists",
+            ));
+        }
+        // 新旧名字指向同一个文件时 rename 可以什么都不做就返回成功（POSIX 的规定），
+        // 磁盘上的大小写不变，所以绕一个临时名字分两步改。
+        rename_case_only_via_temp(&target, &next_path)?;
+    } else {
+        std::fs::rename(&target, &next_path).map_err(AppCommandError::io)?;
     }
-
-    std::fs::rename(&target, &next_path).map_err(AppCommandError::io)?;
 
     let rel = next_path
         .strip_prefix(&root)
@@ -5844,6 +5850,112 @@ pub async fn rename_file_tree_entry(
         .to_string_lossy()
         .to_string();
     Ok(rel)
+}
+
+/// 只改大小写的改名：先改成同目录下一个临时名字，再改成新名字。
+/// 第一步之后新名字还在，说明它是同一个文件的另一个目录项（大小写敏感的盘上的硬链接），
+/// 不是大小写不敏感查到的自己：改回原名，照旧报「已存在」。第二步失败也改回原名。
+fn rename_case_only_via_temp(target: &Path, next_path: &Path) -> Result<(), AppCommandError> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| AppCommandError::invalid_input("Cannot rename path without parent"))?;
+    let stem = target
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let temp = (0u32..100)
+        .map(|i| {
+            parent.join(format!(
+                ".{stem}.codeg-rename-{}-{nanos}-{i}",
+                std::process::id()
+            ))
+        })
+        .find(|p| std::fs::symlink_metadata(p).is_err())
+        .ok_or_else(|| AppCommandError::already_exists("No free temporary name for rename"))?;
+
+    std::fs::rename(target, &temp).map_err(AppCommandError::io)?;
+    if std::fs::symlink_metadata(next_path).is_ok() {
+        let _ = std::fs::rename(&temp, target);
+        return Err(AppCommandError::already_exists(
+            "A file with this name already exists",
+        ));
+    }
+    if let Err(e) = std::fs::rename(&temp, next_path) {
+        let _ = std::fs::rename(&temp, target);
+        return Err(AppCommandError::io(e));
+    }
+    Ok(())
+}
+
+/// 新名字和原名只差大小写、而且磁盘上查到的新名字就是原文件本身（大小写不敏感的盘）。
+/// Linux 上 a 和 A 是两个文件时身份不同，返回 false，照旧报「已存在」。
+fn is_case_only_rename_of_itself(target: &Path, next_path: &Path) -> bool {
+    let (Some(old_name), Some(new_name)) = (target.file_name(), next_path.file_name()) else {
+        return false;
+    };
+    let (Some(old_name), Some(new_name)) = (old_name.to_str(), new_name.to_str()) else {
+        return false;
+    };
+    old_name != new_name
+        && old_name.to_lowercase() == new_name.to_lowercase()
+        && is_same_file(target, next_path)
+}
+
+/// 两个路径是不是磁盘上同一个文件：按文件身份比，不按规范化后的路径比
+/// （macOS 上规范化不一定改写大小写）。拿不到身份就当不是同一个。
+#[cfg(unix)]
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+        (Ok(ma), Ok(mb)) => ma.dev() == mb.dev() && ma.ino() == mb.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(windows)]
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    // 卷序列号加文件编号；目录要带 FILE_FLAG_BACKUP_SEMANTICS 才打得开，
+    // 带 FILE_FLAG_OPEN_REPARSE_POINT 比的是链接本身，不跟过去。
+    fn identity(path: &Path) -> Option<(u32, u32, u32)> {
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        let file = std::fs::OpenOptions::new()
+            .access_mode(0)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .ok()?;
+        // SAFETY: 句柄在调用期间有效，info 是可写的本地结构体。
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
+        if ok == 0 {
+            return None;
+        }
+        Some((
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+        ))
+    }
+
+    match (identity(a), identity(b)) {
+        (Some(ia), Some(ib)) => ia == ib,
+        _ => false,
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn is_same_file(_a: &Path, _b: &Path) -> bool {
+    false
 }
 
 /// Move a file/directory into a different directory of the same workspace,
@@ -9474,6 +9586,188 @@ branch refs/heads/main";
                 ("R", "d/旧.txt -> d/新.txt"),
             ]
         );
+    }
+
+    /// 提交窗口提交一次已暂存的改名时只传新名字（#527）：git add 新名字不报错，
+    /// 提交里是一次改名，旧名消失、新名出现。
+    #[tokio::test]
+    async fn git_commit_of_a_staged_rename_by_its_new_name_commits_the_rename() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        init_quoting_fixture(root);
+        git_run(root, &["config", "user.name", "t"]);
+        git_run(root, &["config", "user.email", "t@example.com"]);
+        std::fs::create_dir(root.join("d")).expect("mkdir");
+        std::fs::write(root.join("d").join("old name.txt"), "1\n2\n3\n").expect("write");
+        git_run(root, &["add", "-A"]);
+        git_run(root, &["commit", "-q", "-m", "base"]);
+        git_run(root, &["mv", "d/old name.txt", "d/新 name.txt"]);
+
+        let db = fresh_in_memory_db().await;
+        git_commit_core(
+            &EventEmitter::Noop,
+            None,
+            &db.conn,
+            root.to_str().expect("utf-8 path"),
+            "chore: rename",
+            &["d/新 name.txt".to_string()],
+        )
+        .await
+        .expect("commit");
+
+        let changes = git_capture(
+            root,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                "--name-status",
+                "-M",
+                "HEAD~1",
+                "HEAD",
+            ],
+        );
+        assert_eq!(changes, "R100\td/old name.txt\td/新 name.txt");
+        let tree = git_capture(
+            root,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "ls-tree",
+                "-r",
+                "--name-only",
+                "HEAD",
+            ],
+        );
+        assert_eq!(tree, "d/新 name.txt");
+        let status = git_capture(root, &["status", "--porcelain=v1"]);
+        assert_eq!(status, "", "nothing should be left staged or unstaged");
+    }
+
+    #[test]
+    fn is_same_file_compares_file_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        std::fs::write(&a, "a").expect("write");
+        std::fs::write(&b, "b").expect("write");
+        assert!(is_same_file(&a, &a));
+        // 另一个名字指向同一个文件（模拟大小写不敏感的盘上查到的就是自己）。
+        let link = dir.path().join("link.txt");
+        std::fs::hard_link(&a, &link).expect("hard link");
+        assert!(is_same_file(&a, &link));
+        assert!(!is_same_file(&a, &b));
+        assert!(!is_same_file(&a, &dir.path().join("missing.txt")));
+    }
+
+    #[test]
+    fn case_only_rename_of_itself_needs_both_case_only_names_and_the_same_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let readme = dir.path().join("readme.md");
+        std::fs::write(&readme, "x").expect("write");
+        // 大小写不敏感的盘上（macOS、Windows 默认）README.md 本来就查到原文件；
+        // 大小写敏感的盘上用硬链接充当「新名字查到的就是原文件」。
+        let upper = dir.path().join("README.md");
+        if !upper.exists() {
+            std::fs::hard_link(&readme, &upper).expect("hard link");
+        }
+        assert!(is_case_only_rename_of_itself(&readme, &upper));
+
+        // 同一个文件，但名字不只差大小写：不放行。
+        let other_name = dir.path().join("notes.md");
+        std::fs::hard_link(&readme, &other_name).expect("hard link");
+        assert!(!is_case_only_rename_of_itself(&readme, &other_name));
+
+        // 只差大小写，但是另一个真实存在的文件：不放行。
+        let a = dir.path().join("a.txt");
+        let a_upper = dir.path().join("A.txt");
+        std::fs::write(&a, "a").expect("write");
+        if std::fs::write(&a_upper, "A").is_ok() && !is_same_file(&a, &a_upper) {
+            assert!(!is_case_only_rename_of_itself(&a, &a_upper));
+        }
+    }
+
+    /// Linux 上 a 和 A 是两个不同文件时，文件树把 a 改成 A 仍然报「已存在」。
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn rename_file_tree_entry_refuses_a_case_only_name_held_by_another_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("a.txt"), "a").expect("write");
+        std::fs::write(root.join("A.txt"), "A").expect("write");
+
+        let err = rename_file_tree_entry(
+            root.to_str().expect("utf-8 path").to_string(),
+            "a.txt".to_string(),
+            "A.txt".to_string(),
+        )
+        .await
+        .expect_err("another file already holds the name");
+        assert_eq!(err.message, "A file with this name already exists");
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "a");
+        assert_eq!(std::fs::read_to_string(root.join("A.txt")).unwrap(), "A");
+    }
+
+    /// 只改大小写、新名字没被别的文件占用时照常改名，返回新路径。
+    #[tokio::test]
+    async fn rename_file_tree_entry_renames_a_case_only_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir(root.join("d")).expect("mkdir");
+        std::fs::write(root.join("d").join("readme.md"), "x").expect("write");
+
+        let renamed = rename_file_tree_entry(
+            root.to_str().expect("utf-8 path").to_string(),
+            "d/readme.md".to_string(),
+            "README.md".to_string(),
+        )
+        .await
+        .expect("rename");
+        assert_eq!(
+            renamed,
+            std::path::Path::new("d")
+                .join("README.md")
+                .to_string_lossy()
+        );
+        let names: Vec<String> = std::fs::read_dir(root.join("d"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, ["README.md"]);
+    }
+
+    /// 新名字查到的就是原文件自己时，不能只调一次 rename 就报成功：对同一个文件 rename
+    /// 可以什么都不改。大小写不敏感的盘上要真的改成新的大小写；大小写敏感的盘上用硬链接
+    /// 模拟「同一个文件」，这时新名字是另一个目录项，照旧报「已存在」，两个名字都不动。
+    #[tokio::test]
+    async fn rename_file_tree_entry_case_only_rename_of_the_same_file_changes_the_name_on_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("readme.md"), "x").expect("write");
+        let case_sensitive = !root.join("README.md").exists();
+        if case_sensitive {
+            std::fs::hard_link(root.join("readme.md"), root.join("README.md")).expect("hard link");
+        }
+
+        let result = rename_file_tree_entry(
+            root.to_str().expect("utf-8 path").to_string(),
+            "readme.md".to_string(),
+            "README.md".to_string(),
+        )
+        .await;
+        let mut names: Vec<String> = std::fs::read_dir(root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        if case_sensitive {
+            let err = result.expect_err("README.md is another directory entry");
+            assert_eq!(err.message, "A file with this name already exists");
+            assert_eq!(names, ["README.md", "readme.md"]);
+        } else {
+            assert_eq!(result.expect("rename"), "README.md");
+            assert_eq!(names, ["README.md"]);
+        }
     }
 
     /// 回滚按原名恢复，不去掉名字首尾的空格：提交窗口回滚一次改名时，

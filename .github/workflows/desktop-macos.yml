@@ -1,4 +1,4 @@
-# 公开镜像 Tinghecui/dodoer-releases 的桌面版 dodoer.app（macOS arm64；Intel 包见 desktop-macos-intel.yml。固定的自签名证书签名；文件在私有仓库 cowork-codeg 的
+# 公开镜像 Tinghecui/dodoer-releases 的桌面版 dodoer.app（macOS arm64；Intel 包见 desktop-macos-intel.yml。Apple 的 Developer ID 证书签名并公证；文件在私有仓库 cowork-codeg 的
 # .github/public/workflows/ 里维护）。跑在 GitHub 托管的 macOS 机器上，公开仓库不收费。
 # 编法、冒烟、打包都在 scripts/cowork-desktop-build.sh 里。只有一种包（完整版，自带 codeg-server；2026-11-09 去掉了纯客户端版），
 # 一台机器编前端、sidecar 和主程序，最后 publish 发版。
@@ -18,10 +18,11 @@
 #   这个提交上了，Release 挂到已有的 tag 上；发之前等这个提交的 Test 过（scripts/cowork-wait-test.sh），说明用调用方给的改动清单
 #
 # 自动更新包用 TAURI_SIGNING_PRIVATE_KEY（+ _PASSWORD）签，签名绑定版本号（requireSignedVersion）。私钥丢了已经装好的 app 就再也收不到更新。
-# app 本身用 DODOER_CODESIGN_P12（+ _PASSWORD）里的自签名证书签（不是 Apple 开发者证书，「无法验证开发者」照旧）：macOS 的
-# 屏幕录制、辅助功能、钥匙串「始终允许」记的是签名证书，证书不变，更新以后这些授权就还在。ad-hoc 签名记的是每一版自己的哈希，
-# 每更新一次就悄悄失效一次（开关还亮着）。证书备份在生产机 /root/dodoer-codesign/（只有 root 能读）；丢了可以换一张，代价是
-# 换证书的那一版装上以后，大家要重新授权一次。
+# app 本身用 DODOER_DEVID_P12（+ _PASSWORD）里 Apple 发的 Developer ID Application 证书签，再用 APPLE_ID / APPLE_PASSWORD（App 专用密码）/
+# APPLE_TEAM_ID 交给 Apple 公证（scripts/cowork-desktop-build.sh 里做）：别人下载后不弹「无法验证开发者」；macOS 的屏幕录制、辅助功能
+# 授权记的是签名的 Team ID，更新以后还在。ad-hoc 签名记的是每一版自己的哈希，每更新一次就悄悄失效一次（开关还亮着）。
+# 没配 DODOER_DEVID_P12 时退回以前那张自签名证书 DODOER_CODESIGN_P12（不公证）。证书和私钥的备份在生产机 /root/dodoer-codesign/
+# （只有 root 能读）；证书到期或丢了，在同一个开发者账户下换一张，授权不受影响。
 # 公开仓库的日志和 artifact 谁都能看：步骤里别打印代码之外的东西（密钥都走 secrets，会被打码）。
 #
 # 黑苹果（2026-11-16 起）：用户家里的黑苹果（Intel i7-12700KF 20 线程 / 64GB）挂成自托管 runner（标签 hackintosh），在线就在它上面
@@ -81,6 +82,17 @@ on:
         required: true
       DODOER_CODESIGN_PASSWORD:
         required: true
+      # Apple 的 Developer ID 证书和公证用的账户；都配了就用它签名并公证，没配还是上面那张自签名证书
+      DODOER_DEVID_P12:
+        required: false
+      DODOER_DEVID_PASSWORD:
+        required: false
+      APPLE_ID:
+        required: false
+      APPLE_PASSWORD:
+        required: false
+      APPLE_TEAM_ID:
+        required: false
       # 发版的包编进 Sentry 的 DSN（见下面 build 那步）；不传就是关的
       CODEG_TELEMETRY_BUILTIN_DSN:
         required: false
@@ -266,12 +278,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: 签名证书（临时钥匙串）
         env:
-          P12: ${{ secrets.DODOER_CODESIGN_P12 }}
-          P12_PASSWORD: ${{ secrets.DODOER_CODESIGN_PASSWORD }}
+          P12: ${{ secrets.DODOER_DEVID_P12 || secrets.DODOER_CODESIGN_P12 }}
+          P12_PASSWORD: ${{ secrets.DODOER_DEVID_P12 && secrets.DODOER_DEVID_PASSWORD || secrets.DODOER_CODESIGN_PASSWORD }}
         run: |
           set -euo pipefail
           if [[ -z "$P12" || -z "$P12_PASSWORD" ]]; then
-            echo "::error::缺 Secret DODOER_CODESIGN_P12 / DODOER_CODESIGN_PASSWORD：不签名的包装上以后屏幕录制等授权会失效"
+            echo "::error::缺 Secret DODOER_DEVID_P12 / DODOER_DEVID_PASSWORD：不签名的包装上以后屏幕录制等授权会失效"
             exit 1
           fi
           kc="$RUNNER_TEMP/dodoer-codesign.keychain-db"
@@ -282,12 +294,27 @@ jobs:
           security set-keychain-settings -lut 21600 "$kc"
           security unlock-keychain -p "$kc_pw" "$kc"
           security import "$RUNNER_TEMP/codesign.p12" -k "$kc" -f pkcs12 -P "$P12_PASSWORD" -T /usr/bin/codesign
+          # p12 里带的中间证书（Developer ID G2）单独再导一次，再列出钥匙串里的证书：codesign 在钥匙串里找不到中间证书
+          # 就拼不出证书链（unable to build chain to self-signed root + errSecInternalComponent，2026-11-18 第一次用新证书时遇到）
+          ca="$RUNNER_TEMP/codesign-ca.pem"
+          openssl pkcs12 -in "$RUNNER_TEMP/codesign.p12" -passin env:P12_PASSWORD -nokeys -cacerts -out "$ca" 2>/dev/null \
+            || openssl pkcs12 -legacy -in "$RUNNER_TEMP/codesign.p12" -passin env:P12_PASSWORD -nokeys -cacerts -out "$ca" 2>/dev/null || true
+          if grep -q "BEGIN CERTIFICATE" "$ca" 2>/dev/null; then
+            security import "$ca" -k "$kc" -t cert >/dev/null 2>&1 || true
+          fi
+          rm -f "$ca"
+          security find-certificate -a "$kc" | grep '"labl"' || true
           rm -f "$RUNNER_TEMP/codesign.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pw" "$kc" >/dev/null
           echo "DODOER_KEYCHAIN_PASSWORD=$kc_pw" >> "$GITHUB_ENV"
-          sha1=$(security find-certificate -c "dodoer code signing" -Z "$kc" | awk '/SHA-1 hash:/ {print $3}')
+          # Apple 发的 Developer ID 证书；Secret 还没换时是以前那张自签名的
+          sha1=""
+          for cn in "Developer ID Application" "dodoer code signing"; do
+            sha1=$(security find-certificate -c "$cn" -Z "$kc" 2>/dev/null | awk '/SHA-1 hash:/ {print $3}') || true
+            if [[ -n "$sha1" ]]; then break; fi
+          done
           if [[ ! "$sha1" =~ ^[0-9A-F]{40}$ ]]; then
-            echo "::error::临时钥匙串里没有 dodoer code signing 证书"
+            echo "::error::临时钥匙串里没有签名证书（Developer ID Application 或 dodoer code signing）"
             exit 1
           fi
           echo "DODOER_SIGNING_IDENTITY=$sha1" >> "$GITHUB_ENV"
@@ -323,6 +350,10 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # 公证（证书是 Developer ID 时 scripts/cowork-desktop-build.sh 用）
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # 和下面 build 一样：要发布的包编进 Sentry 的 DSN（2026-11-16 以前这里漏了，黑苹果编的 v1.6.27、v1.6.28 本机工作区不上报）
           CODEG_TELEMETRY_BUILTIN_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_DSN || '' }}
           CODEG_TELEMETRY_BUILTIN_WEB_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_WEB_DSN || '' }}
@@ -548,12 +579,12 @@ jobs:
       # find-identity -v 列不出它，按名字找不稳，codesign 按哈希找不看信任）
       - name: 签名证书（临时钥匙串）
         env:
-          P12: ${{ secrets.DODOER_CODESIGN_P12 }}
-          P12_PASSWORD: ${{ secrets.DODOER_CODESIGN_PASSWORD }}
+          P12: ${{ secrets.DODOER_DEVID_P12 || secrets.DODOER_CODESIGN_P12 }}
+          P12_PASSWORD: ${{ secrets.DODOER_DEVID_P12 && secrets.DODOER_DEVID_PASSWORD || secrets.DODOER_CODESIGN_PASSWORD }}
         run: |
           set -euo pipefail
           if [[ -z "$P12" || -z "$P12_PASSWORD" ]]; then
-            echo "::error::缺 Secret DODOER_CODESIGN_P12 / DODOER_CODESIGN_PASSWORD：不签名的包装上以后屏幕录制等授权会失效"
+            echo "::error::缺 Secret DODOER_DEVID_P12 / DODOER_DEVID_PASSWORD：不签名的包装上以后屏幕录制等授权会失效"
             exit 1
           fi
           kc="$RUNNER_TEMP/dodoer-codesign.keychain-db"
@@ -564,13 +595,28 @@ jobs:
           security set-keychain-settings -lut 21600 "$kc"
           security unlock-keychain -p "$kc_pw" "$kc"
           security import "$RUNNER_TEMP/codesign.p12" -k "$kc" -f pkcs12 -P "$P12_PASSWORD" -T /usr/bin/codesign
+          # p12 里带的中间证书（Developer ID G2）单独再导一次，再列出钥匙串里的证书：codesign 在钥匙串里找不到中间证书
+          # 就拼不出证书链（unable to build chain to self-signed root + errSecInternalComponent，2026-11-18 第一次用新证书时遇到）
+          ca="$RUNNER_TEMP/codesign-ca.pem"
+          openssl pkcs12 -in "$RUNNER_TEMP/codesign.p12" -passin env:P12_PASSWORD -nokeys -cacerts -out "$ca" 2>/dev/null \
+            || openssl pkcs12 -legacy -in "$RUNNER_TEMP/codesign.p12" -passin env:P12_PASSWORD -nokeys -cacerts -out "$ca" 2>/dev/null || true
+          if grep -q "BEGIN CERTIFICATE" "$ca" 2>/dev/null; then
+            security import "$ca" -k "$kc" -t cert >/dev/null 2>&1 || true
+          fi
+          rm -f "$ca"
+          security find-certificate -a "$kc" | grep '"labl"' || true
           rm -f "$RUNNER_TEMP/codesign.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pw" "$kc" >/dev/null
           # shellcheck disable=SC2046
           security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
-          sha1=$(security find-certificate -c "dodoer code signing" -Z "$kc" | awk '/SHA-1 hash:/ {print $3}')
+          # Apple 发的 Developer ID 证书；Secret 还没换时是以前那张自签名的
+          sha1=""
+          for cn in "Developer ID Application" "dodoer code signing"; do
+            sha1=$(security find-certificate -c "$cn" -Z "$kc" 2>/dev/null | awk '/SHA-1 hash:/ {print $3}') || true
+            if [[ -n "$sha1" ]]; then break; fi
+          done
           if [[ ! "$sha1" =~ ^[0-9A-F]{40}$ ]]; then
-            echo "::error::临时钥匙串里没有 dodoer code signing 证书"
+            echo "::error::临时钥匙串里没有签名证书（Developer ID Application 或 dodoer code signing）"
             exit 1
           fi
           security find-identity -p codesigning "$kc"
@@ -585,6 +631,10 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # 公证（证书是 Developer ID 时 scripts/cowork-desktop-build.sh 用）
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CODEG_TELEMETRY_BUILTIN_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_DSN || '' }}
           CODEG_TELEMETRY_BUILTIN_WEB_DSN: ${{ needs.prepare.outputs.publish == 'true' && secrets.CODEG_TELEMETRY_BUILTIN_WEB_DSN || '' }}
           VERSION: ${{ needs.prepare.outputs.version }}

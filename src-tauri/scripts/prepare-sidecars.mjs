@@ -129,9 +129,26 @@ function stageHelperApp(built) {
     join(contents, "Resources", "icon.icns")
   )
   if (process.platform === "darwin") {
-    execFileSync("codesign", ["--force", "--sign", "-", HELPER_APP], {
-      stdio: "inherit",
-    })
+    // Cowork fork: `scripts/cowork-desktop-build.sh` runs this script from
+    // inside `tauri build` (beforeBuildCommand), so there is no step between
+    // staging and bundling in which to sign the helper the way release.yml
+    // does. With `CODEG_HELPER_SIGNING_IDENTITY` (a Developer ID identity)
+    // the helper is signed here as notarization needs: hardened runtime,
+    // secure timestamp, no entitlements. Without it: ad hoc, as upstream.
+    const identity = process.env.CODEG_HELPER_SIGNING_IDENTITY || "-"
+    const args =
+      identity === "-"
+        ? ["--force", "--sign", "-", HELPER_APP]
+        : [
+            "--force",
+            "--options",
+            "runtime",
+            "--timestamp",
+            "--sign",
+            identity,
+            HELPER_APP,
+          ]
+    execFileSync("codesign", args, { stdio: "inherit" })
   } else {
     log(`not on macOS: ${HELPER_APP} is left unsigned`)
   }

@@ -20,6 +20,9 @@ on:
       from_version:
         description: "先装这个旧版、再让它自己升级（测更新链用，如 v1.6.90；空 = 直接装被测版）"
         default: ""
+      employee:
+        description: "连验收机上的哪个员工（qa4–qa6 留给 Mac；同时跑的几批要连服务器时各用一个）"
+        default: "qa4"
       max_turns:
         default: "600"
       minutes:
@@ -45,6 +48,7 @@ jobs:
       BATCH: ${{ inputs.batch }}
       APP_VERSION: ${{ inputs.version }}
       FROM_VERSION: ${{ inputs.from_version }}
+      EMPLOYEE: ${{ inputs.employee || 'qa4' }}
       MAX_TURNS: ${{ inputs.max_turns || '600' }}
       MINUTES: ${{ inputs.minutes || '200' }}
       MODEL: ${{ inputs.model || vars.AIQA_MODEL || 'claude-opus-5-5' }}

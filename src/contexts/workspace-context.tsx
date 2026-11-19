@@ -1646,9 +1646,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   // the final content.
   const replaceTabContent = useCallback(
     (nextTab: FileWorkspaceTab) => {
-      useFolderTabsStore
-        .getState()
-        .addFile(nextTab.id, openingScope(nextTab.folderId))
+      const scope = openingScope(nextTab.folderId)
+      useFolderTabsStore.getState().addFile(nextTab.id, scope)
       setFileTabs((prev) => {
         const idx = prev.findIndex((tab) => tab.id === nextTab.id)
         if (idx < 0) return [...prev, nextTab]
@@ -1656,6 +1655,12 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         updated[idx] = nextTab
         return updated
       })
+      // 放进了别的项目的组（#953）：那排选中它，当前看着的这排和窗格不动。
+      if (
+        useFolderTabsStore.getState().enabled &&
+        scope !== useFolderTabsStore.getState().scope
+      )
+        return
       setActiveFileTabId(nextTab.id)
       activateFilePane()
     },
@@ -2203,11 +2208,12 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
               line: requestedLine,
             })
           } else {
-            // 等着切项目的跳行请求（#790）留着，除非开的就是那个文件。
+            // 等着切项目的跳行请求（#790）留着，除非是在它等的那个项目里开的就是那个文件；
+            // 别的项目里开着的同一个文件重新打开、自动刷新不算（#953）。
             setPendingFileReveal((prev) =>
               prev &&
               prev.requestId === reroutedRevealIdRef.current &&
-              prev.path !== absPath
+              (prev.path !== absPath || prev.scope !== targetScope)
                 ? prev
                 : null
             )
@@ -2881,16 +2887,24 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     ]
   )
 
-  const openSessionFileDiff = useCallback(
+  // 会话差异按算好的绝对路径（算不出时为 null）找所属项目放进对应的组（#953）。
+  const placeSessionDiff = useCallback(
     (
       filePath: string,
+      absPath: string | null,
+      openerScope: ReturnType<typeof openingScope>,
       diffContent: string,
       groupLabel: string,
       options?: { folderId?: number }
     ) => {
-      const target = resolveTargetFolder(options?.folderId)
+      const ownerScope = absPath
+        ? followOwnerScope(absPath, openerScope)
+        : openerScope
+      const moved = typeof ownerScope === "number" && ownerScope !== openerScope
+      const target = resolveTargetFolder(moved ? ownerScope : options?.folderId)
       if (!target) return
-      const path = normalizePath(filePath)
+      // 挪到别的项目时相对路径对那个项目不成立，用绝对路径。
+      const path = moved && absPath ? absPath : normalizePath(filePath)
       const tabId = buildFileTabId({
         kind: "diff-session",
         folderId: target.id,
@@ -2915,6 +2929,53 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       replaceTabContent(tab)
     },
     [replaceTabContent, resolveTargetFolder, t]
+  )
+
+  const openSessionFileDiff = useCallback(
+    (
+      filePath: string,
+      diffContent: string,
+      groupLabel: string,
+      options?: { folderId?: number }
+    ) => {
+      // 没指定项目时和打开文件一样按目录放（#953）：跟随开着、差异的文件在别的项目
+      // 目录下，标签进那个项目的组，界面不切项目。
+      // 相对路径按当前项目的目录拼成绝对路径再找归属（../别的项目/x 也算那个项目的）；
+      // ~/ 开头的先展开用户主目录（要问后端，异步）再找归属。
+      const openerScope = openingScope()
+      const opener = resolveTargetFolder()
+      if (options?.folderId == null && isHomeRelativePath(filePath)) {
+        void expandHomePath(filePath).then((expanded) =>
+          placeSessionDiff(
+            filePath,
+            isAbsoluteFilePath(expanded) ? normalizeAbsPath(expanded) : null,
+            openerScope,
+            diffContent,
+            groupLabel,
+            // 等主目录期间切了项目也放回点击时的项目。
+            opener ? { folderId: opener.id } : options
+          )
+        )
+        return
+      }
+      const absPath =
+        options?.folderId != null
+          ? null
+          : isAbsoluteFilePath(filePath)
+            ? normalizeAbsPath(filePath)
+            : opener
+              ? joinRootRel(opener.path, filePath)
+              : null
+      placeSessionDiff(
+        filePath,
+        absPath,
+        openerScope,
+        diffContent,
+        groupLabel,
+        options
+      )
+    },
+    [placeSessionDiff, resolveTargetFolder]
   )
 
   const openExternalConflictDiff = useCallback(

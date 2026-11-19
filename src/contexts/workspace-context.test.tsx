@@ -5933,6 +5933,108 @@ describe("Folder-tabs shared file buffers and selections", () => {
     })
   })
 
+  it("keeps another project's requested line when a third project reopens the same file (#953)", async () => {
+    act(() => {
+      useAppWorkspaceStore.setState({
+        allFolders: [
+          { id: 1, path: "/repo", name: "repo", color: "inherit" },
+          { id: 2, path: "/repo2", name: "repo2", color: "inherit" },
+          { id: 3, path: "/repo3", name: "repo3", color: "inherit" },
+        ] as never,
+      })
+    })
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/index.md", { folderId: 3 })
+    })
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/index.md", { line: 42 })
+    })
+    // 切到第三个项目，那边的同一个文件不带行号重新打开（自动刷新、重新加载）。
+    act(() => useFolderTabsStore.getState().activateScope(3))
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/index.md", { reload: true })
+    })
+    act(() => useFolderTabsStore.getState().activateScope(2))
+    expect(scopedWorkspace.activeFileTab?.path).toBe("/repo2/index.md")
+    expect(scopedWorkspace.pendingFileReveal).toMatchObject({
+      path: "/repo2/index.md",
+      line: 42,
+    })
+  })
+
+  it("puts a session diff of another project's file into that project's group (#953)", async () => {
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo/own.ts")
+    })
+    const own = scopedWorkspace.activeFileTabId!
+    act(() =>
+      scopedWorkspace.openSessionFileDiff("/repo2/index.md", "diff", "Turn 1")
+    )
+    const diffId = buildFileTabId({
+      kind: "diff-session",
+      folderId: 2,
+      groupLabel: "Turn 1",
+      path: "/repo2/index.md",
+    })
+    const state = useFolderTabsStore.getState()
+    expect(state.scope).toBe(1)
+    expect(state.fileRefs[1]).toEqual([own])
+    expect(state.fileRefs[2]).toEqual([diffId])
+    expect(scopedWorkspace.activeFileTabId).toBe(own)
+    act(() => useFolderTabsStore.getState().activateScope(2))
+    expect(scopedWorkspace.activeFileTabId).toBe(diffId)
+  })
+
+  it("puts a session diff with a relative path into the owning project's group (#953)", async () => {
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo/own.ts")
+    })
+    const own = scopedWorkspace.activeFileTabId!
+    // 会话里报的是相对当前项目的路径，落在别的项目目录下。
+    act(() =>
+      scopedWorkspace.openSessionFileDiff("../repo2/index.md", "diff", "Turn 1")
+    )
+    const diffId = buildFileTabId({
+      kind: "diff-session",
+      folderId: 2,
+      groupLabel: "Turn 1",
+      path: "/repo2/index.md",
+    })
+    const state = useFolderTabsStore.getState()
+    expect(state.scope).toBe(1)
+    expect(state.fileRefs[1]).toEqual([own])
+    expect(state.fileRefs[2]).toEqual([diffId])
+    expect(scopedWorkspace.activeFileTabId).toBe(own)
+    act(() => useFolderTabsStore.getState().activateScope(2))
+    expect(scopedWorkspace.activeFileTabId).toBe(diffId)
+  })
+
+  it("puts a session diff with a ~/ path into the owning project's group (#953)", async () => {
+    resetHomeDirCacheForTests()
+    mockedApi.getHomeDirectory.mockResolvedValue("/")
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo/own.ts")
+    })
+    const own = scopedWorkspace.activeFileTabId!
+    // 会话里报的是 ~/ 开头的路径，展开用户主目录后落在别的项目目录下。
+    await act(async () => {
+      scopedWorkspace.openSessionFileDiff("~/repo2/index.md", "diff", "Turn 1")
+    })
+    const diffId = buildFileTabId({
+      kind: "diff-session",
+      folderId: 2,
+      groupLabel: "Turn 1",
+      path: "/repo2/index.md",
+    })
+    const state = useFolderTabsStore.getState()
+    expect(state.scope).toBe(1)
+    expect(state.fileRefs[1]).toEqual([own])
+    expect(state.fileRefs[2]).toEqual([diffId])
+    expect(scopedWorkspace.activeFileTabId).toBe(own)
+    act(() => useFolderTabsStore.getState().activateScope(2))
+    expect(scopedWorkspace.activeFileTabId).toBe(diffId)
+  })
+
   it("keeps another project's file in the current group once it was opened there (#790)", async () => {
     const shared = buildFileTabId({ kind: "file", path: "/repo2/index.md" })
     // 第二个组里先有别的选中标签，重新加载、带行号打开都不能把它换掉。

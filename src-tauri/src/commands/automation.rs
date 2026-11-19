@@ -31,6 +31,9 @@ pub fn automation_error(e: DbError) -> AppCommandError {
         // 500；文字和它们还是 `Validation` 时一样，只放 `message`、不带
         // `validation error: ` 前缀的 `detail`（界面先取 `detail`）。
         DbError::Internal(msg) => AppCommandError::database_error(msg),
+        // 「立即运行」时上一次还在跑（[`run_error`]）：调用方的冲突，回 409，
+        // 文字照旧是原话、不带 `conflict: ` 前缀的 `detail`。
+        DbError::Conflict(msg) => AppCommandError::already_exists(msg),
         other => AppCommandError::from(other),
     }
 }
@@ -224,7 +227,17 @@ pub async fn automation_run_now_core(automation_id: i32) -> Result<i32, DbError>
     engine
         .run_automation(automation_id, "manual", None)
         .await
-        .map_err(DbError::Internal)
+        .map_err(run_error)
+}
+
+/// 引擎的错误是一句话：「上一次还在跑」是调用方的冲突（Sentry CODEG-SERVER-M），
+/// 认的是引擎自己的常量，不是猜文字；其余照旧是服务器这边的 `Internal`（500）。
+fn run_error(message: String) -> DbError {
+    if message == crate::automation::engine::PREVIOUS_RUN_ACTIVE {
+        DbError::Conflict(message)
+    } else {
+        DbError::Internal(message)
+    }
 }
 
 /// Cancel an in-flight (or clear a wedged) run.
@@ -270,10 +283,20 @@ mod tests {
 
     #[test]
     fn internal_failure_stays_500_with_the_same_text() {
-        // 引擎没起来、引擎报上来的错（如上一次还在跑）是服务器这边的，照旧
-        // 500；界面看到的文字和改成 Internal 之前一样，不带 `validation error: `。
-        let err = automation_error(DbError::Internal("previous run still active".into()));
+        // 引擎没起来、引擎报上来的错是服务器这边的，照旧 500；界面看到的文字
+        // 和改成 Internal 之前一样，不带 `validation error: `。
+        let err = automation_error(run_error("automation engine not running".into()));
         assert_eq!(err.code, AppErrorCode::DatabaseError);
+        assert_eq!(err.message, "automation engine not running");
+        assert_eq!(err.detail, None);
+    }
+
+    #[test]
+    fn run_now_while_the_last_run_is_active_is_a_conflict_with_the_same_text() {
+        let err = automation_error(run_error(
+            crate::automation::engine::PREVIOUS_RUN_ACTIVE.to_string(),
+        ));
+        assert_eq!(err.code, AppErrorCode::AlreadyExists);
         assert_eq!(err.message, "previous run still active");
         assert_eq!(err.detail, None);
     }

@@ -223,6 +223,11 @@ fn acquire_engine_ownership(data_dir: &Path) -> Ownership {
     }
 }
 
+/// What [`AutomationEngine::run_automation`] answers when the same automation
+/// is still running. It is the caller's conflict, not a failure: a manual
+/// "Run now" maps it to 409 (`commands::automation`).
+pub(crate) const PREVIOUS_RUN_ACTIVE: &str = "previous run still active";
+
 /// Long-running engine driver: boot recovery, then a single select loop over the
 /// completion event stream + the reconcile interval. Spawn once per process in
 /// each boot path (`lib.rs` setup via `tauri::async_runtime::spawn`, and
@@ -335,7 +340,7 @@ impl AutomationEngine {
                 automation_service::record_skipped_run(&self.db.conn, automation_id, trigger, scheduled_for)
                     .await;
             self.emit(AutomationChange::Upsert { id: automation_id });
-            return Err("previous run still active".to_string());
+            return Err(PREVIOUS_RUN_ACTIVE.to_string());
         }
 
         let run = automation_service::start_run(&self.db.conn, automation_id, trigger, scheduled_for)

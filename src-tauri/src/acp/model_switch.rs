@@ -243,6 +243,12 @@ fn settle(switch: &mut ModelSwitchInfo, error: Option<&str>, now: Option<(String
 /// A pick of the model selector made while a reply runs: kept in `held` (as
 /// `AfterTurn`) until [`apply_held`] sends it after the reply. A newer pick
 /// replaces one still waiting, and a pick of the model in effect just drops it.
+///
+/// The caller is answered `Accepted` as soon as the pick is kept, not when the
+/// reply ends: the reply can run for minutes, and the setter's 15 s wait then
+/// ran out on every such pick, holding the request open for nothing (p95 15 s
+/// in telemetry). How it ends is announced as the switch's own phase, and the
+/// default for new conversations is saved once it is `Applied`.
 pub(crate) async fn hold(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
@@ -263,7 +269,11 @@ pub(crate) async fn hold(
     match new_switch(state, &config_id, &value_id, after_turn).await {
         Some(switch) => {
             announce(state, emitter, &switch).await;
-            held.push(HeldModelSwitch { switch, reply });
+            answer(reply, Ok(SetterOutcome::Accepted));
+            held.push(HeldModelSwitch {
+                switch,
+                reply: None,
+            });
         }
         // The model already in effect: nothing to wait for.
         None => answer(reply, Ok(SetterOutcome::Confirmed { current: value_id })),
@@ -377,6 +387,21 @@ mod tests {
             current: "opus".to_string(),
         };
         assert_eq!(rx.await.unwrap(), Ok(want));
+    }
+
+    #[tokio::test]
+    async fn a_held_pick_is_answered_at_once_and_still_kept_for_after_the_reply() {
+        let state = state_with(vec![model_option("opus")]);
+        let emitter = EventEmitter::Noop;
+        let mut held = Vec::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (id, fable) = ("model".to_string(), "fable".to_string());
+        hold(&state, &emitter, &mut held, id, fable, Some(tx)).await;
+        assert_eq!(rx.await.unwrap(), Ok(SetterOutcome::Accepted));
+        assert_eq!(held.len(), 1);
+        assert!(held[0].reply.is_none());
+        assert_eq!(held[0].switch.to_value, "fable");
+        assert_eq!(held[0].switch.phase, ModelSwitchPhase::AfterTurn);
     }
 
     #[test]

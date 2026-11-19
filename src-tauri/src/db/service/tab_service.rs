@@ -2,12 +2,13 @@ use chrono::Utc;
 use sea_orm::sea_query::Expr;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseConnection,
-    EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
+    EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
 };
+use std::collections::HashSet;
 use std::sync::OnceLock;
 use tokio::sync::Mutex;
 
-use crate::db::entities::{app_metadata, opened_tab};
+use crate::db::entities::{app_metadata, conversation, folder, opened_tab};
 use crate::db::error::DbError;
 use crate::db::service::app_metadata_service;
 use crate::models::agent::AgentType;
@@ -130,6 +131,7 @@ pub async fn save_all_tabs<C: ConnectionTrait>(
     conn: &C,
     items: Vec<OpenedTab>,
 ) -> Result<(), DbError> {
+    let (live_conversations, live_folders) = live_targets(conn, &items).await?;
     opened_tab::Entity::delete_many().exec(conn).await?;
 
     let now = Utc::now();
@@ -137,7 +139,11 @@ pub async fn save_all_tabs<C: ConnectionTrait>(
 
     for item in items {
         // Skip drafts — never persist a conversation-less tab.
-        if item.conversation_id.is_none() {
+        let Some(conversation_id) = item.conversation_id else {
+            continue;
+        };
+        if !live_conversations.contains(&conversation_id) || !live_folders.contains(&item.folder_id)
+        {
             continue;
         }
 
@@ -168,6 +174,39 @@ pub async fn save_all_tabs<C: ConnectionTrait>(
     }
 
     Ok(())
+}
+
+/// Cowork fork (CODEG-SERVER-4): the conversations and folders of `items` that
+/// have a row here. A tab pointing at one that does not is skipped rather
+/// than failing the whole save on its FOREIGN KEY: a client keeps tabs the
+/// server never confirmed in local storage, which can outlive the database
+/// they were written against (a backup restored, another data directory), and
+/// sends them again on every reconnect. The snapshot the save returns leaves
+/// them out, so the client stops sending them.
+async fn live_targets<C: ConnectionTrait>(
+    conn: &C,
+    items: &[OpenedTab],
+) -> Result<(HashSet<i32>, HashSet<i32>), DbError> {
+    let conversation_ids: Vec<i32> = items.iter().filter_map(|i| i.conversation_id).collect();
+    let folder_ids: Vec<i32> = items.iter().map(|i| i.folder_id).collect();
+    let conversations = conversation::Entity::find()
+        .select_only()
+        .column(conversation::Column::Id)
+        .filter(conversation::Column::Id.is_in(conversation_ids))
+        .into_tuple::<i32>()
+        .all(conn)
+        .await?;
+    let folders = folder::Entity::find()
+        .select_only()
+        .column(folder::Column::Id)
+        .filter(folder::Column::Id.is_in(folder_ids))
+        .into_tuple::<i32>()
+        .all(conn)
+        .await?;
+    Ok((
+        conversations.into_iter().collect(),
+        folders.into_iter().collect(),
+    ))
 }
 
 /// Compare-and-set save: only writes when `expected_version` matches the stored
@@ -487,6 +526,29 @@ mod tests {
         let rows = list_all_tabs(&db.conn).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].conversation_id, Some(first));
+    }
+
+    /// CODEG-SERVER-4: a tab whose conversation or folder has no row here is
+    /// left out, and the rest of the save lands.
+    #[tokio::test]
+    async fn cas_save_skips_tabs_of_rows_this_database_does_not_have() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = fresh_disk_db(dir.path()).await;
+        let folder_id = seed_folder(&db, "/tmp/tabs-missing-rows").await;
+        let conversation_id = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+
+        let items = vec![
+            tab(folder_id, conversation_id + 1000, 0),
+            tab(folder_id + 1000, conversation_id, 1),
+            tab(folder_id, conversation_id, 2),
+        ];
+        let outcome = save_all_tabs_cas(&db.conn, items, 0)
+            .await
+            .expect("no FOREIGN KEY failure");
+        assert!(outcome.accepted);
+        assert_eq!(outcome.tabs.len(), 1);
+        assert_eq!(outcome.tabs[0].conversation_id, Some(conversation_id));
+        assert_eq!(outcome.tabs[0].folder_id, folder_id);
     }
 
     /// A fresh database has no version row; the claim creates it as "0", so a

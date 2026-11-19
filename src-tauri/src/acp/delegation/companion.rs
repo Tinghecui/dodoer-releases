@@ -3170,6 +3170,7 @@ fn scroll_note(scrolled: Option<&Value>) -> String {
 /// missing grant is an instruction (snapshot again; ask the user), not a
 /// failure the turn should abort on.
 pub fn render_browser_act_result(outcome: &Value) -> Value {
+    let mut structured = outcome.clone();
     let text = match outcome.get("action") {
         Some(action) if action.is_object() => {
             let fidelity = action
@@ -3181,13 +3182,20 @@ pub fn render_browser_act_result(outcome: &Value) -> Value {
                 "trusted" => "as a real input event",
                 _ => "as events dispatched by script (synthetic)",
             };
-            format!(
+            let text = format!(
                 "Done, {how}.{}{} The page was at {url}. Take a browser_snapshot to see what came \
                  of it.{}",
                 upload_note(action.get("uploaded")),
                 scroll_note(action.get("scrolled")),
                 download_note(action.get("downloads")),
-            )
+            );
+            // Claude Code、Codex 只把 structuredContent 的 JSON 交给模型、不看
+            // content 文字（见 render_feedback_result 的注释），上传、滚动、
+            // 下载的说明（比如「Chrome 可能在问保存到哪」）也放一份进 hint。
+            if let Some(map) = structured.as_object_mut() {
+                map.insert("hint".to_string(), Value::String(text.clone()));
+            }
+            text
         }
         _ => outcome
             .get("note")
@@ -3198,7 +3206,7 @@ pub fn render_browser_act_result(outcome: &Value) -> Value {
     json!({
         "content": [{ "type": "text", "text": text }],
         "isError": false,
-        "structuredContent": outcome.clone(),
+        "structuredContent": structured,
     })
 }
 
@@ -7471,6 +7479,40 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("ssh <device>"), "{text}");
+
+        // Claude Code、Codex 只把 structuredContent 交给模型：下载、上传的说明
+        // 也要在那里，不然智能体只看到 {fileName, state}。
+        let hint = downloaded["structuredContent"]["hint"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            hint.contains("Downloaded a.pdf to /Users/someone/Downloads/a.pdf"),
+            "{hint}"
+        );
+        assert!(
+            hint.contains("Chrome may be asking the user where to save it"),
+            "{hint}"
+        );
+        assert_eq!(downloaded["structuredContent"]["tabId"], "t1");
+        assert_eq!(
+            downloaded["structuredContent"]["action"]["downloads"][2]["state"],
+            "inProgress"
+        );
+        let hint = uploaded["structuredContent"]["hint"].as_str().unwrap_or("");
+        assert!(hint.contains("Gave the page 1 file: a.pdf."), "{hint}");
+    }
+
+    /// 滚动的说明同样要进 structuredContent。
+    #[test]
+    fn a_scroll_note_reaches_hosts_that_read_only_structured_content() {
+        let result = render_browser_act_result(&json!({
+            "tabId": "t1",
+            "action": { "fidelity": "synthetic", "url": "http://x/",
+                        "scrolled": { "by": 700, "top": 700, "max": 2900 } }
+        }));
+        let hint = result["structuredContent"]["hint"].as_str().unwrap_or("");
+        assert!(hint.contains("Scrolled down 700px"), "{hint}");
+        assert_eq!(hint, result["content"][0]["text"].as_str().unwrap());
     }
 
     /// The three tab tools are as strict about their two arguments: an

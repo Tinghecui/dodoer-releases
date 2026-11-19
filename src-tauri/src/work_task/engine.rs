@@ -971,7 +971,13 @@ impl TaskEngine {
                 .find(|(_, (tid, _))| *tid == task_id)
                 .map(|(c, _)| c.clone())
         };
+        // #834：任务连接的编号。`disconnect` 只发个命令，连接后来才报断开，那时还挂着后台
+        // 命令就会留「?」；下面清「?」时按这个编号把它挡住。
+        let mut retired_generation = None;
         if let Some(conn_id) = conn_id {
+            if let Some(state) = self.manager.get_state(&conn_id).await {
+                retired_generation = Some(state.read().await.generation);
+            }
             let _ = self.manager.cancel(&self.db.conn, &conn_id).await;
             self.forget_connection(&conn_id).await;
             self.forget_delegation_children_of(&conn_id).await;
@@ -979,12 +985,29 @@ impl TaskEngine {
         }
         self.awaiting.lock().await.remove(&task_id);
 
-        // Converge a stranded InProgress conversation.
+        // Converge a stranded InProgress conversation — and (#834) one whose
+        // turn already finished and is awaiting review: the user canceled the
+        // whole task, so the sidebar and the conversation details say
+        // 「已取消」 like a cancel mid-turn does. A Completed one the user has
+        // already seen is left as is.
         let task = work_task_service::get_model(&self.db.conn, task_id).await.ok();
         if let Some(conv_id) = task.as_ref().and_then(|t| t.conversation_id) {
-            if self.conversation_status(conv_id).await == Some(ConversationStatus::InProgress) {
+            if matches!(
+                self.conversation_status(conv_id).await,
+                Some(ConversationStatus::InProgress) | Some(ConversationStatus::PendingReview)
+            ) {
                 self.cancel_conversation(conv_id).await;
             }
+            // 断开时还在等后台的活，会留一个「?」；任务取消了，后台的活跟着停了，「?」
+            // 没有意义。会话状态没改（比如已完成）时也要清掉；任务连接晚到的断开也不能再
+            // 把它写回来。
+            // 按「取消」清：只删「?」，已经记下的没跑完的后台任务（#817）留给红叉。
+            crate::web::event_bridge::retire_uncertain_background(
+                &self.emitter,
+                conv_id,
+                crate::web::event_bridge::SettledAs::Cancelled,
+                retired_generation,
+            );
         }
         // The slot freed — refill from the queue (and an auto folder's todo).
         if let Some(folder_id) = task.map(|t| t.folder_id) {
@@ -10542,6 +10565,206 @@ mod tests {
             .await
             .expect("task row")
             .status
+    }
+
+    /// #834 用的：一个跑完这一轮、停在 review 的任务，它的会话是 `status`；engine 的发射器
+    /// 后面是一个 web broadcaster。
+    async fn reviewed_task_with_conversation(
+        status: ConversationStatus,
+    ) -> (
+        Arc<TaskEngine>,
+        Arc<crate::web::event_bridge::WebEventBroadcaster>,
+        i32,
+        i32,
+    ) {
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
+
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/task-cancel-review").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .expect("conversation");
+        let task = work_task_service::create(
+            &db.conn,
+            crate::models::WorkTaskDraft {
+                folder_id,
+                title: "sleep in background".to_string(),
+                config: serde_json::json!({
+                    "display_text": "sleep in background",
+                    "prompt_blocks": [{ "type": "text", "text": "sleep in background" }],
+                }),
+            },
+        )
+        .await
+        .expect("task");
+        let run_seq =
+            work_task_service::claim_for_run(&db.conn, task.id, WorkTaskStatus::Todo, "test")
+                .await
+                .expect("claim")
+                .expect("claimed");
+        assert!(work_task_service::begin_setup(&db.conn, task.id, run_seq)
+            .await
+            .expect("begin_setup"));
+        assert!(
+            work_task_service::mark_running(&db.conn, task.id, run_seq, conv.id, PARENT_CONN)
+                .await
+                .expect("mark_running")
+        );
+        assert!(
+            work_task_service::settle_review(&db.conn, task.id, run_seq, None, None)
+                .await
+                .expect("settle review")
+        );
+        conversation_service::update_status(&db.conn, conv.id, status)
+            .await
+            .expect("conversation status");
+
+        let broadcaster = Arc::new(crate::web::event_bridge::WebEventBroadcaster::new());
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+        let engine = test_engine_full(db, Arc::new(crate::forge::deliver::ForgeDelivery), emitter);
+        (engine, broadcaster, task.id, conv.id)
+    }
+
+    /// 让对话 `conversation_id` 留下一个「?」：一条连接绑上它、等后台、断开。
+    async fn leave_uncertain_mark(emitter: &EventEmitter, conversation_id: i32) {
+        use crate::acp::types::{BackgroundOutstandingTask, BackgroundTaskKind, ConnectionStatus};
+        let state = Arc::new(tokio::sync::RwLock::new(crate::acp::SessionState::new(
+            "conn-uncertain".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "win-test".to_string(),
+            None,
+        )));
+        let emit = |event| crate::web::event_bridge::emit_with_state(&state, emitter, event);
+        emit(AcpEvent::ConversationLinked {
+            conversation_id,
+            folder_id: 1,
+            parent_conversation_id: None,
+            parent_tool_use_id: None,
+        })
+        .await;
+        emit(AcpEvent::BackgroundActivity {
+            session_id: "sid".into(),
+            turns: vec![],
+            outstanding: 1,
+            outstanding_tasks: vec![BackgroundOutstandingTask {
+                task_id: "b1".into(),
+                kind: BackgroundTaskKind::Shell,
+                tool_use_id: None,
+                description: Some("Wait 60 seconds in the background".into()),
+                started_at_ms: 1_000,
+            }],
+            settled: vec![],
+            watermark: 1,
+        })
+        .await;
+        emit(AcpEvent::StatusChanged {
+            status: ConnectionStatus::Disconnected,
+        })
+        .await;
+    }
+
+    /// #834：这一轮跑完、会话待复查（还挂着后台命令，断开时留了「?」），在看板上取消任务：
+    /// 会话标成「已取消」，「?」也清掉。
+    #[tokio::test]
+    async fn canceling_a_task_in_review_cancels_its_pending_review_conversation() {
+        let (engine, broadcaster, task_id, conv_id) =
+            reviewed_task_with_conversation(ConversationStatus::PendingReview).await;
+        leave_uncertain_mark(&engine.emitter, conv_id).await;
+        assert_eq!(broadcaster.merge_background_pending(Vec::new()).len(), 1);
+
+        engine.cancel(task_id, None).await.expect("cancel");
+
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::Canceled);
+        assert_eq!(
+            engine.conversation_status(conv_id).await,
+            Some(ConversationStatus::Cancelled)
+        );
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// #834：真实的顺序是取消先返回、连接后来才报断开（`disconnect` 只发个命令）。任务的
+    /// 连接还挂着后台命令，晚到的断开不能把取消时清掉的「?」写回来。
+    #[tokio::test]
+    async fn a_late_disconnect_after_canceling_a_task_leaves_no_mark() {
+        use crate::acp::types::{BackgroundOutstandingTask, BackgroundTaskKind, ConnectionStatus};
+        let (engine, broadcaster, task_id, conv_id) =
+            reviewed_task_with_conversation(ConversationStatus::PendingReview).await;
+        engine
+            .manager
+            .insert_test_connection(
+                PARENT_CONN,
+                AgentType::ClaudeCode,
+                None,
+                engine.emitter.clone(),
+            )
+            .await;
+        engine
+            .index
+            .lock()
+            .await
+            .insert(PARENT_CONN.into(), (task_id, 1));
+        let state = engine.manager.get_state(PARENT_CONN).await.expect("state");
+        let emitter = engine.emitter.clone();
+        let emit = |event| crate::web::event_bridge::emit_with_state(&state, &emitter, event);
+        emit(AcpEvent::ConversationLinked {
+            conversation_id: conv_id,
+            folder_id: 1,
+            parent_conversation_id: None,
+            parent_tool_use_id: None,
+        })
+        .await;
+        emit(AcpEvent::BackgroundActivity {
+            session_id: "sid".into(),
+            turns: vec![],
+            outstanding: 1,
+            outstanding_tasks: vec![BackgroundOutstandingTask {
+                task_id: "b1".into(),
+                kind: BackgroundTaskKind::Shell,
+                tool_use_id: None,
+                description: Some("Wait 60 seconds in the background".into()),
+                started_at_ms: 1_000,
+            }],
+            settled: vec![],
+            watermark: 1,
+        })
+        .await;
+
+        engine.cancel(task_id, None).await.expect("cancel");
+        // 连接的循环收到断开命令以后才报断开。
+        emit(AcpEvent::StatusChanged {
+            status: ConnectionStatus::Disconnected,
+        })
+        .await;
+
+        assert_eq!(
+            engine.conversation_status(conv_id).await,
+            Some(ConversationStatus::Cancelled)
+        );
+        assert!(
+            engine.manager.get_state(PARENT_CONN).await.is_none(),
+            "connection shed"
+        );
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// #834：用户已经看过、标成「已完成」的会话不改写，但取消任务后「?」照样清掉。
+    #[tokio::test]
+    async fn canceling_a_task_keeps_a_completed_conversation_but_clears_its_mark() {
+        let (engine, broadcaster, task_id, conv_id) =
+            reviewed_task_with_conversation(ConversationStatus::Completed).await;
+        // 「已完成」的 upsert 会顺带清掉「?」，所以先改状态再留「?」。
+        leave_uncertain_mark(&engine.emitter, conv_id).await;
+        assert_eq!(broadcaster.merge_background_pending(Vec::new()).len(), 1);
+
+        engine.cancel(task_id, None).await.expect("cancel");
+
+        assert_eq!(
+            engine.conversation_status(conv_id).await,
+            Some(ConversationStatus::Completed)
+        );
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
     }
 
     /// #538: Codex still ends the turn with `end_turn` after an upstream 400.

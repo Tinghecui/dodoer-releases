@@ -48,6 +48,10 @@ struct BackgroundSlot {
     /// 留下「?」的那条连接断开前的智能体会话 id（#441）：刷新后自动连上的新连接只 resume
     /// 这个会话、不绑对话，靠它认出来。
     external_id: Option<String>,
+    /// #834：被取消的任务连接的编号（这个及更旧的被挡在外面）。它们晚到的断开不留「?」，
+    /// 只把客户端上的沙漏清掉，或者（回合没跑完）照 #817 记下没跑完的后台任务。之后有更新的
+    /// 连接报了读数就作废。
+    retired_through: Option<u64>,
 }
 
 /// Cowork 加的（#441）：一条没断开的活连接绑着什么，给 [`WebEventBroadcaster::merge_background_pending_with`]
@@ -653,7 +657,7 @@ pub fn emit_event(emitter: &EventEmitter, event: &str, payload: impl Serialize) 
 
 /// Cowork 加的：[`settled_conversation_id`] 说的对话是怎么结束的。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SettledAs {
+pub(crate) enum SettledAs {
     /// 完成或删掉：留下来的什么都删。
     Closed,
     /// 取消（红叉）：只删「?」，没跑完的后台任务（#817）留着给红叉写任务名。
@@ -687,11 +691,29 @@ fn settled_conversation_id(value: &serde_json::Value) -> Option<(i32, SettledAs)
 /// Cowork 加的：删掉一个对话留下来的「?」，删了就广播一条 `idle`。编号不动：旧连接照样不能
 /// 再把「?」写回来。取消时没跑完的后台任务（`abandoned`，#817）不删：那正是红叉要写的。
 fn clear_uncertain_background(emitter: &EventEmitter, conversation_id: i32, how: SettledAs) {
+    retire_uncertain_background(emitter, conversation_id, how, None);
+}
+
+/// Cowork 加的（#834）：[`clear_uncertain_background`]，再把 `fence`（编号）及更旧的连接
+/// 挡在这个对话外面：它们之后报的读数（包括断开时留「?」）不进表、也不广播。
+/// `disconnect` 只是发个命令，连接真正断开、报 `Disconnected` 在后面，取消任务时先清掉的
+/// 「?」不能被它写回来。之后新起的连接编号更大，不受影响。
+pub(crate) fn retire_uncertain_background(
+    emitter: &EventEmitter,
+    conversation_id: i32,
+    how: SettledAs,
+    fence: Option<u64>,
+) {
     let Some(broadcaster) = emitter.web_broadcaster() else {
         return;
     };
     // 拿着表锁发，和别的连接对同一个对话的广播排好先后。
     let mut slots = broadcaster.lock_background_slots();
+    if let Some(fence) = fence {
+        let slot = slots.entry(conversation_id).or_default();
+        slot.generation = slot.generation.max(fence.saturating_add(1));
+        slot.retired_through = Some(slot.retired_through.map_or(fence, |r| r.max(fence)));
+    }
     let removed = slots
         .get_mut(&conversation_id)
         .and_then(|slot| {
@@ -1088,7 +1110,16 @@ fn admit_background_reading(
         return false;
     }
     slot.generation = generation;
+    slot.retired_through = None;
     true
+}
+
+/// #834：编号是 `generation` 的连接是不是被 [`retire_uncertain_background`] 挡住的那条（而且
+/// 之后没有更新的连接接手这个对话）。
+fn is_retired_connection(slots: &BackgroundSlots, conversation_id: i32, generation: u64) -> bool {
+    slots.get(&conversation_id).is_some_and(|slot| {
+        generation < slot.generation && slot.retired_through.is_some_and(|r| generation <= r)
+    })
 }
 
 /// Cowork 加的：一次读数变化要发的 [`BACKGROUND_PENDING_EVENT`]，顺带改表：
@@ -1124,12 +1155,14 @@ fn background_pending_broadcasts(
     let mut out = Vec::new();
 
     if disconnected {
+        // #834：被取消的任务连接晚到的断开：编号虽然被挡住了，客户端上它的沙漏或「?」还得清。
+        let retired = after_id.is_some_and(|id| is_retired_connection(slots, id, generation));
         // 断开不换对话。断开前在等后台，后台活跟着进程没了：留「?」。`count` 照旧 0。
         if *before_count == 0 {
             // 只是在跑、被进程观察标了「?」的：不留（回合由 `handle_terminal_event` 标成
             // 取消），把客户端上那个「?」清掉。
             if let Some(conversation_id) = after_id.filter(|_| before_reason.is_some()) {
-                if admit_background_reading(slots, conversation_id, generation) {
+                if retired || admit_background_reading(slots, conversation_id, generation) {
                     out.push(BackgroundPendingEntry::idle(conversation_id));
                 }
             }
@@ -1138,6 +1171,21 @@ fn background_pending_broadcasts(
         let Some(conversation_id) = after_id else {
             return out;
         };
+        if retired {
+            // 任务取消了，不留「?」。回合没跑完的照 #817 记下没跑完的后台任务给红叉；
+            // 跑完了的（待复查）发 `idle`，把客户端上的沙漏清掉。编号不动，挡板照旧。
+            if turn_failed {
+                let entry = BackgroundPendingEntry::abandoned(conversation_id, before_tasks);
+                if let Some(slot) = slots.get_mut(&conversation_id) {
+                    slot.uncertain = Some(entry.clone());
+                    slot.external_id = external_id;
+                }
+                out.push(entry);
+            } else {
+                out.push(BackgroundPendingEntry::idle(conversation_id));
+            }
+            return out;
+        }
         if !admit_background_reading(slots, conversation_id, generation) {
             return out;
         }
@@ -1178,6 +1226,7 @@ fn background_pending_broadcasts(
                 slot.uncertain = None;
                 slot.external_id = None;
                 slot.generation = generation;
+                slot.retired_through = None;
             }
             out.push(BackgroundPendingEntry::idle(conversation_id));
         }
@@ -1807,6 +1856,69 @@ mod tests {
             .merge_background_pending_with(Vec::new(), &[binding(newer_generation)])
             .is_empty());
         assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// #834：按编号挡住的连接晚到的断开不再留「?」，但要发 `idle` 把客户端上它的沙漏清掉；
+    /// 之后新起的连接照常报读数、留「?」。
+    #[tokio::test]
+    async fn a_retired_connection_cannot_put_the_mark_back() {
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        let retired = fresh_state();
+        emit_with_state(&retired, &emitter, linked(7)).await;
+        emit_with_state(
+            &retired,
+            &emitter,
+            watcher_activity(&[("b1", "Watch CI")], 1),
+        )
+        .await;
+        let fence = retired.read().await.generation;
+
+        retire_uncertain_background(&emitter, 7, SettledAs::Cancelled, Some(fence));
+        let _ = background_events(&mut rx);
+        emit_with_state(&retired, &emitter, disconnected()).await;
+        assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+
+        leave_uncertain_mark(&emitter).await;
+        assert_eq!(broadcaster.merge_background_pending(Vec::new()).len(), 1);
+    }
+
+    /// #834 + #817：回合还在跑时取消任务，被挡住的任务连接后来才断开：不留「?」，没跑完的
+    /// 后台任务照样记下、广播给红叉写任务名。
+    #[tokio::test]
+    async fn a_retired_connection_disconnecting_mid_turn_still_leaves_abandoned_tasks() {
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        let retired = fresh_state();
+        emit_with_state(&retired, &emitter, linked(7)).await;
+        emit_with_state(
+            &retired,
+            &emitter,
+            watcher_activity(&[("b1", "Watch CI")], 1),
+        )
+        .await;
+        retired.write().await.turn_in_flight = true;
+        let fence = retired.read().await.generation;
+
+        retire_uncertain_background(&emitter, 7, SettledAs::Cancelled, Some(fence));
+        let _ = background_events(&mut rx);
+        emit_with_state(&retired, &emitter, disconnected()).await;
+        assert_eq!(
+            background_events(&mut rx),
+            vec![serde_json::json!({
+                "conversation_id": 7,
+                "count": 0,
+                "names": [],
+                "state": "abandoned",
+                "reason": null,
+                "tasks": [{ "task_id": "b1", "name": "Watch CI" }],
+            })]
+        );
+        let listed = broadcaster.merge_background_pending(Vec::new());
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].state,
+            crate::acp::types::BackgroundPendingState::Abandoned
+        );
     }
 
     /// 完成标准 4：新连接绑到这个对话上，即使 `count` 是 0，也删掉「?」并广播 `idle`。

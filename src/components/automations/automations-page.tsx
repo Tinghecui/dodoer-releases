@@ -271,10 +271,23 @@ export function AutomationsPage() {
   }, [unseenFailures, refetch])
 
   const hasAutomations = automations.length > 0
-  // Frozen at mount — the page remounts on each route entry, so relative labels
-  // ("Next in 3h") are anchored to when Automations was opened. Reading Date.now
-  // during render is impure (react-hooks/purity); this is the RunHistory idiom.
-  const [now] = useState(() => Date.now())
+  // 列表行的相对时间（"Next in 3h"、上次运行 "5m"）共用的时钟。不能冻结在打开
+  // 页面那一刻：页面开得越久，倒计时就比实际剩的越多，停用后比打开页面还晚的
+  // 上次运行会一直显示 "now"（#895）。每 15 秒走一次，页面切回可见时立刻对一次。
+  // 渲染里直接读 Date.now 不纯（react-hooks/purity），所以放在 state 里。
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const tick = () => setNow(Date.now())
+    const id = window.setInterval(tick, 15_000)
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick()
+    }
+    document.addEventListener("visibilitychange", onVisible)
+    return () => {
+      window.clearInterval(id)
+      document.removeEventListener("visibilitychange", onVisible)
+    }
+  }, [])
 
   // List filters (folder + enabled state), ephemeral per page mount.
   const [folderFilter, setFolderFilter] = useState<number | "all">(
@@ -1204,7 +1217,9 @@ export function AutomationDetail({
                 onCheckedChange={(v) =>
                   run(() => automationSetEnabled(automation.id, v))
                 }
-                aria-label={t("enabled")}
+                aria-label={
+                  automation.enabled ? t("enabled") : t("statusDisabled")
+                }
               />
             </label>
           </div>

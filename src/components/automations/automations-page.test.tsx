@@ -1,4 +1,5 @@
 import {
+  act,
   render,
   screen,
   fireEvent,
@@ -8,7 +9,7 @@ import {
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { toast } from "sonner"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import enMessages from "@/i18n/messages/en.json"
 import {
   automationRunNow,
@@ -424,6 +425,69 @@ describe("AutomationsPage (master-detail)", () => {
       screen.getByRole("button", { name: enMessages.Automations.edit })
     )
     expect(screen.getByTestId("editor-name")).toHaveTextContent("Nightly sweep")
+  })
+})
+
+// 页面开着时，列表行的相对时间要跟着时钟走，不能停在打开页面那一刻（#895）。
+describe("AutomationsPage (relative times keep ticking)", () => {
+  const T0 = Date.parse("2026-11-19T06:00:00Z")
+  const scheduled: Automation = {
+    ...FIXTURE,
+    trigger_kind: "schedule",
+    cron: "*/2 * * * *",
+    next_run_at: new Date(T0 + 5 * 60_000).toISOString(),
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] })
+    vi.setSystemTime(T0)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("counts the next run down while the page stays open", () => {
+    automations = [scheduled]
+    renderPage()
+    expect(screen.getByText("Next in 5m")).toBeInTheDocument()
+    act(() => {
+      vi.advanceTimersByTime(3 * 60_000)
+    })
+    expect(screen.getByText("Next in 2m")).toBeInTheDocument()
+  })
+
+  it("does not call a disabled automation's later last run 'now' forever", () => {
+    automations = [{ ...scheduled, enabled: false }]
+    const { rerender } = renderPage()
+    // 页面开着时跑了一次、然后停用：上次运行比打开页面还晚。
+    act(() => {
+      vi.advanceTimersByTime(30_000)
+    })
+    automations = [
+      {
+        ...scheduled,
+        enabled: false,
+        last_run_at: new Date(Date.now()).toISOString(),
+      },
+    ]
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AutomationsPage />
+      </NextIntlClientProvider>
+    )
+    act(() => {
+      vi.advanceTimersByTime(60_000)
+    })
+    expect(screen.getByText("1m")).toBeInTheDocument()
+  })
+
+  it("names the detail switch by its real state", () => {
+    automations = [{ ...scheduled, enabled: false }]
+    renderPage()
+    expect(screen.getByRole("switch")).toHaveAccessibleName(
+      enMessages.Automations.statusDisabled
+    )
   })
 })
 

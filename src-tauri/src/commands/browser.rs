@@ -1638,6 +1638,10 @@ pub async fn set_agent_grant_core(
         ),
     })?;
     events::emit_state(app, &state);
+    if state.surface == SurfaceKind::External {
+        // 别的窗口可能没听过这个 Chrome 标签的状态：列表里带着级别再发一遍。
+        crate::browser::chrome_share::publish_tabs(app);
+    }
     if let Some(change) = change {
         events::emit_agent_grant(
             app,

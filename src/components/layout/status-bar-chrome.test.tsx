@@ -132,8 +132,20 @@ function sites(over: Partial<ChromeSites> = {}): ChromeSites {
 }
 
 const TABS: ChromeTab[] = [
-  { id: "1", title: "Inbox", host: "mail.example.com" },
-  { id: "2", title: "", host: "localhost" },
+  {
+    id: "1",
+    title: "Inbox",
+    host: "mail.example.com",
+    level: "none",
+    openedByAgent: false,
+  },
+  {
+    id: "2",
+    title: "",
+    host: "localhost",
+    level: "none",
+    openedByAgent: false,
+  },
 ]
 
 async function mount() {
@@ -394,6 +406,42 @@ describe("StatusBarChrome", () => {
     ).toHaveAttribute("data-disabled")
     await userEvent.click(screen.getByRole("menuitem", { name: "Take back" }))
     expect(mocks.chromeShare).toHaveBeenLastCalledWith("1", "none")
+  })
+
+  it("shows the level the tab list carries when this window never heard the tab's state", async () => {
+    // 远端窗口在本机窗口交出标签以后才打开：存储里没有这个标签的状态，
+    // 级别只能从后端的标签列表里来。
+    mocks.windowLabel = "remote-workspace-7"
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    mocks.chromeTabs.mockResolvedValue([
+      { ...TABS[0], level: "control", openedByAgent: false },
+      {
+        id: "3",
+        title: "Found",
+        host: "wiki.example.org",
+        level: "control",
+        openedByAgent: true,
+      },
+    ])
+    await mount()
+    await openPanel()
+    expect(
+      screen.getByRole("button", { name: "Hand to agents · Inbox" })
+    ).toHaveTextContent("Can act")
+    expect(
+      screen.getByText("Opened by an agent · wiki.example.org")
+    ).toBeInTheDocument()
+
+    // 之后听到的状态比列表新：收回以后按状态显示。
+    mocks.owners.set("browser:1", "chrome")
+    await act(async () => {
+      mocks.heardTabs?.([
+        { ...TABS[0], level: "control", openedByAgent: false },
+      ])
+    })
+    expect(
+      screen.getByRole("button", { name: "Hand to agents · Inbox" })
+    ).not.toHaveTextContent("Can act")
   })
 
   it("says so when a tab could not be handed over", async () => {

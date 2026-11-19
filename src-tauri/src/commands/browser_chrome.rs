@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Once;
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::app_error::AppCommandError;
 use crate::browser::agent::GrantLevel;
@@ -43,9 +43,14 @@ fn announce(app: &AppHandle, link: &ChromeLink) {
             }
         });
         let mut tab_changes = link.tab_changes();
+        let app = app.clone();
         tauri::async_runtime::spawn(async move {
             while tab_changes.changed().await.is_ok() {
                 let tabs = tab_changes.borrow_and_update().clone();
+                let tabs = match app.try_state::<BrowserRegistry>() {
+                    Some(registry) => chrome_share::panel_tabs(&registry, tabs),
+                    None => tabs,
+                };
                 emit_event(&emitter, TABS_EVENT, tabs);
             }
         });
@@ -67,9 +72,10 @@ pub async fn browser_chrome_status(
 pub async fn browser_chrome_tabs(
     app: AppHandle,
     link: State<'_, ChromeLink>,
+    registry: State<'_, BrowserRegistry>,
 ) -> Result<Vec<ChromeTab>, AppCommandError> {
     announce(&app, &link);
-    Ok(link.tabs())
+    Ok(chrome_share::panel_tabs(&registry, link.tabs()))
 }
 
 /// What agents did to each of the connected Chrome's tabs, oldest first, by

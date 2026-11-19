@@ -50,6 +50,11 @@ export interface ChromeTab {
   id: string
   title: string
   host: string
+  /** What agents may do there, as the backend's registry has it: what a
+   *  window that never heard the tab's state goes by. */
+  level: GrantLevel
+  /** A page an agent opened (with the window's switch on). */
+  openedByAgent: boolean
 }
 
 /** What an action was aimed at. Mirrors `ActivityTarget` in

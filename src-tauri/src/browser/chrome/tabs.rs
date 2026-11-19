@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast::error::RecvError;
 
 use super::cdp::CdpClient;
+use crate::browser::agent::GrantLevel;
 
 /// The app's name for the tab that is Chrome's target `target`: the same
 /// every time it is asked, so that the list and whoever opened the tab agree
@@ -44,6 +45,13 @@ pub struct ChromeTab {
     /// title.
     pub title: String,
     pub host: String,
+    /// What agents may do there, from the browser registry
+    /// (`chrome_share::panel_tabs`): a window that never heard the tab's
+    /// state shows it from here. `None` as Chrome lists it.
+    pub level: GrantLevel,
+    /// Whether an agent opened it (owner `chrome@<scope>`), from the same
+    /// place.
+    pub opened_by_agent: bool,
 }
 
 /// A listed tab with what the backend keeps of it: what attaching to it
@@ -125,6 +133,8 @@ impl TabList {
                     id: known.id.clone(),
                     title: known.title.clone(),
                     host,
+                    level: GrantLevel::None,
+                    opened_by_agent: false,
                 },
                 target: target.clone(),
                 url: known.url.clone(),

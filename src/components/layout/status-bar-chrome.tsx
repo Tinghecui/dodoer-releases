@@ -559,10 +559,15 @@ function ChromeTabRow({
 }) {
   const t = useTranslations("ChromeSettings")
   const state = useBrowserTabState(browserWorkspaceTabId(tab.id))
-  const level = state?.agentGrant?.level ?? "none"
+  // 听到过这个标签的状态就照状态（比列表新）；没听到过——交出以后才打开或
+  // 刷新的窗口——照后端列表里带的级别。
+  const level = state
+    ? (state.agentGrant?.level ?? "none")
+    : (tab.level ?? "none")
   const name = tab.title || tab.host
-  const openedByAgent =
-    state?.ownerWindow.startsWith(AGENT_OWNER_PREFIX) ?? false
+  const openedByAgent = state
+    ? state.ownerWindow.startsWith(AGENT_OWNER_PREFIX)
+    : (tab.openedByAgent ?? false)
   const Icon = openedByAgent ? Bot : Globe
   return (
     <li className="px-2 py-1.5">

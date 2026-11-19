@@ -39,6 +39,7 @@ use tokio::sync::mpsc;
 use crate::app_error::AppCommandError;
 use crate::commands::browser::{close_core_if, set_agent_grant_core};
 use crate::commands::workspace_windows::REMOTE_WORKSPACE_LABEL_PREFIX;
+use crate::web::event_bridge::{emit_event, EventEmitter};
 
 use super::agent::{self, AgentAction, AgentOutcome, GrantLevel};
 use super::channel;
@@ -46,7 +47,7 @@ use super::chrome::activity::{ActivityEntry, ActivityTarget};
 use super::chrome::cdp::CdpClient;
 use super::chrome::files;
 use super::chrome::lending::{agent_owner, ChromeLending, AGENT_OWNER_PREFIX, LOCAL_SCOPE, OWNER};
-use super::chrome::{sensitive, tabs, ChromeLink, ChromePage, PageEvent};
+use super::chrome::{sensitive, tabs, ChromeLink, ChromePage, ChromeTab, PageEvent, TABS_EVENT};
 use super::events;
 use super::hooks;
 use super::registry::{BrowserRegistry, BrowserTab};
@@ -635,6 +636,40 @@ fn release(app: &AppHandle, registry: &BrowserRegistry, tab_id: &str, generation
     let _ = close_core_if(app, registry, tab_id, None, |tab| {
         tab.state.surface == SurfaceKind::External && generation.is_none_or(|wanted| tab.generation == wanted)
     });
+    publish_tabs(app);
+}
+
+/// The connected Chrome's tabs as the panel shows them: each with what
+/// agents may do there and whether an agent opened it, as the registry has
+/// it. A window opened (or reloaded) after a tab was handed over never heard
+/// that tab's state, and goes by this.
+pub fn panel_tabs(registry: &BrowserRegistry, tabs: Vec<ChromeTab>) -> Vec<ChromeTab> {
+    with_shares(&registry.list(), tabs)
+}
+
+fn with_shares(states: &[BrowserTabState], mut tabs: Vec<ChromeTab>) -> Vec<ChromeTab> {
+    for tab in &mut tabs {
+        let state = states
+            .iter()
+            .find(|state| state.tab_id == tab.id && state.surface == SurfaceKind::External);
+        tab.level = agent::level_of(state.and_then(|state| state.agent_grant.as_ref()));
+        tab.opened_by_agent =
+            state.is_some_and(|state| state.owner_window.starts_with(AGENT_OWNER_PREFIX));
+    }
+    tabs
+}
+
+/// Tell every window the tab list again: a Chrome tab was shared at another
+/// level or let go of, which Chrome's own list does not change for.
+pub fn publish_tabs(app: &AppHandle) {
+    let (Some(link), Some(registry)) = (
+        app.try_state::<ChromeLink>(),
+        app.try_state::<BrowserRegistry>(),
+    ) else {
+        return;
+    };
+    let tabs = panel_tabs(&registry, link.tabs());
+    emit_event(&EventEmitter::Tauri(app.clone()), TABS_EVENT, tabs);
 }
 
 /// Put the person's edits to the sensitive sites in force (and in the data
@@ -755,6 +790,58 @@ mod tests {
             paused,
         }
         .normalized()
+    }
+
+    fn listed(id: &str) -> ChromeTab {
+        ChromeTab {
+            id: id.into(),
+            title: String::new(),
+            host: "wiki.example.org".into(),
+            level: GrantLevel::None,
+            opened_by_agent: false,
+        }
+    }
+
+    /// 交出去的标签在列表里带着级别，智能体自己开的带着标记，别的都是没共享。
+    #[test]
+    fn listed_tabs_carry_the_registry_level() {
+        let mut handed = tab("handed", "https://wiki.example.org/", SurfaceKind::External);
+        handed.owner_window = OWNER.into();
+        handed.agent_grant = Some(agent::AgentGrant {
+            level: GrantLevel::Control,
+            origin: "https://wiki.example.org".into(),
+            granted_at: 0,
+            listener: None,
+        });
+        let mut opened = tab("opened", "https://docs.example.org/", SurfaceKind::External);
+        opened.owner_window = agent_owner("remote-workspace-7");
+        // 内置浏览器里同 id 的标签不算。
+        let inside = tab("inside", "https://wiki.example.org/", SurfaceKind::Child);
+        let shown = with_shares(
+            &[handed, opened, inside],
+            vec![
+                listed("handed"),
+                listed("opened"),
+                listed("inside"),
+                listed("plain"),
+            ],
+        );
+        let seen: Vec<(&str, GrantLevel, bool)> = shown
+            .iter()
+            .map(|tab| (tab.id.as_str(), tab.level, tab.opened_by_agent))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("handed", GrantLevel::Control, false),
+                ("opened", GrantLevel::None, true),
+                ("inside", GrantLevel::None, false),
+                ("plain", GrantLevel::None, false),
+            ]
+        );
+        let wire = serde_json::to_value(&shown[0]).unwrap();
+        assert_eq!(wire["level"], "control");
+        assert_eq!(wire["openedByAgent"], false);
     }
 
     #[test]

@@ -23,6 +23,7 @@ const scene = vi.hoisted(() => ({
 const view = {
   tasks: [] as WorkTask[],
   loading: false,
+  error: null as string | null,
   refetch: vi.fn(async () => {}),
 }
 
@@ -165,6 +166,8 @@ beforeEach(() => {
   scene.projectFolderId = 1
   scene.setRoute.mockClear()
   view.loading = false
+  view.error = null
+  view.refetch.mockClear()
   view.tasks = [
     task({ id: 1, title: "Fix the login timeout", status: "todo" }),
     task({ id: 2, title: "Write the release notes", status: "review" }),
@@ -176,6 +179,19 @@ beforeEach(() => {
 })
 
 describe("TasksAuxTab", () => {
+  it("says the list failed to load, with a retry, instead of the empty state", async () => {
+    // 列表没加载出来：和主区一样写「加载失败 + 原因 + 重试」，不显示「还没有任务」（#839）。
+    view.tasks = []
+    view.error = "boom"
+    const user = userEvent.setup()
+    mount()
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load tasks")
+    expect(screen.getByText("boom")).toBeInTheDocument()
+    expect(screen.queryByText("No tasks yet")).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+    expect(view.refetch).toHaveBeenCalled()
+  })
+
   it("stacks the project's board, what needs you first and Done folded", () => {
     mount()
     expect(sections()).toEqual([

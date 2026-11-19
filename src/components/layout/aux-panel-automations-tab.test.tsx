@@ -16,6 +16,7 @@ const scene = vi.hoisted(() => ({
   projectFolderId: 1 as number | null,
   automations: [] as Automation[],
   loaded: true,
+  error: null as string | null,
   refetch: vi.fn(async () => {}),
   setRoute: vi.fn(),
   setOpen: vi.fn(),
@@ -26,7 +27,7 @@ vi.mock("@/contexts/automations-view-context", () => ({
   useAutomationsView: () => ({
     automations: scene.automations,
     unseenFailures: 0,
-    error: null,
+    error: scene.error,
     loaded: scene.loaded,
     refetch: scene.refetch,
   }),
@@ -151,6 +152,7 @@ beforeEach(() => {
   scene.projectFolderId = 1
   scene.mobile = false
   scene.loaded = true
+  scene.error = null
   scene.setRoute.mockClear()
   scene.setOpen.mockClear()
   scene.refetch.mockClear()
@@ -164,6 +166,23 @@ beforeEach(() => {
 })
 
 describe("AutomationsAuxTab", () => {
+  it("says the list failed to load, with a retry, instead of the empty state", async () => {
+    // 列表没加载出来：和主区一样写「加载失败 + 原因 + 重试」，不进新手空态（#839）。
+    scene.automations = []
+    scene.error = "boom"
+    const user = userEvent.setup()
+    render(<Tab />)
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Couldn't load automations"
+    )
+    expect(screen.getByText("boom")).toBeInTheDocument()
+    expect(
+      screen.queryByText("No automations for this project yet")
+    ).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+    expect(scene.refetch).toHaveBeenCalled()
+  })
+
   it("lists the project's automations, its worktrees' included", () => {
     render(<Tab />)
     expect(screen.getByText("Codeg")).toBeInTheDocument()

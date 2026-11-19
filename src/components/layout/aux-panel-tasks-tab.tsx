@@ -4,8 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   ChevronRight,
+  CircleAlert,
   ListTodo,
   Plus,
+  RotateCw,
   Search,
   SquareArrowOutUpRight,
   X,
@@ -79,7 +81,7 @@ const SECTION_TONE: Record<BoardColumnId, string> = {
 export function TasksAuxTab() {
   const t = useTranslations("Tasks")
   const tAux = useTranslations("Folder.auxPanel")
-  const { tasks, loading, refetch } = useTasksView()
+  const { tasks, loading, error, refetch } = useTasksView()
   const projectFolderId = useActiveProjectFolderId()
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const { setRoute } = useWorkbenchRoute()
@@ -223,6 +225,33 @@ export function TasksAuxTab() {
 
       {loading && tasks.length === 0 ? (
         <TasksAuxSkeleton />
+      ) : error != null && !hasAnyTask ? (
+        // 列表没加载出来：和主区一样说清楚、给「重试」，别让人以为任务没了（#839）。
+        <div
+          role="alert"
+          className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center"
+        >
+          <CircleAlert
+            className="size-8 text-destructive/70"
+            aria-hidden="true"
+          />
+          <div className="flex flex-col gap-1">
+            <p className="text-sm font-medium">{t("loadFailed")}</p>
+            <p className="max-w-sm break-words text-xs text-muted-foreground">
+              {error}
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            onClick={() => void refetch()}
+          >
+            <RotateCw className="size-3.5" aria-hidden="true" />
+            {t("retry")}
+          </Button>
+        </div>
       ) : !hasAnyTask ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
           <ListTodo

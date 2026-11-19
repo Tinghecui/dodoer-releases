@@ -5,9 +5,11 @@ import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import {
   ArrowLeft,
+  CircleAlert,
   Folder,
   Loader2,
   Plus,
+  RotateCw,
   SquareArrowOutUpRight,
   Zap,
 } from "lucide-react"
@@ -239,6 +241,34 @@ export function AutomationsAuxTab() {
             className="size-5 animate-spin text-muted-foreground"
             aria-hidden="true"
           />
+        </div>
+      ) : error != null && projectAutomations.length === 0 ? (
+        // 列表没加载出来：和主区一样说清楚、给「重试」，不进新手空态，
+        // 免得看着像这个项目一个自动化都没有（#839）。
+        <div
+          role="alert"
+          className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center"
+        >
+          <CircleAlert
+            className="size-8 text-destructive/70"
+            aria-hidden="true"
+          />
+          <div className="flex flex-col gap-1">
+            <p className="text-sm font-medium">{t("loadFailed")}</p>
+            <p className="max-w-sm break-words text-xs text-muted-foreground">
+              {error}
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            onClick={() => void refetch()}
+          >
+            <RotateCw className="size-3.5" aria-hidden="true" />
+            {t("retry")}
+          </Button>
         </div>
       ) : projectAutomations.length === 0 ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">

@@ -100,6 +100,7 @@ import {
 import { WorkspaceOpenFolderListener } from "@/components/workspace/workspace-open-folder-listener"
 import { WorkspaceRestoreNotices } from "@/components/workspace/workspace-restore-notices"
 import { RemoteCompatNotice } from "@/components/cowork/remote-compat-notice"
+import { LinkTokenNotice } from "@/components/cowork/link-token-notice"
 import { StartGate } from "@/components/cowork/start-home"
 import { HeavyPluginsWarmup } from "@/components/ai-elements/heavy-plugins-warmup"
 import {
@@ -1623,6 +1624,8 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                       <WorkspaceRestoreNotices />
                       {/* Cowork fork: does this app work with the server? */}
                       <RemoteCompatNotice />
+                      {/* Cowork fork: a sign-in link left unused (#873). */}
+                      <LinkTokenNotice />
                       {/* Always mounted: external-change conflicts must be
                             resolvable even with the aux file tree closed. */}
                       <ExternalConflictDialog />

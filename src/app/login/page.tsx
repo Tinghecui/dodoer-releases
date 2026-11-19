@@ -18,7 +18,7 @@ import {
 import { COWORK_ACCOUNT_URL } from "@/lib/cowork/account"
 import { COWORK_BUILD } from "@/lib/cowork/brand"
 import { useCoworkText } from "@/lib/cowork/i18n"
-import { takeLinkToken } from "@/lib/cowork/token-link"
+import { noteLinkTokenIgnored, takeLinkToken } from "@/lib/cowork/token-link"
 
 type TokenCheck =
   | { kind: "ok" }
@@ -81,13 +81,43 @@ export default function LoginPage() {
     if (linkToken.current === undefined) linkToken.current = takeLinkToken()
     const fromLink = linkToken.current
     if (fromLink) {
-      // An explicit sign-in link wins over the SSO / proxy probes: check its
-      // token right away, with the form on screen saying so, and leave it in
-      // the form with the reason should it be rejected.
+      // An explicit sign-in link wins over the portal redirect and the proxy
+      // probe: check its token, with the form on screen saying so, and leave
+      // it in the form with the reason should it be rejected. A Cowork build
+      // first asks whether the portal already signed the browser in (#873).
       setToken(fromLink)
       setSsoChecking(false)
       setLoading(true)
-      void checkToken(fromLink).then((result) => {
+      void (async () => {
+        // #873: behind the Cowork portal the proxy swaps any token for the
+        // employee's real one, so every link token "passes". With a portal
+        // session already valid, keep it (the probe stores the placeholder),
+        // leave the link's token unused and say so — never overwrite the
+        // stored credential quietly.
+        if (COWORK_BUILD) {
+          const probe = await probeCoworkSso()
+          if (cancelled) return
+          if (probe === "ok") {
+            linkToken.current = null
+            // Said in the workspace (LinkTokenNotice): this page has no
+            // toaster and is gone the moment the workspace opens.
+            noteLinkTokenIgnored()
+            router.replace("/workspace")
+            return
+          }
+          if (probe === "unavailable") {
+            // 探测临时失败（网络错误、5xx）时说不清有没有门户会话：紧接着
+            // 校验链接里的令牌，可能被网关换成真令牌而“通过”，把它写进本地
+            // 凭据。只有探测明确拒绝（没有门户会话）才用链接里的令牌；这里
+            // 令牌留在表单里，提示连不上服务器。
+            linkToken.current = null
+            setLoading(false)
+            setFailure({ kind: "network" })
+            return
+          }
+        }
+        if (cancelled) return
+        const result = await checkToken(fromLink)
         if (cancelled) return
         linkToken.current = null
         setLoading(false)
@@ -97,7 +127,7 @@ export default function LoginPage() {
         } else {
           setFailure(result)
         }
-      })
+      })()
       return () => {
         cancelled = true
       }

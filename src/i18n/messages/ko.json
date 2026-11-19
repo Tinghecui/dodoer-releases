@@ -6761,6 +6761,7 @@
     "settingsAgent": "기본 에이전트",
     "settingsMaxConcurrent": "최대 동시 작업 수",
     "settingsMaxConcurrentHint": "0 = 무제한",
+    "settingsMaxConcurrentInvalid": "0 또는 양의 정수를 입력하세요",
     "settingsAutoCompact": "자동 압축 임계값",
     "settingsAutoCompactHint": "후속 작업·재시도·병합 전에 컨텍스트 사용률이 이 값 이상이면 세션을 먼저 압축합니다. 0이면 사용 안 함.",
     "compactingNote": "세션 컨텍스트를 압축하는 중…",

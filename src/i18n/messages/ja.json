@@ -6761,6 +6761,7 @@
     "settingsAgent": "既定のエージェント",
     "settingsMaxConcurrent": "最大同時実行数",
     "settingsMaxConcurrentHint": "0 = 無制限",
+    "settingsMaxConcurrentInvalid": "0 または正の整数を入力してください",
     "settingsAutoCompact": "自動コンパクトのしきい値",
     "settingsAutoCompactHint": "フォローアップ・再試行・マージの前に、コンテキストウィンドウの使用率がこの値以上ならセッションを圧縮してから送信します。0 で無効。",
     "compactingNote": "セッションのコンテキストを圧縮中…",

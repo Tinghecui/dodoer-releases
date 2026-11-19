@@ -6761,6 +6761,7 @@
     "settingsAgent": "الوكيل الافتراضي",
     "settingsMaxConcurrent": "أقصى عدد للمهام المتزامنة",
     "settingsMaxConcurrentHint": "0 = بلا حد",
+    "settingsMaxConcurrentInvalid": "أدخل 0 أو عددًا صحيحًا موجبًا",
     "settingsAutoCompact": "عتبة الضغط التلقائي",
     "settingsAutoCompactHint": "قبل جولة متابعة أو إعادة محاولة أو دمج، اضغط الجلسة إذا بلغ امتلاء نافذة السياق هذه النسبة. 0 يعني إيقاف.",
     "compactingNote": "جارٍ ضغط سياق الجلسة…",

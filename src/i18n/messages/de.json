@@ -6761,6 +6761,7 @@
     "settingsAgent": "Standard-Agent",
     "settingsMaxConcurrent": "Max. gleichzeitige Aufgaben",
     "settingsMaxConcurrentHint": "0 = unbegrenzt",
+    "settingsMaxConcurrentInvalid": "Gib 0 oder eine positive ganze Zahl ein",
     "settingsAutoCompact": "Schwelle für automatisches Komprimieren",
     "settingsAutoCompactHint": "Vor einer Folge-, Wiederholungs- oder Merge-Runde die Sitzung komprimieren, wenn das Kontextfenster mindestens so voll ist. 0 = aus.",
     "compactingNote": "Sitzungskontext wird verdichtet …",

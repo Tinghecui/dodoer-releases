@@ -6761,6 +6761,7 @@
     "settingsAgent": "Agente por defecto",
     "settingsMaxConcurrent": "Tareas concurrentes máx.",
     "settingsMaxConcurrentHint": "0 = sin límite",
+    "settingsMaxConcurrentInvalid": "Introduce 0 o un número entero positivo",
     "settingsAutoCompact": "Umbral de compactación automática",
     "settingsAutoCompactHint": "Antes de una ronda de seguimiento, reintento o fusión, compacta la sesión si su ventana de contexto está al menos así de llena. 0 = desactivado.",
     "compactingNote": "Compactando el contexto de la sesión…",

@@ -6761,6 +6761,7 @@
     "settingsAgent": "預設 agent",
     "settingsMaxConcurrent": "最大並行任務數",
     "settingsMaxConcurrentHint": "0 表示不限制",
+    "settingsMaxConcurrentInvalid": "請輸入 0 或正整數",
     "settingsAutoCompact": "自動壓縮上下文閾值",
     "settingsAutoCompactHint": "繼續處理、重試或合併前，若工作階段上下文佔用達到該比例，先壓縮再傳送任務訊息。0 表示關閉。",
     "compactingNote": "正在壓縮工作階段脈絡…",

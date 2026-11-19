@@ -300,7 +300,12 @@ function TaskSettingsBody({
   )
   const booleanLabels = useBooleanOptionLabels()
 
+  // 只认 0 或正整数：负号、小数、空白都当场标红，不再悄悄删字符或回退默认值。
+  const maxConcurrentInvalid = !/^\d+$/.test(maxConcurrent.trim())
+
   const save = async () => {
+    // 跟随全局默认时表单是藏起来的，保存只删本文件夹的行，不看这个框。
+    if (editing && maxConcurrentInvalid) return
     setSaving(true)
     try {
       // "Use global defaults" saves by dropping the folder's own row.
@@ -315,7 +320,7 @@ function TaskSettingsBody({
         modeId,
         configValues
       )
-      const parsed = Number.parseInt(maxConcurrent, 10)
+      const parsed = Number.parseInt(maxConcurrent.trim(), 10)
       // A percentage the box can't represent (blank, or typed past 100) reads
       // as "off" rather than as an accidental compact-every-round.
       const compactPercent = Number.parseInt(autoCompactPercent, 10)
@@ -526,13 +531,27 @@ function TaskSettingsBody({
                       id="task-max-concurrent"
                       inputMode="numeric"
                       value={maxConcurrent}
-                      onChange={(e) =>
-                        setMaxConcurrent(e.target.value.replace(/[^0-9]/g, ""))
+                      onChange={(e) => setMaxConcurrent(e.target.value)}
+                      aria-invalid={maxConcurrentInvalid || undefined}
+                      aria-describedby={
+                        maxConcurrentInvalid
+                          ? "task-max-concurrent-error"
+                          : undefined
                       }
                       className="h-8 w-16 bg-background text-center"
                     />
                   }
-                />
+                >
+                  {maxConcurrentInvalid ? (
+                    <p
+                      id="task-max-concurrent-error"
+                      role="alert"
+                      className="text-xs leading-5 text-destructive"
+                    >
+                      {t("settingsMaxConcurrentInvalid")}
+                    </p>
+                  ) : null}
+                </SettingRow>
               </SettingCard>
 
               {/* Every round after the first resumes the same session, so its

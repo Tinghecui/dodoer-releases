@@ -472,3 +472,50 @@ describe("TaskSettingsDialog scope", () => {
     expect(setMock).not.toHaveBeenCalled()
   })
 })
+
+describe("TaskSettingsDialog max concurrent", () => {
+  it("keeps a negative value as typed, flags it and refuses to save", async () => {
+    const onOpenChange = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TaskSettingsDialog open onOpenChange={onOpenChange} folderId={1} />
+      </NextIntlClientProvider>
+    )
+    const save = await saveButton()
+
+    const box = screen.getByRole("textbox", { name: "Max concurrent tasks" })
+    await user.clear(box)
+    await user.type(box, "-3")
+
+    // 负号不能被悄悄删掉，否则 -3 当场就成了 3。
+    expect(box).toHaveValue("-3")
+    expect(box).toHaveAttribute("aria-invalid", "true")
+    expect(box).toHaveAccessibleDescription(
+      expect.stringContaining("Enter 0 or a positive whole number")
+    )
+
+    await user.click(save)
+    expect(setMock).not.toHaveBeenCalled()
+    expect(onOpenChange).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole("textbox", { name: "Max concurrent tasks" })
+    ).toBeInTheDocument()
+  })
+
+  it("saves a valid whole number as typed", async () => {
+    const user = userEvent.setup()
+    renderDialog(1)
+    const save = await saveButton()
+
+    const box = screen.getByRole("textbox", { name: "Max concurrent tasks" })
+    await user.clear(box)
+    await user.type(box, "4")
+    expect(box).not.toHaveAttribute("aria-invalid", "true")
+    await user.click(save)
+
+    await waitFor(() => expect(setMock).toHaveBeenCalled())
+    const [, saved] = setMock.mock.calls[0] as [number, WorkTaskFolderSettings]
+    expect(saved.max_concurrent).toBe(4)
+  })
+})

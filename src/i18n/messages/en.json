@@ -6761,6 +6761,7 @@
     "settingsAgent": "Default agent",
     "settingsMaxConcurrent": "Max concurrent tasks",
     "settingsMaxConcurrentHint": "0 = unlimited",
+    "settingsMaxConcurrentInvalid": "Enter 0 or a positive whole number",
     "settingsAutoCompact": "Auto-compact threshold",
     "settingsAutoCompactHint": "Before a follow-up, retry or merge round, compact the session when its context window is at least this full. 0 = off.",
     "compactingNote": "Compacting the session context…",

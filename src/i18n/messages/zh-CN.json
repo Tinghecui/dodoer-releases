@@ -6761,6 +6761,7 @@
     "settingsAgent": "默认 agent",
     "settingsMaxConcurrent": "最大并发任务数",
     "settingsMaxConcurrentHint": "0 表示不限制",
+    "settingsMaxConcurrentInvalid": "请输入 0 或正整数",
     "settingsAutoCompact": "自动压缩上下文阈值",
     "settingsAutoCompactHint": "继续处理、重试或合并前，若会话上下文占用达到该比例，先压缩再发送任务消息。0 表示关闭。",
     "compactingNote": "正在压缩会话上下文…",

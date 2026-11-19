@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { act, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -136,6 +136,7 @@ function setWorkspace(over: {
   activeFolderId?: number | null
   conversations?: DbConversationSummary[]
   conversationsError?: string | null
+  conversationsLoaded?: boolean
 }) {
   // The active folder is the active tab's: a saved conversation in it.
   setActiveTab(over.activeFolderId ?? null, over.activeFolderId ? 999 : null)
@@ -153,6 +154,7 @@ function setWorkspace(over: {
       conv(50, 5),
     ],
     conversationsError: over.conversationsError ?? null,
+    conversationsLoaded: over.conversationsLoaded ?? true,
     foldersError: null,
     foldersHydrated: true,
   })
@@ -345,6 +347,32 @@ describe("MindMapPage", () => {
     ).toBeNull()
     await userEvent.click(screen.getByRole("button", { name: "Retry" }))
     expect(refreshConversations).toHaveBeenCalledTimes(1)
+  })
+
+  // #1007: 会话列表还没取回来时，空列表不等于「这个项目还没有会话」。
+  it("waits for the conversation list instead of calling the project empty", async () => {
+    setWorkspace({
+      activeFolderId: 1,
+      conversations: [],
+      conversationsLoaded: false,
+    })
+    const { container } = renderPage()
+    await waitFor(() => expect(mockGet).toHaveBeenCalledWith(1))
+    expect(container.querySelector("[data-mindmap-loading]")).toBeTruthy()
+    expect(
+      screen.queryByText("This project has no conversations yet.")
+    ).toBeNull()
+
+    act(() => {
+      useAppWorkspaceStore.setState({
+        conversations: [conv(10, 1)],
+        conversationsLoaded: true,
+      })
+    })
+    expect(
+      (await screen.findByTestId("mindmap-view")).dataset.conversations
+    ).toBe("10")
+    expect(container.querySelector("[data-mindmap-loading]")).toBeNull()
   })
 
   it("says the project list failed to load instead of calling it empty", async () => {

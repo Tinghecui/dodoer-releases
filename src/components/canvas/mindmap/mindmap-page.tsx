@@ -93,6 +93,9 @@ export function MindMapPage() {
   const conversations = useAppWorkspaceStore((s) => s.conversations)
   // 会话列表没加载出来时，空列表不等于「项目里没有会话」。
   const conversationsError = useAppWorkspaceStore((s) => s.conversationsError)
+  // 会话列表还没取回来过（#1007）：空列表也不等于「项目里没有会话」，先显示
+  // 加载中。取失败时 store 也会记成取过，走上面的错误提示，不会一直转圈。
+  const conversationsLoaded = useAppWorkspaceStore((s) => s.conversationsLoaded)
   const refreshConversations = useAppWorkspaceStore(
     (s) => s.refreshConversations
   )
@@ -436,13 +439,15 @@ export function MindMapPage() {
               {t("retry")}
             </Button>
           </div>
-        ) : project && members.length === 0 ? (
+        ) : project && members.length === 0 && conversationsLoaded ? (
           <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
             {t("emptyProject")}
           </div>
-        ) : project && !taxonomy && !entry?.error ? (
+        ) : project &&
+          ((!taxonomy && !entry?.error) || members.length === 0) ? (
           // Not the map until its categories are in: drawn without them, every
           // conversation would flash under "Unclassified" and be fitted so.
+          // 走到这里还没有会话的，是会话列表还没取回来（#1007）。
           <div
             className="flex h-full items-center justify-center"
             data-mindmap-loading

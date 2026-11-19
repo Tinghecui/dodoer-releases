@@ -23,6 +23,11 @@ on:
       employee:
         description: "连验收机上的哪个员工（qa4–qa6 留给 Mac；同时跑的几批要连服务器时各用一个）"
         default: "qa4"
+      driver:
+        description: "怎么操作 Mac：cliclick（截图 + System Events + cliclick）或 native（Claude Code 自带的 computer use，先探测，用不了就退回 cliclick）"
+        type: choice
+        options: [cliclick, native]
+        default: cliclick
       max_turns:
         default: "600"
       minutes:
@@ -49,6 +54,7 @@ jobs:
       APP_VERSION: ${{ inputs.version }}
       FROM_VERSION: ${{ inputs.from_version }}
       EMPLOYEE: ${{ inputs.employee || 'qa4' }}
+      DRIVER: ${{ inputs.driver || 'cliclick' }}
       MAX_TURNS: ${{ inputs.max_turns || '600' }}
       MINUTES: ${{ inputs.minutes || '200' }}
       MODEL: ${{ inputs.model || vars.AIQA_MODEL || 'claude-opus-5-5' }}

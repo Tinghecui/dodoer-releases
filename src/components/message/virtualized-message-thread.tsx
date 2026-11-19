@@ -242,8 +242,14 @@ function VirtualizedMessageThreadImpl<T>({
       // dragged straight back to the bottom. A jump that can't move up (to
       // the message the view already rests on) keeps the lock, so a reply
       // still streaming in stays followed.
-      if (handle.getItemOffset(target) < handle.scrollOffset) stopScroll()
-      handle.scrollToIndex(target, opts)
+      // `leaveBottom` lets go regardless: right after mount the first stick
+      // hasn't landed, the offset still sits near 0, and the check above
+      // would keep the lock that then drags the jump back to the bottom.
+      const { leaveBottom, ...virtuaOpts } = opts ?? {}
+      if (leaveBottom || handle.getItemOffset(target) < handle.scrollOffset) {
+        stopScroll()
+      }
+      handle.scrollToIndex(target, opts ? virtuaOpts : undefined)
     },
     [stopScroll]
   )

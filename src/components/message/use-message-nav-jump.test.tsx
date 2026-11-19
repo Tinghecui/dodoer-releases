@@ -118,6 +118,7 @@ describe("useMessageNavJump", () => {
     expect(scrollToIndex).toHaveBeenCalledWith(2, {
       align: "start",
       smooth: false,
+      leaveBottom: true,
     })
     expect(result.current.revealingTurnId).toBeNull()
   })
@@ -201,6 +202,7 @@ describe("useMessageNavJump", () => {
     expect(scrollToIndex).toHaveBeenCalledWith(0, {
       align: "start",
       smooth: false,
+      leaveBottom: true,
     })
   })
 
@@ -234,6 +236,7 @@ describe("useMessageNavJump", () => {
     expect(scrollToIndex).toHaveBeenCalledWith(0, {
       align: "start",
       smooth: false,
+      leaveBottom: true,
     })
     expect(result.current.revealingTurnId).toBeNull()
   })
@@ -274,6 +277,7 @@ describe("useMessageNavJump revealTurn (search hits)", () => {
     expect(scrollToIndex).toHaveBeenCalledExactlyOnceWith(7, {
       align: "start",
       smooth: false,
+      leaveBottom: true,
     })
     expect(result.current.revealingTurnId).toBeNull()
   })
@@ -296,6 +300,7 @@ describe("useMessageNavJump revealTurn (search hits)", () => {
     expect(scrollToIndex).toHaveBeenCalledExactlyOnceWith(2, {
       align: "start",
       smooth: false,
+      leaveBottom: true,
     })
   })
 

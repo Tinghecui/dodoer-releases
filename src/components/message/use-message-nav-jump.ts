@@ -82,9 +82,13 @@ export function useMessageNavJump({
       // longer thread, and virtua's smooth scroll gives up without moving
       // when the rows it waits on aren't measured within 150 ms. An instant
       // scroll lands first and settles as those rows are measured.
+      // `leaveBottom`: a search hit opening another conversation jumps right
+      // after the thread mounts, before its first stick to the bottom lands;
+      // the lock must be let go or that stick drags the view back down.
       scrollApiRef.current?.scrollToIndex(targetIndex, {
         align: "start",
         smooth: false,
+        leaveBottom: true,
       })
       setReveal((current) => (current?.token === token ? null : current))
     })

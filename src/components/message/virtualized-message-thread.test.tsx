@@ -177,6 +177,23 @@ describe("VirtualizedMessageThread scroll API", () => {
       })
     }
   )
+  it("releases the lock for a jump asked to leave the bottom, even before the first stick lands", () => {
+    // The thread just mounted: the stick-to-bottom's first scroll down hasn't
+    // landed, so the view still rests at the top, above the target row.
+    testState.scrollOffset = 0
+    const scrollApiRef = renderWithScrollApi()
+    scrollApiRef.current?.scrollToIndex(1, {
+      align: "start",
+      smooth: false,
+      leaveBottom: true,
+    })
+    expect(testState.stopScroll).toHaveBeenCalledTimes(1)
+    // virtua isn't handed the flag.
+    expect(testState.virtuaScrollToIndex).toHaveBeenCalledWith(2, {
+      align: "start",
+      smooth: false,
+    })
+  })
 })
 
 describe("VirtualizedMessageThread revealFromAbove", () => {

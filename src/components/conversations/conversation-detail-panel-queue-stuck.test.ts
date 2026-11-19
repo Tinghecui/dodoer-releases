@@ -642,3 +642,50 @@ describe("a session that never finishes initializing does not hold the queue for
     expect(refs).not.toContain("isActive")
   })
 })
+
+// #984：发送请求没等到回应，服务器其实收下了：不留「发送失败」的副本。
+// 判断逻辑在 `uncertain-send.ts` 里单测，这里守住它接在面板上。
+describe("a send that got no answer but reached the server", () => {
+  it("is not rolled back when the server already echoed it", () => {
+    const failed = between(
+      "const onSendFailed: SendFailedCallback = (_error, info) => {",
+      "// Pin the tab if it was a temporary preview"
+    )
+    const delivered = failed.indexOf(
+      "info?.uncertain && uncertainSends.echoed(optimisticTurn.id)"
+    )
+    expect(delivered).toBeGreaterThan(-1)
+    expect(failed.indexOf('return "delivered"')).toBeGreaterThan(delivered)
+    expect(failed.indexOf('return "delivered"')).toBeLessThan(
+      failed.indexOf("removeOptimisticTurn(")
+    )
+    // 没回传过的：照旧放回排队区标失败，并记下它的排队 id。
+    expect(failed).toContain(
+      "const queueItemId = mqRequeueFailed(draft, selectedModeIdArg ?? null)"
+    )
+    // 第 1 次返工：记下的是放回去的那份草稿本身，迟到的回传靠它认出用户改没改过。
+    expect(failed.replace(/\s+/g, " ")).toContain(
+      "uncertainSends.noteUncertain(optimisticTurn.id, { queueItemId, draft, })"
+    )
+  })
+
+  it("takes the failed copy out when the server echoes it later", () => {
+    const live = between(
+      'if (envelope.type !== "user_message") return',
+      "appendViewerUserTurn("
+    )
+    expect(live).toContain("uncertainSends.noteEcho(envelope.message_id)")
+    // 第 1 次返工：只拿掉原样没动过的副本（用户改过、正在改的留着）。
+    const takeBack =
+      "mqRemoveIfUnchanged(uncertainCopy.queueItemId, uncertainCopy.draft)"
+    expect(live).toContain(takeBack)
+    expect(live).not.toContain("mqRemove(uncertainCopy")
+    const snapshot = between(
+      "const pending = conn.pendingUserMessage",
+      "appendViewerUserTurn("
+    )
+    expect(snapshot).toContain("uncertainSends.noteEcho(pending.messageId)")
+    expect(snapshot).toContain(takeBack)
+    expect(snapshot).not.toContain("mqRemove(uncertainCopy")
+  })
+})

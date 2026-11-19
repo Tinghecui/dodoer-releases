@@ -150,7 +150,9 @@ describe("useConnectionLifecycle send-failure surfacing", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
     const calls: string[] = []
     toastError.mockImplementation(() => calls.push("toast"))
-    const onSendFailed = vi.fn(() => calls.push("onSendFailed"))
+    const onSendFailed = vi.fn(() => {
+      calls.push("onSendFailed")
+    })
 
     const { result } = renderLifecycle()
     await act(async () => {
@@ -206,6 +208,68 @@ describe("useConnectionLifecycle send-failure surfacing", () => {
     expect(onTurnInProgress).toHaveBeenCalledTimes(1)
     expect(onSendFailed).not.toHaveBeenCalled()
     expect(toastError).not.toHaveBeenCalled()
+  })
+
+  // #984：远程窗口发消息的请求没等到回应（超时、断线），服务器其实可能已经收下了。
+  it("tells the caller a send that got no answer may have been delivered", async () => {
+    const error = {
+      code: "network_error",
+      message: "Remote HTTP request failed",
+      detail: "operation timed out",
+    }
+    sendPrompt.mockRejectedValue(error)
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+    const onSendFailed = vi.fn(() => undefined)
+
+    const { result } = renderLifecycle()
+    await act(async () => {
+      result.current.handleSend(draft(), null, { onSendFailed })
+      await flush()
+    })
+
+    expect(onSendFailed).toHaveBeenCalledWith(error, { uncertain: true })
+    // 调用方没确认送达：照样提示失败，消息留在排队区。
+    expect(toastError).toHaveBeenCalledTimes(1)
+    consoleError.mockRestore()
+  })
+
+  it("does not toast a failure when the caller saw the server take the message", async () => {
+    sendPrompt.mockRejectedValue({
+      code: "network_error",
+      message: "Remote HTTP request failed",
+    })
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+    const onSendFailed = vi.fn(() => "delivered" as const)
+
+    const { result } = renderLifecycle()
+    await act(async () => {
+      result.current.handleSend(draft(), null, { onSendFailed })
+      await flush()
+    })
+
+    expect(onSendFailed).toHaveBeenCalledTimes(1)
+    expect(toastError).not.toHaveBeenCalled()
+    consoleError.mockRestore()
+  })
+
+  it("keeps a server's refusal a plain failure", async () => {
+    const error = {
+      code: "network_error",
+      message: "Remote returned HTTP 413 Payload Too Large",
+    }
+    sendPrompt.mockRejectedValue(error)
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+    const onSendFailed = vi.fn(() => "delivered" as const)
+
+    const { result } = renderLifecycle()
+    await act(async () => {
+      result.current.handleSend(draft(), null, { onSendFailed })
+      await flush()
+    })
+
+    expect(onSendFailed).toHaveBeenCalledWith(error)
+    expect(toastError).toHaveBeenCalledTimes(1)
+    consoleError.mockRestore()
   })
 
   it("does not toast on a successful send", async () => {

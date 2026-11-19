@@ -68,7 +68,10 @@ import {
   parkAskSelectionPrompt,
   type AskSelectionParkedDetail,
 } from "@/lib/ask-selection-handoff"
-import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
+import {
+  useConnectionLifecycle,
+  type SendFailedCallback,
+} from "@/hooks/use-connection-lifecycle"
 import {
   draftMessageQueueStorageKey,
   messageQueueStorageKey,
@@ -166,6 +169,7 @@ import {
   createSessionLostRetry,
   sessionLostRetryRoute,
 } from "@/lib/cowork/session-lost-retry"
+import { createUncertainSendWatch } from "@/lib/cowork/uncertain-send"
 import {
   failedTurnRequeueKind,
   lostTurnRequeueKind,
@@ -870,6 +874,7 @@ const ConversationTabView = memo(function ConversationTabView({
     settle: mqSettle,
     hold: mqHold,
     remove: mqRemove,
+    removeIfUnchanged: mqRemoveIfUnchanged,
     reorder: mqReorder,
     moveToFront: mqMoveToFront,
     updateItem: mqUpdateItem,
@@ -1056,6 +1061,12 @@ const ConversationTabView = memo(function ConversationTabView({
   // 回合结束时读、清；要自动重发的那条记在 `sessionLostRetry`。
   const turnSessionLostRef = useRef(false)
   const [sessionLostRetry] = useState(createSessionLostRetry)
+  // Cowork fork (#984)：发送请求没等到回应时，用服务器回传的同一条用户消息
+  // 判断它其实送到了没有（见 `createUncertainSendWatch`）。
+  // 记下放回排队区的副本的排队 id 和草稿本身：迟到的回传只拿掉用户没改过的。
+  const [uncertainSends] = useState(() =>
+    createUncertainSendWatch<{ queueItemId: string; draft: PromptDraft }>()
+  )
   const prevConnStatusRef = useRef(connStatus)
   // jenny fork: the message this tab sent last, until its turn ends. When the
   // turn fails (for example the agent quits mid-reply), it goes back to the
@@ -1392,11 +1403,23 @@ const ConversationTabView = memo(function ConversationTabView({
   useEffect(() => {
     const pending = conn.pendingUserMessage
     if (!pending) return
+    // #984：这条是本窗口发送请求没等到回应、放回排队区的那条：服务器收下了，
+    // 失败副本拿掉（用户消息由下面补回对话里）。用户改过、正在改的副本是
+    // 用户自己的了，留着（第 1 次返工）。
+    const uncertainCopy = uncertainSends.noteEcho(pending.messageId)
+    if (uncertainCopy)
+      mqRemoveIfUnchanged(uncertainCopy.queueItemId, uncertainCopy.draft)
     appendViewerUserTurn(
       effectiveConversationId,
       buildUserTurnFromMessageBlocks(pending.messageId, pending.blocks)
     )
-  }, [conn.pendingUserMessage, effectiveConversationId, appendViewerUserTurn])
+  }, [
+    conn.pendingUserMessage,
+    effectiveConversationId,
+    appendViewerUserTurn,
+    uncertainSends,
+    mqRemoveIfUnchanged,
+  ])
 
   // Cross-client VIEWER (Bug 2): a `user_message` event for THIS connection
   // that arrives while we're attached. The owner added its user turn
@@ -1408,12 +1431,22 @@ const ConversationTabView = memo(function ConversationTabView({
       (envelope: EventEnvelope) => {
         if (envelope.type !== "user_message") return
         if (envelope.connection_id !== conn.connectionId) return
+        // #984：同上，服务器收下了没等到回应的那条，失败副本拿掉。
+        const uncertainCopy = uncertainSends.noteEcho(envelope.message_id)
+        if (uncertainCopy)
+          mqRemoveIfUnchanged(uncertainCopy.queueItemId, uncertainCopy.draft)
         appendViewerUserTurn(
           effectiveConversationId,
           buildUserTurnFromMessageBlocks(envelope.message_id, envelope.blocks)
         )
       },
-      [conn.connectionId, effectiveConversationId, appendViewerUserTurn]
+      [
+        conn.connectionId,
+        effectiveConversationId,
+        appendViewerUserTurn,
+        uncertainSends,
+        mqRemoveIfUnchanged,
+      ]
     )
   )
 
@@ -1912,12 +1945,28 @@ const ConversationTabView = memo(function ConversationTabView({
       // failed, with a retry button. It does not retry by itself (a
       // deterministic failure would retry — and toast — forever), and the
       // items behind it wait so the order holds.
-      const onSendFailed = () => {
+      //
+      // Cowork fork (#984): a request that got no answer (timeout, dropped
+      // link) may still have reached the server. If the server already echoed
+      // this message back, it did: nothing to roll back, the reply will come.
+      // Otherwise the failed copy stays in the queue, and comes out again if
+      // the echo shows up later; with no echo it stays, with retry and delete.
+      const onSendFailed: SendFailedCallback = (_error, info) => {
+        if (info?.uncertain && uncertainSends.echoed(optimisticTurn.id)) {
+          settleQueued()
+          return "delivered"
+        }
         lastSentRef.current?.turn.end("send_failed")
         lastSentRef.current = null
         removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
-        mqRequeueFailed(draft, selectedModeIdArg ?? null)
+        const queueItemId = mqRequeueFailed(draft, selectedModeIdArg ?? null)
         settleQueued()
+        if (info?.uncertain && queueItemId) {
+          uncertainSends.noteUncertain(optimisticTurn.id, {
+            queueItemId,
+            draft,
+          })
+        }
       }
 
       // Pin the tab if it was a temporary preview (single-click opened)
@@ -2154,6 +2203,7 @@ const ConversationTabView = memo(function ConversationTabView({
       ownTab,
       tWelcome,
       tabId,
+      uncertainSends,
       upsertFolder,
     ]
   )

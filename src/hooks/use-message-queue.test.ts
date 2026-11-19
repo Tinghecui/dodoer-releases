@@ -162,6 +162,61 @@ describe("useMessageQueue bounce FIFO ordering", () => {
     expect(texts(result.current.queue)).toEqual(["B", "A-edited"])
   })
 
+  // #984：放回去的失败副本，调用方拿得到它的 id，确认送达后按 id 拿掉。
+  it("returns the id of the failed copy so it can be taken back out", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => result.current.enqueue(draft("B"), null))
+    let id = ""
+    act(() => {
+      id = result.current.requeueFailed(draft("A"), null)
+    })
+    expect(result.current.queue[0].id).toBe(id)
+    act(() => result.current.remove(id))
+    expect(texts(result.current.queue)).toEqual(["B"])
+  })
+
+  // #984 第 1 次返工：服务器迟到的回传只拿掉原样没动过的失败副本；用户改过、
+  // 正在改的那份留着，不能把用户的修改丢了。
+  it("takes back an untouched failed copy but keeps one the user edited", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    const sent = draft("A")
+    let untouched = ""
+    let edited = ""
+    act(() => {
+      untouched = result.current.requeueFailed(sent, null)
+    })
+    act(() => {
+      edited = result.current.requeueFailed(sent, null)
+    })
+    act(() => result.current.updateItem(edited, draft("A-edited")))
+    let removed: boolean[] = []
+    act(() => {
+      removed = [
+        result.current.removeIfUnchanged(edited, sent),
+        result.current.removeIfUnchanged(untouched, sent),
+      ]
+    })
+    expect(removed).toEqual([false, true])
+    expect(texts(result.current.queue)).toEqual(["A-edited"])
+  })
+
+  it("keeps a failed copy that is open in the editor", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    const sent = draft("A")
+    let id = ""
+    act(() => {
+      id = result.current.requeueFailed(sent, null)
+    })
+    act(() => result.current.startEditing(id))
+    let removed = true
+    act(() => {
+      removed = result.current.removeIfUnchanged(id, sent)
+    })
+    expect(removed).toBe(false)
+    expect(result.current.queue[0].id).toBe(id)
+    expect(result.current.editingItemId).toBe(id)
+  })
+
   // jenny fork: a send that failed after it went out.
   it("holds a failed head until it is retried, keeping the order", () => {
     const { result } = renderHook(() => useMessageQueue())

@@ -16,11 +16,21 @@ import {
   type ConnectionWork,
 } from "@/lib/connection-teardown"
 import { TurnBusyError } from "@/lib/turn-busy"
+import { isUncertainSendError } from "@/lib/cowork/uncertain-send"
 import { ConversationMovedError } from "@/lib/conversation-moved"
 import { asPromptImagesTooLarge } from "@/lib/prompt-images-too-large"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { type AgentType, type PromptDraft } from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
+
+/**
+ * 发送失败时叫调用方。Cowork fork (#984)：`info.uncertain` 是没等到回应、
+ * 不知道服务器收没收到；调用方确认收到了就返回 `"delivered"`。
+ */
+export type SendFailedCallback = (
+  error: unknown,
+  info?: { uncertain: boolean }
+) => "delivered" | void
 
 interface UseConnectionLifecycleOptions {
   contextKey: string
@@ -108,8 +118,12 @@ export interface UseConnectionLifecycleReturn {
        * would block queue auto-flush) and doesn't display the failed prompt
        * as though it were sent. The draft is deliberately NOT re-queued: a
        * deterministic failure would otherwise retry forever.
+       *
+       * Cowork fork (#984)：请求没等到回应（超时、断线）时第二个参数是
+       * `{ uncertain: true }`，服务器可能已经收下了；调用方先被叫到，确认
+       * 服务器收下了（它回传过这条）就返回 `"delivered"`，这时不弹失败提示。
        */
-      onSendFailed?: (error: unknown) => void
+      onSendFailed?: SendFailedCallback
       /**
        * #650：后端收下了这条（发送请求成功返回）。排队区发出去的那条到这时
        * 才从存储里拿掉，发送途中刷新还读得回来。
@@ -622,7 +636,7 @@ export function useConnectionLifecycle({
         conversationId?: number | null
         clientMessageId?: string | null
         onTurnInProgress?: () => void
-        onSendFailed?: (error: unknown) => void
+        onSendFailed?: SendFailedCallback
         onSendAccepted?: () => void
       }
     ) => {
@@ -693,6 +707,12 @@ export function useConnectionLifecycle({
         // message over a bare stringification.
         // 没有 code 的 `{ error: "..." }` 这类错误体也取里面的文字（#952），
         // 不显示「[object Object]」。
+        // #984：没等到回应的，先问调用方服务器回传过这条没有；回传过就是
+        // 送到了（回复照常会来），不报失败。
+        const uncertain = isUncertainSendError(e)
+        if (uncertain && onSendFailed?.(e, { uncertain }) === "delivered") {
+          return
+        }
         const appError = extractAppCommandError(e)
         const message =
           appError?.message ??
@@ -706,7 +726,7 @@ export function useConnectionLifecycle({
         // user turn, drop out of awaiting_persist so the queue keeps
         // flushing). Runs after the toast so the state rollback can't hide
         // the failure.
-        onSendFailed?.(e)
+        if (!uncertain) onSendFailed?.(e)
       })
     },
     [connSetMode, sendPrompt, contextKey, touchActivity, t]

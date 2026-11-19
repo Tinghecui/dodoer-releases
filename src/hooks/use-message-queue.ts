@@ -82,12 +82,16 @@ export interface UseMessageQueueReturn {
    * so it retries before items that were already behind it (FIFO preserved).
    */
   requeueFront: (draft: PromptDraft, modeId: string | null) => void
-  /** Put a draft whose send failed back at the FRONT, flagged `failed`. */
+  /**
+   * Put a draft whose send failed back at the FRONT, flagged `failed`.
+   * Returns the new item's id (Cowork fork #984: the panel takes it back out
+   * once the server turns out to have received the message after all).
+   */
   requeueFailed: (
     draft: PromptDraft,
     modeId: string | null,
     failure?: QueueFailureKind
-  ) => void
+  ) => string
   /**
    * Cowork fork: flag the item at the head `failed` where it stands (same id,
    * same place). For a message that never went out and, as things are, never
@@ -121,6 +125,14 @@ export interface UseMessageQueueReturn {
    */
   hold: (draft: PromptDraft, modeId: string | null) => string
   remove: (id: string) => void
+  /**
+   * Cowork fork (#984 第 1 次返工): remove `id` only if it still holds this
+   * exact `draft` (the user has not saved an edit over it) and is not open in
+   * the editor. Returns whether it removed it. For a failed copy that the
+   * server turns out to have received after all: a copy the user changed is
+   * their own message now and stays.
+   */
+  removeIfUnchanged: (id: string, draft: PromptDraft) => boolean
   reorder: (items: QueuedMessage[]) => void
   /** Prioritize a still-queued item using its latest draft and mode. */
   moveToFront: (id: string) => void
@@ -401,10 +413,15 @@ export function useMessageQueue(
   )
 
   const requeueFailed = useCallback(
-    (draft: PromptDraft, modeId: string | null, failure?: QueueFailureKind) => {
+    (
+      draft: PromptDraft,
+      modeId: string | null,
+      failure?: QueueFailureKind
+    ): string => {
+      const id = randomUUID()
       commit([
         {
-          id: randomUUID(),
+          id,
           draft,
           modeId,
           failed: true,
@@ -412,6 +429,7 @@ export function useMessageQueue(
         },
         ...queueRef.current,
       ])
+      return id
     },
     [commit]
   )
@@ -503,6 +521,18 @@ export function useMessageQueue(
     [commit, editingItemId, setEditingItemId]
   )
 
+  const removeIfUnchanged = useCallback(
+    (id: string, draft: PromptDraft): boolean => {
+      if (editingItemIdRef.current === id) return false
+      const current = queueRef.current
+      const item = current.find((entry) => entry.id === id)
+      if (!item || item.draft !== draft) return false
+      commit(current.filter((entry) => entry.id !== id))
+      return true
+    },
+    [commit]
+  )
+
   const reorder = useCallback(
     (items: QueuedMessage[]) => {
       // Apply a reorder ONLY if it is a true permutation of the live queue, and
@@ -576,6 +606,7 @@ export function useMessageQueue(
     settle,
     hold,
     remove,
+    removeIfUnchanged,
     reorder,
     moveToFront,
     updateItem,

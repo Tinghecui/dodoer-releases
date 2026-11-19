@@ -348,6 +348,9 @@ export function stripUploadedImagePayloads(
   })
 }
 
+/** 发消息的请求最多等多久（#984）。 */
+const ACP_PROMPT_TIMEOUT_MS = 120_000
+
 export async function acpPrompt(
   connectionId: string,
   blocks: PromptInputBlock[],
@@ -356,18 +359,25 @@ export async function acpPrompt(
   clientMessageId: string | null = null
 ): Promise<void> {
   try {
-    await getTransport().call("acp_prompt", {
-      connectionId,
-      // Strip in every mode where the prompt leaves through an HTTP body:
-      // pure web (`!isDesktop`) and desktop-attached-to-remote-workspace.
-      blocks: stripUploadedImagePayloads(
-        blocks,
-        !isDesktop() || getActiveRemoteConnectionId() !== null
-      ),
-      folderId,
-      conversationId,
-      clientMessageId,
-    })
+    await getTransport().call(
+      "acp_prompt",
+      {
+        connectionId,
+        // Strip in every mode where the prompt leaves through an HTTP body:
+        // pure web (`!isDesktop`) and desktop-attached-to-remote-workspace.
+        blocks: stripUploadedImagePayloads(
+          blocks,
+          !isDesktop() || getActiveRemoteConnectionId() !== null
+        ),
+        folderId,
+        conversationId,
+        clientMessageId,
+      },
+      // Cowork fork (#984): 服务器收下消息前可能要等一会儿（等上一条的锁、
+      // 读回上传的图片），远程窗口默认 30 秒就放弃，常常是服务器其实收下了、
+      // 这边却报发送失败。多等一会儿；真没回应的照样按「没确认送达」处理。
+      { timeoutMs: ACP_PROMPT_TIMEOUT_MS }
+    )
   } catch (e) {
     if (isTurnInProgressRejection(e)) throw new TurnBusyError()
     throw asConversationMovedError(e) ?? e

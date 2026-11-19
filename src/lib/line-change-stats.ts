@@ -189,6 +189,61 @@ export function editFragmentTexts(
   return { oldText: `${oldText}\n`, newText: `${newText}\n` }
 }
 
+/**
+ * 纯插入的编辑（去掉片段里相同的首尾行以后旧的一边是空的），插入的几行和
+ * 片段后面紧跟的文件行一样时，对整个文件做 diff 会把插入往后挪（连续空行
+ * 末尾再加一个空行，算在最后）。片段看不到后面的文件内容，后端读文件算出
+ * 插入真正的起始行 `changeStartLine`（工具输入里的 `_change_start_line`）。
+ *
+ * 往后挪了 d 行，说明片段后面那 d 行就是插入的几行轮着排下去；把这 d 行补到
+ * 两边片段的末尾，再按片段算行号、生成 diff，就和整个文件的 diff 一样。
+ * 先按 `editFragmentTexts` 补齐换行。`changeStartLine` 对不上（不是纯插入、
+ * 不比片段里的插入位置靠后、片段不以换行结尾）时只做补齐。
+ */
+export function editFragmentTextsAt(
+  oldText: string,
+  newText: string,
+  startLine: number | undefined,
+  changeStartLine: number | undefined
+): { oldText: string; newText: string } {
+  const padded = editFragmentTexts(oldText, newText)
+  if (
+    startLine === undefined ||
+    changeStartLine === undefined ||
+    !Number.isInteger(startLine) ||
+    !Number.isInteger(changeStartLine) ||
+    startLine <= 0 ||
+    !padded.oldText.endsWith("\n") ||
+    !padded.newText.endsWith("\n")
+  ) {
+    return padded
+  }
+  const oldLines = splitNormalizedLines(padded.oldText)
+  const newLines = splitNormalizedLines(padded.newText)
+  let prefix = 0
+  while (
+    prefix < oldLines.length &&
+    prefix < newLines.length &&
+    oldLines[prefix] === newLines[prefix]
+  ) {
+    prefix += 1
+  }
+  const inserted = newLines.slice(prefix)
+  // 旧的一边整个是新的一边的开头，才是插在片段末尾、可能往后挪的纯插入
+  if (prefix !== oldLines.length || inserted.length === 0) return padded
+  const shift = changeStartLine - (startLine + prefix)
+  if (shift <= 0 || shift > MAX_SLIDE_LINES) return padded
+  const following = Array.from(
+    { length: shift },
+    (_, i) => inserted[i % inserted.length]
+  )
+  const tail = `${following.join("\n")}\n`
+  return { oldText: padded.oldText + tail, newText: padded.newText + tail }
+}
+
+// 往后挪的行数上限：防一个错的 `_change_start_line` 让片段变得很长
+const MAX_SLIDE_LINES = 10_000
+
 /** 字符串替换式编辑的增删行数：`editFragmentTexts` 补齐后再比。 */
 export function estimateEditFragmentStats(
   oldText: string,

@@ -11468,6 +11468,7 @@ fn minimax_gated_tool_call_id(
         let mut value = value.clone();
         if let Some(obj) = value.as_object_mut() {
             obj.remove("_start_line");
+            obj.remove("_change_start_line");
         }
         value
     }
@@ -17099,15 +17100,16 @@ fn structurize_live_output(text: &str) -> String {
 /// Resolve line numbers for live tool call input (string form).
 ///
 /// - For apply_patch with bare `@@`: resolve line numbers in place.
-/// - For canonical edit JSON: inject `_start_line`.
-fn resolve_live_tool_input(text: &str, cwd: Option<&str>) -> String {
+/// - For canonical edit JSON: inject `_start_line` (and `_change_start_line`,
+///   see `edit_change_start_line`). `applied`：这一帧是完成帧，磁盘上的文件已经改过。
+fn resolve_live_tool_input(text: &str, cwd: Option<&str>, applied: bool) -> String {
     if text.contains("@@\n") || text.contains("@@\r\n") {
         if let Some(resolved) = crate::parsers::resolve_patch_text(text, cwd) {
             return resolved;
         }
     }
     if let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(text) {
-        if inject_start_line(&mut parsed, cwd) {
+        if inject_edit_line_hints(&mut parsed, cwd, applied) {
             return parsed.to_string();
         }
     }
@@ -17115,7 +17117,8 @@ fn resolve_live_tool_input(text: &str, cwd: Option<&str>) -> String {
 }
 
 /// Try to inject `_start_line` into a JSON object with `file_path` + `old_string`.
-/// Returns true if injected.
+/// Returns true if injected. 用在编辑还没落盘的帧（权限请求）上，见
+/// `inject_edit_line_hints`。
 ///
 /// The camelCase spellings are OpenCode's: its ACP adapter forwards the tool's
 /// own arguments verbatim (`{filePath, oldString, newString}`), and the rename
@@ -17126,6 +17129,13 @@ fn resolve_live_tool_input(text: &str, cwd: Option<&str>) -> String {
 /// Resolution happens on the `in_progress` frame, before the edit is applied, so
 /// `old_string` is still findable on disk.
 fn inject_start_line(value: &mut serde_json::Value, cwd: Option<&str>) -> bool {
+    inject_edit_line_hints(value, cwd, false)
+}
+
+/// `inject_start_line`，另外给纯插入的编辑注入 `_change_start_line`（见
+/// `edit_change_start_line`）。`applied` 说磁盘上的文件是改之前还是改之后的：
+/// 片段本身分不出来（连续空行末尾加空行时两种都对得上）。
+fn inject_edit_line_hints(value: &mut serde_json::Value, cwd: Option<&str>, applied: bool) -> bool {
     let obj = match value.as_object_mut() {
         Some(o) => o,
         None => return false,
@@ -17157,10 +17167,75 @@ fn inject_start_line(value: &mut serde_json::Value, cwd: Option<&str>) -> bool {
         });
         if let Some(sl) = sl {
             obj.insert("_start_line".to_string(), serde_json::json!(sl));
+            let replace_all = obj.get("replace_all").and_then(|v| v.as_bool()) == Some(true);
+            let change = new_str.as_deref().filter(|_| !replace_all).and_then(|n| {
+                let content = load_file_content_for_line_lookup(&fp, cwd)?;
+                edit_change_start_line(&content, &old_str, n, applied)
+            });
+            if let Some(change) = change {
+                obj.insert("_change_start_line".to_string(), serde_json::json!(change));
+            }
             return true;
         }
     }
     false
+}
+
+/// 纯插入的编辑（旧片段换成新片段，整个文件比下来只多了几行）在新文件里的
+/// 起始行，按整个文件去掉相同的首尾行来算，和刷新后 Claude 历史里的
+/// structuredPatch 一样：插入的几行和后面紧跟的行相同时（连续空行末尾再加
+/// 一个空行），会算在后面，只看片段的前端算不出来。不是纯插入、片段在文件里
+/// 找不到时返回 `None`。
+///
+/// `applied` 为 false 时 `content` 是改之前的文件，按 `old` 第一次出现的位置
+/// 拼出改之后的；为 true 时是改之后的，按 `new` 唯一出现的位置拼出改之前的。
+fn edit_change_start_line(content: &str, old: &str, new: &str, applied: bool) -> Option<u64> {
+    let old = old.replace("\r\n", "\n");
+    let new = new.replace("\r\n", "\n");
+    if old.is_empty() || new.is_empty() {
+        return None;
+    }
+    let (before, after) = if applied {
+        let at = content.find(&new)?;
+        let first_char_len = new.chars().next()?.len_utf8();
+        if content[at + first_char_len..].contains(&new) {
+            return None;
+        }
+        (
+            format!("{}{}{}", &content[..at], old, &content[at + new.len()..]),
+            content.to_string(),
+        )
+    } else {
+        let at = content.find(&old)?;
+        (
+            content.to_string(),
+            format!("{}{}{}", &content[..at], new, &content[at + old.len()..]),
+        )
+    };
+    // 结尾的换行不另算一行
+    fn lines(text: &str) -> Vec<&str> {
+        let mut lines: Vec<&str> = text.split('\n').collect();
+        if lines.last() == Some(&"") {
+            lines.pop();
+        }
+        lines
+    }
+    let old_lines = lines(&before);
+    let new_lines = lines(&after);
+    let prefix = old_lines
+        .iter()
+        .zip(&new_lines)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let suffix = old_lines[prefix..]
+        .iter()
+        .rev()
+        .zip(new_lines[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let removed = old_lines.len() - prefix - suffix;
+    let added = new_lines.len() - prefix - suffix;
+    (removed == 0 && added > 0).then_some(prefix as u64 + 1)
 }
 
 /// 和 `find_string_start_line` 一样，但 `needle` 在文件里出现不止一次时返回 `None`。
@@ -26030,13 +26105,18 @@ async fn emit_conversation_update(
                 Some(content_blocks),
                 tc.raw_output.as_ref(),
             );
+            // 完成帧上的编辑已经落盘，按改之后的文件找插入位置
+            let edit_applied = matches!(
+                tc.status,
+                agent_client_protocol::schema::v1::ToolCallStatus::Completed
+            );
             let codex_subagent_launch = codex_subagent.is_some();
             let raw_input = codex_subagent
                 .or(synthesized_edit)
                 .or(own_raw_input)
                 .or(pi_bash_input)
                 .or(gemini_input)
-                .map(|text| resolve_live_tool_input(&text, cwd));
+                .map(|text| resolve_live_tool_input(&text, cwd, edit_applied));
             // Initial tool_call notification — the frontend reducer
             // treats `raw_output` as a full replacement, so we bypass
             // the diff path and seed the cache with the current snapshot.
@@ -26560,13 +26640,18 @@ async fn emit_conversation_update(
                 content_blocks,
                 tcu.fields.raw_output.as_ref(),
             );
+            // 完成帧上的编辑已经落盘，按改之后的文件找插入位置
+            let edit_applied = matches!(
+                tcu.fields.status,
+                Some(agent_client_protocol::schema::v1::ToolCallStatus::Completed)
+            );
             let codex_subagent_launch = codex_subagent.is_some();
             let raw_input = codex_subagent
                 .or(synthesized_edit)
                 .or(own_raw_input)
                 .or(pi_bash_input)
                 .or(gemini_input)
-                .map(|text| resolve_live_tool_input(&text, cwd));
+                .map(|text| resolve_live_tool_input(&text, cwd, edit_applied));
             // Diff the incoming raw_output against the last snapshot we
             // emitted for this tool call. This turns cumulative snapshots
             // from agents (Claude Code, Codex, …) into incremental deltas
@@ -39757,6 +39842,67 @@ mod tests {
         });
         assert!(inject_start_line(&mut before, None));
         assert_eq!(before["_start_line"], serde_json::json!(7));
+    }
+
+    /// 连续空行末尾再加一个空行：片段里新增行在第 4 行，对整个文件做 diff
+    /// （刷新后的 structuredPatch）算在第 5 行。编辑落盘前后两帧都要给出 5。
+    #[test]
+    fn live_change_start_line_follows_whole_file_diff_for_slid_insertion() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("tail.txt");
+        std::fs::write(&file, "a\nb\nc\n\n").expect("write");
+
+        let mut before = serde_json::json!({
+            "file_path": file.to_string_lossy(),
+            "old_string": "c\n",
+            "new_string": "c\n\n",
+        });
+        assert!(inject_start_line(&mut before, None));
+        assert_eq!(before["_start_line"], serde_json::json!(3));
+        assert_eq!(before["_change_start_line"], serde_json::json!(5));
+
+        // 完成帧：文件已经改成「a\nb\nc\n\n\n」，同样的片段还是第 5 行。
+        // 片段本身分不出文件改没改（old_string「c\n」在新文件里也找得到），
+        // 要靠帧的状态：当成改之前的文件来算会得出 6。
+        std::fs::write(&file, "a\nb\nc\n\n\n").expect("write");
+        let mut applied = serde_json::json!({
+            "file_path": file.to_string_lossy(),
+            "old_string": "c\n",
+            "new_string": "c\n\n",
+        });
+        assert!(inject_edit_line_hints(&mut applied, None, true));
+        assert_eq!(applied["_start_line"], serde_json::json!(3));
+        assert_eq!(applied["_change_start_line"], serde_json::json!(5));
+        let resolved = resolve_live_tool_input(&before.to_string(), None, true);
+        let resolved: serde_json::Value = serde_json::from_str(&resolved).expect("json");
+        assert_eq!(resolved["_change_start_line"], serde_json::json!(5));
+
+        // 末尾第一次加空行（「c」改成「c\n」）：插在第 4 行
+        std::fs::write(&file, "a\nb\nc\n").expect("write");
+        let mut first = serde_json::json!({
+            "file_path": file.to_string_lossy(),
+            "old_string": "c",
+            "new_string": "c\n",
+        });
+        assert!(inject_start_line(&mut first, None));
+        assert_eq!(first["_change_start_line"], serde_json::json!(4));
+
+        // 不是纯插入、replace_all 都不给
+        let mut replaced = serde_json::json!({
+            "file_path": file.to_string_lossy(),
+            "old_string": "b",
+            "new_string": "B",
+        });
+        assert!(inject_start_line(&mut replaced, None));
+        assert!(replaced.get("_change_start_line").is_none());
+        let mut multi = serde_json::json!({
+            "file_path": file.to_string_lossy(),
+            "old_string": "c",
+            "new_string": "c\n",
+            "replace_all": true,
+        });
+        assert!(inject_start_line(&mut multi, None));
+        assert!(multi.get("_change_start_line").is_none());
     }
 
     /// hunk 一直延伸到文件末尾、new_string 以换行结尾时，也要找得到（文件末尾的换行不能丢）。

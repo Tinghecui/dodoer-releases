@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   editFragmentTexts,
+  editFragmentTextsAt,
   estimateEditFragmentStats,
 } from "./line-change-stats"
 
@@ -54,6 +55,34 @@ describe("estimateEditFragmentStats", () => {
     expect(estimateEditFragmentStats("a\nb", "")).toEqual({
       additions: 0,
       deletions: 2,
+    })
+  })
+})
+
+describe("editFragmentTextsAt", () => {
+  it("把往后挪的插入补成片段后面的那几行", () => {
+    // 片段里新增行在 3 + 1 = 4 行，后端说在第 5 行：后面那一行是空行
+    expect(editFragmentTextsAt("c\n", "c\n\n", 3, 5)).toEqual({
+      oldText: "c\n\n",
+      newText: "c\n\n\n",
+    })
+  })
+
+  it("对不上的起始行只补齐换行", () => {
+    // 没往后挪
+    expect(editFragmentTextsAt("c", "c\n", 3, 4)).toEqual({
+      oldText: "c\n",
+      newText: "c\n\n",
+    })
+    // 不是纯插入
+    expect(editFragmentTextsAt("b\n", "B\n\n", 3, 6)).toEqual({
+      oldText: "b\n",
+      newText: "B\n\n",
+    })
+    // 没有片段的起始行
+    expect(editFragmentTextsAt("c\n", "c\n\n", undefined, 5)).toEqual({
+      oldText: "c\n",
+      newText: "c\n\n",
     })
   })
 })

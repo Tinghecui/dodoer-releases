@@ -352,6 +352,24 @@ describe("extractReplyFileChanges", () => {
     expect(file.additions - file.deletions).toBe(4)
   })
 
+  it("the navigator puts a slid blank line where the file diff does", () => {
+    // 文件「a\nb\nc\n\n」末尾再加一个空行，后端算出新增在第 5 行
+    const turn = editTurn("a2", "t2", "/repo/tail.txt", "c\n", "c\n\n")
+    const block = turn.blocks[0]
+    if (block.type !== "tool_use") throw new Error("not a tool call")
+    block.input_preview = JSON.stringify({
+      file_path: "/repo/tail.txt",
+      old_string: "c\n",
+      new_string: "c\n\n",
+      _start_line: 3,
+      _change_start_line: 5,
+    })
+    const [file] = extractReplyFileChanges([turn])
+    expect(file.additions).toBe(1)
+    expect(file.deletions).toBe(0)
+    expect(file.diff).toContain("@@ -3,2 +3,3 @@\n c\n \n+")
+  })
+
   it("a second write to the same file replaces the first one's count", () => {
     const [file] = extractReplyFileChanges([
       writeTurn("a1", "t1", "/repo/c2.md", "a\nb\nc\n"),

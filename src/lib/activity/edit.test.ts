@@ -109,6 +109,46 @@ describe("describeEditFiles", () => {
     ])
   })
 
+  it("counts the blank line an edit adds at the end of the file", () => {
+    // 「c」改成「c\n」：切行时两边都是 ["c"]，以前算成 +0、只标 L3
+    const input = JSON.stringify({
+      file_path: "/repo/tail.txt",
+      old_string: "c",
+      new_string: "c\n",
+      _start_line: 3,
+    })
+    expect(describeEditFiles("edit", input, null)).toEqual([
+      {
+        path: "/repo/tail.txt",
+        op: "update",
+        additions: 1,
+        deletions: 0,
+        lineRange: { start: 4, end: 4 },
+      },
+    ])
+    expect(editDiffText("edit", input, null)?.text).toContain("\n+")
+  })
+
+  it("moves an inserted blank line to where the file diff puts it", () => {
+    // 文件「a\nb\nc\n\n」末尾再加一个空行：片段里新增行在第 4 行，对整个
+    // 文件做 diff 时第 4 行和下一行一样，新增算在第 5 行，后端给出 5
+    const input = JSON.stringify({
+      file_path: "/repo/tail.txt",
+      old_string: "c\n",
+      new_string: "c\n\n",
+      _start_line: 3,
+      _change_start_line: 5,
+    })
+    expect(describeEditFiles("edit", input, null)[0]).toMatchObject({
+      additions: 1,
+      deletions: 0,
+      lineRange: { start: 5, end: 5 },
+    })
+    const diff = editDiffText("edit", input, null)
+    expect(diff?.numbered).toBe(true)
+    expect(diff?.text).toContain("@@ -3,2 +3,3 @@\n c\n \n+")
+  })
+
   it("prefers the rebuilt structured patch in a reloaded Claude edit", () => {
     const input = JSON.stringify({
       file_path: "/repo/q.py",

@@ -8,7 +8,9 @@
 
 import {
   countUnifiedDiffLineChanges,
+  editFragmentTextsAt,
   estimateChangedLineStats,
+  estimateEditFragmentStats,
   splitNormalizedLines,
 } from "@/lib/line-change-stats"
 import {
@@ -591,9 +593,17 @@ export function describeEditFiles(
       const oldText = str(parsed, "old_string") ?? str(parsed, "old_text")
       const newText = str(parsed, "new_string") ?? str(parsed, "new_text")
       if (oldText !== undefined || newText !== undefined) {
-        const stats = estimateChangedLineStats(oldText ?? "", newText ?? "")
+        // 只有一边以换行结尾（末尾加空行）时两边补齐再比，和「改动文件」、
+        // 消息导航同一种算法
+        const stats = estimateEditFragmentStats(oldText ?? "", newText ?? "")
         const startLine = num(parsed, "_start_line")
         const multi = parsed.replace_all === true
+        const fragment = editFragmentTextsAt(
+          oldText ?? "",
+          newText ?? "",
+          startLine,
+          multi ? undefined : num(parsed, "_change_start_line")
+        )
         return [
           {
             path: filePath,
@@ -603,8 +613,8 @@ export function describeEditFiles(
             lineRange:
               startLine !== undefined && !multi
                 ? changedRangeFromReplacement(
-                    oldText ?? "",
-                    newText ?? "",
+                    fragment.oldText,
+                    fragment.newText,
                     startLine
                   )
                 : null,
@@ -772,13 +782,22 @@ export function editDiffText(
   }
 
   if (parsed && isCanonicalEditPayload(parsed)) {
-    const diff = generateUnifiedDiff(
+    const startLine = num(parsed, "_start_line")
+    // 补齐换行、按后端算的插入位置挪过，和编辑卡标题的行号、+1 一致
+    const fragment = editFragmentTextsAt(
       str(parsed, "old_string") ?? "",
       str(parsed, "new_string") ?? "",
+      startLine,
+      parsed.replace_all === true
+        ? undefined
+        : num(parsed, "_change_start_line")
+    )
+    const diff = generateUnifiedDiff(
+      fragment.oldText,
+      fragment.newText,
       str(parsed, "file_path") ?? str(parsed, "path") ?? undefined
     )
     if (!diff) return null
-    const startLine = num(parsed, "_start_line")
     return {
       text: startLineAdjusted(diff, startLine),
       numbered: startLine !== undefined && startLine > 0,

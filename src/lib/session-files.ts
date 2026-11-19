@@ -4,7 +4,7 @@ import {
   applyPatchHunks,
   applyTextEdits,
   countUnifiedDiffLineChanges,
-  editFragmentTexts,
+  editFragmentTextsAt,
   estimateEditFragmentStats,
   splitNormalizedLines,
   textEditsLineDelta,
@@ -272,12 +272,20 @@ const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/
 
 // 只用于字符串替换式编辑的两段片段：只有一边以换行结尾时两边补齐再比，末尾只加
 // 空行的编辑才生成得出 diff（见 editFragmentTexts）
+// 有后端算的插入起始行时，把插入挪到整个文件 diff 放的位置（见 editFragmentTextsAt）
 function buildUnifiedDiff(
   filePath: string,
   oldText: string,
-  newText: string
+  newText: string,
+  startLine?: number,
+  changeStartLine?: number
 ): string | null {
-  const padded = editFragmentTexts(oldText, newText)
+  const padded = editFragmentTextsAt(
+    oldText,
+    newText,
+    startLine,
+    changeStartLine
+  )
   return generateUnifiedDiff(padded.oldText, padded.newText, filePath)
 }
 
@@ -1459,10 +1467,21 @@ function buildDiffChunk(
     const newStr =
       typeof parsed.new_string === "string" ? parsed.new_string : ""
 
-    const diff = buildUnifiedDiff(filePath, oldStr, newStr)
-    if (!diff) return null
     const startLine =
       typeof parsed._start_line === "number" ? parsed._start_line : 0
+    const changeStartLine =
+      parsed.replace_all !== true &&
+      typeof parsed._change_start_line === "number"
+        ? parsed._change_start_line
+        : undefined
+    const diff = buildUnifiedDiff(
+      filePath,
+      oldStr,
+      newStr,
+      startLine,
+      changeStartLine
+    )
+    if (!diff) return null
     if (startLine <= 1) return diff
     return diff.replace(
       /^@@ -(\d+),(\d+) \+(\d+),(\d+) @@/gm,

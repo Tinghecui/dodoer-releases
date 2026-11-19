@@ -11,23 +11,46 @@
 import { parseCodexCommandEnvelope } from "@/lib/codex-command-action"
 import { tryParseJson } from "./json"
 
-function unwrapQuotedCommand(command: string): string {
+/**
+ * 开头引号对应的闭合引号的下标：单引号里没有转义，双引号里跳过 `\x`。
+ * 找不到返回 -1。
+ */
+function closingQuoteIndex(text: string): number {
+  const quote = text[0]
+  for (let i = 1; i < text.length; i += 1) {
+    const ch = text[i]
+    if (quote === '"' && ch === "\\") {
+      i += 1
+      continue
+    }
+    if (ch === quote) return i
+  }
+  return -1
+}
+
+/**
+ * `-c` 后面那段参数去掉一层引号。参数以引号开头、但闭合引号后面还有别的
+ * 内容（`sh -c "exit 3"; echo …`、`bash -c 'a' && bash -c 'b'`）时，
+ * 它不是一个完整的单词，外壳不能拆，返回 null。
+ */
+function unwrapQuotedCommand(command: string): string | null {
   const trimmed = command.trim()
   if (trimmed.length < 2) return trimmed
 
-  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+  const quote = trimmed[0]
+  if (quote !== "'" && quote !== '"') return trimmed
+
+  if (closingQuoteIndex(trimmed) !== trimmed.length - 1) return null
+
+  if (quote === "'") {
     return trimmed.slice(1, -1)
   }
 
-  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
-    return trimmed
-      .slice(1, -1)
-      .replace(/\\"/g, '"')
-      .replace(/\\n/g, "\n")
-      .replace(/\\\\/g, "\\")
-  }
-
   return trimmed
+    .slice(1, -1)
+    .replace(/\\"/g, '"')
+    .replace(/\\n/g, "\n")
+    .replace(/\\\\/g, "\\")
 }
 
 export function simplifyShellCommand(command: string): string {
@@ -39,7 +62,8 @@ export function simplifyShellCommand(command: string): string {
   for (let i = 0; i < 6; i += 1) {
     const wrapped = current.match(wrapperRe)
     if (!wrapped) break
-    const next = unwrapQuotedCommand(wrapped[1] ?? "").trim()
+    const next = unwrapQuotedCommand(wrapped[1] ?? "")?.trim()
+    // null：参数后面还接着别的命令，保留这一层原样显示。
     if (!next || next === current) break
     current = next
   }

@@ -18,6 +18,24 @@ describe("simplifyShellCommand", () => {
     )
   })
 
+  it("keeps a wrapper whose quoted argument is followed by more commands", () => {
+    expect(simplifyShellCommand(`sh -c "exit 3"; echo "exit status: $?"`)).toBe(
+      `sh -c "exit 3"; echo "exit status: $?"`
+    )
+    expect(simplifyShellCommand(`bash -c 'a' && bash -c 'b'`)).toBe(
+      `bash -c 'a' && bash -c 'b'`
+    )
+    expect(
+      extractDisplayCommandFromToolInput(
+        JSON.stringify({ command: `sh -c "exit 3"; echo "exit status: $?"` })
+      )
+    ).toBe(`sh -c "exit 3"; echo "exit status: $?"`)
+  })
+
+  it("unwraps a double-quoted argument with escaped quotes", () => {
+    expect(simplifyShellCommand(`bash -lc "echo \\"hi\\""`)).toBe(`echo "hi"`)
+  })
+
   it("leaves a plain command alone", () => {
     expect(simplifyShellCommand("git status --short")).toBe(
       "git status --short"

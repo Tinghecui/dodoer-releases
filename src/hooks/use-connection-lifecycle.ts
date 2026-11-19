@@ -214,6 +214,18 @@ export function useConnectionLifecycle({
     // #872: 被限流的那次。provider 会自己重连，之后的失败由它发布。
     rateLimited: boolean
   } | null>(null)
+  // #952: 状态重新变成 connecting 就是 provider 开始了新的一次连接（失败提示
+  // 里的「重试」、限流后的自动重连都直接走 provider，不经过这个 hook），上一次
+  // 自动连接的失败到这里作废：这次再失败由 provider 发布，被限流就不算失败。
+  // 渲染时比较上一次的状态（React 推荐的「渲染中调整 state」写法），不放进
+  // effect，免得多渲染一轮旧的失败。
+  const [prevStatus, setPrevStatus] = useState(status)
+  if (status !== prevStatus) {
+    setPrevStatus(status)
+    if (status === "connecting" && lastAutoConnectError !== null) {
+      setLastAutoConnectError(null)
+    }
+  }
 
   // Refs for auto-connect effect, which intentionally avoids volatile
   // dependencies to prevent reconnect loops. Synced via useEffect —
@@ -679,10 +691,12 @@ export function useConnectionLifecycle({
         // server, a hydration failure, a network drop — looks like the message
         // simply vanished. Surface the failure; prefer the structured backend
         // message over a bare stringification.
+        // 没有 code 的 `{ error: "..." }` 这类错误体也取里面的文字（#952），
+        // 不显示「[object Object]」。
         const appError = extractAppCommandError(e)
         const message =
           appError?.message ??
-          (e instanceof Error ? e.message : String(e ?? "unknown error"))
+          (e == null ? "unknown error" : toErrorMessage(e) || "unknown error")
         notify({
           level: "error",
           key: `send-failed:${contextKey}`,

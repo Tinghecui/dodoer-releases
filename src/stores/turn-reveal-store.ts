@@ -17,6 +17,9 @@ export interface TurnRevealRequest {
   turnId: string
   /** Its index in the full transcript (`turns_offset` coordinates). */
   turnIndex: number
+  /** 它是整段记录里的第几条用户消息（从 0 数）。这个标签页里发的消息在线程
+   *  里是本地 id，按 `turnId` 找不到时用它找。 */
+  userIndex?: number | null
 }
 
 interface TurnRevealState {

@@ -219,6 +219,11 @@ pub struct ConversationMessageHit {
     /// `turns_offset`), so a jump can page it in when it is above the
     /// loaded window.
     pub turn_index: usize,
+    /// 这条用户消息是整段记录里的第几条用户消息（从 0 数，和
+    /// `user_turns_before_offset` 同一种数法）。这个标签页里刚发的消息在前端
+    /// 用的是本地 id，按 `turn_id` 找不到，就按这个序号找。round 前面没有用户
+    /// 消息时为 None。
+    pub user_index: Option<usize>,
     /// Which side of the round the text matched in.
     pub role: TurnRole,
     /// The matched text with some context around it, whitespace collapsed.

@@ -8,6 +8,11 @@ interface MessageNavJumpOptions {
   conversationId: number
   /** Each loaded user turn's index among the rendered thread items. */
   threadIndexByTurnId: ReadonlyMap<string, number>
+  /** 已加载的每条用户消息在线程里的下标，按先后排。按 id 找不到时，用
+   *  搜索结果给的「第几条用户消息」从这里找。 */
+  userThreadIndices?: readonly number[]
+  /** 已加载窗口上面还有几条用户消息（`user_turns_before_offset`）。 */
+  earlierUserCount?: number
   scrollApiRef: RefObject<MessageScrollContextValue | null>
   /** Glide rather than jump (Settings → Appearance → "Chat animations"). */
   smooth: boolean
@@ -24,8 +29,22 @@ interface PendingReveal {
   token: number
   conversationId: number
   turnId: string
+  /** 它是整段记录里的第几条用户消息（从 0 数）；不知道时为 null。 */
+  userIndex: number | null
   /** The paging is over (it reached the message); only the scroll is left. */
   settled: boolean
+}
+
+const NO_USER_THREAD_INDICES: readonly number[] = []
+
+/** `userIndex` 那条用户消息在线程里的下标；不在已加载的窗口里时为 null。 */
+function threadIndexOfUser(
+  userIndex: number | null,
+  userThreadIndices: readonly number[],
+  earlierUserCount: number
+): number | null {
+  if (userIndex == null) return null
+  return userThreadIndices[userIndex - earlierUserCount] ?? null
 }
 
 /**
@@ -44,6 +63,8 @@ interface PendingReveal {
 export function useMessageNavJump({
   conversationId,
   threadIndexByTurnId,
+  userThreadIndices = NO_USER_THREAD_INDICES,
+  earlierUserCount = 0,
   scrollApiRef,
   smooth,
   loadOlderTurnsThrough,
@@ -53,7 +74,11 @@ export function useMessageNavJump({
    *  the navigator — the search dialog's message hits. Unlike `select` it
    *  needs no navigator entry: a loaded turn is found by id, one above the
    *  window is paged in through its index. */
-  revealTurn: (turnId: string, turnIndex: number) => void
+  revealTurn: (
+    turnId: string,
+    turnIndex: number,
+    userIndex?: number | null
+  ) => void
   revealingTurnId: string | null
 } {
   const [reveal, setReveal] = useState<PendingReveal | null>(null)
@@ -61,8 +86,17 @@ export function useMessageNavJump({
   // A reveal belongs to the conversation it was started in.
   const active =
     reveal != null && reveal.conversationId === conversationId ? reveal : null
+  // 先按 id 找；这个标签页里发的消息在线程里是本地 id，和搜索结果给的
+  // 解析器 id 对不上，再按它是第几条用户消息找。
   const targetIndex =
-    active != null ? (threadIndexByTurnId.get(active.turnId) ?? null) : null
+    active != null
+      ? (threadIndexByTurnId.get(active.turnId) ??
+        threadIndexOfUser(
+          active.userIndex,
+          userThreadIndices,
+          earlierUserCount
+        ))
+      : null
 
   // Nothing left to wait for: the conversation changed under the reveal, or
   // the paging is over and the message still isn't in the thread.
@@ -111,6 +145,7 @@ export function useMessageNavJump({
         token,
         conversationId,
         turnId: entry.turnId,
+        userIndex: null,
         settled: false,
       })
       void loadOlderTurnsThrough(conversationId, entry.turnIndex).then(
@@ -129,10 +164,13 @@ export function useMessageNavJump({
   // asks right after the transcript loads, and the scroll then waits the
   // frame the effect above gives virtua to settle.
   const revealTurn = useCallback(
-    (turnId: string, turnIndex: number) => {
+    (turnId: string, turnIndex: number, userIndex: number | null = null) => {
       const token = ++lastToken.current
-      const loaded = threadIndexByTurnId.has(turnId)
-      setReveal({ token, conversationId, turnId, settled: loaded })
+      const loaded =
+        threadIndexByTurnId.has(turnId) ||
+        threadIndexOfUser(userIndex, userThreadIndices, earlierUserCount) !=
+          null
+      setReveal({ token, conversationId, turnId, userIndex, settled: loaded })
       if (loaded) return
       void loadOlderTurnsThrough(conversationId, turnIndex).then((reached) => {
         setReveal((current) => {
@@ -141,7 +179,13 @@ export function useMessageNavJump({
         })
       })
     },
-    [conversationId, loadOlderTurnsThrough, threadIndexByTurnId]
+    [
+      conversationId,
+      loadOlderTurnsThrough,
+      threadIndexByTurnId,
+      userThreadIndices,
+      earlierUserCount,
+    ]
   )
 
   return { select, revealTurn, revealingTurnId: active?.turnId ?? null }

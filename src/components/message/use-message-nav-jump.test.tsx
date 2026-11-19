@@ -34,6 +34,8 @@ function deferred<T>() {
 interface Props {
   conversationId: number
   threadIndexByTurnId: ReadonlyMap<string, number>
+  userThreadIndices?: readonly number[]
+  earlierUserCount?: number
   smooth: boolean
 }
 
@@ -310,5 +312,45 @@ describe("useMessageNavJump revealTurn (search hits)", () => {
     await waitFor(() => expect(result.current.revealingTurnId).toBeNull())
     await nextFrame()
     expect(scrollToIndex).not.toHaveBeenCalled()
+  })
+
+  // 这个标签页里刚发的消息在线程里是本地 id（optimistic-…），搜索结果给的是
+  // 解析器的 turn-N，按 id 对不上：按它是第几条用户消息找。
+  it("finds a turn sent in this tab by its user-message ordinal", async () => {
+    const load = vi.fn(() => Promise.resolve(true))
+    const { result, scrollToIndex } = setup(load, {
+      threadIndexByTurnId: new Map([
+        ["optimistic-a", 0],
+        ["optimistic-b", 2],
+        ["optimistic-c", 4],
+      ]),
+      userThreadIndices: [0, 2, 4],
+    })
+    act(() => result.current.revealTurn("turn-2", 2, 1))
+    await nextFrame()
+    expect(scrollToIndex).toHaveBeenCalledExactlyOnceWith(2, {
+      align: "start",
+      smooth: false,
+      leaveBottom: true,
+    })
+    expect(load).not.toHaveBeenCalled()
+  })
+
+  it("counts the ordinal from the loaded window's first user message", async () => {
+    const { result, scrollToIndex } = setup(vi.fn(), {
+      threadIndexByTurnId: new Map([
+        ["optimistic-a", 1],
+        ["optimistic-b", 3],
+      ]),
+      userThreadIndices: [1, 3],
+      earlierUserCount: 5,
+    })
+    act(() => result.current.revealTurn("turn-14", 14, 6))
+    await nextFrame()
+    expect(scrollToIndex).toHaveBeenCalledExactlyOnceWith(3, {
+      align: "start",
+      smooth: false,
+      leaveBottom: true,
+    })
   })
 })

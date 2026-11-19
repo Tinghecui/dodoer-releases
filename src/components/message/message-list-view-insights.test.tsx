@@ -28,6 +28,10 @@ import {
   type TranscriptInsights,
 } from "@/stores/transcript-insights-store"
 import type { MessageScrollContextValue } from "./message-scroll-context"
+import {
+  requestTurnReveal,
+  useTurnRevealStore,
+} from "@/stores/turn-reveal-store"
 
 const { stableT, scrollToIndex, viewport } = vi.hoisted(() => ({
   stableT: (key: string) => key,
@@ -374,5 +378,77 @@ describe("MessageListView insights", () => {
     expect(published()).toBeDefined()
     unmount()
     expect(published()).toBeUndefined()
+  })
+})
+
+/** Let the reveal's animation frame run. */
+async function nextFrame(): Promise<void> {
+  await act(
+    () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  )
+}
+
+describe("MessageListView search-hit reveal (#869)", () => {
+  afterEach(() => {
+    useTurnRevealStore.setState({ pending: null })
+  })
+
+  function transcript(isActive: boolean) {
+    return (
+      <MessageListView
+        conversationId={CID}
+        imageRoot={null}
+        agentType="claude_code"
+        availableCommands={[]}
+        connStatus="connected"
+        insightsInSidebar
+        isActive={isActive}
+      />
+    )
+  }
+
+  it("jumps to a message sent in this tab, found by its ordinal", async () => {
+    // 线程里的用户消息是本地 id（u1、u2），搜索结果给的是解析器的 turn-2。
+    seed()
+    render(transcript(true))
+    act(() => {
+      demandTranscriptNav(CID)
+    })
+    const second = published()?.nav.entries[1]
+    expect(second?.threadIndex).not.toBeNull()
+    act(() =>
+      requestTurnReveal({
+        conversationId: CID,
+        turnId: "turn-2",
+        turnIndex: 2,
+        userIndex: 1,
+      })
+    )
+    await nextFrame()
+    expect(scrollToIndex).toHaveBeenCalledWith(second?.threadIndex, {
+      align: "start",
+      smooth: false,
+      leaveBottom: true,
+    })
+  })
+
+  it("waits for its tab to become active before it jumps", async () => {
+    seed()
+    const view = render(transcript(false))
+    act(() =>
+      requestTurnReveal({ conversationId: CID, turnId: "u2", turnIndex: 2 })
+    )
+    await nextFrame()
+    expect(scrollToIndex).not.toHaveBeenCalled()
+    expect(useTurnRevealStore.getState().pending).not.toBeNull()
+
+    view.rerender(transcript(true))
+    await nextFrame()
+    expect(scrollToIndex).toHaveBeenCalledWith(2, {
+      align: "start",
+      smooth: false,
+      leaveBottom: true,
+    })
+    expect(useTurnRevealStore.getState().pending).toBeNull()
   })
 })

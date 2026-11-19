@@ -1326,6 +1326,10 @@ export interface ConversationMessageHit {
   /** That user turn's index in the full transcript (`turns_offset`
    *  coordinates), for paging it in above a loaded window. */
   turn_index: number
+  /** 这条用户消息是整段记录里的第几条用户消息（从 0 数）；这个标签页里刚发的
+   *  消息在前端是本地 id，按 `turn_id` 找不到时按它找。round 前面没有用户消息
+   *  时为 null；老服务端没有这个字段。 */
+  user_index?: number | null
   /** Which side of the round the text matched in. */
   role: TurnRole
   /** The matched text with some context, whitespace collapsed. */

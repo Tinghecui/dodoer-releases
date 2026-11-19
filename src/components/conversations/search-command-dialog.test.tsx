@@ -207,6 +207,7 @@ const bodyHit = response({
         {
           turn_id: "turn-2",
           turn_index: 2,
+          user_index: 1,
           role: "assistant",
           snippet: "It is pineapple-answer-0, as asked.",
         },
@@ -261,6 +262,7 @@ describe("SearchCommandDialog message search (#101)", () => {
       conversationId: 5,
       turnId: "turn-2",
       turnIndex: 2,
+      userIndex: 1,
     })
   })
 

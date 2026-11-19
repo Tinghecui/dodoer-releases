@@ -2414,15 +2414,23 @@ fn search_snippet(text: &str, start: usize, end: usize) -> String {
 /// at most [`SEARCH_HITS_PER_CONVERSATION`], one per round, oldest first.
 fn search_turns(turns: &[MessageTurn], query_lower: &str) -> Vec<ConversationMessageHit> {
     let mut hits: Vec<ConversationMessageHit> = Vec::new();
-    // The user turn that opened the round being walked.
-    let mut round: Option<(usize, &str)> = None;
+    // The user turn that opened the round being walked, and its ordinal among
+    // the user turns.
+    let mut round: Option<(usize, &str, usize)> = None;
+    let mut users_seen = 0usize;
     for (index, turn) in turns.iter().enumerate() {
         match turn.role {
-            TurnRole::User => round = Some((index, turn.id.as_str())),
+            TurnRole::User => {
+                round = Some((index, turn.id.as_str(), users_seen));
+                users_seen += 1;
+            }
             TurnRole::Assistant => {}
             TurnRole::System => continue,
         }
-        let (turn_index, turn_id) = round.unwrap_or((index, turn.id.as_str()));
+        let (turn_index, turn_id, user_index) = match round {
+            Some((i, id, n)) => (i, id, Some(n)),
+            None => (index, turn.id.as_str(), None),
+        };
         if hits.last().is_some_and(|h| h.turn_index == turn_index) {
             continue;
         }
@@ -2436,6 +2444,7 @@ fn search_turns(turns: &[MessageTurn], query_lower: &str) -> Vec<ConversationMes
             hits.push(ConversationMessageHit {
                 turn_id: turn_id.to_string(),
                 turn_index,
+                user_index,
                 role: turn.role.clone(),
                 snippet,
             });
@@ -5737,7 +5746,14 @@ mod tests {
         assert_eq!(hits[1].turn_id, "turn-6");
         assert!(matches!(hits[1].role, TurnRole::User));
         assert_eq!(hits[2].turn_id, "turn-7");
+        // 每条命中带上它那条用户消息的序号（第几条用户消息），前端按 id 找不到时用。
+        assert_eq!(hits[0].user_index, Some(1));
+        assert_eq!(hits[1].user_index, Some(2));
+        assert_eq!(hits[2].user_index, Some(3));
         assert!(search_turns(&turns, "absent").is_empty());
+        // round 前面没有用户消息：没有序号。
+        let orphan = vec![text_turn("turn-0", TurnRole::Assistant, "kiwi first")];
+        assert_eq!(search_turns(&orphan, "kiwi")[0].user_index, None);
     }
 
     /// The bug: a word only in a message body was never found, because only

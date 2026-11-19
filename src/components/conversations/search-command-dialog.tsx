@@ -261,6 +261,7 @@ export function SearchCommandDialog({
           conversationId: conv.id,
           turnId: hit.turn_id,
           turnIndex: hit.turn_index,
+          userIndex: hit.user_index ?? null,
         })
       }
       openTab(conv.folder_id, conv.id, conv.agent_type, true)

@@ -2107,16 +2107,20 @@ export function MessageListView({
   // streaming.
   const loadedUserMessages = useMemo(() => {
     const threadIndexByTurnId = new Map<string, number>()
+    // 每条用户消息的线程下标，按先后排：搜索结果按 id 对不上时按序号找。
+    const userThreadIndices: number[] = []
     let count = 0
-    if (!insightsInSidebar) return { count, threadIndexByTurnId }
+    if (!insightsInSidebar)
+      return { count, threadIndexByTurnId, userThreadIndices }
     for (let i = 0; i < threadItems.length; i++) {
       const item = threadItems[i]
       if (item.kind === "turn" && item.group.role === "user") {
         count += 1
         threadIndexByTurnId.set(item.group.id, i)
+        userThreadIndices.push(i)
       }
     }
-    return { count, threadIndexByTurnId }
+    return { count, threadIndexByTurnId, userThreadIndices }
   }, [insightsInSidebar, threadItems])
 
   // A long conversation is loaded a window at a time (reverse infinite
@@ -2201,6 +2205,8 @@ export function MessageListView({
   const navJump = useMessageNavJump({
     conversationId,
     threadIndexByTurnId: loadedUserMessages.threadIndexByTurnId,
+    userThreadIndices: loadedUserMessages.userThreadIndices,
+    earlierUserCount,
     scrollApiRef,
     smooth: chatAnimations,
     loadOlderTurnsThrough,
@@ -2215,11 +2221,16 @@ export function MessageListView({
   const transcriptReady = detail != null && !detailLoading
   const { revealTurn } = navJump
   useEffect(() => {
-    if (!insightsInSidebar || !transcriptReady) return
+    // 等标签页成了活动的再取：消息区的 key 带着 isActive，激活时整个重挂、
+    // 重新贴底，在还没激活的那份上跳了也会被盖掉。
+    if (!insightsInSidebar || !transcriptReady || !isActive) return
     if (pendingTurnReveal?.conversationId !== revealConversationId) return
     const request = takeTurnReveal(revealConversationId)
-    if (request) revealTurn(request.turnId, request.turnIndex)
+    if (request) {
+      revealTurn(request.turnId, request.turnIndex, request.userIndex ?? null)
+    }
   }, [
+    isActive,
     insightsInSidebar,
     transcriptReady,
     pendingTurnReveal,

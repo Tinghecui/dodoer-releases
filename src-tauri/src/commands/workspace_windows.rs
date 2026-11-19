@@ -534,7 +534,7 @@ pub async fn load_restore(
         .iter()
         .any(|window| matches!(window, WorkspaceWindow::Remote { .. }))
     {
-        match remote_workspace_connection_service::list(conn).await {
+        match remote_workspace_connection_service::list_without_tokens(conn).await {
             Ok(list) => {
                 connections = list.into_iter().map(|c| (c.id, c)).collect();
             }
@@ -1037,6 +1037,8 @@ mod tests {
             .map(|c| c.name.as_str())
             .collect();
         assert_eq!(names, vec!["two", "one"]);
+        // Read on the main thread at launch: no token, so no keychain read.
+        assert!(restore.connections.iter().all(|c| c.token.is_empty()));
 
         // A connection deleted before the next launch is not reopened.
         remote_workspace_connection_service::delete(&db.conn, one.id)

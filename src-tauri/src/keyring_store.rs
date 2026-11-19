@@ -307,6 +307,25 @@ fn write_tokens_at(
 #[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
 type KeychainRead<'a> = &'a dyn Fn(&str) -> Result<Option<String>, String>;
 
+/// Keys whose keychain read failed in this process (the user denied the
+/// prompt), with the error it gave. Memory only, never written to the file:
+/// the next launch asks once more, so a mistaken "Deny" does not lose the
+/// token for good.
+#[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
+type DeniedReads = std::sync::Mutex<std::collections::HashMap<String, String>>;
+
+#[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
+static DENIED: std::sync::LazyLock<DeniedReads> = std::sync::LazyLock::new(Default::default);
+
+#[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
+fn denied_error(denied: &DeniedReads, key: &str) -> Option<String> {
+    denied
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .cloned()
+}
+
 #[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
 fn keychain_migrated_key(key: &str) -> String {
     format!("keychain-migrated:{key}")
@@ -315,8 +334,11 @@ fn keychain_migrated_key(key: &str) -> String {
 /// Read one entry. When `legacy` is given (the macOS desktop app) and the file
 /// has never held this entry, ask the old keychain item once and copy what it
 /// returns into the file, together with a `keychain-migrated:<key>` marker, so
-/// the keychain is asked at most once per entry (once more after a denied
-/// prompt, which is an error and leaves no marker). The marker outlives
+/// the keychain is asked at most once per entry. A denied prompt is an error
+/// and leaves no marker; it is remembered in `denied` (memory only), so the
+/// rest of this launch gives the same error without prompting again, and the
+/// next launch asks once more. A value set in the file meanwhile still wins.
+/// The marker outlives
 /// [`delete_at`], so a deleted token is not brought back from the keychain
 /// copy we leave behind (deleting it would be one more password prompt).
 #[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
@@ -324,6 +346,7 @@ fn get_or_migrate_at(
     path: &std::path::Path,
     key: &str,
     legacy: Option<KeychainRead<'_>>,
+    denied: &DeniedReads,
 ) -> Result<Option<String>, String> {
     let tokens = read_tokens_at_checked(path)?;
     if let Some(value) = tokens.get(key) {
@@ -335,6 +358,9 @@ fn get_or_migrate_at(
     if let Some(known) = settled(&tokens, key) {
         return Ok(known);
     }
+    if let Some(err) = denied_error(denied, key) {
+        return Err(err);
+    }
     // One keychain prompt at a time in this process: a thread that waited here
     // finds the other's result in the file instead of prompting again.
     static MIGRATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -342,7 +368,20 @@ fn get_or_migrate_at(
     if let Some(known) = settled(&read_tokens_at_checked(path)?, key) {
         return Ok(known);
     }
-    let found = legacy(key)?;
+    // Denied while this thread waited for the other prompt.
+    if let Some(err) = denied_error(denied, key) {
+        return Err(err);
+    }
+    let found = match legacy(key) {
+        Ok(found) => found,
+        Err(err) => {
+            denied
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(key.to_string(), err.clone());
+            return Err(err);
+        }
+    };
     match save_migrated(path, key, found.as_deref()) {
         Ok(Some(known)) => Ok(known),
         Ok(None) => Ok(found),
@@ -436,7 +475,7 @@ fn file_get(key: &str) -> Result<Option<String>, String> {
     let legacy: Option<KeychainRead<'_>> = Some(&keychain_get);
     #[cfg(not(all(feature = "tauri-runtime", target_os = "macos")))]
     let legacy: Option<KeychainRead<'_>> = None;
-    get_or_migrate_at(&tokens_file_path(), key, legacy)
+    get_or_migrate_at(&tokens_file_path(), key, legacy, &DENIED)
 }
 
 #[cfg(any(not(feature = "tauri-runtime"), target_os = "macos"))]
@@ -659,40 +698,149 @@ mod tests {
             asked.set(asked.get() + 1);
             Ok((key == "secret:remote-workspace:k").then(|| "tok".to_string()))
         };
-        let got = get_or_migrate_at(&path, "secret:remote-workspace:k", Some(&keychain));
+        let got = get_or_migrate_at(
+            &path,
+            "secret:remote-workspace:k",
+            Some(&keychain),
+            &DeniedReads::default(),
+        );
         assert_eq!(got.unwrap().as_deref(), Some("tok"));
-        let got = get_or_migrate_at(&path, "secret:remote-workspace:k", Some(&keychain));
+        let got = get_or_migrate_at(
+            &path,
+            "secret:remote-workspace:k",
+            Some(&keychain),
+            &DeniedReads::default(),
+        );
         assert_eq!(got.unwrap().as_deref(), Some("tok"));
         assert_eq!(asked.get(), 1);
         // Absent from the keychain too: asked once, then remembered as absent.
         assert_eq!(
-            get_or_migrate_at(&path, "github-token:x", Some(&keychain)).unwrap(),
+            get_or_migrate_at(
+                &path,
+                "github-token:x",
+                Some(&keychain),
+                &DeniedReads::default()
+            )
+            .unwrap(),
             None
         );
         assert_eq!(
-            get_or_migrate_at(&path, "github-token:x", Some(&keychain)).unwrap(),
+            get_or_migrate_at(
+                &path,
+                "github-token:x",
+                Some(&keychain),
+                &DeniedReads::default()
+            )
+            .unwrap(),
             None
         );
         assert_eq!(asked.get(), 2);
     }
 
-    /// A denied prompt is an error, not "absent": nothing is recorded, so the
-    /// next read asks again instead of losing the token for good.
+    /// A fake keychain that counts its reads and refuses the first `deny` of
+    /// them, the way a user clicking "Deny" does.
+    fn counting_keychain(
+        asked: &std::cell::Cell<usize>,
+        deny: usize,
+    ) -> impl Fn(&str) -> Result<Option<String>, String> + '_ {
+        move |key: &str| {
+            asked.set(asked.get() + 1);
+            if asked.get() <= deny {
+                Err("keyring get error: User canceled the operation".to_string())
+            } else {
+                Ok(Some(format!("tok-{key}")))
+            }
+        }
+    }
+
+    /// A denied prompt is not asked again in the same process: every later
+    /// read of that key gives the same error without touching the keychain,
+    /// and nothing is written to the file.
     #[test]
-    fn test_get_or_migrate_denied_keychain_asks_again() {
+    fn a_denied_keychain_read_is_not_asked_again_this_launch() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("tokens.json");
-        let denied = |_: &str| -> Result<Option<String>, String> {
-            Err("keyring get error: denied".to_string())
-        };
-        assert!(get_or_migrate_at(&path, "secret:a", Some(&denied)).is_err());
-        let allowed = |_: &str| -> Result<Option<String>, String> { Ok(Some("v".to_string())) };
+        let denied = DeniedReads::default();
+        let asked = std::cell::Cell::new(0);
+        let keychain = counting_keychain(&asked, 1);
+        for _ in 0..5 {
+            let err = get_or_migrate_at(&path, "secret:a", Some(&keychain), &denied).unwrap_err();
+            assert!(err.contains("User canceled"), "{err}");
+        }
+        assert_eq!(asked.get(), 1);
+        assert!(!read_tokens_at(&path).contains_key(&keychain_migrated_key("secret:a")));
+        assert!(read_tokens_at(&path).is_empty());
+    }
+
+    /// The denial lives only in memory: the next launch (a fresh record) asks
+    /// again, and what it returns is moved into the file with its marker.
+    #[test]
+    fn a_denied_keychain_read_is_asked_again_next_launch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tokens.json");
+        let denied = DeniedReads::default();
+        let asked = std::cell::Cell::new(0);
+        let keychain = counting_keychain(&asked, 1);
+        assert!(get_or_migrate_at(&path, "secret:a", Some(&keychain), &denied).is_err());
+        assert!(get_or_migrate_at(&path, "secret:a", Some(&keychain), &denied).is_err());
+        assert_eq!(asked.get(), 1);
+        // Restart: the in-memory record is gone.
+        denied.lock().unwrap().clear();
         assert_eq!(
-            get_or_migrate_at(&path, "secret:a", Some(&allowed))
+            get_or_migrate_at(&path, "secret:a", Some(&keychain), &denied)
                 .unwrap()
                 .as_deref(),
-            Some("v")
+            Some("tok-secret:a")
         );
+        assert_eq!(asked.get(), 2);
+        let tokens = read_tokens_at(&path);
+        assert_eq!(tokens.get("secret:a").unwrap(), "tok-secret:a");
+        assert!(tokens.contains_key(&keychain_migrated_key("secret:a")));
+    }
+
+    /// One denied key does not stop the others from being taken over.
+    #[test]
+    fn a_denied_key_does_not_block_other_keys() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tokens.json");
+        let denied = DeniedReads::default();
+        let asked = std::cell::Cell::new(0);
+        let keychain = counting_keychain(&asked, 1);
+        assert!(get_or_migrate_at(&path, "secret:a", Some(&keychain), &denied).is_err());
+        assert_eq!(
+            get_or_migrate_at(&path, "github-token:b", Some(&keychain), &denied)
+                .unwrap()
+                .as_deref(),
+            Some("tok-github-token:b")
+        );
+        assert_eq!(asked.get(), 2);
+    }
+
+    /// A token saved after the denial (the connection edited, the portal link
+    /// clicked again) is stored and read back as usual.
+    #[test]
+    fn a_token_saved_after_a_denial_reads_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tokens.json");
+        let denied = DeniedReads::default();
+        let asked = std::cell::Cell::new(0);
+        let keychain = counting_keychain(&asked, usize::MAX);
+        assert!(get_or_migrate_at(&path, "secret:a", Some(&keychain), &denied).is_err());
+        set_at(&path, "secret:a", "fresh", true).expect("set");
+        assert_eq!(
+            get_or_migrate_at(&path, "secret:a", Some(&keychain), &denied)
+                .unwrap()
+                .as_deref(),
+            Some("fresh")
+        );
+        assert_eq!(asked.get(), 1);
+        // Deleted afterwards: absent, not the old denial, and still not asked.
+        delete_at(&path, "secret:a", true).expect("delete");
+        assert_eq!(
+            get_or_migrate_at(&path, "secret:a", Some(&keychain), &denied).unwrap(),
+            None
+        );
+        assert_eq!(asked.get(), 1);
     }
 
     /// Deleting a migrated entry must not bring it back from the keychain copy.
@@ -701,19 +849,36 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("tokens.json");
         let keychain = |_: &str| -> Result<Option<String>, String> { Ok(Some("old".to_string())) };
-        assert!(get_or_migrate_at(&path, "github-token:a", Some(&keychain))
-            .unwrap()
-            .is_some());
+        assert!(get_or_migrate_at(
+            &path,
+            "github-token:a",
+            Some(&keychain),
+            &DeniedReads::default()
+        )
+        .unwrap()
+        .is_some());
         delete_at(&path, "github-token:a", true).expect("delete");
         assert_eq!(
-            get_or_migrate_at(&path, "github-token:a", Some(&keychain)).unwrap(),
+            get_or_migrate_at(
+                &path,
+                "github-token:a",
+                Some(&keychain),
+                &DeniedReads::default()
+            )
+            .unwrap(),
             None
         );
         // Set before any read: the keychain is never consulted for it.
         set_at(&path, "github-token:b", "new", true).expect("set");
         delete_at(&path, "github-token:b", true).expect("delete");
         assert_eq!(
-            get_or_migrate_at(&path, "github-token:b", Some(&keychain)).unwrap(),
+            get_or_migrate_at(
+                &path,
+                "github-token:b",
+                Some(&keychain),
+                &DeniedReads::default()
+            )
+            .unwrap(),
             None
         );
     }
@@ -728,7 +893,13 @@ mod tests {
             set_at(&path, "github-token:other", "fresh", true).expect("set other");
             Ok(Some("old".to_string()))
         };
-        let got = get_or_migrate_at(&path, "github-token:a", Some(&keychain)).unwrap();
+        let got = get_or_migrate_at(
+            &path,
+            "github-token:a",
+            Some(&keychain),
+            &DeniedReads::default(),
+        )
+        .unwrap();
         assert_eq!(got.as_deref(), Some("old"));
         let tokens = read_tokens_at(&path);
         assert_eq!(tokens.get("github-token:other").unwrap(), "fresh");
@@ -738,7 +909,13 @@ mod tests {
             delete_at(&path, key, true).expect("delete");
             Ok(Some("old".to_string()))
         };
-        let got = get_or_migrate_at(&path, "github-token:b", Some(&deleting)).unwrap();
+        let got = get_or_migrate_at(
+            &path,
+            "github-token:b",
+            Some(&deleting),
+            &DeniedReads::default(),
+        )
+        .unwrap();
         assert_eq!(got, None);
         assert!(!read_tokens_at(&path).contains_key("github-token:b"));
     }
@@ -750,7 +927,7 @@ mod tests {
         let path = dir.path().join("tokens.json");
         set_at(&path, "github-token:a", "t", false).expect("set");
         assert_eq!(
-            get_or_migrate_at(&path, "github-token:z", None).unwrap(),
+            get_or_migrate_at(&path, "github-token:z", None, &DeniedReads::default()).unwrap(),
             None
         );
         delete_at(&path, "github-token:a", false).expect("delete");

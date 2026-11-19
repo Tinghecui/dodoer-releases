@@ -291,6 +291,45 @@ fn to_info(
     }
 }
 
+/// [`to_info`] for every row, with the keychain reads on the blocking pool:
+/// on the macOS desktop a read can be a system prompt that waits for the user,
+/// and waiting for it on an async worker (or the main thread) froze the app,
+/// Quit included. The vault has to be `'static` to cross into that thread.
+async fn to_infos(
+    rows: Vec<remote_workspace_connection::Model>,
+    vault: Option<&'static dyn TokenVault>,
+) -> Vec<RemoteWorkspaceConnectionInfo> {
+    let pointers: Vec<(i32, String)> = rows
+        .iter()
+        .filter(|row| keychain_key(&row.token).is_some())
+        .map(|row| (row.id, row.token.clone()))
+        .collect();
+    if pointers.is_empty() {
+        return rows.into_iter().map(|row| to_info(row, vault)).collect();
+    }
+    let resolved = tokio::task::spawn_blocking(move || {
+        pointers
+            .into_iter()
+            .map(|(id, stored)| (id, resolve_token(vault, id, stored)))
+            .collect::<HashMap<_, _>>()
+    })
+    .await
+    .unwrap_or_else(|err| {
+        // Same as an unreadable keychain: an empty token, the user signs in again.
+        tracing::warn!("[remote-workspace] keychain read did not finish: {err}");
+        HashMap::new()
+    });
+    rows.into_iter()
+        .map(|mut row| {
+            if keychain_key(&row.token).is_some() {
+                row.token = resolved.get(&row.id).cloned().unwrap_or_default();
+            }
+            // Already resolved (or plain): nothing left for `to_info` to read.
+            to_info(row, None)
+        })
+        .collect()
+}
+
 pub fn validate_headers(
     headers: &[RemoteWorkspaceHeader],
 ) -> Result<Vec<RemoteWorkspaceHeader>, AppCommandError> {
@@ -376,7 +415,7 @@ pub async fn list(
 
 pub(crate) async fn list_with(
     conn: &DatabaseConnection,
-    vault: Option<&dyn TokenVault>,
+    vault: Option<&'static dyn TokenVault>,
 ) -> Result<Vec<RemoteWorkspaceConnectionInfo>, DbError> {
     ensure_migrated(conn, vault).await;
     let rows = remote_workspace_connection::Entity::find()
@@ -384,7 +423,28 @@ pub(crate) async fn list_with(
         .order_by_asc(remote_workspace_connection::Column::Name)
         .all(conn)
         .await?;
-    Ok(rows.into_iter().map(|row| to_info(row, vault)).collect())
+    Ok(to_infos(rows, vault).await)
+}
+
+/// Every connection without its token: never asks the keychain, so the
+/// launch can call it on the main thread before the event loop runs. For the
+/// workspace restore, which only needs each window's id and name; the
+/// window's own requests read the token later through [`get`].
+pub async fn list_without_tokens(
+    conn: &DatabaseConnection,
+) -> Result<Vec<RemoteWorkspaceConnectionInfo>, DbError> {
+    let rows = remote_workspace_connection::Entity::find()
+        .order_by_asc(remote_workspace_connection::Column::SortOrder)
+        .order_by_asc(remote_workspace_connection::Column::Name)
+        .all(conn)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|mut row| {
+            row.token.clear();
+            to_info(row, None)
+        })
+        .collect())
 }
 
 pub async fn get(
@@ -397,13 +457,13 @@ pub async fn get(
 pub(crate) async fn get_with(
     conn: &DatabaseConnection,
     id: i32,
-    vault: Option<&dyn TokenVault>,
+    vault: Option<&'static dyn TokenVault>,
 ) -> Result<Option<RemoteWorkspaceConnectionInfo>, DbError> {
     ensure_migrated(conn, vault).await;
     let row = remote_workspace_connection::Entity::find_by_id(id)
         .one(conn)
         .await?;
-    Ok(row.map(|row| to_info(row, vault)))
+    Ok(to_infos(row.into_iter().collect(), vault).await.pop())
 }
 
 pub async fn create(
@@ -879,6 +939,12 @@ mod tests {
         }
     }
 
+    /// A vault that lives for the rest of the test run: `list_with` and
+    /// `get_with` hand it to the blocking pool.
+    fn leaked(vault: MemoryVault) -> &'static MemoryVault {
+        Box::leak(Box::new(vault))
+    }
+
     async fn stored_token(conn: &DatabaseConnection, id: i32) -> String {
         remote_workspace_connection::Entity::find_by_id(id)
             .one(conn)
@@ -905,14 +971,14 @@ mod tests {
     #[tokio::test]
     async fn create_and_update_keep_the_token_in_the_vault() {
         let db = fresh_in_memory_db().await;
-        let vault = MemoryVault::default();
+        let vault = leaked(MemoryVault::default());
         let created = create_with(
             &db.conn,
             "Cowork",
             "https://james.example.com",
             "secret-a",
             &[],
-            Some(&vault),
+            Some(vault),
         )
         .await
         .unwrap();
@@ -930,7 +996,7 @@ mod tests {
             "https://james.example.com",
             "secret-b",
             &[],
-            Some(&vault),
+            Some(vault),
         )
         .await
         .unwrap();
@@ -939,10 +1005,10 @@ mod tests {
         assert_eq!(stored_token(&db.conn, created.id).await, stored);
         assert_eq!(vault.len(), 1);
 
-        let listed = list_with(&db.conn, Some(&vault)).await.unwrap();
+        let listed = list_with(&db.conn, Some(vault)).await.unwrap();
         assert_eq!(listed[0].token, "secret-b");
 
-        delete_with(&db.conn, created.id, Some(&vault))
+        delete_with(&db.conn, created.id, Some(vault))
             .await
             .unwrap();
         assert_eq!(vault.len(), 0);
@@ -951,21 +1017,21 @@ mod tests {
     #[tokio::test]
     async fn a_broken_vault_falls_back_to_the_database() {
         let db = fresh_in_memory_db().await;
-        let vault = MemoryVault::broken();
+        let vault = leaked(MemoryVault::broken());
         let created = create_with(
             &db.conn,
             "Cowork",
             "https://james.example.com",
             "secret-a",
             &[],
-            Some(&vault),
+            Some(vault),
         )
         .await
         .unwrap();
         assert_eq!(created.token, "secret-a");
         assert_eq!(stored_token(&db.conn, created.id).await, "secret-a");
         assert_eq!(
-            get_with(&db.conn, created.id, Some(&vault))
+            get_with(&db.conn, created.id, Some(vault))
                 .await
                 .unwrap()
                 .unwrap()
@@ -973,10 +1039,10 @@ mod tests {
             "secret-a"
         );
         // Deleting still works when the keychain cannot be reached.
-        delete_with(&db.conn, created.id, Some(&vault))
+        delete_with(&db.conn, created.id, Some(vault))
             .await
             .unwrap();
-        assert!(list_with(&db.conn, Some(&vault)).await.unwrap().is_empty());
+        assert!(list_with(&db.conn, Some(vault)).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1019,20 +1085,20 @@ mod tests {
         let b = create(&db.conn, "B", "http://127.0.0.1:3081", "token-b", &[])
             .await
             .unwrap();
-        let vault = MemoryVault::default();
+        let vault = leaked(MemoryVault::default());
 
-        assert_eq!(migrate_tokens(&db.conn, &vault).await, 2);
+        assert_eq!(migrate_tokens(&db.conn, vault).await, 2);
         for row in [&a, &b] {
             let stored = stored_token(&db.conn, row.id).await;
             assert!(stored.starts_with(KEYCHAIN_REF_PREFIX), "{stored}");
         }
-        let listed = list_with(&db.conn, Some(&vault)).await.unwrap();
+        let listed = list_with(&db.conn, Some(vault)).await.unwrap();
         assert_eq!(
             listed.iter().map(|c| c.token.as_str()).collect::<Vec<_>>(),
             vec!["token-a", "token-b"]
         );
         // Idempotent: pointers are left alone.
-        assert_eq!(migrate_tokens(&db.conn, &vault).await, 0);
+        assert_eq!(migrate_tokens(&db.conn, vault).await, 0);
         assert_eq!(vault.len(), 2);
     }
 
@@ -1052,19 +1118,19 @@ mod tests {
         // Removed in Keychain Access, or the database copied to another
         // machine: the connection stays listed and the token can be re-entered.
         let db = fresh_in_memory_db().await;
-        let vault = MemoryVault::default();
+        let vault = leaked(MemoryVault::default());
         let created = create_with(
             &db.conn,
             "Cowork",
             "https://james.example.com",
             "secret-a",
             &[],
-            Some(&vault),
+            Some(vault),
         )
         .await
         .unwrap();
         vault.entries.lock().unwrap().clear();
-        let read = get_with(&db.conn, created.id, Some(&vault))
+        let read = get_with(&db.conn, created.id, Some(vault))
             .await
             .unwrap()
             .unwrap();
@@ -1080,11 +1146,98 @@ mod tests {
             "https://james.example.com",
             "secret-new",
             &[],
-            Some(&vault),
+            Some(vault),
         )
         .await
         .unwrap();
         assert_eq!(fixed.token, "secret-new");
+    }
+
+    /// Remembers which thread each `get` ran on: a keychain read may sit on
+    /// a system prompt for as long as the user leaves it open.
+    #[derive(Default)]
+    struct ThreadRecordingVault {
+        inner: MemoryVault,
+        read_on: std::sync::Mutex<Vec<std::thread::ThreadId>>,
+    }
+
+    impl TokenVault for ThreadRecordingVault {
+        fn set(&self, key: &str, token: &str) -> Result<(), String> {
+            self.inner.set(key, token)
+        }
+
+        fn get(&self, key: &str) -> Result<Option<String>, String> {
+            self.read_on
+                .lock()
+                .unwrap()
+                .push(std::thread::current().id());
+            self.inner.get(key)
+        }
+
+        fn delete(&self, key: &str) -> Result<(), String> {
+            self.inner.delete(key)
+        }
+    }
+
+    /// `list` and `get` read the keychain on the blocking pool, not on the
+    /// async runtime's own thread (here the test's, a current-thread runtime).
+    #[tokio::test]
+    async fn list_and_get_read_the_vault_off_the_runtime_thread() {
+        let db = fresh_in_memory_db().await;
+        let vault: &'static ThreadRecordingVault =
+            Box::leak(Box::new(ThreadRecordingVault::default()));
+        let a = create_with(&db.conn, "A", "http://a.test", "token-a", &[], Some(vault))
+            .await
+            .unwrap();
+        create_with(&db.conn, "B", "http://b.test", "token-b", &[], Some(vault))
+            .await
+            .unwrap();
+        vault.read_on.lock().unwrap().clear();
+        let runtime_thread = std::thread::current().id();
+
+        let listed = list_with(&db.conn, Some(vault)).await.unwrap();
+        assert_eq!(
+            listed.iter().map(|c| c.token.as_str()).collect::<Vec<_>>(),
+            vec!["token-a", "token-b"]
+        );
+        let got = get_with(&db.conn, a.id, Some(vault))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.token, "token-a");
+
+        let read_on = vault.read_on.lock().unwrap().clone();
+        assert_eq!(read_on.len(), 3);
+        assert!(
+            read_on.iter().all(|id| *id != runtime_thread),
+            "the vault was read on the runtime thread"
+        );
+    }
+
+    /// The launch restore lists the connections on the main thread: no
+    /// keychain read (a prompt there freezes the app, Quit included), and no
+    /// token handed out, plain or not.
+    #[tokio::test]
+    async fn listing_without_tokens_never_reads_the_vault() {
+        let db = fresh_in_memory_db().await;
+        let vault: &'static ThreadRecordingVault =
+            Box::leak(Box::new(ThreadRecordingVault::default()));
+        create_with(&db.conn, "A", "http://a.test", "token-a", &[], Some(vault))
+            .await
+            .unwrap();
+        // An older row whose token is still in the database.
+        create_with(&db.conn, "B", "http://b.test", "token-b", &[], None)
+            .await
+            .unwrap();
+        vault.read_on.lock().unwrap().clear();
+
+        let listed = list_without_tokens(&db.conn).await.unwrap();
+        assert_eq!(
+            listed.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["A", "B"]
+        );
+        assert!(listed.iter().all(|c| c.token.is_empty()), "{listed:?}");
+        assert!(vault.read_on.lock().unwrap().is_empty());
     }
 
     #[test]

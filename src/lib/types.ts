@@ -823,6 +823,9 @@ export interface DbConversationSummary {
    *  这时 `status` 是 `cancelled`。用户自己点「停止」的、老服务器发来的行都
    *  没有它。下一次状态写入就清掉（#369）。 */
   interrupted_at?: string | null
+  /** 这个会话的任务被取消过（任务删了也算，#788）。服务器只在为真时带上。
+   *  列表里还有这个任务时，前端以任务列表为准。 */
+  task_canceled?: boolean
   /**
    * Ids of the {@link ConversationTagDetail tags} on this conversation,
    * ascending. Absent when it has none (the backend omits an empty list). May

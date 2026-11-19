@@ -1622,6 +1622,18 @@ describe("SidebarConversationCard turn that did not finish", () => {
     expect(container.textContent).not.toContain("Finished — not viewed yet")
   })
 
+  // #788：取消的任务删掉以后，任务列表里没有它了，靠会话自己带的标记。
+  it("a deleted canceled task's session still says cancelled", () => {
+    act(() => publishCanceledTasks([]))
+    const { container } = renderCard({
+      ...ended("pending_review"),
+      task_canceled: true,
+    })
+    const dot = container.querySelector("[data-jenny-unread-dot]")
+    expect(dot?.getAttribute("title")).toBe("Cancelled — not viewed yet")
+    expect(container.textContent).not.toContain("Finished — not viewed yet")
+  })
+
   it("another task's cancel leaves this row's wording alone", () => {
     act(() => publishCanceledTasks([canceledTask(99)]))
     const { container } = renderCard(ended("cancelled"))

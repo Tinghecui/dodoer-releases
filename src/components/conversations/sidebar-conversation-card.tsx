@@ -460,7 +460,10 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   // The session of a work task the user canceled: its unread mark — the cross,
   // or the dot when the task was canceled after its turn had ended — says
   // "cancelled, not viewed yet" (#178).
-  const taskCanceled = useIsCanceledTaskConversation(conversation.id)
+  const taskCanceled = useIsCanceledTaskConversation(
+    conversation.id,
+    conversation.task_canceled
+  )
   const unreadEnding = unreadEndingOf(isCancelled, taskCanceled)
   const isPinned = conversation.pinned_at != null
   const isCompleted = status === "completed"

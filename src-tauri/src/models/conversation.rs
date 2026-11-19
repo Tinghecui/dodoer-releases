@@ -92,6 +92,11 @@ pub struct DbConversationSummary {
     /// the wire when empty, so the frontend reads an absent field as "no tags".
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tag_ids: Vec<i32>,
+    /// 这个会话的任务被取消过：用它的 `work_task` 里有 `status = canceled`
+    /// 的行，任务软删了也算（#788）。不在行上存，`fill_summary_extras` 一次
+    /// 查询补上。只在为真时上线。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub task_canceled: bool,
 }
 
 /// A conversation tag as the UI sees it. `folder_id` is the scope: `None` for

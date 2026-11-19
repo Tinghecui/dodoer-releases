@@ -437,6 +437,18 @@ pub async fn work_task_delete_core(
                 WORK_TASK_CHANGED_EVENT,
                 WorkTaskChange::Deleted { id },
             );
+            // 任务从列表里没了，侧栏就只能看会话摘要里的「任务已取消」（#788）。
+            // 侧栏手里的摘要可能是取消前拿的，重新推一份。
+            if task.status == WorkTaskStatus::Canceled {
+                if let Some(conversation_id) = task.conversation_id {
+                    crate::commands::conversations::emit_conversation_upsert(
+                        emitter,
+                        &db.conn,
+                        conversation_id,
+                    )
+                    .await;
+                }
+            }
             return Ok(());
         }
         last_conflict = Some("task was claimed while being deleted".to_string());
@@ -498,6 +510,12 @@ pub async fn work_task_requeue_core(
     blocks: Vec<serde_json::Value>,
     allow_duplicate_source: bool,
 ) -> Result<(), DbError> {
+    // 重新排队会断开任务和这次会话的关联（#788）：先记下旧会话，排队成功后
+    // 重新推一份它的摘要，侧栏手里带着「任务已取消」的旧摘要才会被换掉。
+    let old_conversation_id = work_task_service::get_model(&db.conn, id)
+        .await
+        .ok()
+        .and_then(|t| t.conversation_id);
     if !work_task_service::requeue_canceled(
         &db.conn,
         id,
@@ -514,6 +532,14 @@ pub async fn work_task_requeue_core(
         WORK_TASK_CHANGED_EVENT,
         WorkTaskChange::Upsert { id },
     );
+    if let Some(conversation_id) = old_conversation_id {
+        crate::commands::conversations::emit_conversation_upsert(
+            emitter,
+            &db.conn,
+            conversation_id,
+        )
+        .await;
+    }
     if let Ok(task) = work_task_service::get_model(&db.conn, id).await {
         nudge_pump(task.folder_id);
     }
@@ -1780,5 +1806,83 @@ mod tests {
             );
         }
         assert_eq!(work_task_attention_count_core(&db).await.unwrap(), 1);
+    }
+
+    /// #788：删掉一个已取消的任务，会把它的会话重新推给侧栏，推出去的摘要里
+    /// 带着「任务已取消」，侧栏不会退回成「已完成」。
+    #[tokio::test]
+    async fn deleting_a_canceled_task_rebroadcasts_its_session_as_canceled() {
+        use sea_orm::{ActiveModelTrait, Set};
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-delete-canceled").await;
+        let task = work_task_service::create(&db.conn, draft(folder_id, "Fix login", None))
+            .await
+            .unwrap();
+        let conversation_id = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+        let mut row: crate::db::entities::work_task::ActiveModel =
+            work_task_service::get_model(&db.conn, task.id)
+                .await
+                .unwrap()
+                .into();
+        row.status = Set(WorkTaskStatus::Canceled);
+        row.conversation_id = Set(Some(conversation_id));
+        row.update(&db.conn).await.unwrap();
+
+        let broadcaster = std::sync::Arc::new(crate::web::event_bridge::WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+        work_task_delete_core(&emitter, &db, task.id, false, false)
+            .await
+            .unwrap();
+
+        let mut upsert = None;
+        while let Ok(evt) = rx.try_recv() {
+            if evt.channel == crate::web::event_bridge::CONVERSATION_CHANGED_EVENT {
+                upsert = Some(evt.payload.clone());
+            }
+        }
+        let upsert = upsert.expect("the session is re-sent after the delete");
+        assert_eq!(upsert["kind"], "upsert");
+        assert_eq!(upsert["summary"]["id"], conversation_id);
+        assert_eq!(upsert["summary"]["task_canceled"], true);
+    }
+
+    /// #788：已取消的任务重新排队，会和旧会话脱钩；把旧会话重新推一次，侧栏
+    /// 手里（刷新后拿到的）带着「任务已取消」的摘要被换掉，不再显示「已取消」。
+    #[tokio::test]
+    async fn requeueing_a_canceled_task_rebroadcasts_its_old_session_as_not_canceled() {
+        use sea_orm::{ActiveModelTrait, Set};
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-requeue-canceled").await;
+        let task = work_task_service::create(&db.conn, draft(folder_id, "Fix login", None))
+            .await
+            .unwrap();
+        let conversation_id = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+        let mut row: crate::db::entities::work_task::ActiveModel =
+            work_task_service::get_model(&db.conn, task.id)
+                .await
+                .unwrap()
+                .into();
+        row.status = Set(WorkTaskStatus::Canceled);
+        row.conversation_id = Set(Some(conversation_id));
+        row.update(&db.conn).await.unwrap();
+
+        let broadcaster = std::sync::Arc::new(crate::web::event_bridge::WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+        work_task_requeue_core(&emitter, &db, task.id, None, Vec::new(), false)
+            .await
+            .unwrap();
+
+        let mut upsert = None;
+        while let Ok(evt) = rx.try_recv() {
+            if evt.channel == crate::web::event_bridge::CONVERSATION_CHANGED_EVENT {
+                upsert = Some(evt.payload.clone());
+            }
+        }
+        let upsert = upsert.expect("the old session is re-sent after the requeue");
+        assert_eq!(upsert["kind"], "upsert");
+        assert_eq!(upsert["summary"]["id"], conversation_id);
+        assert!(upsert["summary"].get("task_canceled").is_none());
     }
 }

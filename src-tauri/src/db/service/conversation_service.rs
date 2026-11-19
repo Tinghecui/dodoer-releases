@@ -7,7 +7,7 @@ use sea_orm::{
 };
 
 use crate::db::entities::conversation::ConversationKind;
-use crate::db::entities::{conversation, folder};
+use crate::db::entities::{conversation, folder, work_task};
 use crate::db::error::DbError;
 use crate::db::service::conversation_tag_service;
 use crate::models::{AgentType, AssistantRunSnapshot, DbConversationSummary};
@@ -1619,6 +1619,7 @@ fn conv_to_summary(r: conversation::Model) -> DbConversationSummary {
         interrupted_at: r.interrupted_at,
         // Backfilled by `fill_summary_extras`, like `child_count`.
         tag_ids: Vec::new(),
+        task_canceled: false,
     }
 }
 
@@ -1674,8 +1675,22 @@ async fn fill_summary_extras(
     }
     let ids: Vec<i32> = summaries.iter().map(|s| s.id).collect();
     let mut tags = conversation_tag_service::tag_ids_by_conversation(conn, &ids).await?;
+    // 任务被取消过的会话（#788）：不管任务软删没删，删掉一个已取消的任务，
+    // 侧栏也不能把它的会话说成「已完成」。
+    let canceled: std::collections::HashSet<i32> = work_task::Entity::find()
+        .select_only()
+        .column(work_task::Column::ConversationId)
+        .filter(work_task::Column::ConversationId.is_in(ids))
+        .filter(work_task::Column::Status.eq(work_task::WorkTaskStatus::Canceled))
+        .into_tuple::<Option<i32>>()
+        .all(conn)
+        .await?
+        .into_iter()
+        .flatten()
+        .collect();
     for s in summaries.iter_mut() {
         s.tag_ids = tags.remove(&s.id).unwrap_or_default();
+        s.task_canceled = canceled.contains(&s.id);
     }
     Ok(())
 }
@@ -4552,5 +4567,96 @@ mod tests {
             list_live_origin_cwds(&db.conn).await.unwrap(),
             vec!["/tmp/codeg-origins-x".to_string()]
         );
+    }
+
+    /// 给会话挂一个任务行（#788 的测试用）。
+    async fn seed_task_for(
+        conn: &DatabaseConnection,
+        folder_id: i32,
+        conversation_id: i32,
+        status: crate::db::entities::work_task::WorkTaskStatus,
+        deleted: bool,
+    ) {
+        use sea_orm::{ActiveModelTrait, Set};
+        let now = Utc::now();
+        crate::db::entities::work_task::ActiveModel {
+            folder_id: Set(folder_id),
+            title: Set("task".to_string()),
+            config: Set("{}".to_string()),
+            status: Set(status),
+            run_seq: Set(1),
+            sort_order: Set(0),
+            conversation_id: Set(Some(conversation_id)),
+            deleted_at: Set(deleted.then_some(now)),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        }
+        .insert(conn)
+        .await
+        .expect("insert task");
+    }
+
+    /// #788：任务取消后再删掉，它的会话仍标着「任务已取消」；没取消就删的、
+    /// 还在跑的、没有任务的会话都不标。
+    #[tokio::test]
+    async fn summary_marks_sessions_of_canceled_tasks_even_after_delete() {
+        use crate::db::entities::work_task::WorkTaskStatus;
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-task-canceled").await;
+        let canceled_deleted = seed_conv(&db.conn, folder_id, "canceled-deleted").await;
+        let canceled_live = seed_conv(&db.conn, folder_id, "canceled-live").await;
+        let done_deleted = seed_conv(&db.conn, folder_id, "done-deleted").await;
+        let running = seed_conv(&db.conn, folder_id, "running").await;
+        let plain = seed_conv(&db.conn, folder_id, "plain").await;
+        seed_task_for(
+            &db.conn,
+            folder_id,
+            canceled_deleted,
+            WorkTaskStatus::Canceled,
+            true,
+        )
+        .await;
+        seed_task_for(
+            &db.conn,
+            folder_id,
+            canceled_live,
+            WorkTaskStatus::Canceled,
+            false,
+        )
+        .await;
+        seed_task_for(
+            &db.conn,
+            folder_id,
+            done_deleted,
+            WorkTaskStatus::Done,
+            true,
+        )
+        .await;
+        seed_task_for(&db.conn, folder_id, running, WorkTaskStatus::Running, false).await;
+
+        let list = list_all(&db.conn, None, None, None, None, None, false)
+            .await
+            .expect("list");
+        let flag = |id: i32| {
+            list.iter()
+                .find(|s| s.id == id)
+                .map(|s| s.task_canceled)
+                .expect("listed")
+        };
+        assert!(flag(canceled_deleted));
+        assert!(flag(canceled_live));
+        assert!(!flag(done_deleted));
+        assert!(!flag(running));
+        assert!(!flag(plain));
+        // 单条读取（推送给侧栏的 upsert 用它）也带上。
+        assert!(
+            get_by_id(&db.conn, canceled_deleted)
+                .await
+                .unwrap()
+                .task_canceled
+        );
+        let json = serde_json::to_value(get_by_id(&db.conn, plain).await.unwrap()).unwrap();
+        assert!(json.get("task_canceled").is_none(), "false 时不上线");
     }
 }

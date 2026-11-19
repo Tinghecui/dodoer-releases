@@ -3915,6 +3915,7 @@ mod tests {
             assistant_name: None,
             interrupted_at: None,
             tag_ids: Vec::new(),
+            task_canceled: false,
         }
     }
 
@@ -8795,6 +8796,7 @@ mod tests {
                 assistant_name: None,
                 interrupted_at: None,
                 tag_ids: Vec::new(),
+                task_canceled: false,
             },
             turns,
             session_stats: None,

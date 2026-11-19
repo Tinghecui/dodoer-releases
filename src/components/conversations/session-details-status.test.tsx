@@ -98,6 +98,26 @@ describe("conversationStatusLabelKey", () => {
       })
     ).toEqual({ scope: "sidebar", key: "statusCancelledBadge" })
   })
+
+  it("取消了的任务会话，回合已经结束（待验收、已完成）也写已取消（#788）", () => {
+    for (const status of ["pending_review", "completed"] as const) {
+      expect(
+        conversationStatusLabelKey({
+          status,
+          interrupted: false,
+          taskCanceled: true,
+        })
+      ).toEqual({ scope: "statusLabels", key: "cancelled" })
+    }
+    // 取消以后又在这个会话里接着聊、正在跑的，照实写进行中。
+    expect(
+      conversationStatusLabelKey({
+        status: "in_progress",
+        interrupted: false,
+        taskCanceled: true,
+      })
+    ).toEqual({ scope: "statusLabels", key: "in_progress" })
+  })
 })
 
 describe("会话详情的状态文字（#652）", () => {
@@ -128,6 +148,18 @@ describe("会话详情的状态文字（#652）", () => {
       <SessionDetailsCard summary={summary()} model={null} />
     )
     expect(getByTestId("session-agent-line").textContent).toContain("已取消")
+  })
+
+  it("任务待验收时取消又删掉了，会话详情看摘要的标记写已取消（#788）", () => {
+    const { getByTestId } = renderZh(
+      <SessionDetailsCard
+        summary={summary({ status: "pending_review", task_canceled: true })}
+        model={null}
+      />
+    )
+    const line = getByTestId("session-agent-line").textContent ?? ""
+    expect(line).toContain("已取消")
+    expect(line).not.toContain("待复查")
   })
 
   it("已完成的还是已完成", () => {

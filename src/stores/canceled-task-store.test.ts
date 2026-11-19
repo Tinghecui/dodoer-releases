@@ -9,7 +9,10 @@ import {
 } from "./canceled-task-store"
 
 beforeEach(() => {
-  useCanceledTaskStore.setState({ conversationIds: new Set() })
+  useCanceledTaskStore.setState({
+    conversationIds: new Set(),
+    taskConversationIds: new Set(),
+  })
 })
 
 /** A task row, reduced to what `publishCanceledTasks` reads. */
@@ -63,6 +66,28 @@ describe("useIsCanceledTaskConversation", () => {
   it("is false without a conversation id", () => {
     act(() => publishCanceledTasks([task(1, "canceled")]))
     const { result } = renderHook(() => useIsCanceledTaskConversation(null))
+    expect(result.current).toBe(false)
+  })
+
+  // #788：任务删了，列表里没了它，就看服务器记下的「它的任务被取消过」。
+  it("falls back to the server's flag for a session no listed task owns", () => {
+    const { result } = renderHook(() => useIsCanceledTaskConversation(10, true))
+    expect(result.current).toBe(true)
+    act(() => publishCanceledTasks([task(2, "canceled")]))
+    expect(result.current).toBe(true)
+  })
+
+  it("trusts the list over a stale server flag once the task is requeued", () => {
+    const { result } = renderHook(() => useIsCanceledTaskConversation(10, true))
+    act(() => publishCanceledTasks([task(1, "todo")]))
+    expect(result.current).toBe(false)
+  })
+
+  it("is false without the flag when no listed task owns the session", () => {
+    act(() => publishCanceledTasks([task(2, "canceled")]))
+    const { result } = renderHook(() =>
+      useIsCanceledTaskConversation(10, false)
+    )
     expect(result.current).toBe(false)
   })
 })

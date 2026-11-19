@@ -292,7 +292,10 @@ export const MindMapLeaf = memo(function MindMapLeaf({
   const holdsUnread =
     backgroundMark.waiting != null || backgroundMark.uncertain != null
   // A canceled work task's session says so on its unread mark (#178).
-  const taskCanceled = useIsCanceledTaskConversation(conversation.id)
+  const taskCanceled = useIsCanceledTaskConversation(
+    conversation.id,
+    conversation.task_canceled
+  )
   const timeLabel =
     now > 0 ? formatRelative(conversation.updated_at, now) : undefined
   const sourceText =

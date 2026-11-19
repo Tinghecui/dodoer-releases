@@ -28,6 +28,11 @@ export function conversationStatusLabelKey({
   interrupted: boolean
   taskCanceled: boolean
 }): ConversationStatusLabelKey {
+  // 任务取消时回合可能早就结束了（待验收、已完成），会话自己的状态不会变；
+  // 这时也写「已取消」，和侧栏的未读点一致（#788）。正在跑的照实写。
+  if (taskCanceled && (status === "pending_review" || status === "completed")) {
+    return { scope: "statusLabels", key: "cancelled" }
+  }
   if (status !== "cancelled") return { scope: "statusLabels", key: status }
   if (interrupted) return { scope: "sidebar", key: "statusInterruptedBadge" }
   if (taskCanceled) return { scope: "statusLabels", key: "cancelled" }
@@ -40,11 +45,17 @@ function isKnownStatus(value: string): value is ConversationStatus {
 
 /** 一个会话的状态文字；不认识的状态原样返回。 */
 export function useConversationStatusLabel(
-  summary: Pick<DbConversationSummary, "id" | "status" | "interrupted_at">
+  summary: Pick<
+    DbConversationSummary,
+    "id" | "status" | "interrupted_at" | "task_canceled"
+  >
 ): string {
   const tStatus = useTranslations("Folder.statusLabels")
   const tSidebar = useTranslations("Folder.sidebar")
-  const taskCanceled = useIsCanceledTaskConversation(summary.id)
+  const taskCanceled = useIsCanceledTaskConversation(
+    summary.id,
+    summary.task_canceled
+  )
   if (!isKnownStatus(summary.status)) return summary.status
   const label = conversationStatusLabelKey({
     status: summary.status,

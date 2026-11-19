@@ -4117,6 +4117,21 @@ pub async fn git_continue_operation(
         }
     };
 
+    // 合并已经在别处（比如另一个标签页的合并工具）提交过了，就没有 MERGE_HEAD：
+    // 这时再点「完成合并」当成已完成，不去跑 git commit 报错（#894）
+    if matches!(operation.as_str(), "merge" | "pull") {
+        let head = crate::process::tokio_command("git")
+            .args(["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+            .current_dir(&path)
+            .output()
+            .await
+            .map_err(AppCommandError::io)?;
+        // 退出码 1 = 仓库在、只是没有这个引用；不是仓库（128）照旧往下走、照旧报错
+        if head.status.code() == Some(1) {
+            return Ok(());
+        }
+    }
+
     let output = crate::process::tokio_command(program)
         .args(&args)
         .current_dir(&path)
@@ -7227,6 +7242,83 @@ pub async fn create_conversation_worktree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // 合并工具那边已经提交了合并，工作区弹窗再点「完成合并」：没有进行中的合并，
+    // 不能报错（以前 git commit 失败返回 500，#894）
+    #[tokio::test]
+    async fn continue_merge_without_merge_head_is_ok() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        git_in(root, &["init", "-q"]);
+        git_in(root, &["config", "user.name", "Test"]);
+        git_in(root, &["config", "user.email", "tester"]);
+        std::fs::write(root.join("README.md"), "a\n").unwrap();
+        git_in(root, &["add", "README.md"]);
+        git_in(root, &["commit", "-q", "-m", "init"]);
+
+        let path = root.to_string_lossy().to_string();
+        git_continue_operation(path.clone(), "merge".into())
+            .await
+            .expect("no merge in progress: merge continue is a no-op");
+        git_continue_operation(path, "pull".into())
+            .await
+            .expect("no merge in progress: pull continue is a no-op");
+    }
+
+    // 有进行中的合并时照旧提交出合并提交
+    #[tokio::test]
+    async fn continue_merge_with_merge_head_commits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        git_in(root, &["init", "-q", "-b", "main"]);
+        git_in(root, &["config", "user.name", "Test"]);
+        git_in(root, &["config", "user.email", "tester"]);
+        std::fs::write(root.join("README.md"), "a\n").unwrap();
+        git_in(root, &["add", "README.md"]);
+        git_in(root, &["commit", "-q", "-m", "init"]);
+        git_in(root, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(root.join("README.md"), "side\n").unwrap();
+        git_in(root, &["commit", "-q", "-am", "side"]);
+        git_in(root, &["checkout", "-q", "main"]);
+        std::fs::write(root.join("README.md"), "main\n").unwrap();
+        git_in(root, &["commit", "-q", "-am", "main"]);
+        let merge = std::process::Command::new("git")
+            .args(["merge", "side"])
+            .current_dir(root)
+            .output()
+            .expect("git merge");
+        assert!(!merge.status.success(), "merge should conflict");
+        std::fs::write(root.join("README.md"), "both\n").unwrap();
+        git_in(root, &["add", "README.md"]);
+
+        git_continue_operation(root.to_string_lossy().to_string(), "merge".into())
+            .await
+            .expect("merge continue");
+        let parents = std::process::Command::new("git")
+            .args(["rev-list", "--parents", "-n", "1", "HEAD"])
+            .current_dir(root)
+            .output()
+            .expect("rev-list");
+        let line = String::from_utf8_lossy(&parents.stdout);
+        assert_eq!(
+            line.split_whitespace().count(),
+            3,
+            "HEAD should be a merge commit: {line}"
+        );
+    }
 
     // A pre-push hook that prints its environment puts the token git was
     // given in git's output: it must not reach the log or the error's detail.

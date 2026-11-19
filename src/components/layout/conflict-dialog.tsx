@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { subscribe } from "@/lib/platform"
+import { listenMergeEvents } from "@/lib/merge-events"
+import { toErrorMessage } from "@/lib/app-error"
 import { AlertTriangle, Check, FileWarning, Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -79,43 +81,66 @@ export function ConflictDialog({
     let unlistenCompleted: (() => void) | null = null
     let unlistenAborted: (() => void) | null = null
 
+    const handleResolved = (payload: { folder_id: number; file: string }) => {
+      if (payload.folder_id !== folderId) return
+      setResolvedFiles((prev) => new Set([...prev, payload.file]))
+    }
+    const handleCompleted = (payload: { folder_id: number }) => {
+      if (payload.folder_id !== folderId) return
+      setDone(true)
+      onResolved()
+      onClose()
+    }
+    // Merge was aborted (user clicked abort in merge window, or window closed)
+    // Reset resolved state since abort reverts all changes
+    const handleAborted = (payload: { folder_id: number }) => {
+      if (payload.folder_id !== folderId) return
+      setDone(true)
+      setResolvedFiles(new Set())
+      onClose()
+    }
+
     subscribe<{ folder_id: number; file: string }>(
       "folder://merge-conflict-resolved",
-      (payload) => {
-        if (payload.folder_id !== folderId) return
-        setResolvedFiles((prev) => new Set([...prev, payload.file]))
-      }
+      handleResolved
     )
       .then((fn) => {
         unlistenResolved = fn
       })
       .catch(() => {})
 
-    subscribe<{ folder_id: number }>("folder://merge-completed", (payload) => {
-      if (payload.folder_id !== folderId) return
-      setDone(true)
-      onResolved()
-      onClose()
-    })
+    subscribe<{ folder_id: number }>(
+      "folder://merge-completed",
+      handleCompleted
+    )
       .then((fn) => {
         unlistenCompleted = fn
       })
       .catch(() => {})
 
-    // Merge was aborted (user clicked abort in merge window, or window closed)
-    // Reset resolved state since abort reverts all changes
-    subscribe<{ folder_id: number }>("folder://merge-aborted", (payload) => {
-      if (payload.folder_id !== folderId) return
-      setDone(true)
-      setResolvedFiles(new Set())
-      onClose()
-    })
+    subscribe<{ folder_id: number }>("folder://merge-aborted", handleAborted)
       .then((fn) => {
         unlistenAborted = fn
       })
       .catch(() => {})
 
+    // 网页版：合并工具是另一个浏览器标签页，事件走 BroadcastChannel（#894）
+    const unlistenChannel = listenMergeEvents((event, raw) => {
+      const payload = raw as { folder_id?: unknown; file?: unknown } | null
+      if (!payload || typeof payload.folder_id !== "number") return
+      const folder_id = payload.folder_id
+      if (event === "folder://merge-conflict-resolved") {
+        if (typeof payload.file !== "string") return
+        handleResolved({ folder_id, file: payload.file })
+      } else if (event === "folder://merge-completed") {
+        handleCompleted({ folder_id })
+      } else if (event === "folder://merge-aborted") {
+        handleAborted({ folder_id })
+      }
+    })
+
     return () => {
+      unlistenChannel()
       unlistenResolved?.()
       unlistenCompleted?.()
       unlistenAborted?.()
@@ -138,7 +163,7 @@ export function ConflictDialog({
     try {
       await openMergeWindow(folderId, operation, conflictInfo?.upstream_commit)
     } catch (err) {
-      toast.error(String(err))
+      toast.error(toErrorMessage(err))
     }
   }
 
@@ -156,7 +181,7 @@ export function ConflictDialog({
       onClose()
       onResolved()
     } catch (err) {
-      toast.error(String(err))
+      toast.error(toErrorMessage(err))
     } finally {
       setAborting(false)
     }
@@ -171,7 +196,7 @@ export function ConflictDialog({
       onResolved()
       onClose()
     } catch (err) {
-      toast.error(String(err))
+      toast.error(toErrorMessage(err))
     } finally {
       setCompleting(false)
     }

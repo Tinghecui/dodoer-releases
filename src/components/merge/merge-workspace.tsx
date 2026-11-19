@@ -1,14 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-async function emitEvent(event: string, payload?: unknown) {
-  try {
-    const { emit } = await import("@tauri-apps/api/event")
-    await emit(event, payload)
-  } catch {
-    /* not in Tauri */
-  }
-}
+import { emitMergeEvent } from "@/lib/merge-events"
 import { Check, FileWarning, Loader2, X, CheckCheck } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -129,7 +122,7 @@ export function MergeWorkspace({
       setResolvedFiles((prev) => new Set([...prev, selectedFile]))
 
       // Notify parent window
-      await emitEvent("folder://merge-conflict-resolved", {
+      await emitMergeEvent("folder://merge-conflict-resolved", {
         folder_id: folderId,
         file: selectedFile,
       })
@@ -153,7 +146,7 @@ export function MergeWorkspace({
     try {
       await gitAbortOperation(folderPath, operation)
       toast.success(t("abortSuccess"))
-      await emitEvent("folder://merge-aborted", { folder_id: folderId })
+      await emitMergeEvent("folder://merge-aborted", { folder_id: folderId })
       void petCelebrate("failed").catch((err) => {
         console.warn("[Merge] pet celebrate (failed) failed:", err)
       })
@@ -170,7 +163,7 @@ export function MergeWorkspace({
     try {
       await gitContinueOperation(folderPath, operation)
       toast.success(t("allResolved"))
-      await emitEvent("folder://merge-completed", { folder_id: folderId })
+      await emitMergeEvent("folder://merge-completed", { folder_id: folderId })
       void petCelebrate("jumping").catch((err) => {
         console.warn("[Merge] pet celebrate (jumping) failed:", err)
       })

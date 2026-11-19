@@ -33,6 +33,7 @@ import type { FileWorkspaceTab } from "@/contexts/workspace-context"
 import { useIsCoarsePointer } from "@/hooks/use-is-coarse-pointer"
 import { useLongPressDrag } from "@/hooks/use-long-press-drag"
 import { normalizeAbsPath } from "@/lib/file-open-target"
+import { noteUserPickedFileTab } from "@/lib/files/file-tab-user-pick"
 import { extractHtmlTitle } from "@/lib/html-preview-inline"
 import { isHtmlPreviewable } from "@/lib/language-detect"
 import { openFileDialog } from "@/lib/platform"
@@ -386,10 +387,12 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
       ? [htmlTitle, tab.description ?? tab.path].filter(Boolean).join("\n")
       : (tab.description ?? tab.title)
 
-  const handleLongPressStart = useCallback(
-    () => onTouchSortingStart(tab.id),
-    [onTouchSortingStart, tab.id]
-  )
+  // 点、拖都告诉文件标签的持久化「用户选过它」：点的是已经选中的标签时选中项不变，
+  // 它从标签栏的变化里看不出来，刷新后恢复到一半时会又选回刷新前的那个。
+  const handleLongPressStart = useCallback(() => {
+    noteUserPickedFileTab(tab.id)
+    onTouchSortingStart(tab.id)
+  }, [onTouchSortingStart, tab.id])
 
   const { dragControls, gestureHandlers } = useLongPressDrag({
     enabled: isCoarsePointer,
@@ -398,8 +401,16 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
   })
 
   const handleSwitch = useCallback(() => {
+    noteUserPickedFileTab(tab.id)
     onSwitch(tab.id)
   }, [onSwitch, tab.id])
+
+  // 拖动开始：先告诉持久化，再交给长按拖动的手势（拖完松手的那一下点击靠它吞掉）。
+  const gestureDragStart = gestureHandlers.onDragStart
+  const handleDragStart = useCallback(() => {
+    noteUserPickedFileTab(tab.id)
+    gestureDragStart()
+  }, [gestureDragStart, tab.id])
 
   const whileDrag = useMemo(() => ({ scale: 1.03 }), [])
 
@@ -413,6 +424,7 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
       dragListener={!isCoarsePointer}
       whileDrag={whileDrag}
       {...gestureHandlers}
+      onDragStart={handleDragStart}
       data-tab-item
       data-active={active ? "true" : undefined}
       className={cn(

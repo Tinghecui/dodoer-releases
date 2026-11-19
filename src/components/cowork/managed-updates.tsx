@@ -18,6 +18,22 @@ export function updatesAreManaged(info: CoworkInfo | null): boolean {
 }
 
 /**
+ * Like `updatesAreManaged`, but an unread `cowork_info` (`loaded` false: the
+ * server is restarting, a proxy answered 500, …) also counts as managed for
+ * now — the same rule as the provider's background check. So the System page
+ * neither checks on load nor shows the update section until the server has
+ * said whether Cowork pins the version; a Cowork server would refuse the
+ * check with a 403 and the page would show an update error.
+ */
+export function updatesMayBeManaged(
+  info: CoworkInfo | null,
+  loaded: boolean
+): boolean {
+  if (usesTauriUpdater()) return false
+  return !loaded || info?.updateDisabled === true
+}
+
+/**
  * The System page's software-update `<section>`, left out entirely (version
  * label included) where updates are managed. It takes the section's own props
  * so the upstream markup inside it stays exactly as it is.

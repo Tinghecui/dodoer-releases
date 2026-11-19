@@ -194,6 +194,16 @@ export function useCachedCoworkInfo(): CoworkInfo | null {
   return useSyncExternalStore(subscribe, getCachedCoworkInfo, getServerSnapshot)
 }
 
+/**
+ * `isCoworkInfoLoaded()` as React state, WITHOUT starting a load (pair it with
+ * `useCoworkInfo`). Its own snapshot, because `useCoworkInfo` stays `null`
+ * when an upstream server's 501 turns "unknown" into "not Cowork" and so
+ * would not re-render on that.
+ */
+export function useCoworkInfoLoaded(): boolean {
+  return useSyncExternalStore(subscribe, isCoworkInfoLoaded, () => false)
+}
+
 /** Test hook: forget the cached info. */
 export function resetCoworkInfoForTests(info?: CoworkInfo | null): void {
   cached = info

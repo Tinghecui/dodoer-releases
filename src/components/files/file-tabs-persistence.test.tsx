@@ -1,4 +1,4 @@
-import { act, render } from "@testing-library/react"
+import { act, cleanup, render } from "@testing-library/react"
 import {
   createContext,
   useContext,
@@ -97,6 +97,7 @@ import {
   markFileTabsEvictedByCap,
   resetFileTabEvictionsForTests,
 } from "@/lib/files/file-tab-evictions"
+import { noteUserPickedFileTab } from "@/lib/files/file-tab-user-pick"
 import { pickTabsToEvict, TabRecency } from "@/lib/tab-limit"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
@@ -1297,6 +1298,202 @@ describe("FileTabsPersistence", () => {
       paths: ["/repo/mine.ts", "/repo/a.ts", "/repo/c.ts"],
       active: "/repo/mine.ts",
     })
+  })
+
+  // 第一个恢复出来的标签被工作区自己选上；第二个读得慢，恢复还没做完。
+  async function restoreWithSlowSecond() {
+    writePersistedFileTabs(7, {
+      paths: ["/repo/a.ts", "/repo/b.ts", "/repo/README.md"],
+      active: "/repo/README.md",
+    })
+    let releaseSecond: () => void = () => {}
+    const base = mocks.openFilePreview.getMockImplementation()!
+    mocks.openFilePreview.mockImplementationOnce(base)
+    mocks.openFilePreview.mockImplementationOnce(
+      (path: string, options?: unknown) =>
+        new Promise((resolve) => {
+          releaseSecond = () => resolve(base(path, options))
+        })
+    )
+    mount()
+    // 第一个是在挂载的 effect 里同步加上的，那时还没接上 rerender：让标签栏
+    // 照真实工作区那样跟着重新渲染一次。
+    await act(async () => {
+      mocks.rerender?.()
+    })
+    await flush()
+    const a = fileTab("/repo/a.ts")
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual(["/repo/a.ts"])
+    expect(mocks.activeFileTabId).toBe(a.id)
+    return { a, release: () => releaseSecond() }
+  }
+
+  it("恢复过程中点了工作区自己选上的第一个标签：恢复完仍选中它，不被记下的那个抢走", async () => {
+    const { a, release } = await restoreWithSlowSecond()
+    // 用户点它：选中项没变，标签栏看不出变化
+    await act(async () => {
+      noteUserPickedFileTab(a.id)
+      mocks.switchFileTab(a.id)
+    })
+    await act(async () => {
+      release()
+    })
+    await flush()
+    await flush()
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/repo/a.ts",
+      "/repo/b.ts",
+      "/repo/README.md",
+    ])
+    expect(mocks.activeFileTabId).toBe(a.id)
+    expect(mocks.switchFileTab).not.toHaveBeenCalledWith(
+      fileTab("/repo/README.md").id
+    )
+    expect(readPersistedFileTabs(7)).toEqual({
+      paths: ["/repo/a.ts", "/repo/b.ts", "/repo/README.md"],
+      active: "/repo/a.ts",
+    })
+  })
+
+  it("恢复过程中拖动工作区自己选上的第一个标签：恢复完仍选中它", async () => {
+    const { a, release } = await restoreWithSlowSecond()
+    // 只是开始拖，没有别的变化
+    await act(async () => {
+      noteUserPickedFileTab(a.id)
+    })
+    // 恢复还没做完就写下：选中的是它，没开出来的也在
+    await act(async () => {
+      vi.advanceTimersByTime(400)
+    })
+    expect(readPersistedFileTabs(7)).toEqual({
+      paths: ["/repo/a.ts", "/repo/b.ts", "/repo/README.md"],
+      active: "/repo/a.ts",
+    })
+    await act(async () => {
+      release()
+    })
+    await flush()
+    await flush()
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(mocks.activeFileTabId).toBe(a.id)
+    expect(readPersistedFileTabs(7).active).toBe("/repo/a.ts")
+  })
+
+  it("标签不跟随项目：恢复共用那排途中点了自己选上的第一个标签，没恢复完就再刷新，选中的还是它", async () => {
+    writeSharedFileTabs({
+      paths: ["/repo/a.ts", "/repo/b.ts", "/repo/README.md"],
+      active: "/repo/README.md",
+    })
+    const { a } = await restoreWithSlowSecond()
+    await act(async () => {
+      noteUserPickedFileTab(a.id)
+      mocks.switchFileTab(a.id)
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    // 共用那排当时就记下用户选的，还没开出来的也在
+    expect(readSharedFileTabs()).toMatchObject({
+      paths: ["/repo/a.ts", "/repo/b.ts", "/repo/README.md"],
+      active: "/repo/a.ts",
+    })
+
+    // 第二个还没开出来就刷新
+    cleanup()
+    resetFileTabsPersistenceForTests()
+    mocks.openFilePreview.mockImplementation(async (path: string) => {
+      if (!mocks.fileTabs.some((tab) => tab.path === path)) {
+        mocks.fileTabs = [...mocks.fileTabs, fileTab(path)]
+        mocks.activeFileTabId ??= mocks.fileTabs[0].id
+      }
+      mocks.rerender?.()
+      return path
+    })
+    mocks.fileTabs = []
+    mocks.activeFileTabId = null
+    mount()
+    await act(async () => {
+      mocks.rerender?.()
+    })
+    await flush()
+    await flush()
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/repo/a.ts",
+      "/repo/b.ts",
+      "/repo/README.md",
+    ])
+    expect(mocks.activeFileTabId).toBe(a.id)
+  })
+
+  it("标签不跟随项目、没有当前项目：恢复共用那排途中点了自己选上的第一个标签，恢复完仍选中它，恢复完之前共用那排就记下它", async () => {
+    writeSharedFileTabs({
+      paths: ["/repo/a.ts", "/repo/b.ts", "/repo/README.md"],
+      active: "/repo/README.md",
+    })
+    mocks.folderId = null
+    const { a, release } = await restoreWithSlowSecond()
+    await act(async () => {
+      noteUserPickedFileTab(a.id)
+      mocks.switchFileTab(a.id)
+    })
+    // 共用那排当时就记下用户选的，还没开出来的也在
+    expect(readSharedFileTabs()).toMatchObject({
+      paths: ["/repo/a.ts", "/repo/b.ts", "/repo/README.md"],
+      active: "/repo/a.ts",
+    })
+    await act(async () => {
+      release()
+    })
+    await flush()
+    await flush()
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/repo/a.ts",
+      "/repo/b.ts",
+      "/repo/README.md",
+    ])
+    expect(mocks.activeFileTabId).toBe(a.id)
+    expect(mocks.switchFileTab).not.toHaveBeenCalledWith(
+      fileTab("/repo/README.md").id
+    )
+    expect(readSharedFileTabs()).toMatchObject({ active: "/repo/a.ts" })
+  })
+
+  it("恢复过程中没点标签：恢复完照旧选中记下的那个", async () => {
+    const { release } = await restoreWithSlowSecond()
+    await act(async () => {
+      release()
+    })
+    await flush()
+    await flush()
+
+    expect(mocks.activeFileTabId).toBe(fileTab("/repo/README.md").id)
+  })
+
+  it("点的是别的项目标签栏里没有的标签：不当成这个项目里选过", async () => {
+    const { release } = await restoreWithSlowSecond()
+    await act(async () => {
+      noteUserPickedFileTab(fileTab("/elsewhere/x.ts").id)
+    })
+    await act(async () => {
+      release()
+    })
+    await flush()
+    await flush()
+
+    expect(mocks.activeFileTabId).toBe(fileTab("/repo/README.md").id)
   })
 
   it("恢复过程中只拖动了顺序，恢复完也记下来", async () => {

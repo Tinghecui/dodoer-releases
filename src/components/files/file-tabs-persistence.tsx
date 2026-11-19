@@ -12,6 +12,7 @@ import { isNotFoundError } from "@/lib/app-error"
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
 import { buildFileTabId } from "@/lib/file-tab-id"
 import { takeFileTabEvictedByCap } from "@/lib/files/file-tab-evictions"
+import { subscribeUserPickedFileTab } from "@/lib/files/file-tab-user-pick"
 import {
   fileTabsServerKey,
   fileTabsStorageKey,
@@ -227,6 +228,20 @@ function mergeWithRemainder(
   return { paths, active }
 }
 
+// 恢复共用那排途中用户动过标签：共用那排当时就写下（刷新后第一次恢复读的是它）。
+// 还没开出来的照记下的项目，开出来的再合上它眼下登记在哪些项目里。
+function writeSharedDuringRestore(
+  merged: PersistedFileTabs,
+  recorded: Map<string, number[]>,
+  server: string
+) {
+  const owners = new Map(recorded)
+  for (const [path, ids] of tabOwners(merged.paths)) {
+    owners.set(path, [...new Set([...(owners.get(path) ?? []), ...ids])])
+  }
+  writeSharedFileTabs(merged, server, owners)
+}
+
 /**
  * 把文件标签（打开了哪些、顺序、选中哪个）存进本机，刷新、重启后读回来。
  * 挂在工作区 provider 里面，和浏览器标签的持久化挨着；不渲染任何东西。
@@ -330,6 +345,28 @@ export function FileTabsPersistence() {
     snapshot: PersistedFileTabs
   } | null>(null)
   const timerRef = useRef<number | null>(null)
+  // 标签栏告诉我们用户点了、拖了标签的项目，等下面对账的 effect 记成用户选过。
+  // 点的是已经选中的标签时标签栏不变，只靠对比前后的标签栏看不出来。
+  const pickedNowRef = useRef<Set<string>>(new Set())
+  const [pickTick, setPickTick] = useState(0)
+  const fileTabsRef = useRef(fileTabs)
+  useEffect(() => {
+    fileTabsRef.current = fileTabs
+  }, [fileTabs])
+  useEffect(
+    () =>
+      subscribeUserPickedFileTab((tabId) => {
+        const key = storageKeyRef.current
+        if (key == null) return
+        // 只管这个项目标签栏里的；恢复做完、记下的那个也选过了，就和平常一样
+        // 只看标签栏的变化。
+        if (!fileTabsRef.current.some((tab) => tab.id === tabId)) return
+        if (!restores.has(key) && !pendingActiveRef.current.has(key)) return
+        pickedNowRef.current.add(key)
+        setPickTick((tick) => tick + 1)
+      }),
+    []
+  )
 
   // 写盘用的两个函数挂在 ref 上，pagehide 和卸载时也能拿到。
   const flushRef = useRef<() => void>(() => {})
@@ -669,6 +706,27 @@ export function FileTabsPersistence() {
   useEffect(() => {
     if (storageKey == null || view == null || !consistent) {
       seenRef.current = null
+      // 没有当前项目、恢复的是共用那排：下面的对账不跑，用户在标签栏上点了、拖了
+      // 标签也要在这里记成选过，不然恢复完又选回记下的那个。恢复期间共用那排也当时
+      // 写下，恢复完之前刷新才不丢。
+      if (rowKey != null && consistent && pickedNowRef.current.has(rowKey)) {
+        userPickedRef.current.add(rowKey)
+        pendingActiveRef.current.delete(rowKey)
+        const ledger = ledgersRef.current.get(rowKey)
+        if (restores.has(rowKey) && ledger?.owners) {
+          writeSharedDuringRestore(
+            mergeWithRemainder(
+              snapshotRef.current,
+              ledger,
+              evictedRef.current.get(rowKey),
+              true
+            ),
+            ledger.owners,
+            server
+          )
+        }
+      }
+      pickedNowRef.current.clear()
       return
     }
     const folderId = Number(activeFolderId)
@@ -707,6 +765,14 @@ export function FileTabsPersistence() {
       // 项目的标签组）：也是用户改的，这个项目的记录要记上它，打开跟随后才有。
       changed = true
       liveRef.current.add(storageKey)
+    }
+    if (pickedNowRef.current.delete(storageKey)) {
+      // 用户在标签栏上点了、拖了标签（可能是工作区自己选上的那个，选中项没变）：
+      // 算用户自己选过，恢复完不再去选记下的那个。
+      changed = true
+      liveRef.current.add(storageKey)
+      userPickedRef.current.add(storageKey)
+      pendingActiveRef.current.delete(storageKey)
     }
     if (
       previous &&
@@ -793,14 +859,19 @@ export function FileTabsPersistence() {
         ledger &&
         (picked || userEditedRef.current.has(storageKey))
       ) {
-        schedule(
-          mergeWithRemainder(
-            current,
-            ledger,
-            evictedRef.current.get(storageKey),
-            picked
-          )
+        const merged = mergeWithRemainder(
+          current,
+          ledger,
+          evictedRef.current.get(storageKey),
+          picked
         )
+        schedule(merged)
+        if (!tabsFollowFolder && ledger.owners) {
+          // 恢复的是共用那排：刷新后第一次恢复读的是它，不是按项目的记录。也当时
+          // 记下，不然恢复完之前再刷新，又按旧的那排把选中项、顺序摆回去。还没开
+          // 出来的照记下的项目，开出来的看它眼下登记在哪些项目里。
+          writeSharedDuringRestore(merged, ledger.owners, server)
+        }
       }
       return
     }
@@ -822,6 +893,8 @@ export function FileTabsPersistence() {
     tabsFollowFolder,
     restoredTick,
     fileRefs,
+    pickTick,
+    rowKey,
   ])
 
   // 标签不跟随项目时把共用的那一整排记下来：恢复全做完以后标签栏一变就写（恢复补开

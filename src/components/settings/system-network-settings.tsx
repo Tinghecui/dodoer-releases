@@ -69,9 +69,14 @@ import { useAppUpdate } from "@/components/providers/update-provider"
 import { APP_LOCALES } from "@/lib/i18n"
 import {
   SoftwareUpdateSection,
-  updatesAreManaged,
+  updatesMayBeManaged,
 } from "@/components/cowork/managed-updates"
-import { loadCoworkInfo, useCoworkInfo } from "@/lib/cowork/info"
+import {
+  isCoworkInfoLoaded,
+  loadCoworkInfo,
+  useCoworkInfo,
+  useCoworkInfoLoaded,
+} from "@/lib/cowork/info"
 import { toErrorMessage } from "@/lib/app-error"
 import type { AppCommandError } from "@/lib/types"
 
@@ -160,8 +165,12 @@ export function SystemNetworkSettings() {
   // is always mounted inside the provider, hence the non-null assertion.
   const update = useAppUpdate()!
   // Cowork: the administrator upgrades the server, so the update section
-  // (version label included) is left out there. See `managed-updates.tsx`.
-  const updatesManaged = updatesAreManaged(useCoworkInfo())
+  // (version label included) is left out there — and while `cowork_info` has
+  // not answered yet, so a failed read does not show an update error. See
+  // `managed-updates.tsx`.
+  const coworkInfo = useCoworkInfo()
+  const coworkInfoLoaded = useCoworkInfoLoaded()
+  const updatesManaged = updatesMayBeManaged(coworkInfo, coworkInfoLoaded)
   const {
     state: updateState,
     isUpdating,
@@ -338,10 +347,13 @@ export function SystemNetworkSettings() {
     // seeds in its own effect and therefore may not have applied yet), or the
     // last attempt failed, in which case opening this page is a natural retry.
     // Cowork: skipped where updates are managed, which the server says
-    // (`cowork_info`, cached after the first answer; this never rejects).
+    // (`cowork_info`, cached after the first answer; this never rejects),
+    // and when it could not be read: the provider's background check tries
+    // again later, and the section (its "Check for updates" button with it)
+    // appears once the server says updates are not managed.
     // Cowork: also when the last answer is older than PAGE_RECHECK_AFTER_MS.
     void loadCoworkInfo().then((info) => {
-      if (updatesAreManaged(info)) return
+      if (updatesMayBeManaged(info, isCoworkInfoLoaded())) return
       const last = readLastCheck()
       if (!last || checkError || Date.now() - last.at > PAGE_RECHECK_AFTER_MS) {
         checkNow({ silent: true }).catch((err) => {

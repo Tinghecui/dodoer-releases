@@ -97,6 +97,7 @@ vi.mock("@/contexts/workspace-context", () => ({
   useWorkspaceView: () => ({ mode: "fusion", filesMaximized: false }),
 }))
 
+import { subscribeUserPickedFileTab } from "@/lib/files/file-tab-user-pick"
 import { FileWorkspaceTabBar } from "./file-workspace-tab-bar"
 
 function fileTab(path: string): FileWorkspaceTab {
@@ -414,5 +415,31 @@ describe("FileWorkspaceTabBar — browser tab hover", () => {
     expect(screen.getByRole("tab").title).toBe(
       "A page title far too long for the tab\nhttps://example.com/docs"
     )
+  })
+})
+
+// 恢复文件标签的途中，用户点的可能正是工作区自己选上的那个：选中项没变，持久化
+// 只看标签栏的变化看不出来，要标签栏明说。
+describe("FileWorkspaceTabBar tells persistence about user picks", () => {
+  it("reports a click on the tab that is already selected", () => {
+    const picked: string[] = []
+    const stop = subscribeUserPickedFileTab((id) => picked.push(id))
+    mocks.fileTabs = [fileTab("/repo/a.ts"), fileTab("/repo/b.ts")]
+    renderStrip()
+    fireEvent.click(screen.getAllByRole("tab")[0])
+    stop()
+    expect(picked).toEqual(["file:/repo/a.ts"])
+  })
+
+  it("reports the tab a drag starts on", () => {
+    const picked: string[] = []
+    const stop = subscribeUserPickedFileTab((id) => picked.push(id))
+    mocks.fileTabs = [fileTab("/repo/a.ts"), fileTab("/repo/b.ts")]
+    const { container } = renderStrip()
+    fireEvent.dragStart(
+      container.querySelector('[data-file-tab-id="file:/repo/b.ts"]')!
+    )
+    stop()
+    expect(picked).toEqual(["file:/repo/b.ts"])
   })
 })

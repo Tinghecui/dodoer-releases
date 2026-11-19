@@ -71,7 +71,10 @@ vi.mock("react-markdown", () => ({
 }))
 vi.mock("remark-gfm", () => ({ default: () => undefined }))
 
-import { updatesAreManaged } from "@/components/cowork/managed-updates"
+import {
+  updatesAreManaged,
+  updatesMayBeManaged,
+} from "@/components/cowork/managed-updates"
 import { UpdateProvider } from "@/components/providers/update-provider"
 import { SystemNetworkSettings } from "@/components/settings/system-network-settings"
 import enMessages from "@/i18n/messages/en.json"
@@ -222,5 +225,46 @@ describe("updatesAreManaged", () => {
   it("never applies to a desktop window, which updates the app itself", () => {
     desktop.value = true
     expect(updatesAreManaged(cowork(true))).toBe(false)
+  })
+})
+
+describe("System settings while cowork_info cannot be read", () => {
+  it("neither checks nor shows the update section until the server answers", async () => {
+    const answer = server(cowork(true))
+    call.mockImplementation(async (endpoint: string) => {
+      // A server restarting / a proxy hiccup: 500, not the upstream 501.
+      if (endpoint === "cowork_info") {
+        throw { code: "internal_error", message: "Internal Server Error" }
+      }
+      return answer(endpoint)
+    })
+
+    renderPage()
+
+    expect(
+      await screen.findByRole("heading", { name: "Network Proxy" })
+    ).toBeVisible()
+    await waitFor(() => expect(asked("app_update_status")).toBe(true))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(asked("check_app_update")).toBe(false)
+    expect(
+      screen.queryByRole("heading", { name: "Software Update" })
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText(/Current version/)).not.toBeInTheDocument()
+  })
+})
+
+describe("updatesMayBeManaged", () => {
+  it("counts an unread cowork_info as possibly managed", () => {
+    expect(updatesMayBeManaged(null, false)).toBe(true)
+    expect(updatesMayBeManaged(null, true)).toBe(false)
+    expect(updatesMayBeManaged(cowork(true), true)).toBe(true)
+    expect(updatesMayBeManaged(cowork(false), true)).toBe(false)
+  })
+
+  it("never applies to a desktop window, which updates the app itself", () => {
+    desktop.value = true
+    expect(updatesMayBeManaged(null, false)).toBe(false)
+    expect(updatesMayBeManaged(cowork(true), true)).toBe(false)
   })
 })

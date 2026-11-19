@@ -28,8 +28,16 @@ const subscribe = vi.fn(
   }
 )
 
+// The doubles below are plain codeg servers: `cowork_info` gets the upstream
+// 501, so the page knows updates are not Cowork's to manage. An unread
+// `cowork_info` would keep the update section hidden (managed-updates.tsx).
+const callServer = (endpoint: string, args?: unknown) =>
+  endpoint === "cowork_info"
+    ? Promise.reject({ code: "not_implemented", message: "Not implemented" })
+    : call(endpoint, args)
+
 vi.mock("@/lib/transport", () => ({
-  getTransport: () => ({ call, subscribe }),
+  getTransport: () => ({ call: callServer, subscribe }),
   isDesktop: () => false,
   isRemoteDesktopMode: () => false,
   getActiveRemoteConnectionId: () => null,

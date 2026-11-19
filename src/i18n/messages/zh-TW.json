@@ -2795,6 +2795,7 @@
       "hideTerminal": "隱藏終端（{shortcut}）",
       "openFolderFirst": "請先開啟一個資料夾",
       "newTerminal": "新增終端",
+      "emptyForFolder": "這個專案還沒有終端",
       "closeTab": "關閉 {title}",
       "processExited": "程序已結束",
       "processExitedWithCode": "程序已結束（代碼 {code}）",

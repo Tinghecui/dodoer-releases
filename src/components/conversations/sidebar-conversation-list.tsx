@@ -1417,7 +1417,13 @@ export function SidebarConversationList({
       const folder = folderIndex.get(folderId)
       if (!folder) return
       const title = tFileTree("terminalTitle", { name: folder.name })
-      const id = await createTerminalInDirectory(folder.path, title)
+      // 终端记到这个项目名下，不是当前项目（#787）。
+      const id = await createTerminalInDirectory(
+        folder.path,
+        title,
+        undefined,
+        folderId
+      )
       if (!id) {
         toast.error(tFileTree("toasts.openBuiltinTerminalFailed"))
       }

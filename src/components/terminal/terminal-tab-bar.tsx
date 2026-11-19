@@ -46,7 +46,8 @@ export function TerminalTabBar({
   const { shortcuts } = useShortcutSettings()
   const isMac = useIsMac()
   const {
-    tabs,
+    // 跟随开着时只列当前项目的和全局的终端（#787）。
+    visibleTabs: tabs,
     activeTabId,
     switchTerminal,
     closeTerminal,

@@ -2795,6 +2795,7 @@
       "hideTerminal": "隐藏终端（{shortcut}）",
       "openFolderFirst": "请先打开一个文件夹",
       "newTerminal": "新建终端",
+      "emptyForFolder": "这个项目还没有终端",
       "closeTab": "关闭 {title}",
       "processExited": "进程已退出",
       "processExitedWithCode": "进程已退出（代码 {code}）",

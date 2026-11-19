@@ -1,8 +1,11 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { Plus } from "lucide-react"
+import { useTranslations } from "next-intl"
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { Button } from "@/components/ui/button"
 import { TerminalTabBar } from "./terminal-tab-bar"
 import { TerminalView } from "./terminal-view"
 
@@ -21,12 +24,21 @@ export function TerminalPanel() {
   const {
     isOpen,
     tabs,
+    visibleTabs,
     activeTabId,
+    createTerminal,
+    canCreateTerminal,
     markTerminalExited,
     markTerminalRunning,
     markTerminalStarted,
   } = useTerminalContext()
+  const t = useTranslations("Folder.terminal")
   const isMobile = useIsMobile()
+  // 别的项目的终端也一直挂着（不能把它们的 shell 断掉），只是不显示（#787）。
+  const visibleIds = useMemo(
+    () => new Set(visibleTabs.map((tab) => tab.id)),
+    [visibleTabs]
+  )
 
   const [keybarCollapsed, setKeybarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false
@@ -81,12 +93,26 @@ export function TerminalPanel() {
             reuseCompleted
             onSpawned={markTerminalStarted}
             onProcessRestored={markTerminalRunning}
-            isActive={tab.id === activeTabId}
+            isActive={tab.id === activeTabId && visibleIds.has(tab.id)}
             isVisible={isOpen}
             keybarVisible={keybarVisible}
             onProcessExited={markTerminalExited}
           />
         ))}
+        {/* 没有当前项目时建不了终端，不显示一个点了没反应的按钮。 */}
+        {visibleTabs.length === 0 && canCreateTerminal && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
+            <span>{t("emptyForFolder")}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void createTerminal()}
+            >
+              <Plus className="h-3 w-3" aria-hidden />
+              {t("newTerminal")}
+            </Button>
+          </div>
+        )}
       </div>
     </section>
   )

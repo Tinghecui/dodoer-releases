@@ -2795,6 +2795,7 @@
       "hideTerminal": "Ocultar terminal ({shortcut})",
       "openFolderFirst": "Abra primeiro uma pasta",
       "newTerminal": "Novo terminal",
+      "emptyForFolder": "Este projeto ainda não tem terminais",
       "closeTab": "Fechar {title}",
       "processExited": "Processo encerrado",
       "processExitedWithCode": "Processo encerrado (código {code})",

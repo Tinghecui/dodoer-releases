@@ -2795,6 +2795,7 @@
       "hideTerminal": "ターミナルを隠す ({shortcut})",
       "openFolderFirst": "先にフォルダを開いてください",
       "newTerminal": "新しいターミナル",
+      "emptyForFolder": "このプロジェクトにはまだターミナルがありません",
       "closeTab": "{title} を閉じる",
       "processExited": "プロセスが終了しました",
       "processExitedWithCode": "プロセスが終了しました（コード {code}）",

@@ -1,7 +1,20 @@
 import { fireEvent, render, screen } from "@testing-library/react"
+import { NextIntlClientProvider } from "next-intl"
+import type { ReactElement } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { TerminalPanel } from "./terminal-panel"
+import enMessages from "@/i18n/messages/en.json"
+
+import { TerminalPanel as BarePanel } from "./terminal-panel"
+
+// 面板的空状态有文案，套上 next-intl。
+function TerminalPanel(): ReactElement {
+  return (
+    <NextIntlClientProvider locale="en" messages={enMessages}>
+      <BarePanel />
+    </NextIntlClientProvider>
+  )
+}
 
 // The panel only decides *whether* the mobile key bar is on; the tab bar and
 // the xterm host are stubbed so this stays a test of that decision (and of the
@@ -30,21 +43,28 @@ vi.mock("./terminal-view", () => ({
   TerminalView: ({
     terminalId,
     keybarVisible,
+    isActive,
   }: {
     terminalId: string
     keybarVisible?: boolean
+    isActive?: boolean
   }) => (
     <div
       data-testid={`view-${terminalId}`}
       data-keybar={String(keybarVisible)}
+      data-active={String(isActive)}
     />
   ),
 }))
 
+const defaultTabs = [{ id: "t1", folderId: 1, title: "1", workingDir: "/tmp" }]
 const terminalContext = {
   isOpen: true,
-  tabs: [{ id: "t1", title: "1", workingDir: "/tmp" }],
-  activeTabId: "t1",
+  tabs: defaultTabs as { id: string; folderId: number; title: string }[],
+  visibleTabs: defaultTabs as { id: string; folderId: number; title: string }[],
+  activeTabId: "t1" as string | null,
+  createTerminal: vi.fn(async () => {}),
+  canCreateTerminal: true,
   markTerminalExited: () => {},
 }
 
@@ -83,6 +103,11 @@ function setViewportWidth(width: number) {
 
 beforeEach(() => {
   window.localStorage.clear()
+  terminalContext.tabs = defaultTabs
+  terminalContext.visibleTabs = defaultTabs
+  terminalContext.activeTabId = "t1"
+  terminalContext.canCreateTerminal = true
+  terminalContext.createTerminal.mockClear()
 })
 
 afterEach(() => {
@@ -153,5 +178,46 @@ describe("<TerminalPanel /> 键栏门控", () => {
       "data-keybar",
       "false"
     )
+  })
+})
+
+// #787：跟随开着、当前项目没有终端时显示空状态，别的项目的终端照样挂着。
+describe("<TerminalPanel /> 当前项目没有终端", () => {
+  it("显示空状态和「新建终端」，别的项目的终端仍挂着但不选中", () => {
+    terminalContext.tabs = [{ id: "other", folderId: 2, title: "Terminal 1" }]
+    terminalContext.visibleTabs = []
+    terminalContext.activeTabId = "other"
+    render(<TerminalPanel />)
+    expect(
+      screen.getByText("This project has no terminals yet")
+    ).toBeInTheDocument()
+    expect(screen.getByTestId("view-other")).toHaveAttribute(
+      "data-active",
+      "false"
+    )
+    fireEvent.click(screen.getByRole("button", { name: "New Terminal" }))
+    expect(terminalContext.createTerminal).toHaveBeenCalledTimes(1)
+  })
+
+  it("没有当前项目、建不了终端时不显示空状态和按钮", () => {
+    terminalContext.tabs = []
+    terminalContext.visibleTabs = []
+    terminalContext.activeTabId = null
+    terminalContext.canCreateTerminal = false
+    render(<TerminalPanel />)
+    expect(
+      screen.queryByText("This project has no terminals yet")
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "New Terminal" })
+    ).not.toBeInTheDocument()
+  })
+
+  it("有终端时不显示空状态", () => {
+    render(<TerminalPanel />)
+    expect(
+      screen.queryByText("This project has no terminals yet")
+    ).not.toBeInTheDocument()
+    expect(screen.getByTestId("view-t1")).toHaveAttribute("data-active", "true")
   })
 })

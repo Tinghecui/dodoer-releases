@@ -1,10 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { TerminalProvider, useTerminalContext } from "./terminal-context"
 import {
   commandLinkKey,
   useCommandTerminalLinkStore,
 } from "@/stores/command-terminal-link-store"
+import { useFolderTabsStore } from "@/stores/folder-tabs-store"
 
 const h = vi.hoisted(() => ({
   terminalKill: vi.fn(async () => {}),
@@ -991,5 +992,313 @@ describe("TerminalProvider follows the active project", () => {
     expect(active()).toBe(global.id)
     goTo(7)
     expect(active()).toBe(global.id)
+  })
+})
+
+// #787：「标签页跟随文件夹」开着时终端按项目分开显示，别的项目的在后台照常运行。
+describe("TerminalProvider with tabs following the folder", () => {
+  function FollowProbe() {
+    const ctx = useTerminalContext()
+    // 没有 visibleTabs 的旧版本当作全部可见，让断言落在行为上。
+    const terminal = { ...ctx, visibleTabs: ctx.visibleTabs ?? ctx.tabs }
+    return (
+      <div>
+        <button onClick={() => terminal.createTerminal()}>New</button>
+        <button onClick={() => terminal.toggle()}>Toggle</button>
+        <button
+          onClick={() =>
+            terminal.visibleTabs[0] &&
+            terminal.switchTerminal(terminal.visibleTabs[0].id)
+          }
+        >
+          Pick first
+        </button>
+        <button
+          onClick={() => {
+            const last = terminal.visibleTabs[terminal.visibleTabs.length - 1]
+            if (last) terminal.switchTerminal(last.id)
+          }}
+        >
+          Pick last
+        </button>
+        <button onClick={() => terminal.closeAllTerminals()}>Close all</button>
+        <button onClick={() => terminal.closeTerminalsByFolder([7])}>
+          Close project 7
+        </button>
+        <button
+          onClick={() => terminal.createTerminalInDirectory("/tmp/codeg-787")}
+        >
+          New in dir
+        </button>
+        <button
+          onClick={() =>
+            terminal.createTerminalInDirectory(
+              "/tmp/codeg-787-other",
+              "Other",
+              undefined,
+              8
+            )
+          }
+        >
+          New for project 8
+        </button>
+        <button
+          onClick={() =>
+            terminal.activeTabId && terminal.closeTerminal(terminal.activeTabId)
+          }
+        >
+          Close active
+        </button>
+        <span data-testid="tabs">
+          {terminal.tabs.map((tab) => `${tab.folderId}:${tab.id}`).join(",")}
+        </span>
+        <span data-testid="visible">
+          {terminal.visibleTabs
+            .map((tab) => `${tab.folderId}:${tab.id}`)
+            .join(",")}
+        </span>
+        <span data-testid="active">{terminal.activeTabId ?? ""}</span>
+        <span data-testid="open">{String(terminal.isOpen)}</span>
+      </div>
+    )
+  }
+
+  beforeEach(() => {
+    h.terminalKill.mockClear()
+    h.listeners.clear()
+    h.holdSubscribe = false
+    h.remoteId = null
+    h.windowLabel = "main"
+    sessionStorage.clear()
+    window.name = ""
+    act(() => useFolderTabsStore.setState({ enabled: true }))
+  })
+  afterEach(() => {
+    act(() => useFolderTabsStore.setState({ enabled: false }))
+  })
+
+  function setup() {
+    h.activeFolderId = 7
+    const view = render(
+      <TerminalProvider>
+        <FollowProbe />
+      </TerminalProvider>
+    )
+    const goTo = (folderId: number | null) => {
+      h.activeFolderId = folderId
+      view.rerender(
+        <TerminalProvider>
+          <FollowProbe />
+        </TerminalProvider>
+      )
+    }
+    const parse = (testId: string) =>
+      (screen.getByTestId(testId).textContent ?? "")
+        .split(",")
+        .filter(Boolean)
+        .map((entry) => {
+          const [folderId, id] = entry.split(":")
+          return { folderId: Number(folderId), id }
+        })
+    const tabs = () => parse("tabs")
+    const visible = () => parse("visible")
+    const active = () => screen.getByTestId("active").textContent
+    const click = (name: string) =>
+      fireEvent.click(screen.getByRole("button", { name }))
+    return { goTo, tabs, visible, active, click }
+  }
+
+  it("shows nothing selected for a project with no terminals, and A's own on return", () => {
+    const { goTo, tabs, visible, active, click } = setup()
+    click("New")
+    click("New")
+    click("Pick first")
+    const [a1, a2] = tabs()
+    expect(active()).toBe(a1.id)
+
+    goTo(8)
+    expect(active()).toBe("")
+    expect(visible()).toEqual([])
+    // A 的终端还在（后台照常运行）。
+    expect(tabs().map((t) => t.id)).toEqual([a1.id, a2.id])
+
+    click("New")
+    const b = tabs()[2]
+    expect(b.folderId).toBe(8)
+    expect(visible().map((t) => t.id)).toEqual([b.id])
+    expect(active()).toBe(b.id)
+
+    goTo(7)
+    expect(active()).toBe(a1.id)
+    expect(visible().map((t) => t.id)).toEqual([a1.id, a2.id])
+  })
+
+  it("files a terminal opened from the sidebar for another project under that project", () => {
+    const { goTo, tabs, visible, active, click } = setup()
+    click("New")
+    const [a] = tabs()
+    expect(active()).toBe(a.id)
+
+    // 停在 A，侧栏右键 B →「在终端打开」：终端属于 B，不出现在 A 的终端栏里。
+    click("New for project 8")
+    const b = tabs()[1]
+    expect(b.folderId).toBe(8)
+    expect(visible().map((t) => t.id)).toEqual([a.id])
+    expect(active()).toBe(a.id)
+    expect(screen.getByTestId("open").textContent).toBe("true")
+
+    // 切到 B：看得见它，而且选中的就是它。
+    goTo(8)
+    expect(visible().map((t) => t.id)).toEqual([b.id])
+    expect(active()).toBe(b.id)
+  })
+
+  it("does not select another project's hidden terminal when a project is removed", () => {
+    const { goTo, tabs, visible, active, click } = setup()
+    click("New")
+    goTo(8)
+    click("New")
+    const b = tabs()[1]
+    goTo(9)
+    expect(active()).toBe("")
+    expect(visible()).toEqual([])
+
+    // 停在没有终端的项目 C，删掉项目 A：B 的终端还在后台，但不能被选中，
+    // 不然在终端面板按「关闭当前终端」会关掉看不见的 B 的终端。
+    click("Close project 7")
+    expect(tabs().map((t) => t.id)).toEqual([b.id])
+    expect(active()).toBe("")
+    expect(screen.getByTestId("open").textContent).toBe("true")
+
+    goTo(8)
+    expect(active()).toBe(b.id)
+  })
+
+  it("finds A's last terminal again when coming back from a project with none", () => {
+    const { goTo, tabs, active, click } = setup()
+    click("New")
+    click("New")
+    const [, a2] = tabs()
+    expect(active()).toBe(a2.id)
+    goTo(8)
+    expect(active()).toBe("")
+    goTo(7)
+    expect(active()).toBe(a2.id)
+  })
+
+  it("auto-creates a terminal on open when only another project has terminals", () => {
+    const { goTo, tabs, visible, active, click } = setup()
+    click("New")
+    click("Toggle") // 收起
+    expect(screen.getByTestId("open").textContent).toBe("false")
+    goTo(8)
+    click("Toggle") // 打开：B 没有终端，给它建一个
+    expect(screen.getByTestId("open").textContent).toBe("true")
+    expect(tabs().map((t) => t.folderId)).toEqual([7, 8])
+    expect(visible().map((t) => t.folderId)).toEqual([8])
+    expect(active()).toBe(visible()[0].id)
+  })
+
+  it("closing B's last terminal leaves nothing selected rather than A's", () => {
+    const { goTo, tabs, visible, active, click } = setup()
+    click("New")
+    goTo(8)
+    click("New")
+    click("Close active")
+    expect(tabs().map((t) => t.folderId)).toEqual([7])
+    expect(visible()).toEqual([])
+    expect(active()).toBe("")
+  })
+
+  it("close all only closes the current project's terminals", () => {
+    const { goTo, tabs, click } = setup()
+    click("New")
+    const [a] = tabs()
+    goTo(8)
+    click("New")
+    const b = tabs()[1]
+    click("Close all")
+    expect(tabs().map((t) => t.id)).toEqual([a.id])
+    expect(h.terminalKill).toHaveBeenCalledWith(b.id)
+    expect(h.terminalKill).not.toHaveBeenCalledWith(a.id)
+  })
+
+  it("falls to a visible global terminal for a project with none of its own", () => {
+    const { goTo, tabs, visible, active, click } = setup()
+    click("New")
+    const [a] = tabs()
+    goTo(null)
+    click("New in dir") // 没有当前项目时建的是全局终端
+    const g = tabs()[1]
+    expect(g.folderId).toBe(0)
+    goTo(7)
+    click("Pick first")
+    expect(active()).toBe(a.id)
+    goTo(8)
+    expect(visible().map((t) => t.id)).toEqual([g.id])
+    expect(active()).toBe(g.id)
+  })
+
+  it("restores A's own terminal after passing through a global one on B", () => {
+    const { goTo, tabs, active, click } = setup()
+    click("New")
+    const [a] = tabs()
+    goTo(null)
+    click("New in dir") // 全局终端
+    const g = tabs()[1]
+    goTo(7)
+    click("Pick first")
+    expect(active()).toBe(a.id)
+    goTo(8) // B 没有自己的终端，落到全局终端上
+    expect(active()).toBe(g.id)
+    goTo(7) // 回到 A：选中的应是 A 上次那个，不是路过 B 时自动选的全局终端
+    expect(active()).toBe(a.id)
+  })
+
+  it("keeps a global terminal the user picked on A when coming back to A", () => {
+    const { goTo, tabs, active, click } = setup()
+    click("New")
+    goTo(null)
+    click("New in dir")
+    const g = tabs()[1]
+    goTo(7)
+    click("Pick last") // 在 A 上自己选了全局终端
+    expect(active()).toBe(g.id)
+    goTo(8)
+    expect(active()).toBe(g.id)
+    goTo(7)
+    expect(active()).toBe(g.id)
+  })
+
+  it("picks a terminal again when the follow switch is turned off on an empty project", () => {
+    const { goTo, tabs, visible, active, click } = setup()
+    click("New")
+    const [a] = tabs()
+    goTo(8)
+    expect(active()).toBe("")
+    act(() => useFolderTabsStore.setState({ enabled: false }))
+    expect(visible().map((t) => t.id)).toEqual([a.id])
+    expect(active()).toBe(a.id)
+  })
+
+  it("keeps the panel open on the empty state after closing the very last terminal", () => {
+    const { tabs, visible, active, click } = setup()
+    click("New")
+    expect(screen.getByTestId("open").textContent).toBe("true")
+    click("Close active")
+    expect(tabs()).toEqual([])
+    expect(visible()).toEqual([])
+    expect(active()).toBe("")
+    expect(screen.getByTestId("open").textContent).toBe("true")
+  })
+
+  it("keeps showing every terminal while the follow switch is off", () => {
+    act(() => useFolderTabsStore.setState({ enabled: false }))
+    const { goTo, tabs, visible, active, click } = setup()
+    click("New")
+    const [a] = tabs()
+    goTo(8)
+    expect(active()).toBe(a.id)
+    expect(visible().map((t) => t.id)).toEqual([a.id])
   })
 })

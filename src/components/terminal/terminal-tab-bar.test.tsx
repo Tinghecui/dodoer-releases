@@ -11,13 +11,19 @@ const terminal = vi.hoisted(() => ({
   closeTerminal: vi.fn(),
 }))
 const folder = vi.hoisted(() => ({ activeFolderId: 1 as number | null }))
+const shown = vi.hoisted(() => ({
+  visibleTabs: null as null | { id: string; title: string; folderId: number }[],
+}))
+
+const allTabs = [
+  { id: "t1", title: "Terminal 1", folderId: 1 },
+  { id: "t2", title: "Terminal 2", folderId: 1 },
+]
 
 vi.mock("@/contexts/terminal-context", () => ({
   useTerminalContext: () => ({
-    tabs: [
-      { id: "t1", title: "Terminal 1", folderId: 1 },
-      { id: "t2", title: "Terminal 2", folderId: 1 },
-    ],
+    tabs: allTabs,
+    visibleTabs: shown.visibleTabs ?? allTabs,
     activeTabId: "t1",
     switchTerminal: () => {},
     closeTerminal: terminal.closeTerminal,
@@ -59,6 +65,7 @@ describe("TerminalTabBar accessible names", () => {
     terminal.createTerminal.mockClear()
     terminal.closeTerminal.mockClear()
     folder.activeFolderId = 1
+    shown.visibleTabs = null
   })
 
   it("names the new-terminal button", () => {
@@ -80,5 +87,23 @@ describe("TerminalTabBar accessible names", () => {
     expect(
       screen.getByRole("button", { name: "Close Terminal 1" })
     ).toBeInTheDocument()
+  })
+})
+
+// #787：跟随开着时只列当前项目的（和全局的）终端，别的项目的不进标签栏。
+describe("TerminalTabBar per-project tabs", () => {
+  beforeEach(() => {
+    shown.visibleTabs = null
+  })
+
+  it("renders only the visible tabs", () => {
+    shown.visibleTabs = [{ id: "t2", title: "Terminal 2", folderId: 1 }]
+    renderBar()
+    expect(
+      screen.getByRole("button", { name: "Close Terminal 2" })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Close Terminal 1" })
+    ).not.toBeInTheDocument()
   })
 })

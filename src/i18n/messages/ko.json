@@ -2795,6 +2795,7 @@
       "hideTerminal": "터미널 숨기기 ({shortcut})",
       "openFolderFirst": "먼저 폴더를 여세요",
       "newTerminal": "새 터미널",
+      "emptyForFolder": "이 프로젝트에는 아직 터미널이 없습니다",
       "closeTab": "{title} 닫기",
       "processExited": "프로세스가 종료되었습니다",
       "processExitedWithCode": "프로세스가 종료되었습니다(코드 {code})",

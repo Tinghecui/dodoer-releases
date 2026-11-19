@@ -2795,6 +2795,7 @@
       "hideTerminal": "إخفاء الطرفية ({shortcut})",
       "openFolderFirst": "افتح مجلدا أولا",
       "newTerminal": "طرفية جديدة",
+      "emptyForFolder": "لا توجد طرفيات لهذا المشروع بعد",
       "closeTab": "إغلاق {title}",
       "processExited": "انتهت العملية",
       "processExitedWithCode": "انتهت العملية (الرمز {code})",

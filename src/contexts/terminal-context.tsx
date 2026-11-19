@@ -21,6 +21,7 @@ import { FOLDER_CHANGED_EVENT, type FolderChange } from "@/lib/types"
 import { randomUUID } from "@/lib/utils"
 import { getCurrentWindowLabel } from "@/lib/browser/window-label"
 import { useActiveFolder } from "@/contexts/active-folder-context"
+import { useFolderTabsStore } from "@/stores/folder-tabs-store"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
 import {
@@ -194,16 +195,25 @@ interface TerminalContextValue {
   toggle: () => void
   setHeight: (h: number) => void
   tabs: TerminalTab[]
+  /** 终端栏里该列出来的终端：「标签页跟随文件夹」开着、有当前项目时只有这个
+   *  项目的和全局（folderId 0）的；别的情况等于 `tabs`。`tabs` 仍是全部，
+   *  别的项目的终端在后台照常运行（#787）。 */
+  visibleTabs: TerminalTab[]
   activeTabId: string | null
   exitedTerminals: Set<string>
   markTerminalExited: (id: string) => void
   markTerminalRunning: (id: string) => void
   markTerminalStarted: (id: string) => void
   createTerminal: () => Promise<void>
+  /** 有当前项目、`createTerminal` 真能建出终端时为 true；面板据此决定显不显示
+   *  空状态和「新建终端」（没有项目时那个按钮点了没反应，#787）。 */
+  canCreateTerminal: boolean
   createTerminalInDirectory: (
     workingDir: string,
     title?: string,
-    shell?: string
+    shell?: string,
+    /** 终端属于哪个项目；不给就是当前项目（#787）。 */
+    folderId?: number
   ) => Promise<string | null>
   createTerminalWithCommand: (
     title: string,
@@ -282,6 +292,28 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
 
   const folderPath = activeFolder?.path ?? ""
   const currentFolderId = activeFolderId ?? 0
+  // 跟随开着时终端按项目分开显示（#787）；没有当前项目时没得跟，照旧全列。
+  const followFolder = useFolderTabsStore((s) => s.enabled)
+  const filterByFolder = followFolder && currentFolderId !== 0
+  const visibleTabs = useMemo(
+    () =>
+      filterByFolder
+        ? tabs.filter((t) => t.folderId === currentFolderId || t.folderId === 0)
+        : tabs,
+    [filterByFolder, tabs, currentFolderId]
+  )
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
+  // 关闭类操作在 setTabs 的 updater 里判断「看得见」，用 ref 拿最新的筛选条件。
+  const isVisibleRef = useRef<(tab: TerminalTab) => boolean>(() => true)
+  isVisibleRef.current = (tab: TerminalTab) =>
+    !filterByFolder || tab.folderId === currentFolderId || tab.folderId === 0
+  const filterByFolderRef = useRef(filterByFolder)
+  filterByFolderRef.current = filterByFolder
+  // 每个项目上次选中的自己的终端，和离开时选中的终端（包括全局终端），
+  // 切项目的 effect 用（#338、#787）。
+  const lastActiveByFolderRef = useRef(new Map<number, string>())
+  const selectedOnLeaveRef = useRef(new Map<number, string>())
   const resolveTerminalShell = useCallback(
     (shell?: string) => shell ?? defaultTerminalShell ?? undefined,
     [defaultTerminalShell]
@@ -438,32 +470,25 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const toggle = useCallback(() => {
-    const autoId = randomUUID()
-    const nextCounter = tabCounterRef.current + 1n
-
     setIsOpen((wasOpen) => !wasOpen)
 
-    // Auto-create first terminal when opening with no tabs
-    setTabs((currentTabs) => {
-      if (currentTabs.length > 0 || !folderPath) return currentTabs
-      tabCounterRef.current = nextCounter
-      return [
-        {
-          id: autoId,
-          folderId: currentFolderId,
-          title: `Terminal ${nextCounter}`,
-          workingDir: folderPath,
-          shell: resolveTerminalShell(),
-        },
-      ]
-    })
-
-    setActiveTabId((prev) => {
-      if (prev !== null) return prev
-      if (!folderPath) return null
-      return autoId
-    })
-  }, [folderPath, currentFolderId, resolveTerminalShell])
+    // 打开面板时，当前看得见的终端一个都没有就自动建第一个（跟随开着时只看
+    // 这个项目的和全局的，#787）。收起面板时不建：跟随开着时面板可能正开着
+    // 空状态。
+    if (isOpen || !folderPath) return
+    if (tabsRef.current.some((t) => isVisibleRef.current(t))) return
+    const autoId = randomUUID()
+    tabCounterRef.current += 1n
+    const tab: TerminalTab = {
+      id: autoId,
+      folderId: currentFolderId,
+      title: `Terminal ${tabCounterRef.current}`,
+      workingDir: folderPath,
+      shell: resolveTerminalShell(),
+    }
+    setTabs((prev) => [...prev, tab])
+    setActiveTabId(autoId)
+  }, [isOpen, folderPath, currentFolderId, resolveTerminalShell])
 
   const createTerminalWithCommand = useCallback(
     async (title: string, command: string, commandId?: number) => {
@@ -493,25 +518,38 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   )
 
   const createTerminalInDirectory = useCallback(
-    async (workingDir: string, title?: string, shell?: string) => {
+    async (
+      workingDir: string,
+      title?: string,
+      shell?: string,
+      folderId?: number
+    ) => {
       if (!workingDir) return null
 
       setIsOpen(true)
 
+      // 侧栏给别的项目「在终端打开」时，终端记到那个项目名下（目录是它的），
+      // 不记到当前项目（#787）。
+      const ownerFolderId = folderId ?? currentFolderId
       const id = randomUUID()
       tabCounterRef.current += 1n
       const defaultTitle = `Terminal ${tabCounterRef.current}`
-      setTabs((prev) => [
-        ...prev,
-        {
-          id,
-          folderId: currentFolderId,
-          title: title ?? defaultTitle,
-          workingDir,
-          shell: resolveTerminalShell(shell),
-        },
-      ])
-      setActiveTabId(id)
+      const tab: TerminalTab = {
+        id,
+        folderId: ownerFolderId,
+        title: title ?? defaultTitle,
+        workingDir,
+        shell: resolveTerminalShell(shell),
+      }
+      setTabs((prev) => [...prev, tab])
+      if (isVisibleRef.current(tab)) {
+        setActiveTabId(id)
+      } else {
+        // 跟随开着、终端属于别的项目：这里看不见，不选中它；记下来，切到那个
+        // 项目时选中的就是它。
+        lastActiveByFolderRef.current.set(ownerFolderId, id)
+        selectedOnLeaveRef.current.set(ownerFolderId, id)
+      }
 
       return id
     },
@@ -536,11 +574,18 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         const next = prev.filter((t) => t.id !== id)
         if (next.length === 0) {
           tabCounterRef.current = 0n
-          setIsOpen(false)
+          // 跟随开着时面板留着，显示这个项目的空状态和「新建终端」（#787）；
+          // 关着时照旧收起。
+          if (!filterByFolderRef.current) setIsOpen(false)
           setActiveTabId(null)
         } else {
+          // 关掉的是选中的那个时，落到还看得见的最后一个；跟随开着、这个项目
+          // 没有剩下的就不选，面板显示空状态（不跳到别的项目的终端，#787）。
+          const visible = next.filter((t) => isVisibleRef.current(t))
           setActiveTabId((prevActive) =>
-            prevActive === id ? next[next.length - 1].id : prevActive
+            prevActive === id
+              ? (visible[visible.length - 1]?.id ?? null)
+              : prevActive
           )
         }
         return next
@@ -549,13 +594,16 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     [markTerminalExited, removeExitedTerminals]
   )
 
+  // 跟随开着时「关闭其它」「关闭所有」只管看得见的终端，别的项目的不动（#787）。
   const closeOtherTerminals = useCallback(
     (id: string) => {
       setTabs((prev) => {
-        const closed = prev.filter((t) => t.id !== id)
+        const closed = prev.filter(
+          (t) => t.id !== id && isVisibleRef.current(t)
+        )
         killTerminalTabs(closed)
         removeExitedTerminals(closed.map((t) => t.id))
-        return prev.filter((t) => t.id === id)
+        return prev.filter((t) => !closed.includes(t))
       })
       setActiveTabId(id)
     },
@@ -564,11 +612,13 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
 
   const closeAllTerminals = useCallback(() => {
     setTabs((prev) => {
-      killTerminalTabs(prev)
-      removeExitedTerminals(prev.map((t) => t.id))
-      return []
+      const closed = prev.filter((t) => isVisibleRef.current(t))
+      killTerminalTabs(closed)
+      removeExitedTerminals(closed.map((t) => t.id))
+      const next = prev.filter((t) => !closed.includes(t))
+      if (next.length === 0) tabCounterRef.current = 0n
+      return next
     })
-    tabCounterRef.current = 0n
     setActiveTabId(null)
     setIsOpen(false)
   }, [killTerminalTabs, removeExitedTerminals])
@@ -592,10 +642,13 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
           setIsOpen(false)
           setActiveTabId(null)
         } else {
+          // 只落到还看得见的终端上：跟随开着时别的项目的终端在后台，选中它
+          // 会让「关闭当前终端」关掉看不见的终端；一个都看不见就不选（#787）。
+          const visible = next.filter((t) => isVisibleRef.current(t))
           setActiveTabId((prevActive) =>
-            prevActive !== null && next.some((t) => t.id === prevActive)
+            prevActive !== null && visible.some((t) => t.id === prevActive)
               ? prevActive
-              : next[0].id
+              : (visible[0]?.id ?? null)
           )
         }
         return next
@@ -638,41 +691,84 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   }, [])
 
   // 终端跟着当前项目走（#338）：每个项目记住上次选中的终端，切到别的项目时
-  // 显示那个项目的终端。只换选中的那个，不关、不新建；这个项目一个终端都
-  // 没有时不动（别的项目的终端标签上带着项目名）；全局终端（folderId 0）
-  // 选中时也不被切走。
-  const tabsRef = useRef(tabs)
-  tabsRef.current = tabs
-  const lastActiveByFolderRef = useRef(new Map<number, string>())
+  // 显示那个项目的终端。只换选中的那个，不关、不新建；全局终端（folderId 0）
+  // 选中时也不被切走。这个项目一个终端都没有时：跟随关着就不动（别的项目的
+  // 终端标签上带着项目名）；跟随开着就不选，面板显示空状态（#787），切回来
+  // 时再找回那个项目上次选中的。
   useEffect(() => {
     const tab = tabs.find((t) => t.id === activeTabId)
     if (tab && tab.folderId !== 0) {
       lastActiveByFolderRef.current.set(tab.folderId, tab.id)
     }
   }, [activeTabId, tabs])
+  // 离开每个项目时选中的是哪个终端（包括全局终端）。跟随开着时切回来先找它：
+  // 路过没有自己终端的项目时会自动落到全局终端上，回来不能就停在全局终端，
+  // 要回到这个项目原来选中的那个（#787）。
+  const activeTabIdRef = useRef(activeTabId)
+  activeTabIdRef.current = activeTabId
   const previousFolderIdRef = useRef(currentFolderId)
+  const previousFilterRef = useRef(filterByFolder)
   useEffect(() => {
-    if (previousFolderIdRef.current === currentFolderId) return
+    const previousFolderId = previousFolderIdRef.current
+    const folderChanged = previousFolderId !== currentFolderId
+    // 跟随刚打开时也按当前项目重新挑一次，免得选中的是看不见的终端。
+    const filterTurnedOn = filterByFolder && !previousFilterRef.current
     previousFolderIdRef.current = currentFolderId
+    previousFilterRef.current = filterByFolder
+    if (!folderChanged && !filterTurnedOn) return
+    if (folderChanged && previousFolderId !== 0) {
+      const leaving = activeTabIdRef.current
+      if (leaving) selectedOnLeaveRef.current.set(previousFolderId, leaving)
+      else selectedOnLeaveRef.current.delete(previousFolderId)
+    }
     if (currentFolderId === 0) return
     setActiveTabId((prev) => {
       const current = tabsRef.current
+      if (filterByFolder && folderChanged) {
+        const leftId = selectedOnLeaveRef.current.get(currentFolderId)
+        const left = current.find((t) => t.id === leftId)
+        if (
+          left &&
+          (left.folderId === 0 || left.folderId === currentFolderId)
+        ) {
+          return left.id
+        }
+      }
       const active = current.find((t) => t.id === prev)
       if (
-        !active ||
-        active.folderId === 0 ||
-        active.folderId === currentFolderId
+        active &&
+        (active.folderId === 0 || active.folderId === currentFolderId)
       ) {
         return prev
       }
+      // 跟随关着时，没有选中的终端就照旧不动。
+      if (!active && !filterByFolder) return prev
       const remembered = lastActiveByFolderRef.current.get(currentFolderId)
       const target =
         current.find(
           (t) => t.id === remembered && t.folderId === currentFolderId
         ) ?? current.find((t) => t.folderId === currentFolderId)
-      return target ? target.id : prev
+      if (target) return target.id
+      return filterByFolder ? null : prev
     })
-  }, [currentFolderId])
+  }, [currentFolderId, filterByFolder])
+
+  // 终端栏里还有看得见的终端时，选中的必须是其中一个，不然面板既没有终端也
+  // 没有空状态（#787）：切到没有自己终端的项目时落到全局终端上；关掉跟随时
+  // 选中为空就找回这个项目上次选中的那个，没有就选最后一个。
+  useEffect(() => {
+    setActiveTabId((prev) => {
+      const visible = tabsRef.current.filter((t) => isVisibleRef.current(t))
+      if (visible.some((t) => t.id === prev)) return prev
+      // 一个都看不见时不留着隐藏的选中项（别的项目的终端），免得快捷键
+      // 「关闭当前终端」关掉用户看不见的终端。
+      if (visible.length === 0) return null
+      const remembered = lastActiveByFolderRef.current.get(currentFolderId)
+      return (
+        visible.find((t) => t.id === remembered) ?? visible[visible.length - 1]
+      ).id
+    })
+  }, [visibleTabs, activeTabId, currentFolderId])
 
   const isInTerminalRegion = useCallback((target: EventTarget | null) => {
     if (!(target instanceof Element)) return false
@@ -764,12 +860,14 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       toggle,
       setHeight,
       tabs,
+      visibleTabs,
       activeTabId,
       exitedTerminals,
       markTerminalExited,
       markTerminalRunning,
       markTerminalStarted,
       createTerminal,
+      canCreateTerminal: folderPath !== "",
       createTerminalInDirectory,
       createTerminalWithCommand,
       closeTerminal,
@@ -785,12 +883,14 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       toggle,
       setHeight,
       tabs,
+      visibleTabs,
       activeTabId,
       exitedTerminals,
       markTerminalExited,
       markTerminalRunning,
       markTerminalStarted,
       createTerminal,
+      folderPath,
       createTerminalInDirectory,
       createTerminalWithCommand,
       closeTerminal,

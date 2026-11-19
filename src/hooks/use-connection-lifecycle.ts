@@ -5,7 +5,11 @@ import { useTranslations } from "next-intl"
 import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { useConnection, type UseConnectionReturn } from "@/hooks/use-connection"
-import { extractAppCommandError } from "@/lib/app-error"
+import {
+  extractAppCommandError,
+  isRateLimitedError,
+  toErrorMessage,
+} from "@/lib/app-error"
 import { notify } from "@/lib/notify"
 import {
   isConnectionBusy,
@@ -147,11 +151,6 @@ export function shouldDisconnectOnUnmount(
   return !isConnectionBusy(args)
 }
 
-function normalizeErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message
-  return String(error)
-}
-
 function isExpectedConnectError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false
   return (error as { alerted?: unknown }).alerted === true
@@ -212,6 +211,8 @@ export function useConnectionLifecycle({
     contextKey: string
     agentType: AgentType
     message: string
+    // #872: 被限流的那次。provider 会自己重连，之后的失败由它发布。
+    rateLimited: boolean
   } | null>(null)
 
   // Refs for auto-connect effect, which intentionally avoids volatile
@@ -305,7 +306,8 @@ export function useConnectionLifecycle({
           setLastAutoConnectError({
             contextKey: contextKeyRef.current,
             agentType,
-            message: normalizeErrorMessage(e),
+            message: toErrorMessage(e),
+            rateLimited: isRateLimitedError(e),
           })
         }
         if (!isExpectedConnectError(e)) {
@@ -586,7 +588,12 @@ export function useConnectionLifecycle({
     status === "connected" || status === "prompting"
       ? null
       : lastAutoConnectError?.contextKey === contextKey &&
-          lastAutoConnectError.agentType === agentType
+          lastAutoConnectError.agentType === agentType &&
+          // #872: 被限流不算连接失败：provider 过几秒自己重连，这期间不报错
+          // （不然聊天页会把排队的消息标成失败，重连上了也不会自己发）。
+          // 重连再失败（别的原因）时用它发布的那条：每次连接开始时 provider
+          // 都会清掉发布的失败，所以这里有就一定是限流之后那次的。
+          !lastAutoConnectError.rateLimited
         ? lastAutoConnectError.message
         : publishedConnectError
           ? (publishedConnectError.detail ?? publishedConnectError.title)

@@ -154,6 +154,7 @@ function setWorkspace(over: {
     ],
     conversationsError: over.conversationsError ?? null,
     foldersError: null,
+    foldersHydrated: true,
   })
 }
 
@@ -367,6 +368,21 @@ describe("MindMapPage", () => {
     ).toBeNull()
     await userEvent.click(screen.getByRole("button", { name: "Retry" }))
     expect(fetchFolders).toHaveBeenCalledTimes(1)
+  })
+
+  // #872: 项目列表第一次被限流时 store 不记错误、过几秒自己再取；这期间
+  // 不能说成「还没打开过项目」。
+  it("waits for the project list instead of calling it empty", async () => {
+    setWorkspace({ folders: [], conversations: [] })
+    useAppWorkspaceStore.setState({ allFolders: [], foldersHydrated: false })
+    useMindMapViewStore.setState({ projectId: null })
+    const { container } = renderPage()
+    expect(container.querySelector("[data-mindmap-loading]")).toBeTruthy()
+    expect(
+      screen.queryByText(
+        "Open a project folder to see its conversations as a mind map."
+      )
+    ).toBeNull()
   })
 
   it("hands the search to the map", async () => {

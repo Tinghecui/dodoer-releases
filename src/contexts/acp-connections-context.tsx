@@ -1,6 +1,7 @@
 "use client"
 
 import { selectorsCache } from "@/lib/selectors-cache"
+import { isRateLimitedError, toErrorMessage } from "@/lib/app-error"
 import {
   readKimiMcpOAuth,
   rebindKimiMcpOAuth,
@@ -975,6 +976,10 @@ type StreamingAction =
       text: string
       parentToolUseId?: string
     }
+
+/** Cowork (#872): 门户限流（429）导致连接失败时，不弹「连接失败」，过这么久
+ *  自己再连一次（和项目列表、会话列表的限流重试同一个间隔）。 */
+export const RATE_LIMITED_CONNECT_RETRY_MS = 5_000
 
 /** One display frame: the narrowest window streaming deltas coalesce into. */
 export const STREAM_FLUSH_FRAME_MS = 16
@@ -3950,11 +3955,6 @@ function getAffectedKey(action: Action): string | null {
   return null
 }
 
-function normalizeErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message
-  return String(error)
-}
-
 type AlertedError = Error & { alerted: true }
 
 function createAlertedError(message: string): AlertedError {
@@ -4196,6 +4196,46 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   // duplicate, so a reconnect landing mid-connect would vanish silently.
   const connectSettledWaitersRef = useRef(new Map<string, Array<() => void>>())
   const connectRef = useRef<AcpActionsValue["connect"] | null>(null)
+  // Cowork (#872): 限流后等着自己重连的计时器，一个界面最多一个。
+  const rateLimitRetryTimersRef = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>()
+  )
+  const clearRateLimitedConnectRetry = useCallback((contextKey: string) => {
+    const timer = rateLimitRetryTimersRef.current.get(contextKey)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    rateLimitRetryTimersRef.current.delete(contextKey)
+  }, [])
+  const scheduleRateLimitedConnectRetry = useCallback(
+    (contextKey: string, request: ConnectRequest) => {
+      clearRateLimitedConnectRetry(contextKey)
+      const timer = setTimeout(() => {
+        rateLimitRetryTimersRef.current.delete(contextKey)
+        // 用记下的最新参数：后端解析出的会话身份会折进这里。
+        const next = lastConnectParamsRef.current.get(contextKey) ?? request
+        void connectRef
+          .current?.(
+            contextKey,
+            next.agentType,
+            next.workingDir,
+            next.sessionId,
+            next.conversationId
+          )
+          .catch(() => {
+            // 再失败时 connect() 自己处理：限流就再排一次，别的照常提示。
+          })
+      }, RATE_LIMITED_CONNECT_RETRY_MS)
+      rateLimitRetryTimersRef.current.set(contextKey, timer)
+    },
+    [clearRateLimitedConnectRetry]
+  )
+  useEffect(() => {
+    const timers = rateLimitRetryTimersRef.current
+    return () => {
+      for (const timer of timers.values()) clearTimeout(timer)
+      timers.clear()
+    }
+  }, [])
   // `reconnect` for callbacks created before it is (a connect failure's
   // "Retry").
   const reconnectRef = useRef<AcpActionsValue["reconnect"] | null>(null)
@@ -7509,6 +7549,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // throw: a connect that never produced a store entry is precisely when
       // `reconnect()` has nothing else to go on.
       lastConnectParamsRef.current.set(contextKey, request)
+      // 新的请求替代了限流后等着的那次重连（#872）。
+      clearRateLimitedConnectRetry(contextKey)
       if (connectingKeysRef.current.has(contextKey)) {
         // Parked: the call in flight runs this next, unless a newer request
         // replaces it first. The surface is waiting on THIS request from now
@@ -7569,8 +7611,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         try {
           configuredAgent = await acpGetAgentStatus(agentType)
         } catch (error) {
+          // 限流交给最外层的 catch：不弹失败，过几秒自己重连（#872）。
+          if (isRateLimitedError(error)) throw error
           const reason = t("unableReadAgentConfig", {
-            message: normalizeErrorMessage(error),
+            message: toErrorMessage(error),
           })
           publishConnectError({
             agentType,
@@ -7977,8 +8021,28 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         const pendingRequest = pendingConnectRequestsRef.current.get(contextKey)
         const superseded =
           pendingRequest != null && !sameConnectRequest(pendingRequest, request)
-        if (!superseded && !isAlertedError(err)) {
-          const message = normalizeErrorMessage(err)
+        if (
+          !superseded &&
+          isRateLimitedError(err) &&
+          !abandonedKeysRef.current.has(contextKey)
+        ) {
+          // Cowork (#872): 门户限流不是连接真的失败了，服务器也说了「稍后
+          // 自动重试」：不弹「连接失败」，过几秒照最后一次的参数再连一次。
+          // 再被限流就再等一轮；这个界面断开或换了请求时计时器作废。
+          // 上一条连接已经是 error 的，改成 disconnected：等着重连时不算
+          // 连接失败，聊天页不会把排队的消息标成失败，连上了照常发出。
+          if (
+            storeRef.current.connections.get(contextKey)?.status === "error"
+          ) {
+            dispatch({
+              type: "STATUS_CHANGED",
+              contextKey,
+              status: "disconnected",
+            })
+          }
+          scheduleRateLimitedConnectRetry(contextKey, request)
+        } else if (!superseded && !isAlertedError(err)) {
+          const message = toErrorMessage(err)
           const agentLabel = getAgentLabel(agentType)
           // Backend safety net: if the agent turned out to be not
           // installed (e.g. the binary was removed between preflight
@@ -8061,6 +8125,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       applyMappedEnvelope,
       bindConnectionRoute,
       captureIdentityBeforeRemoval,
+      clearRateLimitedConnectRetry,
       connectAsViewer,
       consumeBufferedEvents,
       dispatch,
@@ -8072,6 +8137,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       notifyConnectError,
       releaseConnectionRoute,
       resolveConnectBlockState,
+      scheduleRateLimitedConnectRetry,
       seedDelegationsFromSnapshot,
       setActiveKey,
       setConnectError,
@@ -8147,6 +8213,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   const disconnect = useCallback(
     async (contextKey: string): Promise<boolean> => {
       pendingConnectRequestsRef.current.delete(contextKey)
+      clearRateLimitedConnectRetry(contextKey)
       // Whatever the surface does next — close, switch agent, reconnect — the
       // last attempt's failure no longer describes it.
       setConnectError(contextKey, null)
@@ -8222,6 +8289,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     },
     [
       captureIdentityBeforeRemoval,
+      clearRateLimitedConnectRetry,
       dispatch,
       releaseConnectionRoute,
       retireTurnFailures,

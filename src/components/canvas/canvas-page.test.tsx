@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import enMessages from "@/i18n/messages/en.json"
 import { canvasListBoards } from "@/lib/api"
 import type { CanvasBoard, CanvasBoardSummary } from "@/lib/types"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useCanvasBoardsStore } from "@/stores/canvas-boards-store"
 import { useCanvasStore } from "@/stores/canvas-store"
 import { useMindMapViewStore } from "@/stores/mindmap-view-store"
@@ -175,6 +176,9 @@ describe("CanvasPage views", () => {
   it("opens on the mind map, and the switch leads to the canvases and back", async () => {
     window.localStorage.clear()
     useMindMapViewStore.setState({ mode: "mindmap" })
+    // 项目列表取到了、确实是空的，脑图才显示「打开项目」的空状态；
+    // 没取到之前显示的是加载中。
+    useAppWorkspaceStore.setState({ foldersHydrated: true })
     renderPage()
     expect(
       await screen.findByText(

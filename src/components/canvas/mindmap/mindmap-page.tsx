@@ -98,6 +98,9 @@ export function MindMapPage() {
   )
   // 项目列表没加载出来时，空列表不等于「还没打开过项目」。
   const foldersError = useAppWorkspaceStore((s) => s.foldersError)
+  // 还没取到过项目列表（比如第一次被限流、store 过几秒自己再取，#872）：
+  // 空列表也不等于「还没打开过项目」，先显示加载中。
+  const foldersHydrated = useAppWorkspaceStore((s) => s.foldersHydrated)
   const fetchFolders = useAppWorkspaceStore((s) => s.fetchFolders)
   // The folder of the conversation in front of the user. A draft does not
   // count: an empty "new chat" in a default folder says nothing of the work.
@@ -247,6 +250,25 @@ export function MindMapPage() {
           >
             {t("retry")}
           </Button>
+        </div>
+      </div>
+    )
+  }
+
+  if (projects.length === 0 && !project && !foldersHydrated) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <PageHeader>
+          <CanvasModeSwitch />
+        </PageHeader>
+        <div
+          className="flex flex-1 items-center justify-center"
+          data-mindmap-loading
+        >
+          <Loader2
+            className="size-5 animate-spin text-muted-foreground"
+            aria-hidden="true"
+          />
         </div>
       </div>
     )

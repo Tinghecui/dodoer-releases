@@ -422,7 +422,11 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
       } catch (err) {
         console.error("[AppWorkspace] fetchFolders failed:", err)
         if (!get().foldersHydrated) {
-          set({ foldersError: toErrorMessage(err) })
+          // #872: 被限流时下面会自己再取，侧栏显示「加载中」就行，不记成
+          // 「项目列表没取到」（那是给要用户点「重试」的失败用的）。
+          set({
+            foldersError: isRateLimitedError(err) ? null : toErrorMessage(err),
+          })
         }
         if (isRateLimitedError(err) && foldersRetryTimer === null) {
           foldersRetryTimer = setTimeout(() => {

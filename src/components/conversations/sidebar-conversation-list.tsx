@@ -1018,6 +1018,9 @@ export function SidebarConversationList({
   const error = useAppWorkspaceStore((s) => s.conversationsError)
   // #540: 项目列表一次都没取到时的原因（取到过的瞬时失败 store 不记）。
   const foldersError = useAppWorkspaceStore((s) => s.foldersError)
+  // #872: 项目列表取到过没有。没取到过（比如被限流、store 正在重试）时
+  // 「没有打开的文件夹」「新建或打开项目」都换成「加载中…」，不然像项目全没了。
+  const foldersHydrated = useAppWorkspaceStore((s) => s.foldersHydrated)
   const fetchFolders = useAppWorkspaceStore((s) => s.fetchFolders)
   const foldersLoading = useAppWorkspaceStore((s) => s.foldersLoading)
   const refreshConversations = useAppWorkspaceStore(
@@ -3158,7 +3161,7 @@ export function SidebarConversationList({
   }, [])
 
   const showEmptyWorkspaceActions =
-    folders.length === 0 && conversations.length === 0
+    foldersHydrated && folders.length === 0 && conversations.length === 0
 
   // A folder's chosen colour, for the header's colour picker and for the tint
   // its TITLE takes. It used to also drive a per-row `data-theme` wrapper, which
@@ -3539,8 +3542,12 @@ export function SidebarConversationList({
       // so the first step gets a button of its own.
       return (
         <div className="px-[0.5rem] py-[0.375rem] text-[0.75rem] text-muted-foreground/70">
-          {tagFilterActive ? tTags("filter.noMatches") : t("noFolders")}
-          {COWORK_BUILD && !tagFilterActive && (
+          {!foldersHydrated
+            ? firstLoadHint
+            : tagFilterActive
+              ? tTags("filter.noMatches")
+              : t("noFolders")}
+          {COWORK_BUILD && foldersHydrated && !tagFilterActive && (
             <Button
               variant="outline"
               size="sm"

@@ -3,6 +3,7 @@
 import {
   openingScope,
   fileOpeningScope,
+  followOwnerScope,
   useFolderTabsStore,
   type TabScope,
 } from "@/stores/folder-tabs-store"
@@ -781,6 +782,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     requestId: number
     path: string
     line: number
+    // 按目录挪到别的项目的打开（#790）只交给那个项目的标签排：同一个文件也开在第三个
+    // 项目那排时，先切过去不能把请求提前用掉。
+    scope?: TabScope
   } | null>(null)
   const [previewFileTabIds, setPreviewFileTabIds] = useState<Set<string>>(
     new Set()
@@ -817,6 +821,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const activeFileTabIdRef = useRef<string | null>(null)
   const activeFolderRef = useRef<{ id: number; path: string } | null>(null)
   const fileRevealRequestIdRef = useRef(0)
+  // 按目录挪到别的项目的打开（#790）记下的跳行请求编号：在当前项目里再开不带行号的文件
+  // 不清掉它，等切到那个项目时用。
+  const reroutedRevealIdRef = useRef<number | null>(null)
   // tabId -> generation of its current in-flight fetch. Serves two roles:
   //   (a) Dedup: `has(tabId)` collapses rapid re-clicks within one event
   //       loop turn (where fileTabsRef.current is still pre-render-stale).
@@ -2137,12 +2144,24 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         index?: number
       }
     ) => {
-      const targetScope = openingScope(options?.folderId)
+      const openerScope = openingScope(options?.folderId)
       const targetFolderId =
         options?.folderId ??
-        (typeof targetScope === "number" ? targetScope : undefined)
+        (typeof openerScope === "number" ? openerScope : undefined)
       const absPath = await resolveOpenAbsolutePath(rawPath, targetFolderId)
       if (!absPath) return null
+      // 没指定项目时按文件所在的目录放：别的项目的文件进那个项目的组、后台打开（#790）。
+      // 当前组里已经有这个文件（明确开进来的、正在看的标签自动刷新、冲突后重新加载）
+      // 就留在当前组，不去动所属项目那排的选中，也让带行号的链接就地跳行。
+      const openerRefs =
+        useFolderTabsStore.getState().fileRefs[openerScope] ?? []
+      const inOpenerGroup = openerRefs.includes(
+        buildFileTabId({ kind: "file", path: absPath })
+      )
+      const targetScope =
+        options?.folderId == null && !inOpenerGroup
+          ? followOwnerScope(absPath, openerScope)
+          : openerScope
       const io = splitAbsPath(absPath)
       if (!io) return null
       // The load runs in an inner closure purely so every early `return`
@@ -2162,7 +2181,20 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         // A background open never touches the pending reveal: it is not
         // asking the file column to scroll anywhere, and clearing the field
         // would cancel a reveal some other opener is waiting on.
-        if (!background) {
+        // 按目录挪到别的项目的打开（#790）也要记住行号：标签成了那个项目的当前标签，
+        // 切过去时文件列按路径对上了才跳行。
+        const rerouted =
+          options?.background !== true && targetScope !== openerScope
+        if (requestedLine && rerouted) {
+          fileRevealRequestIdRef.current += 1
+          reroutedRevealIdRef.current = fileRevealRequestIdRef.current
+          setPendingFileReveal({
+            requestId: fileRevealRequestIdRef.current,
+            path: absPath,
+            line: requestedLine,
+            scope: targetScope,
+          })
+        } else if (!background) {
           if (requestedLine) {
             fileRevealRequestIdRef.current += 1
             setPendingFileReveal({
@@ -2171,7 +2203,14 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
               line: requestedLine,
             })
           } else {
-            setPendingFileReveal(null)
+            // 等着切项目的跳行请求（#790）留着，除非开的就是那个文件。
+            setPendingFileReveal((prev) =>
+              prev &&
+              prev.requestId === reroutedRevealIdRef.current &&
+              prev.path !== absPath
+                ? prev
+                : null
+            )
           }
         }
         const tabId = buildFileTabId({ kind: "file", path: absPath })
@@ -3814,6 +3853,14 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     ]
   )
 
+  // 给别的项目的跳行请求（#790）在切到那个项目之前不交给文件列。
+  const visibleFileReveal =
+    pendingFileReveal?.scope !== undefined &&
+    tabsFollowFolder &&
+    tabScope !== pendingFileReveal.scope
+      ? null
+      : pendingFileReveal
+
   const fileTabsValue = useMemo<WorkspaceFileTabsValue>(
     () => ({
       fileTabs: visibleFileTabs,
@@ -3822,7 +3869,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       activeFileTab,
       activeFilePath,
       previewFileTabIds,
-      pendingFileReveal,
+      pendingFileReveal: visibleFileReveal,
     }),
     [
       visibleFileTabs,
@@ -3831,7 +3878,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       activeFileTab,
       activeFilePath,
       previewFileTabIds,
-      pendingFileReveal,
+      visibleFileReveal,
     ]
   )
 

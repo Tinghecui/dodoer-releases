@@ -428,6 +428,8 @@ beforeEach(() => {
   useAppWorkspaceStore.setState({
     conversationsLoading: false,
     conversationsError: null,
+    // 多数用例当项目列表已经取到过；#872 的用例自己改回 false。
+    foldersHydrated: true,
     ...stableWorkspaceFns,
   })
   virtuaCtl.scrollOffset = 0
@@ -534,6 +536,40 @@ describe("SidebarConversationList — first conversations load", () => {
     const { getAllByText, queryByText } = render(tree())
     expect(getAllByText("conv-11").length).toBeGreaterThan(0)
     expect(queryByText(loadingText)).toBeNull()
+  })
+})
+
+// #872: 项目列表还没取回来（比如被限流、store 正在重试）时，侧栏不能显示成
+// 「没有打开的文件夹 / 新建或打开项目」，像是项目都没了；显示「加载中」。
+describe("SidebarConversationList — projects not fetched yet", () => {
+  const loadingText = enMessages.Folder.common.loading
+
+  it("shows loading instead of the empty Folders section", () => {
+    brand.cowork = true
+    useAppWorkspaceStore.setState({
+      folders: [],
+      conversations: [conv(3, 99, { kind: "chat" })],
+      foldersHydrated: false,
+      foldersError: null,
+    })
+    const { queryByText, queryByRole, getAllByText } = render(tree())
+    expect(queryByText(enMessages.Folder.sidebar.noFolders)).toBeNull()
+    expect(queryByRole("button", { name: "New or open project" })).toBeNull()
+    expect(getAllByText(loadingText).length).toBeGreaterThan(0)
+  })
+
+  it("does not show the empty workspace before the projects arrive", () => {
+    brand.cowork = true
+    useAppWorkspaceStore.setState({
+      folders: [],
+      conversations: [],
+      conversationsLoaded: true,
+      foldersHydrated: false,
+      foldersError: null,
+    })
+    const { queryByRole, getAllByText } = render(tree())
+    expect(queryByRole("button", { name: "New or open project" })).toBeNull()
+    expect(getAllByText(loadingText).length).toBeGreaterThan(0)
   })
 })
 

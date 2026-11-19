@@ -1015,6 +1015,27 @@ describe("rate limited lists retry on their own (#336)", () => {
     mockListOpenFolders.mockImplementation(async () => [])
   })
 
+  // #872: 一次都没取到时被限流，store 自己会重试，侧栏该显示「加载中」，
+  // 不该停在红色的「项目列表没取到」上。
+  it("a rate-limited first fetchFolders leaves no error behind", async () => {
+    useAppWorkspaceStore.setState({
+      foldersHydrated: false,
+      foldersError: null,
+    })
+    mockListOpenFolders.mockReset()
+    mockListOpenFolders
+      .mockRejectedValueOnce(rateLimited)
+      .mockImplementation(async () => [])
+    vi.spyOn(console, "error").mockImplementation(() => {})
+
+    await useAppWorkspaceStore.getState().fetchFolders()
+    expect(useAppWorkspaceStore.getState().foldersHydrated).toBe(false)
+    expect(useAppWorkspaceStore.getState().foldersError).toBeNull()
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(useAppWorkspaceStore.getState().foldersHydrated).toBe(true)
+  })
+
   it("refreshConversations shows a readable message, then recovers", async () => {
     const { listAllConversations } = await import("@/lib/api")
     const mockList = vi.mocked(listAllConversations)

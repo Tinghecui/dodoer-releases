@@ -63,6 +63,7 @@ import {
   useFolderTabsStore,
 } from "@/stores/folder-tabs-store"
 import { resetHomeDirCacheForTests } from "@/lib/file-open-target"
+import { buildFileTabId } from "@/lib/file-tab-id"
 import {
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
@@ -5773,7 +5774,10 @@ describe("Folder-tabs shared file buffers and selections", () => {
     })
     act(() => useFolderTabsStore.getState().activateScope(2))
     await act(async () => {
-      await scopedWorkspace.openFilePreview("/repo/./shared.ts")
+      // 明确指定开进第二个组（不指定的话按目录归到 /repo 的组，#790）。
+      await scopedWorkspace.openFilePreview("/repo/./shared.ts", {
+        folderId: 2,
+      })
     })
     expect(scopedWorkspace.activeFileTabId).toBe(shared)
     expect(scopedWorkspace.activeFileTab?.content).toBe("shared unsaved")
@@ -5848,6 +5852,170 @@ describe("Folder-tabs shared file buffers and selections", () => {
     act(() => useFolderTabsStore.getState().activateScope(1))
     expect(scopedWorkspace.fileTabs).toHaveLength(1)
     expect(scopedWorkspace.activeFileTab?.path).toBe("/repo/late.ts")
+    expect(useFolderTabsStore.getState().fileRefs[2] ?? []).toHaveLength(0)
+  })
+
+  it("puts another project's file into that project's group without switching (#790)", async () => {
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo/own.ts")
+    })
+    const own = scopedWorkspace.activeFileTabId!
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo/../repo2/index.md")
+    })
+    const state = useFolderTabsStore.getState()
+    expect(state.scope).toBe(1)
+    expect(state.fileRefs[1]).toEqual([own])
+    expect(state.fileRefs[2]).toEqual([
+      buildFileTabId({ kind: "file", path: "/repo2/index.md" }),
+    ])
+    expect(scopedWorkspace.activeFileTabId).toBe(own)
+    act(() => useFolderTabsStore.getState().activateScope(2))
+    expect(scopedWorkspace.activeFileTab?.path).toBe("/repo2/index.md")
+  })
+
+  it("keeps the requested line for another project's file until that project is opened (#790)", async () => {
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/index.md", { line: 42 })
+    })
+    expect(useFolderTabsStore.getState().scope).toBe(1)
+    // 还在当前项目时不交给文件列，切过去才交。
+    expect(scopedWorkspace.pendingFileReveal).toBeNull()
+    act(() => useFolderTabsStore.getState().activateScope(2))
+    expect(scopedWorkspace.pendingFileReveal).toMatchObject({
+      path: "/repo2/index.md",
+      line: 42,
+    })
+  })
+
+  it("keeps another project's requested line across plain opens in the current project (#790)", async () => {
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/index.md", { line: 42 })
+    })
+    // 切过去之前在当前项目里开一个不带行号的文件，不能把等着的跳行清掉。
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo/own.ts")
+    })
+    act(() => useFolderTabsStore.getState().activateScope(2))
+    expect(scopedWorkspace.activeFileTab?.path).toBe("/repo2/index.md")
+    expect(scopedWorkspace.pendingFileReveal).toMatchObject({
+      path: "/repo2/index.md",
+      line: 42,
+    })
+  })
+
+  it("holds another project's requested line back from a third project showing the same file (#790)", async () => {
+    act(() => {
+      useAppWorkspaceStore.setState({
+        allFolders: [
+          { id: 1, path: "/repo", name: "repo", color: "inherit" },
+          { id: 2, path: "/repo2", name: "repo2", color: "inherit" },
+          { id: 3, path: "/repo3", name: "repo3", color: "inherit" },
+        ] as never,
+      })
+    })
+    // 同一个文件也明确开在第三个项目那排里。
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/index.md", { folderId: 3 })
+    })
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/index.md", { line: 42 })
+    })
+    // 先切到第三个项目：那边正显示这个文件，但跳行请求是给第二个项目的，不能交给它。
+    act(() => useFolderTabsStore.getState().activateScope(3))
+    expect(scopedWorkspace.activeFileTab?.path).toBe("/repo2/index.md")
+    expect(scopedWorkspace.pendingFileReveal).toBeNull()
+    act(() => useFolderTabsStore.getState().activateScope(2))
+    expect(scopedWorkspace.activeFileTab?.path).toBe("/repo2/index.md")
+    expect(scopedWorkspace.pendingFileReveal).toMatchObject({
+      path: "/repo2/index.md",
+      line: 42,
+    })
+  })
+
+  it("keeps another project's file in the current group once it was opened there (#790)", async () => {
+    const shared = buildFileTabId({ kind: "file", path: "/repo2/index.md" })
+    // 第二个组里先有别的选中标签，重新加载、带行号打开都不能把它换掉。
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/other.md", { folderId: 2 })
+    })
+    const other = buildFileTabId({ kind: "file", path: "/repo2/other.md" })
+    // 明确开进当前组（比如重新打开刚关掉的标签）。
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/index.md", { folderId: 1 })
+    })
+    // 自动刷新、冲突后重新加载：不指定项目。
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/index.md", { reload: true })
+    })
+    // 带行号的链接：就地跳行。
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/index.md", { line: 7 })
+    })
+    const state = useFolderTabsStore.getState()
+    expect(state.scope).toBe(1)
+    expect(state.fileRefs[2]).toEqual([other])
+    expect(state.fileSelection[2]).toBe(other)
+    expect(state.fileRefs[1]).toContain(shared)
+    expect(scopedWorkspace.activeFileTabId).toBe(shared)
+    expect(scopedWorkspace.pendingFileReveal).toMatchObject({
+      path: "/repo2/index.md",
+      line: 7,
+    })
+  })
+
+  it("puts a nested project's file into the nested project's group (#790)", async () => {
+    act(() => {
+      useAppWorkspaceStore.setState({
+        allFolders: [
+          { id: 1, path: "/repo", name: "repo", color: "inherit" },
+          { id: 4, path: "/repo/sub", name: "sub", color: "inherit" },
+        ] as never,
+      })
+    })
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo/sub/x.ts")
+    })
+    const state = useFolderTabsStore.getState()
+    expect(state.scope).toBe(1)
+    expect(state.fileRefs[1] ?? []).toEqual([])
+    expect(state.fileRefs[4]).toEqual([
+      buildFileTabId({ kind: "file", path: "/repo/sub/x.ts" }),
+    ])
+  })
+
+  it("keeps files outside every project, and of look-alike roots, in the current group (#790)", async () => {
+    act(() => {
+      useAppWorkspaceStore.setState({
+        allFolders: [
+          { id: 1, path: "/repo", name: "repo", color: "inherit" },
+          { id: 3, path: "/repo-x", name: "repo-x", color: "inherit" },
+        ] as never,
+      })
+    })
+    // 前缀相同的项目（/repo 和 /repo-x）不会互相认领；哪个项目都不在的照旧进当前组。
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo-x/a.ts")
+    })
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/etc/hostname")
+    })
+    const state = useFolderTabsStore.getState()
+    expect(state.fileRefs[3]).toEqual([
+      buildFileTabId({ kind: "file", path: "/repo-x/a.ts" }),
+    ])
+    expect(state.fileRefs[1]).toEqual([
+      buildFileTabId({ kind: "file", path: "/etc/hostname" }),
+    ])
+    expect(scopedWorkspace.activeFileTab?.path).toBe("/etc/hostname")
+  })
+
+  it("keeps the shared tab row when tabs do not follow the folder (#790)", async () => {
+    act(() => useFolderTabsStore.getState().setEnabled(false))
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/index.md")
+    })
+    expect(scopedWorkspace.activeFileTab?.path).toBe("/repo2/index.md")
     expect(useFolderTabsStore.getState().fileRefs[2] ?? []).toHaveLength(0)
   })
 

@@ -5,6 +5,7 @@ import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { registerBackendScopedStoreReset } from "@/stores/backend-scoped-store-reset"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
 import { parseFileTabId } from "@/lib/file-tab-id"
+import { findOwningFolder } from "@/lib/file-open-target"
 import {
   foreignFolderOf,
   type FolderRoot,
@@ -58,6 +59,20 @@ export function openingScope(folderId?: number | null): TabScope {
   return state.enabled
     ? state.scope
     : folderScope(useAppWorkspaceStore.getState().activeFolderId)
+}
+
+/**
+ * 跟随开着、调用方没指定项目时，文件该进哪一排（#790）：在当前项目组里打开别的项目
+ * 目录下的文件（比如会话里指向 ../别的项目/x.md 的链接），放进那个项目自己的组，界面
+ * 不切项目；是自己的、哪个项目都不在（/etc/hostname）的，或者当前是全局范围，照旧。
+ * 项目嵌套时按最深的那个项目算：在外层项目里打开内层项目的文件，也进内层的组。
+ */
+export function followOwnerScope(absPath: string, scope: TabScope): TabScope {
+  if (!useFolderTabsStore.getState().enabled || scope === "global") return scope
+  const owner = findOwningFolder(absPath, projectFolderRoots())
+  return owner == null || owner.folderId === scope
+    ? scope
+    : folderScope(owner.folderId)
 }
 
 /** Browser popups inherit their opener's references even after a scope switch. */

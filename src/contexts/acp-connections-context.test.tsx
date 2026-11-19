@@ -12,6 +12,7 @@ import {
 } from "vitest"
 import {
   AcpConnectionsProvider,
+  RATE_LIMITED_CONNECT_RETRY_MS,
   STREAM_FLUSH_FRAME_MS,
   STREAM_FLUSH_MAX_MS,
   useAcpActions,
@@ -9029,6 +9030,137 @@ describe("connect failures land on the surface that asked", () => {
     expect(
       alert.actions.map((action: { label: string }) => action.label)
     ).toEqual(["actions.openAgentsSettings"])
+  })
+
+  // #872: 门户限流（429）时 transport 抛的是 `{ code, message }` 普通对象。
+  // 不弹「连接失败 / [object Object]」，过几秒自己再连一次。
+  describe("rate-limited connect", () => {
+    const rateLimited = {
+      code: "rate_limited",
+      message: "请求太频繁，稍后自动重试。",
+    }
+
+    it("does not notify, and reconnects by itself a few seconds later", async () => {
+      vi.useFakeTimers()
+      try {
+        h.acpConnect.mockRejectedValueOnce(rateLimited)
+        await mountProvider()
+        await act(async () => {
+          await expect(
+            h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+          ).rejects.toBe(rateLimited)
+        })
+        expect(h.toastError).not.toHaveBeenCalled()
+        expect(h.recordAlert).not.toHaveBeenCalled()
+        expect(h.store!.getConnectError(TAB)).toBeUndefined()
+        expect(h.acpConnect).toHaveBeenCalledTimes(1)
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(RATE_LIMITED_CONNECT_RETRY_MS)
+        })
+        expect(h.acpConnect).toHaveBeenCalledTimes(2)
+        expect(h.store!.getConnection(TAB)?.connectionId).toBe("spawned-conn")
+        expect(h.toastError).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("treats a rate-limited preflight the same way", async () => {
+      vi.useFakeTimers()
+      try {
+        h.acpGetAgentStatus.mockRejectedValueOnce(rateLimited)
+        await mountProvider()
+        await act(async () => {
+          await expect(
+            h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+          ).rejects.toBe(rateLimited)
+        })
+        expect(h.toastError).not.toHaveBeenCalled()
+        expect(h.store!.getConnectError(TAB)).toBeUndefined()
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(RATE_LIMITED_CONNECT_RETRY_MS)
+        })
+        expect(h.store!.getConnection(TAB)?.connectionId).toBe("spawned-conn")
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    // 审查（#915）：已有连接处于 error 时重连被限流，不能还停在 error，
+    // 不然聊天页把等着的消息标成失败，重连上了也不发。
+    it("does not leave a connection in the error state while it waits", async () => {
+      vi.useFakeTimers()
+      try {
+        await mountProvider()
+        await act(async () => {
+          await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+        })
+        emitAcpEvent(latestAttachHandlers(), {
+          seq: 1,
+          connection_id: "spawned-conn",
+          type: "status_changed",
+          status: "error",
+        })
+        expect(h.store!.getConnection(TAB)?.status).toBe("error")
+
+        h.acpConnect.mockRejectedValueOnce(rateLimited)
+        await act(async () => {
+          await expect(
+            h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+          ).rejects.toBe(rateLimited)
+        })
+        expect(h.toastError).not.toHaveBeenCalled()
+        expect(h.store!.getConnection(TAB)?.status).not.toBe("error")
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(RATE_LIMITED_CONNECT_RETRY_MS)
+        })
+        expect(h.store!.getConnection(TAB)?.status).not.toBe("error")
+        expect(h.store!.getConnection(TAB)?.connectionId).toBe("spawned-conn")
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("drops the pending retry once the surface disconnects", async () => {
+      vi.useFakeTimers()
+      try {
+        h.acpConnect.mockRejectedValueOnce(rateLimited)
+        await mountProvider()
+        await act(async () => {
+          await expect(
+            h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+          ).rejects.toBe(rateLimited)
+        })
+        await act(async () => {
+          await h.actions!.disconnect(TAB)
+        })
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(RATE_LIMITED_CONNECT_RETRY_MS * 2)
+        })
+        expect(h.acpConnect).toHaveBeenCalledTimes(1)
+        expect(h.store!.getConnection(TAB)).toBeUndefined()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
+  it("reads the text out of a plain error body instead of [object Object]", async () => {
+    h.acpConnect.mockRejectedValueOnce({ error: "gateway said no" })
+    await mountProvider()
+    await act(async () => {
+      await expect(
+        h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+      ).rejects.toBeDefined()
+    })
+    expect(h.store!.getConnectError(TAB)?.detail).toBe("gateway said no")
+    expect(h.toastError).toHaveBeenCalledWith(
+      "connectFailedTitle",
+      expect.objectContaining({ description: "gateway said no" })
+    )
   })
 
   it("records a spawn failure with its reason, and retires it on the next attempt", async () => {

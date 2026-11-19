@@ -259,6 +259,59 @@ describe("VersionControlSettings account changes", () => {
     await waitFor(() => expect(mockGetGitHubAccounts).toHaveBeenCalledTimes(2))
     expect(mockUpdateGitHubAccounts).not.toHaveBeenCalled()
   })
+
+  // 在页面打开时读到的空列表上加 Git 账号：对话框以为这是第一个账号。
+  async function addGitAccountFromStalePage(username: string) {
+    renderWithIntl()
+    const heading = await screen.findByText("Git Accounts")
+    const section = heading.closest("section") as HTMLElement
+    await screen.findByText("No Git server accounts configured.")
+    fireEvent.click(within(section).getByText("Add Account"))
+    fireEvent.change(
+      await screen.findByPlaceholderText("https://gitlab.example.com"),
+      { target: { value: "https://git2.example.test" } }
+    )
+    fireEvent.change(screen.getByPlaceholderText("Username or email"), {
+      target: { value: username },
+    })
+    fireEvent.change(screen.getByPlaceholderText("Password or access token"), {
+      target: { value: "x2" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Add" }))
+    await waitFor(() => expect(mockUpdateGitHubAccounts).toHaveBeenCalled())
+    return mockUpdateGitHubAccounts.mock.calls[0][0].accounts
+  }
+
+  // 别的标签页刚加的默认账号，不会被没刷新的页面加的新账号抢走默认。
+  it("keeps the stored default when a stale page adds another account", async () => {
+    const qaOne = account({
+      id: "acc-1",
+      username: "qa-one",
+      server_url: "https://git.example.test",
+      provider: undefined,
+      is_default: true,
+    })
+    mockGetGitHubAccounts.mockResolvedValueOnce({ accounts: [] })
+    mockGetGitHubAccounts.mockResolvedValue({ accounts: [qaOne] })
+    mockUpdateGitHubAccounts.mockImplementation(async (s) => s)
+
+    const sent = await addGitAccountFromStalePage("qa-two")
+    expect(sent.map((a) => [a.username, a.is_default])).toEqual([
+      ["qa-one", true],
+      ["qa-two", false],
+    ])
+  })
+
+  // 存着的列表里还没有默认账号时，新加的账号成为默认。
+  it("makes the new account the default when none is stored", async () => {
+    mockGetGitHubAccounts.mockResolvedValue({ accounts: [] })
+    mockUpdateGitHubAccounts.mockImplementation(async (s) => s)
+
+    const sent = await addGitAccountFromStalePage("qa-two")
+    expect(sent.map((a) => [a.username, a.is_default])).toEqual([
+      ["qa-two", true],
+    ])
+  })
 })
 
 describe("VersionControlSettings read failure", () => {

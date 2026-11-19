@@ -359,16 +359,20 @@ export function VersionControlSettings() {
     async (account: GitHubAccount) => {
       // Replace in place when the id is already known: that is a token
       // rotation, and appending would leave two rows claiming one identity.
+      // 默认账号按存着的列表定，不信对话框带来的 is_default：那是按页面上次
+      // 读到的列表算的，别的标签页刚加的默认账号它看不到。轮换的保留原来那
+      // 一行的默认；新账号只在列表里还没有默认账号时才成为默认，别人的默认不动。
       const add = (list: GitHubAccount[]) => {
-        const known = list.some((a) => a.id === account.id)
-        const others = list.map((a) =>
-          account.is_default && a.id !== account.id
-            ? { ...a, is_default: false }
-            : a
-        )
-        return known
-          ? others.map((a) => (a.id === account.id ? account : a))
-          : [...others, account]
+        const stored = list.find((a) => a.id === account.id)
+        if (stored) {
+          return list.map((a) =>
+            a.id === account.id
+              ? { ...account, is_default: stored.is_default }
+              : a
+          )
+        }
+        const hasDefault = list.some((a) => a.is_default)
+        return [...list, { ...account, is_default: !hasDefault }]
       }
       try {
         await saveAccounts(add)

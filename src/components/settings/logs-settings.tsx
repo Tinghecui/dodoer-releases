@@ -275,7 +275,10 @@ export function LogsSettings() {
   const desktop = isDesktop()
 
   const [loading, setLoading] = useState(true)
+  // 三样各读各的：设置没读到只锁编辑器，不连累最近日志和日志文件。
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [recordsError, setRecordsError] = useState<string | null>(null)
+  const [filesError, setFilesError] = useState<string | null>(null)
   const [savingLevel, setSavingLevel] = useState(false)
 
   const [captureLevel, setCaptureLevel] = useState<LogLevel>("info")
@@ -358,28 +361,43 @@ export function LogsSettings() {
   const refreshLogs = useCallback(async () => {
     const recent = await getRecentLogs({ limit: DISPLAY_LIMIT })
     setRecords(recent)
+    setRecordsError(null)
   }, [])
 
   const loadInitial = useCallback(async () => {
     setLoading(true)
     setLoadError(null)
+    setRecordsError(null)
+    setFilesError(null)
     try {
-      const [settings, recent, files] = await Promise.all([
+      // allSettled：一样失败不能把另外两样读到的结果也扔掉。
+      const [settingsRes, recentRes, filesRes] = await Promise.allSettled([
         getLogSettings(),
         getRecentLogs({ limit: DISPLAY_LIMIT }),
         desktop ? Promise.resolve<LogFileInfo[]>([]) : listLogFiles(),
       ])
-      setCaptureLevel(settings.level)
-      setTargets(settings.targets ?? [])
-      settingsRef.current = {
-        level: settings.level,
-        targets: settings.targets ?? [],
+      if (settingsRes.status === "fulfilled") {
+        const settings = settingsRes.value
+        setCaptureLevel(settings.level)
+        setTargets(settings.targets ?? [])
+        settingsRef.current = {
+          level: settings.level,
+          targets: settings.targets ?? [],
+        }
+        setEnvLocked(settings.env_locked)
+      } else {
+        setLoadError(toErrorMessage(settingsRes.reason))
       }
-      setEnvLocked(settings.env_locked)
-      setRecords(recent)
-      setLogFiles(files)
-    } catch (err) {
-      setLoadError(toErrorMessage(err))
+      if (recentRes.status === "fulfilled") {
+        setRecords(recentRes.value)
+      } else {
+        setRecordsError(toErrorMessage(recentRes.reason))
+      }
+      if (filesRes.status === "fulfilled") {
+        setLogFiles(filesRes.value)
+      } else {
+        setFilesError(toErrorMessage(filesRes.reason))
+      }
     } finally {
       setLoading(false)
     }
@@ -649,6 +667,8 @@ export function LogsSettings() {
   // every edit persists the whole object — one level change would wipe the
   // stored per-module overrides. Lock it until a load succeeds.
   const settingsLocked = envLocked || loadError !== null
+  // 顶部红框带重试：三样里任何一样没读到都要露出来，设置的错误优先。
+  const bannerError = loadError ?? recordsError ?? filesError
 
   if (loading) {
     return (
@@ -669,13 +689,13 @@ export function LogsSettings() {
           </p>
         </section>
 
-        {loadError && (
+        {bannerError && (
           <div
             role="alert"
             className="flex items-center justify-between gap-3 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400"
           >
             <span className="min-w-0 break-words">
-              {tSystem("loadFailed", { message: loadError })}
+              {tSystem("loadFailed", { message: bannerError })}
             </span>
             <Button
               size="sm"
@@ -902,13 +922,21 @@ export function LogsSettings() {
             </span>
           </div>
 
+          {recordsError && records.length > 0 && (
+            // 最近日志没读到时，实时推来的零散记录不代表完整日志；
+            // 顶部红框可能显示的是设置的错误，这里单独说清楚。
+            <p className="text-2xs text-red-400">
+              {tSystem("loadFailed", { message: recordsError })}
+            </p>
+          )}
+
           <div className="h-[30rem] rounded-md border bg-background/50 font-mono text-2xs leading-5">
             {visible.length === 0 ? (
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
                 {/* A failed read is not an empty log; the banner above
                     carries the retry. */}
-                {loadError && records.length === 0
-                  ? tSystem("loadFailed", { message: loadError })
+                {recordsError && records.length === 0
+                  ? tSystem("loadFailed", { message: recordsError })
                   : t("empty")}
               </div>
             ) : (
@@ -943,7 +971,12 @@ export function LogsSettings() {
                 {t("filesDescription")}
               </p>
             </div>
-            {logFiles.length === 0 ? (
+            {filesError ? (
+              // 列表没读到不是没有文件；重试在顶部红框里。
+              <p className="text-2xs text-red-400">
+                {tSystem("loadFailed", { message: filesError })}
+              </p>
+            ) : logFiles.length === 0 ? (
               <p className="text-2xs text-muted-foreground">
                 {t("filesEmpty")}
               </p>

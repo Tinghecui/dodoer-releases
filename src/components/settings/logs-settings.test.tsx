@@ -114,10 +114,12 @@ vi.mock("@/components/ui/scroll-area", () => ({
 }))
 
 import { LogsSettings } from "./logs-settings"
+import { isDesktop } from "@/lib/platform"
 import enMessages from "@/i18n/messages/en.json"
 import {
   getLogSettings,
   getRecentLogs,
+  listLogFiles,
   setLogSettings,
   subscribeLogAppended,
   subscribeLogSettingsChanged,
@@ -126,6 +128,7 @@ import type { LogRecord } from "@/lib/types"
 
 const mockGetSettings = vi.mocked(getLogSettings)
 const mockGetRecent = vi.mocked(getRecentLogs)
+const mockListFiles = vi.mocked(listLogFiles)
 const mockSetSettings = vi.mocked(setLogSettings)
 const mockSubAppended = vi.mocked(subscribeLogAppended)
 const mockSubSettings = vi.mocked(subscribeLogSettingsChanged)
@@ -213,6 +216,8 @@ beforeEach(() => {
     env_locked: false,
   })
   mockGetRecent.mockResolvedValue([])
+  mockListFiles.mockResolvedValue([])
+  vi.mocked(isDesktop).mockReturnValue(true)
   mockSetSettings.mockResolvedValue({ level: "info", targets: [] })
   mockSubSettings.mockResolvedValue(() => {})
   mockSubAppended.mockImplementation(async (handler) => {
@@ -555,8 +560,8 @@ describe("LogsSettings", () => {
 
     const alert = await screen.findByRole("alert")
     expect(alert).toHaveTextContent("Load failed: Error: backend down")
-    // The viewer says the read failed rather than claiming there are no logs.
-    expect(screen.queryByText(M.empty)).toBeNull()
+    // 最近日志自己读成功了（确实是空的），不跟着设置一起报失败（#885）。
+    expect(screen.getByText(M.empty)).toBeInTheDocument()
     expect(screen.getByRole("button", { name: M.targetsAdd })).toBeDisabled()
     // The first combobox is the capture level; the viewer filter stays usable.
     expect(screen.getAllByRole("combobox")[0]).toBeDisabled()
@@ -584,5 +589,102 @@ describe("LogsSettings", () => {
         targets: [{ target: "codeg_lib::acp", level: "debug" }],
       })
     )
+  })
+
+  /// 回归（#885）：读设置失败时，同时读到的最近日志和日志文件被一起丢掉，
+  /// 文件区写「暂无日志文件」，最近日志只剩实时推进来的那几条。
+  it("keeps recent logs and log files when only the settings read fails", async () => {
+    vi.mocked(isDesktop).mockReturnValue(false)
+    mockGetSettings.mockRejectedValueOnce(new Error("backend down"))
+    mockGetRecent.mockResolvedValue([
+      rec(1, "INFO", "web", "first line"),
+      rec(2, "INFO", "web", "second line"),
+      rec(3, "WARN", "acp", "third line"),
+    ])
+    mockListFiles.mockResolvedValue([
+      { name: "codeg.log", size_bytes: 1024 },
+      { name: "codeg.log.1", size_bytes: 2048 },
+    ] as Awaited<ReturnType<typeof listLogFiles>>)
+    renderWithIntl()
+
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent("Load failed: Error: backend down")
+    expect(screen.getByText("first line")).toBeInTheDocument()
+    expect(screen.getByText("second line")).toBeInTheDocument()
+    expect(screen.getByText("third line")).toBeInTheDocument()
+    expect(screen.getByText("codeg.log")).toBeInTheDocument()
+    expect(screen.getByText("codeg.log.1")).toBeInTheDocument()
+    expect(screen.getAllByRole("button", { name: M.download })).toHaveLength(2)
+    expect(screen.queryByText(M.filesEmpty)).toBeNull()
+    // 设置没读到照旧锁住编辑器。
+    expect(screen.getByRole("button", { name: M.targetsAdd })).toBeDisabled()
+  })
+
+  it("says the file list failed to load instead of showing the empty state", async () => {
+    vi.mocked(isDesktop).mockReturnValue(false)
+    mockListFiles.mockRejectedValueOnce(new Error("files down"))
+    mockGetRecent.mockResolvedValue([rec(1, "INFO", "web", "only line")])
+    renderWithIntl()
+
+    expect(await screen.findByText("only line")).toBeInTheDocument()
+    expect(screen.queryByText(M.filesEmpty)).toBeNull()
+    expect(
+      screen.getAllByText("Load failed: Error: files down").length
+    ).toBeGreaterThan(0)
+    // 只是文件列表没读到，设置照常可编辑。
+    expect(screen.getByRole("button", { name: M.targetsAdd })).toBeEnabled()
+
+    mockListFiles.mockResolvedValueOnce([
+      { name: "codeg.log", size_bytes: 1024 },
+    ] as Awaited<ReturnType<typeof listLogFiles>>)
+    fireEvent.click(
+      screen.getByRole("button", { name: enMessages.SystemSettings.retry })
+    )
+    expect(await screen.findByText("codeg.log")).toBeInTheDocument()
+    expect(screen.queryByText("Load failed: Error: files down")).toBeNull()
+  })
+
+  it("says the recent-log read failed instead of claiming there are no logs", async () => {
+    mockGetRecent.mockRejectedValueOnce(new Error("buffer down"))
+    renderWithIntl()
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Load failed: Error: buffer down"
+    )
+    expect(screen.queryByText(M.empty)).toBeNull()
+    expect(screen.getAllByText("Load failed: Error: buffer down").length).toBe(
+      2
+    )
+    // 设置读到了，编辑器照常可用。
+    expect(screen.getByRole("button", { name: M.targetsAdd })).toBeEnabled()
+  })
+
+  it("keeps the recent-log failure visible after live records arrive", async () => {
+    // 设置和最近日志都没读到：顶部只显示设置的错误，日志区自己得说清楚。
+    mockGetSettings.mockRejectedValueOnce(new Error("backend down"))
+    mockGetRecent.mockRejectedValueOnce(new Error("buffer down"))
+    renderWithIntl()
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Load failed: Error: backend down"
+    )
+    await waitFor(() => expect(appendedHandler).toBeDefined())
+    await act(async () => {
+      appendedHandler?.(rec(9, "INFO", "web", "live only line"))
+    })
+    await flushAllRaf()
+    expect(await screen.findByText("live only line")).toBeInTheDocument()
+    // 实时推来的零散记录不能盖掉「最近日志没读到」。
+    expect(
+      screen.getByText("Load failed: Error: buffer down")
+    ).toBeInTheDocument()
+
+    // 重试读到最近日志后，提示消失。
+    mockGetRecent.mockResolvedValueOnce([rec(1, "INFO", "web", "full line")])
+    fireEvent.click(
+      screen.getByRole("button", { name: enMessages.SystemSettings.retry })
+    )
+    expect(await screen.findByText("full line")).toBeInTheDocument()
+    expect(screen.queryByText("Load failed: Error: buffer down")).toBeNull()
   })
 })

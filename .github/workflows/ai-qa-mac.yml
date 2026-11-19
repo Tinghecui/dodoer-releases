@@ -3,7 +3,7 @@
 # 这份日志里只有 AIQA-BEGIN、每个阶段一行进度、AIQA-END，运行结束后 ai-qa-seal.yml 核对。
 # GitHub 自带的 macos-15 机器有图形登录，bash / osascript 预先有「辅助功能」「屏幕录制」授权（2026-11-18 试过：截图、按键、读界面元素、cliclick 都行）。
 name: ai-qa-mac
-run-name: "${{ format('ai-qa-mac {0} {1}', inputs.batch, inputs.changes) }}"
+run-name: "${{ format('ai-qa-mac {0} {1} {2}', inputs.batch, inputs.changes, inputs.employee || 'qa4') }}"
 
 on:
   workflow_dispatch:

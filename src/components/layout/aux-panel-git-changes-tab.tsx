@@ -1479,11 +1479,13 @@ export function GitChangesTab() {
               >
                 {t("actions.addToVcs")}
               </ContextMenuItem>
+              {/* 未跟踪的 HEAD 里没有，回滚只会报错；去掉用下面的「删除」（#854） */}
               <ContextMenuItem
                 onSelect={() => {
                   handleRequestRollback(target)
                 }}
                 variant="destructive"
+                disabled
               >
                 {t("actions.rollback")}
               </ContextMenuItem>
@@ -1567,11 +1569,13 @@ export function GitChangesTab() {
             >
               {t("actions.addToVcs")}
             </ContextMenuItem>
+            {/* 未跟踪的 HEAD 里没有，回滚只会报错；去掉用下面的「删除」（#854） */}
             <ContextMenuItem
               onSelect={() => {
                 handleRequestRollback(target)
               }}
               variant="destructive"
+              disabled
             >
               {t("actions.rollback")}
             </ContextMenuItem>

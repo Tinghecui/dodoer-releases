@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  canRollbackGitStatus,
   isRenameStatus,
   rollbackPaths,
   rollbackPathsForStatus,
@@ -209,5 +210,20 @@ describe("scopeGitStatusEntriesForDirectory", () => {
     expect(
       scopeGitStatusEntriesForDirectory([{ status: "??", file: "new/" }], "")
     ).toEqual([{ path: "new", status: "??" }])
+  })
+})
+
+// #854：未跟踪的文件 HEAD 里没有，回滚只会报 git 原文，菜单里要变灰
+describe("canRollbackGitStatus", () => {
+  it("is false for untracked, ignored and unchanged files", () => {
+    for (const status of [undefined, "", "  ", "??", "!!"]) {
+      expect(canRollbackGitStatus(status)).toBe(false)
+    }
+  })
+
+  it("is true for tracked changes", () => {
+    for (const status of ["M", " M", "MM", "A", "AM", "D", "R", "UU", "T"]) {
+      expect(canRollbackGitStatus(status)).toBe(true)
+    }
   })
 })

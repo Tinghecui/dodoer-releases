@@ -704,6 +704,44 @@ describe("TerminalView recovery", () => {
     expect(h.disposed).toBe(1)
   })
 
+  it("drops the emulator's replies to queries replayed from a snapshot, but keeps typed input", async () => {
+    // 刷新接回时快照里的 ESC[c 被 xterm 重新解析，它自动回的 ESC[?1;2c
+    // 不能当成键盘输入发给 shell，否则每刷新一次提示符后多一串「1;2c」。
+    h.holdParse = true
+    h.snapshot.mockResolvedValueOnce(snapshot("\x1b[c$ ", 2))
+    const view = render(
+      <TerminalView {...props} attach spawnOnMissing={false} reuseCompleted />
+    )
+    await waitFor(() => expect(h.writes).toContain("\x1b[c$ "))
+    act(() => {
+      // 回放还没解析完：这些是终端对历史里查询的自动应答。
+      h.onData?.("\x1b[?1;2c")
+      h.onData?.("\x1b[>0;276;0c")
+      h.onData?.("\x1b[0n")
+      h.onData?.("\x1b[3;7R")
+      h.onData?.("\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\")
+      // 用户这时敲的键照常发出去。
+      h.onData?.("a")
+    })
+    // 写队列会把连着的输入并成一批，按拼起来的字节比。
+    const sent = () =>
+      h.write.mock.calls.map((c) => (c as unknown[])[1]).join("")
+    await waitFor(() => expect(sent()).toContain("a"))
+    expect(JSON.stringify(sent())).toBe(JSON.stringify("a"))
+
+    // 回放解析完以后，程序真的发来的查询要照常应答。
+    act(() => {
+      for (const done of h.parsed.splice(0)) done()
+    })
+    act(() => {
+      h.onData?.("\x1b[?1;2c")
+    })
+    await waitFor(() =>
+      expect(JSON.stringify(sent())).toBe(JSON.stringify("a\x1b[?1;2c"))
+    )
+    view.unmount()
+  })
+
   it("keeps a new PTY's input when the handshake after its spawn fails once", async () => {
     // A canvas card restarting over a completed PTY: the old reader's late
     // exit can land while the new process's generation is still unknown. A

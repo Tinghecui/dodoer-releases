@@ -237,12 +237,14 @@ vi.mock("@/components/ui/context-menu", () => ({
   ContextMenuItem: ({
     children,
     onSelect,
+    disabled,
   }: {
     children: React.ReactNode
     onSelect?: () => void
+    disabled?: boolean
   }) =>
     menus.render ? (
-      <button type="button" onClick={() => onSelect?.()}>
+      <button type="button" disabled={disabled} onClick={() => onSelect?.()}>
         {children}
       </button>
     ) : null,
@@ -1081,5 +1083,56 @@ describe("GitChangesTab rollback of a renamed file (#604)", () => {
       ["/repo", "a.md"],
       ["/repo", "docs/b.md"],
     ])
+  })
+})
+
+// #854：未跟踪的文件、目录 HEAD 里没有，回滚只会报 git 原文；变灰，去掉用「删除」
+describe("GitChangesTab rollback of untracked entries (#854)", () => {
+  afterEach(() => {
+    menus.render = false
+  })
+
+  const ownMenu = (name: string) => {
+    const box = screen
+      .getAllByText(name)
+      .map((el) => el.closest('[data-testid="ctx"]') as HTMLElement | null)
+      .find(Boolean)
+    return box?.lastElementChild as HTMLElement
+  }
+
+  it("greys out rollback for an untracked file and keeps delete", () => {
+    menus.render = true
+    store.git = [
+      { path: "draft.txt", status: "??", additions: 0, deletions: 0 },
+      { path: "README.md", status: "M", additions: 1, deletions: 0 },
+    ]
+    renderTab()
+    const own = ownMenu("draft.txt")
+    expect(within(own).getByRole("button", { name: "Rollback" })).toBeDisabled()
+    expect(within(own).getByRole("button", { name: "Delete" })).toBeEnabled()
+  })
+
+  it("greys out rollback for an untracked directory and keeps delete", () => {
+    menus.render = true
+    store.git = [
+      { path: "gen/a.json", status: "??", additions: 0, deletions: 0 },
+      { path: "gen/b.json", status: "??", additions: 0, deletions: 0 },
+      { path: "README.md", status: "M", additions: 1, deletions: 0 },
+    ]
+    renderTab()
+    const own = ownMenu("gen")
+    expect(within(own).getByRole("button", { name: "Rollback" })).toBeDisabled()
+    expect(within(own).getByRole("button", { name: "Delete" })).toBeEnabled()
+  })
+
+  it("keeps rollback for a tracked file", () => {
+    menus.render = true
+    store.git = [
+      { path: "draft.txt", status: "??", additions: 0, deletions: 0 },
+      { path: "README.md", status: "M", additions: 1, deletions: 0 },
+    ]
+    renderTab()
+    const own = ownMenu("README.md")
+    expect(within(own).getByRole("button", { name: "Rollback" })).toBeEnabled()
   })
 })

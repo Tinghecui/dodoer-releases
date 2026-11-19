@@ -63,6 +63,7 @@ import {
   type FileTreeDragPayload,
 } from "@/lib/file-tree-dnd"
 import {
+  canRollbackGitStatus,
   rollbackPathsForStatus,
   scopeGitStatusEntriesForDirectory,
 } from "@/lib/git-status-path"
@@ -786,7 +787,9 @@ function RenderNode({
               <ContextMenuItem
                 variant="destructive"
                 onSelect={() => onRequestRollback(node)}
-                disabled={isGitMenuDisabled}
+                disabled={
+                  isGitMenuDisabled || !canRollbackGitStatus(gitStatusCode)
+                }
               >
                 {t("actions.rollback")}
               </ContextMenuItem>

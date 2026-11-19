@@ -27,6 +27,16 @@ export function splitGitStatusRename(raw: string): {
 }
 
 /**
+ * 这个状态的文件能不能「回滚」：回滚是按 HEAD 恢复，未跟踪（??）、被忽略（!!）的
+ * 文件 HEAD 里没有，git 只会报 pathspec did not match；没有变更的也没东西可回滚。
+ * 文件树、「变更」面板的回滚菜单照这个变灰，要去掉新文件用「删除」（#854）。
+ */
+export function canRollbackGitStatus(status: string | undefined): boolean {
+  const code = status?.trim() ?? ""
+  return code !== "" && code !== "??" && code !== "!!"
+}
+
+/**
  * 回滚 target（一个文件或目录，"." 是整个仓库）要交给恢复接口的路径。
  * 改名（R）的新名在 HEAD 里不存在，只恢复新名会把它删掉、旧名却留着暂存的删除，
  * 所以落在 target 里的改名要把旧名也一起恢复；旧名已经在 target 里的不用重复。

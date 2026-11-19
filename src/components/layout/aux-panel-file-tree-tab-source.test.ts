@@ -451,3 +451,13 @@ describe("aux file tree directory Git action expands untracked dirs", () => {
     expect(handler).toMatch(/gitStatus\(folder\.path,\s*true\)/)
   })
 })
+
+describe("aux file tree greys out rollback for untracked files (#854)", () => {
+  // 整个目录未跟踪时 git status 只列「?? 目录/」，里面的文件靠 ancestorUntracked
+  // 算成 "??"；回滚要看这个状态，不然对 HEAD 里没有的文件跑恢复，报 git 原文
+  it("disables the file's rollback item unless the status can be rolled back", () => {
+    expect(auxSource).toMatch(
+      /onSelect=\{\(\) => onRequestRollback\(node\)\}\s*disabled=\{\s*isGitMenuDisabled \|\| !canRollbackGitStatus\(gitStatusCode\)\s*\}/
+    )
+  })
+})

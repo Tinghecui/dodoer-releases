@@ -115,6 +115,19 @@ interface TerminalViewProps {
   onProcessExited?: (terminalId: string) => void
 }
 
+/**
+ * 终端模拟器自动发出的应答（不是键盘输入）：DA1/DA2（ESC[?…c、ESC[>…c）、
+ * DSR 与光标位置报告（ESC[…n、ESC[…R）、DECRQM（ESC[?…$y）、
+ * OSC 颜色查询应答（ESC]4/10/11/12;…rgb:…）、DECRQSS（ESC P…$r…）。
+ * 一次 onData 可能连着好几条，整段都是应答才算。
+ */
+const TERMINAL_REPLY =
+  /^(?:\x1b\[[?>]?[\d;]*(?:c|n|R|\$y)|\x1b\](?:4;\d+|1[0-2]);rgb:[0-9a-fA-F/]+(?:\x07|\x1b\\)|\x1bP[01]\$r[^\x1b]*\x1b\\)+$/
+
+function isTerminalReply(data: string): boolean {
+  return TERMINAL_REPLY.test(data)
+}
+
 export function TerminalView({
   terminalId,
   workingDir,
@@ -402,6 +415,10 @@ export function TerminalView({
         // Some apps toggle focus reporting; don't leak focus in/out sequences
         // into the shell prompt when tabs are switched.
         if (data === "\x1b[I" || data === "\x1b[O") return
+        // 快照回放还没解析完时，xterm 会把历史里的查询（ESC[c 等）再应答一遍；
+        // 这些应答不是用户敲的，发给 shell 会在提示符后留下「1;2c」。只丢应答，
+        // 用户这时敲的键照常发。
+        if (replays.pending > 0 && isTerminalReply(data)) return
         // 虚拟键栏闩锁 armed 时包装软键盘输入（CTRL+字母→控制码、ALT→ESC 前缀）
         const cur = modsRef.current
         if (cur.ctrl || cur.alt) {

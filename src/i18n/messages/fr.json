@@ -7753,6 +7753,7 @@
     "moveFailed": "Impossible de déplacer la conversation : {message}",
     "loadFailed": "Impossible de charger la carte mentale : {message}",
     "conversationsLoadFailed": "Impossible de charger la liste des conversations : {message}",
+    "foldersLoadFailed": "Impossible de charger la liste des projets : {message}",
     "retry": "Réessayer",
     "emptyProject": "Ce projet n'a pas encore de conversations.",
     "noMatches": "Rien ne correspond à « {query} »",

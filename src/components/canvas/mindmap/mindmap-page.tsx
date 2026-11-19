@@ -96,6 +96,9 @@ export function MindMapPage() {
   const refreshConversations = useAppWorkspaceStore(
     (s) => s.refreshConversations
   )
+  // 项目列表没加载出来时，空列表不等于「还没打开过项目」。
+  const foldersError = useAppWorkspaceStore((s) => s.foldersError)
+  const fetchFolders = useAppWorkspaceStore((s) => s.fetchFolders)
   // The folder of the conversation in front of the user. A draft does not
   // count: an empty "new chat" in a default folder says nothing of the work.
   const activeFolderId = useTabStore((s) => {
@@ -221,6 +224,33 @@ export function MindMapPage() {
                   locale: dateFnsLocale(locale),
                 }),
         })
+
+  if (projects.length === 0 && !project && foldersError) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <PageHeader>
+          <CanvasModeSwitch />
+        </PageHeader>
+        <div
+          className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-sm text-destructive"
+          role="alert"
+          data-mindmap-folders-error
+        >
+          <p className="max-w-sm">
+            {t("foldersLoadFailed", { message: foldersError })}
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs"
+            onClick={() => void fetchFolders()}
+          >
+            {t("retry")}
+          </Button>
+        </div>
+      </div>
+    )
+  }
 
   if (projects.length === 0 && !project) {
     return (

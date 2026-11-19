@@ -153,6 +153,7 @@ function setWorkspace(over: {
       conv(50, 5),
     ],
     conversationsError: over.conversationsError ?? null,
+    foldersError: null,
   })
 }
 
@@ -343,6 +344,29 @@ describe("MindMapPage", () => {
     ).toBeNull()
     await userEvent.click(screen.getByRole("button", { name: "Retry" }))
     expect(refreshConversations).toHaveBeenCalledTimes(1)
+  })
+
+  it("says the project list failed to load instead of calling it empty", async () => {
+    const fetchFolders = vi.fn(async () => {})
+    setWorkspace({ folders: [], conversations: [] })
+    useAppWorkspaceStore.setState({
+      allFolders: [],
+      foldersError: "HTTP 500",
+      fetchFolders,
+    })
+    useMindMapViewStore.setState({ projectId: null })
+    renderPage()
+    expect(
+      await screen.findByText("Could not load the project list: HTTP 500")
+    ).toBeTruthy()
+    expect(screen.getByRole("alert")).toBeTruthy()
+    expect(
+      screen.queryByText(
+        "Open a project folder to see its conversations as a mind map."
+      )
+    ).toBeNull()
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(fetchFolders).toHaveBeenCalledTimes(1)
   })
 
   it("hands the search to the map", async () => {

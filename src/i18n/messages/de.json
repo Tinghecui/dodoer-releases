@@ -7753,6 +7753,7 @@
     "moveFailed": "Die Unterhaltung konnte nicht verschoben werden: {message}",
     "loadFailed": "Die Mindmap konnte nicht geladen werden: {message}",
     "conversationsLoadFailed": "Die Unterhaltungsliste konnte nicht geladen werden: {message}",
+    "foldersLoadFailed": "Die Projektliste konnte nicht geladen werden: {message}",
     "retry": "Erneut versuchen",
     "emptyProject": "Dieses Projekt hat noch keine Unterhaltungen.",
     "noMatches": "Keine Treffer für „{query}“",

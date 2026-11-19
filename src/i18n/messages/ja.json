@@ -7753,6 +7753,7 @@
     "moveFailed": "会話を移動できませんでした: {message}",
     "loadFailed": "マインドマップを読み込めませんでした: {message}",
     "conversationsLoadFailed": "会話リストを読み込めませんでした：{message}",
+    "foldersLoadFailed": "プロジェクトリストを読み込めませんでした：{message}",
     "retry": "再試行",
     "emptyProject": "このプロジェクトにはまだ会話がありません。",
     "noMatches": "「{query}」に一致するものはありません",

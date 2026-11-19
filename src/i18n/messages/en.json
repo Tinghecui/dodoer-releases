@@ -7753,6 +7753,7 @@
     "moveFailed": "Could not move the conversation: {message}",
     "loadFailed": "Could not load the mind map: {message}",
     "conversationsLoadFailed": "Could not load the conversation list: {message}",
+    "foldersLoadFailed": "Could not load the project list: {message}",
     "retry": "Retry",
     "emptyProject": "This project has no conversations yet.",
     "noMatches": "Nothing matches “{query}”",

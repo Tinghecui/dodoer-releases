@@ -77,6 +77,7 @@ import type {
 import { defaultConversationBranch } from "@/lib/worktree-slug"
 import {
   branchNameProblem,
+  MAX_BRANCH_NAME_BYTES,
   type BranchNameProblem,
 } from "@/lib/cowork/worktree-start"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
@@ -1005,7 +1006,11 @@ export function BranchDropdown({
                       })
                     : startBranchProblem === "unchecked"
                       ? t("dialogs.branchListUnavailable")
-                      : t("dialogs.branchNameInvalid")}
+                      : startBranchProblem === "too_long"
+                        ? t("dialogs.branchNameTooLong", {
+                            max: MAX_BRANCH_NAME_BYTES,
+                          })
+                        : t("dialogs.branchNameInvalid")}
                 </p>
               ) : null}
             </div>

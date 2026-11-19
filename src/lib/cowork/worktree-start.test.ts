@@ -5,7 +5,9 @@ import { defaultConversationBranch } from "@/lib/worktree-slug"
 import {
   branchNameProblem,
   commandErrorReason,
+  isBranchNameTooLongError,
   isValidBranchName,
+  MAX_BRANCH_NAME_BYTES,
 } from "./worktree-start"
 
 // Each verdict below was checked against `git check-ref-format --branch`
@@ -134,5 +136,46 @@ describe("branchNameProblem", () => {
     expect(branchNameProblem("cv/tidy-fox", local)).toBeNull()
     expect(branchNameProblem("Main", local)).toBeNull()
     expect(branchNameProblem("", local)).toBeNull()
+  })
+})
+
+// #833：名字太长时 git 要到 `worktree add` 写 refs/heads/<名字>.lock 才失败，
+// 弹框里就要拦下。
+describe("branchNameProblem: length", () => {
+  it("refuses a name past the byte limit as too long", () => {
+    expect(branchNameProblem(`qa/${"a".repeat(260)}`, [])).toBe("too_long")
+    expect(branchNameProblem("a".repeat(MAX_BRANCH_NAME_BYTES + 1), [])).toBe(
+      "too_long"
+    )
+  })
+
+  it("takes a name right at the limit", () => {
+    expect(branchNameProblem("a".repeat(MAX_BRANCH_NAME_BYTES), [])).toBeNull()
+  })
+
+  it("counts UTF-8 bytes, not characters", () => {
+    // 「分」是 3 个字节
+    const chars = Math.floor(MAX_BRANCH_NAME_BYTES / 3) + 1
+    expect(branchNameProblem("分".repeat(chars), [])).toBe("too_long")
+    expect(branchNameProblem("分".repeat(chars - 1), [])).toBeNull()
+  })
+})
+
+describe("isBranchNameTooLongError", () => {
+  it("knows the backend's too-long refusal and nothing else", () => {
+    expect(
+      isBranchNameTooLongError({
+        code: "invalid_input",
+        message: "Branch name too long",
+        detail: "qa/aaa",
+      })
+    ).toBe(true)
+    expect(
+      isBranchNameTooLongError({
+        code: "invalid_input",
+        message: "Invalid branch name",
+      })
+    ).toBe(false)
+    expect(isBranchNameTooLongError(new Error("boom"))).toBe(false)
   })
 })

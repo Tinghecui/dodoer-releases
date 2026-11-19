@@ -268,6 +268,35 @@ export function hasStoredQueue(conversationId: number): boolean {
   }
 }
 
+/** 草稿标签 `tabId` 的排队区存着消息（还没有会话、没发出去的，比如新工作树
+ *  没建成，#833）。输入框这时已经清空，靠这个才知道草稿不是空的。 */
+export function hasStoredDraftQueue(tabId: string): boolean {
+  const store = storage()
+  if (!store) return false
+  try {
+    return store.getItem(draftMessageQueueStorageKey(tabId)) != null
+  } catch {
+    return false
+  }
+}
+
+/** 草稿标签换成新标签接着用（关掉最后一个标签时补的那个草稿）时，把排队区
+ *  存的消息搬到新标签名下（#833），像输入框文字一样跟过去。新标签那份原来
+ *  有的排在后面。 */
+export function moveStoredDraftQueue(fromTabId: string, toTabId: string): void {
+  const from = draftMessageQueueStorageKey(fromTabId)
+  const to = draftMessageQueueStorageKey(toTabId)
+  if (from === to) return
+  const moving = readStoredQueue(from)
+  if (moving.length === 0) return
+  const ids = new Set(moving.map((item) => item.id))
+  const kept = readStoredQueue(to).filter((item) => !ids.has(item.id))
+  writeStoredQueue(to, [...moving, ...kept])
+  // 新键确实存下了才清旧键（超出存储上限时旧的那份留着）
+  const landed = new Set(readStoredQueue(to).map((item) => item.id))
+  if (moving.every((item) => landed.has(item.id))) writeStoredQueue(from, [])
+}
+
 /** Mirror `queue` into `key`; an empty queue removes the entry. Never
  *  throws: storage full or unavailable only loses the restart copy. Only the
  *  window holding the claim (`claimStoredQueue`) calls this. */

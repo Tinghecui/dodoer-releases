@@ -206,7 +206,10 @@ describe("a worktree that cannot be created fails the message", () => {
       "const failWorktreeStart = useCallback(",
       "const handleSend = useCallback("
     )
-    expect(handler).toContain("description: commandErrorReason(error)")
+    // #833：分支名太长时换成翻译好的说明，别的错误照旧带上原因
+    expect(handler).toContain("description: isBranchNameTooLongError(error)")
+    expect(handler).toContain('tBranch("dialogs.branchNameTooLong"')
+    expect(handler).toContain(": commandErrorReason(error)")
     expect(handler).toContain("mqFailHead()")
     // …and the send's worktree branch hands its failure to it.
     const failure = between(

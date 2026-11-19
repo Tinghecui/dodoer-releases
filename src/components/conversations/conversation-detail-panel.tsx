@@ -153,7 +153,11 @@ import {
 import { TurnBusyError } from "@/lib/turn-busy"
 import { deliverQueuedSteer } from "@/lib/queued-steer"
 import { toErrorMessage } from "@/lib/app-error"
-import { commandErrorReason } from "@/lib/cowork/worktree-start"
+import {
+  commandErrorReason,
+  isBranchNameTooLongError,
+  MAX_BRANCH_NAME_BYTES,
+} from "@/lib/cowork/worktree-start"
 import { useCoworkText } from "@/lib/cowork/i18n"
 import { ModelSwitchContext } from "@/lib/cowork/model-switch"
 import { useCachedCoworkInfo } from "@/lib/cowork/info"
@@ -1542,7 +1546,11 @@ const ConversationTabView = memo(function ConversationTabView({
   const failWorktreeStart = useCallback(
     (error: unknown) => {
       toast.error(tBranch("toasts.worktreeCreateFailed"), {
-        description: commandErrorReason(error),
+        description: isBranchNameTooLongError(error)
+          ? tBranch("dialogs.branchNameTooLong", {
+              max: MAX_BRANCH_NAME_BYTES,
+            })
+          : commandErrorReason(error),
       })
       mqFailHead()
     },

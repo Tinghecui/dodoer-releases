@@ -3065,6 +3065,7 @@
         "baseLabel": "Point de départ",
         "baseCurrent": "{branch} (actuelle)",
         "branchNameInvalid": "Nom de branche invalide. Il ne peut pas contenir d’espace, « .. », ~ ^ : ? * [ ou \\, ni commencer par - ou /, ni se terminer par /, . ou .lock.",
+        "branchNameTooLong": "Nom de branche trop long : {max} octets au maximum (une lettre latine compte 1 octet, un caractère CJK 3).",
         "branchNameExists": "Une branche nommée {name} existe déjà. Choisissez un autre nom.",
         "branchListUnavailable": "Impossible de lire les branches existantes, ce nom ne peut donc pas être vérifié. Réessayez ou laissez le nom vide."
       },

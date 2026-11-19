@@ -3065,6 +3065,7 @@
         "baseLabel": "起點",
         "baseCurrent": "{branch}（目前）",
         "branchNameInvalid": "分支名稱不合法：不能包含空格、「..」、~ ^ : ? * [ 或 \\，不能以 - 或 / 開頭，也不能以 /、. 或 .lock 結尾。",
+        "branchNameTooLong": "分支名稱太長：最多 {max} 個位元組（英文字母算 1 個，漢字算 3 個）。",
         "branchNameExists": "分支 {name} 已存在，請換一個名稱。",
         "branchListUnavailable": "讀不到現有的分支，無法確認這個名稱是否已被使用。請重試，或將名稱留空。"
       },

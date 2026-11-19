@@ -3065,6 +3065,7 @@
         "baseLabel": "시작 지점",
         "baseCurrent": "{branch} (현재)",
         "branchNameInvalid": "올바른 브랜치 이름이 아닙니다. 공백, “..”, ~ ^ : ? * [ \\ 문자는 쓸 수 없고, - 또는 /로 시작하거나 /, ., .lock으로 끝날 수 없습니다.",
+        "branchNameTooLong": "브랜치 이름이 너무 깁니다. 최대 {max}바이트까지 쓸 수 있습니다(영문자는 1바이트, 한글은 3바이트).",
         "branchNameExists": "{name} 브랜치가 이미 있습니다. 다른 이름을 입력하세요.",
         "branchListUnavailable": "기존 브랜치를 읽을 수 없어 이 이름을 확인할 수 없습니다. 다시 시도하거나 이름을 비워 두세요."
       },

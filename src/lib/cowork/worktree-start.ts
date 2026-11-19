@@ -35,8 +35,16 @@ export function isValidBranchName(name: string): boolean {
     .every((part) => !part.startsWith(".") && !part.endsWith(".lock"))
 }
 
+/**
+ * 分支名最多多少个 UTF-8 字节（#833）。git 的规则不管长度，可建工作树时
+ * 要写 `refs/heads/<名字>.lock`，工作树目录名又是「仓库名-分支名」，任何一个
+ * 超过文件系统 255 字节的上限，`git worktree add` 就报 cannot lock ref。
+ * 后端 `plan_conversation_worktree` 用同一个上限。
+ */
+export const MAX_BRANCH_NAME_BYTES = 200
+
 /** Why the dialog refuses a typed branch name; `null` when it takes it. */
-export type BranchNameProblem = "invalid" | "exists"
+export type BranchNameProblem = "invalid" | "too_long" | "exists"
 
 /**
  * Checks a name typed into "adjust new worktree" the way the backend will when
@@ -51,6 +59,9 @@ export function branchNameProblem(
 ): BranchNameProblem | null {
   if (name === "") return null
   if (!isValidBranchName(name)) return "invalid"
+  if (new TextEncoder().encode(name).length > MAX_BRANCH_NAME_BYTES) {
+    return "too_long"
+  }
   return localBranches.includes(name) ? "exists" : null
 }
 
@@ -67,4 +78,15 @@ export function commandErrorReason(error: unknown): string {
   return detail && detail !== appError.message
     ? `${appError.message}: ${detail}`
     : appError.message
+}
+
+/** 后端因分支名太长拒掉了新工作树（`plan_conversation_worktree` 的
+ *  "Branch name too long"，#833）：toast 换成翻译好的说明，不显示英文原文。
+ *  弹框已经拦着，这里接的是升级前就定好名字的草稿。 */
+export function isBranchNameTooLongError(error: unknown): boolean {
+  const appError = extractAppCommandError(error)
+  return (
+    appError?.code === "invalid_input" &&
+    appError.message === "Branch name too long"
+  )
 }

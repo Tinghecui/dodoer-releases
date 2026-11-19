@@ -3065,6 +3065,7 @@
         "baseLabel": "Start from",
         "baseCurrent": "{branch} (current)",
         "branchNameInvalid": "Not a valid branch name. It cannot contain spaces, \"..\", ~ ^ : ? * [ or \\; start with - or /; or end with /, . or .lock.",
+        "branchNameTooLong": "Branch name is too long: at most {max} bytes (a letter is 1 byte, a CJK character 3).",
         "branchNameExists": "A branch named {name} already exists. Pick another name.",
         "branchListUnavailable": "Couldn't read the existing branches, so this name can't be checked. Try again, or leave the name empty."
       },

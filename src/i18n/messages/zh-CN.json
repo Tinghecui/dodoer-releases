@@ -3065,6 +3065,7 @@
         "baseLabel": "起点",
         "baseCurrent": "{branch}（当前）",
         "branchNameInvalid": "分支名不合法：不能含空格、“..”、~ ^ : ? * [ 或 \\，不能以 - 或 / 开头，也不能以 /、. 或 .lock 结尾。",
+        "branchNameTooLong": "分支名太长：最多 {max} 个字节（英文字母算 1 个，汉字算 3 个）。",
         "branchNameExists": "分支 {name} 已存在，换一个名字。",
         "branchListUnavailable": "读不到已有的分支，没法确认这个名字有没有被占用。请重试，或者把名字留空。"
       },

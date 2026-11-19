@@ -6982,6 +6982,9 @@ pub(crate) async fn git_ref_exists(repo: &str, full_ref: &str) -> Result<bool, A
 /// the arguments before the path (`-b <new>`) and after it (the base / the
 /// existing branch). Resolved before any path is chosen, so a bad spec never
 /// touches disk.
+/// 新工作树分支名最多多少个 UTF-8 字节（#833），见 `plan_conversation_worktree`。
+const MAX_CONVERSATION_BRANCH_BYTES: usize = 200;
+
 async fn plan_conversation_worktree(
     root_path: &str,
     spec: ConversationWorktreeSpec,
@@ -6989,6 +6992,14 @@ async fn plan_conversation_worktree(
     Ok(match spec {
         ConversationWorktreeSpec::BranchOff { branch, base } => {
             let branch = branch.trim().to_string();
+            // #833：git 的规则不管长度，太长的名字要到 `worktree add` 写
+            // `refs/heads/<名字>.lock`（工作树目录名也带着它）时才因超过文件名
+            // 上限失败。上限和前端 `MAX_BRANCH_NAME_BYTES` 一样。
+            if branch.len() > MAX_CONVERSATION_BRANCH_BYTES {
+                return Err(
+                    AppCommandError::invalid_input("Branch name too long").with_detail(branch)
+                );
+            }
             let check = crate::process::tokio_command("git")
                 .args(["check-ref-format", "--branch", &branch])
                 .current_dir(root_path)
@@ -7400,6 +7411,22 @@ mod tests {
         let stderr = b"fatal: Authentication failed for 'https://example.com/repo.git/'";
         let err = classify_remote_git_error("fetch", stderr);
         assert!(matches!(err.code, AppErrorCode::AuthenticationFailed), "{err:?}");
+    }
+
+    // #833：名字太长时不等 `git worktree add` 报 cannot lock ref，这里就拒掉；
+    // 拒在跑 git 之前，所以不存在的仓库目录也一样。
+    #[tokio::test]
+    async fn plan_conversation_worktree_refuses_a_too_long_branch_name() {
+        use crate::app_error::AppErrorCode;
+        let spec = ConversationWorktreeSpec::BranchOff {
+            branch: format!("qa/{}", "a".repeat(260)),
+            base: None,
+        };
+        let err = plan_conversation_worktree("/nonexistent-repo-for-test", spec)
+            .await
+            .expect_err("too long a name must be refused");
+        assert!(matches!(err.code, AppErrorCode::InvalidInput), "{err:?}");
+        assert_eq!(err.message, "Branch name too long");
     }
 
     #[test]

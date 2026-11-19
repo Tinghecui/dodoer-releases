@@ -48,6 +48,10 @@ import {
 } from "@/lib/message-input-draft"
 import { discardAskSelectionPrompts } from "@/lib/ask-selection-handoff"
 import {
+  hasStoredDraftQueue,
+  moveStoredDraftQueue,
+} from "@/lib/cowork/message-queue-storage"
+import {
   MAX_CONVERSATION_TABS,
   TabRecency,
   pickTabsToEvict,
@@ -1806,11 +1810,16 @@ function focusTab(tabId: string) {
 }
 
 /** A draft holding nothing to lose: no saved text, and its composer reports
- *  no unsaved typing or image attachment either. */
+ *  no unsaved typing or image attachment either. Cowork（#833）：排队区存着
+ *  没发出去的消息（新工作树没建成时就是这样，输入框已经清空）也不算空。 */
 function isBlankDraft(tab: TabItemInternal): boolean {
   if (tab.conversationId != null) return false
   const key = buildNewConversationDraftStorageKey(tab.id)
-  return loadMessageInputDraftV2(key) == null && !hasLiveComposerContent(key)
+  return (
+    loadMessageInputDraftV2(key) == null &&
+    !hasLiveComposerContent(key) &&
+    !hasStoredDraftQueue(tab.id)
+  )
 }
 
 /**
@@ -2280,7 +2289,23 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         if (useAppWorkspaceStore.getState().folders.length === 0) {
           set({ rawTabs: [], activeTabId: null })
         } else {
-          const replacementTab = makeReplacementDraftTab(closingTab)
+          let replacementTab = makeReplacementDraftTab(closingTab)
+          // Cowork（#833）：排队区存着没发出去的消息时，原来的新工作树选择
+          // 也跟过去，不然点重试会在原项目目录里直接发，不先建工作树。
+          // 文件夹换了（比如关的是聊天标签）就不带。
+          const carriesQueue =
+            closingDraftKey != null && hasStoredDraftQueue(closingTab.id)
+          if (
+            carriesQueue &&
+            closingTab.pendingWorktree &&
+            replacementTab.folderId === closingTab.folderId &&
+            replacementTab.workingDir === closingTab.workingDir
+          ) {
+            replacementTab = {
+              ...replacementTab,
+              pendingWorktree: closingTab.pendingWorktree,
+            }
+          }
           set({ rawTabs: [replacementTab], activeTabId: replacementTab.id })
           if (closingDraftKey) {
             draftKeyHandedOver = true
@@ -2288,6 +2313,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
               closingDraftKey,
               buildNewConversationDraftStorageKey(replacementTab.id)
             )
+            // Cowork（#833）：排队区存着的消息也跟过去
+            if (carriesQueue) {
+              moveStoredDraftQueue(closingTab.id, replacementTab.id)
+            }
           }
         }
       } else if (tabId === prevState.activeTabId) {

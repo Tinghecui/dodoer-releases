@@ -3065,6 +3065,7 @@
         "baseLabel": "Ausgangspunkt",
         "baseCurrent": "{branch} (aktuell)",
         "branchNameInvalid": "Ungültiger Branch-Name. Er darf keine Leerzeichen, „..“, ~ ^ : ? * [ oder \\ enthalten, nicht mit - oder / beginnen und nicht auf /, . oder .lock enden.",
+        "branchNameTooLong": "Der Branch-Name ist zu lang: höchstens {max} Byte (ein lateinischer Buchstabe zählt 1 Byte, ein CJK-Zeichen 3).",
         "branchNameExists": "Ein Branch namens {name} existiert bereits. Wähle einen anderen Namen.",
         "branchListUnavailable": "Die vorhandenen Branches konnten nicht gelesen werden, daher lässt sich dieser Name nicht prüfen. Versuche es erneut oder lass den Namen leer."
       },

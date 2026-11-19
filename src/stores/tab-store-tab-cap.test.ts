@@ -5,13 +5,14 @@ import {
   buildNewConversationDraftStorageKey,
   saveMessageInputDraftV2,
 } from "@/lib/message-input-draft"
+import { draftMessageQueueStorageKey } from "@/lib/cowork/message-queue-storage"
 import { MAX_CONVERSATION_TABS } from "@/lib/tab-limit"
 import {
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
 } from "./app-workspace-store"
 import { resetTabStore, useTabStore, type TabItemInternal } from "./tab-store"
-import type { FolderDetail } from "@/lib/types"
+import type { ConversationWorktreeSpec, FolderDetail } from "@/lib/types"
 
 vi.mock("@/lib/api", () => ({
   listOpenedTabs: vi.fn(),
@@ -104,5 +105,71 @@ describe("conversation tab cap", () => {
     for (let id = 1; id <= 5; id += 1) open(id)
     await settle()
     expect(ids()).toEqual([draft.tabId, ...[2, 3, 4, 5].map(tabId)])
+  })
+})
+
+// #833：消息发出后输入框清空了，可排队区里还存着这条没发出去的消息（比如
+// 新工作树没建成），这个草稿也不能被当成空草稿关掉。
+describe("a draft whose queue holds an unsent message (#833)", () => {
+  const storeQueue = (draftTabId: string) =>
+    localStorage.setItem(
+      draftMessageQueueStorageKey(draftTabId),
+      JSON.stringify([
+        {
+          id: "q1",
+          draft: { blocks: [{ type: "text", text: "hi" }], displayText: "hi" },
+          modeId: null,
+          failure: "send",
+        },
+      ])
+    )
+
+  it("stays open past the tab cap", async () => {
+    const draft = useTabStore.getState().openNewConversationTab(1, "/repo")
+    storeQueue(draft.tabId)
+    for (let id = 1; id <= 5; id += 1) open(id)
+    await settle()
+    expect(ids()).toEqual([draft.tabId, ...[2, 3, 4, 5].map(tabId)])
+  })
+
+  it("hands its queue to the draft that replaces it on close", () => {
+    const draft = useTabStore.getState().openNewConversationTab(1, "/repo")
+    storeQueue(draft.tabId)
+    useTabStore.getState().closeTab(draft.tabId)
+    const [replacement] = useTabStore.getState().rawTabs
+    expect(replacement.id).not.toBe(draft.tabId)
+    expect(
+      localStorage.getItem(draftMessageQueueStorageKey(replacement.id))
+    ).toContain('"q1"')
+    expect(
+      localStorage.getItem(draftMessageQueueStorageKey(draft.tabId))
+    ).toBeNull()
+  })
+
+  it("keeps its new-worktree choice on the replacement, so retry still creates the worktree", () => {
+    const spec: ConversationWorktreeSpec = {
+      kind: "branch_off",
+      branch: "qa/retry",
+      base: null,
+    }
+    const draft = useTabStore.getState().openNewConversationTab(1, "/repo")
+    useTabStore.getState().setDraftWorktree(draft.tabId, spec)
+    storeQueue(draft.tabId)
+    useTabStore.getState().closeTab(draft.tabId)
+    const [replacement] = useTabStore.getState().rawTabs
+    expect(replacement.id).not.toBe(draft.tabId)
+    expect(replacement.pendingWorktree).toEqual(spec)
+  })
+
+  it("does not carry a worktree choice when nothing was queued", () => {
+    const draft = useTabStore.getState().openNewConversationTab(1, "/repo")
+    useTabStore.getState().setDraftWorktree(draft.tabId, {
+      kind: "branch_off",
+      branch: "qa/plain",
+      base: null,
+    })
+    useTabStore.getState().closeTab(draft.tabId)
+    const [replacement] = useTabStore.getState().rawTabs
+    expect(replacement.pendingWorktree).toBeUndefined()
   })
 })

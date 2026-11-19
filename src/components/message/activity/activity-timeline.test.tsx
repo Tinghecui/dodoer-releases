@@ -36,7 +36,7 @@ import type { MessageTurn } from "@/lib/types"
 import { mockTruncateLayout } from "@/test-layout"
 import { CompletedTurnContent } from "../completed-turn-content"
 import { MessageScrollProvider } from "../message-scroll-context"
-import { resetDisclosureStore } from "./disclosure-store"
+import { openDisclosures, resetDisclosureStore } from "./disclosure-store"
 
 const STORE: ConnectionStoreApi = {
   getConnection: () => undefined,
@@ -1388,6 +1388,260 @@ describe("activity timeline: where the rail ends", () => {
     expect(
       screen.getByRole("button", { name: /Tidy the README/ })
     ).toHaveAttribute("aria-expanded", "false")
+  })
+
+  it("marks a goal whose run failed as failed, and the header's failure opens its card at the step", () => {
+    const goal: AdaptedContentPart = {
+      type: "goal-run",
+      start: {
+        type: "tool-call",
+        toolCallId: "g-start",
+        toolName: "create_goal",
+        input: JSON.stringify({ objective: "Tidy the README" }),
+        state: "output-available",
+      },
+      end: null,
+      items: [
+        {
+          type: "tool-call",
+          toolCallId: "g-bash",
+          toolName: "Bash",
+          input: JSON.stringify({ command: "pnpm lint-readme" }),
+          state: "output-error",
+          errorText: "lint-readme: not found",
+        },
+      ],
+      isRunning: false,
+    }
+    renderSettled([goal], 13000)
+    const goalRow = document.querySelector<HTMLElement>(
+      '[data-step-key="goal:g-start"]'
+    )!
+    // The run's failure is the goal's: its row says so, as the header does.
+    expect(goalRow).toHaveAttribute("data-status", "failed")
+    expect(document.querySelector('[data-step-key="tool:g-bash"]')).toBeNull()
+    const into = vi.spyOn(Element.prototype, "scrollIntoView")
+    // The jump scrolls two frames on, once the opened rows are drawn.
+    const frames: FrameRequestCallback[] = []
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((frame) => {
+      frames.push(frame)
+      return frames.length
+    })
+    vi.stubGlobal("CSS", { escape: (value: string) => value })
+    try {
+      fireEvent.click(screen.getByTitle("Show the failure"))
+      while (frames.length > 0) act(() => frames.shift()!(0))
+      expect(
+        screen.getByRole("button", { name: /Tidy the README/ })
+      ).toHaveAttribute("aria-expanded", "true")
+      const failed = document.querySelector('[data-step-key="tool:g-bash"]')
+      expect(failed).toBeTruthy()
+      // The jump lands on the failed step itself.
+      expect(into).toHaveBeenCalledTimes(1)
+      expect(into.mock.contexts[0]).toBe(failed)
+    } finally {
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }
+  })
+
+  it("leaves a goal unmarked when the turn redid its failed command after the card", () => {
+    const goal: AdaptedContentPart = {
+      type: "goal-run",
+      start: {
+        type: "tool-call",
+        toolCallId: "g-start",
+        toolName: "create_goal",
+        input: JSON.stringify({ objective: "Tidy the README" }),
+        state: "output-available",
+      },
+      end: null,
+      items: [
+        {
+          type: "tool-call",
+          toolCallId: "g-bash",
+          toolName: "Bash",
+          input: JSON.stringify({ command: "pnpm lint-readme" }),
+          state: "output-error",
+          errorText: "lint-readme: not found",
+        },
+      ],
+      isRunning: false,
+    }
+    const retry: AdaptedContentPart = {
+      type: "tool-call",
+      toolCallId: "retry-bash",
+      toolName: "Bash",
+      input: JSON.stringify({ command: "pnpm lint-readme" }),
+      state: "output-available",
+      output: "ok",
+    }
+    renderSettled([goal, retry], 13000)
+    // The header counts the failure as put right; the goal's row agrees.
+    expect(screen.queryByTitle("Show the failure")).toBeNull()
+    expect(
+      document.querySelector('[data-step-key="goal:g-start"]')
+    ).toHaveAttribute("data-status", "succeeded")
+  })
+
+  it("brings a failure in the hidden middle of a long goal run into view", () => {
+    // Reads and commands in turn: each its own row, past the long-list fold.
+    const items: AdaptedContentPart[] = Array.from({ length: 180 }, (_, i) =>
+      i % 2 === 0
+        ? {
+            type: "tool-call",
+            toolCallId: `g-read-${i}`,
+            toolName: "Read",
+            input: JSON.stringify({ file_path: `/r/doc-${i}.md` }),
+            state: "output-available",
+            output: "# doc",
+          }
+        : {
+            type: "tool-call",
+            toolCallId: `g-bash-${i}`,
+            toolName: "Bash",
+            input: JSON.stringify({ command: `pnpm check-${i}` }),
+            state: i === 81 ? "output-error" : "output-available",
+            ...(i === 81 ? { errorText: "check failed" } : { output: "ok" }),
+          }
+    )
+    const goal: AdaptedContentPart = {
+      type: "goal-run",
+      start: {
+        type: "tool-call",
+        toolCallId: "g-start",
+        toolName: "create_goal",
+        input: JSON.stringify({ objective: "Tidy the docs" }),
+        state: "output-available",
+      },
+      end: null,
+      items,
+      isRunning: false,
+    }
+    renderSettled([goal], 13000)
+    const into = vi.spyOn(Element.prototype, "scrollIntoView")
+    // The jump scrolls two frames on, once the opened rows are drawn.
+    const frames: FrameRequestCallback[] = []
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((frame) => {
+      frames.push(frame)
+      return frames.length
+    })
+    vi.stubGlobal("CSS", { escape: (value: string) => value })
+    try {
+      fireEvent.click(screen.getByTitle("Show the failure"))
+      while (frames.length > 0) act(() => frames.shift()!(0))
+      const failed = document.querySelector('[data-step-key="tool:g-bash-81"]')
+      expect(failed).toBeTruthy()
+      expect(into).toHaveBeenCalledTimes(1)
+      expect(into.mock.contexts[0]).toBe(failed)
+    } finally {
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }
+  })
+
+  it("keeps a failure brought out of one long list drawn when another list's is", () => {
+    // Two goals, each a long run with a failure in its hidden middle.
+    const longGoal = (id: string): AdaptedContentPart => ({
+      type: "goal-run",
+      start: {
+        type: "tool-call",
+        toolCallId: `${id}-start`,
+        toolName: "create_goal",
+        input: JSON.stringify({ objective: `Tidy ${id}` }),
+        state: "output-available",
+      },
+      end: null,
+      items: Array.from({ length: 180 }, (_, i) =>
+        i % 2 === 0
+          ? {
+              type: "tool-call" as const,
+              toolCallId: `${id}-read-${i}`,
+              toolName: "Read",
+              input: JSON.stringify({ file_path: `/r/${id}-${i}.md` }),
+              state: "output-available" as const,
+              output: "# doc",
+            }
+          : {
+              type: "tool-call" as const,
+              toolCallId: `${id}-bash-${i}`,
+              toolName: "Bash",
+              input: JSON.stringify({ command: `pnpm ${id}-${i}` }),
+              state:
+                i === 81
+                  ? ("output-error" as const)
+                  : ("output-available" as const),
+              ...(i === 81 ? { errorText: "check failed" } : { output: "ok" }),
+            }
+      ),
+      isRunning: false,
+    })
+    renderSettled([longGoal("ga"), longGoal("gb")], 13000)
+    act(() => openDisclosures(["goal:ga-start", "tool:ga-bash-81"]))
+    expect(
+      document.querySelector('[data-step-key="tool:ga-bash-81"]')
+    ).toBeTruthy()
+    // Opening the other list's failure leaves the first one's in view.
+    act(() => openDisclosures(["goal:gb-start", "tool:gb-bash-81"]))
+    expect(
+      document.querySelector('[data-step-key="tool:gb-bash-81"]')
+    ).toBeTruthy()
+    expect(
+      document.querySelector('[data-step-key="tool:ga-bash-81"]')
+    ).toBeTruthy()
+  })
+
+  it("keeps a failure brought out of a long list's middle when a later one is in its tail", () => {
+    // One long goal run: a failure in its hidden middle, another in its tail.
+    const goal: AdaptedContentPart = {
+      type: "goal-run",
+      start: {
+        type: "tool-call",
+        toolCallId: "gc-start",
+        toolName: "create_goal",
+        input: JSON.stringify({ objective: "Tidy gc" }),
+        state: "output-available",
+      },
+      end: null,
+      items: Array.from({ length: 180 }, (_, i) =>
+        i % 2 === 0
+          ? {
+              type: "tool-call" as const,
+              toolCallId: `gc-read-${i}`,
+              toolName: "Read",
+              input: JSON.stringify({ file_path: `/r/gc-${i}.md` }),
+              state: "output-available" as const,
+              output: "# doc",
+            }
+          : {
+              type: "tool-call" as const,
+              toolCallId: `gc-bash-${i}`,
+              toolName: "Bash",
+              input: JSON.stringify({ command: `pnpm gc-${i}` }),
+              state:
+                i === 81 || i === 171
+                  ? ("output-error" as const)
+                  : ("output-available" as const),
+              ...(i === 81 || i === 171
+                ? { errorText: "check failed" }
+                : { output: "ok" }),
+            }
+      ),
+      isRunning: false,
+    }
+    renderSettled([goal], 13000)
+    act(() => openDisclosures(["goal:gc-start", "tool:gc-bash-81"]))
+    expect(
+      document.querySelector('[data-step-key="tool:gc-bash-81"]')
+    ).toBeTruthy()
+    // The later jump lands in the tail, always drawn: the middle stays out.
+    act(() => openDisclosures(["goal:gc-start", "tool:gc-bash-171"]))
+    expect(
+      document.querySelector('[data-step-key="tool:gc-bash-171"]')
+    ).toBeTruthy()
+    expect(
+      document.querySelector('[data-step-key="tool:gc-bash-81"]')
+    ).toBeTruthy()
   })
 
   it("runs the rail past the last row only beside a body under its line", () => {

@@ -204,14 +204,14 @@ export function summarizeActivity(steps: ActivityStep[]): ActivitySummary {
   counts.editedFiles = editPaths.size
 
   const recoveredKeys = new Set<string>()
-  let firstUnrecoveredKey: string | null = null
+  const unrecoveredKeys: string[] = []
   for (const failure of failures) {
     const laterSuccess =
       failure.signature !== null ? successes.get(failure.signature) : undefined
     if (laterSuccess !== undefined && laterSuccess > failure.index) {
       recoveredKeys.add(failure.key)
-    } else if (firstUnrecoveredKey === null) {
-      firstUnrecoveredKey = failure.key
+    } else {
+      unrecoveredKeys.push(failure.key)
     }
   }
 
@@ -222,7 +222,8 @@ export function summarizeActivity(steps: ActivityStep[]): ActivitySummary {
     unrecovered: failures.length - recoveredKeys.size,
     interrupted,
     running,
-    firstUnrecoveredKey,
+    firstUnrecoveredKey: unrecoveredKeys[0] ?? null,
+    unrecoveredKeys,
     recoveredKeys,
   }
 }

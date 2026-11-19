@@ -23,6 +23,7 @@ function summaryOf(given: Partial<ActivitySummary>): ActivitySummary {
     interrupted: 0,
     running: false,
     firstUnrecoveredKey: null,
+    unrecoveredKeys: [],
     recoveredKeys: new Set(),
     ...given,
   }

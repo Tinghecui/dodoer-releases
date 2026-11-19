@@ -17,6 +17,7 @@ import { unwrapWholeFence } from "@/lib/fenced-text"
 import { formatTokensCompact } from "@/lib/token-format"
 import { PauseIcon, XIcon } from "lucide-react"
 import { useTranslations } from "next-intl"
+import { useDisclosure } from "./activity/disclosure-store"
 import { useFoldBack } from "./activity/fold-back"
 import { useGoalControl } from "./goal-control-context"
 
@@ -218,11 +219,15 @@ function GoalCard({
   items = [],
   forceRunning,
   renderBody,
+  disclosureKey,
 }: {
   startPart: GoalToolPart
   endPart: GoalToolPart | null
   items?: AdaptedContentPart[]
   forceRunning?: boolean
+  /** Keeps the card's open state in the activity's disclosure store under
+   *  this key, so the turn header's "show the failure" can open it. */
+  disclosureKey?: string
   /** Draws the run's steps — the activity timeline's nested timeline —
    *  handed the fold the row at their foot folds the card with. */
   renderBody?: (fold: (control: HTMLElement) => void) => ReactNode
@@ -249,8 +254,16 @@ function GoalCard({
   // again (its answer has been lifted out by then), and an error opens even
   // when it lands late. `userOpen` is the manual override and wins once set,
   // so any of those defaults yields to a deliberate toggle.
-  const [userOpen, setUserOpen] = useState<boolean | null>(null)
-  const bodyOpen = userOpen ?? (isError || (isRunning && items.length > 0))
+  const defaultOpen = isError || (isRunning && items.length > 0)
+  const [localOpen, setLocalOpen] = useState<boolean | null>(null)
+  // On the activity timeline the choice lives in the disclosure store (same
+  // `choice ?? default` rule), keyed by the goal step: the header's jump to
+  // a failure inside the run opens the card through it.
+  const [storedOpen, setStoredOpen] = useDisclosure(disclosureKey ?? "", {
+    defaultOpen,
+  })
+  const bodyOpen = disclosureKey ? storedOpen : (localOpen ?? defaultOpen)
+  const setUserOpen = disclosureKey ? setStoredOpen : setLocalOpen
   // Folded from the foot of its steps, the card's header comes back into view
   // and takes the focus. Found from the control pressed, the card's own
   // trigger: the fold only ever runs on a press.
@@ -450,9 +463,11 @@ export const GoalToolCallPart = memo(function GoalToolCallPart({
 export const GoalRunPart = memo(function GoalRunPart({
   part,
   renderBody,
+  disclosureKey,
 }: {
   part: AdaptedGoalRunPart
   renderBody?: (fold: (control: HTMLElement) => void) => ReactNode
+  disclosureKey?: string
 }) {
   return (
     <GoalCard
@@ -461,6 +476,7 @@ export const GoalRunPart = memo(function GoalRunPart({
       items={part.items}
       forceRunning={part.isRunning}
       renderBody={renderBody}
+      disclosureKey={disclosureKey}
     />
   )
 })

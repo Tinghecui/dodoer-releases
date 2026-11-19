@@ -253,6 +253,9 @@ export interface ActivitySummary {
   running: boolean
   /** Key of the first unrecovered failure, for "jump to failure". */
   firstUnrecoveredKey: string | null
+  /** Keys of every unrecovered failure, in order. A goal's run reads its own
+   *  against the turn's `recoveredKeys`: a step after the card may redo it. */
+  unrecoveredKeys: readonly string[]
   /** Keys of failed steps a later step recovered. */
   recoveredKeys: ReadonlySet<string>
 }

@@ -27,11 +27,14 @@ export interface ActivityRenderContextValue {
   /** Failed steps a later step redid successfully (see `summarizeActivity`). */
   recoveredKeys: ReadonlySet<string>
   /** Draw a nested timeline (a sub-agent's own steps) with the same wiring,
-   *  ending on the capsule that folds its host. */
+   *  ending on the capsule that folds its host. `recoveredKeys`: the
+   *  recoveries its rows go by when not its own model's — a goal's run is
+   *  counted with the turn, so it goes by the turn's. */
   renderNested: (
     model: ActivityModel,
     isStreaming: boolean,
-    foot?: ActivityFoot
+    foot?: ActivityFoot,
+    recoveredKeys?: ReadonlySet<string>
   ) => ReactNode
   /** Only rows still running are drawn — the folded turn's long-lived rows
    *  (delegations, sub-agents, background tasks that outlive the turn). */

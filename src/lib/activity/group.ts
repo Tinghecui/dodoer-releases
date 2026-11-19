@@ -80,16 +80,30 @@ export function groupActivitySteps(steps: ActivityStep[]): ActivityItem[] {
 
 /**
  * The disclosure keys to open so the step `key` is in view: the step's own,
- * and its group's when it is folded into one.
+ * and its group's when it is folded into one — and, for a step a goal's run
+ * holds, the goal's card first (its key is the goal step's own).
  */
 export function disclosureKeysFor(
   items: ActivityItem[],
   key: string
 ): string[] {
+  return findDisclosureKeys(items, key) ?? [key]
+}
+
+function findDisclosureKeys(
+  items: ActivityItem[],
+  key: string
+): string[] | null {
   for (const item of items) {
     if (item.type === "group" && item.steps.some((s) => s.key === key)) {
       return [`group:${item.key}`, key]
     }
+    if (item.type === "step" && item.step.type === "goal") {
+      if (item.step.key === key) return [key]
+      const inner = findDisclosureKeys(item.step.model.items, key)
+      if (inner) return [item.step.key, ...inner]
+    }
+    if (item.type === "step" && item.key === key) return [key]
   }
-  return [key]
+  return null
 }

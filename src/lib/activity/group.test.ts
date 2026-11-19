@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest"
 
 import type { AdaptedToolCallPart } from "@/lib/adapters/ai-elements-adapter"
 import { describeToolCall } from "./describe-tool-call"
-import { groupActivitySteps } from "./group"
+import { disclosureKeysFor, groupActivitySteps } from "./group"
+import { summarizeActivity } from "./summarize"
 import type { ActivityItem, ActivityStep } from "./types"
 
 function tool(
@@ -148,5 +149,44 @@ describe("groupActivitySteps", () => {
       bash("b", { state: "input-available", output: null }),
     ])
     expect(items[0]).toMatchObject({ status: "running" })
+  })
+})
+
+describe("disclosureKeysFor", () => {
+  it("opens a goal's card, and the group in it, for a step the run holds", () => {
+    const inner = [read("a"), read("b"), bash("x")]
+    const innerItems = groupActivitySteps(inner)
+    const goal: ActivityStep = {
+      type: "goal",
+      key: "goal:g",
+      part: {
+        type: "goal-run",
+        start: {
+          type: "tool-call",
+          toolCallId: "g",
+          toolName: "create_goal",
+          input: "{}",
+          state: "output-available",
+        },
+        end: null,
+        items: [],
+        isRunning: false,
+      },
+      model: {
+        steps: inner,
+        items: innerItems,
+        answer: [],
+        summary: summarizeActivity(inner),
+      },
+    }
+    const items = groupActivitySteps([goal])
+    expect(disclosureKeysFor(items, "tool:b")).toEqual([
+      "goal:g",
+      "group:tool:a",
+      "tool:b",
+    ])
+    expect(disclosureKeysFor(items, "tool:x")).toEqual(["goal:g", "tool:x"])
+    // A key the turn does not hold opens just itself, as before.
+    expect(disclosureKeysFor(items, "tool:zz")).toEqual(["tool:zz"])
   })
 })

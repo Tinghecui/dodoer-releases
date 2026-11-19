@@ -11,6 +11,7 @@ import type {
   ActivityStep,
 } from "@/lib/activity/types"
 import { ActivityRenderProvider, useActivityRender } from "./activity-context"
+import { useRevealedKeys } from "./disclosure-store"
 import { GOAL_ICON, IMAGE_ICON, toolIcon } from "./step-visuals"
 import { AskQuestionResultCard } from "../ask-question-result-card"
 import { CODEG_MCP_TOOL_ICONS, CodegMcpToolCard } from "../codeg-mcp-tool-card"
@@ -62,6 +63,7 @@ export const ActivityTimeline = memo(function ActivityTimeline({
   foot,
   headed = false,
   nested = false,
+  recoveredKeys: givenRecoveredKeys,
 }: {
   model: ActivityModel
   isStreaming: boolean
@@ -83,35 +85,41 @@ export const ActivityTimeline = memo(function ActivityTimeline({
   headed?: boolean
   /** Drawn inside a step (see `ActivityRenderContextValue.nested`). */
   nested?: boolean
+  /** The recoveries its rows go by, when not the model's own (a goal's run:
+   *  the turn's, see `renderNested`). */
+  recoveredKeys?: ReadonlySet<string>
 }) {
   const t = useTranslations("Folder.chat.activity")
+  const recoveredKeys = givenRecoveredKeys ?? model.summary.recoveredKeys
   const context = useMemo(
     () => ({
       renderPart,
       isStreaming,
-      recoveredKeys: model.summary.recoveredKeys,
+      recoveredKeys,
       pinnedOnly,
       nested,
       renderNested: (
         nestedModel: ActivityModel,
         nestedStreaming: boolean,
-        nestedFoot?: ActivityFoot
+        nestedFoot?: ActivityFoot,
+        nestedRecoveredKeys?: ReadonlySet<string>
       ) => (
         <ActivityTimeline
           model={nestedModel}
           isStreaming={nestedStreaming}
           renderPart={renderPart}
           foot={nestedFoot}
+          recoveredKeys={nestedRecoveredKeys}
           nested
         />
       ),
     }),
-    [renderPart, isStreaming, model.summary.recoveredKeys, pinnedOnly, nested]
+    [renderPart, isStreaming, recoveredKeys, pinnedOnly, nested]
   )
   // A giant reply (an agent loop of hundreds of calls) opens with its first
   // and last rows; the middle is revealed a chunk at a time. Message-level
   // virtualization keeps working: this only bounds one row's own DOM.
-  const [revealed, setRevealed] = useState(0)
+  const [shownMore, setShownMore] = useState(0)
   const items = model.items
   const listRef = useRef<HTMLOListElement>(null)
   // Under the header, the list is there from the start: with no step yet,
@@ -130,6 +138,21 @@ export const ActivityTimeline = memo(function ActivityTimeline({
   const tailSize = isStreaming
     ? LONG_TIMELINE_ROWS - LONG_TIMELINE_HEAD
     : LONG_TIMELINE_TAIL
+  // Rows opened from outside (the header's "show the failure") are drawn
+  // even from the hidden middle: the head reaches down to the last of them
+  // there. Rows in the tail are drawn anyway, so they never count: a later
+  // jump into the tail must not hide the middle an earlier one brought out.
+  const revealedKeys = useRevealedKeys()
+  let target = -1
+  if (long) {
+    for (let i = items.length - tailSize - 1; i >= 0 && target < 0; i--) {
+      const key = items[i]!.key
+      if (revealedKeys.includes(key) || revealedKeys.includes(`group:${key}`))
+        target = i
+    }
+  }
+  const reach = target >= 0 ? target - LONG_TIMELINE_HEAD + 1 : 0
+  const revealed = Math.max(shownMore, reach)
   const hidden = long
     ? Math.max(0, items.length - LONG_TIMELINE_HEAD - tailSize - revealed)
     : 0
@@ -167,7 +190,7 @@ export const ActivityTimeline = memo(function ActivityTimeline({
                 type="button"
                 className="min-h-7 rounded-sm py-0.5 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={() =>
-                  setRevealed((count) => count + LONG_TIMELINE_STEP)
+                  setShownMore(() => revealed + LONG_TIMELINE_STEP)
                 }
               >
                 {t("row.showMoreSteps", { count: hidden })}
@@ -262,7 +285,8 @@ function proseMotionKey(noteKey: string): string {
 
 function StepView({ step, tail }: { step: ActivityStep; tail: boolean }) {
   const t = useTranslations("Folder.chat.activity")
-  const { renderPart, renderNested, nested } = useActivityRender()
+  const { renderPart, renderNested, nested, recoveredKeys } =
+    useActivityRender()
   switch (step.type) {
     case "thought":
       return <ThoughtRow step={step} />
@@ -307,21 +331,38 @@ function StepView({ step, tail }: { step: ActivityStep; tail: boolean }) {
         <HostedRow
           stepKey={step.key}
           icon={GOAL_ICON}
-          status={step.part.isRunning ? "running" : "succeeded"}
+          status={
+            step.part.isRunning
+              ? "running"
+              : // A failure in the run counts unless the turn redid it — in
+                // the run or after the card, as the turn's header has it.
+                step.model.summary.unrecoveredKeys.some(
+                    (key) => !recoveredKeys.has(key)
+                  )
+                ? "failed"
+                : "succeeded"
+          }
           kindLabel={t("kind.goal")}
           inset={false}
         >
           <GoalRunPart
             part={step.part}
+            disclosureKey={step.key}
             renderBody={(fold) =>
-              renderNested(step.model, step.part.isRunning, {
-                working: step.part.isRunning,
-                what:
-                  step.model.summary.steps > 0
-                    ? t("header.steps", { count: step.model.summary.steps })
-                    : t("kind.goal"),
-                onFold: fold,
-              })
+              renderNested(
+                step.model,
+                step.part.isRunning,
+                {
+                  working: step.part.isRunning,
+                  what:
+                    step.model.summary.steps > 0
+                      ? t("header.steps", { count: step.model.summary.steps })
+                      : t("kind.goal"),
+                  onFold: fold,
+                },
+                // The run's rows go by the turn's recoveries, as its row does.
+                recoveredKeys
+              )
             }
           />
         </HostedRow>

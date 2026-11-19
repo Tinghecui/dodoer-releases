@@ -23,6 +23,12 @@ const choices = new Map<string, boolean>()
  *  stay open by default even after the state that opened them is gone. */
 const latched = new Set<string>()
 const listeners = new Set<() => void>()
+const EMPTY: readonly string[] = []
+/** Every key opened from outside (`openDisclosures`), oldest first: a long
+ *  list keeps the rows they name drawn, out of its hidden middle. Each jump
+ *  adds to them — one reply's jump never hides the rows another's brought
+ *  out — and the oldest go past `MAX_ENTRIES`. */
+let revealed: readonly string[] = EMPTY
 
 function emit() {
   for (const listener of listeners) listener()
@@ -83,12 +89,25 @@ export function useDisclosure(
 /** Open rows from outside them (the header's "show the failure"). */
 export function openDisclosures(keys: readonly string[]): void {
   for (const key of keys) remember(key, true)
+  const next = [...revealed.filter((key) => !keys.includes(key)), ...keys]
+  revealed = next.length > MAX_ENTRIES ? next.slice(-MAX_ENTRIES) : next
   emit()
+}
+
+/** The keys opened from outside, for a long list to bring the rows they name
+ *  out of its hidden middle. */
+export function useRevealedKeys(): readonly string[] {
+  return useSyncExternalStore(
+    subscribe,
+    () => revealed,
+    () => EMPTY
+  )
 }
 
 /** Forget every remembered choice. For tests. */
 export function resetDisclosureStore(): void {
   choices.clear()
   latched.clear()
+  revealed = EMPTY
   emit()
 }

@@ -2356,6 +2356,7 @@
       "statusUncertainBackgroundExited": "O processo de uma tarefa em segundo plano sumiu, mas nenhum aviso de conclusão chegou",
       "statusUncertainSilent": "Sem nova atividade há muito tempo e sem processos filhos ativos",
       "statusBackgroundTasks": "Tarefas: {names}",
+      "statusAbandonedBackgroundTasks": "Tarefas em segundo plano não concluídas: {names}",
       "statusAwaitingQuestionBadge": "Aguardando sua resposta",
       "statusAwaitingPermissionBadge": "Aguardando sua aprovação",
       "statusAwaitingPlanBadge": "O plano aguarda sua aprovação",

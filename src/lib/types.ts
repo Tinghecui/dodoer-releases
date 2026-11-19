@@ -860,8 +860,13 @@ export interface BackgroundPendingEntry {
   tasks?: BackgroundPendingTask[]
 }
 
-/** Cowork fork (#386): `idle` 什么都没有，`waiting` 等后台，`uncertain`「?」。 */
-export type BackgroundPendingEntryState = "idle" | "waiting" | "uncertain"
+/** Cowork fork (#386): `idle` 什么都没有，`waiting` 等后台，`uncertain`「?」。
+ *  `abandoned`（#817）：回合没跑完就断开，没跑完的后台任务，只给红叉的悬停写任务名。 */
+export type BackgroundPendingEntryState =
+  | "idle"
+  | "waiting"
+  | "uncertain"
+  | "abandoned"
 
 /** Cowork fork (#386): 为什么是「?」。 */
 export type BackgroundUncertainReason =

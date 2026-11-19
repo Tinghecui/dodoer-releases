@@ -747,6 +747,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                         interrupted={isInterruptedTurn(conversation)}
                         unread={isUnread}
                         taskCanceled={taskCanceled}
+                        abandonedTasks={backgroundMark.abandoned?.names}
                         timeLabel={timeLabel}
                         timeClassName={
                           isSelected

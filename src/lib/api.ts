@@ -5103,7 +5103,17 @@ export async function uploadWorkspaceFile(
         return
       }
       const signal = args.signal
-      const onAbort = () => xhr.abort()
+      // 请求体全部发出去以后服务端已经在写盘，abort 撤不回来，只会让界面
+      // 显示「已取消」而磁盘上其实有了这个文件；这时不再 abort，
+      // 让请求自己走完，按服务端的响应 resolve / reject。
+      let bodySent = false
+      xhr.upload.onload = () => {
+        bodySent = true
+      }
+      const onAbort = () => {
+        if (bodySent) return
+        xhr.abort()
+      }
       signal.addEventListener("abort", onAbort, { once: true })
       xhr.addEventListener("loadend", () => {
         signal.removeEventListener("abort", onAbort)

@@ -414,6 +414,39 @@ describe("backgroundMarkOf (Cowork fork)", () => {
     })
   })
 
+  // #817：回合没跑完就断开，服务器发「没跑完的后台任务」而不是「?」。只给取消（红叉）的
+  // 行写任务名，不画沙漏、不画「?」，也不压住未读。
+  it("puts a server's abandoned tasks on a cancelled row only, never as hourglass or「?」", () => {
+    replaceServerBackgroundPending([
+      {
+        conversation_id: 5,
+        count: 0,
+        names: [],
+        state: "abandoned",
+        reason: null,
+        tasks: [{ task_id: "b1", name: "Watch CI" }],
+      },
+    ])
+    const state = useBackgroundPendingStore.getState()
+    const abandoned = {
+      count: 0,
+      names: ["Watch CI"],
+      state: "abandoned" as const,
+    }
+    expect(state.byConversation.get(5)).toEqual(abandoned)
+    const conv = { id: 5, external_id: null, status: "cancelled" }
+    expect(backgroundMarkFor(state, conv)).toEqual({
+      waiting: null,
+      uncertain: null,
+      abandoned,
+    })
+    expect(isConversationActive(state, conv)).toBe(false)
+    expect(countsAsRunning(state, conv)).toBe(false)
+    expect(
+      backgroundMarkFor(state, { ...conv, status: "pending_review" })
+    ).toEqual({ waiting: null, uncertain: null })
+  })
+
   it("reads a conversation's mark straight from the store", () => {
     replaceServerBackgroundPending([uncertain(5)])
     const state = useBackgroundPendingStore.getState()

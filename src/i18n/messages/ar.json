@@ -2356,6 +2356,7 @@
       "statusUncertainBackgroundExited": "اختفت عملية مهمة في الخلفية، لكن لم يصل إشعار بانتهائها",
       "statusUncertainSilent": "لا نشاط جديد منذ وقت طويل، ولا توجد عمليات فرعية حية",
       "statusBackgroundTasks": "المهام: {names}",
+      "statusAbandonedBackgroundTasks": "مهام في الخلفية لم تكتمل: {names}",
       "statusAwaitingQuestionBadge": "بانتظار إجابتك",
       "statusAwaitingPermissionBadge": "بانتظار موافقتك",
       "statusAwaitingPlanBadge": "الخطة بانتظار موافقتك",

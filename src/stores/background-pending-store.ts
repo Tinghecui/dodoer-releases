@@ -40,8 +40,10 @@ export interface BackgroundPending {
    *  transcript watcher only counts). For a「?」, the tasks that were out. */
   names: string[]
   /** Cowork fork (#386): only the server sets it — it claims to run or wait,
-   *  but no live process is moving it. Absent: plain waiting. */
-  state?: "uncertain"
+   *  but no live process is moving it. Absent: plain waiting.
+   *  `abandoned`（#817）：回合没跑完就断开，`names` 是跟着没了的后台任务；
+   *  只给取消（红叉）的行写任务名，不画沙漏也不画「?」。 */
+  state?: "uncertain" | "abandoned"
   /** Why it is a「?」(with `state` only). */
   reason?: BackgroundUncertainReason | null
 }
@@ -148,6 +150,13 @@ function pendingOfEntry(
       reason: entry.reason ?? null,
     }
   }
+  if (entry.state === "abandoned") {
+    return {
+      count: 0,
+      names: (entry.tasks ?? []).map((t) => t.name || t.task_id),
+      state: "abandoned",
+    }
+  }
   if (entry.state === "idle" || entry.count <= 0) return null
   return { count: entry.count, names: entry.names ?? [] }
 }
@@ -214,6 +223,8 @@ export function backgroundPendingFor(
 export interface BackgroundMark {
   waiting: BackgroundPending | null
   uncertain: BackgroundPending | null
+  /** #817：取消的行上没跑完的后台任务（红叉的悬停写任务名），只在有的时候带。 */
+  abandoned?: BackgroundPending
 }
 
 const NO_MARK: BackgroundMark = { waiting: null, uncertain: null }
@@ -223,6 +234,11 @@ export function backgroundMarkOf(
   pending: BackgroundPending | null
 ): BackgroundMark {
   if (!pending) return NO_MARK
+  if (pending.state === "abandoned") {
+    return status === "cancelled"
+      ? { waiting: null, uncertain: null, abandoned: pending }
+      : NO_MARK
+  }
   if (pending.state === "uncertain") {
     return status === "completed" || status === "cancelled"
       ? NO_MARK

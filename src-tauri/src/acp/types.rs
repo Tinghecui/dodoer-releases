@@ -1084,6 +1084,18 @@ impl BackgroundPendingEntry {
             tasks,
         }
     }
+
+    /// #817：回合没跑完就断开、没跑完的后台任务（见 [`BackgroundPendingState::Abandoned`]）。
+    pub fn abandoned(conversation_id: i32, tasks: Vec<BackgroundPendingTask>) -> Self {
+        Self {
+            conversation_id,
+            count: 0,
+            names: Vec::new(),
+            state: BackgroundPendingState::Abandoned,
+            reason: None,
+            tasks,
+        }
+    }
 }
 
 /// Cowork 加的（#707）：停在用户身上的对话——权限请求、提问、计划审批，侧栏「等你回答」
@@ -1122,6 +1134,10 @@ pub enum BackgroundPendingState {
     Waiting,
     /// 「?」：声称在跑或在等后台，但没有活着的进程在推进。
     Uncertain,
+    /// #817：回合没跑完（或者以失败收尾）时智能体断开了，手上的后台任务跟着没了。这一轮会被
+    /// 标成取消（红叉），不画「?」也不画沙漏；`tasks` 给红叉的悬停写「后台任务没有跑完」。
+    /// `count` 照旧是 0，老客户端读成什么都没有。
+    Abandoned,
 }
 
 /// Cowork 加的：「?」的原因，三个值和 dodoer 一样。

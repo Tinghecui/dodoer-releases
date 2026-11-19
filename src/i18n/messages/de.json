@@ -2356,6 +2356,7 @@
       "statusUncertainBackgroundExited": "Der Prozess einer Hintergrundaufgabe ist weg, aber es kam keine Abschlussmeldung",
       "statusUncertainSilent": "Lange keine neue Aktivität und keine laufenden Kindprozesse",
       "statusBackgroundTasks": "Aufgaben: {names}",
+      "statusAbandonedBackgroundTasks": "Hintergrundaufgaben nicht abgeschlossen: {names}",
       "statusAwaitingQuestionBadge": "Wartet auf deine Antwort",
       "statusAwaitingPermissionBadge": "Wartet auf deine Genehmigung",
       "statusAwaitingPlanBadge": "Plan wartet auf deine Genehmigung",

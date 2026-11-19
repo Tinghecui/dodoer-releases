@@ -351,6 +351,7 @@ export const MindMapLeaf = memo(function MindMapLeaf({
                 interrupted={isInterruptedTurn(conversation)}
                 unread={isUnread}
                 taskCanceled={taskCanceled}
+                abandonedTasks={backgroundMark.abandoned?.names}
                 timeLabel={timeLabel}
               />
             </button>

@@ -2356,6 +2356,7 @@
       "statusUncertainBackgroundExited": "バックグラウンドタスクのプロセスが消えましたが、終了通知が届いていません",
       "statusUncertainSilent": "長い間新しい動きがなく、稼働中の子プロセスもありません",
       "statusBackgroundTasks": "タスク：{names}",
+      "statusAbandonedBackgroundTasks": "バックグラウンドタスクが完了していません：{names}",
       "statusAwaitingQuestionBadge": "回答待ち",
       "statusAwaitingPermissionBadge": "承認待ち",
       "statusAwaitingPlanBadge": "プランの承認待ち",

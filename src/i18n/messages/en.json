@@ -2356,6 +2356,7 @@
       "statusUncertainBackgroundExited": "A background task's process is gone, but no finish notice came",
       "statusUncertainSilent": "No new activity for a long time, and no live child processes",
       "statusBackgroundTasks": "Tasks: {names}",
+      "statusAbandonedBackgroundTasks": "Background tasks did not finish: {names}",
       "statusAwaitingQuestionBadge": "Needs your answer",
       "statusAwaitingPermissionBadge": "Needs your approval",
       "statusAwaitingPlanBadge": "Plan needs your approval",

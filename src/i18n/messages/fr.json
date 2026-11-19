@@ -2356,6 +2356,7 @@
       "statusUncertainBackgroundExited": "Le processus d'une tâche en arrière-plan a disparu, sans avis de fin",
       "statusUncertainSilent": "Aucune nouvelle activité depuis longtemps, et aucun processus enfant actif",
       "statusBackgroundTasks": "Tâches : {names}",
+      "statusAbandonedBackgroundTasks": "Tâches en arrière-plan non terminées : {names}",
       "statusAwaitingQuestionBadge": "En attente de votre réponse",
       "statusAwaitingPermissionBadge": "En attente de votre approbation",
       "statusAwaitingPlanBadge": "Le plan attend votre approbation",

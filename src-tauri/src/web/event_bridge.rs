@@ -645,37 +645,48 @@ pub fn emit_event(emitter: &EventEmitter, event: &str, payload: impl Serialize) 
     // Cowork 加的：对话完成、取消或删掉了，留下来的「?」跟着删。只看这个频道发出去的内容，
     // 不改 `ConversationChange` 本身。
     if event == CONVERSATION_CHANGED_EVENT {
-        if let Some(conversation_id) = sent.as_deref().and_then(settled_conversation_id) {
-            clear_uncertain_background(emitter, conversation_id);
+        if let Some((conversation_id, status)) = sent.as_deref().and_then(settled_conversation_id) {
+            clear_uncertain_background(emitter, conversation_id, status);
         }
     }
 }
 
+/// Cowork 加的：[`settled_conversation_id`] 说的对话是怎么结束的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettledAs {
+    /// 完成或删掉：留下来的什么都删。
+    Closed,
+    /// 取消（红叉）：只删「?」，没跑完的后台任务（#817）留着给红叉写任务名。
+    Cancelled,
+}
+
 /// Cowork 加的：一条 [`CONVERSATION_CHANGED_EVENT`] 是不是说某个对话结束了（`Status` /
-/// `Upsert` 是 `completed` / `cancelled`，或者 `Deleted`）。是就返回对话 id。
-fn settled_conversation_id(value: &serde_json::Value) -> Option<i32> {
-    let settled = |status: &serde_json::Value| {
-        matches!(status.as_str(), Some("completed") | Some("cancelled"))
+/// `Upsert` 是 `completed` / `cancelled`，或者 `Deleted`）。是就返回对话 id 和怎么结束的。
+fn settled_conversation_id(value: &serde_json::Value) -> Option<(i32, SettledAs)> {
+    let settled = |status: &serde_json::Value| match status.as_str() {
+        Some("completed") => Some(SettledAs::Closed),
+        Some("cancelled") => Some(SettledAs::Cancelled),
+        _ => None,
     };
     let id = |v: &serde_json::Value| v.as_i64().and_then(|n| i32::try_from(n).ok());
     match value.get("kind")?.as_str()? {
-        "status" if settled(value.get("status")?) => id(value.get("id")?),
+        "status" => {
+            let how = settled(value.get("status")?)?;
+            Some((id(value.get("id")?)?, how))
+        }
         "upsert" => {
             let summary = value.get("summary")?;
-            if settled(summary.get("status")?) {
-                id(summary.get("id")?)
-            } else {
-                None
-            }
+            let how = settled(summary.get("status")?)?;
+            Some((id(summary.get("id")?)?, how))
         }
-        "deleted" => id(value.get("id")?),
+        "deleted" => Some((id(value.get("id")?)?, SettledAs::Closed)),
         _ => None,
     }
 }
 
 /// Cowork 加的：删掉一个对话留下来的「?」，删了就广播一条 `idle`。编号不动：旧连接照样不能
-/// 再把「?」写回来。
-fn clear_uncertain_background(emitter: &EventEmitter, conversation_id: i32) {
+/// 再把「?」写回来。取消时没跑完的后台任务（`abandoned`，#817）不删：那正是红叉要写的。
+fn clear_uncertain_background(emitter: &EventEmitter, conversation_id: i32, how: SettledAs) {
     let Some(broadcaster) = emitter.web_broadcaster() else {
         return;
     };
@@ -683,7 +694,18 @@ fn clear_uncertain_background(emitter: &EventEmitter, conversation_id: i32) {
     let mut slots = broadcaster.lock_background_slots();
     let removed = slots
         .get_mut(&conversation_id)
-        .and_then(|slot| slot.uncertain.take())
+        .and_then(|slot| {
+            let keep = how == SettledAs::Cancelled
+                && slot
+                    .uncertain
+                    .as_ref()
+                    .is_some_and(|e| e.state == BackgroundPendingState::Abandoned);
+            if keep {
+                None
+            } else {
+                slot.uncertain.take()
+            }
+        })
         .is_some();
     if removed {
         emit_event(
@@ -771,6 +793,13 @@ where
         // broadcast below says exactly what this event changed. 已经断开的连接
         // 不再报读数（它的后台活跟着进程没了，「?」在断开那一刻已经留下）。
         let disconnected = is_disconnect(&payload);
+        // #817：断开时这一轮还没跑完，或者刚以失败收尾（和 lifecycle 判失败用的是同一条：
+        // 还没解决的 error）。这一轮会被标成取消，后台任务不留「?」。
+        let turn_failed = disconnected
+            && (s.turn_in_flight
+                || s.session_failures
+                    .values()
+                    .any(|f| f.severity == "error" && !f.resolved));
         // 进程观察标过「?」的连接，任何有进展的事件都会把它清掉，所以也要读前后
         // （只看一个字段，平常是 `None`，热路径照旧不读读数）。
         let before_reason = s.process_watch.uncertain;
@@ -810,6 +839,7 @@ where
                     after_tasks,
                     after_reason,
                     disconnected,
+                    turn_failed,
                     external_id: s.external_id.clone(),
                     resumed_from: s.resumed_from_external_id.clone(),
                 },
@@ -987,6 +1017,8 @@ struct BackgroundPendingUpdate {
     after_reason: Option<BackgroundUncertainReason>,
     /// 事件是断开。
     disconnected: bool,
+    /// 断开时这一轮没跑完或者以失败收尾（#817），只在 `disconnected` 时可能是 `true`。
+    turn_failed: bool,
     /// 事件后这条连接的智能体会话 id（[`SessionState::external_id`]）。
     external_id: Option<String>,
     /// 这条连接启动时要 resume 的会话 id（[`SessionState::resumed_from_external_id`]）。
@@ -1037,6 +1069,7 @@ pub(crate) fn publish_process_observation(
             after_tasks,
             after_reason,
             disconnected: false,
+            turn_failed: false,
             external_id: s.external_id.clone(),
             resumed_from: s.resumed_from_external_id.clone(),
         },
@@ -1063,7 +1096,8 @@ fn admit_background_reading(
 /// - 活着的连接报读数（包括绑到这个对话上，即使 `count` 是 0），删掉留下来的「?」并发 `idle`；
 /// - 较新的连接从较旧的连接手里接过一个对话，即使 `count` 是 0 也发它自己的读数（`idle`），
 ///   清掉旧连接留在客户端上的沙漏或「?」；
-/// - 断开前 `count > 0`，发 `agent_exited` 的「?」并留在表里；
+/// - 断开前 `count > 0`，发 `agent_exited` 的「?」并留在表里；这一轮没跑完或失败了（#817，
+///   回合会被标成取消）就发 `abandoned`（没跑完的后台任务）代替「?」，也留在表里；
 /// - 其余和原来一样（[`background_pending_changes`]）。
 fn background_pending_broadcasts(
     slots: &mut BackgroundSlots,
@@ -1078,6 +1112,7 @@ fn background_pending_broadcasts(
         after_tasks,
         after_reason,
         disconnected,
+        turn_failed,
         external_id,
         resumed_from,
     } = update;
@@ -1106,11 +1141,15 @@ fn background_pending_broadcasts(
         if !admit_background_reading(slots, conversation_id, generation) {
             return out;
         }
-        let entry = BackgroundPendingEntry::uncertain(
-            conversation_id,
-            BackgroundUncertainReason::AgentExited,
-            before_tasks,
-        );
+        let entry = if turn_failed {
+            BackgroundPendingEntry::abandoned(conversation_id, before_tasks)
+        } else {
+            BackgroundPendingEntry::uncertain(
+                conversation_id,
+                BackgroundUncertainReason::AgentExited,
+                before_tasks,
+            )
+        };
         if let Some(slot) = slots.get_mut(&conversation_id) {
             slot.uncertain = Some(entry.clone());
             slot.external_id = external_id;
@@ -1450,6 +1489,88 @@ mod tests {
         emit_with_state(&state, &emitter, watcher_activity(&[], 2)).await;
         assert!(background_events(&mut rx).is_empty());
         assert_eq!(broadcaster.merge_background_pending(Vec::new()).len(), 1);
+    }
+
+    /// #817：回合还没跑完（或者刚以失败收尾）就断开、手上还有后台任务：这一轮会被标成取消
+    /// （红叉），不留「?」。广播 `abandoned`（带断开前的任务，给红叉的悬停写任务名），留在
+    /// 表里；之后不管取消先到还是后到，它都不变成「?」，取消也不删它，完成才删。
+    #[tokio::test]
+    async fn disconnect_mid_turn_leaves_abandoned_tasks_not_an_uncertain_mark() {
+        let abandoned = serde_json::json!({
+            "conversation_id": 7,
+            "count": 0,
+            "names": [],
+            "state": "abandoned",
+            "reason": null,
+            "tasks": [{ "task_id": "b1", "name": "Watch CI" }],
+        });
+        let failure = crate::acp::types::SessionFailureRecord {
+            id: "t1:error".into(),
+            revision: 1,
+            category: "connection".into(),
+            severity: "error".into(),
+            title: "CLI exited".into(),
+            details: None,
+            actions: vec!["new_session".into()],
+            resolved: false,
+        };
+        // 两种：智能体在回合中途被杀（回合还在跑）；CLI 被杀、适配器以失败收了这一轮。
+        for turn_failed_by_session_failure in [false, true] {
+            let state = fresh_state();
+            state.write().await.conversation_id = Some(7);
+            let (broadcaster, emitter, mut rx) = web_emitter();
+            emit_with_state(&state, &emitter, watcher_activity(&[("b1", "Watch CI")], 1)).await;
+            let _ = background_events(&mut rx);
+            if turn_failed_by_session_failure {
+                emit_with_state(
+                    &state,
+                    &emitter,
+                    AcpEvent::SessionFailure {
+                        record: failure.clone(),
+                    },
+                )
+                .await;
+            } else {
+                state.write().await.turn_in_flight = true;
+            }
+
+            emit_with_state(&state, &emitter, disconnected()).await;
+            assert_eq!(
+                background_events(&mut rx),
+                vec![abandoned.clone()],
+                "failure={turn_failed_by_session_failure}"
+            );
+            let listed = broadcaster.merge_background_pending(Vec::new());
+            assert_eq!(listed.len(), 1);
+            assert_eq!(
+                listed[0].state,
+                crate::acp::types::BackgroundPendingState::Abandoned
+            );
+
+            // 取消不删它（红叉要接着写任务名）。
+            emit_event(
+                &emitter,
+                CONVERSATION_CHANGED_EVENT,
+                ConversationChange::Status {
+                    id: 7,
+                    status: "cancelled".into(),
+                },
+            );
+            assert!(background_events(&mut rx).is_empty());
+            assert_eq!(broadcaster.merge_background_pending(Vec::new()).len(), 1);
+
+            // 完成删掉。
+            emit_event(
+                &emitter,
+                CONVERSATION_CHANGED_EVENT,
+                ConversationChange::Status {
+                    id: 7,
+                    status: "completed".into(),
+                },
+            );
+            assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
+            assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+        }
     }
 
     /// 完成标准 11、13：轮询把一条活着的连接标成「?」时广播它（`count` 的意思不变）；

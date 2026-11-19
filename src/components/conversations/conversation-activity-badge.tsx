@@ -77,6 +77,7 @@ export function ConversationActivityBadge({
   interrupted = false,
   unread = false,
   taskCanceled = false,
+  abandonedTasks,
   timeLabel,
   timeClassName,
 }: {
@@ -106,6 +107,8 @@ export function ConversationActivityBadge({
    *  cross says "cancelled, not viewed yet" — the turn did not merely fail
    *  to finish, the user canceled it. */
   taskCanceled?: boolean
+  /** #817：这一轮没跑完时跟着没了的后台任务名，只写进红叉的悬停（多一行）。 */
+  abandonedTasks?: string[]
   timeLabel?: string
   /** The time label's weight and colour (the sidebar emphasises the
    *  selected row's). */
@@ -220,11 +223,20 @@ export function ConversationActivityBadge({
     )
   }
   if (cancelled) {
-    const title = t(
-      unread
-        ? UNREAD_LABEL_KEYS[taskCanceled ? "canceled" : "unfinished"]
-        : "statusCancelledBadge"
-    )
+    const title = [
+      t(
+        unread
+          ? UNREAD_LABEL_KEYS[taskCanceled ? "canceled" : "unfinished"]
+          : "statusCancelledBadge"
+      ),
+      abandonedTasks && abandonedTasks.length > 0
+        ? t("statusAbandonedBackgroundTasks", {
+            names: abandonedTasks.join(", "),
+          })
+        : null,
+    ]
+      .filter((line): line is string => line != null)
+      .join("\n")
     return (
       <span
         className="relative inline-flex shrink-0 items-center justify-center"

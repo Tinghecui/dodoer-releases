@@ -2356,6 +2356,7 @@
       "statusUncertainBackgroundExited": "有背景任務的進程已經不在了，卻沒收到結束通知",
       "statusUncertainSilent": "很久沒有新動靜，智能體底下也沒有存活的子進程",
       "statusBackgroundTasks": "任務：{names}",
+      "statusAbandonedBackgroundTasks": "背景任務沒有跑完：{names}",
       "statusAwaitingQuestionBadge": "等你回答問題",
       "statusAwaitingPermissionBadge": "等你核准操作",
       "statusAwaitingPlanBadge": "等你確認計畫",

@@ -46,6 +46,9 @@ import { toErrorMessage } from "@/lib/app-error"
 import { joinFsPath } from "@/lib/path-utils"
 import { isRemoteDesktopMode } from "@/lib/transport"
 
+// 点「开始上传」后这么久之内点「取消」不算数（防双击误点）。
+const CANCEL_GRACE_MS = 500
+
 type QueueStatus = "pending" | "uploading" | "success" | "error" | "cancelled"
 
 type QueueSource =
@@ -168,6 +171,9 @@ export function WorkspaceUploadDialog({
   // Set while a pump loop is running so we never start two in parallel —
   // the same effect would otherwise re-fire on every setItems call.
   const pumpRunningRef = useRef(false)
+  // 这一轮上传开始的时间：开始后「取消」正好出现在「开始上传」的位置，
+  // 双击的第二下会落在取消上，开头一小段时间里的取消点击不算数。
+  const pumpStartedAtRef = useRef(0)
   // Mirrors `items` so the async pump always reads the latest queue
   // without depending on closure capture or extra effect runs.
   const itemsRef = useRef<QueueItem[]>([])
@@ -334,6 +340,7 @@ export function WorkspaceUploadDialog({
     if (!abortRef.current) abortRef.current = new AbortController()
     const controller = abortRef.current
     pumpRunningRef.current = true
+    pumpStartedAtRef.current = Date.now()
     setPumpActive(true)
     // Lock in the destination at pump start. The user can keep editing
     // the input field after this point, but a session that began
@@ -423,7 +430,14 @@ export function WorkspaceUploadDialog({
               )
             )
           } catch (err) {
-            if (isUploadAbortError(err) || controller.signal.aborted) {
+            // 浏览器上传在请求体发完后不再中止，取消后等到的是服务端的
+            // 真实结果：只有真被中止（AbortError）才算已取消，服务端报的
+            // 错照常显示失败和原因。远程桌面的传输取消后报的不是
+            // AbortError，仍按取消信号判断。
+            const cancelled =
+              isUploadAbortError(err) ||
+              (next.source.kind !== "browserFile" && controller.signal.aborted)
+            if (cancelled) {
               setItems((prev) =>
                 prev.map((it) =>
                   it.id === next.id ? { ...it, status: "cancelled" } : it
@@ -439,6 +453,8 @@ export function WorkspaceUploadDialog({
                   : it
               )
             )
+            // 已经点了取消：这条按服务端结果收尾，后面的不再开始
+            if (controller.signal.aborted) break
           }
         }
       } finally {
@@ -715,12 +731,20 @@ export function WorkspaceUploadDialog({
   )
 
   const handleCancelUpload = useCallback(() => {
+    if (Date.now() - pumpStartedAtRef.current < CANCEL_GRACE_MS) return
     abortRef.current?.abort()
     const transferId = activeTransferIdRef.current
     if (transferId) {
       void cancelWorkspaceTransfer(transferId).catch(() => {})
     }
   }, [])
+
+  // 小文件可能在双击「开始上传」的两下之间就传完了，这时第二下落在同一位置
+  // 换出来的「关闭」上；开始上传后半秒内的点击同样不算数，用户才看得到结果。
+  const handleFooterClose = useCallback(() => {
+    if (Date.now() - pumpStartedAtRef.current < CANCEL_GRACE_MS) return
+    onOpenChange(false)
+  }, [onOpenChange])
 
   const handleRemoveItem = useCallback((id: string) => {
     // Record the removal first — the pump may still be holding a stale
@@ -1046,7 +1070,7 @@ export function WorkspaceUploadDialog({
                 <Button
                   type="button"
                   variant={hasPending ? "outline" : "default"}
-                  onClick={() => onOpenChange(false)}
+                  onClick={handleFooterClose}
                 >
                   {tCommon("close")}
                 </Button>

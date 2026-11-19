@@ -6766,6 +6766,7 @@
     "settingsMaxConcurrentInvalid": "أدخل 0 أو عددًا صحيحًا موجبًا",
     "settingsAutoCompact": "عتبة الضغط التلقائي",
     "settingsAutoCompactHint": "قبل جولة متابعة أو إعادة محاولة أو دمج، اضغط الجلسة إذا بلغ امتلاء نافذة السياق هذه النسبة. 0 يعني إيقاف.",
+    "settingsAutoCompactInvalid": "أدخل عددًا صحيحًا من 0 إلى 100",
     "compactingNote": "جارٍ ضغط سياق الجلسة…",
     "settingsCompactCommand": "أمر الضغط",
     "settingsCompactCommandHint": "اتركه فارغًا لاستخدام الأمر الذي يوفّره الوكيل أو قيمته الافتراضية المعروفة.",

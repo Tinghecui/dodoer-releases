@@ -6766,6 +6766,7 @@
     "settingsMaxConcurrentInvalid": "请输入 0 或正整数",
     "settingsAutoCompact": "自动压缩上下文阈值",
     "settingsAutoCompactHint": "继续处理、重试或合并前，若会话上下文占用达到该比例，先压缩再发送任务消息。0 表示关闭。",
+    "settingsAutoCompactInvalid": "请输入 0 到 100 之间的整数",
     "compactingNote": "正在压缩会话上下文…",
     "settingsCompactCommand": "压缩命令",
     "settingsCompactCommandHint": "留空则按智能体自身提供的命令（或已知默认值）自动选择。",

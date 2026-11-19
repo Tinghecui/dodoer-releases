@@ -6766,6 +6766,7 @@
     "settingsMaxConcurrentInvalid": "Gib 0 oder eine positive ganze Zahl ein",
     "settingsAutoCompact": "Schwelle für automatisches Komprimieren",
     "settingsAutoCompactHint": "Vor einer Folge-, Wiederholungs- oder Merge-Runde die Sitzung komprimieren, wenn das Kontextfenster mindestens so voll ist. 0 = aus.",
+    "settingsAutoCompactInvalid": "Gib eine ganze Zahl von 0 bis 100 ein",
     "compactingNote": "Sitzungskontext wird verdichtet …",
     "settingsCompactCommand": "Komprimierungsbefehl",
     "settingsCompactCommandHint": "Leer lassen, um den vom Agenten angebotenen Befehl bzw. dessen bekannten Standard zu verwenden.",

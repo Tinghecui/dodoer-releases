@@ -6766,6 +6766,7 @@
     "settingsMaxConcurrentInvalid": "Saisissez 0 ou un nombre entier positif",
     "settingsAutoCompact": "Seuil de compactage automatique",
     "settingsAutoCompactHint": "Avant une relance, une nouvelle tentative ou une fusion, compacte la session si sa fenêtre de contexte est au moins aussi remplie. 0 = désactivé.",
+    "settingsAutoCompactInvalid": "Saisissez un nombre entier entre 0 et 100",
     "compactingNote": "Compactage du contexte de la session…",
     "settingsCompactCommand": "Commande de compactage",
     "settingsCompactCommandHint": "Laissez vide pour utiliser la commande proposée par l'agent, ou sa valeur par défaut connue.",

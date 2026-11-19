@@ -6766,6 +6766,7 @@
     "settingsMaxConcurrentInvalid": "Insira 0 ou um número inteiro positivo",
     "settingsAutoCompact": "Limite de compactação automática",
     "settingsAutoCompactHint": "Antes de uma rodada de continuação, nova tentativa ou merge, compacta a sessão se a janela de contexto estiver ao menos assim cheia. 0 = desativado.",
+    "settingsAutoCompactInvalid": "Insira um número inteiro de 0 a 100",
     "compactingNote": "Compactando o contexto da sessão…",
     "settingsCompactCommand": "Comando de compactação",
     "settingsCompactCommandHint": "Deixe em branco para usar o que o agente oferece, ou o padrão conhecido dele.",

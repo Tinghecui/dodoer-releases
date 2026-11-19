@@ -6766,6 +6766,7 @@
     "settingsMaxConcurrentInvalid": "Introduce 0 o un número entero positivo",
     "settingsAutoCompact": "Umbral de compactación automática",
     "settingsAutoCompactHint": "Antes de una ronda de seguimiento, reintento o fusión, compacta la sesión si su ventana de contexto está al menos así de llena. 0 = desactivado.",
+    "settingsAutoCompactInvalid": "Introduce un número entero entre 0 y 100",
     "compactingNote": "Compactando el contexto de la sesión…",
     "settingsCompactCommand": "Comando de compactación",
     "settingsCompactCommandHint": "Déjalo en blanco para usar lo que ofrezca el agente, o su valor predeterminado conocido.",

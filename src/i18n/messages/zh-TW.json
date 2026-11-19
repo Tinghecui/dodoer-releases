@@ -6766,6 +6766,7 @@
     "settingsMaxConcurrentInvalid": "請輸入 0 或正整數",
     "settingsAutoCompact": "自動壓縮上下文閾值",
     "settingsAutoCompactHint": "繼續處理、重試或合併前，若工作階段上下文佔用達到該比例，先壓縮再傳送任務訊息。0 表示關閉。",
+    "settingsAutoCompactInvalid": "請輸入 0 到 100 之間的整數",
     "compactingNote": "正在壓縮工作階段脈絡…",
     "settingsCompactCommand": "壓縮指令",
     "settingsCompactCommandHint": "留空則依代理自身提供的指令（或已知預設值）自動選擇。",

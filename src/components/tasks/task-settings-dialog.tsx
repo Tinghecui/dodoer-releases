@@ -302,10 +302,14 @@ function TaskSettingsBody({
 
   // 只认 0 或正整数：负号、小数、空白都当场标红，不再悄悄删字符或回退默认值。
   const maxConcurrentInvalid = !/^\d+$/.test(maxConcurrent.trim())
+  // 自动压缩阈值同理：只认 0～100 的整数，超范围不再悄悄存成 0（关闭）。
+  const autoCompactInvalid =
+    !/^\d+$/.test(autoCompactPercent.trim()) ||
+    Number(autoCompactPercent.trim()) > 100
 
   const save = async () => {
     // 跟随全局默认时表单是藏起来的，保存只删本文件夹的行，不看这个框。
-    if (editing && maxConcurrentInvalid) return
+    if (editing && (maxConcurrentInvalid || autoCompactInvalid)) return
     setSaving(true)
     try {
       // "Use global defaults" saves by dropping the folder's own row.
@@ -321,9 +325,8 @@ function TaskSettingsBody({
         configValues
       )
       const parsed = Number.parseInt(maxConcurrent.trim(), 10)
-      // A percentage the box can't represent (blank, or typed past 100) reads
-      // as "off" rather than as an accidental compact-every-round.
-      const compactPercent = Number.parseInt(autoCompactPercent, 10)
+      // 上面已经拦掉了不是 0～100 整数的输入，这里直接按原样存；0 表示关闭。
+      const compactPercent = Number(autoCompactPercent.trim())
       const settings: WorkTaskFolderSettings = {
         default_agent_type: agentType,
         mode_id,
@@ -345,12 +348,7 @@ function TaskSettingsBody({
         preflight_command_id: null,
         preflight_command: preflightCommand.trim() || null,
         init_command: initCommand.trim() || null,
-        auto_compact_percent:
-          Number.isFinite(compactPercent) &&
-          compactPercent > 0 &&
-          compactPercent <= 100
-            ? compactPercent
-            : 0,
+        auto_compact_percent: compactPercent,
         compact_command: compactCommand.trim() || null,
         // Blank stages are dropped rather than stored as "" — the engine
         // trims anyway, and an empty entry would only add noise to the blob.
@@ -570,17 +568,29 @@ function TaskSettingsBody({
                         id="task-auto-compact"
                         inputMode="numeric"
                         value={autoCompactPercent}
-                        onChange={(e) =>
-                          setAutoCompactPercent(
-                            e.target.value.replace(/[^0-9]/g, "").slice(0, 3)
-                          )
+                        onChange={(e) => setAutoCompactPercent(e.target.value)}
+                        aria-invalid={autoCompactInvalid || undefined}
+                        aria-describedby={
+                          autoCompactInvalid
+                            ? "task-auto-compact-error"
+                            : undefined
                         }
                         className="h-8 w-16 bg-background text-center"
                       />
                       <span className="text-xs text-muted-foreground">%</span>
                     </div>
                   }
-                />
+                >
+                  {autoCompactInvalid ? (
+                    <p
+                      id="task-auto-compact-error"
+                      role="alert"
+                      className="text-xs leading-5 text-destructive"
+                    >
+                      {t("settingsAutoCompactInvalid")}
+                    </p>
+                  ) : null}
+                </SettingRow>
                 <SettingRow
                   icon={SquareSlash}
                   title={t("settingsCompactCommand")}

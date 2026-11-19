@@ -6766,6 +6766,7 @@
     "settingsMaxConcurrentInvalid": "Enter 0 or a positive whole number",
     "settingsAutoCompact": "Auto-compact threshold",
     "settingsAutoCompactHint": "Before a follow-up, retry or merge round, compact the session when its context window is at least this full. 0 = off.",
+    "settingsAutoCompactInvalid": "Enter a whole number from 0 to 100",
     "compactingNote": "Compacting the session context…",
     "settingsCompactCommand": "Compact command",
     "settingsCompactCommandHint": "Leave blank to use what the agent offers, or its known default.",

@@ -404,33 +404,61 @@ describe("TaskSettingsDialog auto-compact", () => {
     ).toHaveValue("/compress")
   })
 
-  it("reads a percentage it cannot honour as off", async () => {
+  it.each(["-5", "150", "1.5", "  "])(
+    "keeps %j as typed, flags it and refuses to save",
+    async (typed) => {
+      const onOpenChange = vi.fn()
+      const user = userEvent.setup()
+      render(
+        <NextIntlClientProvider locale="en" messages={enMessages}>
+          <TaskSettingsDialog open onOpenChange={onOpenChange} folderId={1} />
+        </NextIntlClientProvider>
+      )
+      const save = await saveButton()
+
+      const box = screen.getByRole("textbox", {
+        name: "Auto-compact threshold",
+      })
+      await user.clear(box)
+      await user.type(box, typed)
+
+      // 负号、小数点不能被悄悄删掉，否则 -5 当场就成了 5。
+      expect(box).toHaveValue(typed)
+      expect(box).toHaveAttribute("aria-invalid", "true")
+      expect(box).toHaveAccessibleDescription(
+        expect.stringContaining("Enter a whole number from 0 to 100")
+      )
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Enter a whole number from 0 to 100"
+      )
+
+      await user.click(save)
+      expect(setMock).not.toHaveBeenCalled()
+      expect(onOpenChange).not.toHaveBeenCalled()
+    }
+  )
+
+  it("saves 0 as off and 100 as typed", async () => {
     const user = userEvent.setup()
     renderDialog(1)
     const save = await saveButton()
 
     const box = screen.getByRole("textbox", { name: "Auto-compact threshold" })
-    // Above 100 there is no occupancy that could ever reach it — storing it
-    // would look enabled while behaving exactly like off.
     await user.clear(box)
-    await user.type(box, "120")
+    await user.type(box, "100")
+    expect(box).not.toHaveAttribute("aria-invalid", "true")
     await user.click(save)
-
     await waitFor(() => expect(setMock).toHaveBeenCalled())
-    const [, saved] = setMock.mock.calls[0] as [number, WorkTaskFolderSettings]
-    expect(saved.auto_compact_percent).toBe(0)
+    const [, full] = setMock.mock.calls[0] as [number, WorkTaskFolderSettings]
+    expect(full.auto_compact_percent).toBe(100)
 
-    // And an emptied box is off too, rather than NaN.
     setMock.mockClear()
     await user.clear(box)
+    await user.type(box, "0")
     await user.click(save)
     await waitFor(() => expect(setMock).toHaveBeenCalled())
-    const [, blanked] = setMock.mock.calls[0] as [
-      number,
-      WorkTaskFolderSettings,
-    ]
-    expect(blanked.auto_compact_percent).toBe(0)
-    expect(blanked.compact_command).toBeNull()
+    const [, off] = setMock.mock.calls[0] as [number, WorkTaskFolderSettings]
+    expect(off.auto_compact_percent).toBe(0)
   })
 })
 

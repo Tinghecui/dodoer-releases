@@ -6766,6 +6766,7 @@
     "settingsMaxConcurrentInvalid": "0 または正の整数を入力してください",
     "settingsAutoCompact": "自動コンパクトのしきい値",
     "settingsAutoCompactHint": "フォローアップ・再試行・マージの前に、コンテキストウィンドウの使用率がこの値以上ならセッションを圧縮してから送信します。0 で無効。",
+    "settingsAutoCompactInvalid": "0 から 100 までの整数を入力してください",
     "compactingNote": "セッションのコンテキストを圧縮中…",
     "settingsCompactCommand": "コンパクトコマンド",
     "settingsCompactCommandHint": "空欄ならエージェントが提供するコマンド（または既知の既定値）を自動で使います。",

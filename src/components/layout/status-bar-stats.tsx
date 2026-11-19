@@ -33,8 +33,9 @@ export function StatusBarStats() {
   return (
     // Cowork: the server's name gives way first (`min-w-0`) when the sidebar
     // foot is narrow, so the resource meter and the account menu at its far
-    // end stay inside it.
-    <div className="flex min-w-0 items-center gap-3">
+    // end stay inside it. The count gives way after it (`min-w-0` + `truncate`
+    // below) and `overflow-hidden` keeps it from spilling under those icons.
+    <div className="flex min-w-0 items-center gap-3 overflow-hidden">
       {remoteConnection && (
         <span
           className="flex max-w-40 min-w-0 items-center gap-1.5"
@@ -52,12 +53,12 @@ export function StatusBarStats() {
           onClick={() => setRoute("tokenUsage")}
           title={t("openUsage")}
           className={cn(
-            "flex shrink-0 items-center gap-1.5 whitespace-nowrap transition-colors hover:text-foreground",
+            "flex min-w-0 items-center gap-1.5 whitespace-nowrap transition-colors hover:text-foreground",
             routeId === "tokenUsage" && "text-foreground"
           )}
         >
-          <ChartNoAxesColumn className="h-3 w-3" />
-          <span>
+          <ChartNoAxesColumn className="h-3 w-3 shrink-0" />
+          <span className="truncate">
             {t("conversations", { count: stats.total_conversations })}
           </span>
         </button>

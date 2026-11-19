@@ -80,6 +80,7 @@ export function CanvasBoardList() {
   const boards = useCanvasBoardsStore((s) => s.boards)
   const hydrated = useCanvasBoardsStore((s) => s.hydrated)
   const loadError = useCanvasBoardsStore((s) => s.loadError)
+  const refetching = useCanvasBoardsStore((s) => s.refetching)
   const openBoard = useCanvasBoardsStore((s) => s.openBoard)
   const { createBoard, updateBoard, deleteBoard } = useCanvasBoardActions()
   const displayName = useBoardDisplayName()
@@ -112,14 +113,17 @@ export function CanvasBoardList() {
     )
   }, [boards, query, displayName])
 
+  // 列表为空时，重新读失败或者还在读，都不能显示「还没有画布」：那会让人
+  // 以为画布没了（#1008）。列表不为空时照旧显示卡片，错误放在上面的横幅里。
+  const noBoardsShown = !hydrated || boards.length === 0
   let body: React.ReactNode
-  if (!hydrated && !loadError) {
+  if (noBoardsShown && !loadError && (!hydrated || refetching)) {
     body = (
       <div className="flex flex-1 items-center justify-center">
         <Loader2 className="size-5 animate-spin text-muted-foreground/60" />
       </div>
     )
-  } else if (!hydrated) {
+  } else if (noBoardsShown && loadError) {
     body = (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
         <LoadError message={loadError} />

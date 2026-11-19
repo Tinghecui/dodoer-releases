@@ -222,6 +222,29 @@ describe("canvas boards store", () => {
     expect(store().loadError).toBeNull()
   })
 
+  it("flags a read while it is out, and clears the flag either way", async () => {
+    expect(store().refetching).toBe(false)
+    const answer = deferredList()
+    const ok = store().refetch()
+    expect(store().refetching).toBe(true)
+    answer([summary(board(1))])
+    await ok
+    expect(store().refetching).toBe(false)
+    mockList.mockRejectedValueOnce(new Error("offline"))
+    const failed = store().refetch()
+    expect(store().refetching).toBe(true)
+    await failed
+    expect(store().refetching).toBe(false)
+  })
+
+  it("reset clears the in-flight flag", () => {
+    deferredList()
+    void store().refetch()
+    expect(store().refetching).toBe(true)
+    store().reset()
+    expect(store().refetching).toBe(false)
+  })
+
   it("reset forgets the open board and strands a read in flight", async () => {
     store().openBoard(2)
     const answer = deferredList()

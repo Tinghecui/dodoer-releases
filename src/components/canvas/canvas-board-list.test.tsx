@@ -329,4 +329,37 @@ describe("CanvasBoardList", () => {
     await userEvent.click(screen.getByRole("button", { name: "Retry" }))
     expect(await screen.findByRole("button", { name: "Sprint" })).toBeTruthy()
   })
+
+  it("a failed re-read of an empty list shows the failure, not the empty state", async () => {
+    mockList.mockResolvedValueOnce([])
+    const view = renderList()
+    expect(await screen.findByText("No canvases yet")).toBeTruthy()
+    view.unmount()
+
+    // 切走再切回：重新挂载时会再读一次列表
+    mockList.mockRejectedValueOnce(new Error("offline"))
+    renderList()
+    expect(
+      await screen.findByText("Couldn't load canvases: offline")
+    ).toBeTruthy()
+    expect(screen.queryByText("No canvases yet")).toBeNull()
+    expect(screen.queryByRole("button", { name: "New canvas" })).toBeNull()
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(await screen.findByRole("button", { name: "Sprint" })).toBeTruthy()
+  })
+
+  it("a slow re-read of an empty list shows a spinner, not the empty state", async () => {
+    mockList.mockResolvedValueOnce([])
+    const view = renderList()
+    expect(await screen.findByText("No canvases yet")).toBeTruthy()
+    view.unmount()
+
+    let resolve: (list: CanvasBoardSummary[]) => void = () => {}
+    mockList.mockImplementationOnce(() => new Promise((r) => (resolve = r)))
+    const { container } = renderList()
+    expect(screen.queryByText("No canvases yet")).toBeNull()
+    expect(container.querySelector(".animate-spin")).toBeTruthy()
+    await act(async () => resolve([]))
+    expect(await screen.findByText("No canvases yet")).toBeTruthy()
+  })
 })

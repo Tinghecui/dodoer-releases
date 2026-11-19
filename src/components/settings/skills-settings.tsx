@@ -959,10 +959,21 @@ export function SkillsSettings() {
                     </div>
                   )}
 
+                  {/* 读列表失败：只显示失败和「重试」，不和下面的「暂无 Skill」
+                      一起出现（#1008） */}
                   {!skillsLoading && skillsError && (
-                    <div className="text-xs text-red-400 rounded-md border border-red-500/30 bg-red-500/5 px-2.5 py-2">
-                      {skillsError}
-                    </div>
+                    <SettingsLoadError
+                      message={skillsError}
+                      onRetry={() => {
+                        if (!selectedAgent) return
+                        loadSkills(selectedAgent.agent_type).catch((err) => {
+                          console.error(
+                            "[SkillsSettings] retry skills failed:",
+                            err
+                          )
+                        })
+                      }}
+                    />
                   )}
 
                   {!skillsLoading && !skillsError && !skillsSupported && (
@@ -972,6 +983,7 @@ export function SkillsSettings() {
                   )}
 
                   {!skillsLoading &&
+                    !skillsError &&
                     skillsSupported &&
                     filteredSkills.length === 0 && (
                       <div className="text-xs text-muted-foreground px-1">

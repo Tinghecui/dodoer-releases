@@ -44,6 +44,9 @@ interface CanvasBoardsState {
   /** Why the last list fetch failed, while nothing newer has loaded. The list
    *  keeps whatever it had and offers a retry. */
   loadError: string | null
+  /** A list read is out. Lets an empty list show a spinner instead of the
+   *  "no canvases" call to action until the read says it really is empty. */
+  refetching: boolean
   /** The board the canvas route shows, or null for the list. Session memory:
    *  leaving the route and coming back returns to the same board, while a
    *  fresh start (like every full-page route) begins at the list. */
@@ -145,6 +148,7 @@ export const useCanvasBoardsStore = create<CanvasBoardsState>((set, get) => {
     boards: [],
     hydrated: false,
     loadError: null,
+    refetching: false,
     activeBoardId: null,
     closedNotice: null,
 
@@ -190,6 +194,7 @@ export const useCanvasBoardsStore = create<CanvasBoardsState>((set, get) => {
       }
       const epoch = fetchEpoch
       opsSinceFetch = []
+      set({ refetching: true })
       const settle = () => {
         fetchInFlight = null
         opsSinceFetch = null
@@ -207,13 +212,13 @@ export const useCanvasBoardsStore = create<CanvasBoardsState>((set, get) => {
           for (const op of opsSinceFetch ?? []) {
             boards = applyOp(boards, op, deletedBoards)
           }
-          set({ boards, hydrated: true, loadError: null })
+          set({ boards, hydrated: true, loadError: null, refetching: false })
           settle()
         })
         .catch((e) => {
           if (epoch !== fetchEpoch) return
           console.error("[canvas] board list fetch failed:", e)
-          set({ loadError: toErrorMessage(e) })
+          set({ loadError: toErrorMessage(e), refetching: false })
           settle()
         })
       return fetchInFlight
@@ -231,6 +236,7 @@ export const useCanvasBoardsStore = create<CanvasBoardsState>((set, get) => {
         boards: [],
         hydrated: false,
         loadError: null,
+        refetching: false,
         activeBoardId: null,
         closedNotice: null,
       })

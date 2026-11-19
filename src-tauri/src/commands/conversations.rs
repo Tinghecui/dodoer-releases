@@ -3614,6 +3614,10 @@ async fn move_conversations_to(
         )));
     }
 
+    // Cowork fork: 挪过去以后会话记下的分支跟着换成目标文件夹的分支（悬停卡片、
+    // 会话详情读的是这一列）。查不到（不是 git 仓库、游离 HEAD）就保留原值。
+    let target_branch = detect_git_branch(&target.path).await;
+
     let mut ids = Vec::with_capacity(conversation_ids.len());
     for id in conversation_ids {
         if !ids.contains(&id) {
@@ -3679,6 +3683,7 @@ async fn move_conversations_to(
             &target.path,
             RelocateOptions {
                 touch_updated_at: false,
+                git_branch: target_branch.clone(),
             },
         )
         .await
@@ -9116,6 +9121,71 @@ mod tests {
                 .folder_id,
             project
         );
+    }
+
+    /// Cowork fork: 智能体把会话挪进工作树（continue_in_worktree）以后，
+    /// 会话记下的分支要换成工作树的分支，不能还是原项目建会话时的 main。
+    #[tokio::test]
+    async fn agent_move_into_worktree_takes_the_worktree_branch() {
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("run git");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        let wt = tmp.path().join("repo-aiqa-x");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "aiqa/x",
+                wt.to_str().unwrap(),
+            ],
+        );
+
+        let db = fresh_in_memory_db().await;
+        let mgr = ConnectionManager::new();
+        let project = seed_folder(&db, repo.to_str().unwrap()).await;
+        let worktree =
+            folder_service::add_folder_with_parent(&db.conn, wt.to_str().unwrap(), Some(project))
+                .await
+                .expect("worktree folder")
+                .id;
+        let id = create_conversation_core(&db.conn, project, AgentType::ClaudeCode, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            conversation_service::get_by_id(&db.conn, id)
+                .await
+                .unwrap()
+                .git_branch
+                .as_deref(),
+            Some("main")
+        );
+
+        let result = move_conversation_for_agent(&EventEmitter::Noop, &db.conn, &mgr, id, worktree)
+            .await
+            .expect("move");
+        assert_eq!(result.moved, vec![id]);
+
+        let row = conversation_service::get_by_id(&db.conn, id).await.unwrap();
+        assert_eq!(row.folder_id, worktree);
+        assert_eq!(row.git_branch.as_deref(), Some("aiqa/x"));
     }
 
     #[tokio::test]

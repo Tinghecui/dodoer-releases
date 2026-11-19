@@ -1177,6 +1177,7 @@ pub async fn reparent_folder_conversations(
         &target_path,
         RelocateOptions {
             touch_updated_at: true,
+            git_branch: None,
         },
     )
     .await?;
@@ -1223,11 +1224,15 @@ pub enum RelocateSelection {
     Tree { root_id: i32 },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RelocateOptions {
     /// Stamp `updated_at` on the moved rows. Worktree re-parenting does (it
     /// always has); a user's move does not — reorganizing is not activity.
     pub touch_updated_at: bool,
+    /// Cowork fork: 目标文件夹当前的分支。`Some` 时挪过去的每一行的
+    /// `git_branch` 都改成它（原分支属于原来那个文件夹，挪过去再显示没有意义）；
+    /// `None`（目标不是 git 仓库、或调用方没查）时保留原值。
+    pub git_branch: Option<String>,
 }
 
 /// One row [`relocate_conversations`] moved.
@@ -1272,7 +1277,8 @@ pub enum RelocateOutcome {
 /// - `kind` chat → regular (a chat conversation that lands in a project is an
 ///   ordinary project conversation from then on — the sidebar groups by the
 ///   row's own kind, so it would otherwise stay in the Chat section);
-/// - `updated_at` only when [`RelocateOptions::touch_updated_at`].
+/// - `updated_at` only when [`RelocateOptions::touch_updated_at`];
+/// - `git_branch` → [`RelocateOptions::git_branch`] when it is `Some`.
 ///
 /// Each row is written with a compare-and-set on the folder it was read in,
 /// so a concurrent move or delete is never overwritten. In `Tree` mode a lost
@@ -1384,6 +1390,12 @@ pub async fn relocate_conversations(
         }
         if opts.touch_updated_at {
             update = update.col_expr(conversation::Column::UpdatedAt, Expr::value(now));
+        }
+        if let Some(branch) = &opts.git_branch {
+            update = update.col_expr(
+                conversation::Column::GitBranch,
+                Expr::value(Some(branch.clone())),
+            );
         }
         let res = update
             .filter(conversation::Column::Id.eq(row.id))
@@ -4195,6 +4207,7 @@ mod tests {
             target_path,
             RelocateOptions {
                 touch_updated_at: false,
+                git_branch: None,
             },
         )
         .await
@@ -4291,6 +4304,45 @@ mod tests {
         let remote_row = raw(&db.conn, remote).await;
         assert_eq!(remote_row.folder_id, elsewhere);
         assert_eq!(remote_row.origin_cwd, None);
+    }
+
+    /// Cowork fork: 带了目标分支，整棵树每一行的分支都换成它；没带就保留原值。
+    #[tokio::test]
+    async fn tree_move_sets_the_target_branch_only_when_given() {
+        let db = fresh_in_memory_db().await;
+        let from = seed_folder(&db, "/tmp/codeg-move-branch-from").await;
+        let to = seed_folder(&db, "/tmp/codeg-move-branch-to").await;
+        let back = seed_folder(&db, "/tmp/codeg-move-branch-back").await;
+        let (root, child) = seed_parent_with_child(&db.conn, from).await;
+        for id in [root, child] {
+            let mut active: conversation::ActiveModel = raw(&db.conn, id).await.into();
+            active.git_branch = Set(Some("main".into()));
+            active.update(&db.conn).await.expect("seed branch");
+        }
+
+        let moved = relocate_conversations(
+            &db.conn,
+            RelocateSelection::Tree { root_id: root },
+            to,
+            "/tmp/codeg-move-branch-to",
+            RelocateOptions {
+                touch_updated_at: false,
+                git_branch: Some("feat".into()),
+            },
+        )
+        .await
+        .expect("relocate");
+        assert!(matches!(moved, RelocateOutcome::Moved(ref rows) if rows.len() == 2));
+        for id in [root, child] {
+            assert_eq!(raw(&db.conn, id).await.git_branch.as_deref(), Some("feat"));
+        }
+
+        tree_move(&db.conn, root, back, "/tmp/codeg-move-branch-back").await;
+        for id in [root, child] {
+            let row = raw(&db.conn, id).await;
+            assert_eq!(row.folder_id, back);
+            assert_eq!(row.git_branch.as_deref(), Some("feat"));
+        }
     }
 
     #[tokio::test]

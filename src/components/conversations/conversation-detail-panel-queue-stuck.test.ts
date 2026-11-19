@@ -578,7 +578,9 @@ describe("a connection bound to another target does not hold the queue forever",
       "const staleConnectedTarget =",
       "// Mirror the connection's liveMessage"
     )
-    expect(effect).toContain('connStatus === "connected" && !connectionReady')
+    expect(effect).toContain(
+      'connStatus === "connected" && (!connectionReady || selectorsLoading)'
+    )
     // 计时本身（满 15 秒、加消息不清零）由 use-stale-target-fail.test.ts 跑
     expect(effect).toContain("useStaleTargetFail({")
     expect(effect).toContain("stale: staleConnectedTarget")
@@ -587,5 +589,53 @@ describe("a connection bound to another target does not hold the queue forever",
     expect(effect).toContain("isReady: () => connectionReadyRef.current")
     expect(effect).toContain("retargetConnection()")
     expect(effect).toContain("mqFailHead()")
+  })
+})
+
+// #868：连的目录和智能体都对，会话却一直没初始化完（selectorsLoading 一直为真），
+// 排队自动发送被它挡住；兜底计时也要管这种，到点强制重连（同参数的
+// retargetConnection 会被 connect 去重）。
+describe("a session that never finishes initializing does not hold the queue forever", () => {
+  it("counts a never-ready session as stale", () => {
+    const effect = between(
+      "const staleConnectedTarget =",
+      "// Mirror the connection's liveMessage"
+    )
+    expect(effect).toContain(
+      'connStatus === "connected" && (!connectionReady || selectorsLoading)'
+    )
+    expect(effect).toContain(
+      "isReady: () => connectionReadyRef.current && !selectorsLoadingRef.current"
+    )
+  })
+
+  it("force-reconnects a right-target connection, retargets a wrong one", () => {
+    const effect = between(
+      "const staleConnectedTarget =",
+      "// Mirror the connection's liveMessage"
+    )
+    const onTimeout = effect.slice(effect.indexOf("onTimeout:"))
+    expect(onTimeout).toContain("if (!connectionReadyRef.current)")
+    expect(onTimeout).toContain("retargetConnection()")
+    expect(onTimeout).toContain("void forceReconnect()")
+    expect(onTimeout).toContain("mqFailHead()")
+  })
+
+  // 审查打回：发完就切到别的标签，后台标签到点也要重连，只看能不能连。
+  it("force-reconnects a background tab too, as long as it can connect", () => {
+    const effect = between(
+      "const staleConnectedTarget =",
+      "// Mirror the connection's liveMessage"
+    )
+    const onTimeout = effect.slice(effect.indexOf("onTimeout:"))
+    expect(onTimeout).toContain(
+      "else if (canForceReconnectRef.current) void forceReconnect()"
+    )
+    const refs = between(
+      "const canForceReconnectRef",
+      "const staleConnectedTarget ="
+    )
+    expect(refs).toContain("canAutoConnect && agentUnavailableReason == null")
+    expect(refs).not.toContain("isActive")
   })
 })

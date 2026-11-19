@@ -77,6 +77,12 @@ export interface UseConnectionLifecycleReturn {
    * 这种情况它不管。参数相同的请求由 connect 自己去重，不会重复起进程。
    */
   retargetConnection: () => void
+  /**
+   * Cowork 加的（#868）：先断开、再按当前参数连一次。给「目录和智能体都对、
+   * 会话却一直没初始化完」用：这时参数没变，retargetConnection 会被 connect
+   * 去重，什么都不发生。后台标签也连（调用方保证这个标签现在能连）。
+   */
+  forceReconnect: () => Promise<void>
   handleSend: (
     draft: PromptDraft,
     modeId?: string | null,
@@ -540,6 +546,33 @@ export function useConnectionLifecycle({
     touchActivity,
   ])
 
+  const forceReconnect = useCallback(async () => {
+    // 不看 isActive：用户发完消息切到别的标签，后台这个标签到点也得重连，
+    // 不然切回来同参数的连接被去重，点重试还得再等一轮超时。能不能连由调用方
+    // 保证（同 reconnectInBackground）；只有当前标签才记活动时间。
+    if (!workingDir) return
+    if (isActive) touchActivity(contextKey)
+    setLastAutoConnectError(null)
+    await connDisconnect().catch(() => {})
+    await connConnect(agentType, workingDir, sessionId, conversationId).catch(
+      (e: unknown) => {
+        if (!isExpectedConnectError(e)) {
+          console.error("[ConnLifecycle] force reconnect:", e)
+        }
+      }
+    )
+  }, [
+    isActive,
+    agentType,
+    workingDir,
+    sessionId,
+    conversationId,
+    connConnect,
+    connDisconnect,
+    contextKey,
+    touchActivity,
+  ])
+
   // Why connecting failed, for the composer's inline banner. The auto-connect's
   // own rejection says it first; a request parked behind another in-flight
   // connect never rejects to it (its promise resolves at once, and the run
@@ -700,6 +733,7 @@ export function useConnectionLifecycle({
     handleFocus,
     reconnectInBackground,
     retargetConnection,
+    forceReconnect,
     handleSend,
     handleSetConfigOption,
     handleCancel,

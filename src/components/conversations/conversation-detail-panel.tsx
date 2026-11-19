@@ -807,6 +807,7 @@ const ConversationTabView = memo(function ConversationTabView({
     handleFocus,
     reconnectInBackground,
     retargetConnection,
+    forceReconnect,
     handleSend: lifecycleSend,
     handleSetConfigOption: lifecycleSetConfigOption,
     handleCancel,
@@ -1333,14 +1334,28 @@ const ConversationTabView = memo(function ConversationTabView({
   // 要是没触发，排队的消息就一直写「正在等待就绪」。等满 STALE_TARGET_FAIL_MS
   // 还没就绪：再请求一次连接，并把队首标成失败、带重试。
   // 计时不随排队条数、回调引用变化清零（见 useStaleTargetFail）。
-  const staleConnectedTarget = connStatus === "connected" && !connectionReady
+  // #868：目录和智能体都对、会话却一直没初始化完（selectorsLoading 一直为真，
+  // 自动发送被它挡着）也算。这种参数没变，retargetConnection 会被 connect
+  // 去重，到点要先断开再连（forceReconnect）。
+  // 强制重连后台标签也做：用户发完就切走的话，切回来同参数的连接会被去重，
+  // 点重试还得再等一轮。能不能连按 canAutoConnect 判断，同后台自动重发。
+  const selectorsLoadingRef = useRef(selectorsLoading)
+  const canForceReconnectRef = useRef(false)
+  const canForceReconnect = canAutoConnect && agentUnavailableReason == null
+  useEffect(() => {
+    selectorsLoadingRef.current = selectorsLoading
+    canForceReconnectRef.current = canForceReconnect
+  }, [selectorsLoading, canForceReconnect])
+  const staleConnectedTarget =
+    connStatus === "connected" && (!connectionReady || selectorsLoading)
   useStaleTargetFail({
     stale: staleConnectedTarget,
     queueLength: msgQueue.length,
     headFailed: queueHeadFailed,
-    isReady: () => connectionReadyRef.current,
+    isReady: () => connectionReadyRef.current && !selectorsLoadingRef.current,
     onTimeout: () => {
-      retargetConnection()
+      if (!connectionReadyRef.current) retargetConnection()
+      else if (canForceReconnectRef.current) void forceReconnect()
       mqFailHead()
     },
   })

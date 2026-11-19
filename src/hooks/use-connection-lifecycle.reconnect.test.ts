@@ -29,11 +29,13 @@ vi.mock("@/contexts/task-context", () => {
 const conn = vi.hoisted(() => ({
   status: null as string | null,
   connect: null as unknown as Mock,
+  disconnect: null as unknown as Mock,
 }))
 
 vi.mock("@/hooks/use-connection", async () => {
   const { vi } = await import("vitest")
   conn.connect = vi.fn().mockResolvedValue(undefined)
+  conn.disconnect = vi.fn().mockResolvedValue(undefined)
   const noop = vi.fn().mockResolvedValue(undefined)
   return {
     useConnection: () => ({
@@ -43,7 +45,7 @@ vi.mock("@/hooks/use-connection", async () => {
       selectorsReady: false,
       hasCachedSelectors: false,
       connect: conn.connect,
-      disconnect: noop,
+      disconnect: conn.disconnect,
       sendPrompt: noop,
       setMode: noop,
       setConfigOption: noop,
@@ -149,5 +151,58 @@ describe("useConnectionLifecycle retargetConnection", () => {
     const { result } = renderBackgroundTab()
     result.current.retargetConnection()
     expect(conn.connect).not.toHaveBeenCalled()
+  })
+})
+
+// #868：连的目录和智能体都对、可会话一直没初始化完（selectors_ready 没到），
+// 同参数的 connect 会被去重，retargetConnection 救不回来。forceReconnect
+// 先断开再按当前参数连一次。
+describe("useConnectionLifecycle forceReconnect", () => {
+  beforeEach(() => {
+    conn.status = null
+    conn.connect.mockClear()
+    conn.disconnect.mockClear()
+  })
+
+  it("tears the connection down before connecting again", async () => {
+    conn.status = "connected"
+    const { result } = renderHook(() =>
+      useConnectionLifecycle({
+        contextKey: "tab-4",
+        agentType: "claude_code",
+        isActive: true,
+        workingDir: "/tmp/new-chat",
+        sessionId: undefined,
+        conversationId: undefined,
+      })
+    )
+    conn.connect.mockClear()
+    await result.current.forceReconnect()
+    expect(conn.disconnect).toHaveBeenCalledTimes(1)
+    expect(conn.connect).toHaveBeenCalledWith(
+      "claude_code",
+      "/tmp/new-chat",
+      undefined,
+      undefined
+    )
+    expect(conn.disconnect.mock.invocationCallOrder[0]).toBeLessThan(
+      conn.connect.mock.invocationCallOrder[0]
+    )
+  })
+
+  // 审查打回：用户发完就切到别的标签时，后台标签到点也得断开重连，不然切回来
+  // 同参数的连接被去重，点重试还要再等一轮超时。
+  it("reconnects a background tab too", async () => {
+    conn.status = "connected"
+    const { result } = renderBackgroundTab()
+    conn.connect.mockClear()
+    await result.current.forceReconnect()
+    expect(conn.disconnect).toHaveBeenCalledTimes(1)
+    expect(conn.connect).toHaveBeenCalledWith(
+      "claude_code",
+      "/tmp/proj",
+      "s1",
+      7
+    )
   })
 })

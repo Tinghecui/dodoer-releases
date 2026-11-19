@@ -44,6 +44,7 @@ import {
   CommandItem,
 } from "@/components/ui/command"
 import { cn } from "@/lib/utils"
+import { toErrorMessage } from "@/lib/app-error"
 import { formatConversationTitle } from "@/lib/conversation-title"
 
 type SearchTab = "conversations" | "files"
@@ -131,6 +132,9 @@ export function SearchCommandDialog({
   const [results, setResults] = useState<ConversationSearchResult[]>([])
   const [limits, setLimits] = useState<SearchLimits | null>(null)
   const [searching, setSearching] = useState(false)
+  // 最近一次会话搜索失败的原因：有它时空状态写「搜索失败」并给重试，
+  // 不冒充「未找到结果」（#1009）。
+  const [searchError, setSearchError] = useState<string | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   // Bumped by every new search (and by every keystroke, before the debounce
   // fires): a response that comes back after it is stale and is dropped, so a
@@ -169,11 +173,13 @@ export function SearchCommandDialog({
       if (!text && !agent) {
         setResults([])
         setLimits(null)
+        setSearchError(null)
         setSearching(false)
         return
       }
       const folderIds = searchAll ? null : [folderId]
       setSearching(true)
+      setSearchError(null)
       try {
         if (text) {
           // Titles and message text, matched by the backend: the rows are
@@ -207,10 +213,11 @@ export function SearchCommandDialog({
           )
           setLimits(null)
         }
-      } catch {
+      } catch (err) {
         if (seq !== searchSeqRef.current) return
         setResults([])
         setLimits(null)
+        setSearchError(toErrorMessage(err))
       } finally {
         if (seq === searchSeqRef.current) setSearching(false)
       }
@@ -240,6 +247,7 @@ export function SearchCommandDialog({
       setAgentFilter(null)
       setResults([])
       setLimits(null)
+      setSearchError(null)
       setScope("project")
       searchSeqRef.current += 1
       setActiveTab("conversations")
@@ -437,11 +445,28 @@ export function SearchCommandDialog({
         {activeTab === "conversations" && (
           <>
             <CommandEmpty>
-              {searching
-                ? t("searching")
-                : !query.trim() && !agentFilter
-                  ? t("typeToSearch")
-                  : t("noResults")}
+              {searching ? (
+                t("searching")
+              ) : searchError ? (
+                <span className="flex flex-col items-center gap-2">
+                  <span className="text-destructive">
+                    {t("searchFailed", { message: searchError })}
+                  </span>
+                  <button
+                    type="button"
+                    // 焦点留在搜索框里，重试后接着打字还是在搜
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => doSearch(query, agentFilter)}
+                    className="rounded-md border px-2 py-0.5 text-xs text-foreground hover:bg-muted"
+                  >
+                    {t("retry")}
+                  </button>
+                </span>
+              ) : !query.trim() && !agentFilter ? (
+                t("typeToSearch")
+              ) : (
+                t("noResults")
+              )}
             </CommandEmpty>
             {limits?.stopped && !searching && (
               <p

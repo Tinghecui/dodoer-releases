@@ -2611,7 +2611,9 @@
       "scopeAll": "Todos los proyectos",
       "scanLimited": "Solo se buscaron mensajes en las {scanned} conversaciones más recientes de {total}; los títulos, en todas.",
       "scanTimedOut": "Se agotó el tiempo: solo se buscaron mensajes en las {scanned} conversaciones más recientes de {total}; los títulos, en todas.",
-      "resultsLimited": "Solo se muestran las primeras {count} coincidencias. Haz una búsqueda más específica para ver las demás."
+      "resultsLimited": "Solo se muestran las primeras {count} coincidencias. Haz una búsqueda más específica para ver las demás.",
+      "searchFailed": "La búsqueda falló: {message}",
+      "retry": "Reintentar"
     },
     "folderTitleBar": {
       "showSidebar": "Mostrar barra lateral",

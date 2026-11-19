@@ -353,3 +353,66 @@ describe("SearchCommandDialog message search (#101)", () => {
     expect(screen.getByText("newer result")).toBeInTheDocument()
   })
 })
+
+describe("SearchCommandDialog failed search (#1009)", () => {
+  const search = vi.mocked(searchConversationMessages)
+  const list = vi.mocked(listAllConversations)
+  const msgs = enMessages.Folder.search
+
+  beforeEach(() => {
+    workspace.activeFolderId = 1
+    workspace.activeFolder = { id: 1, name: "docs-site", path: "/p/docs" }
+    workspace.conversations = []
+    search.mockReset()
+    list.mockReset()
+    list.mockResolvedValue([])
+  })
+
+  it("says the search failed, not that nothing matched, and retries", async () => {
+    search.mockRejectedValueOnce(new Error("server exploded"))
+    const user = userEvent.setup()
+    renderDialog()
+    await user.keyboard("README")
+
+    expect(
+      await screen.findByText(/server exploded/, undefined, { timeout: 2000 })
+    ).toBeInTheDocument()
+    expect(screen.queryByText(msgs.noResults)).not.toBeInTheDocument()
+    const retry = screen.getByRole("button", { name: msgs.retry })
+
+    search.mockResolvedValueOnce(
+      response({
+        results: [
+          {
+            conversation: summary(3, "notes on setup"),
+            title_match: true,
+            hits: [],
+          },
+        ],
+      })
+    )
+    await user.click(retry)
+    expect(await screen.findByText("notes on setup")).toBeInTheDocument()
+    expect(search).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText(/server exploded/)).not.toBeInTheDocument()
+    // 重试后光标还在搜索框里
+    expect(screen.getByPlaceholderText(msgs.placeholder)).toHaveFocus()
+  })
+
+  it("says the listing failed when only an agent filter is picked", async () => {
+    workspace.conversations = [
+      { folder_id: 1, agent_type: "claude_code" },
+      { folder_id: 1, agent_type: "codex" },
+    ]
+    list.mockRejectedValue(new Error("list exploded"))
+    const user = userEvent.setup()
+    renderDialog()
+    await user.click(screen.getByRole("button", { name: "Codex" }))
+
+    expect(
+      await screen.findByText(/list exploded/, undefined, { timeout: 2000 })
+    ).toBeInTheDocument()
+    expect(screen.queryByText(msgs.noResults)).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: msgs.retry })).toBeInTheDocument()
+  })
+})

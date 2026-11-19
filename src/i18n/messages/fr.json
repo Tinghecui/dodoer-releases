@@ -2611,7 +2611,9 @@
       "scopeAll": "Tous les projets",
       "scanLimited": "Messages recherchés uniquement dans les {scanned} conversations les plus récentes sur {total} ; titres dans toutes.",
       "scanTimedOut": "Temps écoulé : messages recherchés uniquement dans les {scanned} conversations les plus récentes sur {total} ; titres dans toutes.",
-      "resultsLimited": "Seuls les {count} premiers résultats sont affichés. Précisez la recherche pour voir les autres."
+      "resultsLimited": "Seuls les {count} premiers résultats sont affichés. Précisez la recherche pour voir les autres.",
+      "searchFailed": "La recherche a échoué : {message}",
+      "retry": "Réessayer"
     },
     "folderTitleBar": {
       "showSidebar": "Afficher la barre latérale",

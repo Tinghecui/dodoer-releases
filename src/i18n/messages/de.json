@@ -2611,7 +2611,9 @@
       "scopeAll": "Alle Projekte",
       "scanLimited": "Nachrichten wurden nur in den {scanned} neuesten von {total} Unterhaltungen durchsucht, Titel in allen.",
       "scanTimedOut": "Zeitlimit erreicht: Nachrichten wurden nur in den {scanned} neuesten von {total} Unterhaltungen durchsucht, Titel in allen.",
-      "resultsLimited": "Nur die ersten {count} Treffer werden angezeigt. Suche genauer, um weitere zu sehen."
+      "resultsLimited": "Nur die ersten {count} Treffer werden angezeigt. Suche genauer, um weitere zu sehen.",
+      "searchFailed": "Suche fehlgeschlagen: {message}",
+      "retry": "Erneut versuchen"
     },
     "folderTitleBar": {
       "showSidebar": "Seitenleiste anzeigen",

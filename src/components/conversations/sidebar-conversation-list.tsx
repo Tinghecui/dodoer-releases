@@ -2435,12 +2435,33 @@ export function SidebarConversationList({
     [openTab, openConversations]
   )
 
-  const handleRename = useCallback(
-    async (id: number, newTitle: string) => {
-      await updateConversationTitle(id, newTitle)
+  // Cowork fork: a row action the server refused says so, and the list is
+  // read again so what was changed ahead of the answer goes back. These used
+  // to fail silently, as an unhandled rejection (CODEG-WEB-D: a delete that
+  // failed left the row there and said nothing).
+  const reportRowActionFailure = useCallback(
+    (err: unknown) => {
+      toast.error(
+        t("manageConversations.toastOpFailed", {
+          message: toErrorMessage(err),
+        })
+      )
       refreshConversations()
     },
-    [refreshConversations]
+    [t, refreshConversations]
+  )
+
+  const handleRename = useCallback(
+    async (id: number, newTitle: string) => {
+      try {
+        await updateConversationTitle(id, newTitle)
+      } catch (err) {
+        reportRowActionFailure(err)
+        return
+      }
+      refreshConversations()
+    },
+    [refreshConversations, reportRowActionFailure]
   )
 
   // A conversation that started in its own worktree (the composer's "start in
@@ -2512,7 +2533,13 @@ export function SidebarConversationList({
 
   const handleDelete = useCallback(
     async (id: number, agentType: string, folderId: number) => {
-      await deleteConversation(id)
+      try {
+        await deleteConversation(id)
+      } catch (err) {
+        // Still there: its tab stays open and no clean-up is offered.
+        reportRowActionFailure(err)
+        return
+      }
       // No-op if no matching tab is open (the context guards on its tab ref).
       closeConversationTab(
         folderId,
@@ -2522,30 +2549,43 @@ export function SidebarConversationList({
       refreshConversations()
       void offerWorktreeCleanup(folderId, id)
     },
-    [closeConversationTab, refreshConversations, offerWorktreeCleanup]
+    [
+      closeConversationTab,
+      refreshConversations,
+      offerWorktreeCleanup,
+      reportRowActionFailure,
+    ]
   )
 
   const handleStatusChange = useCallback(
     async (id: number, status: ConversationStatus) => {
       updateConversationLocal(id, { status })
-      await updateConversationStatus(id, status)
+      try {
+        await updateConversationStatus(id, status)
+      } catch (err) {
+        reportRowActionFailure(err)
+      }
     },
-    [updateConversationLocal]
+    [updateConversationLocal, reportRowActionFailure]
   )
 
   const handleTogglePin = useCallback(
     async (id: number, nextPinned: boolean) => {
       // Optimistic: instantly move the row into / out of the Pinned section. The
       // upsert echo (emit_conversation_upsert) reconciles the exact server
-      // `pinned_at`; on failure the next refresh / WS reconnect corrects it
-      // (mirrors handleStatusChange's lenient pattern). Stable callback — only
-      // `updateConversationLocal` as a dep — so the card memo keeps bailing out.
+      // `pinned_at`; on failure the list is read again, which moves it back
+      // (as handleStatusChange does). Stable callback — its deps never change
+      // — so the card memo keeps bailing out.
       updateConversationLocal(id, {
         pinned_at: nextPinned ? new Date().toISOString() : null,
       })
-      await updateConversationPinned(id, nextPinned)
+      try {
+        await updateConversationPinned(id, nextPinned)
+      } catch (err) {
+        reportRowActionFailure(err)
+      }
     },
-    [updateConversationLocal]
+    [updateConversationLocal, reportRowActionFailure]
   )
 
   // "Move to folder" — the row's submenu picks the folder, this one dialog for

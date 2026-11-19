@@ -1182,6 +1182,47 @@ describe("SidebarConversationList — remove from workspace closes terminals", (
     ).toHaveBeenCalledWith(1)
   })
 
+  // CODEG-WEB-D: the delete used to fail as an unhandled rejection, with
+  // nothing on screen.
+  it("says why a delete failed, offers no clean-up and reads the list again", async () => {
+    const refresh = vi.fn(() => Promise.resolve())
+    useAppWorkspaceStore.setState({
+      conversations: [conv(11, 1), conv(21, 2), conv(31, 3)],
+      refreshConversations: refresh,
+    })
+    toastOffers.length = 0
+    const toastError = vi.spyOn(toast, "error").mockImplementation(() => 0)
+    api.deleteConversation.mockRejectedValueOnce(new Error("disk is full"))
+    try {
+      render(tree())
+      const row = document.querySelector('[data-conversation-id="21"]')
+      act(() => {
+        fireEvent.contextMenu(row as HTMLElement)
+      })
+      const del = Array.from(
+        document.querySelectorAll('[role="menuitem"]')
+      ).find((el) => el.textContent?.trim() === "Delete")
+      act(() => {
+        fireEvent.click(del as HTMLElement)
+      })
+      const dialog = document.querySelector('[role="alertdialog"]')
+      await act(async () => {
+        fireEvent.click(
+          within(dialog as HTMLElement).getByRole("button", { name: "Delete" })
+        )
+      })
+      await act(async () => {})
+      expect(api.deleteConversation).toHaveBeenCalledWith(21)
+      expect(toastError).toHaveBeenCalledTimes(1)
+      expect(String(toastError.mock.calls[0][0])).toContain("disk is full")
+      expect(refresh).toHaveBeenCalledTimes(1)
+      expect(toastOffers).toHaveLength(0)
+    } finally {
+      toastError.mockRestore()
+      api.deleteConversation.mockClear()
+    }
+  })
+
   it("closes a deleted worktree's terminals when its clean-up removes it", async () => {
     useAppWorkspaceStore.setState({
       conversations: [conv(11, 1), conv(21, 2), conv(31, 3)],

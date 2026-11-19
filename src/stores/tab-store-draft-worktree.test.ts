@@ -110,3 +110,74 @@ describe("the choice is dropped when the draft moves", () => {
     expect(tab("draft")?.pendingWorktree).toBeUndefined()
   })
 })
+
+// #837：「新建会话」复用分组里已有的草稿时，给的是一份干净的草稿——上次选的
+// 工作树分支（可能正是创建失败的那个）不再跟着。
+describe("clicking new conversation resets the worktree choice", () => {
+  const badSpec: ConversationWorktreeSpec = {
+    kind: "branch_off",
+    branch: `qa/${"a".repeat(260)}`,
+    base: "main",
+  }
+
+  it("reusing the same draft clears it", () => {
+    useTabStore.getState().setDraftWorktree("draft", badSpec)
+    const opened = useTabStore.getState().openNewConversationTab(1, "/repo")
+    expect(opened.tabId).toBe("draft")
+    expect(tab("draft")?.pendingWorktree).toBeUndefined()
+  })
+
+  it("clears it when the reused draft also changes working dir", () => {
+    useTabStore.getState().setDraftWorktree("draft", badSpec)
+    const opened = useTabStore.getState().openNewConversationTab(1, "/repo/sub")
+    expect(opened.tabId).toBe("draft")
+    expect(tab("draft")?.workingDir).toBe("/repo/sub")
+    expect(tab("draft")?.pendingWorktree).toBeUndefined()
+  })
+
+  it("clears it when the reused draft is retargeted to another folder", () => {
+    useTabStore.getState().setDraftWorktree("draft", badSpec)
+    const opened = useTabStore
+      .getState()
+      .openNewConversationTab(2, worktree.path)
+    expect(opened.tabId).toBe("draft")
+    expect(tab("draft")?.pendingWorktree).toBeUndefined()
+  })
+
+  it("a draft restored from a reload is cleared too", async () => {
+    useTabStore.setState({
+      rawTabs: [
+        {
+          id: "restored",
+          kind: "conversation",
+          folderId: 1,
+          conversationId: null,
+          agentType: "claude_code",
+          title: "new",
+          isPinned: true,
+          workingDir: "/repo",
+          pendingWorktree: badSpec,
+        },
+      ],
+      activeTabId: "restored",
+    })
+    const opened = useTabStore.getState().openNewConversationTab(1, "/repo")
+    expect(opened.tabId).toBe("restored")
+    expect(tab("restored")?.pendingWorktree).toBeUndefined()
+  })
+
+  it("moving the draft itself (retargetTabId) keeps it until the retarget", () => {
+    useTabStore.getState().setDraftWorktree("draft", spec)
+    useTabStore.getState().openNewConversationTab(2, worktree.path, {
+      forceAgent: "claude_code",
+      retargetTabId: "draft",
+    })
+    expect(tab("draft")?.pendingWorktree).toEqual(spec)
+  })
+
+  it("startup recovery keeps the restored choice", () => {
+    useTabStore.getState().setDraftWorktree("draft", spec)
+    useTabStore.getState().recoverActiveContext()
+    expect(tab("draft")?.pendingWorktree).toEqual(spec)
+  })
+})

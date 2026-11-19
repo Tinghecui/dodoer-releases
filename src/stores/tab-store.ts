@@ -318,6 +318,10 @@ export interface TabStoreState {
        *  follow the folder, where the target folder may have a draft of its
        *  own. */
       retargetTabId?: string
+      /** 复用已有草稿时保留它的工作树分支选择。默认会清掉（#837：「新建会话」
+       *  给的是一份干净的草稿）；只给不是用户点「新建会话」的内部调用用，
+       *  比如启动时回到上次的项目。 */
+      keepDraftWorktree?: boolean
     }
   ) => OpenedDraftTarget
   openChatModeTab: (options?: {
@@ -479,6 +483,19 @@ let tabsSnapshotLoaded = false
 // 刷新后第一次读取服务器标签失败了、还没有快照落地（#626）。这段时间里本机
 // 列表不完整（只有草稿和补回的未确认标签），版本号也可能还是默认的 0，不能保存。
 let snapshotReadFailed = false
+// 读取失败期间 blob 的基线（#785，见 persistLocalTabsWhileReadFailed）。
+let readFailedBlobBaseline: string | null = null
+// 读取失败时本机上次聚焦的会话所在的项目（从 blob 的 activeConversation 推出来）。
+// 这时没有标签能推出当前项目，靠它让「新建会话」落回原来的项目（#785）。
+let readFailedHomeFolder: number | null = null
+// 读取失败、没有标签时启动流程自动补的那个草稿（runRecoveryOnce）。用户没拿它
+// 发过消息之前不算用户选的：不记进 blob、不顶掉原来记的焦点（#785）。
+let readFailedFillerDraftId: string | null = null
+let readFailedRecovering = false
+// blob 里记下的那个占位草稿（readFailedFiller）。占位草稿也写进 drafts，这样
+// 用户在里面打了字没发就刷新，草稿 id 不变、输入框按 id 读回原来的字；靠这个
+// 记号再刷新时仍认成占位，不算焦点（#785）。
+let pendingRestoreFillerDraft: string | null = null
 const childSummaryInFlight = new Set<number>()
 const childSeedBuffer = new Map<
   number,
@@ -1026,6 +1043,7 @@ function readPersistedGroupState(): {
   pendingRestoreActiveConversation = null
   pendingRestoreUnsynced = []
   pendingRestoreActiveScope = null
+  pendingRestoreFillerDraft = null
   restoredLocalIndex = new Map()
   const fallback = () => ({
     groupLayout: singleGroupLayout() as LayoutNode,
@@ -1050,6 +1068,10 @@ function readPersistedGroupState(): {
             ? parsed.activeConversation
             : null
         pendingRestoreUnsynced = sanitizeUnsynced(parsed.unsyncedConversations)
+        pendingRestoreFillerDraft =
+          typeof parsed.readFailedFiller === "string"
+            ? parsed.readFailedFiller
+            : null
         pendingRestoreActiveScope =
           parsed.activeScope === "global" ||
           (typeof parsed.activeScope === "number" &&
@@ -1087,7 +1109,13 @@ function persistGroupState() {
   // Both gates matter: pre-hydration the state is transient, and after a FAILED
   // hydration it is missing every conversation tab — writing either would
   // replace the good blob with a collapsed layout.
-  if (!st.tabsHydrated || !tabsSnapshotLoaded) return
+  if (!st.tabsHydrated) return
+  if (!tabsSnapshotLoaded) {
+    // 读取失败时本机开的标签还是要记下来，不然再刷新就找不回来（#785）。
+    if (snapshotReadFailed) persistLocalTabsWhileReadFailed(st)
+    return
+  }
+  readFailedBlobBaseline = null
   // The top level is always the normal-mode view, as a session with the mode
   // off reads it; folder views (while tabs follow the folder, or parked from
   // the last session until the stored mode is known) ride in `views`.
@@ -1127,22 +1155,7 @@ function persistGroupState() {
       }
       return
     }
-    drafts.push({
-      id: tab.id,
-      group,
-      index,
-      folderId: tab.folderId,
-      ...(tab.isChat === true ? { isChat: true } : {}),
-      // Chat drafts get a fresh scratch dir on focus; persisting the old one
-      // would point the connection at a directory the GC may have removed.
-      ...(tab.isChat !== true && tab.workingDir
-        ? { workingDir: tab.workingDir }
-        : {}),
-      ...(tab.agentTypeProvisional ? {} : { agentType: tab.agentType }),
-      ...(tab.isChat !== true && tab.pendingWorktree
-        ? { pendingWorktree: tab.pendingWorktree }
-        : {}),
-    })
+    drafts.push(persistedDraftOf(tab, group, index))
   })
   // Each folder view lists only its own folder's tabs (drafts by their own
   // ids — the draft entries above carry the normal-mode group). A folder with
@@ -1194,6 +1207,184 @@ function persistGroupState() {
     localStorage.setItem(TAB_GROUPS_STORAGE_KEY, blob)
   } catch {
     /* ignore */
+  }
+}
+
+/** 一个草稿标签在 blob 里的记录。 */
+function persistedDraftOf(
+  tab: TabItemInternal,
+  group: string,
+  index: number
+): PersistedDraft {
+  return {
+    id: tab.id,
+    group,
+    index,
+    folderId: tab.folderId,
+    ...(tab.isChat === true ? { isChat: true } : {}),
+    // Chat drafts get a fresh scratch dir on focus; persisting the old one
+    // would point the connection at a directory the GC may have removed.
+    ...(tab.isChat !== true && tab.workingDir
+      ? { workingDir: tab.workingDir }
+      : {}),
+    ...(tab.agentTypeProvisional ? {} : { agentType: tab.agentType }),
+    ...(tab.isChat !== true && tab.pendingWorktree
+      ? { pendingWorktree: tab.pendingWorktree }
+      : {}),
+  }
+}
+
+/**
+ * 首次读取服务器标签失败、还没有快照落地时写 blob（#785）。这时本机列表缺了
+ * 服务器上的会话标签，不能照常整份重写（会把分组、布局冲掉），所以只增不删：
+ * 布局、分组选择、各项目视图和已有的分组归属都照原样保留，只把本机才知道的
+ * 东西换成当前的——草稿、服务器没确认过的会话标签（这时全算）和本机焦点。
+ * 不然故障期间新开的会话哪里都没记，再刷新就补不回来。
+ *
+ * 第一次调用只记下基线不写：用户没动过什么，磁盘上的 blob 就原样不动。
+ */
+function persistLocalTabsWhileReadFailed(st: TabStoreState) {
+  let base: Record<string, unknown> = {}
+  try {
+    const raw = localStorage.getItem(TAB_GROUPS_STORAGE_KEY)
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      isLayoutNode((parsed as Record<string, unknown>).layout)
+    ) {
+      base = parsed as Record<string, unknown>
+    }
+  } catch {
+    /* 读不出来就当没有 */
+  }
+  const views: Record<string, GroupView> = {
+    ...st.groupViews,
+    [groupViewKey(useFolderTabsStore.getState())]: groupViewOnScreen(st),
+  }
+  const normal = views[ALL_GROUP_VIEW] ?? groupViewOnScreen(st)
+  const layout = isLayoutNode(base.layout) ? base.layout : normal.layout
+  const assignments = sanitizeStringRecord(base.assignments)
+  const drafts: PersistedDraft[] = []
+  const unsynced: PersistedUnsyncedConversation[] = []
+  if (readFailedRecovering) {
+    const opened = st.rawTabs.find((t) => t.id === st.activeTabId)
+    if (opened && opened.conversationId == null) {
+      readFailedFillerDraftId = opened.id
+    }
+  }
+  const isFiller = (tab: TabItemInternal) =>
+    tab.conversationId == null && tab.id === readFailedFillerDraftId
+  let fillerId: string | null = null
+  st.rawTabs.forEach((tab, position) => {
+    // 启动时自动补的占位草稿也记下来（下面的 readFailedFiller 标着它）：用户在
+    // 里面打了字没发就刷新，靠同一个 id 读回输入框里的字。它照旧不算焦点。
+    if (isFiller(tab)) fillerId = tab.id
+    const group = groupOfTab(normal.groupOf, layout, tab.id)
+    // 补回来的标签记的是完整列表里的位置，沿用它；这时的列表不完整。
+    const index = restoredLocalIndex.get(tab.id) ?? position
+    if (tab.conversationId != null) {
+      assignments[
+        makeConversationTabId(tab.folderId, tab.agentType, tab.conversationId)
+      ] = group
+      const key = tabSyncKey(tab)
+      if (key != null && !serverKnownTabKeys.has(key)) {
+        unsynced.push({
+          folderId: tab.folderId,
+          agentType: tab.agentType,
+          conversationId: tab.conversationId,
+          index,
+          isPinned: tab.isPinned,
+        })
+      }
+      return
+    }
+    drafts.push(persistedDraftOf(tab, group, index))
+  })
+  const activeTab = st.rawTabs.find(
+    (t) => t.id === st.activeTabId && !isFiller(t)
+  )
+  const folderTabs = useFolderTabsStore.getState()
+  let activeDraft: string | null = null
+  let activeConversation: string | null = null
+  if (activeTab) {
+    if (activeTab.conversationId == null) activeDraft = activeTab.id
+    else
+      activeConversation = makeConversationTabId(
+        activeTab.folderId,
+        activeTab.agentType,
+        activeTab.conversationId
+      )
+  } else {
+    // 没有活动标签（比如跟随模式切到的项目里一个本机标签都没有，或者活动的
+    // 只是启动时自动补的草稿）时，原来记的
+    // 焦点照旧留着：它多半是服务器上的会话，这时只是没读出来，清掉了恢复后就
+    // 回不到它。只有它指的是本机才有、已经被关掉的标签时才清。
+    const baseDraft =
+      typeof base.activeDraft === "string" ? base.activeDraft : null
+    if (baseDraft != null && drafts.some((d) => d.id === baseDraft)) {
+      activeDraft = baseDraft
+    }
+    const baseConversation =
+      typeof base.activeConversation === "string"
+        ? base.activeConversation
+        : null
+    const closedLocal = sanitizeUnsynced(base.unsyncedConversations).some(
+      (u) =>
+        makeConversationTabId(u.folderId, u.agentType, u.conversationId) ===
+          baseConversation &&
+        !unsynced.some(
+          (n) =>
+            n.folderId === u.folderId &&
+            n.agentType === u.agentType &&
+            n.conversationId === u.conversationId
+        )
+    )
+    if (baseConversation != null && !closedLocal) {
+      activeConversation = baseConversation
+    }
+  }
+  const merged: Record<string, unknown> = {
+    ...base,
+    layout,
+    assignments,
+    drafts,
+    activeDraft,
+    activeConversation,
+  }
+  if (unsynced.length > 0) merged.unsyncedConversations = unsynced
+  else delete merged.unsyncedConversations
+  if (fillerId != null) merged.readFailedFiller = fillerId
+  else delete merged.readFailedFiller
+  // 跟随模式开着时记下现在停在的项目；还没读出开关时保留原来记的（#741）。
+  if (folderTabs.enabled) merged.activeScope = folderTabs.scope
+  const blob = JSON.stringify(merged)
+  if (readFailedBlobBaseline == null) {
+    readFailedBlobBaseline = blob
+    // 新补的占位草稿还是要写下去，不然用户在里面打的字刷新后就对不上了。
+    if (fillerId == null || base.readFailedFiller === fillerId) return
+  }
+  if (blob === readFailedBlobBaseline) return
+  readFailedBlobBaseline = blob
+  lastGroupBlob = blob
+  try {
+    localStorage.setItem(TAB_GROUPS_STORAGE_KEY, blob)
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * 快照读到了：上次故障期间启动补的占位草稿（#785）如果输入框里什么都没留，就
+ * 不补回来，跟故障前一样不多出一个空的新会话；打了字的照常补回（不算焦点）。
+ */
+function dropEmptyFillerDraft() {
+  const filler = pendingRestoreFillerDraft
+  pendingRestoreFillerDraft = null
+  if (filler == null) return
+  const key = buildNewConversationDraftStorageKey(filler)
+  if (loadMessageInputDraftV2(key) == null && !hasLiveComposerContent(key)) {
+    pendingRestoreDrafts = pendingRestoreDrafts.filter((d) => d.id !== filler)
   }
 }
 
@@ -2618,6 +2809,15 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const agentChanged = existingTab.agentType !== targetAgent
     const provisionalChanged =
       (existingTab.agentTypeProvisional ?? false) !== provisional
+    // #837：点「新建会话」复用分组里已有的草稿时，把它重置成「不用工作树」——
+    // 上次选的分支（可能正是创建失败、刷新后又恢复出来的那个）不再跟着。
+    // 搬草稿（retargetTabId，工作树建好后的那一步）和按原位置重新打开（index）
+    // 不算新建，照旧保留。
+    const clearWorktree =
+      !movingDraft &&
+      options?.index == null &&
+      options?.keepDraftWorktree !== true &&
+      existingTab.pendingWorktree != null
 
     // The singleton means a reopened draft resolves to THIS draft rather than a
     // tab of its own, so the slot it was closed from has to move this one — a
@@ -2628,11 +2828,18 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       options?.index == null
         ? prevState.rawTabs
         : moveTabToSlot(prevState.rawTabs, existingTab.id, options.index)
-    const moved = nextRawTabs !== prevState.rawTabs
+    const clearedRawTabs = clearWorktree
+      ? nextRawTabs.map((tab) =>
+          tab.id === existingTab.id
+            ? { ...tab, pendingWorktree: undefined }
+            : tab
+        )
+      : nextRawTabs
+    const changed = clearedRawTabs !== prevState.rawTabs
 
     if (folderChanged || agentChanged) {
       set({
-        ...(moved ? { rawTabs: nextRawTabs } : {}),
+        ...(changed ? { rawTabs: clearedRawTabs } : {}),
         draftRetargetRequests: [
           ...prevState.draftRetargetRequests,
           {
@@ -2646,10 +2853,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         ],
       })
       focusTab(existingTab.id)
-      if (moved) recomputeTabs()
+      if (changed) recomputeTabs()
     } else if (workingDirChanged || provisionalChanged) {
       set({
-        rawTabs: nextRawTabs.map((tab) =>
+        rawTabs: clearedRawTabs.map((tab) =>
           tab.id === existingTab.id
             ? { ...tab, workingDir, agentTypeProvisional: provisional }
             : tab
@@ -2657,12 +2864,14 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         activeTabId: existingTab.id,
       })
       recomputeTabs()
-    } else if (moved) {
-      set({ rawTabs: nextRawTabs, activeTabId: existingTab.id })
+    } else if (changed) {
+      set({ rawTabs: clearedRawTabs, activeTabId: existingTab.id })
       recomputeTabs()
     } else {
       focusTab(existingTab.id)
     }
+    // 清掉的选择也要落盘，不然刷新后又从存档里恢复出来。
+    if (clearWorktree) persistGroupState()
     runtime.activateConversationPane()
     // Every branch above leaves the tab on `targetAgent` in `folderId` — either
     // already there, or once its queued retarget lands.
@@ -3009,6 +3218,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         // collapse a draft-only one).
         // 服务器还没确认的会话标签（#626）一起按原来的位置插回去；分组沿用
         // blob 的 assignments（按规范 id 记的）。
+        dropEmptyFillerDraft()
         const {
           tabs: withDrafts,
           groupOf: draftGroups,
@@ -3050,6 +3260,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         console.error("[TabStore] listOpenedTabs failed:", err)
         if (!cancelled) {
           snapshotReadFailed = true
+          readFailedHomeFolder = folderOfConversationTabId(
+            pendingRestoreActiveConversation
+          )
           // The snapshot is the CONVERSATION half only; the drafts are
           // device-local and still valid, so restore them rather than starting
           // blank. Everything that could destroy on-disk state — the invariant
@@ -3066,6 +3279,17 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
             recordedIndex,
           } = mergeRestoredLocalTabs(get().rawTabs)
           restoredLocalIndex = recordedIndex
+          // 上次故障期间补的占位草稿补回来了，仍认成占位（不算焦点）。
+          if (
+            pendingRestoreFillerDraft != null &&
+            draftsOnly.some(
+              (tab) =>
+                tab.id === pendingRestoreFillerDraft &&
+                tab.conversationId == null
+            )
+          ) {
+            readFailedFillerDraftId = pendingRestoreFillerDraft
+          }
           if (draftsOnly.length > 0) {
             const focus =
               [
@@ -3479,13 +3703,21 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     if (hint) {
       const f = folders.find((x) => x.id === hint.folderId)
       if (f) {
-        get().openNewConversationTab(f.id, f.path)
+        get().openNewConversationTab(f.id, f.path, { keepDraftWorktree: true })
         return
       }
     }
+    // 读取标签失败时，上次聚焦的是会话（这时不记 hint），回到它的项目（#785）。
+    const home = folders.find((x) => x.id === readFailedHomeFolderInSidebar())
+    if (home) {
+      get().openNewConversationTab(home.id, home.path)
+      return
+    }
     const first = folders[0]
     if (first) {
-      get().openNewConversationTab(first.id, first.path)
+      get().openNewConversationTab(first.id, first.path, {
+        keepDraftWorktree: true,
+      })
       return
     }
     get().openChatModeTab()
@@ -3648,22 +3880,55 @@ export function restorePersistedFolderScope() {
   const scope = pendingRestoreActiveScope
   pendingRestoreActiveScope = null
   const folderTabs = useFolderTabsStore.getState()
-  if (scope == null || !folderTabs.enabled || scope === folderTabs.scope) {
-    return
-  }
+  if (!folderTabs.enabled) return
   if (
-    scope !== "global" &&
-    !useAppWorkspaceStore.getState().folders.some((f) => f.id === scope)
+    scope != null &&
+    scope !== folderTabs.scope &&
+    (scope === "global" ||
+      useAppWorkspaceStore.getState().folders.some((f) => f.id === scope))
   ) {
-    return
+    folderTabs.activateScope(scope)
   }
-  folderTabs.activateScope(scope)
+  // 读取标签失败、停在全局又一个标签都没有时（上次停在全局，或者老记录没记
+  // 项目），推不出当前项目，「新建会话」会退成聊天。回到本机上次聚焦的会话
+  // 所在的项目（#785）。
+  const home = readFailedHomeFolderInSidebar()
+  if (
+    home != null &&
+    useFolderTabsStore.getState().scope === "global" &&
+    !useTabStore.getState().rawTabs.some(isTabInScope)
+  ) {
+    useFolderTabsStore.getState().activateScope(home)
+  }
+}
+
+/** 从会话标签的规范 id（conv-项目-agent-会话）取出项目 id。 */
+function folderOfConversationTabId(id: string | null): number | null {
+  const m = id != null ? /^conv-(\d+)-/.exec(id) : null
+  const folderId = m ? Number(m[1]) : NaN
+  return Number.isInteger(folderId) && folderId > 0 ? folderId : null
+}
+
+/** 读取失败期间可以回去的项目：还在侧栏里才算（#785）。 */
+function readFailedHomeFolderInSidebar(): number | null {
+  if (!snapshotReadFailed || readFailedHomeFolder == null) return null
+  const home = readFailedHomeFolder
+  return useAppWorkspaceStore.getState().folders.some((f) => f.id === home)
+    ? home
+    : null
 }
 
 export function runRecoveryOnce() {
   if (recoveryRan || useFolderTabsStore.getState().enabled) return
   recoveryRan = true
-  useTabStore.getState().recoverActiveContext()
+  // 读取失败时补出来的草稿只是占位，不是用户选的焦点（#785）。补的过程中就会
+  // 写 blob，所以先挂上标记，让那次写把新开的草稿认成占位。
+  readFailedRecovering = snapshotReadFailed
+  try {
+    useTabStore.getState().recoverActiveContext()
+  } finally {
+    readFailedRecovering = false
+  }
 }
 
 /**
@@ -3874,6 +4139,9 @@ export function resetTabStore() {
   orphanDraftPruneRan = false
   tabsSnapshotLoaded = false
   snapshotReadFailed = false
+  readFailedBlobBaseline = null
+  readFailedHomeFolder = null
+  readFailedFillerDraftId = null
   conversationTabRecency.clear()
   runtime = defaultRuntime()
   lastConversations = useAppWorkspaceStore.getState().conversations
@@ -3901,6 +4169,7 @@ function applyRemoteSnapshot(change: TabsChanged) {
   // un-parks the invariant prune and the blob write (see `tabsSnapshotLoaded`).
   tabsSnapshotLoaded = true
   snapshotReadFailed = false
+  readFailedFillerDraftId = null
   // A newer remote truth supersedes any debounced local save still waiting.
   if (saveTimer) {
     clearTimeout(saveTimer)

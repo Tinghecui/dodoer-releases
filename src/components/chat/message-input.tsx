@@ -55,6 +55,7 @@ import type {
   PromptCapabilitiesInfo,
   PromptDraft,
   PromptInputBlock,
+  QuickMessage,
   SessionConfigOptionInfo,
   SessionModeInfo,
 } from "@/lib/types"
@@ -317,6 +318,44 @@ interface MessageInputProps {
  *  needed) — a real `file://` attachment is never matched. Stripping at save
  *  keeps the live badge visible this session but matches the pre-existing
  *  behavior where out-of-band pasted bytes don't survive a draft round-trip. */
+// 快捷消息在 `/` 菜单里按这个搜：有标题按标题，没标题按内容。
+function quickMessageSlashKey(message: QuickMessage): string {
+  return message.title || message.content
+}
+
+// 带空格的搜索词只按标题找：有标题、有内容，标题里原样（不分大小写、不去
+// 首尾空格）包含这段字。打「/compact 」（后面跟了空格）是要接着写命令参数，
+// 不能因为有条快捷消息叫「compact」就弹出来、回车把字替掉。
+function quickMessageTitleContains(
+  message: QuickMessage,
+  query: string
+): boolean {
+  if (!message.title || !message.content) return false
+  return message.title.toLowerCase().includes(query.toLowerCase())
+}
+
+// 快捷消息的标题可以带空格（「QA 问候」），命令的 `/\S*` 规则一碰到空格就断了。
+// 光标前从右往左找行首或空白后面的 `/`，后面那段带空格、而且是某条快捷消息
+// 标题的一部分，就返回这段当搜索词；对不上任何标题就是普通的一句话，返回 null。
+function spacedQuickMessageQuery(
+  before: string,
+  quickMessages: readonly QuickMessage[]
+): string | null {
+  if (quickMessages.length === 0) return null
+  for (let i = before.length - 1; i >= 0; i--) {
+    if (before[i] !== "/") continue
+    if (i > 0 && !/\s/.test(before[i - 1])) continue
+    const query = before.slice(i + 1)
+    // 不带空格的交给 `/\S*` 那条规则；`/` 后面紧跟空格的不算。
+    if (!/\s/.test(query) || /^\s/.test(query)) continue
+    if (
+      quickMessages.some((message) => quickMessageTitleContains(message, query))
+    )
+      return query
+  }
+  return null
+}
+
 function stripEmbeddedReferences(doc: JSONContent): JSONContent {
   if (!doc.content) return doc
   const content: JSONContent[] = []
@@ -1079,15 +1118,24 @@ export function MessageInput({
     () => skillMarkedCommands(slashCommands),
     [slashCommands]
   )
+  // 搜索词带空格只可能是在搜快捷消息的标题（命令和技能的名字没有空格）。
+  const slashFilterHasSpace = /\s/.test(slashFilter)
   const filteredSlashCommands = useMemo(() => {
     if (!slashMenuOpen || slashCommands.length === 0) return []
-    if (slashTriggerChar !== "/") return []
+    if (slashTriggerChar !== "/" || slashFilterHasSpace) return []
     return rankByTextMatch(slashFilter, slashCommands, (cmd) => cmd.name)
-  }, [slashMenuOpen, slashCommands, slashTriggerChar, slashFilter])
+  }, [
+    slashMenuOpen,
+    slashCommands,
+    slashTriggerChar,
+    slashFilter,
+    slashFilterHasSpace,
+  ])
   const filteredSlashSkills = useMemo(() => {
     // Disk skills are listed only under the trigger their agent invokes them by.
     if (!skillTrigger || slashTriggerChar !== skillTrigger) return []
     if (!slashMenuOpen || availableSkills.length === 0) return []
+    if (slashFilterHasSpace) return []
     return rankByTextMatch(
       slashFilter,
       skillsForMenu(availableSkills, slashCommands, skillTrigger),
@@ -1101,9 +1149,44 @@ export function MessageInput({
     skillTrigger,
     slashTriggerChar,
     slashFilter,
+    slashFilterHasSpace,
+  ])
+  // 存的快捷消息排在智能体命令（和磁盘技能）后面，只挂在 `/` 上：打「/标题」
+  // 按标题搜，没标题的按内容搜；选中后插入内容本身，不是徽章。
+  const quickMessages = menuShortcuts.quickMessages
+  const { refreshQuickMessages, quickMessagesLoading } = menuShortcuts
+  // 挂载时先读一次，`/` 一打就有得列；每次打开 `/` 再刷新，设置里刚存的也能搜到。
+  useEffect(() => {
+    refreshQuickMessages()
+  }, [refreshQuickMessages])
+  useEffect(() => {
+    if (slashMenuOpen) refreshQuickMessages()
+  }, [slashMenuOpen, refreshQuickMessages])
+  const filteredSlashQuickMessages = useMemo(() => {
+    if (!slashMenuOpen || slashTriggerChar !== "/") return []
+    if (quickMessages.length === 0) return []
+    // 带空格的只按标题原样包含来筛，和打开菜单时的判断一致（不看内容、不模糊）。
+    if (slashFilterHasSpace) {
+      return quickMessages.filter((message) =>
+        quickMessageTitleContains(message, slashFilter)
+      )
+    }
+    return rankByTextMatch(
+      slashFilter,
+      quickMessages.filter((message) => message.content),
+      quickMessageSlashKey
+    )
+  }, [
+    slashMenuOpen,
+    slashTriggerChar,
+    slashFilter,
+    slashFilterHasSpace,
+    quickMessages,
   ])
   const slashAutocompleteCount =
-    filteredSlashCommands.length + filteredSlashSkills.length
+    filteredSlashCommands.length +
+    filteredSlashSkills.length +
+    filteredSlashQuickMessages.length
   // `/` is fed by the agent's own command list, which only exists once the
   // connection is up — so while it is being established the panel shows a
   // loading row rather than nothing at all. Disk skills (Codex's `$` list,
@@ -1165,6 +1248,9 @@ export function MessageInput({
   // runtime-command menus. We inspect the text before the collapsed caret in the
   // current block: a `/` (any agent) or `$` (Codex) at the start or right after
   // whitespace, and not inside inline code / a code block, opens the menu.
+  // 打了 `/`、但快捷消息列表还空着（第一次读还没回来，或设置里刚新建）时先关菜单、
+  // 记一笔再去读；读完有了就重新检测一次，不用用户再敲一个键。
+  const quickMessagesPendingRef = useRef(false)
   const detectSlashTrigger = useCallback(() => {
     const editor = editorRef.current?.getEditor()
     const close = () => {
@@ -1185,7 +1271,21 @@ export function MessageInput({
     const regex =
       skillTrigger === "$" ? /(^|\s)([/$])(\S*)$/ : /(^|\s)(\/)(\S*)$/
     const match = before.match(regex)
-    if (!match) return close()
+    if (!match) {
+      // 标题带空格的快捷消息（「/QA 问」）：只列快捷消息。
+      const spaced = spacedQuickMessageQuery(before, quickMessages)
+      if (spaced === null) {
+        // 列表正在刷新（打开 `/` 时发的那次），设置里刚建的标题可能还没到：
+        // 记一笔，读完再检测一次。
+        if (quickMessagesLoading) quickMessagesPendingRef.current = true
+        return close()
+      }
+      setSlashTriggerChar("/")
+      setSlashFilter(spaced)
+      setSlashSelectedIndex(0)
+      setSlashMenuOpen(true)
+      return
+    }
     const trigger = match[2] as "/" | "$"
     // Only a commands-only `/` is gated here. Its source is the agent's own
     // command list, which exists only once the connection is up — so an empty
@@ -1196,23 +1296,42 @@ export function MessageInput({
     // closing on empty would strand a trigger typed before the scan lands. Left
     // open, the panel simply stays hidden until the skills arrive and then fills
     // itself in — no second keystroke needed.
+    // 存了快捷消息的话 `/` 总有东西可列，也不关。
     if (
       trigger === "/" &&
       skillTrigger !== "/" &&
       slashCommands.length === 0 &&
+      quickMessages.length === 0 &&
       !commandsLoading
     ) {
+      quickMessagesPendingRef.current = true
+      if (!quickMessagesLoading) refreshQuickMessages()
       return close()
     }
     setSlashTriggerChar(trigger)
     setSlashFilter(match[3])
     setSlashSelectedIndex(0)
     setSlashMenuOpen(true)
-  }, [slashCommands.length, commandsLoading, skillTrigger])
+  }, [
+    slashCommands.length,
+    quickMessages,
+    quickMessagesLoading,
+    refreshQuickMessages,
+    commandsLoading,
+    skillTrigger,
+  ])
 
   useEffect(() => {
     detectSlashTriggerRef.current = detectSlashTrigger
   }, [detectSlashTrigger])
+
+  // 上面记过一笔的，等这次读完：读到了就重新检测（光标还在 `/…` 后面就打开）；
+  // 还是空的就算了，下次打 `/` 再读。读失败也清掉，免得以后不再去读。
+  useEffect(() => {
+    if (quickMessagesLoading || !quickMessagesPendingRef.current) return
+    quickMessagesPendingRef.current = false
+    if (quickMessages.length > 0) detectSlashTrigger()
+  }, [quickMessagesLoading, quickMessages, detectSlashTrigger])
 
   useEffect(() => {
     if (!showModeSelector) return
@@ -1282,6 +1401,35 @@ export function MessageInput({
       replaceTriggerWithReference(commandToReference(cmd))
     },
     [replaceTriggerWithReference]
+  )
+
+  // 快捷消息：删掉打的 `/…`，在原处插入内容（换行、引用和「+」菜单插入的一样）。
+  const handleQuickMessageAutocompleteSelect = useCallback(
+    (message: QuickMessage) => {
+      const handle = editorRef.current
+      const editor = handle?.getEditor()
+      if (!handle || !editor) return
+      const { $from } = editor.state.selection
+      const before = $from.parent.textBetween(
+        0,
+        $from.parentOffset,
+        undefined,
+        " "
+      )
+      // 打的就是「/」加当前的搜索词（搜索词可能带空格）。
+      const token = `/${slashFilter}`
+      if (before.endsWith(token)) {
+        const tokenLen = token.length
+        editor
+          .chain()
+          .focus()
+          .deleteRange({ from: $from.pos - tokenLen, to: $from.pos })
+          .run()
+      }
+      handle.insertTextAtCursor(message.content)
+      closeSlashMenu()
+    },
+    [closeSlashMenu, slashFilter]
   )
 
   // Codex uses `$<id>`, other agents `/<id>` — matching the trigger prefix.
@@ -1884,15 +2032,18 @@ export function MessageInput({
         return true
       }
       if (event.key === "Enter" || event.key === "Tab") {
-        // The merged list is [commands, skills].
-        if (slashSelectedIndex < filteredSlashCommands.length) {
+        // The merged list is [commands, skills, quick messages].
+        const skillsStart = filteredSlashCommands.length
+        const quickStart = skillsStart + filteredSlashSkills.length
+        if (slashSelectedIndex < skillsStart) {
           handleSlashSelect(filteredSlashCommands[slashSelectedIndex])
-        } else {
-          const skill =
-            filteredSlashSkills[
-              slashSelectedIndex - filteredSlashCommands.length
-            ]
+        } else if (slashSelectedIndex < quickStart) {
+          const skill = filteredSlashSkills[slashSelectedIndex - skillsStart]
           if (skill) handleSkillAutocompleteSelect(skill)
+        } else {
+          const message =
+            filteredSlashQuickMessages[slashSelectedIndex - quickStart]
+          if (message) handleQuickMessageAutocompleteSelect(message)
         }
         return true
       }
@@ -1904,8 +2055,10 @@ export function MessageInput({
       slashSelectedIndex,
       filteredSlashCommands,
       filteredSlashSkills,
+      filteredSlashQuickMessages,
       handleSlashSelect,
       handleSkillAutocompleteSelect,
+      handleQuickMessageAutocompleteSelect,
       closeSlashMenu,
     ]
   )
@@ -2161,6 +2314,46 @@ export function MessageInput({
                       title={skill.description ?? undefined}
                     >
                       {skill.description ?? `${skillPrefix}${skill.id}`}
+                    </span>
+                  </div>
+                </button>
+              )
+            })}
+            {filteredSlashQuickMessages.length > 0 && (
+              // 单独一组，带组名：快捷消息的标题和智能体命令重名时也分得清。
+              <div className="px-3 pt-2 pb-1 text-xs font-medium text-muted-foreground">
+                {t("quickMessages")}
+              </div>
+            )}
+            {filteredSlashQuickMessages.map((message, i) => {
+              const absoluteIndex =
+                filteredSlashCommands.length + filteredSlashSkills.length + i
+              return (
+                <button
+                  key={`quick-${message.id}`}
+                  type="button"
+                  data-slash-row=""
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm",
+                    absoluteIndex === slashSelectedIndex
+                      ? "bg-accent text-accent-foreground"
+                      : "hover:bg-muted"
+                  )}
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    handleQuickMessageAutocompleteSelect(message)
+                  }}
+                >
+                  <MessageSquareText className="size-4 shrink-0 text-primary/80" />
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                    <span className="shrink-0 font-medium">
+                      {message.title || t("quickMessageUntitled")}
+                    </span>
+                    <span
+                      className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+                      title={message.content}
+                    >
+                      {message.content}
                     </span>
                   </div>
                 </button>

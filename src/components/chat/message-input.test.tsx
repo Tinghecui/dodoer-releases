@@ -1837,6 +1837,225 @@ describe("MessageInput slash menu rows", () => {
   })
 })
 
+// 存的快捷消息也在 `/` 列表里，排在智能体命令后面：打「/标题」能搜到，
+// 回车把内容插进输入框（替掉打的 `/…`）。
+describe("MessageInput slash menu quick messages", () => {
+  const QUICK = {
+    id: 1,
+    title: "QA问候",
+    content: "请只回复：快捷消息已收到",
+    sort_order: 0,
+    created_at: "",
+    updated_at: "",
+  }
+
+  beforeEach(async () => {
+    const api = await import("@/lib/api")
+    vi.mocked(api.quickMessagesList).mockResolvedValue([QUICK])
+  })
+
+  afterEach(async () => {
+    cleanup()
+    composerHandle.current = null
+    const api = await import("@/lib/api")
+    vi.mocked(api.quickMessagesList).mockResolvedValue([])
+  })
+
+  async function typeInEditor(
+    text: string,
+    props: Partial<React.ComponentProps<typeof MessageInput>> = {}
+  ) {
+    renderInput({
+      agentType: "claude_code",
+      availableCommands: [{ name: "compact", description: "Compact" }],
+      ...props,
+    })
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const editor = composerHandle.current?.getEditor()
+    if (!editor) throw new Error("composer editor not mounted")
+    // 快捷消息是异步读的，先让它落地再打字。
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    act(() => {
+      editor.commands.insertContent(text)
+    })
+    return editor
+  }
+
+  it("lists quick messages after the agent's commands on `/`", async () => {
+    await typeInEditor("/")
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("slash-menu")).getByText("QA问候")
+      ).toBeInTheDocument()
+    )
+    const rows = within(screen.getByTestId("slash-menu"))
+      .getAllByRole("button")
+      .map((b) => b.textContent ?? "")
+    expect(rows[0]).toContain("/compact")
+    expect(rows[rows.length - 1]).toContain("QA问候")
+  })
+
+  it("finds a quick message by title and inserts its content on Enter", async () => {
+    const editor = await typeInEditor("/QA")
+    const menu = await screen.findByTestId("slash-menu")
+    await waitFor(() =>
+      expect(within(menu).getByText("QA问候")).toBeInTheDocument()
+    )
+    act(() => {
+      ;(editor.view.dom as HTMLElement).dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        })
+      )
+    })
+    await waitFor(() =>
+      expect(editor.getText()).toBe("请只回复：快捷消息已收到")
+    )
+    expect(screen.queryByTestId("slash-menu")).toBeNull()
+  })
+
+  it("opens for quick messages even when the agent has no commands", async () => {
+    await typeInEditor("/", { availableCommands: [], commandsLoading: false })
+    const menu = await screen.findByTestId("slash-menu")
+    expect(within(menu).getByText("QA问候")).toBeInTheDocument()
+  })
+
+  it("re-reads quick messages on `/` when the first read was empty (no commands)", async () => {
+    const api = await import("@/lib/api")
+    // 打开输入框时还没有快捷消息，之后在设置里新建了一条。
+    vi.mocked(api.quickMessagesList)
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([QUICK])
+    await typeInEditor("/", { availableCommands: [], commandsLoading: false })
+    const menu = await screen.findByTestId("slash-menu")
+    expect(within(menu).getByText("QA问候")).toBeInTheDocument()
+  })
+
+  it("opens once the first read lands when `/` was typed before it (no commands)", async () => {
+    const api = await import("@/lib/api")
+    let resolveFirst: (list: (typeof QUICK)[]) => void = () => {}
+    vi.mocked(api.quickMessagesList).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFirst = resolve
+      })
+    )
+    await typeInEditor("/", { availableCommands: [], commandsLoading: false })
+    expect(screen.queryByTestId("slash-menu")).toBeNull()
+    await act(async () => {
+      resolveFirst([QUICK])
+    })
+    const menu = await screen.findByTestId("slash-menu")
+    expect(within(menu).getByText("QA问候")).toBeInTheDocument()
+  })
+
+  it("searches titles with spaces and replaces the whole `/…` on Enter", async () => {
+    const api = await import("@/lib/api")
+    vi.mocked(api.quickMessagesList).mockResolvedValue([
+      { ...QUICK, title: "QA 问候" },
+    ])
+    const editor = await typeInEditor("前面 /QA 问")
+    const menu = await screen.findByTestId("slash-menu")
+    await waitFor(() =>
+      expect(within(menu).getByText("QA 问候")).toBeInTheDocument()
+    )
+    // 带空格的搜索词只列快捷消息，不列命令。
+    const rows = within(menu)
+      .getAllByRole("button")
+      .map((b) => b.textContent ?? "")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toContain("QA 问候")
+    act(() => {
+      ;(editor.view.dom as HTMLElement).dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        })
+      )
+    })
+    await waitFor(() =>
+      expect(editor.getText()).toBe("前面 请只回复：快捷消息已收到")
+    )
+    expect(screen.queryByTestId("slash-menu")).toBeNull()
+  })
+
+  it("searches spaced queries by title only, without content or fuzzy matches", async () => {
+    const api = await import("@/lib/api")
+    vi.mocked(api.quickMessagesList).mockResolvedValue([
+      { ...QUICK, title: "QA 问候" },
+      { ...QUICK, id: 2, title: "", content: "关于 QA 问题的说明" },
+      { ...QUICK, id: 3, title: "Q xA 问", content: "模糊" },
+    ])
+    await typeInEditor("/QA 问")
+    const menu = await screen.findByTestId("slash-menu")
+    await waitFor(() =>
+      expect(within(menu).getByText("QA 问候")).toBeInTheDocument()
+    )
+    const rows = within(menu)
+      .getAllByRole("button")
+      .map((b) => b.textContent ?? "")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toContain("QA 问候")
+  })
+
+  it("keeps a trailing space as typed: `/compact ` does not open quick messages", async () => {
+    const api = await import("@/lib/api")
+    vi.mocked(api.quickMessagesList).mockResolvedValue([
+      { ...QUICK, title: "compact" },
+    ])
+    const editor = await typeInEditor("/compact ")
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(screen.queryByTestId("slash-menu")).toBeNull()
+    expect(editor.getText()).toBe("/compact ")
+  })
+
+  it("re-checks a spaced title typed while the open-menu refresh was in flight", async () => {
+    const api = await import("@/lib/api")
+    let resolveRefresh: (list: (typeof QUICK)[]) => void = () => {}
+    // 挂载时读到的是空的；打开 `/` 的那次刷新还没回来，用户已经把标题打完了。
+    vi.mocked(api.quickMessagesList)
+      .mockResolvedValueOnce([])
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveRefresh = resolve
+        })
+      )
+      .mockResolvedValue([{ ...QUICK, title: "QA 问候" }])
+    const editor = await typeInEditor("/")
+    await screen.findByTestId("slash-menu")
+    act(() => {
+      editor.commands.insertContent("QA 问")
+    })
+    expect(screen.queryByTestId("slash-menu")).toBeNull()
+    await act(async () => {
+      resolveRefresh([{ ...QUICK, title: "QA 问候" }])
+    })
+    const menu = await screen.findByTestId("slash-menu")
+    expect(within(menu).getByText("QA 问候")).toBeInTheDocument()
+  })
+
+  it("closes when the spaced text after `/` matches no title", async () => {
+    const api = await import("@/lib/api")
+    vi.mocked(api.quickMessagesList).mockResolvedValue([
+      { ...QUICK, title: "QA 问候" },
+    ])
+    await typeInEditor("/QA 你好")
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(screen.queryByTestId("slash-menu")).toBeNull()
+  })
+})
+
 // claude-agent-acp 0.99.1 marks Claude's skills among its commands: at first
 // only the ones whose SKILL.md it found on disk, and once Claude Code's own
 // skill list is read, all of them (a bundled one without a path). The menu

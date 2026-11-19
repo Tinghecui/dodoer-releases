@@ -1018,3 +1018,92 @@ describe("Folder-tabs split layouts per folder", () => {
     expect(useAppWorkspaceStore.getState().activeFolderId).toBe(scope)
   })
 })
+
+describe("Folder-tabs file refs when turning follow on", () => {
+  const fileId = (path: string) => `file:${encodeURIComponent(path)}`
+
+  it("关着跟随时在别的项目里点开的文件，打开跟随后归回它目录所在的项目", () => {
+    useAppWorkspaceStore.setState({ activeFolderId: 1 })
+    const store = useFolderTabsStore.getState()
+    // 关着跟随：repo1 开了自己的 a.ts，又点开了 repo2 的 b.ts；repo2 里点开了 a.ts
+    store.addFile(fileId("/repo1/a.ts"), 1)
+    store.addFile(fileId("/repo2/b.ts"), 1)
+    store.addFile(fileId("/repo2/b.ts"), 2)
+    store.addFile(fileId("/repo1/a.ts"), 2)
+    // 哪个项目都不在的、聊天会话里的不动
+    store.addFile(fileId("/tmp/notes.md"), 1)
+    store.addFile(fileId("/repo3/c.ts"), "global")
+    useFolderTabsStore.getState().setEnabled(true)
+    const { fileRefs, fileSelection } = useFolderTabsStore.getState()
+    expect(fileRefs["1"]).toEqual([
+      fileId("/repo1/a.ts"),
+      fileId("/tmp/notes.md"),
+    ])
+    expect(fileRefs["2"]).toEqual([fileId("/repo2/b.ts")])
+    expect(fileRefs.global).toEqual([fileId("/repo3/c.ts")])
+    expect(fileSelection["1"]).not.toBe(fileId("/repo2/b.ts"))
+    expect(fileSelection["2"]).not.toBe(fileId("/repo1/a.ts"))
+  })
+
+  it("只在别的项目里开过的文件也归过去，嵌套项目里属于外层项目目录的不挪", () => {
+    const folders = [
+      { id: 1, path: "/repo1" },
+      { id: 4, path: "/repo1/sub" },
+      { id: 2, path: "/repo2" },
+    ].map((folder) => ({ ...folder, name: `f${folder.id}` })) as FolderDetail[]
+    useAppWorkspaceStore.setState({ folders, allFolders: folders })
+    const store = useFolderTabsStore.getState()
+    store.addFile(fileId("/repo2/only-here.ts"), 1)
+    store.addFile(fileId("/repo1/sub/x.ts"), 1)
+    useFolderTabsStore.getState().setEnabled(true)
+    const { fileRefs } = useFolderTabsStore.getState()
+    expect(fileRefs["1"]).toEqual([fileId("/repo1/sub/x.ts")])
+    expect(fileRefs["2"]).toEqual([fileId("/repo2/only-here.ts")])
+  })
+
+  it("跟随开着时在别的项目里打开的文件，关掉再打开跟随后也按目录归回所在项目（#740 定了按目录归属）", () => {
+    useAppWorkspaceStore.setState({ activeFolderId: 1 })
+    useFolderTabsStore.getState().setEnabled(true)
+    // 跟随开着：repo1 里打开 repo2 的 kept.ts
+    useFolderTabsStore.getState().addFile(fileId("/repo1/a.ts"), 1)
+    useFolderTabsStore.getState().addFile(fileId("/repo2/kept.ts"), 1)
+    useFolderTabsStore.getState().setEnabled(false)
+    // 关着跟随：repo1 里又点开了 repo2 的 new.ts
+    useFolderTabsStore.getState().addFile(fileId("/repo2/new.ts"), 1)
+    useFolderTabsStore.getState().setEnabled(true)
+    const { fileRefs } = useFolderTabsStore.getState()
+    expect(fileRefs["1"]).toEqual([fileId("/repo1/a.ts")])
+    expect(fileRefs["2"]).toEqual([
+      fileId("/repo2/kept.ts"),
+      fileId("/repo2/new.ts"),
+    ])
+  })
+
+  it("跟随开着时合法打开的文件，关着跟随期间关掉再在原项目里打开，打开跟随后按目录归位", () => {
+    useAppWorkspaceStore.setState({ activeFolderId: 1 })
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().addFile(fileId("/repo1/a.ts"), 1)
+    useFolderTabsStore.getState().addFile(fileId("/repo2/kept.ts"), 1)
+    useFolderTabsStore.getState().setEnabled(false)
+    // 关着跟随：关掉 kept.ts，再在 repo1 里重新打开，已经不是关掉跟随前的那个了
+    useFolderTabsStore.getState().forgetFile(fileId("/repo2/kept.ts"))
+    useFolderTabsStore.getState().addFile(fileId("/repo2/kept.ts"), 1)
+    useFolderTabsStore.getState().setEnabled(true)
+    const { fileRefs } = useFolderTabsStore.getState()
+    expect(fileRefs["1"]).toEqual([fileId("/repo1/a.ts")])
+    expect(fileRefs["2"]).toEqual([fileId("/repo2/kept.ts")])
+  })
+
+  it("关掉再打开跟随、期间什么都没动：别的项目目录下的文件也按目录归位", () => {
+    useAppWorkspaceStore.setState({ activeFolderId: 1 })
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().addFile(fileId("/repo2/b.ts"), 1)
+    useFolderTabsStore.getState().addFile(fileId("/repo1/a.ts"), 2)
+    useFolderTabsStore.getState().setEnabled(false)
+    useFolderTabsStore.getState().setEnabled(true)
+    expect(useFolderTabsStore.getState().fileRefs).toEqual({
+      "1": [fileId("/repo1/a.ts")],
+      "2": [fileId("/repo2/b.ts")],
+    })
+  })
+})

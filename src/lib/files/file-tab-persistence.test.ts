@@ -11,8 +11,11 @@ vi.mock("@/lib/transport", () => ({
 import {
   fileTabsStorageKey,
   forgetPersistedFileTabPaths,
+  hasRegroupedFileTabs,
+  markRegroupedFileTabs,
   readPersistedFileTabs,
   readSharedFileTabs,
+  regroupPersistedFileTabs,
   samePersistedFileTabs,
   sharedFileTabsStorageKey,
   snapshotFileTabs,
@@ -242,5 +245,70 @@ describe("file-tab-persistence", () => {
     expect(localStorage.getItem(fileTabsStorageKey(2, "local"))).toBeNull()
     expect(readPersistedFileTabs(3, "local").paths).toEqual(["/r/a.ts"])
     expect(readPersistedFileTabs(1, "remote-9").paths).toEqual(["/r/a.ts"])
+  })
+})
+
+describe("regroupPersistedFileTabs", () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  const folders = [
+    { id: 1, path: "/a" },
+    { id: 2, path: "/b" },
+  ]
+
+  it("别的项目目录下的文件挪到那个项目的记录末尾，选中的被挪走就不留选中项（#740）", () => {
+    writePersistedFileTabs(
+      1,
+      { paths: ["/a/x.ts", "/b/y.ts", "/tmp/z.md"], active: "/b/y.ts" },
+      "local"
+    )
+    writePersistedFileTabs(
+      2,
+      { paths: ["/a/x.ts", "/b/w.ts"], active: "/b/w.ts" },
+      "local"
+    )
+    // 别的服务器的记录不动
+    writePersistedFileTabs(1, { paths: ["/b/y.ts"], active: null }, "remote-9")
+    const rewritten = regroupPersistedFileTabs("local", folders)
+    expect(rewritten.map((entry) => entry.folderId).sort()).toEqual([1, 2])
+    expect(readPersistedFileTabs(1, "local")).toEqual({
+      paths: ["/a/x.ts", "/tmp/z.md"],
+      active: null,
+    })
+    expect(readPersistedFileTabs(2, "local")).toEqual({
+      paths: ["/b/w.ts", "/b/y.ts"],
+      active: "/b/w.ts",
+    })
+    expect(readPersistedFileTabs(1, "remote-9").paths).toEqual(["/b/y.ts"])
+  })
+
+  it("只记在别的项目里的文件也不丢：它自己的项目没有记录就新建一条", () => {
+    writePersistedFileTabs(1, { paths: ["/b/y.ts"], active: null }, "local")
+    regroupPersistedFileTabs("local", folders)
+    expect(localStorage.getItem(fileTabsStorageKey(1, "local"))).toBeNull()
+    expect(readPersistedFileTabs(2, "local").paths).toEqual(["/b/y.ts"])
+  })
+
+  it("按目录归属：不管文件是什么时候记进来的，别的项目目录下的都挪走", () => {
+    writePersistedFileTabs(
+      1,
+      { paths: ["/a/x.ts", "/b/kept.ts"], active: "/b/kept.ts" },
+      "local"
+    )
+    regroupPersistedFileTabs("local", folders)
+    expect(readPersistedFileTabs(1, "local")).toEqual({
+      paths: ["/a/x.ts"],
+      active: null,
+    })
+    expect(readPersistedFileTabs(2, "local").paths).toEqual(["/b/kept.ts"])
+  })
+
+  it("归位过的标记按服务器分开记", () => {
+    expect(hasRegroupedFileTabs("local")).toBe(false)
+    markRegroupedFileTabs("local")
+    expect(hasRegroupedFileTabs("local")).toBe(true)
+    expect(hasRegroupedFileTabs("remote-9")).toBe(false)
   })
 })

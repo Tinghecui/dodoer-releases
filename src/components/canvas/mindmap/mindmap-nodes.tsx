@@ -51,6 +51,10 @@ import { formatConversationTitle } from "@/lib/conversation-title"
 import type { DbConversationSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { useAwaitingUser } from "@/stores/awaiting-user-store"
+import {
+  backgroundMarkOf,
+  useBackgroundPending,
+} from "@/stores/background-pending-store"
 import { useIsCanceledTaskConversation } from "@/stores/canceled-task-store"
 import { useIsConversationUnread } from "@/stores/conversation-seen-store"
 import type { MindMapCategory } from "./mindmap-model"
@@ -277,6 +281,16 @@ export const MindMapLeaf = memo(function MindMapLeaf({
   const running = conversation.status === "in_progress"
   const awaiting = useAwaitingUser(conversation.external_id, conversation.id)
   const cancelled = conversation.status === "cancelled"
+  // Cowork fork (#822): 和侧栏那一行一样读后台任务——一轮结束但后台任务
+  // 还在跑是沙漏，服务器判定没有活进程在推进是「?」；两种都算进行中、
+  // 压住未读点。
+  const background = useBackgroundPending(
+    conversation.external_id,
+    conversation.id
+  )
+  const backgroundMark = backgroundMarkOf(conversation.status, background)
+  const holdsUnread =
+    backgroundMark.waiting != null || backgroundMark.uncertain != null
   // A canceled work task's session says so on its unread mark (#178).
   const taskCanceled = useIsCanceledTaskConversation(conversation.id)
   const timeLabel =
@@ -300,7 +314,7 @@ export const MindMapLeaf = memo(function MindMapLeaf({
           LEAF_FILL
         )}
         data-mindmap-leaf-state={
-          running ? "running" : isUnread ? "unread" : undefined
+          running || holdsUnread ? "running" : isUnread ? "unread" : undefined
         }
       >
         <Tooltip>
@@ -325,12 +339,14 @@ export const MindMapLeaf = memo(function MindMapLeaf({
               </span>
               <SourceMark assignment={assignment} />
               {/* A cancelled turn's cross carries unread itself (#102). */}
-              {isUnread && (!cancelled || awaiting) && (
+              {isUnread && !holdsUnread && (!cancelled || awaiting) && (
                 <UnreadDot ending={unreadEndingOf(cancelled, taskCanceled)} />
               )}
               <ConversationActivityBadge
                 awaiting={awaiting}
+                uncertain={backgroundMark.uncertain}
                 running={running}
+                waiting={backgroundMark.waiting}
                 cancelled={cancelled}
                 interrupted={isInterruptedTurn(conversation)}
                 unread={isUnread}

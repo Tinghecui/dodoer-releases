@@ -12,6 +12,7 @@
 // `components/files/file-tabs-persistence`。
 
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
+import { findOwningFolder, isPathUnderRoot } from "@/lib/file-open-target"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
 
 export const FILE_TABS_STORAGE_VERSION = 1
@@ -215,6 +216,125 @@ export function forgetPersistedFileTabPaths(
           ? null
           : recorded.active,
     }
+    writePersistedFileTabs(folderId, entries, server)
+    rewritten.push({ folderId, entries })
+  }
+  return rewritten
+}
+
+/** 归属判断用到的项目：编号和根目录。 */
+export interface FolderRoot {
+  id: number
+  path: string
+}
+
+/**
+ * 这个文件是不是别的项目的：不在 homeFolderId 这个项目的目录下、在另一个项目的目录下
+ * （嵌套的取最深的那个），返回那个项目的编号；是自己的、哪个项目都不在、或者不知道
+ * homeFolderId 的目录，返回 null。
+ */
+export function foreignFolderOf(
+  path: string,
+  homeFolderId: number,
+  folders: readonly FolderRoot[]
+): number | null {
+  const home = folders.find((folder) => folder.id === homeFolderId)
+  if (!home || isPathUnderRoot(path, home.path)) return null
+  const owner = findOwningFolder(path, folders)
+  return owner && owner.folderId !== homeFolderId ? owner.folderId : null
+}
+
+/** 这个服务器上记过标签的项目编号（从小到大）；读不了 localStorage 是 null。 */
+function persistedFolderIds(server: string): number[] | null {
+  const prefix = `${KEY_PREFIX}${server}:`
+  const folderIds: number[] = []
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (!key?.startsWith(prefix)) continue
+      const folderId = Number(key.slice(prefix.length))
+      if (Number.isInteger(folderId)) folderIds.push(folderId)
+    }
+  } catch {
+    return null
+  }
+  return folderIds.sort((a, b) => a - b)
+}
+
+/** 这个服务器的记录按目录归位过没有（#740：旧版本留下的混着的记录只理一次）。 */
+function followRegroupedStorageKey(server: string): string {
+  return `${KEY_PREFIX}${server}:regrouped`
+}
+
+export function hasRegroupedFileTabs(server: string): boolean {
+  if (typeof window === "undefined") return true
+  try {
+    return localStorage.getItem(followRegroupedStorageKey(server)) === "1"
+  } catch {
+    // 读不了本机就不理：也写不进去，每次加载都会理一遍。
+    return true
+  }
+}
+
+export function markRegroupedFileTabs(server: string): void {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(followRegroupedStorageKey(server), "1")
+  } catch {
+    /* 记不下就算了 */
+  }
+}
+
+/**
+ * 打开跟随时把各项目记录里别的项目目录下的文件归回那个项目的记录（#740）：标签不跟随
+ * 项目时标签栏是共用的一排，在 A 里点开过 B 的文件，A 的记录里就有它；打开跟随后
+ * 每个项目只开自己的，B 的文件挪到 B 的记录末尾（B 已经有的不重复），一个都不丢。
+ * 按文件所在的目录归属，不管它是在哪个项目里、什么时候打开的。被挪走的是选中项时，
+ * 原项目不留选中项。返回改写过的项目和改写后的记录。
+ */
+export function regroupPersistedFileTabs(
+  server: string,
+  folders: readonly FolderRoot[]
+): { folderId: number; entries: PersistedFileTabs }[] {
+  if (typeof window === "undefined" || folders.length === 0) return []
+  const folderIds = persistedFolderIds(server)
+  if (!folderIds) return []
+  const records = new Map<number, PersistedFileTabs>()
+  for (const folderId of folderIds) {
+    records.set(folderId, readPersistedFileTabs(folderId, server))
+  }
+  const changed = new Set<number>()
+  for (const folderId of folderIds) {
+    const recorded = records.get(folderId)!
+    const kept: string[] = []
+    for (const path of recorded.paths) {
+      const owner = foreignFolderOf(path, folderId, folders)
+      if (owner == null) {
+        kept.push(path)
+        continue
+      }
+      const target = records.get(owner) ?? EMPTY
+      if (!target.paths.includes(path)) {
+        records.set(owner, { ...target, paths: [...target.paths, path] })
+        changed.add(owner)
+      }
+      changed.add(folderId)
+    }
+    if (!changed.has(folderId)) continue
+    // 前面的项目可能刚往这个项目里挪进来几个：在最新的记录上去掉挪走的。
+    const latest = records.get(folderId)!
+    const moved = new Set(recorded.paths.filter((path) => !kept.includes(path)))
+    records.set(folderId, {
+      paths: latest.paths.filter((path) => !moved.has(path)),
+      active:
+        latest.active != null && moved.has(latest.active)
+          ? null
+          : latest.active,
+    })
+  }
+  const rewritten: { folderId: number; entries: PersistedFileTabs }[] = []
+  for (const folderId of changed) {
+    const entries = records.get(folderId)!
     writePersistedFileTabs(folderId, entries, server)
     rewritten.push({ folderId, entries })
   }

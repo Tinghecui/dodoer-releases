@@ -996,7 +996,13 @@ describe("FileTabsPersistence", () => {
     expect(tabs.active(8)).toBe(a.id)
   })
 
-  it("标签不跟随项目：在两个项目间点开对方的文件，再打开跟随刷新，每个项目自己的文件都在（被上限挤掉的也在）", async () => {
+  it("标签不跟随项目：在两个项目间点开对方的文件，再打开跟随刷新，每个项目自己目录下的文件都在（被上限挤掉的也在），别的项目的归回去（#740）", async () => {
+    useAppWorkspaceStore.setState({
+      allFolders: [
+        { id: 7, kind: "folder", path: "/docs" },
+        { id: 8, kind: "folder", path: "/demo" },
+      ] as never,
+    })
     const register = (path: string, folderId?: number) =>
       useFolderTabsStore
         .getState()
@@ -1093,19 +1099,231 @@ describe("FileTabsPersistence", () => {
     mount()
     await flush()
     await flush()
-    expect(tabs.paths(7)).toEqual([
-      "/docs/index.md",
-      "/docs/intro.md",
-      "/demo/package.json",
-    ])
+    expect(tabs.paths(7)).toEqual(["/docs/index.md", "/docs/intro.md"])
     await tabs.switchTo(8)
     await flush()
     await flush()
-    expect(tabs.paths(8)).toEqual([
-      "/docs/intro.md",
-      "/demo/package.json",
-      "/demo/version.ts",
+    expect(tabs.paths(8)).toEqual(["/demo/package.json", "/demo/version.ts"])
+    useAppWorkspaceStore.setState({ allFolders: [] })
+  })
+
+  it("关着跟随时在两个项目间点开对方的文件，再打开跟随：每个项目的记录只有自己目录下的，刷新后各回各的（#740）", async () => {
+    useAppWorkspaceStore.setState({
+      allFolders: [
+        { id: 7, kind: "folder", path: "/docs" },
+        { id: 8, kind: "folder", path: "/demo" },
+      ] as never,
+      activeFolderId: 7,
+    })
+    const register = (path: string) =>
+      useFolderTabsStore
+        .getState()
+        .addFile(fileTab(path).id, openingScope(), false)
+    // 和真实的工作区一样：点开标签时登记进当前项目的组，再选中它
+    mocks.switchFileTab.mockImplementation((id: string) => {
+      useFolderTabsStore.getState().addFile(id, openingScope(), true)
+      mocks.activeFileTabId = id
+      mocks.rerender?.()
+    })
+    const save = async () => {
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+    }
+    const goTo = async (folderId: number) => {
+      useAppWorkspaceStore.setState({ activeFolderId: folderId })
+      mocks.folderId = folderId
+      mocks.rerender?.()
+      await flush()
+    }
+    const first = mount()
+    await flush()
+    await flush()
+    // docs-site（7）里开 index.md
+    const index = fileTab("/docs/index.md")
+    const readme = fileTab("/demo/README.md")
+    await act(async () => {
+      register(index.path!)
+      mocks.fileTabs = [index]
+      mocks.activeFileTabId = index.id
+      mocks.rerender?.()
+    })
+    await save()
+    // demo（8）里开 README.md，再点一下 docs-site 的 index.md
+    await goTo(8)
+    await act(async () => {
+      register(readme.path!)
+      mocks.fileTabs = [index, readme]
+      mocks.activeFileTabId = readme.id
+      mocks.rerender?.()
+    })
+    await save()
+    await act(async () => {
+      mocks.switchFileTab(index.id)
+    })
+    await save()
+    // 回 docs-site 点一下 demo 的 README.md
+    await goTo(7)
+    await act(async () => {
+      mocks.switchFileTab(readme.id)
+    })
+    await save()
+    // 在 docs-site 里打开跟随
+    await act(async () => {
+      useFolderTabsStore.getState().setEnabled(true)
+      mocks.rerender?.()
+    })
+    await flush()
+    await save()
+    expect(useFolderTabsStore.getState().fileRefs["7"]).toEqual([index.id])
+    expect(useFolderTabsStore.getState().fileRefs["8"]).toEqual([readme.id])
+    expect(readPersistedFileTabs(7).paths).toEqual(["/docs/index.md"])
+    expect(readPersistedFileTabs(8).paths).toEqual(["/demo/README.md"])
+    first.unmount()
+    mocks.rerender = null
+
+    // 跟随开着刷新：docs-site 只有自己的，切到 demo 也只有自己的
+    resetFileTabsPersistenceForTests()
+    resetFolderTabsStore()
+    useFolderTabsStore.setState({
+      preferenceHydrated: true,
+      enabled: true,
+      scope: 7,
+    })
+    mocks.folderId = 7
+    mocks.openFilePreview.mockReset()
+    mocks.switchFileTab.mockReset()
+    const tabs = useScopedTabs()
+    mocks.fileTabs = []
+    mocks.activeFileTabId = null
+    mount()
+    await flush()
+    await flush()
+    expect(tabs.paths(7)).toEqual(["/docs/index.md"])
+    await tabs.switchTo(8)
+    await flush()
+    await flush()
+    expect(tabs.paths(8)).toEqual(["/demo/README.md"])
+    useAppWorkspaceStore.setState({ allFolders: [] })
+  })
+
+  it("跟随开着时在 docs-site 里打开 demo 的文件，关掉再打开跟随后它归回 demo（#740 定了按目录归属）", async () => {
+    useAppWorkspaceStore.setState({
+      allFolders: [
+        { id: 7, kind: "folder", path: "/docs" },
+        { id: 8, kind: "folder", path: "/demo" },
+      ] as never,
+      activeFolderId: 7,
+    })
+    useFolderTabsStore.setState({
+      preferenceHydrated: true,
+      enabled: true,
+      scope: 7,
+    })
+    mocks.folderId = 7
+    const save = async () => {
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+    }
+    const index = fileTab("/docs/index.md")
+    const readme = fileTab("/demo/README.md")
+    const view = mount()
+    await flush()
+    await flush()
+    await act(async () => {
+      useFolderTabsStore.getState().addFile(index.id, 7, false)
+      useFolderTabsStore.getState().addFile(readme.id, 7, true)
+      mocks.fileTabs = [index, readme]
+      mocks.activeFileTabId = readme.id
+      mocks.rerender?.()
+    })
+    await save()
+    expect(readPersistedFileTabs(7).paths).toEqual([
+      "/docs/index.md",
+      "/demo/README.md",
     ])
+    // 关掉跟随，什么都不动，再打开
+    await act(async () => {
+      useFolderTabsStore.getState().setEnabled(false)
+      mocks.rerender?.()
+    })
+    await flush()
+    await save()
+    await act(async () => {
+      useFolderTabsStore.getState().setEnabled(true)
+      mocks.rerender?.()
+    })
+    await flush()
+    await save()
+    expect(useFolderTabsStore.getState().fileRefs["7"]).toEqual([index.id])
+    expect(useFolderTabsStore.getState().fileRefs["8"]).toEqual([readme.id])
+    expect(readPersistedFileTabs(7).paths).toEqual(["/docs/index.md"])
+    expect(readPersistedFileTabs(8).paths).toEqual(["/demo/README.md"])
+    view.unmount()
+    mocks.rerender = null
+    useAppWorkspaceStore.setState({ allFolders: [] })
+  })
+
+  it("旧版本留下的记录已经混了、跟随开着：升级后第一次加载按目录归位一次，关掉再打开跟随也不会混回来（#740）", async () => {
+    useAppWorkspaceStore.setState({
+      allFolders: [
+        { id: 7, kind: "folder", path: "/docs" },
+        { id: 8, kind: "folder", path: "/demo" },
+      ] as never,
+      activeFolderId: 7,
+    })
+    // 旧版本关着跟随时在两个项目间点开过对方的文件，之后又在旧版本里勾上了跟随
+    writePersistedFileTabs(7, {
+      paths: ["/demo/README.md", "/docs/index.md"],
+      active: "/docs/index.md",
+    })
+    writePersistedFileTabs(8, {
+      paths: ["/docs/index.md", "/demo/src/flags.ts"],
+      active: "/demo/src/flags.ts",
+    })
+    useFolderTabsStore.setState({
+      preferenceHydrated: true,
+      enabled: true,
+      scope: 7,
+    })
+    mocks.folderId = 7
+    const save = async () => {
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+    }
+    const tabs = useScopedTabs()
+    const view = mount()
+    await flush()
+    await flush()
+    expect(tabs.paths(7)).toEqual(["/docs/index.md"])
+    expect(readPersistedFileTabs(7).paths).toEqual(["/docs/index.md"])
+    expect(readPersistedFileTabs(8).paths).toEqual([
+      "/demo/src/flags.ts",
+      "/demo/README.md",
+    ])
+    // 按复测步骤关掉再打开跟随：关掉时记下的已经是理干净的
+    await act(async () => {
+      useFolderTabsStore.getState().setEnabled(false)
+      mocks.rerender?.()
+    })
+    await flush()
+    await save()
+    await act(async () => {
+      useFolderTabsStore.getState().setEnabled(true)
+      mocks.rerender?.()
+    })
+    await flush()
+    await save()
+    expect(readPersistedFileTabs(7).paths).toEqual(["/docs/index.md"])
+    await tabs.switchTo(8)
+    await flush()
+    await flush()
+    expect(tabs.paths(8)).toEqual(["/demo/src/flags.ts", "/demo/README.md"])
+    view.unmount()
+    mocks.rerender = null
+    useAppWorkspaceStore.setState({ allFolders: [] })
   })
 
   it("标签不跟随项目：聊天会话和项目都开着同一个文件，刷新后聊天会话里也还有它", async () => {

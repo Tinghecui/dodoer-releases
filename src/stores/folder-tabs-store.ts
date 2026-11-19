@@ -4,6 +4,11 @@ import { create } from "zustand"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { registerBackendScopedStoreReset } from "@/stores/backend-scoped-store-reset"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
+import { parseFileTabId } from "@/lib/file-tab-id"
+import {
+  foreignFolderOf,
+  type FolderRoot,
+} from "@/lib/files/file-tab-persistence"
 
 export type TabScope = number | "global"
 
@@ -38,6 +43,8 @@ interface FolderTabsState {
   removeFile: (id: string, scope: TabScope) => boolean
   forgetFile: (id: string) => void
   reorderFiles: (ids: string[]) => void
+  /** 按目录把各项目组里别的项目的文件全部归位（旧版本留下的混着的，只理一次，#740）。 */
+  regroupAllFiles: () => void
 }
 
 function preferenceKey() {
@@ -65,6 +72,46 @@ export function fileOpeningScope(
       scope === "global" ? ("global" as const) : Number(scope)
     )
   return scopes.includes(state.scope) ? state.scope : (scopes[0] ?? fallback)
+}
+
+/** 有自己标签组的项目（聊天会话用的 chat 文件夹走全局范围，不算）和它们的目录。 */
+export function projectFolderRoots(): FolderRoot[] {
+  return useAppWorkspaceStore
+    .getState()
+    .allFolders.filter((folder) => folder.kind !== "chat")
+    .map((folder) => ({ id: folder.id, path: folder.path }))
+}
+
+/**
+ * 打开跟随时，把登记在某个项目组里、却在别的项目目录下的文件挪到那个项目的组里
+ * （#740）。标签不跟随项目时标签栏是共用的一排，在 A 里点一下 B 的文件就登记进了
+ * A 的组；不挪的话打开跟随后 A 的标签栏里有 B 的文件。挪走的是 A 的选中项时 A 不留
+ * 选中项（工作区按顺序选一个开着的）；B 原来没有选中项的，和后台打开一样选上它。
+ * 按文件所在的目录归属，不管它是在哪个项目里、什么时候打开的。聊天会话的全局范围不动。
+ */
+function regroupFileRefs(
+  state: Pick<FolderTabsState, "fileRefs" | "fileSelection">
+): Pick<FolderTabsState, "fileRefs" | "fileSelection"> {
+  const folders = projectFolderRoots()
+  const fileRefs: Record<string, string[]> = { ...state.fileRefs }
+  const fileSelection = { ...state.fileSelection }
+  for (const [scope, ids] of Object.entries(state.fileRefs)) {
+    const home = Number(scope)
+    if (scope === "global" || !Number.isInteger(home)) continue
+    for (const id of ids) {
+      const parts = parseFileTabId(id)
+      if (parts?.kind !== "file") continue
+      const owner = foreignFolderOf(parts.path, home, folders)
+      if (owner == null) continue
+      const target = String(owner)
+      fileRefs[scope] = fileRefs[scope].filter((ref) => ref !== id)
+      if (fileSelection[scope] === id) fileSelection[scope] = null
+      const refs = fileRefs[target] ?? []
+      if (!refs.includes(id)) fileRefs[target] = [...refs, id]
+      fileSelection[target] ??= id
+    }
+  }
+  return { fileRefs, fileSelection }
 }
 
 const initialState = () => ({
@@ -99,7 +146,12 @@ export const useFolderTabsStore = create<FolderTabsState>()((set, get) => ({
     const scope = enabled
       ? folderScope(useAppWorkspaceStore.getState().activeFolderId)
       : get().scope
-    set({ enabled, scope })
+    // 打开时按目录把别的项目的文件归回各自项目（#740）。
+    set(
+      enabled
+        ? { enabled, scope, ...regroupFileRefs(get()) }
+        : { enabled, scope }
+    )
     try {
       localStorage.setItem(preferenceKey(), String(enabled))
     } catch {
@@ -149,6 +201,18 @@ export const useFolderTabsStore = create<FolderTabsState>()((set, get) => ({
     for (const scope of Object.keys(get().fileRefs)) {
       get().removeFile(id, scope === "global" ? scope : Number(scope))
     }
+  },
+  regroupAllFiles: () => {
+    const next = regroupFileRefs(get())
+    const { fileRefs } = get()
+    const same =
+      Object.keys(next.fileRefs).length === Object.keys(fileRefs).length &&
+      Object.entries(next.fileRefs).every(
+        ([scope, ids]) =>
+          ids.length === fileRefs[scope]?.length &&
+          ids.every((id, index) => fileRefs[scope][index] === id)
+      )
+    if (!same) set(next)
   },
   reorderFiles: (ids) => {
     const state = get()

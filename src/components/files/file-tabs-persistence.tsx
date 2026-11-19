@@ -17,8 +17,11 @@ import {
   fileTabsServerKey,
   fileTabsStorageKey,
   forgetPersistedFileTabPaths,
+  hasRegroupedFileTabs,
+  markRegroupedFileTabs,
   readPersistedFileTabs,
   readSharedFileTabs,
+  regroupPersistedFileTabs,
   samePersistedFileTabs,
   sharedFileTabsStorageKey,
   snapshotFileTabs,
@@ -29,7 +32,12 @@ import {
 } from "@/lib/files/file-tab-persistence"
 import { isOfficePreviewable } from "@/lib/language-detect"
 import { MAX_FILE_TABS } from "@/lib/tab-limit"
-import { folderScope, useFolderTabsStore } from "@/stores/folder-tabs-store"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import {
+  folderScope,
+  projectFolderRoots,
+  useFolderTabsStore,
+} from "@/stores/folder-tabs-store"
 
 /** 探一下文件在不在：只要元数据，比这个大的直接报「太大」，不读内容。 */
 const PROBE_MAX_BYTES = 4096
@@ -385,6 +393,35 @@ export function FileTabsPersistence() {
       writePersistedFileTabs(pending.folderId, pending.snapshot, pending.server)
     }
   }, [])
+
+  // 用户把跟随从关打开（#740）：关着时各项目的记录可能记着别的项目目录下的文件
+  // （在 A 里点开过 B 的文件），按目录归回各自项目的记录，放在恢复前面，下面进
+  // 项目时才不会把它们补开进别的项目。按文件所在的目录归属，跟随开着时在 A 里打开的
+  // B 的文件也挪回 B。只认开关读出来以后的切换，刷新时读出开关为开不算。没写完的先
+  // 写掉，免得之后又把挪走的写回去。
+  // 旧版本里就已经混了、又在旧版本里勾上了跟随的：这个服务器还没理过的话，跟随开着
+  // 第一次加载时按目录全部归位一次（内存里的标签组也理），以后不再理。要等项目列表
+  // 读出来才知道目录。
+  const folderCount = useAppWorkspaceStore((s) => s.allFolders.length)
+  const followSeenRef = useRef<{ follow: boolean; ready: boolean } | null>(null)
+  useEffect(() => {
+    const seen = followSeenRef.current
+    followSeenRef.current = { follow: tabsFollowFolder, ready: preferenceReady }
+    if (!preferenceReady || !tabsFollowFolder) return
+    const turnedOn = !!seen?.ready && !seen.follow
+    if (!turnedOn && hasRegroupedFileTabs(server)) return
+    const folders = projectFolderRoots()
+    if (folders.length === 0) return
+    flushRef.current()
+    if (!turnedOn) useFolderTabsStore.getState().regroupAllFiles()
+    for (const { folderId, entries } of regroupPersistedFileTabs(
+      server,
+      folders
+    )) {
+      lastWrittenRef.current.set(fileTabsStorageKey(folderId, server), entries)
+    }
+    markRegroupedFileTabs(server)
+  }, [tabsFollowFolder, preferenceReady, server, folderCount])
 
   // 切进哪个项目就恢复哪个项目：第一次把记下的都开出来；以后每次切进来，把记下的
   // 里面缺了的补开（被标签上限挤掉的），顺序和选中项也照记下的摆回去。

@@ -248,6 +248,20 @@ function isWindowsRuntime(): boolean {
   return platform.includes("win") || userAgent.includes("windows")
 }
 
+// 只对打开的那一页有用的参数，左侧导航换页时不带走。`focus` 是「打开时
+// 滚到哪张卡片」（侧栏 Chrome 面板带 `?focus=chrome`）：带到别的页再点回
+// 浏览器页，又会被滚过去（#983）。
+const PAGE_ONLY_PARAMS = ["focus"]
+
+/** 左侧导航换页时带过去的查询串：保留 `?remoteConnectionId=` 这类整个窗口
+ *  都要的，去掉只对当前页有用的。 */
+export function settingsNavSearch(search: string): string {
+  const params = new URLSearchParams(search)
+  for (const name of PAGE_ONLY_PARAMS) params.delete(name)
+  const rest = params.toString()
+  return rest ? `?${rest}` : ""
+}
+
 export function SettingsShell({ children }: SettingsShellProps) {
   const t = useTranslations("SettingsShell")
   const pathname = usePathname()
@@ -286,7 +300,8 @@ export function SettingsShell({ children }: SettingsShellProps) {
       // (`?remoteConnectionId=N`) carries over to sub-pages — without this,
       // navigating from /settings/appearance to /settings/mcp drops the
       // remote id and the next page falls back to the local Tauri backend.
-      const search = window.location.search
+      // 只对当前页有用的参数（`?focus=`）不带过去，见 settingsNavSearch。
+      const search = settingsNavSearch(window.location.search)
       const fullTarget = search ? `${target}${search}` : target
 
       if (isWindowsRuntime()) {

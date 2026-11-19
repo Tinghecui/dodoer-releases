@@ -463,6 +463,9 @@ pub async fn prepare_workspace_file_search(
 pub struct OpenSettingsWindowParams {
     pub section: Option<String>,
     pub agent_type: Option<String>,
+    /// 页里要滚到的卡片，只认白名单里的值（目前只有浏览器页的 `chrome`，#983）
+    #[serde(default)]
+    pub focus: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -508,6 +511,11 @@ pub async fn open_settings_window(
         } else {
             format!("/{route}")
         }
+    } else if route == "settings/browser"
+        && params.focus.as_deref().map(str::trim) == Some("chrome")
+    {
+        // 和桌面端 `commands::windows::settings_focus_query` 的白名单一致
+        format!("/{route}?focus=chrome")
     } else {
         format!("/{route}")
     };
@@ -659,4 +667,35 @@ pub async fn create_conversation_worktree(
         )
         .await?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn settings_path(section: &str, focus: Option<&str>) -> String {
+        let Json(result) = open_settings_window(Json(OpenSettingsWindowParams {
+            section: Some(section.to_string()),
+            agent_type: None,
+            focus: focus.map(str::to_string),
+        }))
+        .await
+        .expect("settings path");
+        result.path
+    }
+
+    /// 浏览器页带 focus=chrome 时地址拼上它，不认识的值、别的页都丢掉（#983）
+    #[tokio::test]
+    async fn settings_focus_only_passes_known_cards_on_their_page() {
+        assert_eq!(
+            settings_path("browser", Some("chrome")).await,
+            "/settings/browser?focus=chrome"
+        );
+        assert_eq!(
+            settings_path("browser", Some("x&y=1")).await,
+            "/settings/browser"
+        );
+        assert_eq!(settings_path("mcp", Some("chrome")).await, "/settings/mcp");
+        assert_eq!(settings_path("browser", None).await, "/settings/browser");
+    }
 }

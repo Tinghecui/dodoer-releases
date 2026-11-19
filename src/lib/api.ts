@@ -3927,7 +3927,12 @@ export type SettingsSection =
 
 interface OpenSettingsWindowOptions {
   agentType?: AgentType | null
+  /** 页里要滚到的那张卡片；目前只有浏览器页的 `chrome`（#983） */
+  focus?: SettingsFocus | null
 }
+
+/** 设置页里能直接滚到的卡片，后端只放行这几个值 */
+export type SettingsFocus = "chrome"
 
 export async function openSettingsWindow(
   section?: SettingsSection,
@@ -3938,6 +3943,7 @@ export async function openSettingsWindow(
     return getShellTransport().call("open_settings_window", {
       section: section ?? null,
       agentType: options?.agentType ?? null,
+      focus: options?.focus ?? null,
       locale,
       remoteConnectionId: getActiveRemoteConnectionId(),
     })
@@ -3947,6 +3953,7 @@ export async function openSettingsWindow(
     getTransport().call<{ path: string }>("open_settings_window", {
       section: section ?? null,
       agentType: options?.agentType ?? null,
+      focus: options?.focus ?? null,
       locale,
     })
   )

@@ -525,7 +525,8 @@ function ChromeItem({ className }: { className?: string }) {
           className="w-full"
           onClick={() => {
             setOpen(false)
-            openSettingsWindow("browser").catch((err) => {
+            // 直接落到「你自己的 Chrome」那张卡片，它在内置浏览器几张卡片下面（#983）
+            openSettingsWindow("browser", { focus: "chrome" }).catch((err) => {
               console.error("[StatusBarChrome] failed to open settings:", err)
             })
           }}

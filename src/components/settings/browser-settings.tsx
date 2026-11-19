@@ -26,7 +26,8 @@
  * notice nobody could turn off.
  */
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { useTranslations } from "next-intl"
 import {
   AppWindow,
@@ -528,6 +529,10 @@ export function BrowserSettings() {
   // engine are the desktop's alone; the three that survive a browser session
   // are marked where they are rendered.
   const desktop = isDesktop()
+  // 侧栏 Chrome 面板的「Chrome 设置」带 `?focus=chrome` 打开本页：
+  // Chrome 那张卡片在内置浏览器几张卡片下面，打开时直接滚过去（#983）。
+  const focusChrome = useSearchParams()?.get("focus") === "chrome"
+  const chromeCardRef = useRef<HTMLDivElement | null>(null)
   // Which profile the clear / delete dialog is about (null = closed). Ids,
   // not rows: the row is derived from the current list on every render, so
   // a profile another window deletes while the dialog is open closes it
@@ -552,6 +557,10 @@ export function BrowserSettings() {
   const [signInUaSupported, setSignInUaSupported] = useState<boolean | null>(
     null
   )
+  // 能力问过了（答上来或失败都算）：上面几张卡片的行数这时才定下来，
+  // 滚到 Chrome 卡片要等到这之后，不然滚完它又被挤下去。
+  const [capsSettled, setCapsSettled] = useState(false)
+  const scrolledToChrome = useRef(false)
 
   // Fetched every time the page is opened (not once per app run): the answer
   // follows the proxy setting, which lives on another settings page. Never
@@ -569,6 +578,7 @@ export function BrowserSettings() {
         setDocGuest(caps.docGuest ?? false)
         setProfilesSupported(caps.profiles ?? false)
         setSignInUaSupported(caps.signInUserAgent ?? false)
+        setCapsSettled(true)
       })
       .catch(() => {
         if (cancelled) return
@@ -578,11 +588,27 @@ export function BrowserSettings() {
         setDocGuest(null)
         setProfilesSupported(null)
         setSignInUaSupported(null)
+        setCapsSettled(true)
       })
     return () => {
       cancelled = true
     }
   }, [desktop])
+
+  // The other browser an agent can be given: the person's own Chrome, which
+  // is on this computer and nowhere else. Not offered where an administrator
+  // has turned browser tabs off altogether.
+  const showChromeCard = desktop && !(policy && !policy.enabled)
+
+  // 只滚一次：之后用户自己往上翻，不再被拽回来。
+  useEffect(() => {
+    if (!focusChrome || !capsSettled || !showChromeCard) return
+    if (scrolledToChrome.current) return
+    const card = chromeCardRef.current
+    if (!card) return
+    scrolledToChrome.current = true
+    card.scrollIntoView({ block: "start" })
+  }, [focusChrome, capsSettled, showChromeCard])
 
   const profileRows: ProfileRow[] = [
     {
@@ -785,11 +811,10 @@ export function BrowserSettings() {
           ) : null}
         </SettingCard>
 
-        {/* The other browser an agent can be given: the person's own Chrome,
-            which is on this computer and nowhere else. Not offered where an
-            administrator has turned browser tabs off altogether. */}
-        {desktop && !(policy && !policy.enabled) ? (
-          <ChromeConnectSettings />
+        {showChromeCard ? (
+          <div ref={chromeCardRef} id="chrome-connect-settings">
+            <ChromeConnectSettings />
+          </div>
         ) : null}
 
         <SettingCard>

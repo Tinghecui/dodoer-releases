@@ -561,7 +561,10 @@ describe("StatusBarChrome", () => {
     expect(screen.getByText(/The connection ended/)).toBeInTheDocument()
 
     await press("Chrome settings")
-    expect(mocks.openSettingsWindow).toHaveBeenCalledWith("browser")
+    // 直接落到页里「你自己的 Chrome」那张卡片，不停在内置浏览器的最上面（#983）
+    expect(mocks.openSettingsWindow).toHaveBeenCalledWith("browser", {
+      focus: "chrome",
+    })
   })
 
   it("shows what agents did on a tab, newest first, never what was typed", async () => {

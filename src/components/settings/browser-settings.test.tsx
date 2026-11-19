@@ -10,6 +10,12 @@ const mocks = vi.hoisted(() => ({
    *  call time rather than closing over the value it had when hoisted. */
   desktop: { value: true },
   toast: { success: vi.fn(), error: vi.fn() },
+  /** 设置窗口地址里的查询串，`?focus=chrome` 由侧栏 Chrome 面板带过来 */
+  search: { value: "" },
+}))
+
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(mocks.search.value),
 }))
 
 vi.mock("@/lib/browser/browser-api", () => ({
@@ -91,6 +97,7 @@ function capabilitiesWithoutProfiles() {
 beforeEach(() => {
   resetBrowserPrefsForTests()
   mocks.desktop.value = true
+  mocks.search.value = ""
   mocks.browserClearData.mockReset()
   mocks.browserRemoveProfile.mockReset()
   mocks.browserCapabilitiesNow.mockReset()
@@ -105,6 +112,37 @@ describe("BrowserSettings", () => {
   it("offers the connection to the person's own Chrome", async () => {
     await renderSection()
     expect(screen.getByTestId("chrome-connect")).toBeInTheDocument()
+  })
+
+  it("scrolls to the Chrome card when opened from the Chrome panel", async () => {
+    const scrolled: Element[] = []
+    const spy = vi
+      .spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(function (this: Element) {
+        scrolled.push(this)
+      })
+    try {
+      mocks.search.value = "focus=chrome"
+      await renderSection()
+      const card = screen.getByTestId("chrome-connect")
+      expect(scrolled).toHaveLength(1)
+      expect(scrolled[0].contains(card)).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it("stays at the top when opened without a card to go to", async () => {
+    const spy = vi
+      .spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(() => {})
+    try {
+      await renderSection()
+      expect(screen.getByTestId("chrome-connect")).toBeInTheDocument()
+      expect(spy).not.toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it("shows one picker per link source", async () => {

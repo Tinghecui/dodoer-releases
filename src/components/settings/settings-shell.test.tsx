@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import { settingsTargetFor } from "@/lib/settings-scope"
 
-import { settingsNavItemsFor } from "./settings-shell"
+import { settingsNavItemsFor, settingsNavSearch } from "./settings-shell"
 
 describe("settingsNavItemsFor", () => {
   it("drops the Web service page in a browser session and nothing else", () => {
@@ -85,5 +85,20 @@ describe("settingsNavItemsFor", () => {
     const labels = settingsNavItemsFor("tauri").map((item) => item.labelKey)
     expect(labels).toContain("web_service")
     expect(labels).toContain("browser")
+  })
+})
+
+describe("settingsNavSearch", () => {
+  it("keeps the remote window's id but not the card to scroll to", () => {
+    // 从 Chrome 面板进来带着 `?focus=chrome`，左侧导航换页时不能把它带走：
+    // 换到别的页再点回浏览器页，应该停在最上面（#983）。
+    expect(settingsNavSearch("?focus=chrome")).toBe("")
+    expect(settingsNavSearch("?remoteConnectionId=3&focus=chrome")).toBe(
+      "?remoteConnectionId=3"
+    )
+    expect(settingsNavSearch("?remoteConnectionId=3")).toBe(
+      "?remoteConnectionId=3"
+    )
+    expect(settingsNavSearch("")).toBe("")
   })
 })

@@ -144,6 +144,7 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 None,
                 None,
                 None,
+                None,
                 app.state(),
             )
             .await

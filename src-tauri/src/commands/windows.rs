@@ -436,12 +436,29 @@ fn normalize_agent_query(agent_type: Option<&str>) -> Option<String> {
     None
 }
 
-fn resolve_settings_target(section: Option<&str>, agent_type: Option<&str>) -> String {
+/// 设置页里能直接滚到的卡片：只放行白名单里、而且就在这一页上的值，
+/// 别的一律丢掉（不进地址，也就不会拼出别的查询参数）。和 web 端
+/// `handlers::folders::open_settings_window` 的同名白名单一致（#983）。
+pub(crate) fn settings_focus_query(route: &str, focus: Option<&str>) -> Option<&'static str> {
+    match (route, focus?.trim()) {
+        ("settings/browser", "chrome") => Some("chrome"),
+        _ => None,
+    }
+}
+
+fn resolve_settings_target(
+    section: Option<&str>,
+    agent_type: Option<&str>,
+    focus: Option<&str>,
+) -> String {
     let route = resolve_settings_route(section);
     if route == "settings/agents" {
         if let Some(agent) = normalize_agent_query(agent_type) {
             return format!("{route}?agent={agent}");
         }
+    }
+    if let Some(card) = settings_focus_query(route, focus) {
+        return format!("{route}?focus={card}");
     }
     route.to_string()
 }
@@ -788,6 +805,7 @@ pub async fn open_settings_window(
     db: tauri::State<'_, AppDatabase>,
     section: Option<String>,
     agent_type: Option<String>,
+    focus: Option<String>,
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
     state: tauri::State<'_, SettingsWindowState>,
@@ -799,7 +817,11 @@ pub async fn open_settings_window(
     let owner_label = window.label().to_string();
     if let Some(existing) = app.get_webview_window(&settings_label) {
         post_window_setup(&existing);
-        if section.is_some() || agent_type.is_some() || remote_connection_id.is_some() {
+        if section.is_some()
+            || agent_type.is_some()
+            || focus.is_some()
+            || remote_connection_id.is_some()
+        {
             let existing_remote_window_id = remote_window_id_from_window(&existing);
             let generated_remote_window_id = remote_connection_id
                 .filter(|_| existing_remote_window_id.is_none())
@@ -811,7 +833,11 @@ pub async fn open_settings_window(
                 register_remote_window_cleanup(&app, &existing, remote_window_id);
             }
             let target_route = append_remote_context(
-                resolve_settings_target(section.as_deref(), agent_type.as_deref()),
+                resolve_settings_target(
+                    section.as_deref(),
+                    agent_type.as_deref(),
+                    focus.as_deref(),
+                ),
                 remote_connection_id,
                 remote_window_id,
             );
@@ -835,7 +861,7 @@ pub async fn open_settings_window(
 
     let titles = resolve_window_titles(&db.conn, locale).await;
     let (target_route, remote_window_id) = route_with_new_remote_window(
-        resolve_settings_target(section.as_deref(), agent_type.as_deref()),
+        resolve_settings_target(section.as_deref(), agent_type.as_deref(), focus.as_deref()),
         remote_connection_id,
     );
     // A remote window's settings are titled with the server they edit, so the
@@ -2908,7 +2934,33 @@ mod pet_panel_geometry_tests {
 
 #[cfg(test)]
 mod settings_route_tests {
-    use super::resolve_settings_route;
+    use super::{resolve_settings_route, resolve_settings_target};
+
+    /// 侧栏 Chrome 面板的「Chrome 设置」带 focus=chrome：浏览器页的地址拼上它，
+    /// 页面据此滚到 Chrome 卡片（#983）。不认识的值、别的页一律丢掉，不进地址。
+    #[test]
+    fn settings_focus_only_passes_known_cards_on_their_page() {
+        assert_eq!(
+            resolve_settings_target(Some("browser"), None, Some("chrome")),
+            "settings/browser?focus=chrome"
+        );
+        assert_eq!(
+            resolve_settings_target(Some("browser"), None, Some("x&y=1")),
+            "settings/browser"
+        );
+        assert_eq!(
+            resolve_settings_target(Some("agents"), None, Some("chrome")),
+            "settings/agents"
+        );
+        assert_eq!(
+            resolve_settings_target(Some("browser"), None, None),
+            "settings/browser"
+        );
+        assert_eq!(
+            resolve_settings_target(Some("agents"), Some("codex"), None),
+            "settings/agents?agent=codex"
+        );
+    }
 
     /// Every section the frontend's `SettingsSection` union can send must map
     /// to a real route. `general` is the one that looks redundant and is not:

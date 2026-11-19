@@ -355,9 +355,9 @@ async fn settle_cancelled_turn(
 /// `prompt_in_flight`: a prompt codeg sent owns the connection's turn — one the
 /// agent folded into its own, or the next one, with this worker behind on the
 /// event. Its `InProgress` is already on the row and its `TurnComplete` settles
-/// it, so this leaves the row alone. The end is a conditional
-/// `InProgress → PendingReview`: a row the user stopped (`Cancelled`) or marked
-/// done since is not overwritten.
+/// it, so this leaves the row alone. The start skips a row the user stopped
+/// (`Cancelled`) or marked done (`Completed`); the end is a conditional
+/// `InProgress → PendingReview`, so neither is ever overwritten.
 async fn write_background_turn_status(
     db_conn: &DatabaseConnection,
     state: &Arc<RwLock<SessionState>>,
@@ -370,12 +370,18 @@ async fn write_background_turn_status(
         return Ok(());
     }
     let status = if running {
-        conversation_service::update_status(
+        // 用户标了完成或点了停止的行，agent 醒来也不改回进行中（#818）；
+        // 开始没写，结束那步的 InProgress → PendingReview 也就不会生效。
+        let changed = conversation_service::update_status_unless(
             db_conn,
             conversation_id,
+            &[ConversationStatus::Completed, ConversationStatus::Cancelled],
             ConversationStatus::InProgress,
         )
         .await?;
+        if !changed {
+            return Ok(());
+        }
         ConversationStatus::InProgress
     } else {
         let changed = conversation_service::update_status_if(
@@ -4795,6 +4801,55 @@ mod tests {
             ConversationStatus::InProgress,
             "the prompt's own TurnComplete settles the row"
         );
+    }
+
+    /// Cowork fork（#818）：用户在 agent 等后台任务时标了已完成或点了停止，
+    /// agent 醒来自己跑的那一轮从头到尾都不改这一行，也不发状态变化。
+    #[tokio::test]
+    async fn handle_event_background_turn_never_reopens_completed_or_cancelled_rows() {
+        use crate::web::event_bridge::WebEventBroadcaster;
+        for settled in [ConversationStatus::Completed, ConversationStatus::Cancelled] {
+            let db = test_helpers::fresh_in_memory_db().await;
+            let folder_id = test_helpers::seed_folder(&db, "/tmp/bg-turn-settled").await;
+            let conv = conversation_service::create(
+                &db.conn,
+                folder_id,
+                AgentType::ClaudeCode,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            conversation_service::update_status(&db.conn, conv.id, settled.clone())
+                .await
+                .unwrap();
+            let broadcaster = Arc::new(WebEventBroadcaster::new());
+            let mut rx = broadcaster.subscribe();
+            let mgr = ConnectionManager::new();
+            {
+                let mut map = mgr.connections.lock().await;
+                let mut conn = fake_connection_with_state("c1", Some(conv.id));
+                conn.emitter = EventEmitter::test_web_only(broadcaster.clone());
+                map.insert("c1".to_string(), conn);
+            }
+
+            handle_event(&db.conn, &mgr, &background_turn(1, true), None, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                read_row_status(&db, conv.id).await,
+                settled,
+                "the agent waking up must not reopen a {settled:?} row"
+            );
+            handle_event(&db.conn, &mgr, &background_turn(2, false), None, None)
+                .await
+                .unwrap();
+            assert_eq!(read_row_status(&db, conv.id).await, settled);
+            assert!(
+                rx.try_recv().is_err(),
+                "no status change is announced for a {settled:?} row"
+            );
+        }
     }
 
     /// Helper: install one cache entry seeded from a manager-registered

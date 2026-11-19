@@ -416,7 +416,9 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
     conversation.id,
     conversation.external_id != null && conversation.kind !== "loop"
       ? conversation.updated_at
-      : null
+      : null,
+    // 回合结束后实时时间线可能还停在「目标进行中」，要跟会话记录核对（#896）。
+    !isRunning
   )
   const goalOpen = isGoalOpen(goal)
   // A status set by hand from the sidebar bumps `updated_at`; that alone must

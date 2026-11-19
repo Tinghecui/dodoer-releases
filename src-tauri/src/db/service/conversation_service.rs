@@ -185,6 +185,31 @@ pub async fn update_status_if(
     Ok(result.rows_affected > 0)
 }
 
+/// 条件写入：行的当前 `status` 不在 `excluded` 里才写 `new_status`，返回改没改。
+/// agent 自己醒来的那一轮开始时用它：用户已经标了完成（`completed`）或点了停止
+/// （`cancelled`）的行不被改回进行中。
+pub async fn update_status_unless(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    excluded: &[conversation::ConversationStatus],
+    new_status: conversation::ConversationStatus,
+) -> Result<bool, DbError> {
+    use sea_orm::sea_query::Expr;
+    let result = conversation::Entity::update_many()
+        .col_expr(conversation::Column::Status, Expr::value(new_status))
+        // 状态一变就不再算被打断。
+        .col_expr(
+            conversation::Column::InterruptedAt,
+            Expr::value(None::<chrono::DateTime<Utc>>),
+        )
+        .col_expr(conversation::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .filter(conversation::Column::Status.is_not_in(excluded.iter().cloned()))
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected > 0)
+}
+
 /// 把还停在 `in_progress` 的回合改成 `cancelled`（被打断），返回改了哪些 id。
 /// `only` 是 `Some` 时只看这些 id（退出时：本进程连接上绑定的对话），`Some(&[])` 不查库；
 /// `None` 时扫全部（启动时：上次没跑完留下的）。Loop 行由 Loop 工作台自己管，不碰。

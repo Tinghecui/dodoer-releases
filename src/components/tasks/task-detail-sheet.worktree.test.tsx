@@ -21,6 +21,16 @@ import { TaskDetailSheet } from "./task-detail-sheet"
 const workTaskCleanup = vi.fn().mockResolvedValue(undefined)
 const workTaskDelete = vi.fn().mockResolvedValue(undefined)
 const workTaskWorktreeDirty = vi.fn().mockResolvedValue(0)
+const toastError = vi.fn()
+
+vi.mock("sonner", () => ({
+  toast: Object.assign(vi.fn(), {
+    error: (...args: unknown[]) => toastError(...args),
+    success: vi.fn(),
+    info: vi.fn(),
+    warning: vi.fn(),
+  }),
+}))
 
 vi.mock("@/lib/api", () => ({
   workTaskArchive: vi.fn().mockResolvedValue(undefined),
@@ -247,5 +257,122 @@ describe("task drawer uncommitted files", () => {
       })
     )
     await waitFor(() => expect(workTaskCleanup).toHaveBeenCalledWith(7, true))
+  })
+})
+
+describe("task drawer delete blocked by uncommitted files", () => {
+  it("keeps the delete confirm open and offers discard-and-delete-task", async () => {
+    const user = userEvent.setup()
+    const onOpenChange = vi.fn()
+    // 打开删除框时还没查到未提交文件（或用户没勾丢弃），删除被后端拦下。
+    workTaskWorktreeDirty.mockResolvedValue(0)
+    workTaskDelete.mockRejectedValueOnce(
+      new Error(
+        "the worktree was kept: it still holds uncommitted files. Check it."
+      )
+    )
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TaskDetailSheet
+          open
+          onOpenChange={onOpenChange}
+          task={task({ status: "canceled" })}
+          folderName="repo"
+          onMerge={() => {}}
+          onComplete={() => {}}
+          onDeliverPr={() => {}}
+          onCancel={() => {}}
+          onEdit={() => {}}
+          onSchedule={() => {}}
+        />
+      </NextIntlClientProvider>
+    )
+
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+    const confirm = await screen.findByRole("alertdialog")
+    await user.click(within(confirm).getByLabelText(/Also delete its worktree/))
+    workTaskWorktreeDirty.mockResolvedValue(2)
+    await user.click(within(confirm).getByRole("button", { name: "Delete" }))
+    await waitFor(() =>
+      expect(workTaskDelete).toHaveBeenCalledWith(7, true, false)
+    )
+
+    // 框不关，就地给出「丢弃改动并删除任务」。
+    const still = await screen.findByRole("alertdialog")
+    const discard = await within(still).findByRole("button", {
+      name: "Discard changes and delete task",
+    })
+    expect(onOpenChange).not.toHaveBeenCalledWith(false)
+    await user.click(discard)
+    await waitFor(() =>
+      expect(workTaskDelete).toHaveBeenLastCalledWith(7, true, true)
+    )
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
+  })
+
+  it("reports any other delete error as it is, even with uncommitted files", async () => {
+    const user = userEvent.setup()
+    const onOpenChange = vi.fn()
+    workTaskWorktreeDirty.mockResolvedValue(0)
+    // 后端因为别的原因拒绝删除（比如任务正在合并）：worktree 里正好也有没提交
+    // 的文件，也不能说成「被未提交文件拦下」。
+    workTaskDelete.mockRejectedValueOnce(
+      new Error("task is merging — wait for it to finish")
+    )
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <TaskDetailSheet
+          open
+          onOpenChange={onOpenChange}
+          task={task({ status: "canceled" })}
+          folderName="repo"
+          onMerge={() => {}}
+          onComplete={() => {}}
+          onDeliverPr={() => {}}
+          onCancel={() => {}}
+          onEdit={() => {}}
+          onSchedule={() => {}}
+        />
+      </NextIntlClientProvider>
+    )
+
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+    const confirm = await screen.findByRole("alertdialog")
+    await user.click(within(confirm).getByLabelText(/Also delete its worktree/))
+    workTaskWorktreeDirty.mockResolvedValue(2)
+    await user.click(within(confirm).getByRole("button", { name: "Delete" }))
+    await waitFor(() =>
+      expect(workTaskDelete).toHaveBeenCalledWith(7, true, false)
+    )
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        "task is merging — wait for it to finish"
+      )
+    )
+    expect(
+      screen.queryByRole("button", { name: "Discard changes and delete task" })
+    ).toBeNull()
+  })
+
+  it("finishes a half-done delete from the footer: worktree and task", async () => {
+    const user = userEvent.setup()
+    workTaskWorktreeDirty.mockResolvedValue(1)
+    mount(task({ status: "canceled", cleanup_state: "failed_delete" }))
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Discard changes and delete task",
+      })
+    )
+    const confirm = await screen.findByRole("alertdialog")
+    await user.click(
+      within(confirm).getByRole("button", {
+        name: "Discard changes and delete task",
+      })
+    )
+    await waitFor(() =>
+      expect(workTaskDelete).toHaveBeenCalledWith(7, true, true)
+    )
+    expect(workTaskCleanup).not.toHaveBeenCalled()
   })
 })

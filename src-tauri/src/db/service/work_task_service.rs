@@ -1033,6 +1033,23 @@ pub async fn soft_delete(
 
 // ── state machine (all CAS; event in the same transaction) ─────────────────
 
+/// 任务又回到看板上干活（取消后重新排队、开始新一轮）：用户不再是要删它了，
+/// 删到一半的记号（`failed_delete`）退回普通的清理失败（`failed`）。不退的话，
+/// 之后「重试清理」成功或从分支菜单删掉它的 worktree，会把这个又在用的任务删掉。
+/// 和状态变化写在同一个事务里。
+async fn drop_delete_request<C: ConnectionTrait>(conn: &C, id: i32) -> Result<(), DbError> {
+    work_task::Entity::update_many()
+        .col_expr(
+            work_task::Column::CleanupState,
+            Expr::value(Some(CLEANUP_FAILED.to_string())),
+        )
+        .filter(work_task::Column::Id.eq(id))
+        .filter(work_task::Column::CleanupState.eq(CLEANUP_FAILED_DELETE))
+        .exec(conn)
+        .await?;
+    Ok(())
+}
+
 /// Claim a task for a fresh execution generation: `from` → queued with
 /// `run_seq + 1`, clearing stale failure fields. Returns the NEW run_seq, or
 /// `None` if the CAS lost (wrong status / deleted).
@@ -1168,6 +1185,7 @@ async fn claim_inner(
             return Err(duplicate_active_source_error(&other));
         }
     }
+    drop_delete_request(&txn, id).await?;
     let run_seq = claimed.run_seq;
     // The instruction lands before the status change, so a newest-first scan
     // that stops at the first user action never has to reason about ordering
@@ -1299,6 +1317,7 @@ pub async fn auto_claim_next(
                 return Ok(None);
             }
         }
+        drop_delete_request(&txn, head.id).await?;
         status_changed_event(
             &txn,
             head.id,
@@ -1416,6 +1435,7 @@ pub async fn claim_due_scheduled(
             txn.rollback().await?;
             continue;
         }
+        drop_delete_request(&txn, row.id).await?;
         status_changed_event(
             &txn,
             row.id,
@@ -1508,6 +1528,7 @@ pub async fn requeue_canceled(
         )
         .await?;
     }
+    drop_delete_request(&txn, id).await?;
     status_changed_event(
         &txn,
         id,
@@ -3086,11 +3107,28 @@ pub async fn set_cleanup_state(
 ) -> Result<(), DbError> {
     let now = Utc::now();
     let txn = conn.begin().await?;
-    work_task::Entity::update_many()
+    let mut set_state = work_task::Entity::update_many()
         .col_expr(
             work_task::Column::CleanupState,
-            Expr::value(if failed { Some("failed".to_string()) } else { None }),
+            Expr::value(if failed {
+                Some(CLEANUP_FAILED.to_string())
+            } else {
+                None
+            }),
         )
+        .filter(work_task::Column::Id.eq(id));
+    if failed {
+        // 删到一半的记号（`failed_delete`）本身就是清理失败：再失败一次不能把它
+        // 写回 `failed`，否则「本来要删任务」就丢了。它只在任务真删掉、worktree
+        // 卸下（`clear_worktree`）或清空时才消失。
+        set_state = set_state.filter(
+            work_task::Column::CleanupState
+                .is_null()
+                .or(work_task::Column::CleanupState.ne(CLEANUP_FAILED_DELETE)),
+        );
+    }
+    set_state.exec(&txn).await?;
+    work_task::Entity::update_many()
         .col_expr(work_task::Column::UpdatedAt, Expr::value(now))
         .filter(work_task::Column::Id.eq(id))
         .exec(&txn)
@@ -3107,6 +3145,34 @@ pub async fn set_cleanup_state(
     }
     txn.commit().await?;
     Ok(())
+}
+
+/// `cleanup_state` 的取值：清理失败（可重试）。
+pub const CLEANUP_FAILED: &str = "failed";
+/// `cleanup_state` 的取值：用户要删除这个任务，删到一半被 worktree 里没提交的
+/// 文件拦下。和 `failed` 一样是清理失败、一样能重试，只多记了「本来是要删任务」：
+/// 卡片上的「丢弃改动并删除任务」据此接着把任务也删掉。
+pub const CLEANUP_FAILED_DELETE: &str = "failed_delete";
+
+/// 删除被未提交文件拦下时记下删除意图：只把已经标成 `failed` 的清理改成
+/// `failed_delete`（拦下的那一刻 `cleanup_task` 刚写过 `failed`）。返回有没有改到。
+/// 之后的「重试清理」再失败时记号留着（`set_cleanup_state` 不覆盖它），成功时
+/// 由 `TaskEngine::retry_cleanup` 接着把任务删掉。
+pub async fn mark_cleanup_delete_requested(
+    conn: &DatabaseConnection,
+    id: i32,
+) -> Result<bool, DbError> {
+    let res = work_task::Entity::update_many()
+        .col_expr(
+            work_task::Column::CleanupState,
+            Expr::value(Some(CLEANUP_FAILED_DELETE.to_string())),
+        )
+        .col_expr(work_task::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(work_task::Column::Id.eq(id))
+        .filter(work_task::Column::CleanupState.eq(CLEANUP_FAILED))
+        .exec(conn)
+        .await?;
+    Ok(res.rows_affected > 0)
 }
 
 /// Detach the (now removed) worktree from the task and clear any cleanup flag.
@@ -3170,23 +3236,31 @@ pub async fn tasks_blocking_worktree_removal(
     Ok(rows.into_iter().map(|row| row.title).collect())
 }
 
+/// [`clear_worktree_by_folder`] 的结果：卸下了 worktree、卡片要刷新的任务，和
+/// 因此删完了的任务（删到一半的，卡片要从看板上拿掉）。
+#[derive(Debug, Default)]
+pub struct WorktreeDetached {
+    pub detached: Vec<i32>,
+    pub deleted: Vec<i32>,
+}
+
 /// [`clear_worktree`] for every task pointing at a folder that has just been
 /// removed, whoever removed it. Returns the ids it detached so the caller can
 /// tell clients to refetch those cards — a task still advertising a worktree
 /// that no longer exists offers cleanup and diff actions that can only fail.
+///
+/// 删到一半的任务（`failed_delete`）的 worktree 被别处删掉，等于清理成功了：
+/// 接着把任务删掉（和 `TaskEngine::retry_cleanup` 一样），放进 `deleted`。
 pub async fn clear_worktree_by_folder(
     conn: &DatabaseConnection,
     folder_id: i32,
-) -> Result<Vec<i32>, DbError> {
-    let ids: Vec<i32> = work_task::Entity::find()
+) -> Result<WorktreeDetached, DbError> {
+    let rows = work_task::Entity::find()
         .filter(work_task::Column::WorktreeFolderId.eq(folder_id))
         .all(conn)
-        .await?
-        .into_iter()
-        .map(|row| row.id)
-        .collect();
-    if ids.is_empty() {
-        return Ok(ids);
+        .await?;
+    if rows.is_empty() {
+        return Ok(WorktreeDetached::default());
     }
     work_task::Entity::update_many()
         .col_expr(work_task::Column::WorktreeFolderId, Expr::value(None::<i32>))
@@ -3195,7 +3269,18 @@ pub async fn clear_worktree_by_folder(
         .filter(work_task::Column::WorktreeFolderId.eq(folder_id))
         .exec(conn)
         .await?;
-    Ok(ids)
+    let mut out = WorktreeDetached::default();
+    for row in rows {
+        let half_deleted =
+            row.deleted_at.is_none() && row.cleanup_state.as_deref() == Some(CLEANUP_FAILED_DELETE);
+        // 只在任务还是这个状态时删（和删除入口一样的守卫）；没删成的照旧只刷新卡片。
+        if half_deleted && soft_delete(conn, row.id, row.status).await? {
+            out.deleted.push(row.id);
+        } else {
+            out.detached.push(row.id);
+        }
+    }
+    Ok(out)
 }
 
 /// Boot recovery: a fresh process has no live connections, so every
@@ -4187,6 +4272,134 @@ mod tests {
         let got = get(&db.conn, t.id).await.unwrap();
         assert_eq!(got.status, WorkTaskStatus::Done);
         assert_eq!(got.cleanup_state.as_deref(), Some("failed"));
+    }
+
+    /// 删除被未提交文件拦下：已标成清理失败的任务记下「本来要删」；没有清理
+    /// 失败的不记；之后重试再失败，记号留着。
+    #[tokio::test]
+    async fn a_blocked_delete_is_remembered_on_the_failed_cleanup() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-delete-blocked").await;
+        let t = create(&db.conn, draft(folder_id, "half deleted"))
+            .await
+            .unwrap();
+
+        // 没有清理失败：没什么可记的。
+        assert!(!mark_cleanup_delete_requested(&db.conn, t.id).await.unwrap());
+        assert_eq!(get(&db.conn, t.id).await.unwrap().cleanup_state, None);
+
+        set_cleanup_state(&db.conn, t.id, true, Some("kept".into()))
+            .await
+            .unwrap();
+        assert!(mark_cleanup_delete_requested(&db.conn, t.id).await.unwrap());
+        assert_eq!(
+            get(&db.conn, t.id).await.unwrap().cleanup_state.as_deref(),
+            Some(CLEANUP_FAILED_DELETE)
+        );
+
+        // 卡片上「重试清理」又失败：记号留着，任务还是删到一半的。
+        set_cleanup_state(&db.conn, t.id, true, Some("kept again".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            get(&db.conn, t.id).await.unwrap().cleanup_state.as_deref(),
+            Some(CLEANUP_FAILED_DELETE)
+        );
+
+        // worktree 卸下：标记一起清掉（任务由 retry_cleanup 接着删）。
+        clear_worktree(&db.conn, t.id).await.unwrap();
+        assert_eq!(get(&db.conn, t.id).await.unwrap().cleanup_state, None);
+    }
+
+    /// 删到一半的任务，worktree 被别处（分支菜单）删掉：清理等于成功了，接着把
+    /// 任务删掉，不能只清掉记号、把任务留在看板上。普通清理失败的任务只卸下。
+    #[tokio::test]
+    async fn removing_the_worktree_elsewhere_finishes_a_half_done_delete() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-branch-menu").await;
+        let half = create(&db.conn, draft(folder_id, "half deleted"))
+            .await
+            .unwrap();
+        let plain = create(&db.conn, draft(folder_id, "plain failed"))
+            .await
+            .unwrap();
+        for t in [&half, &plain] {
+            attach_worktree(&db.conn, t.id, folder_id, "main", "abc123", "task/t")
+                .await
+                .unwrap();
+            set_cleanup_state(&db.conn, t.id, true, Some("kept".into()))
+                .await
+                .unwrap();
+        }
+        assert!(mark_cleanup_delete_requested(&db.conn, half.id)
+            .await
+            .unwrap());
+
+        let out = clear_worktree_by_folder(&db.conn, folder_id).await.unwrap();
+        assert_eq!(out.deleted, vec![half.id]);
+        assert_eq!(out.detached, vec![plain.id]);
+        assert!(
+            get_model(&db.conn, half.id).await.is_err(),
+            "the half-done delete is finished once its worktree is gone"
+        );
+        let plain_after = get(&db.conn, plain.id).await.unwrap();
+        assert_eq!(plain_after.cleanup_state, None);
+        assert_eq!(plain_after.worktree_folder_id, None);
+    }
+
+    /// 删除被拦下后，用户把已取消的任务重新排队、又开始新一轮：不再是要删它了，
+    /// 删到一半的记号退回普通的清理失败。之后从分支菜单删掉它的 worktree，任务
+    /// 只卸下 worktree、留在看板上，不能被当成删到一半的删掉。
+    #[tokio::test]
+    async fn requeueing_or_restarting_drops_the_half_done_delete() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-requeue-after-delete").await;
+        let t = create(&db.conn, draft(folder_id, "requeued"))
+            .await
+            .unwrap();
+        let seq = claim_for_run(&db.conn, t.id, WorkTaskStatus::Todo, "user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(start_running(&db.conn, t.id, seq, 1, "c1").await.unwrap());
+        assert!(cancel(&db.conn, t.id, None).await.unwrap());
+        attach_worktree(&db.conn, t.id, folder_id, "main", "abc123", "task/t")
+            .await
+            .unwrap();
+        set_cleanup_state(&db.conn, t.id, true, Some("kept".into()))
+            .await
+            .unwrap();
+        assert!(mark_cleanup_delete_requested(&db.conn, t.id).await.unwrap());
+
+        assert!(requeue_canceled(&db.conn, t.id, None, &[], false)
+            .await
+            .unwrap());
+        assert_eq!(
+            get(&db.conn, t.id).await.unwrap().cleanup_state.as_deref(),
+            Some(CLEANUP_FAILED),
+            "a requeue takes the task back: it is no longer being deleted"
+        );
+
+        // 开始新一轮同理（重新标上记号再开始）。
+        assert!(mark_cleanup_delete_requested(&db.conn, t.id).await.unwrap());
+        claim_for_run(&db.conn, t.id, WorkTaskStatus::Todo, "user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            get(&db.conn, t.id).await.unwrap().cleanup_state.as_deref(),
+            Some(CLEANUP_FAILED),
+            "a fresh run takes the task back too"
+        );
+
+        let out = clear_worktree_by_folder(&db.conn, folder_id).await.unwrap();
+        assert_eq!(out.deleted, Vec::<i32>::new());
+        assert_eq!(out.detached, vec![t.id]);
+        assert!(get_model(&db.conn, t.id)
+            .await
+            .unwrap()
+            .deleted_at
+            .is_none());
     }
 
     /// `done` no longer means one thing, so every writer of it has to say

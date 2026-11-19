@@ -4,7 +4,11 @@ import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Trash2 } from "lucide-react"
 import { toast } from "sonner"
-import { workTaskCleanup, workTaskWorktreeDirty } from "@/lib/api"
+import {
+  workTaskCleanup,
+  workTaskDelete,
+  workTaskWorktreeDirty,
+} from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   AlertDialog,
@@ -90,6 +94,9 @@ export function WorktreeDiscardOption({
  * 这个按钮给一条出路，点了先弹确认，写明会丢几个文件、无法恢复，确认后
  * 带着丢弃许可重新清理。没有未提交文件时不显示（那种失败重试就够了）。
  *
+ * `deleteTask`：这次清理失败是删除任务时被拦下的（`failed_delete`），按钮
+ * 就接着做原来的删除——worktree 和任务一起删，删完调 `onDeleted`。
+ *
  * 卡片整个是可点的（打开详情），这里的点击——包括确认框里的，React 的事件
  * 会穿过 portal 冒泡——都不能冒上去。
  */
@@ -97,22 +104,35 @@ export function TaskDiscardCleanupButton({
   taskId,
   size = "sm",
   className,
+  deleteTask = false,
+  onDeleted,
 }: {
   taskId: number
   size?: "xs" | "sm"
   className?: string
+  deleteTask?: boolean
+  onDeleted?: () => void
 }) {
   const t = useTranslations("Tasks")
   const count = useWorktreeDirtyCount(taskId, true)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   if (count == null || count <= 0) return null
+  const label = deleteTask
+    ? t("actionDiscardAndDeleteTask")
+    : t("actionDiscardAndDeleteWorktree")
 
   const confirm = async () => {
     setBusy(true)
     try {
-      await workTaskCleanup(taskId, true)
-      setOpen(false)
+      if (deleteTask) {
+        await workTaskDelete(taskId, true, true)
+        setOpen(false)
+        onDeleted?.()
+      } else {
+        await workTaskCleanup(taskId, true)
+        setOpen(false)
+      }
     } catch (e) {
       toast.error(toErrorMessage(e))
     } finally {
@@ -134,16 +154,20 @@ export function TaskDiscardCleanupButton({
         onClick={() => setOpen(true)}
       >
         <Trash2 aria-hidden="true" />
-        {t("actionDiscardAndDeleteWorktree")}
+        {label}
       </Button>
       <AlertDialog open={open} onOpenChange={setOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {t("discardWorktreeConfirmTitle")}
+              {deleteTask
+                ? t("discardTaskConfirmTitle")
+                : t("discardWorktreeConfirmTitle")}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {t("discardWorktreeConfirmBody", { count })}
+              {deleteTask
+                ? t("discardTaskConfirmBody", { count })
+                : t("discardWorktreeConfirmBody", { count })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -157,7 +181,7 @@ export function TaskDiscardCleanupButton({
                 void confirm()
               }}
             >
-              {t("actionDiscardAndDeleteWorktree")}
+              {label}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

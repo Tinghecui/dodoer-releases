@@ -104,6 +104,33 @@ export function worktreeWasRemoved(task: WorkTask): boolean {
 }
 
 /**
+ * worktree 清理失败、可以重试。`failed_delete` 也是清理失败，只是失败在删除
+ * 任务的半路（被未提交文件拦下），见 `isDeleteHalfDone`。
+ */
+export function isCleanupFailed(task: WorkTask): boolean {
+  return (
+    task.cleanup_state === "failed" || task.cleanup_state === "failed_delete"
+  )
+}
+
+/**
+ * 用户删除这个任务时被 worktree 里没提交的文件拦下：丢弃改动以后要接着把任务
+ * 也删掉，而不是只删 worktree。
+ */
+export function isDeleteHalfDone(task: WorkTask): boolean {
+  return task.cleanup_state === "failed_delete"
+}
+
+/**
+ * 这个错误是不是「worktree 里有没提交的文件，worktree 被留下了」：后端
+ * `worktree_kept` 的固定开头。删除框只在这种错误时就地给「丢弃改动并删除任务」，
+ * 别的错误（任务正在合并之类）照原样报出来。
+ */
+export function isWorktreeKeptError(message: string): boolean {
+  return message.includes("the worktree was kept:")
+}
+
+/**
  * Whether the drawer should offer to remove the worktree on its own — a task
  * that STOPPED still sitting on the checkout it ran in. Every way of stopping
  * offers to take the worktree along and every one of them lets the user say no
@@ -129,7 +156,7 @@ export function canRemoveWorktree(task: WorkTask): boolean {
   return (
     (task.status === "done" || task.status === "canceled") &&
     !isWorktreeGone(task) &&
-    task.cleanup_state !== "failed"
+    !isCleanupFailed(task)
   )
 }
 

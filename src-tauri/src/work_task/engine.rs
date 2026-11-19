@@ -6177,6 +6177,47 @@ impl TaskEngine {
         Ok(())
     }
 
+    /// 卡片和详情上的「重试清理」。删到一半的任务（`failed_delete`：删除时被
+    /// 未提交文件拦下）重试就是接着做原来的删除：清理没成（再被拦下、git 出错）
+    /// 时记号留着（[`work_task_service::set_cleanup_state`] 不会把它写回
+    /// `failed`），worktree 真的卸下了才把任务删掉。普通的清理失败照旧只清理。
+    pub async fn retry_cleanup(
+        &self,
+        task_id: i32,
+        discard_uncommitted: bool,
+    ) -> Result<(), CleanupBlocked> {
+        let half_deleted = work_task_service::get_model(&self.db.conn, task_id)
+            .await
+            .map_err(|e| CleanupBlocked::failed(e.to_string()))?
+            .cleanup_state
+            .as_deref()
+            == Some(work_task_service::CLEANUP_FAILED_DELETE);
+        self.cleanup_task(task_id, discard_uncommitted).await?;
+        if !half_deleted {
+            return Ok(());
+        }
+        let task = work_task_service::get_model(&self.db.conn, task_id)
+            .await
+            .map_err(|e| CleanupBlocked::failed(e.to_string()))?;
+        if task.worktree_folder_id.is_some() {
+            // 清理没成，卡片上照旧是「清理失败」，记号还在，下次重试接着删。
+            return Ok(());
+        }
+        // 只在任务还是这个状态时删（和删除入口一样的守卫）；被别的操作改了状态
+        // 就不删，任务留在看板上，用户能看见、能再删。
+        if work_task_service::soft_delete(&self.db.conn, task_id, task.status)
+            .await
+            .map_err(|e| CleanupBlocked::failed(e.to_string()))?
+        {
+            emit_event(
+                &self.emitter,
+                WORK_TASK_CHANGED_EVENT,
+                WorkTaskChange::Deleted { id: task_id },
+            );
+        }
+        Ok(())
+    }
+
     /// Git-first-then-DB worktree removal, and the `task://changed` that tells
     /// clients about it. Caller holds the folder git lock.
     ///
@@ -13958,6 +13999,67 @@ mod tests {
             Ok(0),
             "nothing left to warn about"
         );
+    }
+
+    /// 删除被未提交文件拦下（`failed_delete`）后的「重试清理」：再被拦下时记号
+    /// 留着、任务不删；丢弃改动、worktree 真的卸下以后接着把任务删掉。
+    #[tokio::test]
+    async fn retrying_a_half_done_delete_keeps_the_mark_until_the_task_is_gone() {
+        let f = delivery_fixture(FakeForge::default()).await;
+        std::fs::write(f.worktree.join("draft.md"), "not committed\n").expect("write");
+        f.engine
+            .cleanup_task(f.task_id, false)
+            .await
+            .expect_err("the delete is stopped by the uncommitted file");
+        assert!(
+            work_task_service::mark_cleanup_delete_requested(&f.engine.db.conn, f.task_id)
+                .await
+                .expect("mark")
+        );
+
+        let err = f
+            .engine
+            .retry_cleanup(f.task_id, false)
+            .await
+            .expect_err("still dirty, still protected");
+        assert!(err.holds_work);
+        let task = row(&f.engine, f.task_id).await;
+        assert_eq!(
+            task.cleanup_state.as_deref(),
+            Some(work_task_service::CLEANUP_FAILED_DELETE),
+            "a failed retry keeps the half-done delete"
+        );
+        assert!(task.deleted_at.is_none(), "and the task stays on the board");
+
+        f.engine
+            .retry_cleanup(f.task_id, true)
+            .await
+            .expect("the user chose to discard the changes");
+        assert!(!f.worktree.exists(), "the worktree is gone");
+        let task = crate::db::entities::work_task::Entity::find_by_id(f.task_id)
+            .one(&f.engine.db.conn)
+            .await
+            .expect("query")
+            .expect("row kept as a tombstone");
+        assert!(task.deleted_at.is_some(), "and the delete is finished");
+    }
+
+    /// 普通的清理失败（取消时留下的）重试成功只删 worktree，任务留着。
+    #[tokio::test]
+    async fn retrying_a_plain_failed_cleanup_keeps_the_task() {
+        let f = delivery_fixture(FakeForge::default()).await;
+        std::fs::write(f.worktree.join("draft.md"), "not committed\n").expect("write");
+        f.engine
+            .cleanup_task(f.task_id, false)
+            .await
+            .expect_err("stopped by the uncommitted file");
+        f.engine
+            .retry_cleanup(f.task_id, true)
+            .await
+            .expect("discarded");
+        let task = row(&f.engine, f.task_id).await;
+        assert_eq!(task.worktree_folder_id, None);
+        assert!(task.deleted_at.is_none(), "only the worktree goes");
     }
 
     /// The probe fails CLOSED. `git status` can stop answering for reasons that

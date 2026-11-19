@@ -90,7 +90,9 @@ pub struct Model {
     /// leaves review never carries a stale intent.
     #[sea_orm(column_type = "Text")]
     pub pending_merge: Option<String>,
-    /// NULL = nothing pending; 'failed' = worktree cleanup failed (retryable).
+    /// NULL = nothing pending; 'failed' = worktree cleanup failed (retryable);
+    /// 'failed_delete' = 同样是清理失败，但这是删除任务时被未提交文件拦下的，
+    /// 丢弃改动后要接着把任务删掉。
     pub cleanup_state: Option<String>,
     /// success | needs_review | blocked (P1, agent self-report via MCP).
     pub verdict: Option<String>,

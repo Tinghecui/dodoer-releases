@@ -16,10 +16,12 @@ vi.mock("@/lib/platform", async (importOriginal) => ({
 
 const cleanupMock = vi.fn().mockResolvedValue(undefined)
 const dirtyMock = vi.fn().mockResolvedValue(0)
+const deleteMock = vi.fn().mockResolvedValue(undefined)
 // 只替换清理用到的两个，其余照旧。
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
   workTaskCleanup: (...args: unknown[]) => cleanupMock(...args),
+  workTaskDelete: (...args: unknown[]) => deleteMock(...args),
   workTaskWorktreeDirty: (...args: unknown[]) => dirtyMock(...args),
 }))
 
@@ -519,6 +521,31 @@ describe("TaskCard failed cleanup", () => {
     await waitFor(() => expect(cleanupMock).toHaveBeenCalledWith(7, true))
     // 卡片本身点了会打开详情，按钮和确认框里的点击不能冒上去。
     expect(onOpen).not.toHaveBeenCalled()
+  })
+
+  it("finishes the delete it was stopped in: worktree and task together", async () => {
+    // 删除任务时被未提交文件拦下（failed_delete）：卡片上的按钮接着做原来的
+    // 删除，而不是只删 worktree、把任务留在看板上。
+    cleanupMock.mockClear()
+    deleteMock.mockClear()
+    dirtyMock.mockResolvedValue(2)
+    renderCard(task({ status: "canceled", cleanup_state: "failed_delete" }))
+
+    expect(await screen.findByText("Cleanup failed")).toBeInTheDocument()
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: "Discard changes and delete task",
+      })
+    )
+    const confirm = await screen.findByRole("alertdialog")
+    expect(within(confirm).getByText(/2 uncommitted files/)).toBeInTheDocument()
+    await userEvent.click(
+      within(confirm).getByRole("button", {
+        name: "Discard changes and delete task",
+      })
+    )
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(7, true, true))
+    expect(cleanupMock).not.toHaveBeenCalled()
   })
 
   it("stays out of the way when nothing uncommitted is in the worktree", async () => {

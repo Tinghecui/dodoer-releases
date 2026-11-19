@@ -3680,15 +3680,23 @@ async fn converge_removed_worktree_folder(
         .await
         .unwrap_or_else(|e| {
             tracing::warn!("[folders] task detach failed for folder {worktree_folder_id}: {e}");
-            Vec::new()
+            Default::default()
         });
 
     worktree_convergence::announce(emitter, outcome, project_folder_id, worktree_folder_id);
-    for task_id in detached {
+    for task_id in detached.detached {
         crate::web::event_bridge::emit_event(
             emitter,
             crate::web::event_bridge::WORK_TASK_CHANGED_EVENT,
             crate::web::event_bridge::WorkTaskChange::Upsert { id: task_id },
+        );
+    }
+    // 删到一半的任务：worktree 没了就删完了，卡片从看板上拿掉。
+    for task_id in detached.deleted {
+        crate::web::event_bridge::emit_event(
+            emitter,
+            crate::web::event_bridge::WORK_TASK_CHANGED_EVENT,
+            crate::web::event_bridge::WorkTaskChange::Deleted { id: task_id },
         );
     }
     crate::office_watch::stop_office_watches_under_root(worktree_path);

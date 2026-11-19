@@ -2363,7 +2363,8 @@ export interface WorkTask {
   base_branch: string | null
   base_sha: string | null
   work_branch: string | null
-  /** null = nothing pending; "failed" = worktree cleanup failed (retryable). */
+  /** null = nothing pending; "failed" = worktree cleanup failed (retryable);
+   *  "failed_delete" = 同样是清理失败，但这是删除任务时被未提交文件拦下的。 */
   cleanup_state: string | null
   verdict: string | null
   result_summary: string | null

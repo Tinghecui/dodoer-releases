@@ -20,7 +20,9 @@ import { formatRelative } from "@/components/conversations/sidebar-conversation-
 import { formatScheduleFull, formatScheduleShort } from "@/lib/task-schedule"
 import { cn } from "@/lib/utils"
 import {
+  isCleanupFailed,
   isDeferred,
+  isDeleteHalfDone,
   isMergeAwaitingInput,
   isMergeQueued,
   worktreeWasRemoved,
@@ -507,20 +509,22 @@ export function TaskCard({
         <MergeQueuedChip task={task} rank={mergeQueueRank} />
         <PreflightChip task={task} />
         <WorktreeRemovedChip task={task} />
-        {task.cleanup_state === "failed" ? (
+        {isCleanupFailed(task) ? (
           <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[0.625rem] text-amber-600 dark:text-amber-400">
             {t("badgeCleanupFailed")}
           </span>
         ) : null}
         {/* 清理被未提交文件拦下时，卡片上直接给出路（自带二次确认）；
-            没有未提交文件时这个按钮不显示。 */}
-        {task.cleanup_state === "failed" &&
+            没有未提交文件时这个按钮不显示。删除任务时被拦下的，按钮接着把
+            任务也删掉。 */}
+        {isCleanupFailed(task) &&
         task.worktree_folder_id != null &&
         task.worktree_missing !== true ? (
           <TaskDiscardCleanupButton
             key={`discard-${task.id}-${task.updated_at}`}
             taskId={task.id}
             size="xs"
+            deleteTask={isDeleteHalfDone(task)}
           />
         ) : null}
         {/* "Kept" claims the worktree is still there — stay silent when its

@@ -420,6 +420,19 @@ pub async fn work_task_delete_core(
                     // worktree the user was told would be deleted would be left
                     // on disk with nothing anywhere left to say why. Refusing
                     // the delete keeps both the files and the way out.
+                    //
+                    // 拦下前记住「用户本来是要删这个任务」：卡片和详情底栏上的
+                    // 「丢弃改动并删除任务」据此接着把任务也删掉，不用再删一次。
+                    if work_task_service::mark_cleanup_delete_requested(&db.conn, id)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        emit_event(
+                            emitter,
+                            WORK_TASK_CHANGED_EVENT,
+                            WorkTaskChange::Upsert { id },
+                        );
+                    }
                     return Err(DbError::Validation(crate::work_task::worktree_kept(
                         "Check \"also discard these changes\" to delete them with it, or clear \
                          \"also delete its worktree\" to delete just the task.",
@@ -855,8 +868,9 @@ pub async fn work_task_defer_core(
 /// `discard_uncommitted`：用户确认过丢弃 worktree 里没提交的文件（卡片上的
 /// 「丢弃改动并删除」）。不带它时照旧拦下有未提交文件的 worktree。
 pub async fn work_task_cleanup_core(id: i32, discard_uncommitted: bool) -> Result<(), DbError> {
+    // 删到一半的任务，重试清理成功后接着把任务删掉，见 `retry_cleanup`。
     engine()?
-        .cleanup_task(id, discard_uncommitted)
+        .retry_cleanup(id, discard_uncommitted)
         .await
         .map_err(|blocked| DbError::Validation(blocked.message))
 }

@@ -55,6 +55,7 @@ import {
   workTaskRetry,
   workTaskReturn,
   workTaskStart,
+  workTaskWorktreeDirty,
 } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
@@ -80,6 +81,9 @@ import {
   canDeliverToPr,
   canRemoveWorktree,
   deliversIntoOpenPr,
+  isCleanupFailed,
+  isDeleteHalfDone,
+  isWorktreeKeptError,
   hasNothingToMerge,
   isDeferred,
   isMergeAwaitingInput,
@@ -260,6 +264,9 @@ export function TaskDetailSheet({
   const [deleteWorktree, setDeleteWorktree] = useState(false)
   /** 删除确认里的「同时丢弃这些改动」，每次打开都从不勾开始。 */
   const [deleteDiscard, setDeleteDiscard] = useState(false)
+  /** 删除被 worktree 里没提交的文件拦下了：记着还剩几个文件，删除框不关，
+   *  就地给「丢弃改动并删除任务」。每次打开删除框都清空。 */
+  const [deleteBlocked, setDeleteBlocked] = useState<number | null>(null)
   /** Confirm for the footer's standalone worktree removal (`canRemoveWorktree`
    *  decides who is offered it). */
   const [cleanupOpen, setCleanupOpen] = useState(false)
@@ -1503,7 +1510,7 @@ export function TaskDetailSheet({
                   onClick={() => onEdit(task)}
                 />
               ) : null}
-              {hasWorktree && task.cleanup_state === "failed" ? (
+              {hasWorktree && isCleanupFailed(task) ? (
                 <FooterAction
                   icon={FolderX}
                   label={t("actionRetryCleanup")}
@@ -1512,11 +1519,14 @@ export function TaskDetailSheet({
                 />
               ) : null}
               {/* 被未提交文件拦下的清理，重试永远过不去：给「丢弃改动并删除」，
-                  自带二次确认；没有未提交文件时它不显示。 */}
-              {hasWorktree && task.cleanup_state === "failed" ? (
+                  自带二次确认；没有未提交文件时它不显示。删除任务时被拦下的，
+                  它接着把任务也删掉，删完关抽屉。 */}
+              {hasWorktree && isCleanupFailed(task) ? (
                 <TaskDiscardCleanupButton
                   key={`discard-${task.id}-${task.updated_at}`}
                   taskId={task.id}
+                  deleteTask={isDeleteHalfDone(task)}
+                  onDeleted={() => onOpenChange(false)}
                 />
               ) : null}
               <div className="flex-1" />
@@ -1540,6 +1550,7 @@ export function TaskDetailSheet({
                   destructive
                   onClick={() => {
                     setDeleteDiscard(false)
+                    setDeleteBlocked(null)
                     setDeleteOpen(true)
                   }}
                 />
@@ -1618,12 +1629,19 @@ export function TaskDetailSheet({
             <Label className="text-sm font-normal">
               <Checkbox
                 checked={deleteWorktree}
-                onCheckedChange={(v) => setDeleteWorktree(v === true)}
+                onCheckedChange={(v) => {
+                  setDeleteWorktree(v === true)
+                  setDeleteBlocked(null)
+                }}
               />
               {t("deleteWithWorktree")}
             </Label>
           ) : null}
-          {hasWorktree && deleteWorktree ? (
+          {hasWorktree && deleteWorktree && deleteBlocked != null ? (
+            <p className="rounded-md bg-amber-500/10 px-2.5 py-2 text-sm text-amber-700 dark:text-amber-400">
+              {t("deleteBlockedByUncommitted", { count: deleteBlocked })}
+            </p>
+          ) : hasWorktree && deleteWorktree ? (
             <WorktreeDiscardOption
               count={deleteDirtyCount}
               checked={deleteDiscard}
@@ -1632,22 +1650,61 @@ export function TaskDetailSheet({
           ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() =>
-                run(async () => {
-                  const removing = hasWorktree && deleteWorktree
-                  await workTaskDelete(
-                    task.id,
-                    removing,
-                    removing && (deleteDirtyCount ?? 0) > 0 && deleteDiscard
-                  )
-                  setDeleteOpen(false)
-                  onOpenChange(false)
-                })
-              }
-            >
-              {t("actionDelete")}
-            </AlertDialogAction>
+            {hasWorktree && deleteWorktree && deleteBlocked != null ? (
+              <AlertDialogAction
+                variant="destructive"
+                disabled={busy}
+                onClick={(e) => {
+                  // 等删除结束再关：失败时 toast 报错，框留着可以再点。
+                  e.preventDefault()
+                  void run(async () => {
+                    await workTaskDelete(task.id, true, true)
+                    setDeleteOpen(false)
+                    onOpenChange(false)
+                  })
+                }}
+              >
+                {t("actionDiscardAndDeleteTask")}
+              </AlertDialogAction>
+            ) : (
+              <AlertDialogAction
+                disabled={busy}
+                onClick={(e) => {
+                  // 等删除结束再关：被未提交文件拦下时框要留着给出路。
+                  e.preventDefault()
+                  void run(async () => {
+                    const removing = hasWorktree && deleteWorktree
+                    const discard =
+                      removing && (deleteDirtyCount ?? 0) > 0 && deleteDiscard
+                    try {
+                      await workTaskDelete(task.id, removing, discard)
+                    } catch (err) {
+                      // 只有后端说 worktree 因为没提交的文件被留下时，才再问一遍
+                      // 还剩几个，有的话框不关，换成「丢弃改动并删除任务」；别的
+                      // 错误（任务正在合并等）、问不到或没有，照旧报错。
+                      if (
+                        removing &&
+                        !discard &&
+                        isWorktreeKeptError(toErrorMessage(err))
+                      ) {
+                        const left = await workTaskWorktreeDirty(task.id).catch(
+                          () => 0
+                        )
+                        if (left > 0) {
+                          setDeleteBlocked(left)
+                          return
+                        }
+                      }
+                      throw err
+                    }
+                    setDeleteOpen(false)
+                    onOpenChange(false)
+                  })
+                }}
+              >
+                {t("actionDelete")}
+              </AlertDialogAction>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

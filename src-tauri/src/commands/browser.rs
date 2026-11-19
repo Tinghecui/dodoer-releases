@@ -3710,7 +3710,7 @@ fn may_answer_dialog(
             AppCommandError::permission_denied(format!(
                 "the page on browser tab {tab_id} asks whether to leave it, and the tab is the \
                  user's own: leaving may throw away work they have not saved, so only they \
-                 answer that. Ask them to, in Chrome"
+                 answer that. Ask them to answer it in Chrome"
             ))
             .with_i18n(
                 BROWSER_I18N_KEY_DIALOG_FOR_USER,
@@ -5769,12 +5769,17 @@ mod tests {
     #[test]
     fn leaving_the_users_own_page_is_left_to_them() {
         let leave = page_dialog("beforeunload");
+        let err = may_answer_dialog("t1", GrantLevel::Control, true, true, Some(&leave))
+            .unwrap_err()
+            .1;
         assert_eq!(
-            may_answer_dialog("t1", GrantLevel::Control, true, true, Some(&leave))
-                .unwrap_err()
-                .1
-                .i18n_key,
+            err.i18n_key,
             Some(BROWSER_I18N_KEY_DIALOG_FOR_USER.to_string())
+        );
+        assert!(
+            err.message.contains("Ask them to answer it in Chrome"),
+            "{}",
+            err.message
         );
         assert!(may_answer_dialog("t1", GrantLevel::Control, false, true, Some(&leave)).is_ok());
     }

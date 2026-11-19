@@ -153,8 +153,8 @@ pub fn dialog_open_note(
     if dialog.is_before_unload() && users_own {
         note.push_str(
             " It asks whether to leave the page, on a tab of the user's own, where that may \
-             throw away work they have not saved: only the user answers it. Ask them to, in \
-             Chrome.",
+             throw away work they have not saved: only the user answers it. Ask them to answer \
+             it in Chrome.",
         );
     } else if !may_answer {
         note.push_str(
@@ -1158,6 +1158,10 @@ mod tests {
         let leave = dialog("beforeunload", "");
         let theirs = dialog_open_note("t1", &leave, true, true);
         assert!(theirs.contains("only the user answers it"), "{theirs}");
+        assert!(
+            theirs.contains("Ask them to answer it in Chrome."),
+            "{theirs}"
+        );
         assert!(!theirs.contains("browser_dialog"), "{theirs}");
         let agents = dialog_open_note("t1", &leave, true, false);
         assert!(agents.contains("browser_dialog on tab t1"), "{agents}");

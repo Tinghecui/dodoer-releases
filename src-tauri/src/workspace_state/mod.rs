@@ -801,9 +801,13 @@ fn should_emit_watch_event(kind: &EventKind) -> bool {
     )
 }
 
-fn normalize_git_status_path(path: &str) -> String {
+/// `git status --porcelain=v1` 只在改名（R）、复制（C）的行里用「旧 -> 新」
+/// 写两个路径；别的状态（比如未跟踪的 `docs/x -> y.md`）「 -> 」是文件名的一部分，
+/// 不能拆。
+fn normalize_git_status_path(status: &str, path: &str) -> String {
     let normalized = path.trim().replace('\\', "/");
-    if let Some(index) = normalized.rfind(" -> ") {
+    let is_rename_or_copy = status.contains(['R', 'C']);
+    if let Some(index) = normalized.rfind(" -> ").filter(|_| is_rename_or_copy) {
         return normalized[index + 4..]
             .trim()
             .trim_end_matches('/')
@@ -894,7 +898,7 @@ async fn collect_git_snapshot(path: &str) -> Result<Vec<WorkspaceGitEntry>, AppC
     let mut result = status_entries
         .into_iter()
         .filter_map(|entry| {
-            let normalized_path = normalize_git_status_path(&entry.file);
+            let normalized_path = normalize_git_status_path(&entry.status, &entry.file);
             if normalized_path.is_empty() {
                 return None;
             }
@@ -2423,6 +2427,52 @@ mod tests {
             entries,
             vec![modified("docs/需求.md"), modified("plain.txt")]
         );
+    }
+
+    /// 文件名里本来就带「 -> 」的未跟踪文件不是改名：快照要按真实路径列出，
+    /// 不能只留后半截、跑到根目录去（#851）。
+    #[tokio::test]
+    async fn collect_git_snapshot_keeps_arrow_in_untracked_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let path = root.to_str().expect("utf-8 path");
+        git_run(root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("base.txt"), "one\n").expect("write");
+        git_run(root, &["add", "-A"]);
+        git_run(root, &["commit", "-q", "-m", "base"]);
+
+        std::fs::create_dir(root.join("docs")).expect("mkdir");
+        std::fs::create_dir(root.join("scratch")).expect("mkdir");
+        std::fs::write(root.join("docs").join("x -> y.md"), "").expect("write");
+        std::fs::write(root.join("scratch").join("x -> y.md"), "").expect("write");
+
+        let entries = collect_git_snapshot(path).await.expect("git snapshot");
+        let untracked = |file: &str| WorkspaceGitEntry {
+            path: file.to_string(),
+            status: "??".to_string(),
+            additions: 0,
+            deletions: 0,
+        };
+        assert_eq!(
+            entries,
+            vec![untracked("docs/x -> y.md"), untracked("scratch/x -> y.md")]
+        );
+    }
+
+    #[test]
+    fn normalize_git_status_path_splits_only_renames_and_copies() {
+        assert_eq!(
+            normalize_git_status_path("??", "docs/x -> y.md"),
+            "docs/x -> y.md"
+        );
+        assert_eq!(
+            normalize_git_status_path("M", "docs/x -> y.md"),
+            "docs/x -> y.md"
+        );
+        assert_eq!(normalize_git_status_path("R", "old.rs -> new.rs"), "new.rs");
+        assert_eq!(normalize_git_status_path("RM", "a.rs -> d/b.rs"), "d/b.rs");
+        assert_eq!(normalize_git_status_path("C", "a.rs -> b.rs"), "b.rs");
+        assert_eq!(normalize_git_status_path("??", "docs/sub/"), "docs/sub");
     }
 
     /// A staged rename is counted under its new path, which `git status` and

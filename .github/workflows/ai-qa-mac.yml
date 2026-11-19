@@ -9,8 +9,11 @@ on:
   workflow_dispatch:
     inputs:
       changes:
-        description: "要验收的 PR 号，逗号分隔"
-        required: true
+        description: "要验收的 PR 号，逗号分隔（只抽查故事时留空）"
+        default: ""
+      stories:
+        description: "抽查的用户故事：P0 / P1 = 该优先级全部（预发、PM 的除外），或编号 A1,C1,N5；和 changes 至少填一个"
+        default: ""
       batch:
         description: "批次名（只用在报告里）"
         default: ""
@@ -50,6 +53,7 @@ jobs:
       PUBLIC_REPO: ${{ github.repository }}
       W: /Users/runner/ai-qa-work
       CHANGES: ${{ inputs.changes }}
+      STORIES: ${{ inputs.stories }}
       BATCH: ${{ inputs.batch }}
       APP_VERSION: ${{ inputs.version }}
       FROM_VERSION: ${{ inputs.from_version }}

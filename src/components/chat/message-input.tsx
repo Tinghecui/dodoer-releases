@@ -2598,7 +2598,11 @@ export function MessageInput({
           // left edge; the context-usage circle + agent connection status
           // right-align at the trailing edge.
           <div className="flex items-center justify-between gap-2 px-2.5 pt-0.5 pb-1.5 text-xs text-muted-foreground">
-            <div className="flex min-w-0 items-center gap-1">
+            {/* 窄的时候（侧栏、辅助面板都开着）这一组要让位：min-w-0 让它能被
+                压窄，overflow-hidden 把放不下的部分裁掉，不让按钮画到右边上下文圈
+                那组底下（右边那组在后面、叠在上面，点击会落到圈上）。-m/p 各 3px
+                给按钮的聚焦外圈留地方，不被裁掉，位置不变。 */}
+            <div className="-m-[3px] flex min-w-0 items-center gap-1 overflow-hidden p-[3px]">
               <ConversationFolderBranchPicker
                 tabId={attachmentTabId}
                 override={folderPickerOverride}

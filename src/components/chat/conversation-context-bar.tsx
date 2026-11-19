@@ -539,8 +539,10 @@ const FolderPicker = memo(function FolderPicker({
         // `px-1.5` (rem scale, so it tracks UI zoom) matches the composer "+"
         // button's icon breathing room; paired with the row's `pl-2` it lands the
         // folder icon on the same column as the centered "+" icon.
+        // 基础样式带 shrink-0，换成 shrink：那一排放不下时文件夹名出省略号，
+        // min-w-11 留住图标和下拉箭头。
         className={cn(
-          "min-w-0 gap-0.5 px-1.5",
+          "min-w-11 shrink gap-0.5 px-1.5",
           !editable && "cursor-default opacity-60 hover:bg-transparent"
         )}
       >

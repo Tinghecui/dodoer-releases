@@ -173,3 +173,22 @@ describe("BranchDropdown — HEAD backfill for an unpolled folder", () => {
     expect(getGitHead).not.toHaveBeenCalled()
   })
 })
+
+describe("BranchDropdown — trigger in a narrow composer row", () => {
+  it("lets the chip shrink instead of overflowing its row", () => {
+    useAppWorkspaceStore.getState().applyGitHead(7, {
+      is_repo: true,
+      branch: "main",
+      detached: false,
+      short_sha: "abc1234",
+    })
+
+    render(<BranchDropdown folder={folder({ id: 7 })} isChatMode={false} />)
+
+    // Button 的基础样式带 shrink-0；不覆盖掉的话，窄的时候分支按钮缩不下去，
+    // 被挤到右边上下文圈底下，点分支弹出的是上下文弹层。
+    const trigger = screen.getByText("main").closest("button")!
+    expect(trigger).toHaveClass("shrink")
+    expect(trigger).not.toHaveClass("shrink-0")
+  })
+})

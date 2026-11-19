@@ -2,7 +2,10 @@ import { render, screen, cleanup } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { ConversationHeaderFolderPicker } from "./conversation-context-bar"
+import {
+  ConversationFolderBranchPicker,
+  ConversationHeaderFolderPicker,
+} from "./conversation-context-bar"
 import type { FolderDetail } from "@/lib/types"
 import {
   resetAppWorkspaceStore,
@@ -45,6 +48,11 @@ vi.mock("@/contexts/tab-context", () => ({
     openNewConversationTab,
     openChatModeTab: vi.fn(),
   }),
+}))
+
+// 分支按钮有自己的测试；这里只看文件夹按钮。
+vi.mock("@/components/layout/branch-dropdown", () => ({
+  BranchDropdown: () => null,
 }))
 
 function mkFolder(p: Partial<FolderDetail> & { id: number }): FolderDetail {
@@ -132,5 +140,18 @@ describe("ConversationHeaderFolderPicker", () => {
 
     render(<ConversationHeaderFolderPicker tabId="tab-chat" />)
     expect(screen.getByRole("button", { name: /chatModeLabel/ })).toBeTruthy()
+  })
+})
+
+describe("ConversationFolderBranchPicker — folder chip in a narrow row", () => {
+  it("lets the folder chip shrink instead of overflowing its row", () => {
+    tabs = [{ id: "tab-1", folderId: 1, conversationId: 42 }]
+    activeTabId = "tab-1"
+
+    render(<ConversationFolderBranchPicker tabId="tab-1" />)
+    // Button 的基础样式带 shrink-0，要覆盖掉，窄的时候文件夹名才会出省略号。
+    const chip = screen.getByRole("button", { name: /repo/ })
+    expect(chip).toHaveClass("shrink")
+    expect(chip).not.toHaveClass("shrink-0")
   })
 })

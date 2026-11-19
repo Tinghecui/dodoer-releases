@@ -93,7 +93,9 @@ vi.mock("@/components/chat/conversation-context-bar", () => ({
   }) => <div data-testid="ctx-bar">{extraContent}</div>,
   // The composer imports these to render the below-input folder/branch row.
   // Hidden by default; the cold-start test resolves it after the editor mounts.
-  ConversationFolderBranchPicker: () => null,
+  ConversationFolderBranchPicker: () => (
+    <span data-testid="folder-branch-picker" />
+  ),
   useConversationFolderBranchPickerVisible: folderPickerVisible,
 }))
 vi.mock("./composer-context-usage", () => ({
@@ -3629,6 +3631,33 @@ describe("MessageInput folder data arriving after mount", () => {
     expect(handle.getText()).toBe("keep this draft")
     act(() => editor.commands.undo())
     expect(handle.getText()).toBe("")
+  })
+})
+
+describe("MessageInput folder/branch row in a narrow pane", () => {
+  afterEach(() => {
+    cleanup()
+    folderPickerVisible.mockReturnValue(false)
+  })
+
+  it("clips the picker group so it never runs under the context circle", async () => {
+    folderPickerVisible.mockReturnValue(true)
+    const { container } = render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <MessageInput onSend={vi.fn()} promptCapabilities={CAPS} />
+      </NextIntlClientProvider>
+    )
+    await waitFor(() =>
+      expect(composerHandle.current?.getEditor()).toBeTruthy()
+    )
+    const picker = container.querySelector(
+      '[data-testid="folder-branch-picker"]'
+    )
+    expect(picker).not.toBeNull()
+    // jsdom 不排版，只能钉住类名：左边这组可以被压窄（min-w-0），而且超出的
+    // 部分被裁掉（overflow-hidden），不会画到右边上下文圈那组底下去抢点击。
+    const group = picker!.parentElement!
+    expect(group).toHaveClass("min-w-0", "overflow-hidden")
   })
 })
 

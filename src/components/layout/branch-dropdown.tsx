@@ -835,7 +835,9 @@ export function BranchDropdown({
                     ? t("detachedHead", { sha: head?.short_sha ?? "" })
                     : (branch ?? undefined)
             }
-            className="min-w-0 gap-0.5 px-1.5"
+            // 基础样式带 shrink-0，这里换成 shrink：输入框下面那一排放不下时
+            // 分支名出省略号；min-w-14 保证图标和下拉箭头始终露出来、点得到。
+            className="min-w-14 shrink gap-0.5 px-1.5"
           >
             {pendingWorktree ? (
               <FolderGit2 className="size-3 shrink-0 text-muted-foreground" />

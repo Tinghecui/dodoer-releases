@@ -63,6 +63,10 @@ import {
   useFolderTabsStore,
 } from "@/stores/folder-tabs-store"
 import { resetHomeDirCacheForTests } from "@/lib/file-open-target"
+import {
+  readPersistedFileTabs,
+  writePersistedFileTabs,
+} from "@/lib/files/file-tab-persistence"
 import { buildFileTabId } from "@/lib/file-tab-id"
 import {
   resetAppWorkspaceStore,
@@ -5872,6 +5876,51 @@ describe("Folder-tabs shared file buffers and selections", () => {
     expect(scopedWorkspace.activeFileTabId).toBe(own)
     act(() => useFolderTabsStore.getState().activateScope(2))
     expect(scopedWorkspace.activeFileTab?.path).toBe("/repo2/index.md")
+  })
+
+  it("records another project's file in that project's saved tabs so a refresh keeps it (#1046)", async () => {
+    localStorage.removeItem("workspace:file-tabs:v1:local:1")
+    localStorage.removeItem("workspace:file-tabs:v1:local:2")
+    // 第二个项目以前记下过一个标签：追加在它后面，不冲掉。
+    writePersistedFileTabs(2, { paths: ["/repo2/old.md"], active: null })
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo/own.ts")
+    })
+    const before = readPersistedFileTabs(1)
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/index.md", { line: 5 })
+    })
+    expect(readPersistedFileTabs(2)).toEqual({
+      paths: ["/repo2/old.md", "/repo2/index.md"],
+      active: "/repo2/index.md",
+    })
+    // 当前项目的记录不动。
+    expect(readPersistedFileTabs(1)).toEqual(before)
+    // 在当前项目里开、明确开进当前组的，不算跨项目，不写别的项目。
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/other.md", { folderId: 1 })
+    })
+    expect(readPersistedFileTabs(2).paths).not.toContain("/repo2/other.md")
+    localStorage.removeItem("workspace:file-tabs:v1:local:2")
+  })
+
+  it("records a background open of another project's file without changing that project's selected tab (#1046)", async () => {
+    localStorage.removeItem("workspace:file-tabs:v1:local:2")
+    writePersistedFileTabs(2, {
+      paths: ["/repo2/old.md"],
+      active: "/repo2/old.md",
+    })
+    // 画布的文件卡片这样后台加载：组里不选中它，记录里也不能改选中。
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/index.md", {
+        background: true,
+      })
+    })
+    expect(readPersistedFileTabs(2)).toEqual({
+      paths: ["/repo2/old.md", "/repo2/index.md"],
+      active: "/repo2/old.md",
+    })
+    localStorage.removeItem("workspace:file-tabs:v1:local:2")
   })
 
   it("keeps the requested line for another project's file until that project is opened (#790)", async () => {

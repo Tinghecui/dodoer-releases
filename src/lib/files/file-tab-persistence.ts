@@ -149,6 +149,31 @@ export function writePersistedFileTabs(
   }
 }
 
+/**
+ * 标签跟随项目时，在别的项目里点开了这个项目的文件、标签在后台开进这个项目的组
+ * （#790）：顺手记进这个项目的记录（#1046）。持久化只盯着当前项目的标签栏，这个
+ * 标签不是在这个项目里开的，切过去时又只算换了项目，不记下来的话刷新就没了。
+ * 已经记着的不重复，挪不挪位置都不动，只把它设成选中的；新的追加在末尾。
+ * select 为 false（画布这类后台加载，组里不选中它）时不改记下的选中，和标签组一样：
+ * 原来没有选中的才选它。
+ */
+export function recordFileTabInFolder(
+  folderId: number,
+  path: string,
+  server?: string,
+  options?: { select?: boolean }
+): PersistedFileTabs {
+  const recorded = readPersistedFileTabs(folderId, server)
+  const entries: PersistedFileTabs = {
+    paths: recorded.paths.includes(path)
+      ? recorded.paths
+      : [...recorded.paths, path],
+    active: options?.select === false ? (recorded.active ?? path) : path,
+  }
+  writePersistedFileTabs(folderId, entries, server)
+  return entries
+}
+
 /** 记下共用的那一排。全关了也记一条空的：刷新后是空的，不退回去读某个项目的记录。
  *  owners 是每个文件在哪些项目里开着的（没有的不记）。 */
 export function writeSharedFileTabs(

@@ -88,6 +88,7 @@ vi.mock("@/contexts/workspace-context", () => ({
 import {
   fileTabsStorageKey,
   readPersistedFileTabs,
+  recordFileTabInFolder,
   readSharedFileTabs,
   writePersistedFileTabs,
   writeSharedFileTabs,
@@ -705,6 +706,48 @@ describe("FileTabsPersistence", () => {
         (call) => call[0] === "/other/x.ts"
       )
     ).toHaveLength(1)
+  })
+
+  it("标签跟随项目：从别的项目开进来、记进记录的标签，切过去关掉后记录里也去掉（#1046）", async () => {
+    useFolderTabsStore.setState({ enabled: true, scope: 8 })
+    mocks.folderId = 8
+    const tabs = useScopedTabs()
+    mount()
+    await flush()
+    await flush()
+    const x = fileTab("/other/x.ts")
+    tabs.edit([x], x.id)
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(readPersistedFileTabs(8).paths).toEqual(["/other/x.ts"])
+
+    // 在项目 7 里点了项目 8 的文件：工作区把它后台开进 8 的组，顺手记进 8 的记录。
+    await tabs.switchTo(7)
+    await flush()
+    await act(async () => {
+      await mocks.openFilePreview("/other/index.md", { folderId: 8 })
+      recordFileTabInFolder(8, "/other/index.md")
+    })
+    expect(readPersistedFileTabs(8).paths).toEqual([
+      "/other/x.ts",
+      "/other/index.md",
+    ])
+
+    // 切到 8、关掉它：标签栏又和以前写下的一样，也要照写，刷新后不能再冒出来。
+    await tabs.switchTo(8)
+    await flush()
+    expect(tabs.paths(8)).toEqual(["/other/x.ts", "/other/index.md"])
+    await act(async () => {
+      mocks.closeFileTab(fileTab("/other/index.md").id)
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(readPersistedFileTabs(8)).toEqual({
+      paths: ["/other/x.ts"],
+      active: "/other/x.ts",
+    })
   })
 
   it("标签不跟随项目：切到别的项目，共用那排原样不动，不补开那个项目以前记下的", async () => {

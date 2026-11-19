@@ -27,6 +27,10 @@ import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabStore, isTabInScope } from "@/stores/tab-store"
 import { browserTabBackendId, buildFileTabId } from "@/lib/file-tab-id"
 import {
+  fileTabsServerKey,
+  recordFileTabInFolder,
+} from "@/lib/files/file-tab-persistence"
+import {
   gitDiff,
   gitDiffWithBranch,
   gitIsTracked,
@@ -2235,6 +2239,14 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         useFolderTabsStore
           .getState()
           .addFile(tabId, targetScope, options?.background !== true)
+        // 按目录开进了别的项目的组（#790）：那个项目的记录也记上，刷新后切过去
+        // 标签还在（#1046）。当前项目的记录照旧由持久化按标签栏写。后台加载的
+        // （画布的文件卡片）组里不选中它，记录里也不改选中。
+        if (typeof targetScope === "number" && targetScope !== openerScope) {
+          recordFileTabInFolder(targetScope, absPath, fileTabsServerKey(), {
+            select: options?.background !== true,
+          })
+        }
         const decision = decideLoad(
           seed,
           options?.reload ?? false,

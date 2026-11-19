@@ -388,7 +388,19 @@ export function FileTabsPersistence() {
       pendingRef.current = null
       if (!pending) return
       const last = lastWrittenRef.current.get(pending.key)
-      if (last && samePersistedFileTabs(last, pending.snapshot)) return
+      // 和上次写下的一样、记录也还是那样才跳过：工作区在别的项目里点开这个项目的
+      // 文件时会直接往记录里追加（#1046），这里不知道，不再对一下记录，关掉它以后
+      // 标签栏又和上次写下的一样，就会跳过不写，刷新后它又冒出来。
+      if (
+        last &&
+        samePersistedFileTabs(last, pending.snapshot) &&
+        samePersistedFileTabs(
+          readPersistedFileTabs(pending.folderId, pending.server),
+          pending.snapshot
+        )
+      ) {
+        return
+      }
       lastWrittenRef.current.set(pending.key, pending.snapshot)
       writePersistedFileTabs(pending.folderId, pending.snapshot, pending.server)
     }

@@ -15,6 +15,7 @@ import {
   markRegroupedFileTabs,
   readPersistedFileTabs,
   readSharedFileTabs,
+  recordFileTabInFolder,
   regroupPersistedFileTabs,
   samePersistedFileTabs,
   sharedFileTabsStorageKey,
@@ -54,6 +55,38 @@ describe("file-tab-persistence", () => {
   beforeEach(() => {
     localStorage.clear()
     transport.remoteId = null
+  })
+
+  it("往别的项目的记录里记一个标签：新的追加在末尾、设成选中，已有的不重复（#1046）", () => {
+    expect(recordFileTabInFolder(2, "/s/a.md")).toEqual({
+      paths: ["/s/a.md"],
+      active: "/s/a.md",
+    })
+    writePersistedFileTabs(2, { paths: ["/s/a.md", "/s/b.md"], active: null })
+    recordFileTabInFolder(2, "/s/c.md")
+    recordFileTabInFolder(2, "/s/a.md")
+    expect(readPersistedFileTabs(2)).toEqual({
+      paths: ["/s/a.md", "/s/b.md", "/s/c.md"],
+      active: "/s/a.md",
+    })
+    // 按服务器分开：只写给定的那个服务器。
+    recordFileTabInFolder(2, "/s/d.md", "remote-1")
+    expect(readPersistedFileTabs(2).paths).not.toContain("/s/d.md")
+    expect(readPersistedFileTabs(2, "remote-1").paths).toEqual(["/s/d.md"])
+  })
+
+  it("后台记进别的项目的标签不改那个项目的选中；原来没选中的才选它（#1046）", () => {
+    writePersistedFileTabs(2, { paths: ["/s/a.md"], active: "/s/a.md" })
+    recordFileTabInFolder(2, "/s/b.md", undefined, { select: false })
+    expect(readPersistedFileTabs(2)).toEqual({
+      paths: ["/s/a.md", "/s/b.md"],
+      active: "/s/a.md",
+    })
+    recordFileTabInFolder(3, "/t/c.md", undefined, { select: false })
+    expect(readPersistedFileTabs(3)).toEqual({
+      paths: ["/t/c.md"],
+      active: "/t/c.md",
+    })
   })
 
   it("共用的那一排单独一条：没记过是 null，记了空的读回空的，划掉别的项目的标签时不动它", () => {

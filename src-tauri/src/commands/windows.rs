@@ -848,8 +848,26 @@ pub async fn open_folder_window(
     Ok(folder)
 }
 
-/// 已经开着的提交窗口：这次右键带了路径（或范围），就把它导航到新地址，
-/// 勾选跟着这次走，而不是还停在上一次的；然后调到前面。
+/// 已经开着的提交窗口要不要重新导航。这次右键带了路径（或范围）：要，
+/// 勾选跟着这次走。这次什么都没带（工具栏的「Commit code...」）：窗口还停在
+/// 上次右键的范围（地址里有 `paths` / `scope`）就要，回到「勾全部已跟踪改动」，
+/// 免得用户以为在提交全部却漏了（#969）；本来就是全部的窗口不动，
+/// 不清掉写了一半的提交说明。
+fn existing_commit_window_needs_navigation(
+    current_url: Option<&url::Url>,
+    paths: Option<&[String]>,
+    scope: Option<&str>,
+) -> bool {
+    if paths.is_some() || scope.is_some() {
+        return true;
+    }
+    current_url.is_some_and(|url| {
+        url.query_pairs()
+            .any(|(key, value)| (key == "paths" || key == "scope") && !value.is_empty())
+    })
+}
+
+/// 已经开着的提交窗口：按上面的规则需要时导航到新地址，然后调到前面。
 #[allow(clippy::too_many_arguments)]
 fn focus_existing_commit_window(
     existing: &tauri::WebviewWindow,
@@ -861,7 +879,8 @@ fn focus_existing_commit_window(
     paths: Option<&[String]>,
     scope: Option<&str>,
 ) -> Result<(), AppCommandError> {
-    if paths.is_some() || scope.is_some() {
+    let current_url = existing.url().ok();
+    if existing_commit_window_needs_navigation(current_url.as_ref(), paths, scope) {
         let remote_window_id = remote_window_id_from_window(existing);
         let target_route = append_remote_context(
             commit_window_route(folder_id, paths, scope),
@@ -3301,7 +3320,57 @@ mod commit_window_opening_tests {
 
 #[cfg(test)]
 mod commit_window_route_tests {
-    use super::commit_window_route;
+    use super::{commit_window_route, existing_commit_window_needs_navigation};
+
+    fn url(route: &str) -> url::Url {
+        url::Url::parse(&format!("tauri://localhost/{route}")).unwrap()
+    }
+
+    // #969：上次右键只勾了几个文件、窗口没关，这次从工具栏进来（不带范围），
+    // 要导航回不带范围的地址。
+    #[test]
+    fn toolbar_open_resets_a_window_left_on_a_right_click_scope() {
+        let paths = vec!["docs".to_string()];
+        let scoped = url(&commit_window_route(7, Some(&paths), Some("tracked")));
+        assert!(existing_commit_window_needs_navigation(
+            Some(&scoped),
+            None,
+            None
+        ));
+        let untracked = url(&commit_window_route(7, None, Some("untracked")));
+        assert!(existing_commit_window_needs_navigation(
+            Some(&untracked),
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn toolbar_open_keeps_a_window_that_already_shows_everything() {
+        let plain = url(&commit_window_route(7, None, None));
+        assert!(!existing_commit_window_needs_navigation(
+            Some(&plain),
+            None,
+            None
+        ));
+        assert!(!existing_commit_window_needs_navigation(None, None, None));
+    }
+
+    #[test]
+    fn right_click_open_always_navigates() {
+        let plain = url(&commit_window_route(7, None, None));
+        let paths = vec!["README.md".to_string()];
+        assert!(existing_commit_window_needs_navigation(
+            Some(&plain),
+            Some(&paths),
+            None
+        ));
+        assert!(existing_commit_window_needs_navigation(
+            Some(&plain),
+            None,
+            Some("untracked")
+        ));
+    }
 
     #[test]
     fn without_paths_is_the_plain_route() {

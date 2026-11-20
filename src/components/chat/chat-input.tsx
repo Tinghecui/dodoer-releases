@@ -102,6 +102,11 @@ interface ChatInputProps {
   /** Cowork fork: why the failed head is stuck and where to fix it; threaded
    *  straight through to the queue list's hint. */
   queueFailedHeadNotice?: QueueFailedHeadNotice | null
+  /** Cowork fork（#1006）：排队的消息等智能体启动等了多久（秒），等满
+   *  STALE_TARGET_FAIL_MS 才有值；有值时等待提示换成「启动较慢」。 */
+  queueSlowWaitSeconds?: number | null
+  /** Cowork fork（#1006）：启动较慢时提示旁边的「重新连接」。 */
+  onQueueReconnect?: () => void
   /** Insert one queued item into the RUNNING turn over the session's
    *  live-feedback channel (see `MessageQueueDisplayProps.onSteerItem`).
    *  Threaded straight through; present only while a turn is in flight and
@@ -182,6 +187,8 @@ export const ChatInput = memo(function ChatInput({
   onQueueRetry,
   onQueueRetryAll,
   queueFailedHeadNotice,
+  queueSlowWaitSeconds = null,
+  onQueueReconnect,
   onQueueSteer,
   editingItemId,
   editingDraftText,
@@ -526,10 +533,30 @@ export const ChatInput = memo(function ChatInput({
               !queue[0].failed &&
               ((!isConnected && !isPrompting) || selectorsLoading) && (
                 <div
-                  className="px-1 pb-1 text-xs text-muted-foreground"
+                  className="flex items-center gap-2 px-1 pb-1 text-xs text-muted-foreground"
                   data-jenny-queue-waiting=""
                 >
-                  {tJenny("waitingToSend", { agent: agentName ?? "Agent" })}
+                  {/* #1006：等太久了说清楚还在等、等了多久，消息照样排着，
+                      连上了自动发；给一个手动重连。 */}
+                  <span className="min-w-0">
+                    {queueSlowWaitSeconds != null
+                      ? tJenny("slowToStart", {
+                          agent: agentName ?? "Agent",
+                          seconds: queueSlowWaitSeconds,
+                        })
+                      : tJenny("waitingToSend", {
+                          agent: agentName ?? "Agent",
+                        })}
+                  </span>
+                  {queueSlowWaitSeconds != null && onQueueReconnect ? (
+                    <button
+                      type="button"
+                      onClick={onQueueReconnect}
+                      className="shrink-0 rounded border px-2 py-0.5 font-medium text-foreground transition-colors hover:bg-muted"
+                    >
+                      {tJenny("slowStartReconnect")}
+                    </button>
+                  ) : null}
                 </div>
               )}
             {queue &&

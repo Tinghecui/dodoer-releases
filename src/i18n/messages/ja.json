@@ -8401,6 +8401,8 @@
   },
   "JennyFork": {
     "waitingToSend": "{agent} の準備を待っています。キューのメッセージは自動で送信されます。",
+    "slowToStart": "{agent} の起動に時間がかかっています（{seconds} 秒経過）。準備ができればキューのメッセージは自動で送信されます。",
+    "slowStartReconnect": "再接続",
     "selectionUnavailable": "{name}：前回選択した値は現在使用できません。{current} で送信します。"
   },
   "SettingsLoadError": {

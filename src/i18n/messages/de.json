@@ -8401,6 +8401,8 @@
   },
   "JennyFork": {
     "waitingToSend": "Warte, bis {agent} bereit ist – Nachrichten in der Warteschlange werden automatisch gesendet.",
+    "slowToStart": "{agent} startet langsam – seit {seconds} s gewartet. Nachrichten in der Warteschlange werden gesendet, sobald es bereit ist.",
+    "slowStartReconnect": "Neu verbinden",
     "selectionUnavailable": "{name}: Deine gespeicherte Auswahl ist derzeit nicht verfügbar. Gesendet wird mit {current}."
   },
   "SettingsLoadError": {

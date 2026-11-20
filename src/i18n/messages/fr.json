@@ -8401,6 +8401,8 @@
   },
   "JennyFork": {
     "waitingToSend": "En attente de {agent} — les messages en file seront envoyés automatiquement.",
+    "slowToStart": "{agent} met du temps à démarrer — {seconds} s d'attente. Les messages en file seront envoyés dès qu'il sera prêt.",
+    "slowStartReconnect": "Reconnecter",
     "selectionUnavailable": "{name} : votre choix enregistré n'est plus disponible. Envoi avec {current}."
   },
   "SettingsLoadError": {

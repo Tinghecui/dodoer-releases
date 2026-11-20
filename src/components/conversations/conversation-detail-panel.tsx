@@ -231,6 +231,7 @@ import { getAgentLabel } from "@/lib/custom-agents"
 import { saveModePreference } from "@/lib/selector-prefs-storage"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { useStaleTargetFail } from "@/hooks/use-stale-target-fail"
+import { useSlowConnectWait } from "@/hooks/use-slow-connect-wait"
 import { draftAgentSettled } from "@/lib/draft-auto-connect"
 import {
   adoptLegacyNewConversationDraft,
@@ -1415,6 +1416,27 @@ const ConversationTabView = memo(function ConversationTabView({
       mqFailHead()
     },
   })
+
+  // Cowork fork（#1006）：连接还没起来（智能体在启动、握手，状态是连接中 /
+  // 还没连），排队的消息就一直写「正在等待就绪」，慢的时候用户不知道还要等
+  // 多久。等满 STALE_TARGET_FAIL_MS 换成「启动较慢，已等待 N 秒」并给一个
+  // 「重新连接」。定了的做法：消息继续排着、不标失败（连接可能马上就好，
+  // 标失败容易让用户重发）。连上了但目标不对 / 会话没初始化完的归上面那条，
+  // 连不上的归 agentUnavailable，这里都不算。只在当前标签计时：后台标签
+  // 不自动连接，切回来才开始连，不能一回来就显示等了很久。
+  const queueWaitingForConnect =
+    isActive &&
+    msgQueue.length > 0 &&
+    !queueHeadFailed &&
+    agentUnavailable == null &&
+    !staleConnectedTarget &&
+    composerConnStatus !== "connected" &&
+    composerConnStatus !== "prompting"
+  const queueSlowWaitSeconds = useSlowConnectWait(queueWaitingForConnect)
+  const handleQueueReconnect = useCallback(() => {
+    void forceReconnect()
+  }, [forceReconnect])
+  const onQueueReconnect = canForceReconnect ? handleQueueReconnect : undefined
 
   // Mirror the connection's liveMessage into the runtime session OUTSIDE React.
   // The connection dispatch invokes this sink synchronously whenever liveMessage
@@ -3555,6 +3577,8 @@ const ConversationTabView = memo(function ConversationTabView({
       onQueueRetry={handleQueueRetry}
       onQueueRetryAll={handleQueueRetryAll}
       queueFailedHeadNotice={queueFailedHeadNotice}
+      queueSlowWaitSeconds={queueSlowWaitSeconds}
+      onQueueReconnect={onQueueReconnect}
       onQueueSteer={
         // Same gate as the composer's mid-turn send, plus a turn actually in
         // flight: a queued row can only be inserted into a RUNNING turn —
@@ -3688,6 +3712,8 @@ const ConversationTabView = memo(function ConversationTabView({
                 onQueueRetry={handleQueueRetry}
                 onQueueRetryAll={handleQueueRetryAll}
                 queueFailedHeadNotice={queueFailedHeadNotice}
+                queueSlowWaitSeconds={queueSlowWaitSeconds}
+                onQueueReconnect={onQueueReconnect}
                 editingItemId={mqEditingItemId}
                 editingDraftText={editingQueueDraftText}
                 editingDraftBlocks={editingQueueDraftBlocks}

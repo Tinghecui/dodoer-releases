@@ -8401,6 +8401,8 @@
   },
   "JennyFork": {
     "waitingToSend": "في انتظار جاهزية {agent} — ستُرسل الرسائل المصطفة تلقائيًا.",
+    "slowToStart": "بدء تشغيل {agent} بطيء — مضى {seconds} ثانية. ستُرسل الرسائل المصطفة تلقائيًا عند الجاهزية.",
+    "slowStartReconnect": "إعادة الاتصال",
     "selectionUnavailable": "{name}: اختيارك المحفوظ غير متاح الآن. سيتم الإرسال باستخدام {current}."
   },
   "SettingsLoadError": {

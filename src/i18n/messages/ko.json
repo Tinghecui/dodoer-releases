@@ -8401,6 +8401,8 @@
   },
   "JennyFork": {
     "waitingToSend": "{agent} 준비를 기다리는 중입니다. 대기 중인 메시지는 자동으로 전송됩니다.",
+    "slowToStart": "{agent} 시작이 느립니다({seconds}초 대기 중). 준비되면 대기 중인 메시지가 자동으로 전송됩니다.",
+    "slowStartReconnect": "다시 연결",
     "selectionUnavailable": "{name}: 저장된 선택을 지금 사용할 수 없습니다. {current}(으)로 전송합니다."
   },
   "SettingsLoadError": {

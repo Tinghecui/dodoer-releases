@@ -413,3 +413,46 @@ describe("ChatInput automatic collapse", () => {
     expect(outline.style.clipPath).toBe("")
   })
 })
+
+describe("ChatInput slow agent start (#1006)", () => {
+  afterEach(() => cleanup())
+
+  const base = {
+    status: "connecting" as const,
+    promptCapabilities: {
+      image: false,
+      audio: false,
+      embedded_context: false,
+    },
+    onSend: () => {},
+    onCancel: () => {},
+    queue: [
+      { id: "q1", text: "hello", modeId: null },
+    ] as unknown as NonNullable<ComponentProps<typeof ChatInput>["queue"]>,
+  }
+
+  it("keeps the plain waiting hint before the wait turns slow", () => {
+    const { container } = render(<ChatInput {...base} />)
+    const hint = container.querySelector("[data-jenny-queue-waiting]")
+    expect(hint?.textContent).toContain("waitingToSend")
+    expect(screen.queryByRole("button", { name: "slowStartReconnect" })).toBe(
+      null
+    )
+  })
+
+  it("says the start is slow, how long it waited, and offers a reconnect", () => {
+    const onReconnect = vi.fn()
+    const { container } = render(
+      <ChatInput
+        {...base}
+        queueSlowWaitSeconds={20}
+        onQueueReconnect={onReconnect}
+      />
+    )
+    const hint = container.querySelector("[data-jenny-queue-waiting]")
+    expect(hint?.textContent).toContain("slowToStart")
+    expect(hint?.textContent).not.toContain("waitingToSend")
+    fireEvent.click(screen.getByRole("button", { name: "slowStartReconnect" }))
+    expect(onReconnect).toHaveBeenCalledTimes(1)
+  })
+})

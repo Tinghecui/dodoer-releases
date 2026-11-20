@@ -8401,6 +8401,8 @@
   },
   "JennyFork": {
     "waitingToSend": "正在等待 {agent} 就緒，排隊的訊息會自動傳送。",
+    "slowToStart": "{agent} 啟動較慢，已等待 {seconds} 秒，就緒後排隊的訊息仍會自動傳送。",
+    "slowStartReconnect": "重新連線",
     "selectionUnavailable": "{name}：你上次選擇的值現在不可用，本次使用 {current} 傳送。"
   },
   "SettingsLoadError": {

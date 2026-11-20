@@ -135,6 +135,10 @@ interface ConversationShellProps {
   /** Cowork fork: threaded straight through to the composer's queue list.
    *  See `ChatInputProps.queueFailedHeadNotice`. */
   queueFailedHeadNotice?: QueueFailedHeadNotice | null
+  /** See `ChatInputProps.queueSlowWaitSeconds`. */
+  queueSlowWaitSeconds?: number | null
+  /** See `ChatInputProps.onQueueReconnect`. */
+  onQueueReconnect?: () => void
   /** Insert one queued item into the RUNNING turn over the session's
    *  live-feedback channel; threaded straight through to the composer's
    *  queue list. See `ChatInputProps.onQueueSteer`. */
@@ -227,6 +231,8 @@ export function ConversationShell({
   onQueueRetry,
   onQueueRetryAll,
   queueFailedHeadNotice,
+  queueSlowWaitSeconds,
+  onQueueReconnect,
   onQueueSteer,
   editingItemId,
   editingDraftText,
@@ -402,6 +408,8 @@ export function ConversationShell({
               onQueueRetry={onQueueRetry}
               onQueueRetryAll={onQueueRetryAll}
               queueFailedHeadNotice={queueFailedHeadNotice}
+              queueSlowWaitSeconds={queueSlowWaitSeconds}
+              onQueueReconnect={onQueueReconnect}
               onQueueSteer={onQueueSteer}
               editingItemId={editingItemId}
               editingDraftText={editingDraftText}

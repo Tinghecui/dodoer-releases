@@ -8401,6 +8401,8 @@
   },
   "JennyFork": {
     "waitingToSend": "Waiting for {agent} to be ready — queued messages will send automatically.",
+    "slowToStart": "{agent} is slow to start — waited {seconds}s. Queued messages will still send once it's ready.",
+    "slowStartReconnect": "Reconnect",
     "selectionUnavailable": "{name}: your saved choice is not available now. Sending with {current}."
   },
   "SettingsLoadError": {

@@ -8401,6 +8401,8 @@
   },
   "JennyFork": {
     "waitingToSend": "Aguardando {agent} ficar pronto — as mensagens na fila serão enviadas automaticamente.",
+    "slowToStart": "{agent} está demorando para iniciar — {seconds} s de espera. As mensagens na fila serão enviadas quando estiver pronto.",
+    "slowStartReconnect": "Reconectar",
     "selectionUnavailable": "{name}: sua escolha salva não está disponível agora. Enviando com {current}."
   },
   "SettingsLoadError": {

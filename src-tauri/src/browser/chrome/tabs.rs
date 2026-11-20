@@ -14,10 +14,12 @@
 //! tokens live.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::broadcast::error::RecvError;
+use tokio::time::Instant;
 
 use super::cdp::CdpClient;
 use crate::browser::agent::GrantLevel;
@@ -183,6 +185,23 @@ fn host_of(address: &str) -> Option<String> {
     url.host_str().map(str::to_string)
 }
 
+/// 页面开了或换了地址之后，隔多久回头问一遍 Chrome 全部的标签
+/// （`Target.getTargets`）：Chrome 不附加调试的标签在 <title> 设好时
+/// 不一定再发 `targetInfoChanged`，不问的话列表一直停在地址样子的标题上。
+/// 从事件那一刻算起；慢的页面靠后几次。不管问到的标题像不像地址都照问：
+/// 有的页面先显示「Loading」这类临时标题，过几秒才设好真正的。
+const RECHECKS: [Duration; 4] = [
+    Duration::from_millis(1500),
+    Duration::from_secs(5),
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+];
+
+/// `RECHECKS` 问完以后，连着 Chrome 就一直每隔这么久再问一遍：临时标题
+/// 停多久、什么时候才换成真正的标题，从列表上看不出来，Chrome 又不一定
+/// 发事件；`Target.getTargets` 不附加调试，页面察觉不到，问得也很轻。
+const LATE_RECHECK: Duration = Duration::from_secs(10);
+
 /// Follow Chrome's tabs on `client`, handing every changed list to
 /// `publish`. Returns only if Chrome will not say what it has open; the
 /// caller stops it when the connection ends.
@@ -195,11 +214,53 @@ pub(super) async fn follow(client: &CdpClient, mut publish: impl FnMut(Vec<Liste
         return;
     }
     let mut list = TabList::default();
+    // 下一次回头问 Chrome 的时间，和这是第几次（`RECHECKS` 的下标）。
+    let mut recheck: Option<(Instant, usize)> = None;
     loop {
-        match events.recv().await {
+        let due_at = recheck.map(|(at, _)| at);
+        let due = async move {
+            match due_at {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending().await,
+            }
+        };
+        let received = tokio::select! {
+            received = events.recv() => received,
+            () = due => {
+                let Some((_, step)) = recheck.take() else { continue };
+                // 固定的几次（`RECHECKS`）照排，过了就每 `LATE_RECHECK` 问一次。
+                recheck = Some(match (RECHECKS.get(step), RECHECKS.get(step + 1)) {
+                    (Some(now), Some(next)) => (Instant::now() + (*next - *now), step + 1),
+                    _ => (Instant::now() + LATE_RECHECK, RECHECKS.len()),
+                });
+                // 问不到（连接断了）就等下一次，断开由 Closed 收尾。
+                if let Ok(all) = client.call("Target.getTargets", json!({}), None).await {
+                    let before = list.listed();
+                    list.reset(&all["targetInfos"]);
+                    let after = list.listed();
+                    if after != before {
+                        publish(after);
+                    }
+                }
+                continue;
+            }
+        };
+        match received {
             Ok(event) => {
                 if event.session.is_none() && list.apply(&event.method, &event.params) {
                     publish(list.listed());
+                }
+                // 页面开了或换了地址：标题多半还没设好，过一会儿再问。
+                // 第一次已经排着的就不再往后推，连着来的事件合成一次。
+                if event.session.is_none()
+                    && matches!(
+                        event.method.as_str(),
+                        "Target.targetCreated" | "Target.targetInfoChanged"
+                    )
+                    && event.params["targetInfo"]["type"].as_str() == Some("page")
+                    && !matches!(recheck, Some((_, 0)))
+                {
+                    recheck = Some((Instant::now() + RECHECKS[0], 0));
                 }
             }
             // Fell behind and missed some: which, is unknown, so ask for all.
@@ -403,6 +464,244 @@ mod tests {
             .say(json!({ "method": "Target.targetDestroyed", "params": { "targetId": "A" } }))
             .await;
         assert!(next(&mut heard).await.is_empty());
+
+        client.close();
+        drop(chrome);
+        following.abort();
+    }
+
+    /// 页面刚开始加载时 Chrome 报的标题就是地址，加载完设好 <title> 后
+    /// 不一定再发事件：过一会儿要回头再问一遍。
+    #[tokio::test]
+    async fn asks_again_after_a_page_changes_to_pick_up_its_title() {
+        let (mut connections, port) = chrome().await;
+        let client = CdpClient::connect(&format!("ws://127.0.0.1:{port}/devtools/browser/test"))
+            .await
+            .unwrap();
+        let mut chrome = connections.recv().await.unwrap();
+        let (lists, mut heard) = mpsc::unbounded_channel::<Vec<ChromeTab>>();
+        let following = {
+            let client = client.clone();
+            tokio::spawn(async move {
+                follow(&client, |listed| {
+                    lists
+                        .send(listed.into_iter().map(|listed| listed.tab).collect())
+                        .unwrap()
+                })
+                .await
+            })
+        };
+
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Target.setDiscoverTargets");
+        chrome.answer(&call, json!({})).await;
+        let loading = info(
+            "A",
+            "https://www.example.org/help/domains",
+            "example.org/help/domains",
+        );
+        chrome
+            .say(json!({ "method": "Target.targetInfoChanged", "params": { "targetInfo": loading } }))
+            .await;
+        assert_eq!(next(&mut heard).await[0].title, "example.org/help/domains");
+
+        // Chrome 不再说话；列表自己回头问。
+        let call = tokio::time::timeout(Duration::from_secs(10), chrome.next_call())
+            .await
+            .expect("the list never asked again");
+        assert_eq!(call["method"], "Target.getTargets");
+        chrome
+            .answer(
+                &call,
+                json!({ "targetInfos": [info("A", "https://www.example.org/help/domains", "Example Domains")] }),
+            )
+            .await;
+        let tabs = next(&mut heard).await;
+        assert_eq!(tabs[0].title, "Example Domains");
+        assert_eq!(tabs[0].host, "www.example.org");
+
+        client.close();
+        drop(chrome);
+        following.abort();
+    }
+
+    /// 标题在 5 秒以后才设好的慢页面：前两次回头问拿到的还是地址，
+    /// 只要还有标签的标题像地址，就隔一阵接着问，直到拿到真正的标题。
+    #[tokio::test]
+    async fn keeps_asking_while_a_title_still_looks_like_its_address() {
+        let (mut connections, port) = chrome().await;
+        let client = CdpClient::connect(&format!("ws://127.0.0.1:{port}/devtools/browser/test"))
+            .await
+            .unwrap();
+        let mut chrome = connections.recv().await.unwrap();
+        let (lists, mut heard) = mpsc::unbounded_channel::<Vec<ChromeTab>>();
+        let following = {
+            let client = client.clone();
+            tokio::spawn(async move {
+                follow(&client, |listed| {
+                    lists
+                        .send(listed.into_iter().map(|listed| listed.tab).collect())
+                        .unwrap()
+                })
+                .await
+            })
+        };
+
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Target.setDiscoverTargets");
+        chrome.answer(&call, json!({})).await;
+        let address = "https://www.example.org/slow";
+        let loading = info("A", address, "example.org/slow");
+        chrome
+            .say(json!({ "method": "Target.targetInfoChanged", "params": { "targetInfo": loading.clone() } }))
+            .await;
+        assert_eq!(next(&mut heard).await[0].title, "example.org/slow");
+
+        // 1.5 秒、5 秒那两次：Chrome 报的还是地址。
+        for _ in 0..2 {
+            let call = tokio::time::timeout(Duration::from_secs(10), chrome.next_call())
+                .await
+                .expect("the list did not ask again");
+            assert_eq!(call["method"], "Target.getTargets");
+            chrome
+                .answer(&call, json!({ "targetInfos": [loading.clone()] }))
+                .await;
+        }
+        // 之后还要再问；这一次标题设好了。
+        let call = tokio::time::timeout(Duration::from_secs(20), chrome.next_call())
+            .await
+            .expect("the list gave up while the title still looked like the address");
+        assert_eq!(call["method"], "Target.getTargets");
+        chrome
+            .answer(
+                &call,
+                json!({ "targetInfos": [info("A", address, "Slow Page")] }),
+            )
+            .await;
+        assert_eq!(next(&mut heard).await[0].title, "Slow Page");
+
+        client.close();
+        drop(chrome);
+        following.abort();
+    }
+
+    /// 先显示一个临时标题（不像地址，比如「Loading」）、过了 5 秒才设好
+    /// 真正标题的页面：Chrome 不再发事件时，5 秒以后也还要回头问。
+    #[tokio::test]
+    async fn keeps_asking_after_a_placeholder_title() {
+        let (mut connections, port) = chrome().await;
+        let client = CdpClient::connect(&format!("ws://127.0.0.1:{port}/devtools/browser/test"))
+            .await
+            .unwrap();
+        let mut chrome = connections.recv().await.unwrap();
+        let (lists, mut heard) = mpsc::unbounded_channel::<Vec<ChromeTab>>();
+        let following = {
+            let client = client.clone();
+            tokio::spawn(async move {
+                follow(&client, |listed| {
+                    lists
+                        .send(listed.into_iter().map(|listed| listed.tab).collect())
+                        .unwrap()
+                })
+                .await
+            })
+        };
+
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Target.setDiscoverTargets");
+        chrome.answer(&call, json!({})).await;
+        let address = "https://www.example.org/late";
+        chrome
+            .say(json!({ "method": "Target.targetInfoChanged", "params": { "targetInfo": info("A", address, "example.org/late") } }))
+            .await;
+        assert_eq!(next(&mut heard).await[0].title, "example.org/late");
+
+        // 1.5 秒、5 秒那两次：页面只显示着临时标题。
+        for _ in 0..2 {
+            let call = tokio::time::timeout(Duration::from_secs(10), chrome.next_call())
+                .await
+                .expect("the list did not ask again");
+            assert_eq!(call["method"], "Target.getTargets");
+            chrome
+                .answer(
+                    &call,
+                    json!({ "targetInfos": [info("A", address, "Loading")] }),
+                )
+                .await;
+        }
+        assert_eq!(next(&mut heard).await[0].title, "Loading");
+        // 临时标题不像地址，也还要再问；这一次真正的标题设好了。
+        let call = tokio::time::timeout(Duration::from_secs(20), chrome.next_call())
+            .await
+            .expect("the list gave up on a placeholder title");
+        assert_eq!(call["method"], "Target.getTargets");
+        chrome
+            .answer(
+                &call,
+                json!({ "targetInfos": [info("A", address, "Late Page")] }),
+            )
+            .await;
+        assert_eq!(next(&mut heard).await[0].title, "Late Page");
+
+        client.close();
+        drop(chrome);
+        following.abort();
+    }
+
+    /// 临时标题停得比固定的几次（到 30 秒）还久、之后才换成真正标题，
+    /// Chrome 又不发事件：固定几次问完以后也要每 10 秒接着问，列表不变也照问。
+    #[tokio::test]
+    async fn keeps_asking_after_the_fixed_rechecks() {
+        let (mut connections, port) = chrome().await;
+        let client = CdpClient::connect(&format!("ws://127.0.0.1:{port}/devtools/browser/test"))
+            .await
+            .unwrap();
+        let mut chrome = connections.recv().await.unwrap();
+        let (lists, mut heard) = mpsc::unbounded_channel::<Vec<ChromeTab>>();
+        let following = {
+            let client = client.clone();
+            tokio::spawn(async move {
+                follow(&client, |listed| {
+                    lists
+                        .send(listed.into_iter().map(|listed| listed.tab).collect())
+                        .unwrap()
+                })
+                .await
+            })
+        };
+
+        let call = chrome.next_call().await;
+        assert_eq!(call["method"], "Target.setDiscoverTargets");
+        chrome.answer(&call, json!({})).await;
+        let address = "https://www.example.org/later";
+        let placeholder = info("A", address, "Loading");
+        chrome
+            .say(json!({ "method": "Target.targetInfoChanged", "params": { "targetInfo": placeholder.clone() } }))
+            .await;
+        assert_eq!(next(&mut heard).await[0].title, "Loading");
+
+        // 1.5、5、15、30 秒那四次，加上之后的第一次：都还是临时标题。
+        for _ in 0..RECHECKS.len() + 1 {
+            let call = tokio::time::timeout(Duration::from_secs(20), chrome.next_call())
+                .await
+                .expect("the list gave up on a title that never changed");
+            assert_eq!(call["method"], "Target.getTargets");
+            chrome
+                .answer(&call, json!({ "targetInfos": [placeholder.clone()] }))
+                .await;
+        }
+        // 再过 10 秒还问；这一次真正的标题设好了。
+        let call = tokio::time::timeout(Duration::from_secs(20), chrome.next_call())
+            .await
+            .expect("the list stopped asking after the fixed rechecks");
+        assert_eq!(call["method"], "Target.getTargets");
+        chrome
+            .answer(
+                &call,
+                json!({ "targetInfos": [info("A", address, "Later Page")] }),
+            )
+            .await;
+        assert_eq!(next(&mut heard).await[0].title, "Later Page");
 
         client.close();
         drop(chrome);

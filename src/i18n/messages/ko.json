@@ -6556,6 +6556,7 @@
     "cronDomLabel": "일",
     "cronApply": "적용",
     "cronPreviewLabel": "미리 보기",
+    "cronNextRunComputing": "계산 중…",
     "cronOpenBuilder": "일정 빌더 열기",
     "branchDefault": "기본 브랜치",
     "booleanOn": "켜기",

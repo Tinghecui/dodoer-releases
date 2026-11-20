@@ -6556,6 +6556,7 @@
     "cronDomLabel": "日期",
     "cronApply": "应用",
     "cronPreviewLabel": "预览",
+    "cronNextRunComputing": "计算中…",
     "cronOpenBuilder": "打开计划生成器",
     "branchDefault": "默认分支",
     "booleanOn": "开启",

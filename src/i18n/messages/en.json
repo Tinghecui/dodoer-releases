@@ -6556,6 +6556,7 @@
     "cronDomLabel": "Day of month",
     "cronApply": "Apply",
     "cronPreviewLabel": "Preview",
+    "cronNextRunComputing": "Calculating…",
     "cronOpenBuilder": "Open schedule builder",
     "branchDefault": "Default branch",
     "booleanOn": "On",

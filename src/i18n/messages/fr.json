@@ -6556,6 +6556,7 @@
     "cronDomLabel": "Jour du mois",
     "cronApply": "Appliquer",
     "cronPreviewLabel": "Aperçu",
+    "cronNextRunComputing": "Calcul en cours…",
     "cronOpenBuilder": "Ouvrir le générateur de planification",
     "branchDefault": "Branche par défaut",
     "booleanOn": "Activé",

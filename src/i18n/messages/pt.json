@@ -6556,6 +6556,7 @@
     "cronDomLabel": "Dia do mês",
     "cronApply": "Aplicar",
     "cronPreviewLabel": "Pré-visualização",
+    "cronNextRunComputing": "Calculando…",
     "cronOpenBuilder": "Abrir o gerador de agendamento",
     "branchDefault": "Branch padrão",
     "booleanOn": "Ativado",

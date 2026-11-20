@@ -6556,6 +6556,7 @@
     "cronDomLabel": "日",
     "cronApply": "適用",
     "cronPreviewLabel": "プレビュー",
+    "cronNextRunComputing": "計算中…",
     "cronOpenBuilder": "スケジュールビルダーを開く",
     "branchDefault": "デフォルトブランチ",
     "booleanOn": "オン",

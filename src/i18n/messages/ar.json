@@ -6556,6 +6556,7 @@
     "cronDomLabel": "يوم الشهر",
     "cronApply": "تطبيق",
     "cronPreviewLabel": "معاينة",
+    "cronNextRunComputing": "جارٍ الحساب…",
     "cronOpenBuilder": "فتح منشئ الجدولة",
     "branchDefault": "الفرع الافتراضي",
     "booleanOn": "تشغيل",

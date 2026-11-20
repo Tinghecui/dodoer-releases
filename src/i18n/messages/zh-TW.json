@@ -6556,6 +6556,7 @@
     "cronDomLabel": "日期",
     "cronApply": "套用",
     "cronPreviewLabel": "預覽",
+    "cronNextRunComputing": "計算中…",
     "cronOpenBuilder": "開啟排程產生器",
     "branchDefault": "預設分支",
     "booleanOn": "開啟",

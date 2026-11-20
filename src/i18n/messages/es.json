@@ -6556,6 +6556,7 @@
     "cronDomLabel": "Día del mes",
     "cronApply": "Aplicar",
     "cronPreviewLabel": "Vista previa",
+    "cronNextRunComputing": "Calculando…",
     "cronOpenBuilder": "Abrir el generador de programación",
     "branchDefault": "Rama predeterminada",
     "booleanOn": "Activado",

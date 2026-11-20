@@ -1,6 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { Globe } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 import {
@@ -193,31 +194,59 @@ function CronBuilderBody({
   // Authoritative preview — same backend evaluator the scheduler uses. Only the
   // async callbacks set state (an empty expression is handled by gating the
   // render below, never a synchronous setState in the effect body).
-  const [nextRun, setNextRun] = useState<string | null>(null)
-  // Why there is no next run (bad expression, or one that never fires) — the
-  // same localized sentence the editor shows and saving would refuse with.
-  const [nextRunError, setNextRunError] = useState<string | null>(null)
+  // 结果连同算它的表达式和时区一起存：渲染时只认和当前表达式对得上的那份，
+  // 改了星期或时间、新结果还没回来时显示「计算中…」，旧时间不会挂在新表达式下面。
+  const [preview, setPreview] = useState<{
+    cron: string
+    timezone: string
+    nextRun: string | null
+    // Why there is no next run (bad expression, or one that never fires) — the
+    // same localized sentence the editor shows and saving would refuse with.
+    error: string | null
+  } | null>(null)
+  // t / errorMessage 放进 ref，不进依赖数组：父组件重渲染换了引用也不会把
+  // 还在等 300ms 的请求取消掉。
+  const tRef = useRef(t)
+  const errorMessageRef = useRef(errorMessage)
   useEffect(() => {
-    if (!built.trim()) return
+    tRef.current = t
+    errorMessageRef.current = errorMessage
+  })
+  const trimmed = built.trim()
+  useEffect(() => {
+    if (!trimmed) return
     let cancelled = false
     const handle = setTimeout(() => {
-      automationComputeNextRun(built.trim(), timezone)
+      automationComputeNextRun(trimmed, timezone)
         .then((r) => {
           if (cancelled) return
-          setNextRun(r)
-          setNextRunError(r == null ? t("cronErrorNeverFires") : null)
+          setPreview({
+            cron: trimmed,
+            timezone,
+            nextRun: r,
+            error: r == null ? tRef.current("cronErrorNeverFires") : null,
+          })
         })
         .catch((e) => {
           if (cancelled) return
-          setNextRun(null)
-          setNextRunError(errorMessage(e))
+          setPreview({
+            cron: trimmed,
+            timezone,
+            nextRun: null,
+            error: errorMessageRef.current(e),
+          })
         })
     }, 300)
     return () => {
       cancelled = true
       clearTimeout(handle)
     }
-  }, [built, timezone, t, errorMessage])
+  }, [trimmed, timezone])
+  const current =
+    preview && preview.cron === trimmed && preview.timezone === timezone
+      ? preview
+      : null
+  const computing = !!trimmed && !current
 
   const showTime =
     freq === "daily" ||
@@ -363,16 +392,33 @@ function CronBuilderBody({
           cron={built}
           className="flex flex-wrap items-center gap-1.5"
         />
-        <span className="text-xs text-muted-foreground">
-          {t("nextRun")}:{" "}
-          {built.trim() && nextRun ? new Date(nextRun).toLocaleString() : "—"}
-          {built.trim() && nextRunError ? (
-            <span className="text-destructive" role="status">
-              {" "}
-              {nextRunError}
-            </span>
-          ) : null}
-        </span>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <span>
+            {t("nextRun")}:{" "}
+            {computing
+              ? t("cronNextRunComputing")
+              : current?.nextRun
+                ? new Date(current.nextRun).toLocaleString()
+                : "—"}
+            {current?.error ? (
+              <span className="text-destructive" role="status">
+                {" "}
+                {current.error}
+              </span>
+            ) : null}
+          </span>
+          <span className="text-muted-foreground/40" aria-hidden="true">
+            ·
+          </span>
+          {/* 和表单上那行一样写明时区：下次运行按它算。 */}
+          <span
+            className="inline-flex items-center gap-1"
+            title={t("timezone")}
+          >
+            <Globe className="size-3 shrink-0" aria-hidden="true" />
+            <span className="font-mono">{timezone}</span>
+          </span>
+        </div>
       </div>
 
       <DialogFooter>

@@ -6556,6 +6556,7 @@
     "cronDomLabel": "Tag des Monats",
     "cronApply": "Anwenden",
     "cronPreviewLabel": "Vorschau",
+    "cronNextRunComputing": "Wird berechnet…",
     "cronOpenBuilder": "Zeitplan-Generator öffnen",
     "branchDefault": "Standard-Branch",
     "booleanOn": "An",

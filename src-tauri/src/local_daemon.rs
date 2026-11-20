@@ -447,6 +447,47 @@ impl LocalDaemon {
         .join();
     }
 
+    /// 退出时用（issue #968）：和 [`stop`](Self::stop) 一样 SIGTERM、等
+    /// [`STOP_TIMEOUT`]、再 kill，但完全不靠 tokio 运行时。退出钩子在 macOS
+    /// 主线程上跑，运行时的工作线程这时可能正等着主线程，没人推进时钟和
+    /// 信号：在运行时上 block_on 会连超时都不触发，整个 app 卡死。
+    pub fn stop_on_quit_sync(&self) {
+        self.inner
+            .stopping
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(handle) = self
+            .inner
+            .supervisor
+            .lock()
+            .expect("supervisor slot")
+            .take()
+        {
+            handle.abort();
+        }
+        let pid_file = self.inner.config.data_dir.join(PID_FILE);
+        // 锁被别人拿着时，从 endpoint 或 pid 文件认出子进程。
+        let known_pid = self.endpoint().map(|e| e.pid).or_else(|| {
+            std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+        });
+        self.inner.endpoint_tx.send_replace(None);
+        match self.inner.running.try_lock() {
+            Ok(mut guard) => {
+                if let Some(running) = guard.take() {
+                    shut_down_sync(running);
+                }
+            }
+            Err(_) => {
+                tracing::warn!("[local-daemon] child slot busy at quit; stopping it by pid");
+                if let Some(pid) = known_pid {
+                    stop_pid_sync(pid);
+                }
+            }
+        }
+        let _ = std::fs::remove_file(pid_file);
+    }
+
     /// Test / smoke hook: kill the child as a crash would.
     pub async fn kill_for_test(&self) -> Option<u32> {
         let mut guard = self.inner.running.lock().await;
@@ -708,6 +749,84 @@ async fn shut_down(mut running: Running) {
         let _ = running.child.kill().await;
     }
     drop(running.stdin.take());
+}
+
+/// [`shut_down`] 的同步版（退出时用）：只用 try_wait 轮询，不需要运行时。
+fn shut_down_sync(mut running: Running) {
+    #[cfg(unix)]
+    if let Some(pid) = running.child.id().and_then(|p| i32::try_from(p).ok()) {
+        // SAFETY: a signal to our own child.
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        drop(running.stdin.take());
+    }
+    let give_up = Instant::now() + STOP_TIMEOUT;
+    let exited = |running: &mut Running| !matches!(running.child.try_wait(), Ok(None));
+    while !exited(&mut running) {
+        if Instant::now() >= give_up {
+            tracing::warn!(
+                "[local-daemon] {} did not stop within {} s; killing it",
+                SERVER_BIN,
+                STOP_TIMEOUT.as_secs()
+            );
+            let _ = running.child.start_kill();
+            // 回收一下，最多等 1 秒。
+            let reap_until = Instant::now() + Duration::from_secs(1);
+            while !exited(&mut running) && Instant::now() < reap_until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    drop(running.stdin.take());
+}
+
+/// 拿不到子进程句柄时按 pid 停：SIGTERM，等 [`STOP_TIMEOUT`]，再 SIGKILL。
+/// 它是本进程的子进程，waitpid 顺便回收，不留僵尸。
+fn stop_pid_sync(pid: u32) {
+    #[cfg(unix)]
+    {
+        let Ok(raw) = i32::try_from(pid) else {
+            return;
+        };
+        if raw <= 0 {
+            return;
+        }
+        let ended = || {
+            let mut status = 0;
+            // SAFETY: WNOHANG on a pid of our own child; never blocks.
+            let rc = unsafe { libc::waitpid(raw, &mut status, libc::WNOHANG) };
+            rc == raw || (rc == -1 && crate::cli_run::discovery::pid_is_dead(pid))
+        };
+        // SAFETY: the pid is our own child's (endpoint or pid file).
+        unsafe {
+            libc::kill(raw, libc::SIGTERM);
+        }
+        let give_up = Instant::now() + STOP_TIMEOUT;
+        while !ended() {
+            if Instant::now() >= give_up {
+                tracing::warn!("[local-daemon] pid {pid} did not stop; killing it");
+                unsafe {
+                    libc::kill(raw, libc::SIGKILL);
+                }
+                let reap_until = Instant::now() + Duration::from_secs(1);
+                while !ended() && Instant::now() < reap_until {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+    }
 }
 
 /// A child of an earlier run still alive (it should have gone with its
@@ -1109,5 +1228,131 @@ mod tests {
             }
             other => panic!("expected Exited, got {other}"),
         }
+    }
+
+    /// 测试用：拿一个现成的子进程当 Running，运行时之后不再有人驱动
+    /// （模拟退出时工作线程都卡住、没人推进时钟和信号的情形）。
+    #[cfg(unix)]
+    fn daemon_with_child(
+        script: &str,
+    ) -> (LocalDaemon, u32, tokio::runtime::Runtime, tempfile::TempDir) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let data = tempfile::tempdir().expect("tempdir");
+        let child = {
+            let _guard = rt.enter();
+            tokio::process::Command::new("sh")
+                .args(["-c", script])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn sh")
+        };
+        let mut child = child;
+        let pid = child.id().expect("pid");
+        let stdin = child.stdin.take();
+        let endpoint = Endpoint {
+            base_url: "http://127.0.0.1:1".into(),
+            token: "t".into(),
+            pid,
+        };
+        let (endpoint_tx, _) = watch::channel(Some(endpoint.clone()));
+        let inner = Arc::new(Inner {
+            config: LaunchConfig {
+                server: PathBuf::from("/nonexistent/codeg-server"),
+                data_dir: data.path().to_path_buf(),
+                token: "t".into(),
+                host_bridge: None,
+                telemetry_off: true,
+                telemetry_release: None,
+                start_timeout: START_TIMEOUT,
+            },
+            http: loopback_client(),
+            endpoint_tx,
+            stopping: std::sync::atomic::AtomicBool::new(false),
+            running: tokio::sync::Mutex::new(Some(Running {
+                child,
+                stdin,
+                endpoint,
+                started: Instant::now(),
+                stderr_tail: Arc::new(Mutex::new(VecDeque::new())),
+            })),
+            supervisor: Mutex::new(None),
+        });
+        std::fs::write(data.path().join(PID_FILE), pid.to_string()).expect("pid file");
+        (LocalDaemon { inner }, pid, rt, data)
+    }
+
+    /// 在另一个线程上跑同步停机，限时等它返回；超时返回 None。
+    #[cfg(unix)]
+    fn stop_within(
+        daemon: &LocalDaemon,
+        rt: &tokio::runtime::Runtime,
+        limit: Duration,
+    ) -> Option<Duration> {
+        let daemon = daemon.clone();
+        let handle = rt.handle().clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // 和退出钩子一样：线程在运行时的上下文里，但没人驱动它。
+            let _context = handle.enter();
+            let started = Instant::now();
+            daemon.stop_on_quit_sync();
+            let _ = tx.send(started.elapsed());
+        });
+        rx.recv_timeout(limit).ok()
+    }
+
+    #[cfg(unix)]
+    fn gone(pid: u32) -> bool {
+        // 已被回收（不在了），或者只剩僵尸（已经死了，等人回收）。
+        crate::cli_run::discovery::pid_is_dead(pid)
+            || std::process::Command::new("ps")
+                .args(["-p", &pid.to_string(), "-o", "stat="])
+                .output()
+                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim().starts_with('Z'))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quit_stop_kills_a_child_that_ignores_sigterm_without_a_runtime() {
+        let (daemon, pid, rt, data) = daemon_with_child("trap '' TERM; exec sleep 60");
+        let took = stop_within(&daemon, &rt, STOP_TIMEOUT + Duration::from_secs(1));
+        let alive = !gone(pid);
+        if alive {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
+        assert!(
+            took.is_some(),
+            "stop did not return within STOP_TIMEOUT + 1 s"
+        );
+        assert!(!alive, "child {pid} still alive after stop");
+        assert!(!data.path().join(PID_FILE).exists(), "pid file left behind");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quit_stop_returns_in_time_while_the_running_lock_is_held() {
+        let (daemon, pid, rt, _data) = daemon_with_child("exec sleep 60");
+        // 别人拿着 running 锁不放。
+        let guard = daemon.inner.running.try_lock().expect("lock");
+        let took = stop_within(&daemon, &rt, STOP_TIMEOUT + Duration::from_secs(1));
+        let alive = !gone(pid);
+        drop(guard);
+        if alive {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
+        assert!(
+            took.is_some(),
+            "stop did not return within STOP_TIMEOUT + 1 s"
+        );
+        assert!(!alive, "child {pid} still alive after stop");
     }
 }

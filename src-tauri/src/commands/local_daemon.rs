@@ -119,7 +119,8 @@ pub fn local_daemon_attach_window(
 /// Stop the child on the way out (`shut_down`).
 pub fn stop_on_exit(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<LocalDaemonState>() {
-        tauri::async_runtime::block_on(state.0.stop());
+        // 不在运行时上 block_on：主线程上等运行时会和等主线程的工作线程互相卡死（issue #968）。
+        state.0.stop_on_quit_sync();
     }
     if let Some(bridge) = app.try_state::<crate::host_bridge::HostBridgeServer>() {
         bridge.shutdown();

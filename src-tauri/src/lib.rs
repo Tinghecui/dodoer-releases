@@ -177,6 +177,10 @@ mod tauri_app {
     use tauri::Manager;
 
     static APP_QUITTING: AtomicBool = AtomicBool::new(false);
+    /// `shut_down` 走完了。
+    static APP_QUIT_DONE: AtomicBool = AtomicBool::new(false);
+    /// 退出流程最多走这么久，超过了看门狗直接结束进程（issue #968）。
+    const QUIT_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// Everything a quit does before the process goes.
     ///
@@ -198,6 +202,20 @@ mod tauri_app {
         if APP_QUITTING.swap(true, Ordering::Relaxed) {
             return;
         }
+        // 看门狗：下面哪一步卡住（比如 block_on 等一个没人推进的运行时），到时间也直接
+        // 结束进程，不会挂死到只能 kill -9。没走到 note_clean_exit，下次启动照常报这次卡住。
+        let _ = std::thread::Builder::new()
+            .name("quit-watchdog".into())
+            .spawn(|| {
+                std::thread::sleep(QUIT_WATCHDOG);
+                if !APP_QUIT_DONE.load(Ordering::SeqCst) {
+                    tracing::error!(
+                        "[quit] shutdown still running after {} s; exiting now",
+                        QUIT_WATCHDOG.as_secs()
+                    );
+                    std::process::exit(0);
+                }
+            });
         // 在 daemon 停机读重启意图之前：不是更新要的退出，就删掉本进程为更新写的意图。
         crate::commands::app_update::forget_restart_intent_on_quit();
         crate::crash_report::note_quitting();
@@ -265,6 +283,7 @@ mod tauri_app {
         crate::commands::app_update::note_clean_exit();
         // Last: a hang or a crash before here is still reported.
         crate::crash_report::note_clean_exit();
+        APP_QUIT_DONE.store(true, Ordering::SeqCst);
     }
 
     /// `--open` on the desktop: the conversation opens in THIS process, by the

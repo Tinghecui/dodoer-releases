@@ -68,6 +68,9 @@ pub struct WorkspaceStateEvent {
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkspaceSnapshotResponse {
     pub root_path: String,
+    // 这条流（这个进程里这个根目录的登记）的身份：服务重启或流被拆掉重建后
+    // 会换一个。前端靠它分辨重连后自己的登记还在不在（#1114）。
+    pub stream_id: String,
     pub seq: u64,
     pub version: u16,
     pub full: bool,
@@ -80,6 +83,7 @@ pub struct WorkspaceSnapshotResponse {
 
 struct WorkspaceStateCore {
     root_path: String,
+    stream_id: String,
     seq: u64,
     tree_snapshot: Vec<FileTreeNode>,
     git_snapshot: Vec<WorkspaceGitEntry>,
@@ -98,6 +102,7 @@ impl WorkspaceStateCore {
     ) -> Self {
         Self {
             root_path,
+            stream_id: uuid::Uuid::new_v4().to_string(),
             seq: 0,
             tree_snapshot,
             git_snapshot,
@@ -153,6 +158,7 @@ impl WorkspaceStateCore {
 
                 return WorkspaceSnapshotResponse {
                     root_path: self.root_path.clone(),
+                    stream_id: self.stream_id.clone(),
                     seq: self.seq,
                     version: WORKSPACE_STATE_PROTOCOL_VERSION,
                     full: false,
@@ -167,6 +173,7 @@ impl WorkspaceStateCore {
 
         WorkspaceSnapshotResponse {
             root_path: self.root_path.clone(),
+            stream_id: self.stream_id.clone(),
             seq: self.seq,
             version: WORKSPACE_STATE_PROTOCOL_VERSION,
             full: true,
@@ -1886,6 +1893,30 @@ mod tests {
         stop_workspace_state_stream_core(root, false)
             .await
             .expect("stop paths");
+    }
+
+    #[test]
+    fn workspace_state_core_snapshot_carries_stream_identity() {
+        // 同一条流的快照身份不变；重建出来的新流（服务重启后）身份不同，
+        // 前端靠这个分辨自己的登记还在不在（#1114）。
+        let mut core =
+            WorkspaceStateCore::new("/tmp/repo".to_string(), Vec::new(), Vec::new(), false);
+        let first = core.snapshot(None).stream_id;
+        assert!(!first.is_empty());
+        core.append_event(
+            "meta".to_string(),
+            vec![WorkspaceDelta::Meta {
+                reason: "tick".to_string(),
+            }],
+            false,
+            Vec::new(),
+        );
+        assert_eq!(core.snapshot(Some(0)).stream_id, first);
+        assert_eq!(core.snapshot(None).stream_id, first);
+
+        let rebuilt =
+            WorkspaceStateCore::new("/tmp/repo".to_string(), Vec::new(), Vec::new(), false);
+        assert_ne!(rebuilt.snapshot(None).stream_id, first);
     }
 
     #[test]

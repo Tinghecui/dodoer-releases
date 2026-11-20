@@ -5782,6 +5782,8 @@ export interface WorkspaceStateEvent {
 
 export interface WorkspaceSnapshotResponse {
   root_path: string
+  // 后端这条流的身份，服务重启或流重建后会变；老版本服务不带。
+  stream_id?: string
   seq: number
   version: number
   full: boolean

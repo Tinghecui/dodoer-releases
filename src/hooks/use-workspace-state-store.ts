@@ -6,8 +6,8 @@ import {
   startWorkspaceStateStream,
   stopWorkspaceStateStream,
 } from "@/lib/api"
-import { toErrorMessage } from "@/lib/app-error"
-import { subscribe } from "@/lib/platform"
+import { isNotFoundError, toErrorMessage } from "@/lib/app-error"
+import { onTransportReconnect, subscribe } from "@/lib/platform"
 import type {
   FileTreeNode,
   WorkspaceDelta,
@@ -174,6 +174,11 @@ class WorkspaceStateStore {
   private starting: Promise<void> | null = null
   private stopping: Promise<void> | null = null
   private unlisten: (() => void) | null = null
+  // 连接重连的取消订阅；流起来时注册，shutdown 时取消。
+  private offReconnect: (() => void) | null = null
+  // 我们这份登记所在的那条后端流的身份（快照里的 stream_id）。服务重启后新
+  // 进程里的流身份不同，说明我们的登记已经没了（#1114）。老服务不带，为 null。
+  private streamId: string | null = null
   private resyncInFlight: Promise<void> | null = null
   private restarting: Promise<void> | null = null
   private lifecycleId = 0
@@ -342,6 +347,17 @@ class WorkspaceStateStore {
       try {
         const sinceSeq = this.hasBaselineSnapshot ? this.state.seq : undefined
         const snapshot = await getWorkspaceSnapshot(this.rootPath, sinceSeq)
+        // 流还在，但已经不是我们登记的那条：服务重启过，是别的窗口先在新进程
+        // 里登记了。我们的登记已经没了，补登记一份（不能先停，停掉的是别人的）。
+        if (
+          snapshot.stream_id &&
+          this.streamId &&
+          snapshot.stream_id !== this.streamId &&
+          this.canReregister()
+        ) {
+          await this.restart({ backendLost: true })
+          return
+        }
         this.patchState((prev) => applySnapshot(prev, snapshot))
         if (snapshot.full) {
           this.hasBaselineSnapshot = true
@@ -357,6 +373,14 @@ class WorkspaceStateStore {
           }
         }
       } catch (error) {
+        // 后端（本机子进程或远端服务）重启过：新进程里没有这个根目录的流，
+        // 补拉返回 not_found。还有人在用就重新注册一遍流，而不是停在红字上
+        // （#1114）。restart 里的启动失败只会设 degraded、不会再回到这里，
+        // 所以不会反复重启。
+        if (isNotFoundError(error) && this.canReregister()) {
+          await this.restart({ backendLost: true })
+          return
+        }
         this.patchState((prev) => ({
           ...prev,
           health: "degraded",
@@ -372,7 +396,12 @@ class WorkspaceStateStore {
     return this.resyncInFlight
   }
 
-  restart = async (): Promise<void> => {
+  private canReregister = () =>
+    this.started && this.tokenCount > 0 && !this.restarting
+
+  // backendLost：后端已经没有我们的登记了（服务重启过）。这时不能先 stop：
+  // 后端的引用计数是所有窗口共用的，停掉的会是别的窗口刚在新进程里登记的那份。
+  restart = async (options?: { backendLost?: boolean }): Promise<void> => {
     if (this.restarting) return this.restarting
 
     const run = async () => {
@@ -385,7 +414,9 @@ class WorkspaceStateStore {
         health: "resyncing",
       }))
 
-      await this.shutdown(prevLifecycleId)
+      await this.shutdown(prevLifecycleId, {
+        releaseBackend: !options?.backendLost,
+      })
 
       this.lifecycleId += 1
       const nextLifecycleId = this.lifecycleId
@@ -433,6 +464,7 @@ class WorkspaceStateStore {
           wantsTreeGit
         )
         this.backendWantsTreeGit = wantsTreeGit
+        this.streamId = initialSnapshot.stream_id ?? null
         if (!this.isLifecycleActive(lifecycleId)) {
           await stopWorkspaceStateStream(this.rootPath, wantsTreeGit).catch(
             () => {}
@@ -475,6 +507,16 @@ class WorkspaceStateStore {
 
         this.unlisten = unlisten
         this.started = true
+        // 连接断开重连后，后端可能已经换了一个进程（本机服务被拉起、远端服务
+        // 重启），那边没有我们的登记，事件也就不会再来（#1114）。重连上了先
+        // 补拉一次：流不在（not_found）或已经换了一条，requestResync 会补登记；
+        // 只是断了一下、登记还在的，补拉就够了。桌面直连 IPC 返回 null。
+        this.offReconnect?.()
+        this.offReconnect = onTransportReconnect(() => {
+          if (this.started && this.tokenCount > 0) {
+            void this.requestResync("transport_reconnect")
+          }
+        })
         const catchUpSnapshot = await getWorkspaceSnapshot(
           this.rootPath,
           this.state.seq
@@ -509,7 +551,10 @@ class WorkspaceStateStore {
     await this.starting
   }
 
-  private shutdown = async (lifecycleId: number) => {
+  private shutdown = async (
+    lifecycleId: number,
+    options?: { releaseBackend?: boolean }
+  ) => {
     void lifecycleId
     this.started = false
     // Serialize with a possibly-in-flight mode transition so the final
@@ -522,6 +567,11 @@ class WorkspaceStateStore {
     if (unlisten) {
       unlisten()
     }
+    const offReconnect = this.offReconnect
+    this.offReconnect = null
+    offReconnect?.()
+    this.streamId = null
+    if (options?.releaseBackend === false) return
     await stopWorkspaceStateStream(
       this.rootPath,
       this.backendWantsTreeGit

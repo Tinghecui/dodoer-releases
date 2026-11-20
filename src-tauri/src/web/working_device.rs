@@ -3,8 +3,9 @@
 //! A conversation's agent operates one of the person's computers at a time,
 //! its *working device*, and only ones the person has confirmed for that
 //! conversation. The person picks it in the app, on the device button below
-//! the composer (`set_conversation_device`, `docs/devices.md` 6.7); that pick
-//! replaces whatever was confirmed before. Until they do, an agent that needs
+//! the composer (`set_conversation_device`, `docs/devices.md` 6.7); 选的那台
+//! 只是默认去处，之前确认过的、换走的旧电脑照样能用（2026-11-20），「不用
+//! 电脑」才全部清空。Until they do, an agent that needs
 //! a device is told to have them pick one, and the button turns amber; it is
 //! not asked on a card. Only when the person names a device in the chat does
 //! the agent switch itself (`use_device` with the name), and a device not
@@ -95,6 +96,13 @@ pub struct ConversationDevice {
     /// The devices the person has chosen for it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub confirmed: Vec<String>,
+    /// 命令行换走以后留下的旧电脑：照样能 `ssh`，浏览器不因此放开
+    /// （`docs/devices.md` 6.7，2026-11-20）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept_shell: Vec<String>,
+    /// 浏览器换走以后留下的旧电脑：照样能开网页，命令行不因此放开。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept_browser: Vec<String>,
     /// The device the person's latest message came from; none for the web
     /// or a phone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -143,14 +151,42 @@ impl ConversationDevice {
         }
     }
 
-    /// 这个对话可以 `ssh` 到它：命令行那台，或卡片上确认过的。
+    /// 这个对话可以 `ssh` 到它：命令行那台、卡片上确认过的，或命令行
+    /// 换走以后留下的旧电脑。
     pub fn may_ssh(&self, device: &str) -> bool {
-        self.shell_device() == Some(device) || self.confirmed.iter().any(|d| d == device)
+        self.shell_device() == Some(device)
+            || self.confirmed.iter().any(|d| d == device)
+            || self.kept_shell.iter().any(|d| d == device)
     }
 
-    /// 这个对话可以在它上面开网页：浏览器那台，或卡片上确认过的。
+    /// 这个对话可以在它上面开网页：浏览器那台、卡片上确认过的，或浏览器
+    /// 换走以后留下的旧电脑。
     pub fn may_browse(&self, device: &str) -> bool {
-        self.browser_device() == Some(device) || self.confirmed.iter().any(|d| d == device)
+        self.browser_device() == Some(device)
+            || self.confirmed.iter().any(|d| d == device)
+            || self.kept_browser.iter().any(|d| d == device)
+    }
+
+    /// 命令行要换走：现在那台留下来，照样能 `ssh`（2026-11-20）。
+    fn keep_shell(&mut self) {
+        if let Some(device) = self.working.clone() {
+            push_new(&mut self.kept_shell, device);
+        }
+    }
+
+    /// 浏览器要换走：现在那台留下来，照样能开网页。
+    fn keep_browser(&mut self) {
+        if let Some(device) = self.browser_device().map(str::to_string) {
+            push_new(&mut self.kept_browser, device);
+        }
+    }
+
+    /// 保留的列表里不留现在选着的那台。
+    fn tidy_kept(&mut self) {
+        let shell = self.shell_device().map(str::to_string);
+        let browser = self.browser_device().map(str::to_string);
+        self.kept_shell.retain(|d| Some(d) != shell.as_ref());
+        self.kept_browser.retain(|d| Some(d) != browser.as_ref());
     }
 
     /// 两样都改成 `device`（浏览器跟着命令行）。
@@ -166,6 +202,12 @@ impl ConversationDevice {
             self.browser = None;
             self.browser_apart = false;
         }
+    }
+}
+
+fn push_new(list: &mut Vec<String>, device: String) {
+    if !list.contains(&device) {
+        list.push(device);
     }
 }
 
@@ -200,53 +242,81 @@ impl WorkingDevices {
     }
 
     /// The conversation works on `device` from now on, which the person has
-    /// chosen for it.
+    /// chosen for it. 原来的两样留下来，照样能用（2026-11-20）。
     pub fn work_on(&self, conversation_id: i32, device: &str) {
         self.change(conversation_id, |c| {
+            c.keep_shell();
+            c.keep_browser();
             c.set_both(Some(device));
-            if !c.confirmed.iter().any(|d| d == device) {
-                c.confirmed.push(device.to_string());
-            }
+            push_new(&mut c.confirmed, device.to_string());
             c.wanted = 0;
             c.browser_wanted = 0;
+            c.tidy_kept();
         });
     }
 
-    /// The person picked `device` for the conversation in the app, or none:
-    /// it works on that one, and that is the only device it has. What was
-    /// confirmed before goes, so that the agent cannot move off the pick
-    /// without the person (`docs/devices.md` 6.7).
+    /// The person picked `device` for the conversation in the app, or none.
+    /// 选的那台只是默认去处：之前用过的（卡片上确认过的、换走的旧电脑）
+    /// 照样能用；「不用电脑」全部清空（`docs/devices.md` 6.7，2026-11-20）。
     pub fn pick(&self, conversation_id: i32, device: Option<&str>) {
         self.pick_part(conversation_id, None, device);
     }
 
-    /// 界面上只给一样选：`part` 为 `None` 时和 [`Self::pick`] 一样两样都改。
-    /// 另一样不动；卡片上确认过的都作废。
+    /// 界面上只给一样选：`part` 为 `None` 时和 [`Self::pick`] 一样两样都改，
+    /// 另一样不动。换走的那台按那一样留下来；卡片上确认过的不作废。
+    /// 一样设成「不用」时，这一样一台都不用：它保留的旧电脑清掉，确认过的
+    /// 只留给另一样。
     pub fn pick_part(&self, conversation_id: i32, part: Option<DevicePart>, device: Option<&str>) {
         let device = device.map(str::to_string);
         self.change(conversation_id, |c| {
-            match part {
-                None => {
-                    c.set_both(device.as_deref());
+            match (part, device) {
+                (None, None) => {
+                    // 「不用电脑」：这个对话一台都不用了。
+                    c.set_both(None);
+                    c.confirmed.clear();
+                    c.kept_shell.clear();
+                    c.kept_browser.clear();
                     c.wanted = 0;
                     c.browser_wanted = 0;
                 }
-                Some(DevicePart::Shell) => {
+                (None, Some(device)) => {
+                    c.keep_shell();
+                    c.keep_browser();
+                    c.set_both(Some(&device));
+                    c.wanted = 0;
+                    c.browser_wanted = 0;
+                }
+                (Some(DevicePart::Shell), device) => {
                     // 浏览器原来跟着命令行的，先把它记成自己的那台。
                     c.browser = c.browser_device().map(str::to_string);
                     c.browser_apart = true;
+                    if device.is_some() {
+                        c.keep_shell();
+                    } else {
+                        c.kept_shell.clear();
+                        for d in std::mem::take(&mut c.confirmed) {
+                            push_new(&mut c.kept_browser, d);
+                        }
+                    }
                     c.working = device;
                     c.wanted = 0;
                 }
-                Some(DevicePart::Browser) => {
+                (Some(DevicePart::Browser), device) => {
+                    if device.is_some() {
+                        c.keep_browser();
+                    } else {
+                        c.kept_browser.clear();
+                        for d in std::mem::take(&mut c.confirmed) {
+                            push_new(&mut c.kept_shell, d);
+                        }
+                    }
                     c.browser = device;
                     c.browser_apart = true;
                     c.browser_wanted = 0;
                 }
             }
-            // 界面上一选，卡片上确认过的都作废（`docs/devices.md` 6.7）。
-            c.confirmed.clear();
             c.settle();
+            c.tidy_kept();
         });
     }
 
@@ -294,6 +364,8 @@ impl WorkingDevices {
             }
             c.settle();
             c.confirmed.retain(|d| d != device);
+            c.kept_shell.retain(|d| d != device);
+            c.kept_browser.retain(|d| d != device);
             if c.last_from.as_deref() == Some(device) {
                 c.last_from = None;
             }
@@ -802,6 +874,10 @@ impl DeviceTools {
                     parts_text(shell.as_deref(), browser.as_deref())
                 ),
             });
+            if let Some(kept) = kept_text(&devices, &state) {
+                text.push('\n');
+                text.push_str(&kept);
+            }
             text.push('\n');
             text.push_str(&latest_from(&devices, &state));
             text.push_str(
@@ -1439,6 +1515,33 @@ fn how_to_use(device: &DeviceView) -> String {
     text
 }
 
+/// 换走以后这个对话还能用的旧电脑，各能用哪一样（2026-11-20）。没有就是 `None`。
+fn kept_text(devices: &[DeviceView], state: &ConversationDevice) -> Option<String> {
+    let kept: Vec<String> = devices
+        .iter()
+        .filter_map(|device| {
+            let shell = state.kept_shell.contains(&device.id);
+            let browser = state.kept_browser.contains(&device.id);
+            let parts = match (shell, browser) {
+                (true, true) => "shell and browser",
+                (true, false) => "shell",
+                (false, true) => "browser",
+                (false, false) => return None,
+            };
+            Some(format!("`{}` ({parts})", device.name))
+        })
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "This conversation may still use {}: the user picked them before and moved off them. \
+         The device button only sets where calls go by default; to keep working on one of \
+         these, name it (`ssh <name>`, or `device` on the browser tools).",
+        kept.join(", ")
+    ))
+}
+
 /// Where the person's latest message came from, for the agent.
 fn latest_from(devices: &[DeviceView], state: &ConversationDevice) -> String {
     match state
@@ -1831,10 +1934,11 @@ mod tests {
         assert_eq!(tools.check_ssh("conn-9", "imac-0123456789").await, Ok(()));
     }
 
-    /// A pick in the app replaces what cards confirmed: the agent cannot go
-    /// back to another device without the person.
+    /// 界面上一选只换默认去处，卡片上确认过的照样能用（2026-11-20，
+    /// `docs/devices.md` 6.7）：智能体点名确认过的那台不用再弹卡片。
+    /// 「不用电脑」全部清空。
     #[tokio::test]
-    async fn a_pick_in_the_app_wins_over_what_was_confirmed() {
+    async fn a_pick_in_the_app_keeps_what_was_confirmed() {
         let registry = Arc::new(HostRegistry::new());
         let _imac = connect(&registry, "imac", "Study iMac");
         let _book = connect(&registry, "book", "MacBook");
@@ -1845,23 +1949,43 @@ mod tests {
         let kept = registry.working().get(7).unwrap();
         assert_eq!(kept.working.as_deref(), Some("imac-0123456789"));
         assert_eq!(kept.browser_device(), Some("imac-0123456789"));
-        // 选的那台本来就是两样都在用的，不用再记进确认过的（#341）。
-        assert!(kept.confirmed.is_empty());
+        assert!(kept.may_ssh("book-0123456789"));
+        assert!(kept.may_browse("book-0123456789"));
+        // 只选一样也一样：确认过的不作废。
+        for part in [DevicePart::Shell, DevicePart::Browser] {
+            registry
+                .working()
+                .pick_part(7, Some(part), Some("imac-0123456789"));
+            let kept = registry.working().get(7).unwrap();
+            assert!(kept.may_ssh("book-0123456789"), "{part:?}");
+            assert!(kept.may_browse("book-0123456789"), "{part:?}");
+        }
 
-        // The agent names the other one: the person is asked, and says no.
+        // 智能体点名确认过的那台：不弹卡片，直接换。
         let person = Person::picking(None);
-        let used = tools(&registry, &person)
-            .use_device("conn-7", Some("macbook"))
-            .await;
-        assert_eq!(person.asked().len(), 1);
-        assert_eq!(used.working.as_deref(), Some("study-imac"));
+        let tools = tools(&registry, &person);
+        let used = tools.use_device("conn-7", Some("macbook")).await;
+        assert!(person.asked().is_empty());
+        assert_eq!(used.working.as_deref(), Some("macbook"));
 
-        // No device at all.
+        // No device at all: 命令行、浏览器、确认过的、保留下来的都清空。
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), Some("imac-0123456789"));
         registry.working().pick(7, None);
         let kept = registry.working().get(7).unwrap();
         assert_eq!(kept.working, None);
         assert!(kept.confirmed.is_empty());
+        assert!(kept.kept_shell.is_empty() && kept.kept_browser.is_empty());
+        for device in ["imac-0123456789", "book-0123456789"] {
+            assert!(
+                !kept.may_ssh(device) && !kept.may_browse(device),
+                "{device}"
+            );
+        }
         assert!(!answer_for(&registry, 7).needs_pick);
+        assert!(tools.check_ssh("conn-7", "imac-0123456789").await.is_err());
+        assert!(tools.check_ssh("conn-7", "book-0123456789").await.is_err());
     }
 
     /// What was stored before `wanted` reads back, and an unset one is not
@@ -2072,8 +2196,8 @@ mod tests {
         assert_eq!(eight.browser_device(), Some(BOOK), "{text}");
     }
 
-    /// `part` 只改那一样，另一样不动；不带 `part` 两样都改；界面上每次选择
-    /// 都清空卡片上确认过的。
+    /// `part` 只改那一样，另一样不动；不带 `part` 两样都改；界面上选一台
+    /// 不清空卡片上确认过的（2026-11-20）。
     #[test]
     fn split_a_pick_changes_only_its_part() {
         let working = WorkingDevices::default();
@@ -2084,14 +2208,14 @@ mod tests {
         let c = working.get(7).unwrap();
         assert_eq!(c.shell_device(), Some(BOOK));
         assert_eq!(c.browser_device(), Some(IMAC));
-        assert!(c.confirmed.is_empty());
+        assert_eq!(c.confirmed, [IMAC, BOOK]);
 
         working.work_on(7, IMAC);
         working.pick_part(7, Some(DevicePart::Shell), Some(BOOK));
         let c = working.get(7).unwrap();
         assert_eq!(c.shell_device(), Some(BOOK));
         assert_eq!(c.browser_device(), Some(IMAC));
-        assert!(c.confirmed.is_empty());
+        assert_eq!(c.confirmed, [IMAC, BOOK]);
 
         working.pick_part(7, Some(DevicePart::Shell), None);
         let c = working.get(7).unwrap();
@@ -2103,11 +2227,176 @@ mod tests {
         let c = working.get(7).unwrap();
         assert_eq!(c.shell_device(), Some(IMAC));
         assert_eq!(c.browser_device(), Some(IMAC));
-        assert!(c.confirmed.is_empty());
+        assert_eq!(c.confirmed, [BOOK]);
 
         working.pick_part(7, None, None);
         let c = working.get(7).unwrap();
         assert_eq!((c.shell_device(), c.browser_device()), (None, None));
+        assert!(c.confirmed.is_empty());
+    }
+
+    // ---- 设备按钮只决定默认去哪台（2026-11-20，#1087）----
+
+    /// 命令行、浏览器换走以后，旧电脑按用过的那一样照样能用；
+    /// 两样一起换的，两样都留。
+    #[test]
+    fn default_a_device_switched_away_from_stays_for_its_part() {
+        let working = WorkingDevices::default();
+        // 命令行 A → B：A 还能 ssh，浏览器不因此放开。
+        working.pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        working.pick_part(7, Some(DevicePart::Shell), Some(BOOK));
+        let c = working.get(7).unwrap();
+        assert_eq!(c.shell_device(), Some(BOOK));
+        assert!(c.may_ssh(IMAC));
+        assert!(!c.may_browse(IMAC));
+
+        // 浏览器 A → B：A 还能开网页，命令行不因此放开。
+        working.pick_part(8, Some(DevicePart::Browser), Some(IMAC));
+        working.pick_part(8, Some(DevicePart::Browser), Some(BOOK));
+        let c = working.get(8).unwrap();
+        assert_eq!(c.browser_device(), Some(BOOK));
+        assert!(c.may_browse(IMAC));
+        assert!(!c.may_ssh(IMAC));
+
+        // 不带 `part` 两样一起换：两样都留。
+        working.pick(9, Some(IMAC));
+        working.pick(9, Some(BOOK));
+        let c = working.get(9).unwrap();
+        assert!(c.may_ssh(IMAC) && c.may_browse(IMAC));
+        assert!(c.may_ssh(BOOK) && c.may_browse(BOOK));
+    }
+
+    /// 换走再换回、两样选回同一台：保留的列表里没有和现在选着的重复的，
+    /// 另一样的保留也不丢。
+    #[test]
+    fn default_switching_back_keeps_no_duplicates() {
+        let working = WorkingDevices::default();
+        working.pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        working.pick_part(7, Some(DevicePart::Shell), Some(BOOK));
+        working.pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        let c = working.get(7).unwrap();
+        assert_eq!(c.kept_shell, [BOOK]);
+
+        // 浏览器 BOOK → IMAC：两样又是同一台（存回老样子），BOOK 两样都留着。
+        working.pick_part(7, Some(DevicePart::Browser), Some(BOOK));
+        working.pick_part(7, Some(DevicePart::Browser), Some(IMAC));
+        let c = working.get(7).unwrap();
+        assert!(!c.browser_apart);
+        assert_eq!(c.kept_shell, [BOOK]);
+        assert_eq!(c.kept_browser, [BOOK]);
+        assert!(c.may_ssh(BOOK) && c.may_browse(BOOK));
+    }
+
+    /// 只把一样设成「不用」：这一样一台都不用，另一样照旧，
+    /// 卡片上确认过的只留给另一样。
+    #[test]
+    fn default_a_part_set_to_none_uses_nothing_for_it() {
+        let working = WorkingDevices::default();
+        working.work_on(7, BOOK);
+        working.pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        working.pick_part(7, Some(DevicePart::Shell), None);
+        let c = working.get(7).unwrap();
+        assert!(!c.may_ssh(IMAC) && !c.may_ssh(BOOK));
+        assert!(c.may_browse(BOOK));
+        assert!(!c.may_browse(IMAC));
+    }
+
+    /// 设备从列表里删掉：保留下来的旧电脑里也去掉它。
+    #[test]
+    fn default_a_forgotten_device_is_not_kept() {
+        let working = WorkingDevices::default();
+        working.pick(7, Some(IMAC));
+        working.pick(7, Some(BOOK));
+        assert!(working.get(7).unwrap().may_ssh(IMAC));
+        working.forget_device(IMAC);
+        let c = working.get(7).unwrap();
+        assert!(c.kept_shell.is_empty() && c.kept_browser.is_empty());
+        assert!(!c.may_ssh(IMAC) && !c.may_browse(IMAC));
+        assert!(c.may_ssh(BOOK) && c.may_browse(BOOK));
+    }
+
+    /// 老记录（没有新字段）读出来权限不变；新字段为空时不写，有的写了能读回来。
+    #[test]
+    fn default_old_records_read_as_before() {
+        let old: ConversationDevice = serde_json::from_str(
+            r#"{"conversationId":7,"working":"imac-0123456789","confirmed":["book-0123456789"]}"#,
+        )
+        .unwrap();
+        assert!(old.kept_shell.is_empty() && old.kept_browser.is_empty());
+        assert!(old.may_ssh(IMAC) && old.may_browse(IMAC));
+        assert!(old.may_ssh(BOOK) && old.may_browse(BOOK));
+        assert!(!old.may_ssh("mini-0123456789") && !old.may_browse("mini-0123456789"));
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(!text.contains("kept"), "{text}");
+
+        let working = WorkingDevices::default();
+        working.pick_part(7, Some(DevicePart::Shell), Some(IMAC));
+        working.pick_part(7, Some(DevicePart::Shell), Some(BOOK));
+        let text = serde_json::to_string(&working.get(7).unwrap()).unwrap();
+        assert!(
+            text.contains(r#""keptShell":["imac-0123456789"]"#),
+            "{text}"
+        );
+        assert!(!text.contains("keptBrowser"), "{text}");
+        let back: ConversationDevice = serde_json::from_str(&text).unwrap();
+        assert!(back.may_ssh(IMAC) && !back.may_browse(IMAC));
+    }
+
+    /// 服务器这一侧：换走的旧电脑 `ssh`、点名开网页都放行；不点名的网页
+    /// 开在现在选着的那台；从没选过的那台照旧被拒、说明不变；`list_devices`
+    /// 列出还能用的旧电脑。
+    #[tokio::test]
+    async fn default_the_old_device_is_still_served() {
+        let registry = Arc::new(HostRegistry::new());
+        let _imac = connect(&registry, "imac", "Study iMac");
+        let _book = connect(&registry, "book", "MacBook");
+        let _den = connect(&registry, "den", "Den Desktop");
+        let person = Person::picking(None);
+        let tools = tools(&registry, &person);
+        registry.working().pick(7, Some(IMAC));
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Shell), Some(BOOK));
+        registry
+            .working()
+            .pick_part(7, Some(DevicePart::Browser), Some("den-0123456789"));
+
+        assert_eq!(tools.check_ssh("conn-7", IMAC).await, Ok(()));
+        assert_eq!(tools.check_ssh("conn-7", BOOK).await, Ok(()));
+        assert_eq!(
+            tools.resolve("conn-7", Some("study-imac")).await,
+            Ok(Some("study-imac".into()))
+        );
+        assert_eq!(
+            tools.resolve("conn-7", None).await,
+            Ok(Some("den-desktop".into()))
+        );
+        // 只当过浏览器的 den-desktop 不能 ssh；只当过命令行的 macbook 不能开网页。
+        let refused = tools
+            .check_ssh("conn-7", "den-0123456789")
+            .await
+            .unwrap_err();
+        assert!(
+            refused.contains("not been given `den-desktop` for its shell"),
+            "{refused}"
+        );
+        let refused = tools.resolve("conn-7", Some("macbook")).await.unwrap_err();
+        assert!(
+            refused.contains("not been given `macbook` for its browser"),
+            "{refused}"
+        );
+
+        let listed = tools.list("conn-7").await;
+        let text = &listed.text;
+        assert!(text.contains("shell is on `macbook`"), "{text}");
+        assert!(text.contains("browser is on `den-desktop`"), "{text}");
+        assert!(
+            text.contains("still use `study-imac` (shell and browser)"),
+            "{text}"
+        );
+        assert_eq!(listed.working.as_deref(), Some("macbook"));
+        assert_eq!(listed.browser.as_deref(), Some("den-desktop"));
+        assert!(person.asked().is_empty());
     }
 
     /// 两样各记各的「在等」：命令行选了、浏览器在等是常见的情况。

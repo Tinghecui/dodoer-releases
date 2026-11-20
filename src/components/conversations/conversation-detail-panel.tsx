@@ -168,6 +168,7 @@ import { openAgentSignIn, signInViaPortal } from "@/lib/cowork/sign-in"
 import {
   createSessionLostRetry,
   sessionLostRetryRoute,
+  settleEndedTurn,
 } from "@/lib/cowork/session-lost-retry"
 import { createUncertainSendWatch } from "@/lib/cowork/uncertain-send"
 import {
@@ -432,6 +433,7 @@ const ConversationTabView = memo(function ConversationTabView({
   const {
     appendOptimisticTurn,
     removeOptimisticTurn,
+    discardTurn,
     appendViewerUserTurn,
     completeTurn,
     refetchDetail,
@@ -1078,6 +1080,8 @@ const ConversationTabView = memo(function ConversationTabView({
     watch: SentTurnWatch
     // Cowork fork: timed for telemetry (docs/telemetry.md §5.3).
     turn: Turn
+    // #1066：这一轮的乐观用户消息，自动重发时从对话区拿掉。
+    optimisticTurnId: string
   } | null>(null)
   useEffect(() => {
     const wasPrompting = prevConnStatusRef.current === "prompting"
@@ -1102,11 +1106,12 @@ const ConversationTabView = memo(function ConversationTabView({
     const requeueKind =
       failedTurnRequeueKind(liveContent, authFailed) ??
       lostTurnRequeueKind(liveContent, connStatus)
+    let autoResend = false
     if (sent && requeueKind) {
       mqRequeueFailed(sent.draft, sent.modeId, requeueKind)
       // #423：智能体不认这个会话了，第一次失败时记下这条，旧连接退下去以后
       // 自动重试一次（见下面 `handleQueueRetry` 旁边的 effect）。
-      if (sessionLost) sessionLostRetry.noteFailed(sent.draft)
+      if (sessionLost) autoResend = sessionLostRetry.noteFailed(sent.draft)
     }
     sent?.turn.end(failed ? "error" : "complete", { connStatus })
 
@@ -1117,7 +1122,13 @@ const ConversationTabView = memo(function ConversationTabView({
     // session.liveMessage, which the connection dispatch's sink wrote
     // synchronously as the final chunk landed (turn_complete flushes the stream
     // queue BEFORE the status change), so it already holds the final message.
-    completeTurn(effectiveConversationId)
+    // #1066：要自动重发的那条不升格，对话区只留重发出去的那一条
+    // （见 `settleEndedTurn`）。
+    settleEndedTurn(
+      { completeTurn, discardTurn },
+      effectiveConversationId,
+      sent ? { optimisticTurnId: sent.optimisticTurnId, autoResend } : null
+    )
 
     // Cancel previous metadata sync (handles rapid consecutive turns)
     syncCancelRef.current?.()
@@ -1133,6 +1144,7 @@ const ConversationTabView = memo(function ConversationTabView({
   }, [
     completeTurn,
     connStatus,
+    discardTurn,
     effectiveConversationId,
     mqRequeueFailed,
     sessionLostRetry,
@@ -1916,6 +1928,7 @@ const ConversationTabView = memo(function ConversationTabView({
           sawPrompting: false,
         },
         turn: turnStarted(selectedAgentRef.current),
+        optimisticTurnId: optimisticTurn.id,
       }
       turnAuthFailedRef.current = false
       turnSessionLostRef.current = false

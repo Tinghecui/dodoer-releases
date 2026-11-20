@@ -462,6 +462,14 @@ type Action =
       turn: MessageTurn
     }
   | {
+      // Cowork 加的（#1066）：这一轮根本没开始（智能体不认这个会话了），
+      // 消息已经放回排队区、马上自动重发。不升格进 `localTurns`：拿掉这一轮的
+      // 乐观用户消息和只装着失败行的 liveMessage，对话区只等重发的那一条。
+      type: "DISCARD_TURN"
+      conversationId: number
+      optimisticTurnId: string
+    }
+  | {
       type: "SET_LIVE_MESSAGE"
       conversationId: number
       liveMessage: LiveMessage | null
@@ -2811,6 +2819,21 @@ function reducer(
       }))
     }
 
+    case "DISCARD_TURN": {
+      const current = state.byConversationId.get(action.conversationId)
+      if (!current) return state
+      const remaining = current.optimisticTurns.filter(
+        (t) => t.id !== action.optimisticTurnId
+      )
+      return updateSessionInState(state, action.conversationId, (s) => ({
+        ...s,
+        optimisticTurns: remaining,
+        liveMessage: null,
+        activeTurnToken: null,
+        syncState: remaining.length === 0 ? "idle" : s.syncState,
+      }))
+    }
+
     case "APPEND_VIEWER_USER_TURN": {
       const current =
         state.byConversationId.get(action.conversationId) ??
@@ -3226,6 +3249,8 @@ export interface RuntimeActions {
     turnToken: string
   ) => void
   removeOptimisticTurn: (conversationId: number, id: string) => void
+  /** 见 `DISCARD_TURN`（#1066）。 */
+  discardTurn: (conversationId: number, optimisticTurnId: string) => void
   appendViewerUserTurn: (conversationId: number, turn: MessageTurn) => void
   applyBackgroundActivity: (
     conversationId: number,
@@ -5070,6 +5095,11 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
       }),
     removeOptimisticTurn: (conversationId, id) =>
       dispatch({ type: "REMOVE_OPTIMISTIC_TURN", conversationId, id }),
+    discardTurn: (conversationId, optimisticTurnId) => {
+      // 这一轮没有回复要从记录里读，丢掉的会话不用再补读。
+      unseenTurnEnds.delete(conversationId)
+      dispatch({ type: "DISCARD_TURN", conversationId, optimisticTurnId })
+    },
     appendViewerUserTurn: (conversationId, turn) =>
       dispatch({ type: "APPEND_VIEWER_USER_TURN", conversationId, turn }),
     applyBackgroundActivity: (conversationId, turns, watermark) =>

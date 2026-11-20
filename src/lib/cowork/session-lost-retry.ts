@@ -55,3 +55,25 @@ export function sessionLostRetryRoute({
   if (isActive) return "retry"
   return canConnect ? "background" : "wait"
 }
+
+/**
+ * 回合结束时这一轮怎么收（#1066）。默认 `completeTurn`：乐观用户消息和回复
+ * 升格进对话区。这一轮以 `session_lost` 结束、消息已经放回排队区等着自动重发的
+ * （`autoResend`，即 `noteFailed` 返回 true），这一轮根本没开始：丢掉它的乐观
+ * 用户消息和失败行，对话区只留重发出去的那一条，和刷新后服务器那边一致。
+ * 第二次失败、不再自动重发的照旧升格，失败行和排队区里标着失败的那条都留着。
+ */
+export function settleEndedTurn(
+  ops: {
+    completeTurn: (conversationId: number) => void
+    discardTurn: (conversationId: number, optimisticTurnId: string) => void
+  },
+  conversationId: number,
+  sent: { optimisticTurnId: string; autoResend: boolean } | null
+): void {
+  if (sent?.autoResend) {
+    ops.discardTurn(conversationId, sent.optimisticTurnId)
+    return
+  }
+  ops.completeTurn(conversationId)
+}

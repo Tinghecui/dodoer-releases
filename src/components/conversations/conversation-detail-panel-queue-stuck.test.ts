@@ -229,10 +229,20 @@ describe("a lost session retries the message once", () => {
     expect(source).toContain('envelope.code === "session_lost"')
     const edge = between(
       "const sessionLost = turnSessionLostRef.current",
-      "completeTurn(effectiveConversationId)"
+      "// Cancel previous metadata sync"
     )
     expect(edge).toContain("mqRequeueFailed(")
-    expect(edge).toContain("sessionLostRetry.noteFailed(sent.draft)")
+    expect(edge).toContain(
+      "autoResend = sessionLostRetry.noteFailed(sent.draft)"
+    )
+    // #1066：要自动重发的那一轮不升格进对话区（`settleEndedTurn`，单测在
+    // runtime-session-lost-resend.test.ts）。
+    expect(edge).toContain("settleEndedTurn(")
+    expect(edge).toContain(
+      "optimisticTurnId: sent.optimisticTurnId, autoResend"
+    )
+    expect(edge).not.toContain("    completeTurn(effectiveConversationId)")
+    expect(source).toContain("optimisticTurnId: optimisticTurn.id,")
   })
 
   it("retries through the queue's own retry, once the old connection is gone", () => {

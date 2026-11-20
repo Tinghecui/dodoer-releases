@@ -58,7 +58,7 @@ describe("jenny fork: send before the agent is ready", () => {
   // (and the kind, `auth` or `turn_failed`) is `failedTurnRequeueKind`.
   it("re-queues the sent message as failed when its turn fails", () => {
     const start = source.indexOf("const lastSentRef = useRef<")
-    const block = source.slice(start, start + 1500)
+    const block = source.slice(start, start + 1800)
     expect(block).toContain('block.type === "turn_error"')
     expect(block).toContain("failedTurnRequeueKind(liveContent, authFailed)")
     expect(block).toContain(

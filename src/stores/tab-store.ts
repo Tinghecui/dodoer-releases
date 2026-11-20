@@ -11,6 +11,7 @@ import {
   useAppWorkspaceStore,
 } from "@/stores/app-workspace-store"
 import { registerBackendScopedStoreReset } from "@/stores/backend-scoped-store-reset"
+import { getActiveRemoteConnectionId } from "@/lib/transport"
 import {
   getFolderConversation,
   listOpenedTabs,
@@ -391,6 +392,61 @@ const TILE_MODE_STORAGE_KEY = "workspace:tile-mode"
 /** Device-local split-group state (layout tree, assignments, selection, tile
  *  flags), keyed by canonical tab ids. See `persistGroupState`. */
 const TAB_GROUPS_STORAGE_KEY = "workspace:tab-groups:v1"
+
+/**
+ * 标签组记录按服务器分开存（#1063）：本机窗口和远端窗口是同一个 webview 源，
+ * localStorage 共用。本机窗口沿用原来的 key（老数据不用迁移），远端窗口用
+ * `…:remote-<id>`，不然远端窗口会恢复出本机窗口的草稿，把本机路径当 cwd 发给
+ * 服务器上的智能体。写法同 folder-tabs-store 的 preferenceKey。
+ */
+function tabGroupsStorageKey() {
+  const remoteId = getActiveRemoteConnectionId()
+  return remoteId
+    ? `${TAB_GROUPS_STORAGE_KEY}:remote-${remoteId}`
+    : TAB_GROUPS_STORAGE_KEY
+}
+
+/**
+ * 别的窗口（本机或别的服务器）标签组记录里还开着的草稿标签 id。草稿文字
+ * （message-input-draft）存在共用的 localStorage 里、没按服务器分开，清理孤儿
+ * 草稿文字时这些也要算活的，不然远端窗口一恢复标签就把本机窗口没发的文字删了，
+ * 反过来也一样（#1063）。
+ */
+function draftIdsInOtherTabGroupBlobs(): Set<string> {
+  const ids = new Set<string>()
+  try {
+    const current = tabGroupsStorageKey()
+    const keys: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (
+        key &&
+        key !== current &&
+        (key === TAB_GROUPS_STORAGE_KEY ||
+          key.startsWith(`${TAB_GROUPS_STORAGE_KEY}:remote-`))
+      ) {
+        keys.push(key)
+      }
+    }
+    for (const key of keys) {
+      const raw = localStorage.getItem(key)
+      const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : null
+      if (!parsed || typeof parsed !== "object") continue
+      for (const draft of sanitizeDrafts(parsed.drafts)) ids.add(draft.id)
+      if (typeof parsed.readFailedFiller === "string") {
+        ids.add(parsed.readFailedFiller)
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return ids
+}
+
+/** 上次 readPersistedGroupState 读的是哪个 key。store 在模块加载时就建好了，
+ *  远端窗口那时还没拿到连接（远端 id 是异步来的），读的是本机那份；hydrate
+ *  发现 key 变了就按现在的 key 重读。 */
+let groupStateReadKey: string | null = null
 
 /** Per-window/session identity stamped on every tab save and echoed back on
  *  `tabs://changed`, so this client ignores its own broadcast (echo
@@ -1058,7 +1114,9 @@ function readPersistedGroupState(): {
   })
   if (typeof window === "undefined") return fallback()
   try {
-    const raw = localStorage.getItem(TAB_GROUPS_STORAGE_KEY)
+    const storageKey = tabGroupsStorageKey()
+    groupStateReadKey = storageKey
+    const raw = localStorage.getItem(storageKey)
     if (raw) {
       const parsed = JSON.parse(raw) as Record<string, unknown>
       if (parsed && isLayoutNode(parsed.layout)) {
@@ -1208,7 +1266,7 @@ function persistGroupState() {
   if (blob === lastGroupBlob) return
   lastGroupBlob = blob
   try {
-    localStorage.setItem(TAB_GROUPS_STORAGE_KEY, blob)
+    localStorage.setItem(tabGroupsStorageKey(), blob)
   } catch {
     /* ignore */
   }
@@ -1250,7 +1308,7 @@ function persistedDraftOf(
 function persistLocalTabsWhileReadFailed(st: TabStoreState) {
   let base: Record<string, unknown> = {}
   try {
-    const raw = localStorage.getItem(TAB_GROUPS_STORAGE_KEY)
+    const raw = localStorage.getItem(tabGroupsStorageKey())
     const parsed = raw ? (JSON.parse(raw) as unknown) : null
     if (
       parsed &&
@@ -1372,7 +1430,7 @@ function persistLocalTabsWhileReadFailed(st: TabStoreState) {
   readFailedBlobBaseline = blob
   lastGroupBlob = blob
   try {
-    localStorage.setItem(TAB_GROUPS_STORAGE_KEY, blob)
+    localStorage.setItem(tabGroupsStorageKey(), blob)
   } catch {
     /* ignore */
   }
@@ -3203,6 +3261,16 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   hydrate: () => {
+    // 远端窗口：store 建好时还没有远端 id，读的是本机窗口那份记录，换成自己的
+    // 重读一遍（#1063）。还没恢复过标签，这时换掉分组状态不丢东西。
+    if (
+      typeof window !== "undefined" &&
+      !get().tabsHydrated &&
+      groupStateReadKey !== tabGroupsStorageKey()
+    ) {
+      lastGroupBlob = null
+      set(readPersistedGroupState())
+    }
     let cancelled = false
     void (async () => {
       let snapshotLoaded = false
@@ -3356,14 +3424,14 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
           // safe once the tab set is known — after a failed fetch every key
           // would look orphaned and the user's unsent text would be deleted.
           if (snapshotLoaded) {
-            sweepOrphanDraftKeys(
-              () =>
-                new Set(
-                  get()
-                    .rawTabs.filter((tab) => tab.conversationId == null)
-                    .map((tab) => tab.id)
-                )
-            )
+            // 别的窗口记录里的草稿也算活的（#1063），它们的文字不能删。
+            sweepOrphanDraftKeys(() => {
+              const live = draftIdsInOtherTabGroupBlobs()
+              for (const tab of get().rawTabs) {
+                if (tab.conversationId == null) live.add(tab.id)
+              }
+              return live
+            })
           }
           // Apply a remote change that raced ahead of hydration. Call
           // applyRemoteSnapshot directly (not handleTabsChanged): `pending` is

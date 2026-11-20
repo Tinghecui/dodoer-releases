@@ -115,6 +115,7 @@ import {
 import {
   adoptUnknownAsyncTasks,
   mergeAsyncTasks,
+  stopLiveAsyncTasks,
   upsertAsyncTask,
 } from "@/lib/async-tasks"
 import {
@@ -2386,8 +2387,18 @@ function connectionsReducer(
         // Remote Control ran in the agent CLI, which is gone.
         updated.remoteControl = null
       }
-      // A switch still under way went with the connection.
-      if (action.status === "disconnected") updated.modelSwitch = null
+      if (action.status === "disconnected") {
+        // A switch still under way went with the connection.
+        updated.modelSwitch = null
+        // Cowork 加的（#1065）：后台任务跑在智能体进程下面，进程没了它们也没了，
+        // 不会再有「结束」事件，留着会话页就一直写「1 个运行中」。和后端一样只在
+        // disconnected 清（error 后面紧跟着它）；侧栏本来就不看断开的连接。
+        updated.backgroundOutstanding = 0
+        updated.backgroundTasks = EMPTY_BACKGROUND_TASKS
+        // AIR 异步任务（后台 Bash、codex 的后台终端）也一样，还没结束的标成
+        // stopped：会话页的「N 个运行中」也数它们。已经结束的保持原样。
+        updated.asyncTasks = stopLiveAsyncTasks(conn.asyncTasks)
+      }
       if (action.status === "prompting") {
         updated.hasPrompted = true
         updated.liveMessage = {

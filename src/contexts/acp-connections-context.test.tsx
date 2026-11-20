@@ -34,6 +34,7 @@ import {
   resetModelSwitchesForTest,
 } from "@/lib/cowork/model-switch"
 import { saveConfigPreference } from "@/lib/selector-prefs-storage"
+import { collectLiveRuns } from "@/lib/live-runs"
 import { inferLiveToolName } from "@/lib/tool-call-normalization"
 import type { AttachHandlers } from "@/lib/transport/types"
 import {
@@ -724,6 +725,105 @@ describe("AcpConnectionsProvider preview-tab release (disconnectIfIdle)", () => 
     })
 
     expect(h.acpDisconnect).not.toHaveBeenCalled()
+  })
+
+  // #1065: the agent process was killed — its background shells died with it
+  // and will never report settled. The disconnect drops them, so the composer
+  // stops saying "1 running" while the sidebar says nothing is alive.
+  it("drops outstanding background tasks when the connection disconnects", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "connected",
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "background_activity",
+      session_id: "sess-1",
+      turns: [],
+      outstanding: 1,
+      outstanding_tasks: [
+        {
+          task_id: "shell1",
+          kind: "shell",
+          description: "Run sleep 600 in background",
+          started_at_ms: 1_000,
+        },
+      ],
+      settled: [],
+      watermark: 0,
+    })
+    // The same background Bash, announced on the AIR async-task channel too —
+    // the composer's chip counts this one.
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "async_task",
+      delta: {
+        task_id: "shell1",
+        spawned: true,
+        name: "Run sleep 600 in background",
+        task_type: "shell",
+        can_stop: true,
+      },
+    })
+    // A task that already finished keeps its own terminal state.
+    emitAcpEvent(handlers, {
+      seq: 4,
+      connection_id: "spawned-conn",
+      type: "async_task",
+      delta: {
+        task_id: "done1",
+        spawned: true,
+        name: "Run ls",
+        task_type: "shell",
+        can_stop: true,
+        state: "completed",
+      },
+    })
+    const liveCount = () => {
+      const c = h.store!.getConnection(TAB)!
+      return collectLiveRuns({
+        asyncTasks: c.asyncTasks,
+        foregroundAgents: [],
+        backgroundTasks: c.backgroundTasks,
+        findLaunchCard: () => null,
+        delegatedChildren: [],
+        delegationBindings: [],
+      }).count
+    }
+    expect(h.store!.getConnection(TAB)?.backgroundTasks).toHaveLength(1)
+    expect(liveCount()).toBe(1)
+
+    // `error` comes right before `disconnected`: the tasks stay until then.
+    emitAcpEvent(handlers, {
+      seq: 5,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "error",
+    })
+    expect(h.store!.getConnection(TAB)?.backgroundOutstanding).toBe(1)
+    expect(liveCount()).toBe(1)
+
+    emitAcpEvent(handlers, {
+      seq: 6,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "disconnected",
+    })
+    const conn = h.store!.getConnection(TAB)
+    expect(conn?.status).toBe("disconnected")
+    expect(conn?.backgroundOutstanding).toBe(0)
+    expect(conn?.backgroundTasks).toEqual([])
+    expect(conn?.asyncTasks.map((t) => [t.task_id, t.state])).toEqual([
+      ["shell1", "stopped"],
+      ["done1", "completed"],
+    ])
+    // What the composer's "N running" chip would say.
+    expect(liveCount()).toBe(0)
   })
 
   // The transcript watcher only counts work that leaves a Claude transcript

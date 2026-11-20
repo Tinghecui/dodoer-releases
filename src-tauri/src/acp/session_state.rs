@@ -1330,6 +1330,21 @@ impl SessionState {
                     // Remote Control ran in the agent CLI, which is gone.
                     self.remote_control = None;
                 }
+                if matches!(status, ConnectionStatus::Disconnected) {
+                    // Cowork 加的（#1065）：后台任务跑在智能体进程下面，进程没了它们
+                    // 也没了，不会再有「结束」事件，快照不该再带着它们。只在
+                    // `Disconnected` 清：`Error` 后面紧跟着它，侧栏的「?」看的是
+                    // 断开前一刻的读数（event_bridge 在 apply 之前读）。
+                    self.background_outstanding = 0;
+                    self.background_outstanding_tasks.clear();
+                    // AIR 异步任务也一样：还没结束的标成 `stopped`（前端 reducer 同样
+                    // 处理），已经结束的保持原样。
+                    for task in self.async_tasks.values_mut() {
+                        if !crate::acp::types::async_task_state_is_terminal(&task.state) {
+                            task.state = "stopped".to_string();
+                        }
+                    }
+                }
                 self.status = status.clone();
             }
             AcpEvent::SessionModes { modes } => {
@@ -3844,6 +3859,69 @@ mod tests {
         });
         assert!(!s.has_active_background_work(Utc::now()));
         assert!(s.background_outstanding_tasks.is_empty());
+    }
+
+    /// #1065：智能体进程被杀、连接断开以后，后台任务跟着进程没了，不会再有「结束」
+    /// 事件。断开时清掉，快照里不再带着它（会话页不再写「1 个运行中」）。`Error`
+    /// 不清：它后面紧跟着 `Disconnected`，侧栏的「?」看的是断开前一刻的读数。
+    #[test]
+    fn disconnect_drops_outstanding_background_tasks() {
+        let mut s = fresh_state();
+        let shell = crate::acp::types::BackgroundOutstandingTask {
+            task_id: "b1".into(),
+            kind: crate::acp::types::BackgroundTaskKind::Shell,
+            tool_use_id: Some("toolu_1".into()),
+            description: Some("Run sleep 600 in background".into()),
+            started_at_ms: 1_000,
+        };
+        s.apply_event(&AcpEvent::BackgroundActivity {
+            session_id: "sid".into(),
+            turns: vec![],
+            outstanding: 1,
+            outstanding_tasks: vec![shell],
+            settled: vec![],
+            watermark: 1,
+        });
+        // 同一个后台 Bash 也走 AIR 异步任务上报；会话页的「N 个运行中」也数它。
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: AsyncTaskDelta {
+                name: Some("Run sleep 600 in background".into()),
+                task_type: Some("shell".into()),
+                ..async_task_delta("b1", true)
+            },
+        });
+        // 已经结束的保持原样。
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: AsyncTaskDelta {
+                name: Some("Run ls".into()),
+                task_type: Some("shell".into()),
+                state: Some("completed".into()),
+                ..async_task_delta("done1", true)
+            },
+        });
+        s.apply_event(&AcpEvent::StatusChanged {
+            status: ConnectionStatus::Error,
+        });
+        assert_eq!(s.background_outstanding, 1);
+        assert_eq!(s.background_outstanding_tasks.len(), 1);
+        assert_eq!(s.async_tasks["b1"].state, "running");
+
+        s.apply_event(&AcpEvent::StatusChanged {
+            status: ConnectionStatus::Disconnected,
+        });
+        assert_eq!(s.background_outstanding, 0);
+        assert!(s.background_outstanding_tasks.is_empty());
+        let snap = s.to_snapshot();
+        assert_eq!(snap.background_outstanding, 0);
+        assert!(snap.background_outstanding_tasks.is_empty());
+        assert_eq!(s.async_tasks["b1"].state, "stopped");
+        assert_eq!(s.async_tasks["done1"].state, "completed");
+        assert!(snap
+            .async_tasks
+            .iter()
+            .all(|t| crate::acp::types::async_task_state_is_terminal(&t.state)));
+        assert!(s.watched_tasks().is_empty());
+        assert_eq!(s.background_pending().0, 0);
     }
 
     /// Cowork fork: the sidebar's reading of a connection's background work —

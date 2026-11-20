@@ -227,3 +227,17 @@ export function autonomousTurnCause(description: string): AutonomousTurnCause {
 export function liveAsyncTasks(tasks: AsyncTaskRecord[]): AsyncTaskRecord[] {
   return tasks.filter((t) => !isAsyncTaskTerminal(t))
 }
+
+/**
+ * Cowork 加的（#1065）：连接断开时用。任务跑在智能体进程下面，进程没了它们也
+ * 没了，不会再有终态的 delta：还没结束的标成 `stopped`，已经结束的保持原样。
+ * 没有要改的返回同一个数组。
+ */
+export function stopLiveAsyncTasks(
+  tasks: AsyncTaskRecord[]
+): AsyncTaskRecord[] {
+  if (tasks.every(isAsyncTaskTerminal)) return tasks
+  return tasks.map((t) =>
+    isAsyncTaskTerminal(t) ? t : { ...t, state: "stopped" }
+  )
+}

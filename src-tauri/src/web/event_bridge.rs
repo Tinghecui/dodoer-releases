@@ -87,6 +87,27 @@ impl LiveBinding {
 
 type BackgroundSlots = HashMap<i32, BackgroundSlot>;
 
+/// #1117：`payload` 是不是智能体在这一轮里回的东西（文字、思考、工具调用、计划、要权限）。
+/// 只有它说明消息真的交给了智能体：`UserMessage`、`StatusChanged` 是我们自己在发请求前发的。
+fn is_agent_answer(payload: &AcpEvent) -> bool {
+    matches!(
+        payload,
+        AcpEvent::ContentDelta { .. }
+            | AcpEvent::Thinking { .. }
+            | AcpEvent::ToolCall { .. }
+            | AcpEvent::ToolCallUpdate { .. }
+            | AcpEvent::PlanUpdate { .. }
+            | AcpEvent::PermissionRequest { .. }
+    )
+}
+
+/// 这一格留着的是没跑完的后台任务（`abandoned`，#817），不是「?」。
+fn holds_abandoned(slot: &BackgroundSlot) -> bool {
+    slot.uncertain
+        .as_ref()
+        .is_some_and(|e| e.state == BackgroundPendingState::Abandoned)
+}
+
 impl Default for WebEventBroadcaster {
     fn default() -> Self {
         Self::new()
@@ -134,7 +155,10 @@ impl WebEventBroadcaster {
                 if slot.uncertain.is_none() {
                     continue;
                 }
-                if bound.iter().any(|b| b.claims(*conversation_id, slot)) {
+                // #1117：没跑完的后台任务（`abandoned`）不算「?」：重连只是重连，后台任务照样
+                // 没跑完，留着给红叉写任务名。
+                if !holds_abandoned(slot) && bound.iter().any(|b| b.claims(*conversation_id, slot))
+                {
                     slot.uncertain = None;
                     slot.external_id = None;
                     continue;
@@ -658,7 +682,7 @@ pub fn emit_event(emitter: &EventEmitter, event: &str, payload: impl Serialize) 
 /// Cowork 加的：[`settled_conversation_id`] 说的对话是怎么结束的。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettledAs {
-    /// 完成或删掉：留下来的什么都删。
+    /// 完成或删掉，或者新的一轮真的开始了（#1117，智能体在这一轮回了东西）：留下来的什么都删。
     Closed,
     /// 取消（红叉）：只删「?」，没跑完的后台任务（#817）留着给红叉写任务名。
     Cancelled,
@@ -835,7 +859,14 @@ where
                 };
                 (s.conversation_id, s.background_pending(), tasks)
             });
+        // #1117：这一轮里智能体真的回了东西（`Prompting` 里来了它的输出），新的一轮开始了，
+        // 上一轮没跑完的后台任务不用再写。对话的 `in_progress` 和连接进入 `Prompting` 都不算：
+        // 两个都在消息交给智能体之前就发了，交不出去（被拒、连接早断了）这一轮其实没开始。
+        let turn_answered = s.status == ConnectionStatus::Prompting && is_agent_answer(&payload);
         s.apply_event(&payload);
+        if let Some(conversation_id) = s.conversation_id.filter(|_| turn_answered) {
+            clear_uncertain_background(emitter, conversation_id, SettledAs::Closed);
+        }
         if let Some((before_id, before, before_tasks)) = background_before {
             // The CLI and the background work in it end with the
             // connection, whatever the counts last said.
@@ -1217,7 +1248,9 @@ fn background_pending_broadcasts(
         };
         let mut claimed: Vec<i32> = slots
             .iter()
-            .filter(|(id, slot)| slot.uncertain.is_some() && binding.claims(**id, slot))
+            .filter(|(id, slot)| {
+                slot.uncertain.is_some() && !holds_abandoned(slot) && binding.claims(**id, slot)
+            })
             .map(|(id, _)| *id)
             .collect();
         claimed.sort_unstable();
@@ -1236,10 +1269,12 @@ fn background_pending_broadcasts(
     let relinked = *before_id != after_id;
     // #530：这条连接从另一条（更旧的）连接手里接过新对话那一行。表里那一行显示的是旧连接
     // 最后的样子，接手后要把自己的状态推一次（没有后台任务就推 `idle`）。
+    // #1117：这一行留着没跑完的后台任务（`abandoned`）的不推 `idle`：接手只是重连，红叉
+    // 的悬停还要写任务名。
     let took_over = relinked
-        && after_id
-            .and_then(|id| slots.get(&id))
-            .is_some_and(|slot| slot.generation != 0 && slot.generation < generation);
+        && after_id.and_then(|id| slots.get(&id)).is_some_and(|slot| {
+            slot.generation != 0 && slot.generation < generation && !holds_abandoned(slot)
+        });
     let old_row_admitted = !relinked
         || before_id
             .filter(|_| before_shown)
@@ -1248,9 +1283,11 @@ fn background_pending_broadcasts(
         after_id.is_some_and(|id| admit_background_reading(slots, id, generation));
 
     // 活着的连接报了这个对话的读数（包括刚绑上、`count` 是 0）：留下来的「?」作废。
+    // 没跑完的后台任务（`abandoned`，#1117）不删：要等新的一轮开始、完成或删掉对话。
     if let Some(conversation_id) = after_id.filter(|_| new_row_admitted) {
         let removed = slots
             .get_mut(&conversation_id)
+            .filter(|slot| !holds_abandoned(slot))
             .and_then(|slot| slot.uncertain.take())
             .is_some();
         if removed {
@@ -1620,6 +1657,127 @@ mod tests {
             assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
             assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
         }
+    }
+
+    /// #1117：回合中途被杀、留下没跑完的后台任务以后，刷新页面自动重连的新连接（resume 着
+    /// 同一个会话、或者绑上同一个对话、`count` 是 0）只是重连，后台任务照样没跑完：不删、
+    /// 不发 `idle`，列表里照样有，红叉的悬停接着写任务名。智能体在新的一轮里回了东西才删。
+    #[tokio::test]
+    async fn a_reconnect_after_a_mid_turn_kill_keeps_the_abandoned_tasks() {
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        let old = fresh_state();
+        emit_with_state(
+            &old,
+            &emitter,
+            AcpEvent::SessionStarted {
+                session_id: "sid-old".into(),
+            },
+        )
+        .await;
+        emit_with_state(&old, &emitter, linked(7)).await;
+        emit_with_state(&old, &emitter, watcher_activity(&[("b1", "Watch CI")], 1)).await;
+        old.write().await.turn_in_flight = true;
+        emit_with_state(&old, &emitter, disconnected()).await;
+        let _ = background_events(&mut rx);
+        let abandoned_listed = |broadcaster: &WebEventBroadcaster, bound: &[LiveBinding]| {
+            let listed = broadcaster.merge_background_pending_with(Vec::new(), bound);
+            listed.len() == 1
+                && listed[0].state == crate::acp::types::BackgroundPendingState::Abandoned
+        };
+        assert!(abandoned_listed(&broadcaster, &[]));
+
+        // 刷新后自动重连：先 resume 同一个会话（还没绑对话）。
+        let next = fresh_state();
+        emit_with_state(
+            &next,
+            &emitter,
+            AcpEvent::SessionStarted {
+                session_id: "sid-old".into(),
+            },
+        )
+        .await;
+        assert!(background_events(&mut rx).is_empty());
+        let bound = [LiveBinding {
+            conversation_id: Some(7),
+            external_id: Some("sid-old".into()),
+            resumed_from: Some("sid-old".into()),
+            generation: next.read().await.generation,
+        }];
+        assert!(abandoned_listed(&broadcaster, &bound));
+
+        // 再绑上这个对话、报 `count` 0 的读数。
+        emit_with_state(&next, &emitter, linked(7)).await;
+        emit_with_state(&next, &emitter, watcher_activity(&[], 1)).await;
+        assert!(background_events(&mut rx).is_empty());
+        assert!(abandoned_listed(&broadcaster, &bound));
+
+        // 发新消息时服务器先把对话标成 `in_progress`，消息没交给智能体就退回 `cancelled`：
+        // 这一轮其实没开始，任务名照样留着。
+        for status in ["in_progress", "cancelled"] {
+            emit_event(
+                &emitter,
+                CONVERSATION_CHANGED_EVENT,
+                ConversationChange::Status {
+                    id: 7,
+                    status: status.into(),
+                },
+            );
+        }
+        assert!(background_events(&mut rx).is_empty());
+        assert!(abandoned_listed(&broadcaster, &bound));
+
+        // 连接进入 `Prompting`、广播用户消息，都是发请求之前的事：请求可能根本没交出去，
+        // 任务名照样留着。
+        emit_with_state(
+            &next,
+            &emitter,
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Prompting,
+            },
+        )
+        .await;
+        assert!(background_events(&mut rx).is_empty());
+        assert!(abandoned_listed(&broadcaster, &bound));
+
+        // 智能体在这一轮里回了东西，新的一轮真的开始了才删。
+        emit_with_state(
+            &next,
+            &emitter,
+            AcpEvent::ContentDelta {
+                text: "ok".into(),
+                parent_tool_use_id: None,
+            },
+        )
+        .await;
+        assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// #1117：重连以后对话被标成完成，没跑完的后台任务跟着删、广播 `idle`。
+    #[tokio::test]
+    async fn completing_after_a_reconnect_drops_the_abandoned_tasks() {
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        let old = fresh_state();
+        emit_with_state(&old, &emitter, linked(7)).await;
+        emit_with_state(&old, &emitter, watcher_activity(&[("b1", "Watch CI")], 1)).await;
+        old.write().await.turn_in_flight = true;
+        emit_with_state(&old, &emitter, disconnected()).await;
+        let next = fresh_state();
+        emit_with_state(&next, &emitter, linked(7)).await;
+        emit_with_state(&next, &emitter, watcher_activity(&[], 1)).await;
+        let _ = background_events(&mut rx);
+        assert_eq!(broadcaster.merge_background_pending(Vec::new()).len(), 1);
+
+        emit_event(
+            &emitter,
+            CONVERSATION_CHANGED_EVENT,
+            ConversationChange::Status {
+                id: 7,
+                status: "completed".into(),
+            },
+        );
+        assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
     }
 
     /// 完成标准 11、13：轮询把一条活着的连接标成「?」时广播它（`count` 的意思不变）；

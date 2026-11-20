@@ -72,6 +72,14 @@ impl AgentSession {
         &self.modes
     }
 
+    /// 智能体确认切到 `mode_id` 以后记下来，让之后读 [`Self::modes`] 的地方（第一次
+    /// 发给前端的模式列表）看到的是会话真正在用的模式。没有模式列表的会话不变。
+    pub fn set_current_mode_id(&mut self, mode_id: &str) {
+        if let Some(modes) = self.modes.as_mut() {
+            modes.current_mode_id = mode_id.to_string().into();
+        }
+    }
+
     /// The connection the session lives on (cheap to clone).
     pub fn connection(&self) -> ConnectionTo<Agent> {
         self.connection.clone()

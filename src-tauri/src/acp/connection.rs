@@ -4017,6 +4017,64 @@ async fn emit_session_modes(
     }
 }
 
+/// 建立会话（新建、load、resume、fork）时第一次把模式列表发给前端：先把存着的
+/// 模式套上，再发（#978）。
+///
+/// 以前是先发智能体自己开局的模式，再由 [`apply_preferred_session_options`] 切到
+/// 存着的模式、补一个 `ModeChanged`：新会话的设置按钮先写着开局的模式（Auto），
+/// 过一会儿才变成会话真正在用的（Manual）。现在切换在发之前做完，第一份模式列表
+/// 就是真正在用的那个，不再补 `ModeChanged`。跳过和失败的规则跟那边一样：智能体
+/// 已经不提供的模式不发，切换失败只记日志、按开局的模式发。
+///
+/// Kiro、Hermes、Grok、ZCode 的模式有自己的补回通道（合成的模式选项、建立前的
+/// 闸门），照旧交给后面的流程。返回后面的补回流程还要补的模式：这里处理过的给
+/// `None`，免得再发一次 `session/set_mode`。
+async fn apply_preferred_mode_then_emit_modes<'a>(
+    session: &mut AgentSession,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    agent_type: AgentType,
+    preferred_mode_id: Option<&'a str>,
+) -> Option<&'a str> {
+    let own_mode_channel = matches!(
+        agent_type,
+        AgentType::Kiro | AgentType::Hermes | AgentType::Grok | AgentType::ZCode
+    );
+    let Some(pref_mode) = preferred_mode_id.filter(|_| !own_mode_channel) else {
+        emit_session_modes(state, emitter, session.modes()).await;
+        return preferred_mode_id;
+    };
+    let needs_apply = session
+        .modes()
+        .as_ref()
+        .is_some_and(|m| m.current_mode_id.to_string() != pref_mode);
+    let withdrawn = session
+        .modes()
+        .as_ref()
+        .is_some_and(|m| session_modes_reject_id(m, pref_mode));
+    if needs_apply && withdrawn {
+        tracing::info!(
+            "[ACP] skipping preferred mode '{pref_mode}' on connect: \
+             the agent no longer offers that mode"
+        );
+    } else if needs_apply {
+        let req = SetSessionModeRequest::new(session.session_id().clone(), pref_mode.to_string());
+        match session
+            .connection()
+            .send_request_to(Agent, req)
+            .block_task()
+            .await
+        {
+            Ok(_) => session.set_current_mode_id(pref_mode),
+            Err(e) => tracing::error!(
+                "[ACP] failed to apply preferred mode '{pref_mode}' on connect: {e}"
+            ),
+        }
+    }
+    emit_session_modes(state, emitter, session.modes()).await;
+    None
+}
+
 fn map_session_config_category(category: &SessionConfigOptionCategory) -> String {
     match category {
         SessionConfigOptionCategory::Mode => "mode".to_string(),
@@ -9521,7 +9579,12 @@ async fn run_connection(
                                 },
                             )
                             .await;
-                            emit_session_modes(&state, &emitter_clone, session.modes()).await;
+                            let mode_to_replay = unless_cancelled(
+                                &handshake,
+                                apply_preferred_mode_then_emit_modes(
+                                    &mut session, &state, &emitter_clone, agent_type, preferred_mode_id.as_deref(),
+                                ),
+                            ).await?;
                             unless_cancelled(
                                 &handshake,
                                 apply_and_emit_session_config_options(
@@ -9533,7 +9596,7 @@ async fn run_connection(
                                     grok_meta.as_ref(),
                                     grok_model_specs.as_ref(),
                                     models_raw.as_ref(),
-                                    preferred_mode_id.as_deref(),
+                                    mode_to_replay,
                                     &preferred_config_values,
                                     initial_config_options.unwrap_or_default(),
                                 ),
@@ -9825,7 +9888,12 @@ async fn run_connection(
                             },
                         )
                         .await;
-                        emit_session_modes(&state, &emitter_clone, session.modes()).await;
+                        let mode_to_replay = unless_cancelled(
+                            &handshake,
+                            apply_preferred_mode_then_emit_modes(
+                                &mut session, &state, &emitter_clone, agent_type, preferred_mode_id.as_deref(),
+                            ),
+                        ).await?;
                         unless_cancelled(
                             &handshake,
                             apply_and_emit_session_config_options(
@@ -9839,7 +9907,7 @@ async fn run_connection(
                                 // capture, so effort stays on the flat fallback.
                                 None,
                                 load_models_raw.as_ref(),
-                                preferred_mode_id.as_deref(),
+                                mode_to_replay,
                                 &preferred_config_values,
                                 initial_config_options.unwrap_or_default(),
                             ),
@@ -10062,7 +10130,12 @@ async fn run_connection(
                             },
                         )
                         .await;
-                        emit_session_modes(&state, &emitter_clone, session.modes()).await;
+                        let mode_to_replay = unless_cancelled(
+                            &handshake,
+                            apply_preferred_mode_then_emit_modes(
+                                &mut session, &state, &emitter_clone, agent_type, preferred_mode_id.as_deref(),
+                            ),
+                        ).await?;
                         if agent_type == AgentType::ZCode {
                             emit_with_state(&state, &emitter_clone, AcpEvent::ModeChanged {
                                 mode_id: preferred_config_values["mode"].clone(),
@@ -10079,7 +10152,7 @@ async fn run_connection(
                                 grok_meta.as_ref(),
                                 grok_model_specs.as_ref(),
                                 models_raw.as_ref(),
-                                preferred_mode_id.as_deref(),
+                                mode_to_replay,
                                 &preferred_config_values,
                                 initial_config_options.unwrap_or_default(),
                             ),
@@ -10174,7 +10247,12 @@ async fn run_connection(
                     },
                 )
                 .await;
-                emit_session_modes(&state, &emitter_clone, session.modes()).await;
+                let mode_to_replay = unless_cancelled(
+                    &handshake,
+                    apply_preferred_mode_then_emit_modes(
+                        &mut session, &state, &emitter_clone, agent_type, preferred_mode_id.as_deref(),
+                    ),
+                ).await?;
                 if agent_type == AgentType::ZCode {
                     emit_with_state(&state, &emitter_clone, AcpEvent::ModeChanged {
                         mode_id: preferred_config_values["mode"].clone(),
@@ -10191,7 +10269,7 @@ async fn run_connection(
                         grok_meta.as_ref(),
                         grok_model_specs.as_ref(),
                         models_raw.as_ref(),
-                        preferred_mode_id.as_deref(),
+                        mode_to_replay,
                         &preferred_config_values,
                         initial_config_options.unwrap_or_default(),
                     ),
@@ -12467,11 +12545,12 @@ async fn send_goal_control(
 /// "intercept event and rewrite then sync back" hack — single source of truth.
 ///
 /// Returns the (possibly updated) list of config options that the caller
-/// should emit. Mode preferences trigger a `ModeChanged` event from
-/// `set_session_mode`, which the caller's `emit_session_modes` immediately
-/// precedes — so the frontend sees `SessionModes{default}` then
-/// `ModeChanged{preferred}` and converges to the preferred value before
-/// `SelectorsReady` fires. Failures on individual preferences are logged
+/// should emit. The establishing callers apply the saved mode BEFORE their
+/// first `SessionModes` ([`apply_preferred_mode_then_emit_modes`], #978) and
+/// pass `None` here; a mode still passed in (Kiro, Hermes, Grok, ZCode on the
+/// standard path) triggers a `ModeChanged` event from `set_session_mode`, so
+/// the frontend sees `SessionModes{default}` then `ModeChanged{preferred}`.
+/// Failures on individual preferences are logged
 /// and skipped so a stale/invalid preference can't block session startup.
 ///
 /// `session_models` is the establishing answer's raw top-level `models`, when
@@ -13727,7 +13806,14 @@ async fn handle_fork_or_exit(
         },
     )
     .await;
-    emit_session_modes(state, emitter, session.modes()).await;
+    let mode_to_replay = apply_preferred_mode_then_emit_modes(
+        &mut session,
+        state,
+        emitter,
+        agent_type,
+        inherited_mode_id.as_deref(),
+    )
+    .await;
     apply_and_emit_session_config_options(
         &cx,
         &mut session,
@@ -13737,7 +13823,7 @@ async fn handle_fork_or_exit(
         grok_meta.as_ref(),
         grok_model_specs.as_ref(),
         models_raw.as_ref(),
-        inherited_mode_id.as_deref(),
+        mode_to_replay,
         &inherited_config_values,
         initial_config_options.unwrap_or_default(),
     )
@@ -38477,6 +38563,117 @@ mod tests {
             &claude_modes(true),
             "bypassPermissions"
         ));
+    }
+
+    /// #978：存着的模式（Manual）和智能体自己开局的模式（Auto）不一样时，前端收到的
+    /// 第一份模式列表就得是 Manual。以前先发 Auto、再切 Manual，新会话的设置按钮
+    /// 先写着「模式 Auto」，点开才变成 Manual。只切一次，之后的补回流程不再重发。
+    #[tokio::test]
+    async fn the_first_mode_list_a_new_session_shows_carries_the_saved_mode() {
+        use agent_client_protocol::schema::v1::SetSessionModeResponse;
+
+        let set_modes = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let agent_set_modes = Arc::clone(&set_modes);
+        let (client_end, agent_end) = agent_client_protocol::Channel::duplex();
+        let agent = tokio::spawn(async move {
+            let _ = Agent
+                .builder()
+                .on_receive_request(
+                    async |_req: NewSessionRequest,
+                           responder: Responder<NewSessionResponse>,
+                           _cx: ConnectionTo<Client>| {
+                        let mut modes = claude_modes(false);
+                        modes.current_mode_id = "auto".to_string().into();
+                        responder
+                            .respond(NewSessionResponse::new(SessionId::new("s1")).modes(modes))
+                    },
+                    on_receive_request!(),
+                )
+                .on_receive_request(
+                    async move |req: SetSessionModeRequest,
+                                responder: Responder<SetSessionModeResponse>,
+                                _cx: ConnectionTo<Client>| {
+                        agent_set_modes
+                            .lock()
+                            .expect("not poisoned")
+                            .push(req.mode_id.to_string());
+                        responder.respond(SetSessionModeResponse::new())
+                    },
+                    on_receive_request!(),
+                )
+                .connect_with(agent_end, async |_cx: ConnectionTo<Client>| {
+                    std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                })
+                .await;
+        });
+
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-mode".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "win".to_string(),
+            None,
+        )));
+        let mut events = state.read().await.event_stream().subscribe();
+        let establishment_state = Arc::clone(&state);
+        Client
+            .builder()
+            .connect_with(client_end, async move |cx: ConnectionTo<Agent>| {
+                let raw = cx
+                    .send_request_to(
+                        Agent,
+                        UntypedMessage::new("session/new", NewSessionRequest::new("/tmp"))?,
+                    )
+                    .block_task()
+                    .await?;
+                let response: NewSessionResponse = serde_json::from_value(raw)
+                    .map_err(agent_client_protocol::Error::into_internal_error)?;
+                let mut session = AgentSession::attach(&cx, response)?;
+                let rest = apply_preferred_mode_then_emit_modes(
+                    &mut session,
+                    &establishment_state,
+                    &EventEmitter::Noop,
+                    AgentType::ClaudeCode,
+                    Some("default"),
+                )
+                .await;
+                apply_and_emit_session_config_options(
+                    &cx,
+                    &mut session,
+                    &establishment_state,
+                    &EventEmitter::Noop,
+                    AgentType::ClaudeCode,
+                    None,
+                    None,
+                    None,
+                    rest,
+                    &BTreeMap::new(),
+                    Vec::new(),
+                )
+                .await;
+                Ok(())
+            })
+            .await
+            .expect("the establishment runs");
+        agent.abort();
+
+        let mut first_modes = None;
+        while let Ok(envelope) = events.try_recv() {
+            if let AcpEvent::SessionModes { modes } = &envelope.payload {
+                first_modes.get_or_insert_with(|| modes.current_mode_id.clone());
+            }
+        }
+        assert_eq!(
+            first_modes.as_deref(),
+            Some("default"),
+            "the first mode list the composer sees is the saved mode"
+        );
+        assert_eq!(
+            *set_modes.lock().expect("not poisoned"),
+            vec!["default".to_string()],
+            "the saved mode is set once"
+        );
+        assert_eq!(state.read().await.current_mode.as_deref(), Some("default"));
     }
 
     #[test]

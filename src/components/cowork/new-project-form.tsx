@@ -86,6 +86,11 @@ export function CoworkNewProjectForm({
           aria-label={t("projectNamePlaceholder")}
           disabled={disabled || creating}
           autoFocus
+          // 名字就是目录名：别让 macOS 替用户改大写、改拼写（#1110）
+          spellCheck={false}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
         />
         <Button type="submit" disabled={disabled || creating || !name.trim()}>
           {creating ? <Loader2 className="size-4 animate-spin" /> : null}

@@ -147,6 +147,28 @@ describe("RemoteWorkspaceManageDialog search", () => {
   })
 })
 
+// #1110：连接名、地址、header 名是要原样保存的文字，macOS 不能替用户改大小写、改拼写。
+describe("RemoteWorkspaceManageDialog text fields", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("turns off autocapitalize and autocorrect on name, URL and header name", async () => {
+    await mount([connection({ headers: [{ name: "X-Demo", value: "abc" }] })])
+    const fields = [
+      document.getElementById("remote-workspace-name"),
+      document.getElementById("remote-workspace-base-url"),
+      await screen.findByDisplayValue("X-Demo"),
+    ]
+    for (const field of fields) {
+      expect(field).toHaveAttribute("autocapitalize", "off")
+      expect(field).toHaveAttribute("autocorrect", "off")
+      expect(field).toHaveAttribute("spellcheck", "false")
+      expect(field).toHaveAttribute("autocomplete", "off")
+    }
+  })
+})
+
 describe("RemoteWorkspaceManageDialog custom headers", () => {
   beforeEach(() => {
     vi.clearAllMocks()

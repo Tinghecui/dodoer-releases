@@ -546,10 +546,15 @@ export function RemoteWorkspaceManageDialog({
                       </Label>
                       <Input
                         id="remote-workspace-name"
+                        // 名字、地址、header 名都原样保存：别让 macOS 改大写、改拼写（#1110）
                         value={draft.name}
                         onChange={(event) =>
                           updateDraft({ name: event.target.value })
                         }
+                        spellCheck={false}
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="off"
                       />
                     </div>
                     <div className="space-y-1.5">
@@ -566,6 +571,10 @@ export function RemoteWorkspaceManageDialog({
                         onChange={(event) =>
                           updateDraft({ baseUrl: event.target.value })
                         }
+                        spellCheck={false}
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="off"
                       />
                     </div>
                     <div className="space-y-1.5">
@@ -620,6 +629,10 @@ export function RemoteWorkspaceManageDialog({
                                   name: event.target.value,
                                 })
                               }
+                              spellCheck={false}
+                              autoComplete="off"
+                              autoCorrect="off"
+                              autoCapitalize="off"
                             />
                             <Input
                               className="flex-1"

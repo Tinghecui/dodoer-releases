@@ -6001,6 +6001,7 @@
     "agentsHint": "When on, the pages agents working here open go to a separate window of your Chrome, signed in as you. Tabs you opened yourself still need “Hand to agents”; mail, payment and bank sites stay off limits.",
     "agentsOffline": "On, but Chrome is not connected: agents opening a page will fail until you connect it or turn this off.",
     "agentsFailed": "Could not change the switch: {message}",
+    "agentsServerToolsFailed": "The server's browser tools were not turned on ({message}). Turn on “Read and drive the built-in browser” in Settings → Collaboration.",
     "evalSwitch": "Let agents run code in tabs they may act on",
     "evalRisk": "Only in tabs handed to agents to read and act on — never read-only or unshared ones, never sensitive sites. Code an agent runs there can read everything on that site, including sign-in details the page can see, and can do anything there as you. Clicking and typing don't need it; leave it off unless you need it.",
     "evalFailed": "Could not change the switch: {message}",

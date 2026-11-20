@@ -37,6 +37,11 @@ const mocks = vi.hoisted(() => ({
   chromeSetSites: vi.fn(),
   heardSites: null as ((sites: ChromeSites) => void) | null,
   openSettingsWindow: vi.fn(async () => {}),
+  setCodegMcpToolGroup: vi.fn<(key: string, enabled: boolean) => Promise<void>>(
+    async () => {}
+  ),
+  /** Whether this window works on a server. */
+  remote: false,
   toast: { success: vi.fn(), error: vi.fn() },
 }))
 
@@ -98,7 +103,14 @@ vi.mock("@/lib/platform", () => ({ isDesktop: () => mocks.desktop }))
 vi.mock("@/components/settings/chrome-eval-switch", () => ({
   ChromeEvalPanelSwitch: () => null,
 }))
-vi.mock("@/lib/api", () => ({ openSettingsWindow: mocks.openSettingsWindow }))
+vi.mock("@/lib/api", () => ({
+  openSettingsWindow: mocks.openSettingsWindow,
+  setCodegMcpToolGroup: mocks.setCodegMcpToolGroup,
+}))
+vi.mock("@/lib/transport", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/transport")>()),
+  isRemoteDesktopMode: () => mocks.remote,
+}))
 vi.mock("sonner", () => ({ toast: mocks.toast }))
 
 import { agentsKey, StatusBarChrome } from "./status-bar-chrome"
@@ -196,6 +208,8 @@ beforeEach(() => {
   mocks.grants.clear()
   mocks.owners.clear()
   mocks.openSettingsWindow.mockClear()
+  mocks.setCodegMcpToolGroup.mockReset().mockResolvedValue(undefined)
+  mocks.remote = false
   mocks.toast.error.mockReset()
   mocks.heardSites = null
   mocks.chromeSites.mockReset().mockResolvedValue(sites())
@@ -483,6 +497,64 @@ describe("StatusBarChrome", () => {
     expect(localStorage.getItem(agentsKey("remote-workspace-7"))).toBe("0")
     // Turning it off leaves the app's own browser tools as they are.
     expect(mocks.lendBrowserSwitch).toHaveBeenCalledTimes(1)
+  })
+
+  it("in a remote window, also turns the server's browser tools on, and leaves them on when turned off", async () => {
+    mocks.windowLabel = "remote-workspace-7"
+    mocks.remote = true
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    await mount()
+    await openPanel()
+    const toggle = screen.getByRole("switch", {
+      name: "Let agents use my Chrome",
+    })
+    await userEvent.click(toggle)
+    // 一个开关就够：服务器上的智能体靠服务器那边的浏览器工具组拿到工具。
+    expect(mocks.setCodegMcpToolGroup).toHaveBeenCalledTimes(1)
+    expect(mocks.setCodegMcpToolGroup).toHaveBeenCalledWith("browser", true)
+    expect(mocks.lendBrowserSwitch).toHaveBeenCalledWith("browser")
+
+    await userEvent.click(toggle)
+    expect(mocks.chromeSetAgents).toHaveBeenLastCalledWith(false)
+    // 关的时候不动服务器那边。
+    expect(mocks.setCodegMcpToolGroup).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not touch the server's tools in a local window", async () => {
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    await mount()
+    await openPanel()
+    await userEvent.click(
+      screen.getByRole("switch", { name: "Let agents use my Chrome" })
+    )
+    expect(mocks.chromeSetAgents).toHaveBeenCalledWith(true)
+    expect(mocks.setCodegMcpToolGroup).not.toHaveBeenCalled()
+  })
+
+  it("says so when the server's browser tools could not be turned on", async () => {
+    mocks.windowLabel = "remote-workspace-7"
+    mocks.remote = true
+    mocks.setCodegMcpToolGroup.mockRejectedValue(new Error("offline"))
+    await mount()
+    await openPanel()
+    const toggle = screen.getByRole("switch", {
+      name: "Let agents use my Chrome",
+    })
+    await userEvent.click(toggle)
+    // 自己这边的开关照样开着；只提示服务器那边没开成。
+    expect(toggle).toHaveAttribute("aria-checked", "true")
+    expect(mocks.toast.error).toHaveBeenCalledWith(
+      expect.stringContaining("Settings → Collaboration")
+    )
+  })
+
+  it("does not write the server's settings when a remembered switch is handed back", async () => {
+    mocks.windowLabel = "remote-workspace-7"
+    mocks.remote = true
+    localStorage.setItem(agentsKey("remote-workspace-7"), "1")
+    await mount()
+    expect(mocks.chromeSetAgents).toHaveBeenCalledWith(true)
+    expect(mocks.setCodegMcpToolGroup).not.toHaveBeenCalled()
   })
 
   it("hands a remembered switch back to the backend when the app starts", async () => {

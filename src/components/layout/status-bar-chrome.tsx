@@ -36,7 +36,11 @@
  *
  * In a remote window the switch also turns this computer's browser tools on
  * (`lendBrowserSwitch`): the server's agents reach Chrome through the tabs
- * the app lends, and the app lends none while its own switch is off.
+ * the app lends, and the app lends none while its own switch is off. Turned
+ * on by hand there, it also turns the server's own browser tool group on
+ * (off by default), so one switch is all it takes; turning it off leaves the
+ * server's setting alone, and so does handing a remembered switch back when
+ * the window opens (`docs/agent-chrome.md` 7, #980).
  *
  * Under each tab an agent has been at, the last thing it did there, and the
  * whole record a click away (`chrome::activity`, `docs/agent-chrome.md`
@@ -85,7 +89,7 @@ import {
 } from "@/components/settings/chrome-connect-settings"
 import { ChromeEvalPanelSwitch } from "@/components/settings/chrome-eval-switch"
 import { useMinuteNow } from "@/hooks/use-minute-now"
-import { openSettingsWindow } from "@/lib/api"
+import { openSettingsWindow, setCodegMcpToolGroup } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   browserWorkspaceTabId,
@@ -120,6 +124,7 @@ import {
 } from "@/lib/browser/chrome-sites"
 import { lendBrowserSwitch } from "@/lib/cowork/remote-browser"
 import { isDesktop } from "@/lib/platform"
+import { isRemoteDesktopMode } from "@/lib/transport"
 import { formatTimeAgo } from "@/lib/relative-time"
 import { cn } from "@/lib/utils"
 
@@ -320,6 +325,18 @@ function ChromeItem({ className }: { className?: string }) {
       if (now) lendBrowser()
     } catch (error) {
       toast.error(t("agentsFailed", { message: toErrorMessage(error) }))
+      return
+    }
+    // 远端窗口：服务器上的智能体要服务器那边的浏览器工具组开着才有工具，
+    // 只在亲手打开时替用户开；关的时候不动服务器那边。
+    if (on && isRemoteDesktopMode()) {
+      try {
+        await setCodegMcpToolGroup("browser", true)
+      } catch (error) {
+        toast.error(
+          t("agentsServerToolsFailed", { message: toErrorMessage(error) })
+        )
+      }
     }
   }
 

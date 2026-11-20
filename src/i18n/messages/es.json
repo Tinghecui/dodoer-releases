@@ -6001,6 +6001,7 @@
     "agentsHint": "Activado, las páginas que abran los agentes que trabajan aquí se abren en una ventana aparte de tu Chrome, con tu sesión iniciada. Las pestañas que abriste tú siguen necesitando «Pasar a los agentes»; los sitios de correo, pagos y bancos quedan fuera de su alcance.",
     "agentsOffline": "Activado, pero Chrome no está conectado: los agentes no podrán abrir páginas hasta que lo conectes o lo desactives.",
     "agentsFailed": "No se pudo cambiar el interruptor: {message}",
+    "agentsServerToolsFailed": "No se pudieron activar las herramientas de navegador del servidor ({message}). Activa «Leer y manejar el navegador integrado» en Ajustes → Colaboración.",
     "evalSwitch": "Dejar que los agentes ejecuten código en las pestañas donde pueden actuar",
     "evalRisk": "Solo en pestañas entregadas a los agentes para leer y actuar; nunca en las de solo lectura o no compartidas, ni en sitios sensibles. El código que un agente ejecuta ahí puede leer todo lo de ese sitio, incluidos los datos de inicio de sesión que ve la página, y puede hacer cualquier cosa ahí en tu nombre. Hacer clic y escribir no lo necesitan; déjalo apagado salvo que lo necesites.",
     "evalFailed": "No se pudo cambiar el interruptor: {message}",

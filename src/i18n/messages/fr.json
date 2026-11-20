@@ -6001,6 +6001,7 @@
     "agentsHint": "Activé, les pages qu'ouvrent les agents qui travaillent ici s'ouvrent dans une fenêtre à part de votre Chrome, connectée à vos comptes. Les onglets que vous avez ouverts vous-même demandent toujours « Confier aux agents » ; les sites de messagerie, de paiement et de banque leur restent interdits.",
     "agentsOffline": "Activé, mais Chrome n'est pas connecté : les agents ne pourront pas ouvrir de page tant que vous ne l'aurez pas connecté ou désactivé ceci.",
     "agentsFailed": "Impossible de changer l'interrupteur : {message}",
+    "agentsServerToolsFailed": "Les outils de navigateur du serveur n'ont pas pu être activés ({message}). Activez « Lire et piloter le navigateur intégré » dans Réglages → Collaboration.",
     "evalSwitch": "Laisser les agents exécuter du code dans les onglets où ils peuvent agir",
     "evalRisk": "Seulement dans les onglets confiés aux agents pour lire et agir — jamais ceux en lecture seule ou non partagés, jamais les sites sensibles. Le code qu'un agent y exécute peut lire tout ce qui se trouve sur ce site, y compris les informations de connexion que la page voit, et peut y faire n'importe quoi en votre nom. Cliquer et saisir n'en ont pas besoin ; laissez-le désactivé sauf besoin.",
     "evalFailed": "Impossible de changer l'interrupteur : {message}",

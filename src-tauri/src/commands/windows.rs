@@ -257,6 +257,112 @@ fn should_use_dark_background() -> bool {
     }
 }
 
+/// 显示器可用区域（逻辑像素）里放一个窗口后的尺寸、最小尺寸和左上角。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FittedWindowRect {
+    pub width: f64,
+    pub height: f64,
+    pub min_width: f64,
+    pub min_height: f64,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// 把想要的窗口尺寸放进可用区域 `area = (x, y, w, h)`（逻辑像素，已去掉菜单栏、
+/// Dock）：宽高不超过可用区域，最小尺寸也压到不超过可用区域，再在可用区域里居中，
+/// 左上角不小于可用区域的起点。`.center()` 不看屏幕大小，1024 宽的屏上放 1260
+/// 宽的窗口会把左上角算到 x=-118（#1061）。纯函数，方便单测。
+pub(crate) fn fit_window_rect(
+    area: (f64, f64, f64, f64),
+    want: (f64, f64),
+    min: (f64, f64),
+) -> FittedWindowRect {
+    let (ax, ay, aw, ah) = area;
+    let aw = aw.max(1.0);
+    let ah = ah.max(1.0);
+    let width = want.0.min(aw);
+    let height = want.1.min(ah);
+    FittedWindowRect {
+        width,
+        height,
+        min_width: min.0.min(width),
+        min_height: min.1.min(height),
+        x: (ax + (aw - width) / 2.0).max(ax),
+        y: (ay + (ah - height) / 2.0).max(ay),
+    }
+}
+
+/// 把显示器 `work_area()` 给的物理像素起点和尺寸按缩放比例换成逻辑像素
+/// `(x, y, w, h)`；缩放比例不是正数时按 1 算。纯函数，方便单测。
+pub(crate) fn work_area_to_logical(
+    position: (i32, i32),
+    size: (u32, u32),
+    scale_factor: f64,
+) -> (f64, f64, f64, f64) {
+    let sf = if scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    (
+        position.0 as f64 / sf,
+        position.1 as f64 / sf,
+        size.0 as f64 / sf,
+        size.1 as f64 / sf,
+    )
+}
+
+/// 取新窗口要放的显示器的可用区域（逻辑像素）：先看当前聚焦的窗口所在的屏，
+/// 再看主窗口，最后用主显示器。都取不到返回 `None`。
+#[cfg(feature = "tauri-runtime")]
+fn target_monitor_work_area(app: &AppHandle) -> Option<(f64, f64, f64, f64)> {
+    let windows = app.webview_windows();
+    let focused = windows
+        .values()
+        .find(|w| w.is_focused().unwrap_or(false))
+        .and_then(|w| w.current_monitor().ok().flatten());
+    let monitor = focused
+        .or_else(|| {
+            app.get_webview_window("main")
+                .and_then(|w| w.current_monitor().ok().flatten())
+        })
+        .or_else(|| app.primary_monitor().ok().flatten())?;
+    let area = monitor.work_area();
+    Some(work_area_to_logical(
+        (area.position.x, area.position.y),
+        (area.size.width, area.size.height),
+        monitor.scale_factor(),
+    ))
+}
+
+/// 按显示器可用区域设窗口的尺寸、最小尺寸和位置，代替
+/// `.inner_size(..).min_inner_size(..).center()`；取不到显示器时照旧居中。
+#[cfg(feature = "tauri-runtime")]
+pub(crate) fn fit_builder_to_monitor<'a, R, M>(
+    app: &AppHandle,
+    builder: WebviewWindowBuilder<'a, R, M>,
+    want: (f64, f64),
+    min: (f64, f64),
+) -> WebviewWindowBuilder<'a, R, M>
+where
+    R: tauri::Runtime,
+    M: tauri::Manager<R>,
+{
+    match target_monitor_work_area(app) {
+        Some(area) => {
+            let r = fit_window_rect(area, want, min);
+            builder
+                .inner_size(r.width, r.height)
+                .min_inner_size(r.min_width, r.min_height)
+                .position(r.x, r.y)
+        }
+        None => builder
+            .inner_size(want.0, want.1)
+            .min_inner_size(min.0, min.1)
+            .center(),
+    }
+}
+
 pub(crate) fn apply_platform_window_style<'a, R, M>(
     builder: WebviewWindowBuilder<'a, R, M>,
 ) -> WebviewWindowBuilder<'a, R, M>
@@ -3131,5 +3237,73 @@ mod commit_window_route_tests {
             commit_window_route(7, None, Some("everything")),
             "commit?folderId=7"
         );
+    }
+}
+
+#[cfg(test)]
+mod fit_window_rect_tests {
+    use super::{fit_window_rect, work_area_to_logical, FittedWindowRect};
+
+    fn assert_inside(r: FittedWindowRect, area: (f64, f64, f64, f64)) {
+        assert!(r.x >= area.0, "左边在屏幕外：{r:?}");
+        assert!(r.y >= area.1, "上边在屏幕外：{r:?}");
+        assert!(r.x + r.width <= area.0 + area.2, "右边在屏幕外：{r:?}");
+        assert!(r.y + r.height <= area.1 + area.3, "下边在屏幕外：{r:?}");
+        assert!(r.min_width <= r.width && r.min_height <= r.height, "{r:?}");
+    }
+
+    #[test]
+    fn small_screen_shrinks_remote_window_into_work_area() {
+        // 1024×768，菜单栏 25、Dock 在下方占 70
+        let area = (0.0, 25.0, 1024.0, 673.0);
+        let r = fit_window_rect(area, (1260.0, 860.0), (400.0, 600.0));
+        assert_eq!((r.width, r.height), (1024.0, 673.0));
+        assert_eq!((r.x, r.y), (0.0, 25.0));
+        assert_inside(r, area);
+    }
+
+    #[test]
+    fn roomy_screen_keeps_size_and_centres() {
+        let area = (0.0, 25.0, 1920.0, 1055.0);
+        let r = fit_window_rect(area, (1260.0, 860.0), (400.0, 600.0));
+        assert_eq!((r.width, r.height), (1260.0, 860.0));
+        assert_eq!((r.x, r.y), (330.0, 122.5));
+        assert_eq!((r.min_width, r.min_height), (400.0, 600.0));
+    }
+
+    #[test]
+    fn secondary_monitor_at_negative_origin() {
+        // 副屏在主屏左边，逻辑坐标为负（scale 2 的 2048 物理宽 = 1024 逻辑宽）
+        let area = (-1024.0, 0.0, 1024.0, 768.0);
+        let r = fit_window_rect(area, (1260.0, 860.0), (400.0, 600.0));
+        assert_eq!((r.x, r.y), (-1024.0, 0.0));
+        assert_inside(r, area);
+    }
+
+    #[test]
+    fn retina_secondary_monitor_physical_area_converts_to_logical() {
+        // 副屏在主屏左边、scale 2：物理起点 (-2048, 50)、尺寸 2048×1436
+        let area = work_area_to_logical((-2048, 50), (2048, 1436), 2.0);
+        assert_eq!(area, (-1024.0, 25.0, 1024.0, 718.0));
+        let r = fit_window_rect(area, (1260.0, 860.0), (400.0, 600.0));
+        assert_eq!((r.width, r.height), (1024.0, 718.0));
+        assert_eq!((r.x, r.y), (-1024.0, 25.0));
+        assert_inside(r, area);
+    }
+
+    #[test]
+    fn non_positive_scale_factor_falls_back_to_one() {
+        assert_eq!(
+            work_area_to_logical((0, 25), (1024, 673), 0.0),
+            (0.0, 25.0, 1024.0, 673.0)
+        );
+    }
+
+    #[test]
+    fn min_size_larger_than_screen_is_capped() {
+        let area = (0.0, 0.0, 900.0, 500.0);
+        let r = fit_window_rect(area, (1220.0, 820.0), (980.0, 620.0));
+        assert_eq!((r.min_width, r.min_height), (900.0, 500.0));
+        assert_inside(r, area);
     }
 }

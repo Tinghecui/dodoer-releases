@@ -246,10 +246,14 @@ pub(crate) fn build_remote_workspace_window(
     );
     let builder = WebviewWindowBuilder::new(app, &label, url)
         .title(format!("CoTeam - {}", connection.name))
-        .inner_size(1260.0, 860.0)
-        .min_inner_size(400.0, 600.0)
-        .focused(focus)
-        .center();
+        .focused(focus);
+    // 按所在显示器的可用区域收小、居中，小屏上不会有一截跑到屏幕外（#1061）。
+    let builder = crate::commands::windows::fit_builder_to_monitor(
+        app,
+        builder,
+        (1260.0, 860.0),
+        (400.0, 600.0),
+    );
     let builder = crate::commands::windows::apply_platform_window_style(builder);
     // Remote workspace windows load the same `/workspace` route with the taller
     // h-10 title bar, so they get the workspace traffic-light position (not the

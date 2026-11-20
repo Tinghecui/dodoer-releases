@@ -117,6 +117,10 @@
 
 ```
 # <id8> 是设备编号的前 8 位
+Match originalhost desktop exec "printenv CODEG_CLI_CALLER >/dev/null" !exec "<codeg-cli 的绝对路径> desktop check --device <设备编号>"
+  ControlMaster no
+  ControlPath none
+  ControlPersist no
 Match originalhost desktop exec "printenv CODEG_CLI_CALLER >/dev/null"
   ControlPath <目录>/cm-<id8>-${CODEG_CLI_CALLER}
 Host desktop
@@ -133,6 +137,8 @@ Host desktop
   ControlPersist 10m
   ServerAliveInterval 30
 
+Match originalhost laptop exec "printenv CODEG_CLI_CALLER >/dev/null" !exec "…"
+  …
 Match originalhost laptop exec "printenv CODEG_CLI_CALLER >/dev/null"
   …
 Host laptop
@@ -147,6 +153,7 @@ Host *
 - `known_hosts` 一台借出中的设备一行，名字是 `dodoer-<id8>`：一台设备只能出示它自己的密钥。
 - **`codeg-cli desktop proxy --device <编号>`**：连 `GET /api/cli_host_tunnel?device=<编号>`，并带上它所在进程的 `CODEG_CLI_CALLER`（每个智能体进程和它跑的命令都有，值是连接编号）。服务器向这台设备借出命令行的那条 socket 要通道；同一台设备有几个窗口时用最近用的那个。
 - **共用连接按对话分**（`Match` 那两行）：有 `CODEG_CLI_CALLER` 时，`ControlPath` 后面多带连接编号。不然对话 B 会顺着对话 A 留下的连接进去，服务器既拦不了它（6.5），也说不出是谁在用这台设备。没有这个变量时（人在服务器终端里自己敲 `ssh`）用一台设备一条的。2026-11-15 在服务器的 OpenSSH 9.6 上用 `ssh -G` 验过两种情况；`${}` 要 OpenSSH 8.4 以上。socket 路径超长时不分对话，退回一台设备一条。
+- **连之前先问一次**（第一段 `Match`，#991）：智能体的 `ssh`（有 `CODEG_CLI_CALLER`）每次连之前先跑 `codeg-cli desktop check --device <编号>`，问 `GET /api/cli_host_check`：和开通道时一样查设备借没借出、这个对话给没给它这台（6.5），不开通道、不请设备拨回来，也不算进限速。放行就退出 0，这一段不成立，照常用共用连接；不让连就把服务器的说明写到 stderr、退出 1，这一段成立：不用共用连接。原因是开了 `ControlPersist` 的 `ssh`（不加 `-v`）会把代理命令的 stderr 扔掉，智能体只看到「Connection closed by UNKNOWN port 65535」；`ControlPath none` 下代理的说明照常显示，也不会顺着后台还开着的旧连接进去（#989）。`Match exec` 跑的时候 stderr 还没被重定向，`desktop check` 自己说的那一遍一定看得到。设备自己没有共用连接（socket 路径超长）时不加这一段。
 - **限速改成每台设备各算**：现在全服务器每分钟最多 6 条通道（`TUNNELS_PER_MINUTE`），是为了不超过 CoTeam nginx 对一个来源地址每分钟 20 条新连接的限制。通道是设备拨过来的，每台设备是自己的地址。
 - 密钥、`Include`、`Host *` 结尾这些照旧（`docs/host-ssh.md` 5.3）。
 

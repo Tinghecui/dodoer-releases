@@ -76,6 +76,12 @@ pub fn routes(service: Arc<CliRunService>) -> Router {
             "/cli_host_tunnel",
             axum::routing::get(crate::web::host_tunnel::cli_end),
         )
+        // Cowork fork（#991）：`desktop check`，`ssh` 连之前先问能不能连
+        // （`host_ssh::tunnel::CLI_CHECK_ROUTE`）。
+        .route(
+            "/cli_host_check",
+            axum::routing::get(crate::web::host_tunnel::cli_check),
+        )
         .layer(Extension(service))
 }
 

@@ -165,6 +165,7 @@
     "POST /api/cli_automation_run_get": "codeg-cli（cli_run/http.rs）",
     "POST /api/cli_automations": "codeg-cli（cli_run/http.rs）",
     "POST /api/cli_hello": "codeg-cli（cli_run/http.rs）",
+    "GET /api/cli_host_check": "ssh 连之前的 desktop check（codeg-cli，web/host_tunnel.rs）",
     "GET /api/cli_host_tunnel": "ssh desktop（codeg-cli 的代理，web/host_tunnel.rs）",
     "POST /api/cli_run_cancel": "codeg-cli（cli_run/http.rs）",
     "POST /api/cli_run_events": "codeg-cli（cli_run/http.rs）",

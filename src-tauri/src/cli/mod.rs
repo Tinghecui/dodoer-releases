@@ -227,6 +227,9 @@ async fn dispatch(cli: Cli, env: connect::Env) -> i32 {
             args::DesktopAction::Proxy { device } => {
                 desktop::proxy(&cli.global, &env, device.as_deref()).await
             }
+            args::DesktopAction::Check { device } => {
+                desktop::check(&cli.global, &env, device.as_deref()).await
+            }
         },
     }
 }

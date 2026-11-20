@@ -251,6 +251,10 @@ fn config_text(dir: &Path, plan: &SshPlan, program: &Path) -> Result<String, Str
         } else {
             device.name.clone()
         };
+        let control = format!("{CONTROL}-{}", short_id(&device.id));
+        if shares(dir, &control) {
+            text.push_str(&check_first(&proxy, &names, &device.id));
+        }
         text.push_str(&per_conversation(dir, &names, &device.id)?);
         text.push_str(&entry(
             dir,
@@ -260,7 +264,7 @@ fn config_text(dir: &Path, plan: &SshPlan, program: &Path) -> Result<String, Str
                 alias: host_key_alias(&device.id),
                 user: device.user.as_deref().filter(|u| plain_user(u)),
                 device_arg: format!(" --device {}", device.id),
-                control: Some(format!("{CONTROL}-{}", short_id(&device.id))),
+                control: Some(control),
             },
         )?);
     }
@@ -327,13 +331,41 @@ fn per_conversation(dir: &Path, names: &str, id: &str) -> Result<String, String>
     ))
 }
 
+/// Whether an entry with this socket keeps a shared connection (its path
+/// short enough for one).
+fn shares(dir: &Path, socket: &str) -> bool {
+    dir.join(socket).as_os_str().len() <= SOCKET_PATH_MAX
+}
+
+/// Cowork fork（#991）：智能体的 `ssh`（`CODEG_CLI_CALLER`）每次连之前先跑
+/// `desktop check`，问服务器这条 `ssh` 让不让连。被拒绝时这一段成立：不用共用
+/// 连接。开着 `ControlPersist` 的 `ssh` 会把代理的 stderr 扔掉，拒绝的说明就只剩
+/// 「Connection closed」；`ControlPath none` 下它照常显示（`desktop check` 自己
+/// 也说一遍），而且不会搭上后台还开着的旧连接（#989）。排在按对话分的共用连接
+/// 和设备自己那段前面，`ControlPath` 取第一个。程序路径里有 `"` 的放不进
+/// `exec "…"`，那就不先问，照旧。
+fn check_first(proxy: &str, names: &str, id: &str) -> String {
+    if proxy.contains('"') {
+        return String::new();
+    }
+    let caller = crate::cli_run::CLI_CALLER_ENV;
+    format!(
+        "Match originalhost {} exec \"printenv {caller} >/dev/null\" \
+         !exec \"{proxy} desktop check --device {id}\"\n\
+         \x20 ControlMaster no\n\
+         \x20 ControlPath none\n\
+         \x20 ControlPersist no\n",
+        names.replace(' ', ",")
+    )
+}
+
 fn entry(dir: &Path, proxy: &str, entry: Entry<'_>) -> Result<String, String> {
     let path = |name: &str| {
         config_path(&dir.join(name))
             .ok_or_else(|| format!("{} cannot go into an ssh configuration", dir.display()))
     };
     let multiplex = match &entry.control {
-        Some(socket) if dir.join(socket).as_os_str().len() <= SOCKET_PATH_MAX => format!(
+        Some(socket) if shares(dir, socket) => format!(
             "  ControlMaster auto\n  ControlPath {}\n  ControlPersist 10m\n",
             path(socket)?
         ),
@@ -530,8 +562,50 @@ mod tests {
 
         let deep = Path::new("/a/very/long/data/directory/that/goes/on/and/on/host-ssh");
         let text = config_text(deep, &plan, Path::new("/opt/codeg/codeg-cli")).unwrap();
-        assert!(!text.contains("Match originalhost"), "{text}");
+        assert!(!text.contains("${CODEG_CLI_CALLER}"), "{text}");
         assert!(text.contains("Host imac desktop\n"));
+    }
+
+    /// Cowork fork（#991）：智能体的 `ssh` 每次连之前先跑 `desktop check`，排在
+    /// 按对话分的共用连接和设备自己那段前面。被拒绝时（`!exec` 成立）不用共用连接：
+    /// `ControlPath none` 下 `ssh` 不把代理的 stderr 扔掉，拒绝的说明能到智能体那里，
+    /// 也不会搭上后台还开着的旧连接（#989）。
+    #[test]
+    fn an_agents_ssh_asks_first_and_shares_nothing_when_refused() {
+        let plan = SshPlan {
+            devices: vec![
+                SshDevice {
+                    also_desktop: true,
+                    ..device(ID_A, "imac", Some("me"), Some(KEY_A))
+                },
+                device(ID_B, "laptop", Some("me2"), None),
+            ],
+            legacy: None,
+        };
+        let text = written(&plan);
+        for (names, id, host_line) in [
+            ("imac,desktop", ID_A, "Host imac desktop\n"),
+            ("laptop", ID_B, "Host laptop\n"),
+        ] {
+            let check = format!(
+                "Match originalhost {names} exec \"printenv CODEG_CLI_CALLER >/dev/null\" \
+                 !exec \"'/opt/codeg/codeg-cli' desktop check --device {id}\"\n  \
+                 ControlMaster no\n  ControlPath none\n  ControlPersist no\n"
+            );
+            let at = text
+                .find(&check)
+                .unwrap_or_else(|| panic!("{check}\nnot in:\n{text}"));
+            let own = text
+                .find(&format!("cm-{}-${{CODEG_CLI_CALLER}}", &id[..8]))
+                .unwrap();
+            assert!(at < own, "before the conversation's own connection");
+            assert!(at < text.find(host_line).unwrap(), "before the device's");
+        }
+
+        // 设备自己没有共用连接（目录太长）：不用先问，说明本来就能看到。
+        let long = PathBuf::from(format!("/{}", "d".repeat(120)));
+        let text = config_text(&long, &plan, Path::new("/usr/bin/codeg-cli")).unwrap();
+        assert!(!text.contains("desktop check"), "{text}");
     }
 
     #[test]

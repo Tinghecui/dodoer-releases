@@ -299,6 +299,16 @@ pub enum DesktopAction {
         #[arg(long)]
         device: Option<String>,
     },
+    /// Ask the runtime whether an `ssh <device>` may go ahead, without
+    /// connecting: exit 0 if so, else say why on stderr and exit 1. What
+    /// the ssh configuration codeg-server writes runs before each `ssh`
+    /// from an agent's shell. Not for typing.
+    Check {
+        /// The device's id, as the ssh configuration names it. Without it,
+        /// the one the old name `desktop` means.
+        #[arg(long)]
+        device: Option<String>,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -749,6 +759,23 @@ mod tests {
             })) if id == "0123456789abcdef"
         ));
         assert!(parse(&["desktop"]).is_err(), "says which");
+    }
+
+    /// Cowork fork（#991）：`ssh` 配置的 `Match exec` 跑的 `desktop check`。
+    #[test]
+    fn desktop_check_parses() {
+        assert!(matches!(
+            parse(&["desktop", "check", "--device", "0123456789abcdef"]).unwrap().command,
+            Some(Command::Desktop(DesktopArgs {
+                action: DesktopAction::Check { device: Some(ref id) }
+            })) if id == "0123456789abcdef"
+        ));
+        assert!(matches!(
+            parse(&["desktop", "check"]).unwrap().command,
+            Some(Command::Desktop(DesktopArgs {
+                action: DesktopAction::Check { device: None }
+            }))
+        ));
     }
 
     /// The two commands of issue #694, with the command name changed.

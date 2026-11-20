@@ -119,18 +119,7 @@ impl HostTunnels {
             Some(id) => ShellTarget::Device(id),
             None => ShellTarget::Default,
         };
-        // Why it cannot be reached is said before anything is written.
-        self.registry.check_shell(target).map_err(refusal)?;
-        // An agent's `ssh` goes only to a device its conversation has been
-        // given (`web::working_device`); the person's own, anywhere.
-        if let (Some(caller), Some(tools)) = (caller, crate::web::working_device::installed()) {
-            if let Some(device) = self.registry.shell_device(target) {
-                tools
-                    .check_ssh(caller, &device)
-                    .await
-                    .map_err(|note| (StatusCode::PRECONDITION_REQUIRED, note))?;
-            }
-        }
+        self.check(device, caller).await?;
         let failed = |e: String| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -146,6 +135,34 @@ impl HostTunnels {
             .open_tunnel(&key, target, DIAL_TIMEOUT)
             .await
             .map_err(refusal)
+    }
+    /// Whether one `ssh` to `device` may go ahead, as [`Self::open`] would
+    /// answer before it asks the device for a tunnel: the same status and
+    /// words, nothing written, nothing dialed. Cowork fork（#991）：`ssh` 配置的
+    /// `Match exec` 每次连之前问这里（`desktop check`），被拒绝时说明直接到
+    /// 智能体那里，也不去用后台留着的共用连接。
+    pub async fn check(
+        &self,
+        device: Option<&str>,
+        caller: Option<&str>,
+    ) -> Result<(), (StatusCode, String)> {
+        let target = match device {
+            Some(id) => ShellTarget::Device(id),
+            None => ShellTarget::Default,
+        };
+        // Why it cannot be reached is said before anything is written.
+        self.registry.check_shell(target).map_err(refusal)?;
+        // An agent's `ssh` goes only to a device its conversation has been
+        // given (`web::working_device`); the person's own, anywhere.
+        if let (Some(caller), Some(tools)) = (caller, crate::web::working_device::installed()) {
+            if let Some(device) = self.registry.shell_device(target) {
+                tools
+                    .check_ssh(caller, &device)
+                    .await
+                    .map_err(|note| (StatusCode::PRECONDITION_REQUIRED, note))?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -295,6 +312,32 @@ pub async fn cli_end(
 ) -> Response {
     match service.host_tunnels() {
         Some(tunnels) => serve_cli_end(ws, tunnels, query).await,
+        None => (
+            StatusCode::NOT_FOUND,
+            "This codeg runtime does not reach any desktop's command line.",
+        )
+            .into_response(),
+    }
+}
+
+/// Cowork fork（#991）：`desktop check` 问的那一端：放行回 200，拒绝回和开隧道
+/// 时一样的状态码和说明。
+pub async fn serve_cli_check(tunnels: &HostTunnels, query: CliTunnelQuery) -> Response {
+    let caller = query.caller.as_deref().filter(|caller| is_caller(caller));
+    match tunnels.check(query.device.as_deref(), caller).await {
+        Ok(()) => (StatusCode::OK, "ok").into_response(),
+        Err((status, message)) => (status, message).into_response(),
+    }
+}
+
+/// `GET /api/cli_host_check?device=`, among the CLI's routes
+/// (`cli_run::http`).
+pub async fn cli_check(
+    Query(query): Query<CliTunnelQuery>,
+    Extension(service): Extension<Arc<CliRunService>>,
+) -> Response {
+    match service.host_tunnels() {
+        Some(tunnels) => serve_cli_check(&tunnels, query).await,
         None => (
             StatusCode::NOT_FOUND,
             "This codeg runtime does not reach any desktop's command line.",
@@ -475,6 +518,88 @@ mod tests {
         assert!(tunnel::dial_cli_end(&base, "t", Some("not an id"), None)
             .await
             .is_err());
+    }
+
+    /// `serve_cli_check` 的回答：状态码和文字。
+    async fn checked(tunnels: &HostTunnels, device: Option<&str>) -> (StatusCode, String) {
+        let response = serve_cli_check(
+            tunnels,
+            CliTunnelQuery {
+                device: device.map(String::from),
+                caller: None,
+            },
+        )
+        .await;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// Cowork fork（#991）：`desktop check` 问的那一端，拒绝时的状态码和说明和真开
+    /// 隧道时一样；放行回 200，而且不请设备拨回来、不准备 `ssh` 的文件。
+    #[tokio::test]
+    async fn the_check_answers_as_the_tunnel_would_without_dialing() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(HostRegistry::new());
+        let tunnels = tunnels_in(dir.path(), &registry);
+
+        // 谁也没借出：和 `dial_cli_end` 听到的一样。
+        let (status, said) = checked(&tunnels, None).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(said, NO_DESKTOP_NOTE);
+        assert_eq!(
+            (status, said),
+            refusal(TunnelError::NoHost),
+            "the same as the tunnel's refusal"
+        );
+
+        // 设备簿里没有的设备。
+        let (status, said) = checked(&tunnels, Some("0123456789abcdef")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(said.contains("no longer in this server's list"), "{said}");
+
+        // 一台借出命令行的设备：放行，没有隧道指令发给它。
+        let device = "dddd0000000000000000000000000004";
+        let (tx, mut orders) = mpsc::channel(8);
+        let _registration = registry.register_on(
+            tx,
+            vec![CAPABILITY.to_string()],
+            None,
+            Some(ShellHost {
+                host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAA".to_string(),
+                user: "me".to_string(),
+                platform: None,
+            }),
+            Some(crate::host_device::HostDevice {
+                id: device.to_string(),
+                name: "Mac dddd".into(),
+                model: "MacBook".into(),
+                kind: Some("laptop".into()),
+            }),
+            None,
+        );
+        let (status, said) = checked(&tunnels, Some(device)).await;
+        assert_eq!((status, said.as_str()), (StatusCode::OK, "ok"));
+        let (status, _) = checked(&tunnels, None).await;
+        assert_eq!(status, StatusCode::OK, "the one device is the old name's");
+        tokio::task::yield_now().await;
+        while let Ok(order) = orders.try_recv() {
+            assert!(
+                !matches!(order, ServerMsg::HostTunnel { .. }),
+                "the check asked the device to dial back"
+            );
+        }
+        assert!(
+            !dir.path().join("data").join("host-ssh").exists(),
+            "the check wrote the ssh files"
+        );
+    }
+
+    #[test]
+    fn the_check_route_is_the_one_the_cli_asks() {
+        assert_eq!(crate::host_ssh::tunnel::CLI_CHECK_ROUTE, "cli_host_check");
     }
 
     /// Each case its own status, so that the proxy can tell them apart
@@ -926,18 +1051,37 @@ mod tests {
             )));
         }
         // In an agent's shell, its conversation's own shared connection
-        // (unless the folder is too deep for one).
+        // (unless the folder is too deep for one) — once `desktop check`
+        // lets it go ahead. Cowork fork（#991）：check 不放行（这里写进配置的
+        // codeg-cli 不存在）就不用共用连接，`ssh` 不再把代理的说明扔掉。
         let written = std::fs::read_to_string(files.join("config")).unwrap();
-        if written.contains("Match originalhost") {
-            let resolved = std::process::Command::new("/usr/bin/ssh")
-                .arg("-G")
-                .arg("-F")
-                .arg(files.join("config"))
-                .arg("study-imac")
-                .env(crate::cli_run::CLI_CALLER_ENV, "conn-1234")
-                .output()
-                .unwrap();
-            let resolved = String::from_utf8_lossy(&resolved.stdout).to_lowercase();
+        if written.contains("${CODEG_CLI_CALLER}") {
+            let resolve = |config: &Path| {
+                let resolved = std::process::Command::new("/usr/bin/ssh")
+                    .arg("-G")
+                    .arg("-F")
+                    .arg(config)
+                    .arg("study-imac")
+                    .env(crate::cli_run::CLI_CALLER_ENV, "conn-1234")
+                    .output()
+                    .unwrap();
+                String::from_utf8_lossy(&resolved.stdout).to_lowercase()
+            };
+            let refused = resolve(&files.join("config"));
+            // `ControlPath none`：`-G` 不列出它。
+            assert!(!refused.contains("controlpath"), "{refused}");
+            assert!(refused.contains("controlmaster false"), "{refused}");
+            assert!(refused.contains("controlpersist no"), "{refused}");
+            let passing = files.join("config-passing");
+            std::fs::write(
+                &passing,
+                written.replace(
+                    "'/opt/codeg/codeg-cli' desktop check",
+                    "'/bin/true' desktop check",
+                ),
+            )
+            .unwrap();
+            let resolved = resolve(&passing);
             assert!(resolved.contains("cm-01234567-conn-1234"), "{resolved}");
         }
 

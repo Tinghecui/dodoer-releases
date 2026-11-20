@@ -39,6 +39,11 @@ pub const TUNNEL_PROTOCOL: &str = "codeg-host-tunnel";
 /// token) alike, as every `/api/cli_*` route.
 pub const CLI_TUNNEL_ROUTE: &str = "cli_host_tunnel";
 
+/// Cowork fork（#991）：`codeg-cli desktop check` 问的地方，同样在 `/api/` 下。
+/// 只回答这条 `ssh` 让不让连（和 [`CLI_TUNNEL_ROUTE`] 拒绝时的状态码、说明一样），
+/// 不开隧道，也不请设备拨回来。`ssh` 配置里的 `Match exec` 每次连之前跑它。
+pub const CLI_CHECK_ROUTE: &str = "cli_host_check";
+
 /// What `ssh desktop` prints when nothing lends a shell. No product name
 /// for the server (it runs under either brand); the desktop app is dodoer's.
 pub const NO_DESKTOP_NOTE: &str =
@@ -165,6 +170,16 @@ pub type DialedTunnel = tokio_tungstenite::WebSocketStream<
 /// agent's shell (`CODEG_CLI_CALLER`) — the connection it runs under, for
 /// the server to check against that conversation's devices.
 fn cli_end_path(device: Option<&str>, caller: Option<&str>) -> Result<String, String> {
+    cli_path(CLI_TUNNEL_ROUTE, device, caller)
+}
+
+/// `desktop check` 问的路径：参数和 [`cli_end_path`] 一样，只是路由换成
+/// [`CLI_CHECK_ROUTE`]。
+pub fn cli_check_path(device: Option<&str>, caller: Option<&str>) -> Result<String, String> {
+    cli_path(CLI_CHECK_ROUTE, device, caller)
+}
+
+fn cli_path(route: &str, device: Option<&str>, caller: Option<&str>) -> Result<String, String> {
     let mut query = Vec::new();
     match device {
         Some(id) if crate::host_device::is_id(id) => query.push(format!("device={id}")),
@@ -181,9 +196,9 @@ fn cli_end_path(device: Option<&str>, caller: Option<&str>) -> Result<String, St
         query.push(format!("caller={caller}"));
     }
     Ok(if query.is_empty() {
-        format!("/api/{CLI_TUNNEL_ROUTE}")
+        format!("/api/{route}")
     } else {
-        format!("/api/{CLI_TUNNEL_ROUTE}?{}", query.join("&"))
+        format!("/api/{route}?{}", query.join("&"))
     })
 }
 
@@ -287,6 +302,17 @@ mod tests {
             "what is not an id is left out"
         );
         assert!(cli_end_path(Some("not an id"), None).is_err());
+    }
+
+    /// Cowork fork（#991）：`desktop check` 问的路径带的参数和开隧道的一样。
+    #[test]
+    fn the_check_names_the_device_and_the_caller_too() {
+        assert_eq!(
+            cli_check_path(Some("0123456789abcdef"), Some("4f1c-a2b3")).unwrap(),
+            "/api/cli_host_check?device=0123456789abcdef&caller=4f1c-a2b3"
+        );
+        assert_eq!(cli_check_path(None, None).unwrap(), "/api/cli_host_check");
+        assert!(cli_check_path(Some("not an id"), None).is_err());
     }
 
     #[test]

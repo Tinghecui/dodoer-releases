@@ -263,6 +263,7 @@ import {
   notifyWorktreeCreated,
   notifyWorktreeSetupResult,
 } from "./worktree-setup-toasts"
+import { collectDraftTabIds, tabViewKind } from "./tab-view-gate"
 import { useRightStatusCapsuleWidth } from "@/stores/right-status-capsule-store"
 
 interface ConversationTabViewProps {
@@ -4141,6 +4142,17 @@ export function ConversationDetailPanel() {
   )
 
   const tileTabRefs = useRef<Map<string, HTMLDivElement | null>>(new Map())
+  // #1045：本页见过还没有会话号的（草稿）标签。草稿标签发第一条消息时才建
+  // 会话、绑上会话号，这时会话列表可能还没回来（限流时要好几秒）；对它不能
+  // 再等列表，否则视图被卸掉重挂，排队区那条读回成失败、不再自动发送。
+  const [seenDrafts, setSeenDrafts] = useState(() => ({
+    tabs,
+    ids: collectDraftTabIds(tabs, new Set<string>()),
+  }))
+  if (seenDrafts.tabs !== tabs) {
+    setSeenDrafts({ tabs, ids: collectDraftTabIds(tabs, seenDrafts.ids) })
+  }
+  const draftTabIds = seenDrafts.ids
   const groupContainerRef = useRef<HTMLDivElement | null>(null)
   // The panel's context menu wraps the transcript, so a touch long-press that
   // selects text would also open it — modal, over the selection's copy bubble.
@@ -4202,13 +4214,17 @@ export function ConversationDetailPanel() {
     const folderPath = allFolders.find((f) => f.id === tab.folderId)?.path
     // jenny fork: a Loop row has no agent to connect to. Until the first list
     // comes back a restored tab can't tell, so it mounts nothing yet.
-    const tabKind =
-      tab.conversationId != null
-        ? conversationKinds.get(tab.conversationId)
-        : undefined
+    const viewKind = tabViewKind({
+      conversationId: tab.conversationId,
+      conversationsLoaded,
+      kind:
+        tab.conversationId != null
+          ? conversationKinds.get(tab.conversationId)
+          : undefined,
+      mountedBefore: draftTabIds.has(tab.id),
+    })
     const view =
-      tab.conversationId != null && !conversationsLoaded ? null : tabKind ===
-        "loop" ? (
+      viewKind === "wait" ? null : viewKind === "loop" ? (
         <LoopConversationView
           folderId={tab.folderId}
           isActive={active && visible}

@@ -122,6 +122,19 @@ export function notReadyRecovery(
 }
 
 /**
+ * #1118：排队的消息在等的连接是「未连接」（断了，或者还没开始连），也就是眼下
+ * 没有连接在进行。自动连接只在打开标签、换目录 / 智能体时跑，智能体不认会话后的
+ * 自动重发也只试一次；那次没连上又没留下失败记录时，就没有谁会再去连，消息会
+ * 一直等。连接中、已连上、正在回复都还在往就绪走；出错的另有失败提示
+ * （`connectFailed`），这里都不算。
+ */
+export function queueWaitsOnIdleConnection(
+  connStatus: string | null | undefined
+): boolean {
+  return connStatus == null || connStatus === "disconnected"
+}
+
+/**
  * #792：「已经连上、但连的不是这个标签要的目录 / 智能体」持续这么久还没就绪，
  * 就再请求一次连接，并把排队区队首标成失败、带重试，不再一直显示「正在等待就绪」。
  */

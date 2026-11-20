@@ -152,6 +152,7 @@ import {
   flushRetryDelayMs,
   isConnectionReady,
   notReadyRecovery,
+  queueWaitsOnIdleConnection,
   shouldQueueDirectSend,
   shouldRejectDuplicateCreate,
 } from "@/lib/queue-flush"
@@ -1417,6 +1418,27 @@ const ConversationTabView = memo(function ConversationTabView({
     },
   })
 
+  // Cowork fork（#1118）：连接停在「未连接」、眼下又没有连接在进行（智能体反复
+  // 崩溃时，不认会话后的那一次自动重发也没连上，又没留下失败记录，上面的
+  // agentUnavailable 不算它），自动连接不会再跑，排队的消息就一直等下去。
+  // 等满 STALE_TARGET_FAIL_MS：再连一次，并把队首标成失败、带重试（同 #792）。
+  // 只管当前标签：后台标签不自动连接，切回来才连。
+  const queueIdleDisconnected =
+    isActive &&
+    canAutoConnect &&
+    agentUnavailable == null &&
+    queueWaitsOnIdleConnection(composerConnStatus)
+  useStaleTargetFail({
+    stale: queueIdleDisconnected,
+    queueLength: msgQueue.length,
+    headFailed: queueHeadFailed,
+    isReady: () => !queueWaitsOnIdleConnection(composerConnStatus),
+    onTimeout: () => {
+      handleFocus()
+      mqFailHead()
+    },
+  })
+
   // Cowork fork（#1006）：连接还没起来（智能体在启动、握手，状态是连接中 /
   // 还没连），排队的消息就一直写「正在等待就绪」，慢的时候用户不知道还要等
   // 多久。等满 STALE_TARGET_FAIL_MS 换成「启动较慢，已等待 N 秒」并给一个
@@ -1430,6 +1452,8 @@ const ConversationTabView = memo(function ConversationTabView({
     !queueHeadFailed &&
     agentUnavailable == null &&
     !staleConnectedTarget &&
+    // #1118：没有连接在进行时不说「就绪后自动发送」，到点由上面那条标失败。
+    !queueIdleDisconnected &&
     composerConnStatus !== "connected" &&
     composerConnStatus !== "prompting"
   const queueSlowWaitSeconds = useSlowConnectWait(queueWaitingForConnect)

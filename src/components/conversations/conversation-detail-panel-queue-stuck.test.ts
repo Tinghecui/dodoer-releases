@@ -652,6 +652,39 @@ describe("a session that never finishes initializing does not hold the queue for
   })
 })
 
+// #1118：自动重发也没连上，连接停在「未连接」又没留下失败记录时，没有谁会再去连，
+// 排队区不能一直写「启动较慢，已等待 N 秒」：满时限再连一次，并把队首标失败、带重试。
+// 判断「没有连接在进行」的是 `queueWaitsOnIdleConnection`（queue-flush.test.ts）。
+describe("a queue waiting on a connection nobody is starting", () => {
+  it("fails the head after the timeout and tries the connection once more", () => {
+    const effect = between(
+      "const queueIdleDisconnected =",
+      "const queueWaitingForConnect ="
+    )
+    expect(effect).toContain("queueWaitsOnIdleConnection(composerConnStatus)")
+    expect(effect).toContain("isActive &&")
+    expect(effect).toContain("canAutoConnect &&")
+    expect(effect).toContain("agentUnavailable == null")
+    expect(effect).toContain("stale: queueIdleDisconnected")
+    expect(effect).toContain("queueLength: msgQueue.length")
+    expect(effect).toContain("headFailed: queueHeadFailed")
+    expect(effect).toContain(
+      "isReady: () => !queueWaitsOnIdleConnection(composerConnStatus)"
+    )
+    const onTimeout = effect.slice(effect.indexOf("onTimeout:"))
+    expect(onTimeout).toContain("handleFocus()")
+    expect(onTimeout).toContain("mqFailHead()")
+  })
+
+  it("does not tell the user the message will send by itself while nothing connects", () => {
+    const waiting = between(
+      "const queueWaitingForConnect =",
+      "const queueSlowWaitSeconds ="
+    )
+    expect(waiting).toContain("!queueIdleDisconnected")
+  })
+})
+
 // #970：发出去的那条带着 clientMessageId 存下，退出重开后会话里有同一个 id
 // 的用户消息时，读回的「发送失败」拿掉。
 describe("a send that reached the backend before a quit", () => {

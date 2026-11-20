@@ -3,6 +3,7 @@ import {
   flushRetryDelayMs,
   isConnectionReady,
   notReadyRecovery,
+  queueWaitsOnIdleConnection,
   QUEUE_FLUSH_RETRY_BACKOFF_MS,
   STALE_TARGET_FAIL_MS,
   shouldQueueDirectSend,
@@ -146,5 +147,22 @@ describe("notReadyRecovery", () => {
 
   it("gives the stale-target wait a bounded timeout", () => {
     expect(STALE_TARGET_FAIL_MS).toBe(15_000)
+  })
+})
+
+// #1118：连接停在「未连接」（或还没有连接），而且没有连接在进行，排队的消息
+// 等不来就绪；连接中、已连上、出错（另有失败提示）都不算。
+describe("queueWaitsOnIdleConnection", () => {
+  it("counts a dropped or never-started connection", () => {
+    expect(queueWaitsOnIdleConnection("disconnected")).toBe(true)
+    expect(queueWaitsOnIdleConnection(null)).toBe(true)
+    expect(queueWaitsOnIdleConnection(undefined)).toBe(true)
+  })
+
+  it("leaves a connection that is coming up, up, or failed alone", () => {
+    expect(queueWaitsOnIdleConnection("connecting")).toBe(false)
+    expect(queueWaitsOnIdleConnection("connected")).toBe(false)
+    expect(queueWaitsOnIdleConnection("prompting")).toBe(false)
+    expect(queueWaitsOnIdleConnection("error")).toBe(false)
   })
 })

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "macos")]
 use std::sync::atomic::AtomicU32;
 #[cfg(target_os = "macos")]
@@ -141,6 +141,23 @@ pub struct SettingsWindowState {
 
 pub struct CommitWindowState {
     owner_by_commit_label: Mutex<HashMap<String, String>>,
+    /// 正在建的提交窗口名。查「窗口开没开」到真正 build 之间要等数据库，
+    /// 两次重叠的打开请求都会以为还没开、各建一个窗口，所以先在这里占住名字。
+    opening_commit_labels: Mutex<HashSet<String>>,
+}
+
+/// 占住一个正在建的窗口名，drop 时放掉（建成、出错提前返回都会放）。
+pub(crate) struct WindowOpeningGuard<'a> {
+    opening: &'a Mutex<HashSet<String>>,
+    label: String,
+}
+
+impl Drop for WindowOpeningGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut opening) = self.opening.lock() {
+            opening.remove(&self.label);
+        }
+    }
 }
 
 /// Owner tracking for the auxiliary windows that have no state of their own:
@@ -452,7 +469,23 @@ impl CommitWindowState {
     pub fn new() -> Self {
         Self {
             owner_by_commit_label: Mutex::new(HashMap::new()),
+            opening_commit_labels: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// 占住 `commit_label`。同名的窗口已经有人在建时返回 `None`。
+    fn begin_open(&self, commit_label: &str) -> Option<WindowOpeningGuard<'_>> {
+        // 锁坏了（别的线程拿着锁时 panic 过）就当没人在建，退回原来的行为，
+        // 不让提交窗口从此打不开。
+        if let Ok(mut opening) = self.opening_commit_labels.lock() {
+            if !opening.insert(commit_label.to_string()) {
+                return None;
+            }
+        }
+        Some(WindowOpeningGuard {
+            opening: &self.opening_commit_labels,
+            label: commit_label.to_string(),
+        })
     }
 
     fn set_owner(&self, commit_label: String, owner_label: String) {
@@ -815,6 +848,41 @@ pub async fn open_folder_window(
     Ok(folder)
 }
 
+/// 已经开着的提交窗口：这次右键带了路径（或范围），就把它导航到新地址，
+/// 勾选跟着这次走，而不是还停在上一次的；然后调到前面。
+#[allow(clippy::too_many_arguments)]
+fn focus_existing_commit_window(
+    existing: &tauri::WebviewWindow,
+    state: &CommitWindowState,
+    label: String,
+    owner_label: String,
+    folder_id: i32,
+    remote_connection_id: Option<i32>,
+    paths: Option<&[String]>,
+    scope: Option<&str>,
+) -> Result<(), AppCommandError> {
+    if paths.is_some() || scope.is_some() {
+        let remote_window_id = remote_window_id_from_window(existing);
+        let target_route = append_remote_context(
+            commit_window_route(folder_id, paths, scope),
+            remote_connection_id,
+            remote_window_id.as_deref(),
+        );
+        let target_json = serde_json::to_string(&format!("/{target_route}")).map_err(|e| {
+            AppCommandError::window("Failed to build commit navigation target", e.to_string())
+        })?;
+        let nav_script = format!("window.location.replace({target_json});");
+        existing.eval(&nav_script).map_err(|e| {
+            AppCommandError::window("Failed to navigate commit window", e.to_string())
+        })?;
+    }
+    state.set_owner(label, owner_label);
+    let _ = existing.unminimize();
+    existing
+        .set_focus()
+        .map_err(|e| AppCommandError::window("Failed to focus commit window", e.to_string()))
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 #[allow(clippy::too_many_arguments)]
@@ -838,30 +906,24 @@ pub async fn open_commit_window(
     let scope = scope.filter(|scope| !scope.is_empty());
 
     if let Some(existing) = app.get_webview_window(&label) {
-        // 已经开着的窗口：这次右键带了路径（或范围），就把它导航到新地址，
-        // 勾选跟着这次走，而不是还停在上一次的。
-        if paths.is_some() || scope.is_some() {
-            let remote_window_id = remote_window_id_from_window(&existing);
-            let target_route = append_remote_context(
-                commit_window_route(folder_id, paths.as_deref(), scope.as_deref()),
-                remote_connection_id,
-                remote_window_id.as_deref(),
-            );
-            let target_json = serde_json::to_string(&format!("/{target_route}")).map_err(|e| {
-                AppCommandError::window("Failed to build commit navigation target", e.to_string())
-            })?;
-            let nav_script = format!("window.location.replace({target_json});");
-            existing.eval(&nav_script).map_err(|e| {
-                AppCommandError::window("Failed to navigate commit window", e.to_string())
-            })?;
-        }
-        state.set_owner(label.clone(), owner_label);
-        let _ = existing.unminimize();
-        existing
-            .set_focus()
-            .map_err(|e| AppCommandError::window("Failed to focus commit window", e.to_string()))?;
-        return Ok(());
+        return focus_existing_commit_window(
+            &existing,
+            &state,
+            label,
+            owner_label,
+            folder_id,
+            remote_connection_id,
+            paths.as_deref(),
+            scope.as_deref(),
+        );
     }
+
+    // 同一个项目的提交窗口已经有一次请求在建（下面要等数据库，两次重叠的
+    // 请求都过得了上面的检查）：那一次建好会自己调到前面，这次什么都不做，
+    // 免得叠出两个一样的提交窗口。
+    let Some(_opening) = state.begin_open(&label) else {
+        return Ok(());
+    };
 
     let titles = resolve_window_titles(&db.conn, locale).await;
     let window_title = if remote_connection_id.is_some() {
@@ -876,6 +938,20 @@ pub async fn open_commit_window(
             })?;
         format!("{} - {}", titles.commit, folder.name)
     };
+    // 等数据库的时候窗口可能已经建出来了（比如占名字之前就在建的那一次），
+    // build 之前再查一次。
+    if let Some(existing) = app.get_webview_window(&label) {
+        return focus_existing_commit_window(
+            &existing,
+            &state,
+            label,
+            owner_label,
+            folder_id,
+            remote_connection_id,
+            paths.as_deref(),
+            scope.as_deref(),
+        );
+    }
     let (url_str, remote_window_id) = route_with_new_remote_window(
         commit_window_route(folder_id, paths.as_deref(), scope.as_deref()),
         remote_connection_id,
@@ -3195,6 +3271,31 @@ mod workspace_traffic_light_tests {
         assert_eq!(workspace_traffic_light_xy(150.0), (23.0, 48.75));
         // centre 31 * 0.5 = 15.5 -> y = 15.5 + 2.25 = 17.75
         assert_eq!(workspace_traffic_light_xy(50.0), (23.0, 17.75));
+    }
+}
+
+#[cfg(test)]
+mod commit_window_opening_tests {
+    use super::CommitWindowState;
+
+    // 两次重叠的打开请求：第一次占住名字以后，第二次占不到，不会再建一个窗口。
+    #[test]
+    fn second_open_of_the_same_label_is_refused_while_the_first_is_building() {
+        let state = CommitWindowState::new();
+        let first = state.begin_open("commit-7");
+        assert!(first.is_some());
+        assert!(state.begin_open("commit-7").is_none());
+        // 别的项目的提交窗口不受影响。
+        assert!(state.begin_open("commit-8").is_some());
+    }
+
+    // 第一次建完（或出错返回）放掉名字以后，下次又能打开。
+    #[test]
+    fn label_is_released_when_the_guard_drops() {
+        let state = CommitWindowState::new();
+        drop(state.begin_open("commit-7"));
+        let again = state.begin_open("commit-7");
+        assert!(again.is_some());
     }
 }
 

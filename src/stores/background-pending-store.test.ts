@@ -497,3 +497,56 @@ describe("countsAsRunning (Cowork fork)", () => {
     expect(isConversationActive(state, at(5, "pending_review"))).toBe(true)
   })
 })
+
+// #1043：回合中途被杀的会话（cancelled），本窗口的连接还留着被杀前的后台读数，
+// 服务器说的是 abandoned。红叉为准：不画沙漏、不算进行中，悬停写没跑完的任务。
+describe("cancelled rows with a stale live reading (#1043)", () => {
+  const conv = { id: 9, external_id: "sess-9", status: "cancelled" }
+
+  it("never shows the hourglass on a cancelled row; its tasks go to the red cross", () => {
+    const stale = { count: 1, names: ["Run sleep 600 in background"] }
+    expect(backgroundMarkOf("cancelled", stale)).toEqual({
+      waiting: null,
+      uncertain: null,
+      abandoned: stale,
+    })
+    expect(backgroundMarkOf("cancelled", { count: 1, names: [] })).toEqual({
+      waiting: null,
+      uncertain: null,
+    })
+  })
+
+  it("lets the server's abandoned entry win over this window's connection", () => {
+    publishBackgroundPending([
+      {
+        sessionId: "sess-9",
+        asyncTasks: [],
+        backgroundOutstanding: 1,
+        status: "connected",
+      },
+    ])
+    replaceServerBackgroundPending([
+      {
+        conversation_id: 9,
+        count: 0,
+        names: [],
+        state: "abandoned",
+        reason: null,
+        tasks: [{ task_id: "b1", name: "Run sleep 600 in background" }],
+      },
+    ])
+    const state = useBackgroundPendingStore.getState()
+    const abandoned = {
+      count: 0,
+      names: ["Run sleep 600 in background"],
+      state: "abandoned" as const,
+    }
+    expect(backgroundMarkFor(state, conv)).toEqual({
+      waiting: null,
+      uncertain: null,
+      abandoned,
+    })
+    expect(countsAsRunning(state, conv)).toBe(false)
+    expect(isConversationActive(state, conv)).toBe(false)
+  })
+})

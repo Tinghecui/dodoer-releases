@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react"
-import type { PromptDraft } from "@/lib/types"
+import type { MessageTurn, PromptDraft } from "@/lib/types"
 import { randomUUID } from "@/lib/utils"
 import {
   CLAIM_REFRESH_MS,
@@ -65,6 +65,21 @@ export interface QueuedMessage {
    * Only ever set together with `failed`; retry clears both.
    */
   failure?: QueueFailureKind
+  /**
+   * #970：这条发出去时带的 clientMessageId（乐观用户轮次的 id）。后端把它
+   * 当成这条用户消息的 message_id 广播、放进会话快照。发送途中退出、重开后
+   * 读回成 `restored` 的这条，只要在会话里看到同一个 id，就是已经送到了，
+   * 用 `dropDelivered` 拿掉，不再挂「发送失败」。
+   */
+  clientMessageId?: string
+  /**
+   * #970 返工：发这条时会话里还一条消息都没有（新会话的第一条）。这一轮在
+   * 重开前就回完了的话，快照里没有进行中的用户消息，历史里的用户轮次 id 也
+   * 换回了解析器的 `turn-N`，按 id 对不上；这时只要历史从头加载、第一条用户
+   * 消息就是这条的文字，它就是这次发出去的那条（会话是这次发送建的，第一条
+   * 不会是别的），见 `dropDelivered`。
+   */
+  firstOfConversation?: boolean
 }
 
 export type QueueFailureKind = "auth" | "restored" | "turn_failed"
@@ -123,7 +138,31 @@ export interface UseMessageQueueReturn {
    * （和 `dequeue` 出去的那条一样），返回它的 id，有了着落以后 `settle(id)`。
    * 新会话回车直接发、建会话途中刷新，刷新回来读回成失败、带重试。
    */
-  hold: (draft: PromptDraft, modeId: string | null) => string
+  hold: (
+    draft: PromptDraft,
+    modeId: string | null,
+    clientMessageId?: string,
+    firstOfConversation?: boolean
+  ) => string
+  /**
+   * #970：`dequeue` / `hold` 出去、还没有着落的那条，记下这次发送带的
+   * clientMessageId（当场写进存储）。不是在路上的 id 不做事。
+   */
+  stampInFlight: (
+    id: string,
+    clientMessageId: string,
+    firstOfConversation?: boolean
+  ) => void
+  /**
+   * #970：读回成 `restored` 的条目里，clientMessageId 在 `delivered` 里的
+   * （会话里已经有这条用户消息了）拿掉。按 id 对，不按文字对；唯一的例外是
+   * 新会话的第一条（`firstOfConversation`）：`firstUserText`（从头加载的历史
+   * 里第一条用户消息的文字，见 `firstUserTurnText`）和它的文字一样也拿掉。
+   */
+  dropDelivered: (
+    delivered: ReadonlySet<string>,
+    firstUserText?: string | null
+  ) => void
   remove: (id: string) => void
   /**
    * Cowork fork (#984 第 1 次返工): remove `id` only if it still holds this
@@ -155,6 +194,55 @@ export interface UseMessageQueueReturn {
   editingItemId: string | null
   startEditing: (id: string) => void
   cancelEditing: () => void
+}
+
+/**
+ * #970：会话里已经有的用户消息 id：快照里进行中那条（`pendingUserMessage`）
+ * 和详情里的用户轮次（进行中那轮的用户轮次被后端标成发送时的
+ * clientMessageId）。给 `dropDelivered` 用。
+ */
+export function deliveredClientMessageIds(
+  pendingUserMessageId: string | null | undefined,
+  turns: readonly MessageTurn[] | null | undefined
+): ReadonlySet<string> {
+  const ids = new Set<string>()
+  if (pendingUserMessageId) ids.add(pendingUserMessageId)
+  for (const turn of turns ?? []) {
+    if (turn.role === "user" && turn.id) ids.add(turn.id)
+  }
+  return ids
+}
+
+/**
+ * #970 返工：历史从头加载（`turnsOffset` 为 0）时第一条用户消息的文字（文字
+ * 块拼起来、去掉首尾空白）；历史只加载了尾部、没有用户消息或没有文字的给
+ * null。给 `dropDelivered` 认新会话的第一条用。还有用户消息在路上
+ * （`pendingUserMessageId` 不为空，智能体还在回）时也给 null：这时只按发送的
+ * id 认，id 对不上就留着，不拿文字猜。
+ */
+export function firstUserTurnText(
+  turns: readonly MessageTurn[] | null | undefined,
+  turnsOffset: number | null | undefined,
+  pendingUserMessageId?: string | null
+): string | null {
+  if (pendingUserMessageId) return null
+  if (!turns || (turnsOffset ?? 0) !== 0) return null
+  const first = turns.find((turn) => turn.role === "user")
+  if (!first) return null
+  const text = first.blocks
+    .flatMap((block) => (block.type === "text" ? [block.text] : []))
+    .join("\n")
+    .trim()
+  return text || null
+}
+
+/** #970 返工：草稿的文字，和 `firstUserTurnText` 同样拼法。 */
+function draftTexts(draft: PromptDraft): string[] {
+  const joined = draft.blocks
+    .flatMap((block) => (block.type === "text" ? [block.text] : []))
+    .join("\n")
+    .trim()
+  return [joined, draft.displayText.trim()].filter((text) => text !== "")
 }
 
 /**
@@ -480,14 +568,78 @@ export function useMessageQueue(
   }, [commit])
 
   const hold = useCallback(
-    (draft: PromptDraft, modeId: string | null): string => {
-      const item: QueuedMessage = { id: randomUUID(), draft, modeId }
+    (
+      draft: PromptDraft,
+      modeId: string | null,
+      clientMessageId?: string,
+      firstOfConversation?: boolean
+    ): string => {
+      const item: QueuedMessage = {
+        id: randomUUID(),
+        draft,
+        modeId,
+        ...(clientMessageId ? { clientMessageId } : {}),
+        ...(firstOfConversation ? { firstOfConversation: true } : {}),
+      }
       inFlightRef.current = [...inFlightRef.current, item]
       // 排队区本身没变，只是让存储当场写上这一条
       commit(queueRef.current)
       return item.id
     },
     [commit]
+  )
+
+  const stampInFlight = useCallback(
+    (id: string, clientMessageId: string, firstOfConversation?: boolean) => {
+      const before = inFlightRef.current
+      if (!before.some((item) => item.id === id)) return
+      inFlightRef.current = before.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              clientMessageId,
+              ...(firstOfConversation ? { firstOfConversation: true } : {}),
+            }
+          : item
+      )
+      // 排队区本身没变，只是让存储当场写上这个 id
+      commit(queueRef.current)
+    },
+    [commit]
+  )
+
+  const dropDelivered = useCallback(
+    (delivered: ReadonlySet<string>, firstUserText?: string | null) => {
+      if (delivered.size === 0 && !firstUserText) return
+      const current = queueRef.current
+      // 新会话的第一条只认一份：同一段话读回了两条时只拿掉最前面那条
+      let firstMatched = false
+      const kept = current.filter((item) => {
+        if (
+          !item.failed ||
+          item.failure !== "restored" ||
+          item.clientMessageId == null
+        )
+          return true
+        if (delivered.has(item.clientMessageId)) return false
+        if (
+          !firstMatched &&
+          item.firstOfConversation === true &&
+          firstUserText &&
+          draftTexts(item.draft).includes(firstUserText)
+        ) {
+          firstMatched = true
+          return false
+        }
+        return true
+      })
+      if (kept.length === current.length) return
+      const editing = editingItemIdRef.current
+      if (editing != null && !kept.some((item) => item.id === editing))
+        setEditingItemId(null)
+      commit(kept)
+    },
+    [commit, setEditingItemId]
   )
 
   const settle = useCallback((id: string) => {
@@ -605,6 +757,8 @@ export function useMessageQueue(
     dequeue,
     settle,
     hold,
+    stampInFlight,
+    dropDelivered,
     remove,
     removeIfUnchanged,
     reorder,

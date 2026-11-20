@@ -210,6 +210,10 @@ export function readStoredQueue(key: string): QueuedMessage[] {
       draft,
       modeId,
       ...(e.adoptSendTimeMode === true ? { adoptSendTimeMode: true } : {}),
+      ...(typeof e.clientMessageId === "string" && e.clientMessageId
+        ? { clientMessageId: e.clientMessageId }
+        : {}),
+      ...(e.firstOfConversation === true ? { firstOfConversation: true } : {}),
       failed: true,
       // A refusal for credentials keeps its "sign in" link, and a message
       // whose turn failed after it went out still says so (#424): neither
@@ -328,6 +332,10 @@ function writeStoredQueueTo(
         draft: item.draft,
         modeId: item.modeId,
         ...(item.adoptSendTimeMode ? { adoptSendTimeMode: true } : {}),
+        ...(item.clientMessageId
+          ? { clientMessageId: item.clientMessageId }
+          : {}),
+        ...(item.firstOfConversation ? { firstOfConversation: true } : {}),
         ...(item.failure ? { failure: item.failure } : {}),
       })
       // In order: a later item never takes the place of an earlier one.

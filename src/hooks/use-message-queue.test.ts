@@ -1,6 +1,10 @@
 import { beforeEach, describe, it, expect } from "vitest"
 import { act, renderHook } from "@testing-library/react"
-import { useMessageQueue } from "./use-message-queue"
+import {
+  deliveredClientMessageIds,
+  firstUserTurnText,
+  useMessageQueue,
+} from "./use-message-queue"
 import type { PromptDraft } from "@/lib/types"
 import { CLAIM_SETTLE_MS } from "@/lib/cowork/message-queue-storage"
 
@@ -918,5 +922,198 @@ describe("useMessageQueue retryAll", () => {
       true,
       false,
     ])
+  })
+})
+
+// #970：发出去以后、后端回话之前退出再打开，读回的那条带着发送时的
+// clientMessageId；会话里看到同一个 id 就拿掉，没看到的照旧留着。
+describe("useMessageQueue: a restored send the conversation already has", () => {
+  const KEY = "cowork:message-queue:v1:local:970"
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    window.sessionStorage.clear()
+  })
+
+  async function quitMidSend(): Promise<void> {
+    const first = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    act(() => {
+      first.result.current.hold(draft("sleep 12"), null, "optimistic-sent-1")
+      first.result.current.enqueue(draft("later"), null)
+    })
+    // 退出：settle 没来得及跑
+    first.unmount()
+  }
+
+  it("drops the restored item once its clientMessageId shows up", async () => {
+    await quitMidSend()
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    expect(texts(result.current.queue)).toEqual(["sleep 12", "later"])
+    expect(result.current.queue[0]).toMatchObject({
+      failed: true,
+      failure: "restored",
+      clientMessageId: "optimistic-sent-1",
+    })
+    act(() => result.current.dropDelivered(new Set(["optimistic-sent-1"])))
+    expect(texts(result.current.queue)).toEqual(["later"])
+    expect(window.localStorage.getItem(KEY)).not.toContain("sleep 12")
+    unmount()
+  })
+
+  it("keeps it when the conversation has no such id", async () => {
+    await quitMidSend()
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    act(() => result.current.dropDelivered(new Set(["optimistic-other"])))
+    expect(texts(result.current.queue)).toEqual(["sleep 12", "later"])
+    unmount()
+  })
+
+  it("stamps a dequeued item with the id its send carries", async () => {
+    const first = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    act(() => first.result.current.enqueue(draft("queued"), null))
+    let sent: ReturnType<typeof first.result.current.dequeue>
+    act(() => {
+      sent = first.result.current.dequeue()
+    })
+    act(() =>
+      first.result.current.stampInFlight(sent!.id, "optimistic-flush-1")
+    )
+    first.unmount()
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    expect(result.current.queue[0].clientMessageId).toBe("optimistic-flush-1")
+    act(() => result.current.dropDelivered(new Set(["optimistic-flush-1"])))
+    expect(result.current.queue).toEqual([])
+    unmount()
+  })
+})
+
+// #970 返工：重开前这一轮已经回完，快照里没有进行中的用户消息，历史里的
+// 用户轮次 id 也换回了 turn-N。新会话的第一条再按历史里第一条用户消息的文字认。
+describe("useMessageQueue: a first send whose turn finished before the reopen", () => {
+  const KEY = "cowork:message-queue:v1:local:970-done"
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    window.sessionStorage.clear()
+  })
+
+  async function quitMidFirstSend(first: boolean): Promise<void> {
+    const tab = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    act(() => {
+      tab.result.current.hold(
+        draft("sleep 12"),
+        null,
+        "optimistic-first-1",
+        first
+      )
+    })
+    tab.unmount()
+  }
+
+  it("drops the restored first message once the history starts with it", async () => {
+    await quitMidFirstSend(true)
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    expect(result.current.queue[0]).toMatchObject({
+      failure: "restored",
+      firstOfConversation: true,
+    })
+    act(() => result.current.dropDelivered(new Set(["turn-0"]), "sleep 12"))
+    expect(result.current.queue).toEqual([])
+    expect(window.localStorage.getItem(KEY)).toBeNull()
+    unmount()
+  })
+
+  it("keeps it when the first user message says something else", async () => {
+    await quitMidFirstSend(true)
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    act(() => result.current.dropDelivered(new Set(), "something else"))
+    expect(texts(result.current.queue)).toEqual(["sleep 12"])
+    unmount()
+  })
+
+  it("never matches by text a send that was not the conversation's first", async () => {
+    await quitMidFirstSend(false)
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    act(() => result.current.dropDelivered(new Set(), "sleep 12"))
+    expect(texts(result.current.queue)).toEqual(["sleep 12"])
+    unmount()
+  })
+
+  it("stamps a dequeued first send as the conversation's first", async () => {
+    const tab = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    act(() => tab.result.current.enqueue(draft("queued first"), null))
+    let sent: ReturnType<typeof tab.result.current.dequeue>
+    act(() => {
+      sent = tab.result.current.dequeue()
+    })
+    act(() =>
+      tab.result.current.stampInFlight(sent!.id, "optimistic-flush-2", true)
+    )
+    tab.unmount()
+    const { result, unmount } = renderHook(() => useMessageQueue(KEY))
+    await settle()
+    act(() => result.current.dropDelivered(new Set(), "queued first"))
+    expect(result.current.queue).toEqual([])
+    unmount()
+  })
+})
+
+describe("firstUserTurnText", () => {
+  it("reads the first user turn's text only from a history loaded from the start", () => {
+    const turns = [
+      {
+        id: "turn-0",
+        role: "user" as const,
+        blocks: [{ type: "text" as const, text: " sleep 12\n" }],
+        timestamp: "",
+      },
+      {
+        id: "turn-1",
+        role: "assistant" as const,
+        blocks: [{ type: "text" as const, text: "done" }],
+        timestamp: "",
+      },
+    ]
+    expect(firstUserTurnText(turns, 0)).toBe("sleep 12")
+    expect(firstUserTurnText(turns, undefined)).toBe("sleep 12")
+    // 只加载了尾部：第一条不一定是会话的第一条
+    expect(firstUserTurnText(turns, 40)).toBeNull()
+    expect(firstUserTurnText(turns.slice(1), 0)).toBeNull()
+    expect(firstUserTurnText(undefined, 0)).toBeNull()
+  })
+
+  it("does not match by text while a user message is still in flight", () => {
+    const turns = [
+      {
+        id: "optimistic-other",
+        role: "user" as const,
+        blocks: [{ type: "text" as const, text: "sleep 12" }],
+        timestamp: "",
+      },
+    ]
+    // 智能体还在回：只按发送的 id 认，不按文字认
+    expect(firstUserTurnText(turns, 0, "optimistic-other")).toBeNull()
+    expect(firstUserTurnText(turns, 0, null)).toBe("sleep 12")
+  })
+})
+
+describe("deliveredClientMessageIds", () => {
+  it("collects the snapshot's pending id and the user turns' ids", () => {
+    const ids = deliveredClientMessageIds("optimistic-a", [
+      { id: "optimistic-b", role: "user", blocks: [], timestamp: "" },
+      { id: "turn-2", role: "assistant", blocks: [], timestamp: "" },
+    ])
+    expect([...ids].sort()).toEqual(["optimistic-a", "optimistic-b"])
+    expect(deliveredClientMessageIds(null, undefined).size).toBe(0)
   })
 })

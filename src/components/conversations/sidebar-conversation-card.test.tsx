@@ -1642,6 +1642,38 @@ describe("SidebarConversationCard turn that did not finish", () => {
     )
   })
 
+  // #1043：回合中途被杀，本窗口的连接还留着被杀前的后台读数：红叉为准，
+  // 不画沙漏，悬停写没跑完的任务。
+  it("a cancelled row with a stale background reading shows the red cross", () => {
+    act(() =>
+      publishBackgroundPending([
+        {
+          sessionId: "sess-41",
+          asyncTasks: [
+            {
+              task_id: "b1",
+              name: "Run sleep 600 in background",
+              task_type: "shell",
+              description: "",
+              show_in_transcript: false,
+              can_stop: true,
+              state: "running",
+            },
+          ],
+          backgroundOutstanding: 1,
+          status: "connected",
+        },
+      ])
+    )
+    const { container } = renderCard(ended("cancelled"))
+    expect(container.querySelector("[data-background-pending]")).toBeNull()
+    expect(unfinished(container)?.getAttribute("title")).toBe(
+      "Turn didn't finish — not viewed yet\n" +
+        "Background tasks did not finish: Run sleep 600 in background"
+    )
+    expect(unfinished(container)?.hasAttribute("data-unread")).toBe(true)
+  })
+
   // #369：程序停了、这一轮没跑完的，画暂停圈，不画红叉。
   it("marks a turn interrupted by a shutdown with the pause mark", () => {
     const { container } = renderCard({

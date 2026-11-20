@@ -76,6 +76,8 @@ import {
   draftMessageQueueStorageKey,
   messageQueueStorageKey,
   useMessageQueue,
+  deliveredClientMessageIds,
+  firstUserTurnText,
   type QueuedMessage,
 } from "@/hooks/use-message-queue"
 import { useTouchSelectionMenuGuard } from "@/hooks/use-touch-selection-menu-guard"
@@ -876,6 +878,8 @@ const ConversationTabView = memo(function ConversationTabView({
     dequeue: mqDequeue,
     settle: mqSettle,
     hold: mqHold,
+    stampInFlight: mqStampInFlight,
+    dropDelivered: mqDropDelivered,
     remove: mqRemove,
     removeIfUnchanged: mqRemoveIfUnchanged,
     reorder: mqReorder,
@@ -885,6 +889,30 @@ const ConversationTabView = memo(function ConversationTabView({
     startEditing: mqStartEditing,
     cancelEditing: mqCancelEditing,
   } = messageQueue
+  // #970：发出去以后、后端回话之前退出再打开，这条读回成「发送失败」。
+  // 后端把发送带的 clientMessageId 当成用户消息的 id，放进会话快照
+  // （pendingUserMessage）和进行中那轮的用户轮次上；看到同一个 id，就是
+  // 已经送到了，读回的那条拿掉，免得用户点重试再发一遍。对不上的照旧留着。
+  const pendingUserMessageId = conn.pendingUserMessage?.messageId ?? null
+  const deliveredUserTurnIds = useMemo(
+    () => deliveredClientMessageIds(pendingUserMessageId, detail?.turns),
+    [pendingUserMessageId, detail?.turns]
+  )
+  // #970 返工：重开前这一轮已经回完的，上面的 id 都对不上；新会话的第一条
+  // 再拿从头加载的历史里第一条用户消息的文字认一次（见 dropDelivered）。
+  // 智能体还在回（快照里有进行中的用户消息）时不按文字认，只按 id。
+  const deliveredFirstUserText = useMemo(
+    () =>
+      firstUserTurnText(
+        detail?.turns,
+        detail?.turns_offset,
+        pendingUserMessageId
+      ),
+    [detail?.turns, detail?.turns_offset, pendingUserMessageId]
+  )
+  useEffect(() => {
+    mqDropDelivered(deliveredUserTurnIds, deliveredFirstUserText)
+  }, [msgQueue, deliveredUserTurnIds, deliveredFirstUserText, mqDropDelivered])
   const connStatusRef = useRef(connStatus)
   useEffect(() => {
     connStatusRef.current = connStatus
@@ -1901,6 +1929,20 @@ const ConversationTabView = memo(function ConversationTabView({
         return
       }
 
+      // #970 返工：发之前会话里一条消息都没有（新会话的第一条），记在排队
+      // 副本上；重开时这一轮已经回完、按 id 对不上的，靠它和历史里第一条
+      // 用户消息的文字认出已经送到了。
+      const sendSession = useConversationRuntimeStore
+        .getState()
+        .byConversationId.get(effectiveConversationId)
+      const firstOfConversation =
+        (sendSession?.detail?.turns_total ??
+          sendSession?.detail?.turns.length ??
+          0) === 0 &&
+        (sendSession?.localTurns.length ?? 0) === 0 &&
+        (sendSession?.optimisticTurns.length ?? 0) === 0 &&
+        (sendSession?.backgroundTurns.length ?? 0) === 0 &&
+        !sendSession?.liveMessage
       const optimisticTurn = buildOptimisticUserTurnFromDraft(
         draft,
         sharedT("attachedResources")
@@ -1913,6 +1955,10 @@ const ConversationTabView = memo(function ConversationTabView({
       setSendSignal((prev) => prev + 1)
       setSyncState(effectiveConversationId, "awaiting_persist")
       setHasSentMessage(true)
+      // #970：排队区出队的这条记下这次发送的 clientMessageId，退出重开后
+      // 在会话里认得出它已经送到了（见下面按 id 拿掉读回条目的 effect）。
+      if (queueItemId)
+        mqStampInFlight(queueItemId, optimisticTurn.id, firstOfConversation)
 
       // Backend rejected the send because a turn was already in flight (another
       // co-controlling client, or a "prompting" status this client hadn't
@@ -2024,7 +2070,13 @@ const ConversationTabView = memo(function ConversationTabView({
       // #650 第 12 次返工：连上了、排队区空着时回车直接发，建会话和发送请求
       // 都要一会儿；这条当场按「在路上」存进这个标签的排队存储，绑上会话时
       // 跟着挪过去，后端收下或放回排队区以后才拿掉。期间刷新读回成失败、带重试。
-      queueItemId ??= mqHold(draft, selectedModeIdArg ?? null)
+      // #970：带上这次发送的 clientMessageId（见 mqStampInFlight）。
+      queueItemId ??= mqHold(
+        draft,
+        selectedModeIdArg ?? null,
+        optimisticTurn.id,
+        firstOfConversation
+      )
       const title = promptDraftTitleSeed(draft, sharedT("attachedResources"))
       const chatSend = sendOwnTab?.isChat === true
       const chatExistingDir = sendOwnTab?.workingDir
@@ -2193,6 +2245,7 @@ const ConversationTabView = memo(function ConversationTabView({
       mqRequeueFailed,
       mqSettle,
       mqHold,
+      mqStampInFlight,
       failWorktreeStart,
       mqGetQueueLength,
       moveQueueStorageTo,

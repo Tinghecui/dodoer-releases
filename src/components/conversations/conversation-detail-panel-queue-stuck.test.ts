@@ -350,9 +350,8 @@ describe("a draft sent before the agent is ready is saved at once", () => {
     const unbound = send.slice(
       send.indexOf("createConversationPendingRef.current = true")
     )
-    const held = unbound.indexOf(
-      "queueItemId ??= mqHold(draft, selectedModeIdArg ?? null)"
-    )
+    // #970：第三个参数是这次发送的 clientMessageId
+    const held = unbound.indexOf("queueItemId ??= mqHold(")
     expect(held).toBeGreaterThan(-1)
     expect(held).toBeLessThan(unbound.indexOf("void (async () => {"))
     expect(send).toMatch(/let queueItemId = opts\?\.queueItemId/)
@@ -650,6 +649,43 @@ describe("a session that never finishes initializing does not hold the queue for
     )
     expect(refs).toContain("canAutoConnect && agentUnavailableReason == null")
     expect(refs).not.toContain("isActive")
+  })
+})
+
+// #970：发出去的那条带着 clientMessageId 存下，退出重开后会话里有同一个 id
+// 的用户消息时，读回的「发送失败」拿掉。
+describe("a send that reached the backend before a quit", () => {
+  it("stores the send's clientMessageId with the held and the dequeued item", () => {
+    const send = between("const handleSend = useCallback(", "    [\n")
+    expect(send).toMatch(
+      /if \(queueItemId\)\s*mqStampInFlight\(queueItemId, optimisticTurn\.id, firstOfConversation\)/
+    )
+    expect(send).toMatch(
+      /mqHold\(\s*draft,\s*selectedModeIdArg \?\? null,\s*optimisticTurn\.id,\s*firstOfConversation\s*\)/
+    )
+    // 发之前会话里有没有消息，在加乐观轮次之前看
+    expect(send.indexOf("const firstOfConversation =")).toBeGreaterThan(-1)
+    expect(send.indexOf("const firstOfConversation =")).toBeLessThan(
+      send.indexOf("appendOptimisticTurn(")
+    )
+  })
+
+  it("drops the restored copy once the conversation shows that id", () => {
+    const effect = between(
+      "const pendingUserMessageId =",
+      "const connStatusRef = useRef(connStatus)"
+    )
+    expect(effect).toContain("conn.pendingUserMessage?.messageId")
+    expect(effect).toContain(
+      "deliveredClientMessageIds(pendingUserMessageId, detail?.turns)"
+    )
+    // 智能体还在回时不按文字认：把进行中的用户消息 id 一起交给它
+    expect(effect).toMatch(
+      /firstUserTurnText\(\s*detail\?\.turns,\s*detail\?\.turns_offset,\s*pendingUserMessageId\s*\)/
+    )
+    expect(effect).toContain(
+      "mqDropDelivered(deliveredUserTurnIds, deliveredFirstUserText)"
+    )
   })
 })
 

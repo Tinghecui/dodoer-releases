@@ -198,8 +198,8 @@ export function applyServerBackgroundPending(
 
 /** The live background work of a conversation: its connection's here when one
  *  is attached, else what the server says about conversation `conversationId`
- *  (Cowork fork), else `null`. A server「?」(#386) wins over this window's
- *  connection: the server watches the process, the connection here only
+ *  (Cowork fork), else `null`. A server「?」(#386) or abandoned entry (#1043)
+ *  wins over this window's connection: the server watches the process, the connection here only
  *  relays what the agent last said. */
 export function backgroundPendingFor(
   state: BackgroundPendingState,
@@ -210,7 +210,11 @@ export function backgroundPendingFor(
     conversationId != null
       ? state.byConversation.get(conversationId)
       : undefined
-  if (server?.state === "uncertain") return server
+  // #1043：服务器的 abandoned（回合没跑完就断开）也盖过本窗口的读数——本窗口
+  // 留着的是被杀的那个进程最后说的后台任务数，已经没有人在推进它。
+  if (server?.state === "uncertain" || server?.state === "abandoned") {
+    return server
+  }
   const live = externalId ? state.bySession.get(externalId) : undefined
   if (live) return live
   return server ?? null
@@ -219,7 +223,8 @@ export function backgroundPendingFor(
 /** Cowork fork (#386): what a row shows for its background work — the
  *  hourglass (`waiting`: the turn ended, work still out) or the「?」
  *  (`uncertain`); at most one is set. A completed / cancelled conversation
- *  never shows a「?」: the user (or the agent) has closed it. */
+ *  never shows a「?」: the user (or the agent) has closed it. A cancelled one
+ *  never shows the hourglass either (#1043): its tasks go to the red cross. */
 export interface BackgroundMark {
   waiting: BackgroundPending | null
   uncertain: BackgroundPending | null
@@ -244,9 +249,15 @@ export function backgroundMarkOf(
       ? NO_MARK
       : { waiting: null, uncertain: pending }
   }
-  return status === "in_progress"
-    ? NO_MARK
-    : { waiting: pending, uncertain: null }
+  if (status === "in_progress") return NO_MARK
+  // #1043：取消（红叉）的行不画沙漏、不算进行中：这一轮没跑完，读数是断开前留下的。
+  // 有任务名就交给红叉的悬停写「后台任务没有跑完：…」，和服务器的 abandoned 一样。
+  if (status === "cancelled") {
+    return pending.names.length > 0
+      ? { waiting: null, uncertain: null, abandoned: pending }
+      : NO_MARK
+  }
+  return { waiting: pending, uncertain: null }
 }
 
 type MarkInput = { id: number; external_id: string | null; status: string }

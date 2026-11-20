@@ -650,13 +650,14 @@ async fn run_watch(
     loop {
         wait_for_poll(ws.poll_delay(), &wire_title_wake).await;
 
-        let (session_id, session_changed_at, is_prompting, turn_ended_abnormally) = {
+        let (session_id, session_changed_at, is_prompting, turn_ended_abnormally, ended_tasks) = {
             let s = state.read().await;
             (
                 s.external_id.clone(),
                 s.external_id_changed_at,
                 s.status == ConnectionStatus::Prompting,
                 s.last_turn_ended_abnormally,
+                s.ended_async_tasks(),
             )
         };
         let Some(session_id) = session_id else {
@@ -689,6 +690,8 @@ async fn run_watch(
             first_arm_done = true;
             ws.rearm(session_id.clone(), epoch);
         }
+        // Cowork 加的（#1044）：AIR 已经结束的任务（比如用户点了停止）这边也算完。
+        ws.settle_ended_async_tasks(&ended_tasks);
 
         // File I/O + JSON parsing + turn grouping are blocking work; a large
         // tail after a long foreground turn must not stall the runtime.
@@ -787,6 +790,12 @@ async fn run_watch(
             .await;
         }
     }
+}
+
+/// Cowork 加的：AIR 那边已经结束的一个 async task（见 [`WatchState::settle_ended_async_tasks`]）。
+pub(crate) struct EndedAsyncTask {
+    pub(crate) task_id: String,
+    pub(crate) tool_call_id: Option<String>,
 }
 
 /// One launched-but-unresolved background task.
@@ -1623,6 +1632,38 @@ impl WatchState {
     /// (the next, final notification settles it). One this watch never saw
     /// launch is counted from here: the CLI just said it runs, and the
     /// max-age valve still bounds a final notification that never comes.
+    /// Cowork 加的（#1044）：把 AIR 那边已经结束（完成、失败、停止）的 async task 对应的
+    /// 任务算完。用户在「运行中」弹层里点停止时，agent 是空闲的，会话记录里一条结束信号
+    /// 都不会写（没有 task-notification，也没有 TaskStop），这边只看记录的话要一直等到
+    /// max-age 才清掉，侧栏一直是「等待后台任务」。按任务号对，或者按启动它的工具调用对
+    /// （AIR 的 `toolCallId` 就是记录里 tool_result 的 `tool_use_id`），两种都认。
+    /// 每次轮询都调：AIR 的结束可能先于 watcher 读到启动记录。
+    pub(crate) fn settle_ended_async_tasks(&mut self, ended: &[EndedAsyncTask]) {
+        if ended.is_empty() || self.tasks.is_empty() {
+            return;
+        }
+        let matched: Vec<String> = self
+            .tasks
+            .keys()
+            .filter(|id| {
+                let tool_use_id = self
+                    .task_identities
+                    .get(*id)
+                    .and_then(|identity| identity.tool_use_id.as_deref());
+                ended.iter().any(|e| {
+                    e.task_id == **id
+                        || (tool_use_id.is_some() && e.tool_call_id.as_deref() == tool_use_id)
+                })
+            })
+            .cloned()
+            .collect();
+        for id in matched {
+            self.tasks.remove(&id);
+            self.settled_ids.insert(id.clone());
+            tracing::info!("[bg-watch] settled task={id} via ended async task");
+        }
+    }
+
     fn keep_interim_task(&mut self, id: &str) {
         let known = self.tasks.contains_key(id);
         self.tasks
@@ -4931,6 +4972,56 @@ mod tests {
             unpack(tick_now(&mut ws, &ledger).expect("settle event"));
         assert_eq!(outstanding, 0, "TaskStop must clear the count");
         assert!(settled.is_empty());
+    }
+
+    /// #1044：用户在「1 个运行中」里点了停止，AIR 那边任务已经是 stopped，会话记录里却
+    /// 一条结束信号都没有（agent 空闲时被停掉的后台 shell 不写）。watcher 要按 AIR 的
+    /// 结束状态把它算完，否则侧栏一直是「等待 1 个后台任务」。
+    #[test]
+    fn an_ended_async_task_settles_the_watched_task_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&bash_ack("bash9")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("ack event"));
+        assert_eq!(outstanding, 1);
+
+        ws.settle_ended_async_tasks(&[EndedAsyncTask {
+            task_id: "bash9".into(),
+            tool_call_id: None,
+        }]);
+        let (_, outstanding, settled, _) =
+            unpack(tick_now(&mut ws, &ledger).expect("accounting event"));
+        assert_eq!(outstanding, 0, "AIR 已结束的任务不能再算未完成");
+        assert!(settled.is_empty());
+        assert!(tick_now(&mut ws, &ledger).is_none());
+    }
+
+    /// 同上，但 AIR 的任务号和会话记录里的不一样，靠启动它的工具调用对上。
+    #[test]
+    fn an_ended_async_task_settles_the_watched_task_by_tool_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&bash_ack("bash9")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("ack event"));
+        assert_eq!(outstanding, 1);
+
+        // 对不上的不动。
+        ws.settle_ended_async_tasks(&[EndedAsyncTask {
+            task_id: "other".into(),
+            tool_call_id: Some("toolu_other".into()),
+        }]);
+        assert!(tick_now(&mut ws, &ledger).is_none());
+
+        ws.settle_ended_async_tasks(&[EndedAsyncTask {
+            task_id: "air-1".into(),
+            tool_call_id: Some("toolu_02".into()),
+        }]);
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("accounting event"));
+        assert_eq!(outstanding, 0);
     }
 
     #[test]

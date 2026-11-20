@@ -2104,6 +2104,19 @@ impl SessionState {
         tasks
     }
 
+    /// Cowork 加的（#1044）：已经结束的 AIR async task，给 transcript watcher 把对应的
+    /// 任务算完（[`crate::acp::background_watch::WatchState::settle_ended_async_tasks`]）。
+    pub(crate) fn ended_async_tasks(&self) -> Vec<crate::acp::background_watch::EndedAsyncTask> {
+        self.async_tasks
+            .values()
+            .filter(|t| crate::acp::types::async_task_state_is_terminal(&t.state))
+            .map(|t| crate::acp::background_watch::EndedAsyncTask {
+                task_id: t.task_id.clone(),
+                tool_call_id: t.tool_call_id.clone(),
+            })
+            .collect()
+    }
+
     /// Cowork 加的：判「?」时算「在跑」：连接是 `Prompting`，或者这条连接上最后一次
     /// `ConversationStatusChanged` 是 `in_progress`。
     pub(crate) fn watch_running(&self) -> bool {

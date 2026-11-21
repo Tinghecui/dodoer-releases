@@ -258,6 +258,30 @@ describe("closing a draft whose queue holds an unsent message (#1042)", () => {
     expect(tab(reopened.tabId)?.pendingWorktree).toBeUndefined()
   })
 
+  // #1191：领回消息后切到别的聊天再点同一项目的「新建会话」，复用的是这个
+  // 排队区有消息的草稿，新工作树选择不能被 #837 的重置清掉。
+  it("reusing a draft whose queue still holds the claimed message keeps its worktree choice", () => {
+    useFolderTabsStore.getState().setEnabled(true)
+    const oldId = queuedDraft()
+    useTabStore.getState().closeTab(oldId)
+    const next = useTabStore.getState().openNewConversationTab(1, "/demo")
+    expectClaimedBy(next.tabId, oldId)
+
+    useTabStore.getState().openChatModeTab()
+    const again = useTabStore.getState().openNewConversationTab(1, "/demo")
+    expect(again.tabId).toBe(next.tabId)
+    expect(queuedIds(again.tabId)).toEqual(["q1"])
+    expect(tab(again.tabId)?.pendingWorktree).toEqual(spec)
+  })
+
+  it("a reused draft with an empty queue still has its worktree choice reset (#837)", () => {
+    const draft = useTabStore.getState().openNewConversationTab(1, "/demo")
+    useTabStore.getState().setDraftWorktree(draft.tabId, spec)
+    const again = useTabStore.getState().openNewConversationTab(1, "/demo")
+    expect(again.tabId).toBe(draft.tabId)
+    expect(tab(again.tabId)?.pendingWorktree).toBeUndefined()
+  })
+
   it("storage too full to copy the queue on close still leaves it claimable", () => {
     useFolderTabsStore.getState().setEnabled(true)
     const oldId = queuedDraft()

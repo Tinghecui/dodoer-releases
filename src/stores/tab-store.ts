@@ -2947,10 +2947,17 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     // 上次选的分支（可能正是创建失败、刷新后又恢复出来的那个）不再跟着。
     // 搬草稿（retargetTabId，工作树建好后的那一步）和按原位置重新打开（index）
     // 不算新建，照旧保留。
+    // #1191：草稿排队区还存着没发出去的消息、又留在原来的项目和目录时也不清：
+    // 这份选择是那些消息重试要用的，清了重试就悄悄发到主分支上。
+    const keepForQueue =
+      !folderChanged &&
+      !workingDirChanged &&
+      hasStoredDraftQueue(existingTab.id)
     const clearWorktree =
       !movingDraft &&
       options?.index == null &&
       options?.keepDraftWorktree !== true &&
+      !keepForQueue &&
       existingTab.pendingWorktree != null
 
     // The singleton means a reopened draft resolves to THIS draft rather than a

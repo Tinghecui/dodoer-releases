@@ -67,22 +67,24 @@ export const pageState = () =>
     title: document.title,
     buttons: document.querySelectorAll("button").length,
     tauri: typeof window.__TAURI_INTERNALS__,
+    wdio: typeof window.wdioTauri === "object",
   }))
 
-// 等当前窗口加载完、画出按钮
+// 等当前窗口加载完、画出按钮。e2e 版的前端带着 @wdio/tauri-plugin（window.wdioTauri），tauri-service 靠它
+// 找焦点窗口；没有它每次 $ / click 之前要空等 ~10 秒（run 44936024276），所以这里也等它就位
 export async function waitForUi(timeout = 120000) {
   let state = null
   await browser.waitUntil(
     async () => {
       state = await pageState()
-      return state.ready === "complete" && state.buttons > 0
+      return state.ready === "complete" && state.buttons > 0 && state.wdio
     },
-    { timeout, interval: 300, timeoutMsg: "界面没画出来" }
+    {
+      timeout,
+      interval: 300,
+      timeoutMsg: "界面没画出来，或者 window.wdioTauri 不在",
+    }
   )
-  // 显式切一次到当前窗口：@wdio/tauri-service 在每次 $ / click / getTitle 之前要「找焦点窗口」，靠的是
-  // tauri-plugin-wdio 的命令；我们没装那个插件，每次都要空等 ~10 秒（run 44936024276 Linux 那格）。
-  // 用户自己 switchToWindow 过，服务就不再自动找（window.ts 的 userSwitchedWindowCache）
-  await browser.switchToWindow(await browser.getWindowHandle())
   return state
 }
 
@@ -106,24 +108,25 @@ export const invoke = (cmd, payload = {}) =>
 export const lsGet = (key) =>
   browser.execute((k) => localStorage.getItem(k), key)
 
-// 点一个元素。先用 WebDriver 的点击；没生效（check 返回假）再退到页面里派发 pointer/mouse 事件
-// （Radix 的菜单按钮认 pointerdown）。返回怎么点成的
-export async function click(selector, check, label) {
+// 一个元素看得见的文字（innerText，不是 textContent：macOS 插件的 getText 返回 textContent，会带上 script / style）
+export const textOf = (selector) =>
+  browser.execute(
+    (sel) => document.querySelector(sel)?.innerText ?? null,
+    selector
+  )
+
+// 普通按钮：WebDriver 的 elementClick
+export async function click(selector) {
   const el = await $(selector)
   await el.waitForDisplayed({ timeout: 20000 })
-  let how = "WebDriver elementClick"
-  try {
-    await el.click()
-  } catch (e) {
-    how = `elementClick 报错：${e.message.slice(0, 200)}`
-  }
-  const worked = await browser
-    .waitUntil(check, { timeout: 4000, interval: 200 })
-    .catch(() => false)
-  if (worked) {
-    notes[`click:${label}`] = how
-    return how
-  }
+  await el.click()
+}
+
+// Radix 的菜单按钮 / 菜单项认 pointerdown，macOS 插件的 elementClick 只是 el.click()（spike 3/3 点不开），
+// 所以在页面里按真实点击的顺序派发 pointer / mouse 事件（Linux 的 WebKitWebDriver 也一样用这条，两边同一条路）
+export async function pointerClick(selector) {
+  const el = await $(selector)
+  await el.waitForDisplayed({ timeout: 20000 })
   await browser.execute((node) => {
     const r = node.getBoundingClientRect()
     const at = {
@@ -134,32 +137,18 @@ export async function click(selector, check, label) {
       clientX: r.x + r.width / 2,
       clientY: r.y + r.height / 2,
     }
-    node.dispatchEvent(
-      new PointerEvent("pointerdown", {
-        ...at,
-        pointerType: "mouse",
-        pointerId: 1,
-      })
-    )
+    const pointer = {
+      ...at,
+      pointerType: "mouse",
+      pointerId: 1,
+      isPrimary: true,
+    }
+    node.dispatchEvent(new PointerEvent("pointerdown", pointer))
     node.dispatchEvent(new MouseEvent("mousedown", at))
-    node.dispatchEvent(
-      new PointerEvent("pointerup", {
-        ...at,
-        pointerType: "mouse",
-        pointerId: 1,
-      })
-    )
+    node.dispatchEvent(new PointerEvent("pointerup", pointer))
     node.dispatchEvent(new MouseEvent("mouseup", at))
     node.dispatchEvent(new MouseEvent("click", at))
   }, el)
-  await browser.waitUntil(check, {
-    timeout: 10000,
-    interval: 200,
-    timeoutMsg: `${label}：WebDriver 点击和页面里派发事件都没生效（${how}）`,
-  })
-  how = `${how} 没生效 → 页面里派发事件`
-  notes[`click:${label}`] = how
-  return how
 }
 
 export function codegPids() {

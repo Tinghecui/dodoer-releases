@@ -64,6 +64,8 @@ pub mod cowork_connect;
 pub mod crash_report;
 pub mod db;
 pub mod deep_link;
+#[cfg(all(feature = "e2e", feature = "tauri-runtime"))]
+mod e2e;
 pub mod folder_links;
 pub mod forge;
 pub mod git_credential;
@@ -804,10 +806,9 @@ mod tauri_app {
 
         let builder = tauri::Builder::default();
 
-        // `e2e` test builds: the in-app WebDriver server WebdriverIO drives
-        // the WKWebView through (see the feature in Cargo.toml).
-        #[cfg(all(feature = "e2e", target_os = "macos"))]
-        let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+        // `e2e` test builds: the WebdriverIO plugins (see `e2e.rs`).
+        #[cfg(feature = "e2e")]
+        let builder = crate::e2e::register(builder);
 
         // The default menu minus its ⌘W "Close Window", which closed the
         // workspace whenever ⌘W was pressed inside a page (see `app_menu`).

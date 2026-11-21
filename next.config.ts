@@ -50,6 +50,9 @@ const nextConfig: NextConfig = {
     // the upstream base version, so a Cowork release passes its tag
     // (cowork-release-build.sh) and every release turns the caches over.
     CODEG_RELEASE_VERSION: process.env.COWORK_VERSION ?? "",
+    // End-to-end test builds only (src/lib/e2e/wdio-plugin.ts): always
+    // defined, so a normal build inlines "" and drops the plugin import.
+    CODEG_E2E: process.env.NEXT_PUBLIC_CODEG_E2E === "1" ? "1" : "",
   },
   images: {
     unoptimized: true,

@@ -93,7 +93,12 @@ browser-smoke = []
 # must never ship: `lib.rs` refuses to compile it without debug_assertions and
 # no release script turns it on. Linux and Windows keep using tauri-driver.
 # Spike: .cowork/journal/2026-11-21-spike-macos-webdriver.md.
-e2e = ["dep:tauri-plugin-wdio-webdriver"]
+# With it, on every desktop platform, `tauri-plugin-wdio`: the backend half of
+# `@wdio/tauri-service` (window states, `browser.tauri.execute`, mocks). Its
+# frontend half is in the web bundle only when built with
+# NEXT_PUBLIC_CODEG_E2E=1 (src/lib/e2e/); see
+# .cowork/journal/2026-11-21-e2e-wdio-plugin.md.
+e2e = ["dep:tauri-plugin-wdio-webdriver", "dep:tauri-plugin-wdio"]
 
 [[bin]]
 name = "codeg"
@@ -310,6 +315,8 @@ tauri-plugin-autostart = { version = "2", optional = true }
 # permission; `computer::stop_shortcut` keeps media keys — an event tap, and
 # Input Monitoring with it — out of reach.
 tauri-plugin-global-shortcut = { version = "2", optional = true }
+# Only with the `e2e` feature (test builds); see the feature's comment.
+tauri-plugin-wdio = { version = "1.5.1", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-notification-sys = "0.6"

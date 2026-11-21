@@ -957,6 +957,7 @@ pub(crate) fn turn_error_message(
         role: crate::models::MessageRole::System,
         content: vec![ContentBlock::TurnError {
             message: message.to_string(),
+            kind: None,
         }],
         timestamp,
         usage: None,

@@ -8,6 +8,7 @@ import type {
   ToolCallStatus,
   PlanEntryInfo,
   ImageData,
+  TurnErrorKind,
 } from "@/lib/types"
 import {
   isAgentLikeToolName,
@@ -208,7 +209,7 @@ export type AdaptedContentPart =
    * The turn FAILED, in the agent's own words (`turn_error` block) — drawn as
    * one muted line closing the round, never as a reply.
    */
-  | { type: "turn-error"; message: string }
+  | { type: "turn-error"; message: string; kind?: TurnErrorKind }
 
 export interface UserResourceDisplay {
   name: string
@@ -1581,7 +1582,9 @@ function adaptContentBlock(
       }
 
     case "turn_error":
-      return { type: "turn-error", message: block.message }
+      return block.kind
+        ? { type: "turn-error", message: block.message, kind: block.kind }
+        : { type: "turn-error", message: block.message }
 
     default:
       return null

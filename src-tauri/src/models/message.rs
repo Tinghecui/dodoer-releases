@@ -214,6 +214,11 @@ pub enum ContentBlock {
     /// the failure the adapter reported (`parsers::turn_error_message`).
     TurnError {
         message: String,
+        /// Cowork 加的（#1120）：哪一类失败，前端据此换成本地化的说明和按钮。
+        /// 今天只有 `connection_lost`（`acp::turn_failure::KIND_CONNECTION_LOST`），
+        /// 只出现在存下来、刷新后补回的那一行；解析器读出来的都是 `None`。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
 }
 

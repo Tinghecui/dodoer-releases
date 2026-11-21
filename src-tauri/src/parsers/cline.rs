@@ -1812,7 +1812,7 @@ mod tests {
         assert!(
             matches!(
                 detail.turns[1].blocks.as_slice(),
-                [ContentBlock::TurnError { message }] if message == "probe: model does not exist"
+                [ContentBlock::TurnError { message, .. }] if message == "probe: model does not exist"
             ),
             "{:?}",
             detail.turns[1].blocks

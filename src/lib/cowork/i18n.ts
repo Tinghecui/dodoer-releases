@@ -117,6 +117,13 @@ const en = {
   signInViaPortal: "Set up AI accounts in the portal",
   turnFailedAuthRequiredPortal:
     "{agent} needs you to sign in again before it can run this turn. Set it up in the portal under My account → AI accounts, then send this message again.",
+  // A turn whose agent process died under the adapter (#1120): what the line
+  // says instead of the adapter's English, and its retry (reconnect, then send
+  // the turn's message again).
+  turnFailedConnectionLost:
+    "The connection to {agent} was lost and this turn did not finish.",
+  turnFailedTheAgent: "the agent",
+  turnFailedRetry: "Retry",
   // A queued message read back after a reload or an app restart (#159):
   // marked failed, never sent on its own.
   queueRestoredReason:
@@ -386,6 +393,9 @@ const zhCN: Record<CoworkTextKey, string> = {
   signInViaPortal: "去门户配置 AI 账户",
   turnFailedAuthRequiredPortal:
     "{agent} 需要你重新登录后才能执行本轮回复。请到门户「我的账户 → AI 账户」配置，然后重新发送这条消息。",
+  turnFailedConnectionLost: "与 {agent} 的连接断了，这一轮没有完成。",
+  turnFailedTheAgent: "智能体",
+  turnFailedRetry: "重试",
   queueRestoredReason:
     "页面刷新或应用重启时还没发出去，为免重复发送，不会自动续发。",
   queueTurnFailedReason: "这条已经发出，本轮中途失败；重试会再发一次。",
@@ -625,6 +635,9 @@ const zhTW: Record<CoworkTextKey, string> = {
   signInViaPortal: "到入口網站設定 AI 帳戶",
   turnFailedAuthRequiredPortal:
     "{agent} 需要你重新登入後才能執行本輪回覆。請到入口網站「我的帳戶 → AI 帳戶」設定，然後重新傳送這則訊息。",
+  turnFailedConnectionLost: "與 {agent} 的連線斷了，這一輪沒有完成。",
+  turnFailedTheAgent: "智慧體",
+  turnFailedRetry: "重試",
   queueRestoredReason:
     "頁面重新整理或應用程式重新啟動時還沒送出，為避免重複傳送，不會自動續傳。",
   queueTurnFailedReason: "這則已經送出，本輪中途失敗；重試會再送一次。",

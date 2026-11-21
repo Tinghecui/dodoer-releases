@@ -1619,6 +1619,33 @@ describe("AcpConnectionsProvider failed-turn line", () => {
     expect(content[content.length - 1]?.type).toBe("turn_error")
   })
 
+  // #1120：底下的 CLI 被杀、连接断了的那种失败，这一行带上类别，界面据此
+  // 换成中文说明和「重试」。
+  it("marks a lost connection's line so it can be explained and retried", async () => {
+    const handlers = await promptingOwner()
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "session_failure",
+      record: {
+        id: "t1:error",
+        revision: 1,
+        category: "connection",
+        severity: "error",
+        title: "The connection to Claude was lost.",
+        actions: ["new_session"],
+      },
+    })
+    expect(lineOf()).toEqual([
+      {
+        type: "turn_error",
+        message: "The connection to Claude was lost.",
+        fromAgent: true,
+        kind: "connection_lost",
+      },
+    ])
+  })
+
   it("lands text still queued for the stream before the line", async () => {
     const handlers = await promptingOwner()
     emitAcpEvent(handlers, {

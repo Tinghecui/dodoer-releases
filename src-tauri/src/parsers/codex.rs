@@ -16695,7 +16695,7 @@ mod tests {
         assert!(
             matches!(
                 detail.turns[1].blocks.as_slice(),
-                [ContentBlock::TurnError { message }] if message == failure
+                [ContentBlock::TurnError { message, .. }] if message == failure
             ),
             "{:?}",
             detail.turns[1].blocks
@@ -16753,7 +16753,7 @@ mod tests {
             .turns
             .iter()
             .filter_map(|turn| match turn.blocks.as_slice() {
-                [ContentBlock::TurnError { message }] => Some(message.as_str()),
+                [ContentBlock::TurnError { message, .. }] => Some(message.as_str()),
                 _ => None,
             })
             .collect();

@@ -290,7 +290,7 @@ fn compact_turn(turn: &MessageTurn) -> SessionMessageItem {
         match block {
             ContentBlock::Text { text }
             | ContentBlock::Thinking { text }
-            | ContentBlock::TurnError { message: text } => {
+            | ContentBlock::TurnError { message: text, .. } => {
                 let t = text.trim();
                 if !t.is_empty() {
                     parts.push(t);
@@ -490,6 +490,7 @@ mod tests {
             TurnRole::System,
             vec![ContentBlock::TurnError {
                 message: "API Error: 503".into(),
+                kind: None,
             }],
         ));
         assert_eq!(item.role, "system");

@@ -38,6 +38,7 @@ import {
   useAcpEvent,
 } from "@/contexts/acp-connections-context"
 import { ActivityLiveProvider } from "@/components/message/activity/activity-live-context"
+import { TurnErrorRetryProvider } from "@/components/message/turn-error-part"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
@@ -176,7 +177,12 @@ import {
 import { createUncertainSendWatch } from "@/lib/cowork/uncertain-send"
 import {
   failedTurnRequeueKind,
+  isLostConnectionLine,
   lostTurnRequeueKind,
+  lostTurnRetryPlan,
+  readFailedTurnSend,
+  writeFailedTurnSend,
+  type FailedTurnSend,
 } from "@/lib/cowork/failed-turn"
 import { readStoredQueue } from "@/lib/cowork/message-queue-storage"
 import { markConversationSeen } from "@/stores/conversation-seen-store"
@@ -198,6 +204,7 @@ import {
   getRuntimeSession,
   getTimelineTurns,
   releaseRuntimeSession,
+  selectTimelineTurns,
   useConversationRuntimeActions,
   useConversationRuntimeStore,
 } from "@/stores/conversation-runtime-store"
@@ -1101,6 +1108,10 @@ const ConversationTabView = memo(function ConversationTabView({
     createUncertainSendWatch<{ queueItemId: string; draft: PromptDraft }>()
   )
   const prevConnStatusRef = useRef(connStatus)
+  // #1120：上一轮失败时发出去的那条（见回合结束的 effect）。也存进
+  // localStorage（`writeFailedTurnSend`），刷新以后「重试」照样重发原样；
+  // 这里是存不下时（太大）的后备。
+  const failedTurnDraftRef = useRef<FailedTurnSend | null>(null)
   // jenny fork: the message this tab sent last, until its turn ends. When the
   // turn fails (for example the agent quits mid-reply), it goes back to the
   // front of the queue marked failed, with the queue's retry button (SQ5).
@@ -1138,12 +1149,24 @@ const ConversationTabView = memo(function ConversationTabView({
       failedTurnRequeueKind(liveContent, authFailed) ??
       lostTurnRequeueKind(liveContent, connStatus)
     let autoResend = false
+    let requeuedId: string | null = null
     if (sent && requeueKind) {
-      mqRequeueFailed(sent.draft, sent.modeId, requeueKind)
+      requeuedId = mqRequeueFailed(sent.draft, sent.modeId, requeueKind)
       // #423：智能体不认这个会话了，第一次失败时记下这条，旧连接退下去以后
       // 自动重试一次（见下面 `handleQueueRetry` 旁边的 effect）。
       if (sessionLost) autoResend = sessionLostRetry.noteFailed(sent.draft)
     }
+    // #1120：这一轮失败了，记下当初发出去的原样（带附件），对话最后那行
+    // 「连接断了」的「重试」重发它；刷新以后没有，就从对话里那条消息还原。
+    // 放回了排队区的记下排队 id，「重试」重试那一条，不再放一份（返工）。
+    failedTurnDraftRef.current =
+      failed && sent
+        ? { draft: sent.draft, modeId: sent.modeId, queueItemId: requeuedId }
+        : null
+    // 第 3 次返工：会话号先进 ref（建好行的那一刻）、后进 state，用先到的那个。
+    const failedTurnConvId = dbConvIdRef.current ?? dbConversationId
+    if (failedTurnConvId != null)
+      writeFailedTurnSend(failedTurnConvId, failedTurnDraftRef.current)
     sent?.turn.end(failed ? "error" : "complete", { connStatus })
 
     // Turn completed — promote liveMessage + optimisticTurns to localTurns.
@@ -1175,12 +1198,24 @@ const ConversationTabView = memo(function ConversationTabView({
   }, [
     completeTurn,
     connStatus,
+    dbConversationId,
     discardTurn,
     effectiveConversationId,
     mqRequeueFailed,
     sessionLostRetry,
     syncTurnMetadata,
   ])
+  // #1120 第 3 次返工：新建会话的第一条就失败、回合结束时还没有会话号的，
+  // 失败那一轮只记在内存里；会话号到了（从没有变成有）再补存进 localStorage，
+  // 不然刷新后「重试」只能从对话里还原文字和图片，附件就丢了。
+  const failedTurnPrevConvIdRef = useRef(dbConversationId)
+  useEffect(() => {
+    const prev = failedTurnPrevConvIdRef.current
+    failedTurnPrevConvIdRef.current = dbConversationId
+    const pending = failedTurnDraftRef.current
+    if (prev == null && dbConversationId != null && pending)
+      writeFailedTurnSend(dbConversationId, pending)
+  }, [dbConversationId])
   // Cowork fork: a turn still open when the panel goes away is told so.
   useEffect(() => () => lastSentRef.current?.turn.end("closed"), [])
 
@@ -1461,6 +1496,72 @@ const ConversationTabView = memo(function ConversationTabView({
     void forceReconnect()
   }, [forceReconnect])
   const onQueueReconnect = canForceReconnect ? handleQueueReconnect : undefined
+
+  // Cowork 加的（#1120）：对话最后一行是「连接断了」的失败（底下的 CLI 被杀、
+  // 崩了），那一行后面给「重试」：把这一轮的消息放进排队区，连接没起来的先连上，
+  // 连上以后由排队区发出去（和排队区的「重试」同一条路）。定了的做法是自动重发，
+  // 智能体如果已经做了一部分会再做一遍。回合进行中不给。
+  // 返工：重发当初的原样（带附件，刷新后从 localStorage 读回）；这一轮的消息
+  // 已经放回排队区的，重试排队区里那一条；只给最后那一行（`lineId`）。
+  const lostLineId = useConversationRuntimeStore((s) => {
+    const timeline = selectTimelineTurns(s, effectiveConversationId)
+    const last = timeline[timeline.length - 1]?.turn
+    return last != null && isLostConnectionLine(last) ? last.id : null
+  })
+  const planLostTurnRetry = useCallback(
+    (kept: FailedTurnSend | null) =>
+      lostTurnRetryPlan({
+        turns: getTimelineTurns(effectiveConversationId).map(
+          (entry) => entry.turn
+        ),
+        kept,
+        queue: msgQueue,
+        selectedModeId: selectedModeIdRef.current ?? null,
+      }),
+    [effectiveConversationId, msgQueue]
+  )
+  // 内存里那份优先（太大、浏览器存不下的只在这里），没有再读 localStorage
+  // （刷新以后）。按钮和点击用同一份，免得一个有、一个没有（第 2 次返工）。
+  const keptFailedTurn = useCallback(
+    (): FailedTurnSend | null =>
+      failedTurnDraftRef.current ??
+      (dbConversationId != null ? readFailedTurnSend(dbConversationId) : null),
+    [dbConversationId]
+  )
+  const handleLostTurnRetry = useCallback(() => {
+    const plan = planLostTurnRetry(keptFailedTurn())
+    if (!plan) return
+    failedTurnDraftRef.current = null
+    if (dbConversationId != null) writeFailedTurnSend(dbConversationId, null)
+    // 第 4 次返工：排队区里还有别的消息时也重试，放在最前面（这一轮本来就在
+    // 那些前面）；排队区空着时和放在末尾一样。
+    if (plan.kind === "queue") mqRetry(plan.itemId)
+    else mqRequeueFront(plan.draft, plan.modeId)
+    const status = connStatusRef.current
+    if (status == null || status === "disconnected" || status === "error")
+      handleFocus()
+  }, [
+    dbConversationId,
+    handleFocus,
+    keptFailedTurn,
+    mqRequeueFront,
+    mqRetry,
+    planLostTurnRetry,
+  ])
+  // 画不画按钮：同一套判断（排队区变了、最后一行变了重算）。存着的那份在
+  // 回合结束的 effect 里写，写完紧跟着对话区升格，会再渲染一次。
+  const lostTurnRetry = useMemo(() => {
+    if (lostLineId == null || connStatus === "prompting") return null
+    return planLostTurnRetry(keptFailedTurn()) != null
+      ? { lineId: lostLineId, retry: handleLostTurnRetry }
+      : null
+  }, [
+    lostLineId,
+    connStatus,
+    keptFailedTurn,
+    planLostTurnRetry,
+    handleLostTurnRetry,
+  ])
 
   // Mirror the connection's liveMessage into the runtime session OUTSIDE React.
   // The connection dispatch invokes this sink synchronously whenever liveMessage
@@ -3208,52 +3309,56 @@ const ConversationTabView = memo(function ConversationTabView({
   const messageListNode = (
     <GoalControlProvider value={goalControlValue}>
       <ActivityLiveProvider value={activityLive}>
-        <MessageListView
-          conversationId={effectiveConversationId}
-          imageRoot={workingDirForConnection ?? null}
-          agentType={selectedAgent}
-          availableCommands={connectionCommands}
-          connStatus={connStatus}
-          isActive={isActive}
-          sendSignal={sendSignal}
-          detailLoading={detailLoading}
-          detailError={detailError}
-          acpLoadError={acpLoadError}
-          hideEmptyState={!hasPersistedConversation || hasSentMessage}
-          // The conversation page's navigator, plan and sub-agents show in the
-          // Session Details side panel rather than over the messages.
-          insightsInSidebar
-          liveRuns={liveRuns}
-          onReload={canShowDetailErrorActions ? handleReloadDetail : undefined}
-          onNewSession={
-            canShowDetailErrorActions ? handleOpenNewSession : undefined
-          }
-          onQuoteSelection={
-            composerAvailable ? handleQuoteSelection : undefined
-          }
-          // Asking opens its own conversation, so it needs a folder to open it in
-          // rather than a usable composer here — a transcript whose composer is
-          // blocked (session/load failure) can still spawn the question elsewhere.
-          onAskSelection={canAskSelection ? handleAskSelection : undefined}
-          // Fork carries no draft, so — unlike a send — a non-empty queue is
-          // not at risk of being jumped and needs no guard here. A turn in
-          // flight is still rejected, by the backend, which is the only place
-          // that can see it without racing.
-          //
-          // "prompting" belongs on this side of the gate (same shape as the
-          // goal-control gate above): this answers "can this surface fork at
-          // all", and a turn in flight is a passing "not right now" that the
-          // view greys the button out for. Dropping the handler instead made
-          // every reply's fork icon disappear for the length of each reply.
-          // `handleForkFromTurn` re-checks liveness at click time.
-          onForkFromTurn={
-            (connStatus === "connected" || connStatus === "prompting") &&
-            hasPersistedConversation &&
-            conn.supportsFork
-              ? handleForkFromTurn
-              : undefined
-          }
-        />
+        <TurnErrorRetryProvider value={lostTurnRetry}>
+          <MessageListView
+            conversationId={effectiveConversationId}
+            imageRoot={workingDirForConnection ?? null}
+            agentType={selectedAgent}
+            availableCommands={connectionCommands}
+            connStatus={connStatus}
+            isActive={isActive}
+            sendSignal={sendSignal}
+            detailLoading={detailLoading}
+            detailError={detailError}
+            acpLoadError={acpLoadError}
+            hideEmptyState={!hasPersistedConversation || hasSentMessage}
+            // The conversation page's navigator, plan and sub-agents show in the
+            // Session Details side panel rather than over the messages.
+            insightsInSidebar
+            liveRuns={liveRuns}
+            onReload={
+              canShowDetailErrorActions ? handleReloadDetail : undefined
+            }
+            onNewSession={
+              canShowDetailErrorActions ? handleOpenNewSession : undefined
+            }
+            onQuoteSelection={
+              composerAvailable ? handleQuoteSelection : undefined
+            }
+            // Asking opens its own conversation, so it needs a folder to open it in
+            // rather than a usable composer here — a transcript whose composer is
+            // blocked (session/load failure) can still spawn the question elsewhere.
+            onAskSelection={canAskSelection ? handleAskSelection : undefined}
+            // Fork carries no draft, so — unlike a send — a non-empty queue is
+            // not at risk of being jumped and needs no guard here. A turn in
+            // flight is still rejected, by the backend, which is the only place
+            // that can see it without racing.
+            //
+            // "prompting" belongs on this side of the gate (same shape as the
+            // goal-control gate above): this answers "can this surface fork at
+            // all", and a turn in flight is a passing "not right now" that the
+            // view greys the button out for. Dropping the handler instead made
+            // every reply's fork icon disappear for the length of each reply.
+            // `handleForkFromTurn` re-checks liveness at click time.
+            onForkFromTurn={
+              (connStatus === "connected" || connStatus === "prompting") &&
+              hasPersistedConversation &&
+              conn.supportsFork
+                ? handleForkFromTurn
+                : undefined
+            }
+          />
+        </TurnErrorRetryProvider>
       </ActivityLiveProvider>
     </GoalControlProvider>
   )

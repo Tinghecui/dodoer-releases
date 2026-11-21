@@ -5752,6 +5752,38 @@ describe("empty-turn error diagnostics", () => {
     expect(JSON.stringify(notificationArgs)).not.toContain("401 Unauthorized")
   })
 
+  it("folds a broken install's raw error behind the alert's disclosure (#1111)", async () => {
+    // 定了：一句人话当标题，智能体的原文（Node 调用栈）折叠在第二行，不进弹窗正文。
+    const handlers = await connectOwner()
+    h.notifyDesktop.mockClear()
+
+    const raw =
+      "Codex process has exited with code 1\nError: Missing optional dependency @openai/codex-linux-x64. Reinstall Codex\n    at codex.js:1:1"
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "error",
+      message: raw,
+      agent_type: "codex",
+      code: "agent_install_broken",
+      details: "stderr tail",
+    })
+
+    const toastOptions = h.toastError.mock.calls[0]![1] as {
+      description?: string
+    }
+    expect(toastOptions.description).toBeUndefined()
+    const alert = h.recordAlert.mock.calls[0]![0] as {
+      detail?: string
+      evidence?: string
+    }
+    expect(alert).not.toHaveProperty("detail")
+    expect(alert.evidence).toBe(`${raw}\n\nstderr tail`)
+    expect(JSON.stringify(h.notifyDesktop.mock.calls)).not.toContain(
+      "Missing optional dependency"
+    )
+  })
+
   it("omits blank details rather than rendering an empty block", async () => {
     const handlers = await connectOwner()
 

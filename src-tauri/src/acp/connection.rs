@@ -10351,6 +10351,10 @@ fn connection_failure(err: agent_client_protocol::Error) -> AcpError {
         AcpError::agent_auth_required(raw.replace(AUTH_REQUIRED_SENTINEL, ""))
     } else if raw.contains(SESSION_LOST_SENTINEL) {
         AcpError::SessionLost
+    } else if agent_install_is_broken(&raw) {
+        // 排在 MCP 怀疑前面：缺程序包时 session/new 也会失败、被标上那个记号，
+        // 可真正的原因是没装完整，建议去掉 MCP 只会把人带偏。
+        AcpError::agent_install_broken(agent_error_text(&err).replace(MCP_SUSPECT_SENTINEL, ""))
     } else if raw.contains(MCP_SUSPECT_SENTINEL) {
         // Strip the marker so the user sees the agent's own words, then
         // let the frontend append the `supports_mcp` suggestion.
@@ -10358,6 +10362,16 @@ fn connection_failure(err: agent_client_protocol::Error) -> AcpError {
     } else {
         AcpError::protocol(agent_error_text(&err))
     }
+}
+
+/// Cowork 加的（#1111）：智能体的报错说明它没装完整——它要的本机平台程序包不在。
+/// codex-acp 拉起的嵌套 Codex（`@openai/codex/bin/codex.js`）找不到
+/// `@openai/codex-<平台>` 时报 `Missing optional dependency @openai/codex-linux-x64`；
+/// claude 的原生程序没装上时报 `native binary not found` / `not installed`。
+fn agent_install_is_broken(raw: &str) -> bool {
+    raw.contains("Missing optional dependency @openai/codex-")
+        || raw.contains("native binary not found")
+        || raw.contains("native binary not installed")
 }
 
 /// Grok's native `ask_user_question` tool issues this ACP ext request
@@ -33487,6 +33501,41 @@ mod tests {
             assert!(shown.contains(registry::PI_MIN_RUNTIME_VERSION), "{shown}");
             assert!(!shown.contains(PI_RUNTIME_OUTDATED_SENTINEL), "{shown}");
         }
+    }
+
+    /// #1111：codex-acp 拉起的嵌套 Codex 缺了本机平台的程序包，退出码 1，
+    /// 报错带整段 Node 调用栈。要归成 `agent_install_broken`，原文留作第二行。
+    #[test]
+    fn a_missing_platform_package_reads_as_a_broken_install() {
+        let stack = "Codex process has exited with code 1: \
+                     Error: Missing optional dependency @openai/codex-linux-x64. \
+                     Reinstall Codex: npm install -g @openai/codex@latest\n    \
+                     at file:///opt/agents/lib/node_modules/@openai/codex/bin/codex.js:97:11";
+        let plain = agent_client_protocol::Error::new(-32603, stack);
+        // session/new 失败时可能还带着 MCP 怀疑的标记：缺程序包要排在它前面。
+        let suspected =
+            agent_client_protocol::util::internal_error(format!("{stack}{MCP_SUSPECT_SENTINEL}"));
+        for err in [connection_failure(plain), connection_failure(suspected)] {
+            assert_eq!(err.code(), Some("agent_install_broken"));
+            let shown = err.to_string();
+            assert!(shown.contains("@openai/codex-linux-x64"), "{shown}");
+            assert!(!shown.contains(MCP_SUSPECT_SENTINEL), "{shown}");
+        }
+
+        // claude 的原生程序没装上也一样。
+        let claude = agent_client_protocol::Error::new(
+            -32603,
+            "Claude Code native binary not found for linux-x64",
+        );
+        assert_eq!(
+            connection_failure(claude).code(),
+            Some("agent_install_broken")
+        );
+
+        // 别的启动失败照旧是没有代码的协议错误。
+        let other =
+            agent_client_protocol::Error::new(-32603, "Codex process has exited with code 1");
+        assert_eq!(connection_failure(other).code(), None);
     }
 
     #[test]

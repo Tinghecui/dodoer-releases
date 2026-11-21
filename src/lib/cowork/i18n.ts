@@ -115,6 +115,13 @@ const en = {
   // Behind the portal, "Sign in" for an agent whose credentials the portal
   // manages opens its AI accounts (`sign-in.ts`, #158).
   signInViaPortal: "Set up AI accounts in the portal",
+  // An agent that is installed but not completely, so it exits on launch
+  // (`agent-install.ts`, #1111). Behind the portal agents are installed by an
+  // administrator, so the employee cannot fix it in settings.
+  agentInstallBroken:
+    "{agent} is not fully installed (the package for this machine's platform is missing). Reinstall it in the agent's settings.",
+  agentInstallBrokenPortal:
+    "{agent} is not fully installed (the package for this machine's platform is missing). Ask an administrator to reinstall it on the portal's Agents page.",
   turnFailedAuthRequiredPortal:
     "{agent} needs you to sign in again before it can run this turn. Set it up in the portal under My account → AI accounts, then send this message again.",
   // A queued message read back after a reload or an app restart (#159):
@@ -384,6 +391,10 @@ const zhCN: Record<CoworkTextKey, string> = {
   gettingStartedMessage: "发出第一条消息",
   gettingStartedMessageHint: "写下要它做的事，按 {key} 发送。",
   signInViaPortal: "去门户配置 AI 账户",
+  agentInstallBroken:
+    "{agent} 没装完整（缺少本机平台的程序包），请到智能体设置里重装。",
+  agentInstallBrokenPortal:
+    "{agent} 没装完整（缺少本机平台的程序包），请管理员在门户 Agent 页重装。",
   turnFailedAuthRequiredPortal:
     "{agent} 需要你重新登录后才能执行本轮回复。请到门户「我的账户 → AI 账户」配置，然后重新发送这条消息。",
   queueRestoredReason:
@@ -623,6 +634,10 @@ const zhTW: Record<CoworkTextKey, string> = {
   gettingStartedMessage: "送出第一則訊息",
   gettingStartedMessageHint: "寫下要它做的事，按 {key} 送出。",
   signInViaPortal: "到入口網站設定 AI 帳戶",
+  agentInstallBroken:
+    "{agent} 沒裝完整（缺少本機平台的程式包），請到智慧體設定裡重新安裝。",
+  agentInstallBrokenPortal:
+    "{agent} 沒裝完整（缺少本機平台的程式包），請管理員在入口網站 Agent 頁重新安裝。",
   turnFailedAuthRequiredPortal:
     "{agent} 需要你重新登入後才能執行本輪回覆。請到入口網站「我的帳戶 → AI 帳戶」設定，然後重新傳送這則訊息。",
   queueRestoredReason:

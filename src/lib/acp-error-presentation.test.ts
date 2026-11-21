@@ -72,6 +72,19 @@ describe("routeAcpError", () => {
     expect(routeAcpError("process_exited").opensAgentSettings).toBeFalsy()
   })
 
+  it("sends a broken agent install to its settings, raw error folded", () => {
+    // #1111: the localized line says the agent is not fully installed; the
+    // agent's own error (a Node stack) is folded behind the alert's disclosure,
+    // not the toast's second line.
+    expect(routeAcpError("agent_install_broken")).toEqual({
+      kind: "session",
+      level: "error",
+      rawAsDetail: false,
+      rawAsEvidence: true,
+      opensAgentSettings: true,
+    })
+  })
+
   it("keeps a session restored as new as an amber session state", () => {
     expect(routeAcpError("session_load_fallback")).toMatchObject({
       kind: "session",

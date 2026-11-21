@@ -3310,6 +3310,8 @@
       "moreActions": "更多 Git 操作"
     },
     "gitChangesTab": {
+      "loadFailed": "读取改动失败",
+      "retry": "重试",
       "workspace": "工作区",
       "noChanges": "暂无本地改动",
       "notAGitRepoTitle": "不是 Git 仓库",

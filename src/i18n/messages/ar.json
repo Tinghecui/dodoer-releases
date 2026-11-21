@@ -3310,6 +3310,8 @@
       "moreActions": "إجراءات Git إضافية"
     },
     "gitChangesTab": {
+      "loadFailed": "تعذّر تحميل التغييرات",
+      "retry": "إعادة المحاولة",
       "workspace": "مساحة العمل",
       "noChanges": "لا توجد تغييرات محلية",
       "notAGitRepoTitle": "ليس مستودع Git",

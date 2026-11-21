@@ -3310,6 +3310,8 @@
       "moreActions": "Weitere Git-Aktionen"
     },
     "gitChangesTab": {
+      "loadFailed": "Änderungen konnten nicht geladen werden",
+      "retry": "Erneut versuchen",
       "workspace": "Arbeitsbereich",
       "noChanges": "Keine lokalen Änderungen",
       "notAGitRepoTitle": "Kein Git-Repository",

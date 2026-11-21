@@ -337,6 +337,19 @@ class WorkspaceStateStore {
   requestResync = async (reason?: string) => {
     void reason
     if (this.resyncInFlight) return this.resyncInFlight
+    // 打开项目时启动流就失败了（#1135）：后端没有我们的登记，事件不会来，
+    // 只补拉快照也只会 not_found。还有人在用、也没有启动或停止正在进行，
+    // 就重新走一遍启动（我们没登记过，所以不先停）。启动再失败只会设
+    // degraded，不会回到这里，所以不会反复重试。
+    if (
+      !this.started &&
+      !this.starting &&
+      !this.stopping &&
+      !this.restarting &&
+      this.tokenCount > 0
+    ) {
+      return this.restart({ backendLost: true })
+    }
 
     const run = async () => {
       this.patchState((prev) => ({

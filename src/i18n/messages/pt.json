@@ -3310,6 +3310,8 @@
       "moreActions": "Mais ações do Git"
     },
     "gitChangesTab": {
+      "loadFailed": "Falha ao carregar as alterações",
+      "retry": "Tentar novamente",
       "workspace": "espaço de trabalho",
       "noChanges": "Sem alterações locais",
       "notAGitRepoTitle": "Não é um repositório Git",

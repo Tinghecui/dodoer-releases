@@ -3310,6 +3310,8 @@
       "moreActions": "その他の Git 操作"
     },
     "gitChangesTab": {
+      "loadFailed": "変更の読み込みに失敗しました",
+      "retry": "再試行",
       "workspace": "ワークスペース",
       "noChanges": "ローカルの変更はありません",
       "notAGitRepoTitle": "Git リポジトリではありません",

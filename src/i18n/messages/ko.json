@@ -3310,6 +3310,8 @@
       "moreActions": "추가 Git 작업"
     },
     "gitChangesTab": {
+      "loadFailed": "변경 사항을 불러오지 못했습니다",
+      "retry": "다시 시도",
       "workspace": "작업 공간",
       "noChanges": "로컬 변경 사항이 없습니다",
       "notAGitRepoTitle": "Git 저장소가 아닙니다",

@@ -559,12 +559,55 @@ export function GitChangesTab() {
       )
   }, [workspaceState.git])
 
+  // 上一次读取失败的根目录和错误（#1135）。之后重拉（点「重试」或菜单里的
+  // 「刷新」）期间 health 是 resyncing：出错区留在原处、按钮转圈不可点，不闪
+  // 成「没有改动」；首次读取就失败、序号还是 0 时也不退回整块骨架屏（那会把
+  // 出错说明、重试按钮和工具栏一起拿掉）。回到 healthy 或换了根目录就清掉。
+  const [lastFailure, setLastFailure] = useState<{
+    rootPath: string
+    error: string | null
+  } | null>(null)
+  if (
+    workspaceState.health === "degraded" &&
+    (lastFailure?.rootPath !== workspaceState.rootPath ||
+      lastFailure.error !== workspaceState.error)
+  ) {
+    setLastFailure({
+      rootPath: workspaceState.rootPath,
+      error: workspaceState.error,
+    })
+  } else if (
+    lastFailure &&
+    (workspaceState.health === "healthy" ||
+      lastFailure.rootPath !== workspaceState.rootPath)
+  ) {
+    setLastFailure(null)
+  }
+  const recoveringFromFailure =
+    workspaceState.health === "resyncing" &&
+    lastFailure?.rootPath === workspaceState.rootPath
   const loading = useMemo(
-    () => workspaceState.health === "resyncing" && workspaceState.seq === 0,
-    [workspaceState.health, workspaceState.seq]
+    () =>
+      workspaceState.health === "resyncing" &&
+      workspaceState.seq === 0 &&
+      !recoveringFromFailure,
+    [workspaceState.health, workspaceState.seq, recoveringFromFailure]
   )
+  const [retryingLoad, setRetryingLoad] = useState(false)
   const error =
-    workspaceState.health === "degraded" ? workspaceState.error : null
+    workspaceState.health === "degraded"
+      ? workspaceState.error
+      : recoveringFromFailure
+        ? (lastFailure?.error ?? null)
+        : null
+  const handleRetryLoad = useCallback(async () => {
+    setRetryingLoad(true)
+    try {
+      await workspaceState.requestResync("manual_retry")
+    } finally {
+      setRetryingLoad(false)
+    }
+  }, [workspaceState])
 
   const trackedChanges = useMemo(
     () => changes.filter((change) => !isUntrackedStatus(change.status)),
@@ -806,6 +849,9 @@ export function GitChangesTab() {
   // The latest list, for a commit that follows a generation on its own.
   const commitPathsRef = useRef(commitPaths)
   commitPathsRef.current = commitPaths
+  // 写说明期间读取失败的话，结果回来时列表已被出错区遮住（#1135）。
+  const loadErrorRef = useRef(error)
+  loadErrorRef.current = error
   const generation = useCommitMessageGeneration({
     path: folder?.path ?? null,
     folderId: folder?.id ?? null,
@@ -815,7 +861,10 @@ export function GitChangesTab() {
     stop: stopGeneration,
     generating,
   } = generation
+  // 读取失败（含失败后重拉期间）列表被出错区遮住，手里的路径是失败前的缓存，
+  // 用户核对不了：不提交，也不按它写提交说明（#1135）。
   const canQuickCommit =
+    error === null &&
     commitMessage.trim().length > 0 &&
     commitPaths.length > 0 &&
     !committing &&
@@ -823,9 +872,11 @@ export function GitChangesTab() {
   // The same files Enter would commit, so the message describes the commit.
   const generateDisabledReason = committing
     ? tGenerate("busyCommitting")
-    : trackedPaths.length === 0 && untrackedPaths.length === 0
-      ? tGenerate("noChanges")
-      : null
+    : error !== null
+      ? t("loadFailed")
+      : trackedPaths.length === 0 && untrackedPaths.length === 0
+        ? tGenerate("noChanges")
+        : null
 
   // The box grows with its message. `field-sizing: content` does it where the
   // engine has it; elsewhere (older WebKitGTK) it is measured here.
@@ -891,7 +942,11 @@ export function GitChangesTab() {
       if (!generated.autoCommit) return
       // Only ever the files the message was written for: if the changes moved
       // meanwhile, the message waits in the box for the user to check.
-      if (!sameFiles(files, commitPathsRef.current)) {
+      // 读取失败（含重拉中）时列表看不到，手里的是缓存，同样只填框不提交。
+      if (
+        loadErrorRef.current !== null ||
+        !sameFiles(files, commitPathsRef.current)
+      ) {
         toast.info(tGenerate("toasts.autoCommitSkipped"))
         return
       }
@@ -1624,14 +1679,6 @@ export function GitChangesTab() {
     )
   }
 
-  if (error) {
-    return (
-      <div className="p-2 text-xs text-destructive">
-        <p>{error}</p>
-      </div>
-    )
-  }
-
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Toolbar: type a message and commit right here with Enter, or reach the
@@ -1831,7 +1878,29 @@ export function GitChangesTab() {
         <WorkspaceDegradedBanner onRetry={workspaceState.restart} />
       )}
       <ScrollArea className="flex-1 min-h-0" x="scroll">
-        {trackedChanges.length === 0 && untrackedChanges.length === 0 ? (
+        {/* 读取失败不再把整块面板换成一行红字（#1135）：工具栏和「更多 Git
+            操作」照旧在上面，列表的位置给出错说明和「重试」。 */}
+        {error ? (
+          <div className="p-3 text-xs">
+            <p className="font-medium text-destructive">{t("loadFailed")}</p>
+            <p className="mt-1 break-words text-muted-foreground">{error}</p>
+            <Button
+              variant="ghost"
+              size="xs"
+              className="mt-2"
+              disabled={retryingLoad || workspaceState.health === "resyncing"}
+              onClick={() => {
+                void handleRetryLoad()
+              }}
+            >
+              <RefreshCw
+                className={`size-3 ${retryingLoad || workspaceState.health === "resyncing" ? "animate-spin" : ""}`}
+                aria-hidden
+              />
+              {t("retry")}
+            </Button>
+          </div>
+        ) : trackedChanges.length === 0 && untrackedChanges.length === 0 ? (
           !workspaceState.isGitRepo ? (
             <div className="flex flex-col items-center justify-center h-full gap-1 p-6 text-center">
               <GitBranch

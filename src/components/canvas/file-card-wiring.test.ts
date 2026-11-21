@@ -69,6 +69,14 @@ describe("the canvas file card", () => {
     expect(workspace).toContain("if (!background) {")
   })
 
+  it("hands off to the workspace through the owner-aware reveal (#1067)", () => {
+    // 「在工作区打开」按文件所在的项目归位并切过去；switchFileTab 只往当前项目那排加，
+    // 画布开在别的项目里时会把文件挂进两个项目的标签排。
+    const card = read(CARD)
+    expect(card).toContain("revealFileTabInWorkspace(tabId)")
+    expect(card).not.toContain("switchFileTab")
+  })
+
   it("renders through the same branch table the drawer uses", () => {
     // Code, images and the office trio all come from one component; a second
     // copy of that branch is how two surfaces end up disagreeing about, say,

@@ -239,6 +239,9 @@ export interface WorkspaceActionsValue {
   activateConversationPane: () => void
   activateFilePane: () => void
   switchFileTab: (tabId: string) => void
+  /** 画布文件卡的「在工作区打开」：跟随开着、文件属于别的项目时，标签进那个项目的
+   *  一排并切到那个项目（#1067）；否则和 switchFileTab 一样。 */
+  revealFileTabInWorkspace: (tabId: string) => void
   closeFileTab: (tabId: string, options?: { allScopes?: boolean }) => void
   closeOtherFileTabs: (tabId: string) => void
   closeAllFileTabs: () => void
@@ -3409,6 +3412,46 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     [setActiveFileTabId, activateFilePane, saveFileTab]
   )
 
+  // 显式交接到工作区（画布文件卡的「在工作区打开」，#1067）：跟随开着、文件在别的
+  // 项目目录下时，和会话里点链接一样按目录归位（#790/#1046），标签只进所属项目那排，
+  // 并把侧栏切到那个项目，让文件直接显示出来；当前项目那排不加它。
+  // 所属项目就是当前项目、跟随关着、不是文件标签时照旧走 switchFileTab。
+  // switchFileTab 本身不改：刷新后的恢复要靠它按当前项目加。
+  const revealFileTabInWorkspace = useCallback(
+    (tabId: string) => {
+      const tab = fileTabsRef.current.find((it) => it.id === tabId)
+      if (!tab) return
+      const currentScope = openingScope()
+      const ownerScope =
+        tab.kind === "file" && tab.path
+          ? followOwnerScope(tab.path, currentScope)
+          : currentScope
+      if (
+        tab.kind !== "file" ||
+        !tab.path ||
+        typeof ownerScope !== "number" ||
+        ownerScope === currentScope
+      ) {
+        switchFileTab(tabId)
+        return
+      }
+      const folderTabs = useFolderTabsStore.getState()
+      folderTabs.addFile(tabId, ownerScope, true)
+      recordFileTabInFolder(ownerScope, tab.path, fileTabsServerKey(), {
+        select: true,
+      })
+      const activeId = activeFileTabIdRef.current
+      if (activeId && activeId !== tabId) {
+        void saveFileTab(activeId)
+      }
+      // 和侧栏点项目是同一个动作：切过去以后由订阅者接着同步当前项目和会话。
+      folderTabs.activateScope(ownerScope)
+      setActiveFileTabId(tabId)
+      activateFilePane()
+    },
+    [switchFileTab, setActiveFileTabId, activateFilePane, saveFileTab]
+  )
+
   // Closes without asking; `closeFileTab` asks first when the tab is dirty.
   const removeFileTab = useCallback(
     (tabId: string, options?: { allScopes?: boolean }) => {
@@ -3842,6 +3885,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       activateConversationPane,
       activateFilePane,
       switchFileTab,
+      revealFileTabInWorkspace,
       closeFileTab,
       closeOtherFileTabs,
       closeAllFileTabs,
@@ -3877,6 +3921,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       activateConversationPane,
       activateFilePane,
       switchFileTab,
+      revealFileTabInWorkspace,
       closeFileTab,
       closeOtherFileTabs,
       closeAllFileTabs,

@@ -68,7 +68,7 @@ export const FileNode = memo(function FileNode({
   const {
     openFilePreview,
     reloadOpenFileBackground,
-    switchFileTab,
+    revealFileTabInWorkspace,
     toggleFileTabPreview,
   } = useWorkspaceActions()
   const {
@@ -129,8 +129,9 @@ export const FileNode = memo(function FileNode({
   const openInWorkspace = useCallback(() => {
     if (!tabId) return
     openConversations()
-    switchFileTab(tabId)
-  }, [openConversations, switchFileTab, tabId])
+    // 按文件所在的项目归位（#1067），不塞进当前项目那排。
+    revealFileTabInWorkspace(tabId)
+  }, [openConversations, revealFileTabInWorkspace, tabId])
 
   // A link followed inside a rendered markdown card opens in the workspace
   // rather than re-binding this card: the card is pinned to one file on

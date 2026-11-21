@@ -5923,6 +5923,51 @@ describe("Folder-tabs shared file buffers and selections", () => {
     localStorage.removeItem("workspace:file-tabs:v1:local:2")
   })
 
+  it("reveals a canvas card's file in its own project's row and switches there (#1067)", async () => {
+    localStorage.removeItem("workspace:file-tabs:v1:local:1")
+    localStorage.removeItem("workspace:file-tabs:v1:local:2")
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo/own.ts")
+    })
+    const own = scopedWorkspace.activeFileTabId!
+    // 画布的文件卡片在当前项目（1）里后台加载别的项目（2）的文件。
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo2/app.ts", {
+        background: true,
+      })
+    })
+    const card = buildFileTabId({ kind: "file", path: "/repo2/app.ts" })
+    act(() => scopedWorkspace.revealFileTabInWorkspace(card))
+    const state = useFolderTabsStore.getState()
+    expect(state.fileRefs[1]).toEqual([own])
+    expect(state.fileRefs[2]).toEqual([card])
+    expect(state.fileSelection[2]).toBe(card)
+    expect(state.scope).toBe(2)
+    expect(scopedWorkspace.activeFileTab?.path).toBe("/repo2/app.ts")
+    expect(scopedWorkspace.activePane).toBe("files")
+    expect(readPersistedFileTabs(1).paths).not.toContain("/repo2/app.ts")
+    expect(readPersistedFileTabs(2)).toMatchObject({ active: "/repo2/app.ts" })
+    localStorage.removeItem("workspace:file-tabs:v1:local:1")
+    localStorage.removeItem("workspace:file-tabs:v1:local:2")
+  })
+
+  it("reveals a canvas card's own-project file in place without switching (#1067)", async () => {
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo/own.ts")
+    })
+    const own = scopedWorkspace.activeFileTabId!
+    await act(async () => {
+      await scopedWorkspace.openFilePreview("/repo/card.ts", {
+        background: true,
+      })
+    })
+    const card = buildFileTabId({ kind: "file", path: "/repo/card.ts" })
+    act(() => scopedWorkspace.revealFileTabInWorkspace(card))
+    expect(useFolderTabsStore.getState().scope).toBe(1)
+    expect(useFolderTabsStore.getState().fileRefs[1]).toEqual([own, card])
+    expect(scopedWorkspace.activeFileTabId).toBe(card)
+  })
+
   it("keeps the requested line for another project's file until that project is opened (#790)", async () => {
     await act(async () => {
       await scopedWorkspace.openFilePreview("/repo2/index.md", { line: 42 })

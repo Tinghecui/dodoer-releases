@@ -68,6 +68,10 @@ on:
       setup_only:
         type: boolean
         default: false
+      # 重派出来的（日志核对 ai-qa-seal 看到上一次死在机器上，源仓库 .cowork/ai-qa/redispatch.mjs）填 1：再死也不再派
+      retry:
+        description: "重派标记（自动填，人手动跑不用管）"
+        default: ""
 
 permissions:
   contents: read
@@ -110,6 +114,7 @@ jobs:
       AIQA_ADAPTER_VERSION: ${{ vars.AIQA_ADAPTER_VERSION }}
       STAGING: ${{ (github.event_name == 'schedule' || inputs.nightly || inputs.staging) && 'true' || 'false' }}
       STAGING_AGENT: ${{ vars.AIQA_STAGING_AGENT || 'p0' }}
+      AIQA_RETRY: ${{ inputs.retry }}
     steps:
       - uses: actions/setup-node@v4
         with:

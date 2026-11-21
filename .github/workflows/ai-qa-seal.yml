@@ -1,6 +1,7 @@
 # 公开镜像 Tinghecui/dodoer-releases：ai-qa 和自动驾驶（autopilot-*）每次运行结束后核对它的日志（文件在源仓库 .github/public/workflows/ 里维护）。
 # 它们的输出应该全在文件里，日志只有固定格式的进度行。这里把那次运行的日志下载下来交给源仓库的脚本逐行核对，
 # 不合格就删掉那次运行的全部日志，并在源仓库开 issue。workflow_run 用的是 main 上的这个文件。
+# ai-qa 的运行死在机器上（收回 runner、SIGTERM、断了联系）时，seal-check.sh 还用同样的输入重派一次（源仓库 .cowork/ai-qa/redispatch.mjs，只派一次，用 AIQA_PRIVATE_TOKEN 派）。
 # 另一个入口 workflow_dispatch（-f run=<run id>）：GITHUB_TOKEN 派出来的运行（report-status 派的 autopilot-review）结束时
 # 不触发 workflow_run（2026-11-15 run 43772972133 就没核对），所以 autopilot-review.yml 最后一个 job 自己派一次，这里等那次运行结束再查。
 # 人手动派的 autopilot-review 两个入口都会触发，查两遍，不碍事。

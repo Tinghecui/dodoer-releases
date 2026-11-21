@@ -1,3 +1,4 @@
 {"t":"2026-11-21T00:00:09Z","running":[],"queued":[]}
 {"t":"2026-11-21T00:10:22Z","running":[],"queued":[]}
 {"t":"2026-11-21T00:20:11Z","running":[],"queued":[]}
+{"t":"2026-11-21T00:30:16Z","running":[{"wf":"release-train","run":44843888518,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-21T00:27:25Z"}],"queued":[]}

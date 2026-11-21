@@ -2123,7 +2123,8 @@
     "toasts": {
       "failed": "Commit-Nachricht konnte nicht generiert werden",
       "openSettings": "Einstellungen",
-      "autoCommitSkipped": "Nicht automatisch committet: Die Änderungen haben sich verschoben, während die Nachricht geschrieben wurde. Prüfe sie und committe dann."
+      "autoCommitSkipped": "Nicht automatisch committet: Die Änderungen haben sich verschoben, während die Nachricht geschrieben wurde. Prüfe sie und committe dann.",
+      "autoCommitSkippedLoadFailed": "Nicht automatisch committet: Die Änderungen konnten nicht geladen werden. Lade sie erneut, prüfe die Liste und committe dann."
     },
     "errors": {
       "noChanges": "Es gibt keine Änderungen zu beschreiben.",

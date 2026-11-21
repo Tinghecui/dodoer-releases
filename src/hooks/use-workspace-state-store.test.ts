@@ -9,6 +9,7 @@ import {
 } from "vitest"
 import { getWorkspaceStateStore } from "@/hooks/use-workspace-state-store"
 import * as api from "@/lib/api"
+import * as platform from "@/lib/platform"
 
 // Token-set state machine for the per-root workspace stream store:
 // full/paths subscription modes, upgrade/downgrade transitions against the
@@ -306,6 +307,90 @@ describe("workspace state store when the first start fails", () => {
     const state = store.getSnapshot()
     expect(state.health).toBe("healthy")
     expect(state.error).toBeNull()
+
+    store.release(token)
+    await vi.advanceTimersByTimeAsync(700)
+  })
+
+  // 启动流成功、后端已经登记了，但随后订阅事件出错（#1158）：重试不能在
+  // 后端多留一份登记，用完以后后端的引用计数要回到 0。
+  it("does not leak a backend registration when subscribing fails after start", async () => {
+    const root = "/machine/firststart2"
+    let refs = 0
+    mockedApi.startWorkspaceStateStream.mockImplementation((r: string) => {
+      if (r === root) refs += 1
+      return Promise.resolve(fullSnapshot(r))
+    })
+    mockedApi.stopWorkspaceStateStream.mockImplementation((r: string) => {
+      if (r === root) refs = Math.max(0, refs - 1)
+      return Promise.resolve(undefined)
+    })
+    ;(platform.subscribe as Mock).mockImplementationOnce(() =>
+      Promise.reject(new Error("subscribe boom"))
+    )
+    const store = getWorkspaceStateStore(root)
+    const token = store.acquire("full")
+    await drain()
+    expect(store.getSnapshot().health).toBe("degraded")
+
+    await store.requestResync("manual_retry")
+    await drain()
+    expect(store.getSnapshot().health).toBe("healthy")
+    expect(refs).toBe(1)
+
+    store.release(token)
+    await vi.advanceTimersByTimeAsync(700)
+    expect(refs).toBe(0)
+  })
+
+  // 只订阅失败、没重试就关掉：后端那份登记也要释放，而且只释放一次。
+  it("releases the registration once when subscribing failed and nobody retried", async () => {
+    const root = "/machine/firststart3"
+    ;(platform.subscribe as Mock).mockImplementationOnce(() =>
+      Promise.reject(new Error("subscribe boom"))
+    )
+    const store = getWorkspaceStateStore(root)
+    const token = store.acquire("full")
+    await drain()
+    expect(store.getSnapshot().health).toBe("degraded")
+
+    store.release(token)
+    await vi.advanceTimersByTimeAsync(700)
+    expect(callsFor(mockedApi.startWorkspaceStateStream, root)).toBe(1)
+    expect(callsFor(mockedApi.stopWorkspaceStateStream, root)).toBe(1)
+  })
+})
+
+describe("workspace state store when the snapshot read fails", () => {
+  // #1135 原来的路径：流登记好了，但读快照出错，改动列表是空的、显示出错；
+  // 点重试读成功以后，带改动的文件要回到列表里。
+  it("restores the changed files after a failed snapshot read is retried", async () => {
+    const root = "/machine/snapshotfail1"
+    mockedApi.getWorkspaceSnapshot.mockImplementationOnce(() =>
+      Promise.reject({ error: "read boom" })
+    )
+    const store = getWorkspaceStateStore(root)
+    const token = store.acquire("full")
+    await drain()
+    expect(store.getSnapshot().health).toBe("degraded")
+    expect(store.getSnapshot().error).toBe("read boom")
+    expect(store.getSnapshot().git).toEqual([])
+
+    const entry = { path: "src/a.ts", status: "M", additions: 3, deletions: 1 }
+    mockedApi.getWorkspaceSnapshot.mockImplementation((r: string) =>
+      Promise.resolve({
+        ...fullSnapshot(r, 1),
+        git_snapshot: r === root ? [entry] : [],
+      })
+    )
+    await store.requestResync("manual_retry")
+    await drain()
+
+    const state = store.getSnapshot()
+    expect(state.health).toBe("healthy")
+    expect(state.error).toBeNull()
+    expect(state.git).toEqual([entry])
+    expect(callsFor(mockedApi.startWorkspaceStateStream, root)).toBe(1)
 
     store.release(token)
     await vi.advanceTimersByTimeAsync(700)

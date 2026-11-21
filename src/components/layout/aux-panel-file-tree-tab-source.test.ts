@@ -435,7 +435,7 @@ describe("aux file tree load error state", () => {
   // "[object Object]") and a Retry button, with no heading saying what failed.
   it("shows a 'failed to load' heading above the reason and keeps Retry", () => {
     expect(auxSource).toMatch(
-      /\{t\("loadFailed"\)\}<\/p>\s*<p[^>]*>\{error\}<\/p>[\s\S]{0,300}\{t\("retry"\)\}/
+      /\{t\("loadFailed"\)\}\s*<\/p>\s*<p[^>]*>\s*\{error\}\s*<\/p>[\s\S]{0,300}\{t\("retry"\)\}/
     )
   })
 })
@@ -459,5 +459,25 @@ describe("aux file tree greys out rollback for untracked files (#854)", () => {
     expect(auxSource).toMatch(
       /onSelect=\{\(\) => onRequestRollback\(node\)\}\s*disabled=\{\s*isGitMenuDisabled \|\| !canRollbackGitStatus\(gitStatusCode\)\s*\}/
     )
+  })
+})
+
+describe("aux file tree keeps the panel when loading fails", () => {
+  // #1158 第 3、5 条：读取失败时不能提前 return 把整块面板换成一行报错——
+  // 降级横幅、根目录的右键菜单和各个对话框都会跟着消失。出错说明和「重试」
+  // 放在列表的位置（ScrollArea 里），和变更标签（#1135）一样。
+  it("does not early-return the whole panel on a load error", () => {
+    expect(auxSource).not.toMatch(/if \(error\) \{\s*return/)
+  })
+
+  it("renders the error and retry inside the list area, after the banner", () => {
+    const banner = auxSource.indexOf("<WorkspaceDegradedBanner")
+    const scroll = auxSource.indexOf("<ScrollArea", banner)
+    const errorBlock = auxSource.indexOf('{t("loadFailed")}', scroll)
+    const tree = auxSource.indexOf("<FileTree", scroll)
+    expect(banner).toBeGreaterThan(-1)
+    expect(scroll).toBeGreaterThan(banner)
+    expect(errorBlock).toBeGreaterThan(scroll)
+    expect(tree).toBeGreaterThan(errorBlock)
   })
 })

@@ -943,10 +943,12 @@ export function GitChangesTab() {
       // Only ever the files the message was written for: if the changes moved
       // meanwhile, the message waits in the box for the user to check.
       // 读取失败（含重拉中）时列表看不到，手里的是缓存，同样只填框不提交。
-      if (
-        loadErrorRef.current !== null ||
-        !sameFiles(files, commitPathsRef.current)
-      ) {
+      // 两种原因各说各的：读取失败时说读取失败，不说「改动有变化」。
+      if (loadErrorRef.current !== null) {
+        toast.info(tGenerate("toasts.autoCommitSkippedLoadFailed"))
+        return
+      }
+      if (!sameFiles(files, commitPathsRef.current)) {
         toast.info(tGenerate("toasts.autoCommitSkipped"))
         return
       }

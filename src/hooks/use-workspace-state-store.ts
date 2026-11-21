@@ -185,6 +185,10 @@ class WorkspaceStateStore {
   private evictionTimer: ReturnType<typeof setTimeout> | null = null
   private shutdownTimer: ReturnType<typeof setTimeout> | null = null
   private hasBaselineSnapshot = false
+  // 后端现在有没有我们的一份登记（启动成功过、还没停）。启动成功但订阅出错时
+  // started 仍是 false，靠它知道要先把那份登记还掉，免得重试再登记一份、
+  // 最后只停一份（#1158）；也避免没登记过却去停，停掉别的窗口那份。
+  private backendRegistered = false
 
   constructor(rootPath: string) {
     this.rootPath = rootPath
@@ -477,8 +481,10 @@ class WorkspaceStateStore {
           wantsTreeGit
         )
         this.backendWantsTreeGit = wantsTreeGit
+        this.backendRegistered = true
         this.streamId = initialSnapshot.stream_id ?? null
         if (!this.isLifecycleActive(lifecycleId)) {
+          this.backendRegistered = false
           await stopWorkspaceStateStream(this.rootPath, wantsTreeGit).catch(
             () => {}
           )
@@ -512,6 +518,7 @@ class WorkspaceStateStore {
 
         if (!this.isLifecycleActive(lifecycleId)) {
           unlisten()
+          this.backendRegistered = false
           await stopWorkspaceStateStream(this.rootPath, wantsTreeGit).catch(
             () => {}
           )
@@ -549,6 +556,15 @@ class WorkspaceStateStore {
         // sequence was in flight — reconcile now that we're started.
         this.syncBackendMode()
       } catch (error) {
+        // 登记成功了、但还没走到 started（订阅事件出错）：这份登记没人用，
+        // 当场还掉。之后点重试会当作没登记过重新启动，不会多出一份。
+        if (this.backendRegistered && !this.started) {
+          this.backendRegistered = false
+          await stopWorkspaceStateStream(
+            this.rootPath,
+            this.backendWantsTreeGit
+          ).catch(() => {})
+        }
         this.patchState((prev) => ({
           ...prev,
           health: "degraded",
@@ -584,7 +600,9 @@ class WorkspaceStateStore {
     this.offReconnect = null
     offReconnect?.()
     this.streamId = null
-    if (options?.releaseBackend === false) return
+    const registered = this.backendRegistered
+    this.backendRegistered = false
+    if (options?.releaseBackend === false || !registered) return
     await stopWorkspaceStateStream(
       this.rootPath,
       this.backendWantsTreeGit

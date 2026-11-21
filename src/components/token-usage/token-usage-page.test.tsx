@@ -3,7 +3,8 @@ import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import en from "@/i18n/messages/en.json"
-import type { TokenUsageReport } from "@/lib/types"
+import type { DbConversationSummary, TokenUsageReport } from "@/lib/types"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { TokenUsagePage } from "./token-usage-page"
 
 const h = vi.hoisted(() => ({
@@ -203,5 +204,55 @@ describe("Token Usage agent filter", () => {
         expect.objectContaining({ agentTypes: ["custom:claude-code-3"] })
       )
     )
+  })
+})
+
+// 用量页开着时在侧栏删会话（#1194）：侧栏的会话列表变了，报表要跟着重读，
+// 不然会话数、排行一直停在删之前的数，要整页刷新才对。
+describe("Token Usage refetch on sidebar conversation changes", () => {
+  const conv = (id: number) =>
+    ({ id, folder_id: 1, title: `c${id}` }) as unknown as DbConversationSummary
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    h.agents = []
+    h.report.mockResolvedValue(report)
+    h.facets.mockResolvedValue({
+      folders: [],
+      agents: [],
+      models: [],
+      data_start: null,
+      data_end: null,
+    })
+    useAppWorkspaceStore.setState({
+      conversations: [conv(1), conv(2), conv(3)],
+    })
+  })
+
+  it("reloads the report after a conversation is deleted", async () => {
+    render(page())
+    await waitFor(() => expect(h.report).toHaveBeenCalledTimes(1))
+    useAppWorkspaceStore.getState().applyConversationRemove(2)
+    await waitFor(() => expect(h.report).toHaveBeenCalledTimes(2))
+  })
+
+  it("coalesces several quick deletions into one reload", async () => {
+    render(page())
+    await waitFor(() => expect(h.report).toHaveBeenCalledTimes(1))
+    useAppWorkspaceStore.getState().applyConversationRemove(1)
+    useAppWorkspaceStore.getState().applyConversationRemove(3)
+    await waitFor(() => expect(h.report).toHaveBeenCalledTimes(2))
+    await new Promise((r) => setTimeout(r, 500))
+    expect(h.report).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not reload when the conversation list is unchanged", async () => {
+    render(page())
+    await waitFor(() => expect(h.report).toHaveBeenCalledTimes(1))
+    useAppWorkspaceStore.setState({
+      conversations: [conv(1), conv(2), conv(3)],
+    })
+    await new Promise((r) => setTimeout(r, 500))
+    expect(h.report).toHaveBeenCalledTimes(1)
   })
 })

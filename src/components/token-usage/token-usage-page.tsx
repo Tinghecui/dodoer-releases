@@ -55,6 +55,7 @@ import { toErrorMessage } from "@/lib/app-error"
 import { getAgentLabel, isCustomAgentType } from "@/lib/custom-agents"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { subscribe } from "@/lib/platform"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { formatTokensCompact } from "@/lib/token-format"
 import {
   averagePerActiveDay,
@@ -510,6 +511,20 @@ export function TokenUsagePage() {
       unsub?.()
     }
   }, [])
+
+  // 侧栏的会话列表变了（本窗口或别的客户端删了、新建了会话，#1194）：
+  // 单个会话的删除不发 bulk-changed，页面一直开着就停在旧数。跟着 store
+  // 里的会话个数重读；挂载时的值不算，连删几条合成一次（防抖 300ms）。
+  const conversationCount = useAppWorkspaceStore((s) => s.conversations.length)
+  const lastCountRef = useRef(conversationCount)
+  useEffect(() => {
+    if (lastCountRef.current === conversationCount) return
+    lastCountRef.current = conversationCount
+    const timer = setTimeout(() => {
+      void loadRef.current()
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [conversationCount])
 
   const runSync = useCallback(
     async (mode: "incremental" | "full", opts?: { silent?: boolean }) => {

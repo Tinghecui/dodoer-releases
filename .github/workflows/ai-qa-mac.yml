@@ -95,7 +95,7 @@ jobs:
                 grep -q 'AIQA-TRIAL-GUARD' "$f" 2>/dev/null || { echo "::error::分支 $REF 的 $f 不认试跑（没有 AIQA-TRIAL-GUARD），跑了会写台账、评论 PR、开 issue。先把默认分支合进这个分支"; exit 1; }
               done
               export AIQA_TRIAL=1
-              echo "试跑：源仓库分支 $REF（不记台账、不评论 PR、不开 issue）"
+              echo "试跑：源仓库分支 ${REF}（不记台账、不评论 PR、不开 issue）"
             fi
           fi
           exec bash .cowork/ai-qa/mac/sealed.sh

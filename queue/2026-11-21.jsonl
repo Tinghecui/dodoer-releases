@@ -24,3 +24,4 @@
 {"t":"2026-11-21T03:50:12Z","running":[],"queued":[]}
 {"t":"2026-11-21T04:00:15Z","running":[{"wf":"release-train","run":44863240837,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-21T03:59:41Z"}],"queued":[]}
 {"t":"2026-11-21T04:10:20Z","running":[{"wf":"release-train","run":44863240837,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-21T03:59:41Z"}],"queued":[{"job":"整班在等前一班跑完","run":44864744789,"status":"pending","title":"Merge pull request #1148 from Tinghecui/autopilot/1060-chrome-server-…","wf":"release-train"}]}
+{"t":"2026-11-21T04:20:12Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":44864744789,"status":"pending","title":"Merge pull request #1148 from Tinghecui/autopilot/1060-chrome-server-…","wf":"release-train"}]}

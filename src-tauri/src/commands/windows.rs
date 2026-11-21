@@ -976,11 +976,12 @@ pub async fn open_commit_window(
         remote_connection_id,
     );
     let url = WebviewUrl::App(url_str.into());
-    let builder = WebviewWindowBuilder::new(&app, &label, url)
-        .title(window_title)
-        .inner_size(1220.0, 820.0)
-        .min_inner_size(980.0, 620.0)
-        .center();
+    let builder = fit_builder_to_monitor(
+        &app,
+        WebviewWindowBuilder::new(&app, &label, url).title(window_title),
+        (1220.0, 820.0),
+        (980.0, 620.0),
+    );
     let builder = builder.parent(&window).map_err(|e| {
         AppCommandError::window("Failed to attach commit window to parent", e.to_string())
     })?;
@@ -1080,11 +1081,12 @@ pub async fn open_settings_window(
         None => titles.settings.to_string(),
     };
     let url = WebviewUrl::App(target_route.into());
-    let builder = WebviewWindowBuilder::new(&app, &settings_label, url)
-        .title(title)
-        .inner_size(1080.0, 700.0)
-        .min_inner_size(1080.0, 600.0)
-        .center();
+    let builder = fit_builder_to_monitor(
+        &app,
+        WebviewWindowBuilder::new(&app, &settings_label, url).title(title),
+        (1080.0, 700.0),
+        (1080.0, 600.0),
+    );
     // Intentionally NOT a child of the caller window: on macOS `.parent()`
     // attaches the window via `addChildWindow`, which makes settings move and
     // minimize together with the main window. Keep it an independent top-level
@@ -1175,11 +1177,12 @@ pub async fn open_import_sessions_window(
     }
     let (url_str, remote_window_id) = route_with_new_remote_window(route, remote_connection_id);
     let url = WebviewUrl::App(url_str.into());
-    let builder = WebviewWindowBuilder::new(&app, &label, url)
-        .title(titles.import_sessions)
-        .inner_size(1080.0, 720.0)
-        .min_inner_size(860.0, 560.0)
-        .center();
+    let builder = fit_builder_to_monitor(
+        &app,
+        WebviewWindowBuilder::new(&app, &label, url).title(titles.import_sessions),
+        (1080.0, 720.0),
+        (860.0, 560.0),
+    );
     // Independent top-level window — same rationale as settings: `.parent()`
     // on macOS would make it move/minimize together with the opener.
     let import_window = apply_platform_window_style(builder).build().map_err(|e| {
@@ -1334,11 +1337,12 @@ pub async fn open_merge_window(
     }
     let (url_str, remote_window_id) = route_with_new_remote_window(url_str, remote_connection_id);
     let url = WebviewUrl::App(url_str.into());
-    let builder = WebviewWindowBuilder::new(&app, &label, url)
-        .title(window_title)
-        .inner_size(1400.0, 900.0)
-        .min_inner_size(1100.0, 650.0)
-        .center();
+    let builder = fit_builder_to_monitor(
+        &app,
+        WebviewWindowBuilder::new(&app, &label, url).title(window_title),
+        (1400.0, 900.0),
+        (1100.0, 650.0),
+    );
     let builder = builder.parent(&window).map_err(|e| {
         AppCommandError::window("Failed to attach merge window to parent", e.to_string())
     })?;
@@ -1455,11 +1459,12 @@ pub async fn open_stash_window(
     let (url_str, remote_window_id) =
         route_with_new_remote_window(format!("stash?folderId={folder_id}"), remote_connection_id);
     let url = WebviewUrl::App(url_str.into());
-    let builder = WebviewWindowBuilder::new(&app, &label, url)
-        .title(window_title)
-        .inner_size(1100.0, 700.0)
-        .min_inner_size(800.0, 500.0)
-        .center();
+    let builder = fit_builder_to_monitor(
+        &app,
+        WebviewWindowBuilder::new(&app, &label, url).title(window_title),
+        (1100.0, 700.0),
+        (800.0, 500.0),
+    );
     let stash_window = apply_platform_window_style(builder)
         .build()
         .map_err(|e| AppCommandError::window("Failed to open stash window", e.to_string()))?;
@@ -1551,11 +1556,12 @@ pub async fn open_push_window(
         remote_connection_id,
     );
     let url = WebviewUrl::App(url_str.into());
-    let builder = WebviewWindowBuilder::new(&app, &label, url)
-        .title(window_title)
-        .inner_size(1100.0, 700.0)
-        .min_inner_size(800.0, 500.0)
-        .center();
+    let builder = fit_builder_to_monitor(
+        &app,
+        WebviewWindowBuilder::new(&app, &label, url).title(window_title),
+        (1100.0, 700.0),
+        (800.0, 500.0),
+    );
     let builder = builder.parent(&window).map_err(|e| {
         AppCommandError::window("Failed to attach push window to parent", e.to_string())
     })?;
@@ -1600,11 +1606,12 @@ pub async fn open_project_boot_window(
     let (url_str, remote_window_id) =
         route_with_new_remote_window("project-boot".to_string(), remote_connection_id);
     let url = WebviewUrl::App(url_str.into());
-    let builder = WebviewWindowBuilder::new(&app, &label, url)
-        .title(titles.project_boot)
-        .inner_size(1400.0, 900.0)
-        .min_inner_size(1100.0, 700.0)
-        .center();
+    let builder = fit_builder_to_monitor(
+        &app,
+        WebviewWindowBuilder::new(&app, &label, url).title(titles.project_boot),
+        (1400.0, 900.0),
+        (1100.0, 700.0),
+    );
     let boot_window = apply_platform_window_style(builder).build().map_err(|e| {
         AppCommandError::window("Failed to open project boot window", e.to_string())
     })?;
@@ -3467,6 +3474,45 @@ mod fit_window_rect_tests {
             work_area_to_logical((0, 25), (1024, 673), 0.0),
             (0.0, 25.0, 1024.0, 673.0)
         );
+    }
+
+    /// 建窗口的代码要连着 Tauri 才能跑，单测里只能查源码：这些窗口默认都比
+    /// 1024 宽的屏大，不能再用 `.center()`（不看屏幕大小，左上角会算到屏幕外，
+    /// #1036），要走按屏幕可用区域收小居中的那个函数。
+    #[test]
+    fn large_windows_fit_into_monitor_instead_of_plain_center() {
+        let src = include_str!("windows.rs");
+        for name in [
+            "open_commit_window",
+            "open_settings_window",
+            "open_import_sessions_window",
+            "open_merge_window",
+            "open_stash_window",
+            "open_push_window",
+            "open_project_boot_window",
+        ] {
+            let head = format!("pub async fn {name}(");
+            let start = src.find(&head).unwrap_or_else(|| panic!("找不到 {name}"));
+            let rest = &src[start..];
+            let body = &rest[..rest.find("\n}\n").expect("函数没结束")];
+            assert!(
+                !body.contains(".center()"),
+                "{name} 还在用 .center()，小屏上会跑出屏幕"
+            );
+            assert!(
+                body.contains("fit_builder_to_monitor("),
+                "{name} 没按屏幕可用区域收小居中"
+            );
+        }
+    }
+
+    #[test]
+    fn commit_window_fits_small_screen() {
+        // 1024×768，菜单栏 25、Dock 在下方占 70（#1036）
+        let area = (0.0, 25.0, 1024.0, 673.0);
+        let r = fit_window_rect(area, (1220.0, 820.0), (980.0, 620.0));
+        assert_eq!((r.x, r.width, r.min_width), (0.0, 1024.0, 980.0));
+        assert_inside(r, area);
     }
 
     #[test]

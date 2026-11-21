@@ -910,7 +910,7 @@ pub async fn token_usage_report_core(
     let factless = usage_service::factless_workspace_conversations(conn, &query)
         .await
         .map_err(AppCommandError::from)?;
-    // 没有用量的会话也按 0 token 记进按文件夹和排行，和顶部是同一份会话。
+    // 没有用量的会话也按 0 token 记进按文件夹、按智能体和排行，和顶部是同一份会话。
     let factless: Vec<_> = factless
         .into_iter()
         .filter(|c| sessions.insert(c.id))
@@ -937,8 +937,8 @@ pub async fn token_usage_report_core(
     Ok(report)
 }
 
-/// 把侧栏里有、但这段时间没有用量明细的会话按 0 token 补进按文件夹和排行：
-/// 文件夹的会话数加一（没有这一项就补一个 0 token 的），排行还有空位就按 id
+/// 把侧栏里有、但这段时间没有用量明细的会话按 0 token 补进按文件夹、按智能体
+/// 和排行：文件夹、智能体的会话数加一（没有这一项就补一个 0 token 的），排行还有空位就按 id
 /// 顺序接在后面（0 token 排在最后，和排行的平局规则一致）。
 fn add_factless_sessions(
     report: &mut TokenUsageReport,
@@ -964,6 +964,22 @@ fn add_factless_sessions(
         }
     }
     sort_breakdown(&mut report.by_folder);
+
+    // 按智能体同理：这个智能体的会话数加一，没有这一项就补一个 0 token 的。
+    // 按模型不补：没有用量就不知道用的哪个模型。
+    for c in factless {
+        match report.by_agent.iter_mut().find(|a| a.key == c.agent_type) {
+            Some(item) => item.conversation_count += 1,
+            None => {
+                let mut acc = Acc::default();
+                acc.conversations.insert(c.id);
+                report
+                    .by_agent
+                    .push(acc.into_breakdown(c.agent_type.clone(), c.agent_type.clone()));
+            }
+        }
+    }
+    sort_breakdown(&mut report.by_agent);
 
     let mut rest: Vec<&usage_service::FactlessConversation> = factless.iter().collect();
     rest.sort_by_key(|c| c.id);
@@ -2459,5 +2475,53 @@ mod tests {
         assert_eq!(report.totals.total_tokens, 30);
         assert_eq!(folders, vec![(home, 30, 2), (other, 0, 1)]);
         assert_eq!(ranking, vec![(used, 30), (empty_home, 0), (empty_other, 0)]);
+    }
+
+    /// 没有用量的会话也要按 0 token 算进按智能体：同一个智能体的会话数加一，
+    /// 只有空会话的智能体补一个 0 token 的项。这里没有子智能体，各项会话数
+    /// 加起来等于顶部会话数（父子会话智能体不同时的重复计数不归这里管）。
+    #[tokio::test]
+    async fn factless_sessions_count_in_agents_too() {
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
+
+        let db = fresh_in_memory_db().await;
+        let home = seed_folder(&db, "/tmp/tu-factless-agents").await;
+        let used = seed_conversation(&db, home, crate::models::AgentType::ClaudeCode).await;
+        let _empty_claude =
+            seed_conversation(&db, home, crate::models::AgentType::ClaudeCode).await;
+        let _empty_codex = seed_conversation(&db, home, crate::models::AgentType::Codex).await;
+        usage_service::replace_conversation_facts(
+            &db.conn,
+            used,
+            ts("2026-08-03T00:00:00Z"),
+            &[usage_service::UsageFact {
+                turn_key: "u".into(),
+                occurred_at: ts("2026-08-01T10:00:00Z"),
+                model: Some("claude-opus-5".into()),
+                input_tokens: 30,
+                output_tokens: 0,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                duration_ms: 0,
+            }],
+        )
+        .await
+        .expect("write facts");
+
+        let report = token_usage_report_core(&db.conn, TokenUsageFilter::default())
+            .await
+            .expect("report");
+        let agents: Vec<(String, u64, u64)> = report
+            .by_agent
+            .iter()
+            .map(|a| (a.key.clone(), a.total_tokens, a.conversation_count))
+            .collect();
+        assert_eq!(report.totals.conversation_count, 3);
+        assert_eq!(
+            agents,
+            vec![("claude_code".into(), 30, 2), ("codex".into(), 0, 1)]
+        );
+        let sum: u64 = report.by_agent.iter().map(|a| a.conversation_count).sum();
+        assert_eq!(sum, report.totals.conversation_count);
     }
 }

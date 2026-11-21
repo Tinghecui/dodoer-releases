@@ -64,7 +64,7 @@ use crate::acp::delegation::live_reply::{ChildLiveReplyLookup, NoopChildLiveRepl
 use crate::acp::delegation::meta_writer::{
     build_delegation_meta, is_synthetic_parent_tool_use_id, DelegationMetaWriter, NoopMetaWriter,
 };
-use crate::acp::delegation::spawner::{ConnectionSpawner, DelegationLink};
+use crate::acp::delegation::spawner::{ConnectionSpawner, DelegationLink, InheritedMode};
 use crate::acp::agent_mentions::render_assistant_brief;
 use crate::acp::delegation::assistants::{AssistantLookup, AssistantRosterEntry, NoAssistants};
 use crate::acp::delegation::types::{
@@ -938,6 +938,28 @@ fn launch_preferences(
         None => defaults
             .map(|d| (d.mode_id.clone(), d.config_values.clone()))
             .unwrap_or((None, BTreeMap::new())),
+    }
+}
+
+/// 子智能体没有明确定过模式（#1119）：助手或协作设置都没给 `mode_id`，配置项里
+/// 也没有 `mode`。这时由父会话的模式来补，明确定过的照定的来。
+fn mode_left_unset(mode_id: &Option<String>, config_values: &BTreeMap<String, String>) -> bool {
+    mode_id.is_none() && !config_values.contains_key(InheritedMode::CONFIG_ID)
+}
+
+/// 把沿用来的父会话模式放进子智能体的启动偏好（#1119）：会话模式放进
+/// `mode_id`，配置项模式（Kiro、Hermes、ZCode 这类）放进 `config_values["mode"]`。
+fn apply_inherited_mode(
+    inherited: Option<&InheritedMode>,
+    mode_id: &mut Option<String>,
+    config_values: &mut BTreeMap<String, String>,
+) {
+    match inherited {
+        Some(InheritedMode::Session(m)) => *mode_id = Some(m.clone()),
+        Some(InheritedMode::ConfigOption(v)) => {
+            config_values.insert(InheritedMode::CONFIG_ID.to_string(), v.clone());
+        }
+        None => {}
     }
 }
 
@@ -2676,10 +2698,24 @@ impl DelegationBroker {
         // agent's own value). Otherwise pull the per-agent overrides from the
         // broker config (defaults to empty). Cloning is cheap — at most one
         // Option<String> and a small BTreeMap, consumed by value.
-        let (preferred_mode_id, preferred_config_values) = launch_preferences(
+        let (mut preferred_mode_id, mut preferred_config_values) = launch_preferences(
             req.assistant.as_ref(),
             cfg.agent_defaults.get(&req.agent_type),
         );
+        // 没明确定过模式的子智能体沿用父会话的模式（#1119）：父会话设成需要批准，
+        // 子智能体不能按自己的默认（Claude 新会话是 Auto）绕过去。
+        let mut inherited_mode = None;
+        if mode_left_unset(&preferred_mode_id, &preferred_config_values) {
+            inherited_mode = self
+                .spawner
+                .parent_mode_for_child(&req.parent_connection_id, req.agent_type)
+                .await;
+            apply_inherited_mode(
+                inherited_mode.as_ref(),
+                &mut preferred_mode_id,
+                &mut preferred_config_values,
+            );
+        }
         // Checkpoint #1 (opportunistic): if a parent cancel already landed
         // during the claim/depth phase, bail before spawning a child the parent
         // has abandoned. No child exists yet, so there's nothing to tear down.
@@ -2713,6 +2749,21 @@ impl DelegationBroker {
                 );
             }
         };
+        // 沿用来的父会话模式只是启动偏好：智能体拒绝切换时启动流程只记日志、
+        // 照样往下走（#1119）。确认它真的换成了这个模式再发任务，换不过去就
+        // 断开子连接、报启动失败，免得父会话设成需要批准、子智能体却按自己的
+        // 默认（Claude 新会话是 Auto）直接执行。
+        if let Some(mode) = inherited_mode.as_ref() {
+            if let Err(e) = self.spawner.ensure_mode(&child_connection_id, mode).await {
+                self.drop_inflight(inflight_id).await;
+                let _ = self.spawner.disconnect(&child_connection_id).await;
+                return report_err(
+                    req.agent_type,
+                    DelegationError::SpawnFailed(format!("child mode: {e}")),
+                    None,
+                );
+            }
+        }
 
         // Checkpoint #2: a parent cancel that landed during spawn() — the child
         // now exists but no prompt has been sent, so disconnect it (mirroring
@@ -4391,8 +4442,21 @@ impl DelegationBroker {
         // from its row's snapshot, never from the assistant's current row nor
         // the per-agent defaults; no depth re-check — the child row already
         // exists at its chain position, resume adds no node.
-        let (preferred_mode_id, preferred_config_values) =
+        let (mut preferred_mode_id, mut preferred_config_values) =
             launch_preferences(assistant, cfg.agent_defaults.get(&ctx.agent_type));
+        // 和新起的子智能体一样：没明确定过模式的沿用父会话现在的模式（#1119）。
+        let mut inherited_mode = None;
+        if mode_left_unset(&preferred_mode_id, &preferred_config_values) {
+            inherited_mode = self
+                .spawner
+                .parent_mode_for_child(&req.parent_connection_id, ctx.agent_type)
+                .await;
+            apply_inherited_mode(
+                inherited_mode.as_ref(),
+                &mut preferred_mode_id,
+                &mut preferred_config_values,
+            );
+        }
         // Checkpoint #1: a parent cancel during the gates — nothing spawned yet.
         if self.take_inflight_cancel(inflight_id).await {
             return report_from_outcome(
@@ -4429,6 +4493,29 @@ impl DelegationBroker {
             }
         };
         let child_connection_id = spawned.connection_id.clone();
+        // 沿用来的父会话模式要确认真的套上了（#1119）：新起的连接只把它当启动
+        // 偏好，智能体拒绝切换时照样往下走；复用的已有连接（用户在标签页里开着
+        // 这个子会话）根本不按启动参数选模式。套不上就不续跑，免得父会话设成
+        // 需要批准、子智能体却按原来的模式直接执行。只套沿用来的模式：协作设置
+        // 或助手定的模式照旧不去改用户开着的连接。复用的连接不是委托起的，失败时
+        // 不断开它；新起的照常断开。
+        if let Some(mode) = inherited_mode.as_ref() {
+            if let Err(e) = self.spawner.ensure_mode(&child_connection_id, mode).await {
+                self.drop_inflight(inflight_id).await;
+                if !spawned.reused {
+                    let _ = self.spawner.disconnect(&child_connection_id).await;
+                }
+                return report_from_outcome(
+                    Some(req.task_id.clone()),
+                    Some(ctx.agent_type),
+                    &DelegationOutcome::from_err(
+                        DelegationError::SpawnFailed(format!("resume mode: {e}")),
+                        Some(ctx.child_conversation_id),
+                    ),
+                    None,
+                );
+            }
+        }
         // Checkpoint #2: a parent cancel during spawn — the connection exists
         // but no prompt went out; disconnect-only teardown. A DEDUP-REUSED
         // connection (the user has the child session open — see
@@ -5844,6 +5931,234 @@ mod tests {
         assert_eq!(call.agent_type, AgentType::ClaudeCode);
         assert_eq!(call.preferred_mode_id.as_deref(), Some("auto"));
         assert_eq!(call.preferred_config_values, claude_cfg);
+    }
+
+    /// #1119：没有助手、协作设置也没给这种智能体定模式时，子智能体沿用父会话的模式。
+    #[tokio::test]
+    async fn child_without_mode_setting_inherits_parent_mode() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        mock.parent_modes.lock().await.push((
+            "parent-conn".into(),
+            AgentType::ClaudeCode,
+            "default".into(),
+        ));
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+
+        let _ = broker.handle_request(request(1, "pt-1")).await;
+
+        let args = mock.spawn_args.lock().await;
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].preferred_mode_id.as_deref(), Some("default"));
+    }
+
+    /// #1119：新起的子连接上，沿用来的父会话模式要确认真的套上了才发任务。
+    #[tokio::test]
+    async fn child_inherited_mode_is_confirmed_before_task() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        mock.parent_modes.lock().await.push((
+            "parent-conn".into(),
+            AgentType::ClaudeCode,
+            "default".into(),
+        ));
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+
+        let _ = broker.handle_request(request(1, "pt-1")).await;
+
+        assert_eq!(
+            *mock.ensured_modes.lock().await,
+            vec![("child-1".to_string(), "default".to_string())]
+        );
+        assert_eq!(mock.send_args.lock().await.len(), 1);
+    }
+
+    /// #1119：父会话的模式走配置项 `mode`（Kiro、Hermes 这类）时，子智能体按
+    /// 配置项 `mode` 沿用，并确认配置项真的换成了这个值再发任务。
+    #[tokio::test]
+    async fn child_inherits_parent_mode_config_option() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        mock.parent_config_modes.lock().await.push((
+            "parent-conn".into(),
+            AgentType::ClaudeCode,
+            "ask".into(),
+        ));
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+
+        let _ = broker.handle_request(request(1, "pt-1")).await;
+
+        let args = mock.spawn_args.lock().await;
+        assert!(args[0].preferred_mode_id.is_none());
+        assert_eq!(
+            args[0]
+                .preferred_config_values
+                .get("mode")
+                .map(String::as_str),
+            Some("ask")
+        );
+        assert_eq!(
+            *mock.ensured_kinds.lock().await,
+            vec![InheritedMode::ConfigOption("ask".into())]
+        );
+        assert_eq!(mock.send_args.lock().await.len(), 1);
+    }
+
+    /// #1119：子智能体拒绝换成父会话的模式（启动流程只记日志、照样往下走），
+    /// 就不发任务、断开子连接、报启动失败，不让它按自己的默认（Auto）执行。
+    #[tokio::test]
+    async fn child_rejecting_inherited_mode_gets_no_task() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.parent_modes.lock().await.push((
+            "parent-conn".into(),
+            AgentType::ClaudeCode,
+            "default".into(),
+        ));
+        mock.ensure_mode_results
+            .lock()
+            .await
+            .push_back(Err(SpawnerError::Spawn("mode not confirmed".into())));
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+
+        let outcome = broker.handle_request(request(1, "pt-1")).await;
+
+        match outcome {
+            DelegationOutcome::Err { code, .. } => assert_eq!(code, "spawn_failed"),
+            other => panic!("expected spawn_failed, got {other:?}"),
+        }
+        assert!(mock.send_args.lock().await.is_empty());
+        assert_eq!(*mock.disconnects.lock().await, vec!["child-1".to_string()]);
+        assert_eq!(broker.inflight_count().await, 0);
+    }
+
+    /// #1119：父会话没有可沿用的模式时，不另外去切子连接的模式。
+    #[tokio::test]
+    async fn no_inherited_mode_is_not_forced_on_child() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+
+        let _ = broker.handle_request(request(1, "pt-1")).await;
+
+        assert!(mock.ensured_modes.lock().await.is_empty());
+    }
+
+    /// #1119：协作设置里明确定了模式的，照设置的来，不被父会话的模式盖掉。
+    #[tokio::test]
+    async fn agent_default_mode_wins_over_parent_mode() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        mock.parent_modes.lock().await.push((
+            "parent-conn".into(),
+            AgentType::ClaudeCode,
+            "default".into(),
+        ));
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        let mut agent_defaults = BTreeMap::new();
+        agent_defaults.insert(
+            AgentType::ClaudeCode,
+            AgentDelegationDefaults {
+                mode_id: Some("auto".into()),
+                config_values: BTreeMap::new(),
+            },
+        );
+        broker
+            .set_config(DelegationConfig {
+                enabled: true,
+                depth_limit: 8,
+                agent_defaults,
+                ..DelegationConfig::default()
+            })
+            .await;
+
+        let _ = broker.handle_request(request(1, "pt-1")).await;
+
+        let args = mock.spawn_args.lock().await;
+        assert_eq!(args[0].preferred_mode_id.as_deref(), Some("auto"));
+        assert!(mock.ensured_modes.lock().await.is_empty());
+    }
+
+    /// #1119：助手里明确存了模式的，照助手的来，不被父会话的模式盖掉。
+    #[tokio::test]
+    async fn assistant_mode_wins_over_parent_mode() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-a".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        mock.parent_modes.lock().await.push((
+            "parent-conn".into(),
+            AgentType::Codex,
+            "auto".into(),
+        ));
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+
+        let _ = broker.handle_request(assistant_request(1, "pt-a")).await;
+
+        let args = mock.spawn_args.lock().await;
+        assert_eq!(args[0].preferred_mode_id.as_deref(), Some("read-only"));
+    }
+
+    /// #1119：设置里用配置项 `mode` 定了模式的，也算明确设过，不再补父会话的模式。
+    #[tokio::test]
+    async fn mode_config_value_counts_as_explicit_mode() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        mock.parent_modes.lock().await.push((
+            "parent-conn".into(),
+            AgentType::ClaudeCode,
+            "default".into(),
+        ));
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        let mut cfg = BTreeMap::new();
+        cfg.insert("mode".into(), "auto".into());
+        let mut agent_defaults = BTreeMap::new();
+        agent_defaults.insert(
+            AgentType::ClaudeCode,
+            AgentDelegationDefaults {
+                mode_id: None,
+                config_values: cfg,
+            },
+        );
+        broker
+            .set_config(DelegationConfig {
+                enabled: true,
+                depth_limit: 8,
+                agent_defaults,
+                ..DelegationConfig::default()
+            })
+            .await;
+
+        let _ = broker.handle_request(request(1, "pt-1")).await;
+
+        let args = mock.spawn_args.lock().await;
+        assert!(args[0].preferred_mode_id.is_none());
     }
 
     #[tokio::test]
@@ -10421,6 +10736,146 @@ mod tests {
         assert_eq!(broker.inflight_count().await, 0);
         assert_eq!(broker.reserved_call_count().await, 0);
         assert!(broker.pending.inner.lock().await.resuming.is_empty());
+    }
+
+    /// #1119：续跑的子智能体没明确定过模式时，新起的连接按父会话现在的模式启动。
+    #[tokio::test]
+    async fn resume_fresh_spawn_inherits_parent_mode() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.parent_modes.lock().await.push((
+            "parent-conn".into(),
+            AgentType::ClaudeCode,
+            "default".into(),
+        ));
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2")))
+            .await;
+        mock.queue_resume_send(Ok(())).await;
+        let ack = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(ack.status, TaskStatus::Running);
+        let spawns = mock.resume_spawn_args.lock().await;
+        assert_eq!(spawns[0].preferred_mode_id.as_deref(), Some("default"));
+        // 启动偏好之外还要确认真的套上了，再发续跑的提示词。
+        assert_eq!(
+            *mock.ensured_modes.lock().await,
+            vec![("child-conn-2".to_string(), "default".to_string())]
+        );
+    }
+
+    /// #1119：续跑时父会话的模式走配置项 `mode`，也按配置项沿用并确认。
+    #[tokio::test]
+    async fn resume_inherits_parent_mode_config_option() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.parent_config_modes.lock().await.push((
+            "parent-conn".into(),
+            AgentType::ClaudeCode,
+            "ask".into(),
+        ));
+        mock.queue_resume_spawn(Ok(ResumedSpawn::reused("user-conn")))
+            .await;
+        mock.queue_resume_send(Ok(())).await;
+        let ack = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(ack.status, TaskStatus::Running);
+        let spawns = mock.resume_spawn_args.lock().await;
+        assert!(spawns[0].preferred_mode_id.is_none());
+        assert_eq!(
+            spawns[0]
+                .preferred_config_values
+                .get("mode")
+                .map(String::as_str),
+            Some("ask")
+        );
+        assert_eq!(
+            *mock.ensured_kinds.lock().await,
+            vec![InheritedMode::ConfigOption("ask".into())]
+        );
+        assert_eq!(mock.resume_send_args.lock().await.len(), 1);
+    }
+
+    /// #1119：续跑新起的连接没换成父会话的模式（智能体拒绝），就不发续跑的提示词，
+    /// 断开这条委托自己起的连接。
+    #[tokio::test]
+    async fn resume_aborts_when_fresh_connection_rejects_parent_mode() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.parent_modes.lock().await.push((
+            "parent-conn".into(),
+            AgentType::ClaudeCode,
+            "default".into(),
+        ));
+        mock.queue_resume_spawn(Ok(ResumedSpawn::fresh("child-conn-2")))
+            .await;
+        mock.ensure_mode_results
+            .lock()
+            .await
+            .push_back(Err(SpawnerError::Spawn("mode not confirmed".into())));
+        let report = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(report.status, TaskStatus::Failed);
+        assert_eq!(report.error_code.as_deref(), Some("spawn_failed"));
+        assert!(mock.resume_send_args.lock().await.is_empty());
+        assert_eq!(
+            *mock.disconnects.lock().await,
+            vec!["child-conn-2".to_string()]
+        );
+        assert_eq!(broker.inflight_count().await, 0);
+        assert!(broker.pending.inner.lock().await.resuming.is_empty());
+    }
+
+    /// #1119：续跑复用了用户开着的子连接时，启动参数不起作用，要把父会话的模式
+    /// 套到这条连接上，再发续跑的提示词。
+    #[tokio::test]
+    async fn resume_onto_reused_connection_applies_parent_mode() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.parent_modes.lock().await.push((
+            "parent-conn".into(),
+            AgentType::ClaudeCode,
+            "default".into(),
+        ));
+        mock.queue_resume_spawn(Ok(ResumedSpawn::reused("user-conn")))
+            .await;
+        mock.queue_resume_send(Ok(())).await;
+        let ack = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(ack.status, TaskStatus::Running);
+        assert_eq!(
+            *mock.ensured_modes.lock().await,
+            vec![("user-conn".to_string(), "default".to_string())]
+        );
+        assert_eq!(mock.resume_send_args.lock().await.len(), 1);
+    }
+
+    /// #1119：复用的连接切不到父会话的模式，就不发续跑的提示词（不让它按原来的
+    /// 模式跑下去），也不断开这条不属于委托的连接。
+    #[tokio::test]
+    async fn resume_aborts_when_reused_connection_rejects_parent_mode() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.parent_modes.lock().await.push((
+            "parent-conn".into(),
+            AgentType::ClaudeCode,
+            "default".into(),
+        ));
+        mock.queue_resume_spawn(Ok(ResumedSpawn::reused("user-conn")))
+            .await;
+        mock.ensure_mode_results
+            .lock()
+            .await
+            .push_back(Err(SpawnerError::Spawn("mode not confirmed".into())));
+        let report = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(report.status, TaskStatus::Failed);
+        assert_eq!(report.error_code.as_deref(), Some("spawn_failed"));
+        assert!(mock.resume_send_args.lock().await.is_empty());
+        assert!(mock.disconnects.lock().await.is_empty());
+        assert_eq!(broker.inflight_count().await, 0);
+        assert!(broker.pending.inner.lock().await.resuming.is_empty());
+    }
+
+    /// #1119：复用的连接上，没沿用父会话模式（协作设置定过模式）的，不去改它的模式。
+    #[tokio::test]
+    async fn resume_onto_reused_connection_keeps_mode_without_inheritance() {
+        let (mock, _lookup, broker) = resume_harness(Some(resume_ctx(TaskStatus::Canceled))).await;
+        mock.queue_resume_spawn(Ok(ResumedSpawn::reused("user-conn")))
+            .await;
+        mock.queue_resume_send(Ok(())).await;
+        let ack = broker.resume_delegation(resume_request("task-1")).await;
+        assert_eq!(ack.status, TaskStatus::Running);
+        assert!(mock.ensured_modes.lock().await.is_empty());
     }
 
     /// A resumed task is cancelable again through the ordinary path — the

@@ -40,6 +40,27 @@ pub struct AssistantLink {
     pub snapshot: crate::models::AssistantRunSnapshot,
 }
 
+/// 委托子智能体沿用来的父会话模式（#1119），按智能体报模式的方式分两种。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InheritedMode {
+    /// 会话模式（`session/set_mode`），Claude Code、Codex 这类。
+    Session(String),
+    /// 配置项 `mode`（`session/set_config_option`），Kiro、Hermes、ZCode 这类
+    /// 不报会话模式列表、模式走配置项的智能体。
+    ConfigOption(String),
+}
+
+impl InheritedMode {
+    /// 配置项模式的配置项 id，和协作设置里的 `config_values["mode"]` 是同一个。
+    pub const CONFIG_ID: &'static str = "mode";
+
+    pub fn value(&self) -> &str {
+        match self {
+            Self::Session(v) | Self::ConfigOption(v) => v,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SpawnerError {
     #[error("spawn failed: {0}")]
@@ -174,6 +195,24 @@ pub trait ConnectionSpawner: Send + Sync {
         brief: Option<String>,
     ) -> Result<(), SpawnerError>;
 
+    /// 父连接现在的模式，子连接是同一种智能体、能原样用上时才给（#1119）。
+    /// 委托子智能体没有在助手或协作设置里单独定模式时沿用它，免得父会话设成
+    /// 需要批准（Manual）、子智能体却按自己的默认（Claude 新会话是 Auto）直接执行。
+    /// 父连接不在、不是同一种智能体、没报过模式，都给 `None`。
+    async fn parent_mode_for_child(
+        &self,
+        parent_connection_id: &str,
+        agent_type: AgentType,
+    ) -> Option<InheritedMode>;
+
+    /// 确认沿用来的父会话模式真的套到了子连接上（#1119），没套上就切过去、等
+    /// 智能体确认。新起的连接只把模式当启动偏好，智能体拒绝切换时启动流程只记日志、
+    /// 照样往下走；续跑复用的已有连接（用户在标签页里开着）根本不看启动参数。
+    /// 这两种都可能还停在原来的模式（比如 Auto），父会话设成需要批准也拦不住。
+    /// 已经是这个模式的直接成功；连接不在、智能体没确认换成这个模式，都算失败，
+    /// 调用方就不发提示词。
+    async fn ensure_mode(&self, conn_id: &str, mode: &InheritedMode) -> Result<(), SpawnerError>;
+
     /// Whether any live connection is currently bound to `conversation_id`.
     /// Used by `resume_delegation` to tell a stale `in_progress` row (crash
     /// leftover — resumable) from a child session that is genuinely active
@@ -235,6 +274,17 @@ pub mod mock {
         /// exercise a parent cancel landing in the spawn window. `None`
         /// (default) = no gate, return immediately.
         pub spawn_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        /// `parent_mode_for_child` 的回答：(父连接 id, 智能体, 模式)。
+        /// 默认空 = 父连接没有可沿用的模式。这里的是会话模式。
+        pub parent_modes: Mutex<Vec<(String, AgentType, String)>>,
+        /// 同上，模式走配置项 `mode` 的父连接；`parent_modes` 里没有才看这里。
+        pub parent_config_modes: Mutex<Vec<(String, AgentType, String)>>,
+        /// 每次 `ensure_mode` 的 (连接 id, 模式值)，按调用顺序。
+        pub ensured_modes: Mutex<Vec<(String, String)>>,
+        /// 每次 `ensure_mode` 收到的完整模式（带是会话模式还是配置项）。
+        pub ensured_kinds: Mutex<Vec<InheritedMode>>,
+        /// `ensure_mode` 排好的结果；空了就答成功。
+        pub ensure_mode_results: Mutex<VecDeque<Result<(), SpawnerError>>>,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -425,6 +475,39 @@ pub mod mock {
                 .await
                 .pop_front()
                 .unwrap_or_else(|| Err(SpawnerError::Send("no queued resume send result".into())))
+        }
+
+        async fn parent_mode_for_child(
+            &self,
+            parent_connection_id: &str,
+            agent_type: AgentType,
+        ) -> Option<InheritedMode> {
+            let find = |list: &Vec<(String, AgentType, String)>| {
+                list.iter()
+                    .find(|(p, a, _)| p == parent_connection_id && *a == agent_type)
+                    .map(|(_, _, m)| m.clone())
+            };
+            if let Some(m) = find(&*self.parent_modes.lock().await) {
+                return Some(InheritedMode::Session(m));
+            }
+            find(&*self.parent_config_modes.lock().await).map(InheritedMode::ConfigOption)
+        }
+
+        async fn ensure_mode(
+            &self,
+            conn_id: &str,
+            mode: &InheritedMode,
+        ) -> Result<(), SpawnerError> {
+            self.ensured_modes
+                .lock()
+                .await
+                .push((conn_id.to_string(), mode.value().to_string()));
+            self.ensured_kinds.lock().await.push(mode.clone());
+            self.ensure_mode_results
+                .lock()
+                .await
+                .pop_front()
+                .unwrap_or(Ok(()))
         }
 
         async fn has_live_connection_for_conversation(&self, conversation_id: i32) -> bool {

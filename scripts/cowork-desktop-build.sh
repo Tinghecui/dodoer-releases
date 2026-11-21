@@ -90,6 +90,8 @@ if [[ "$mode" == smoke ]]; then
   test -d "$tmp/dodoer.app" || fail "$zip 里没有 dodoer.app"
   echo "==> [$edition] 冒烟 ${zip}（$(uname -m)）"
   codesign --verify --deep --strict --verbose=2 "$tmp/dodoer.app"
+  # 发版安全：包里（程序和 Resources/web 的前端）不能有 e2e 测试版的 WebdriverIO 插件
+  bash scripts/check-no-e2e-bits.sh "$tmp/dodoer.app"
   smoke_app "$tmp/dodoer.app"
   rm -rf "$tmp"
   echo "==> [$edition] 冒烟通过：dist/$zip"
@@ -158,6 +160,8 @@ test -x "$server" || { ls -la "$app/Contents/MacOS"; fail "$server 不在 bundle
 for other in codeg-mcp codeg-cli; do
   test -x "$app/Contents/MacOS/$other" || fail "$other 不在 bundle 里"
 done
+# 发版安全：程序和 Resources/web 的前端里不能有 e2e 测试版的 WebdriverIO 插件（cargo feature e2e、NEXT_PUBLIC_CODEG_E2E）
+bash scripts/check-no-e2e-bits.sh "$app"
 if [[ "${DODOER_SKIP_SMOKE:-}" == 1 ]]; then
   echo "==> [$edition] 冒烟跳过（DODOER_SKIP_SMOKE=1，交叉编译的包在别的机器上用 smoke 模式补）"
 else

@@ -9,3 +9,4 @@ docs/
 pnpm-lock.yaml
 browser-agent/vendor/
 src-tauri/src/browser/js/
+src/lib/e2e/vendor/

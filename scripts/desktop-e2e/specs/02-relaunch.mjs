@@ -7,6 +7,7 @@ import {
   notes,
   shot,
   step,
+  textOf,
   waitForUi,
   writeResult,
 } from "./lib.mjs"
@@ -34,7 +35,9 @@ describe("桌面 app 退出重开", () => {
       const view = await lsGet(MAIN_VIEW_KEY)
       if (view !== "start")
         throw new Error(`${MAIN_VIEW_KEY}=${JSON.stringify(view)}`)
-      return { view, h1: await $("h1").getText() }
+      const h1 = await textOf("h1")
+      if (h1 !== "Where do you want to work?") throw new Error(`h1=${h1}`)
+      return { view, h1 }
     })
     await shot("01-relaunch")
   })

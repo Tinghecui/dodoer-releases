@@ -1,4 +1,5 @@
 # 公开镜像 Tinghecui/dodoer-releases：ai-qa 和自动驾驶（autopilot-*）每次运行结束后核对它的日志（文件在源仓库 .github/public/workflows/ 里维护）。
+# desktop-e2e（2026-11-21）没有封口段，只做第二道检查（整份日志按 denylist 扫）。
 # 它们的输出应该全在文件里，日志只有固定格式的进度行。这里把那次运行的日志下载下来交给源仓库的脚本逐行核对，
 # 不合格就删掉那次运行的全部日志，并在源仓库开 issue。workflow_run 用的是 main 上的这个文件。
 # ai-qa 的运行死在机器上（收回 runner、SIGTERM、断了联系）时，seal-check.sh 还用同样的输入重派一次（源仓库 .cowork/ai-qa/redispatch.mjs，只派一次，用 AIQA_PRIVATE_TOKEN 派）。
@@ -11,7 +12,7 @@ run-name: "ai-qa-seal ${{ inputs.run || github.event.workflow_run.name }}"
 on:
   workflow_run:
     # 加了新的封口 workflow 就加在这里（按 name）
-    workflows: [ai-qa, ai-qa-mac, autopilot-fix, autopilot-review, autopilot-tick]
+    workflows: [ai-qa, ai-qa-mac, autopilot-fix, autopilot-review, autopilot-tick, desktop-e2e]
     types: [completed]
   workflow_dispatch:
     inputs:

@@ -11,9 +11,10 @@
 #                                                                     （PR 同步的是 GitHub 合出来的「product + PR」，SOURCE_REF 指 PR 头，见下）
 #        scripts/public-sync.sh push <ref> macos/pr/<n>               同上，推到 macos/pr/<n>（PR 打了 macos-build 标签，那边的 desktop-macos 编它）
 #        scripts/public-sync.sh push <ref> linux/pr/<n>               同上，推到 linux/pr/<n>（PR 打了 linux-desktop 标签，那边的 desktop-linux 编 Linux 桌面版、跑 WebDriver 冒烟）
+#        scripts/public-sync.sh push <ref> desktop/pr/<n>             同上，推到 desktop/pr/<n>（PR 打了 desktop-e2e 标签或改到了桌面文件，那边的 desktop-e2e 跑 WebdriverIO）
 #        scripts/public-sync.sh push <ref> qa/<run>                   同上，推到 qa/<run>（AI QA 要测没发版的代码，那边的 qa-package 编包；.cowork/ai-qa/build-package.sh）
 #        scripts/public-sync.sh tag <tag>                             同步 tag（树和公开 main 一样就打在 main 上）
-#        scripts/public-sync.sh delete pr/<n>|macos/pr/<n>|linux/pr/<n>  删公开仓库的分支
+#        scripts/public-sync.sh delete pr/<n>|macos/pr/<n>|linux/pr/<n>|desktop/pr/<n>  删公开仓库的分支
 #   环境：PUBLIC_REPO（默认 git@github.com:Tinghecui/dodoer-releases.git）、PUBLIC_DIR（公开仓库的 clone 放哪，默认临时目录）；
 #        push / tag / delete 要能 ssh 推公开仓库（GIT_SSH_COMMAND 指定 deploy key，见 .github/workflows/public-sync.yml）。
 #        GITHUB_OUTPUT 有就写 commit=<公开仓库的提交>。
@@ -140,7 +141,7 @@ case "$cmd" in
     tree_sha=$(git rev-parse "$ref^{commit}")
     sha=$tree_sha merged=""
     if [[ -n "${SOURCE_REF:-}" ]]; then
-      [[ "$branch" == pr/* || "$branch" == macos/pr/* || "$branch" == linux/pr/* ]] || fail "SOURCE_REF 只给 pr/<n>、macos/pr/<n>、linux/pr/<n> 用：$branch"
+      [[ "$branch" == pr/* || "$branch" == macos/pr/* || "$branch" == linux/pr/* || "$branch" == desktop/pr/* ]] || fail "SOURCE_REF 只给 pr/<n>、macos/pr/<n>、linux/pr/<n>、desktop/pr/<n> 用：$branch"
       sha=$(git rev-parse "$SOURCE_REF^{commit}")
       if [[ "$sha" != "$tree_sha" ]]; then
         # 合并提交的第二个父提交必须是 PR 头，第一个是当时的 product
@@ -175,13 +176,13 @@ ${merged:+merged-with: cowork-codeg@$merged
         git -C "$PUBLIC_DIR" push -q origin "$commit:refs/heads/main"
         echo "推到公开 main：$commit"
       fi
-    elif [[ "$branch" == pr/* || "$branch" == macos/pr/* || "$branch" == linux/pr/* || "$branch" == qa/* ]]; then
+    elif [[ "$branch" == pr/* || "$branch" == macos/pr/* || "$branch" == linux/pr/* || "$branch" == desktop/pr/* || "$branch" == qa/* ]]; then
       # 总是做一个新提交（树和 main 一样也做，CI 要有东西跑），父是公开 main，强推
       commit=$(commit_tree "$tree" "$base" "$msg")
       git -C "$PUBLIC_DIR" push -q -f origin "$commit:refs/heads/$branch"
       echo "推到公开 ${branch}：${commit}（父 ${base}）"
     else
-      fail "分支只能是 main、pr/<n>、macos/pr/<n>、linux/pr/<n> 或 qa/<run>：$branch"
+      fail "分支只能是 main、pr/<n>、macos/pr/<n>、linux/pr/<n>、desktop/pr/<n> 或 qa/<run>：$branch"
     fi
     # 写成 if，别写 `[[ ]] && echo`：GITHUB_OUTPUT 为空时（workflow 推 macos/pr/<n> 那次）它是最后一条命令，返回 1，整个脚本就算失败
     if [[ -n "${GITHUB_OUTPUT:-}" ]]; then echo "commit=$commit" >> "$GITHUB_OUTPUT"; fi
@@ -215,7 +216,7 @@ source: cowork-codeg@${sha}")
     ;;
   delete)
     branch="${2:?pr/<n> 或 macos/pr/<n>}"
-    [[ "$branch" == pr/* || "$branch" == macos/pr/* || "$branch" == linux/pr/* ]] || fail "只删 pr/<n>、macos/pr/<n> 和 linux/pr/<n>：$branch"
+    [[ "$branch" == pr/* || "$branch" == macos/pr/* || "$branch" == linux/pr/* || "$branch" == desktop/pr/* ]] || fail "只删 pr/<n>、macos/pr/<n>、linux/pr/<n> 和 desktop/pr/<n>：$branch"
     public_clone
     if git -C "$PUBLIC_DIR" ls-remote --exit-code --heads origin "$branch" >/dev/null; then
       git -C "$PUBLIC_DIR" push -q origin --delete "$branch" && echo "删了公开仓库的 $branch"

@@ -1,5 +1,5 @@
 # 公开镜像 Tinghecui/dodoer-releases 的 CI 结果报回私有仓库 cowork-codeg（文件在私有仓库 .github/public/workflows/ 里维护）。
-# 同步过来的提交说明最后一行是 `source: cowork-codeg@<40 位 sha>`；Test / cowork-release / desktop-macos / desktop-linux / release-train 开始时给那个私有提交
+# 同步过来的提交说明最后一行是 `source: cowork-codeg@<40 位 sha>`；Test / cowork-release / desktop-macos / desktop-linux / desktop-e2e / release-train 开始时给那个私有提交
 # 打 pending，结束时打 success / failure（context「公开 CI / <workflow 名>」），私有 PR 上就能直接看到公开这边的结果。
 # 2026-11-15 起另外两件事（只对 Test，思路照 jenny 的 dev-flow，规则见 COWORK.md「合并：auto-merge 和 product 的 ruleset」）：
 # - 第一次跑挂了、没过的全是偶发（网络、托管机器出问题），自动重跑没过的 job 一次，这次报 pending 不报 failure
@@ -15,7 +15,7 @@ name: report-status
 
 on:
   workflow_run:
-    workflows: [Test, cowork-release, desktop-macos, desktop-linux, release-train]
+    workflows: [Test, cowork-release, desktop-macos, desktop-linux, desktop-e2e, release-train]
     types: [requested, completed]
 
 permissions: {}

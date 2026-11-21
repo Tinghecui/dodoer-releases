@@ -1,4 +1,5 @@
-// 两个 spec 共用的小工具：等界面、调 Tauri 命令、点击（记下是怎么点成的）、截图、把每一步的用时写进 result-phase<N>.json
+// 各段 spec 共用的小工具：等界面、选主窗口、调 Tauri 命令、点击、截图、把每一步的用时写进 result-phase<N>.json
+// （scripts/desktop-e2e/run.sh 拿它写公开日志里的摘要表）
 import { execFileSync } from "node:child_process"
 import { writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
@@ -8,7 +9,8 @@ export const OUT = resolve(process.env.E2E_OUT || "e2e-out")
 export const PHASE = process.env.E2E_PHASE || "1"
 // 主窗口显示本机工作区还是开始页（src/lib/cowork/start-page.ts）
 export const MAIN_VIEW_KEY = "cowork:main-window-view:v1"
-export const MARKER_KEY = "desktop-e2e-spike"
+export const MARKER_KEY = "desktop-e2e"
+export const START_TITLE = "Where do you want to work?"
 
 const t0 = Date.now()
 const steps = []
@@ -87,6 +89,51 @@ export async function waitForUi(timeout = 120000) {
   )
   return state
 }
+
+// 显式选中主窗口。显式选过窗口以后 tauri-service 就不再在每条命令前自动找焦点窗口：页面正在换（工作区 ↔ 开始页）时
+// 那一步偶尔卡到 30 秒的脚本超时（#1189 第 3 次重跑），切窗口都由 spec 自己来
+export async function useMainWindow() {
+  await browser.tauri.switchWindow("main")
+}
+
+// 开始页画出来：标题和「本机」那一段
+export async function waitStartPage(timeout = 60000) {
+  await $("#start-local").waitForExist({ timeout })
+  const h1 = await textOf("h1")
+  if (h1 !== START_TITLE) throw new Error(`h1=${h1}`)
+  return h1
+}
+
+// 本机工作区画出来：没有开始页，有侧栏脚上的「快捷操作」按钮
+export async function waitWorkspace(timeout = 60000) {
+  await browser.waitUntil(
+    () =>
+      browser.execute(
+        () =>
+          !document.getElementById("start-local") &&
+          !!document.querySelector('button[title="Quick actions"]')
+      ),
+    { timeout, interval: 300, timeoutMsg: "没进本机工作区" }
+  )
+}
+
+// 等页面上出现一段字（body 的 innerText）：工作区先画出侧栏，会话区的字晚一点才出来（#1207 Linux 那次 0.4 秒就去读，没读到）
+export async function waitText(text, timeout = 20000) {
+  let last = ""
+  const found = await browser
+    .waitUntil(
+      async () => {
+        last = await browser.execute(() => document.body.innerText)
+        return last.includes(text)
+      },
+      { timeout, interval: 300 }
+    )
+    .catch(() => false)
+  if (!found) throw new Error(`没有「${text}」：${last.slice(0, 200)}`)
+}
+
+// 等 WebKit 把 localStorage 落盘再让 app 退出（tauri-service 收尾时直接杀 app）
+export const flushStorage = () => browser.pause(3000)
 
 // 调一个 Tauri 命令，返回 { ok } 或 { err }
 export const invoke = (cmd, payload = {}) =>

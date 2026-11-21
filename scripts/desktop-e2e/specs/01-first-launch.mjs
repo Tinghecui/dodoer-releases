@@ -1,9 +1,11 @@
-// 第一次启动（新装）：读主窗口、用 Radix 菜单回开始页、开设置窗口并切过去、留一个 localStorage 记号给第二次启动查。
+// 第 1 段，第一次启动（新装、没有保存的服务器）：直接进本机工作区；用 Radix 菜单回开始页（stories.md N3）；开设置窗口切过去读 DOM、
+// 切回来关掉；留一个 localStorage 记号给后面几段查。
 // 文字一律读具体元素的 innerText（textOf），不读 body 的 getText。切窗口用 tauri-service 按 Tauri 窗口标签切（要 tauri-plugin-wdio）
 import {
   MAIN_VIEW_KEY,
   MARKER_KEY,
   codegPids,
+  flushStorage,
   invoke,
   lsGet,
   notes,
@@ -11,7 +13,11 @@ import {
   shot,
   step,
   textOf,
+  useMainWindow,
   waitForUi,
+  waitStartPage,
+  waitText,
+  waitWorkspace,
   writeResult,
 } from "./lib.mjs"
 
@@ -23,6 +29,7 @@ describe("桌面 app 第一次启动", () => {
       const s = await waitForUi()
       if (s.tauri !== "object")
         throw new Error(`没有 __TAURI_INTERNALS__：${JSON.stringify(s)}`)
+      await useMainWindow()
       notes.pids = codegPids()
       return s
     })
@@ -36,20 +43,16 @@ describe("桌面 app 第一次启动", () => {
       return { windows, label }
     })
     await step("新装直接进本机工作区：空会话区的文字", async () => {
-      await $('button[title="Quick actions"]').waitForDisplayed({
-        timeout: 60000,
-      })
+      await waitWorkspace()
       const view = await lsGet(MAIN_VIEW_KEY)
       if (view !== "local") throw new Error(`${MAIN_VIEW_KEY}=${view}`)
-      const text = await browser.execute(() => document.body.innerText)
-      if (!text.includes("No open chats"))
-        throw new Error(`没有「No open chats」：${text.slice(0, 200)}`)
+      await waitText("No open chats")
       return { view }
     })
     await shot("01-launch")
   })
 
-  it("Quick actions →「Back to start page」回到开始页", async () => {
+  it("Quick actions →「Back to start page」回到开始页（N3）", async () => {
     await step("点 Quick actions（派发 pointer 事件），菜单打开", async () => {
       await pointerClick('button[title="Quick actions"]')
       await $("[role='menuitem']").waitForDisplayed({ timeout: 10000 })
@@ -61,10 +64,8 @@ describe("桌面 app 第一次启动", () => {
         await pointerClick(
           "//*[@role='menuitem'][contains(., 'Back to start page')]"
         )
-        await $("#start-local").waitForExist({ timeout: 20000 })
-        const h1 = await textOf("h1")
+        const h1 = await waitStartPage(20000)
         const local = await textOf("#start-local")
-        if (h1 !== "Where do you want to work?") throw new Error(`h1=${h1}`)
         if (local !== "Work on this computer")
           throw new Error(`#start-local=${local}`)
         const view = await lsGet(MAIN_VIEW_KEY)
@@ -115,9 +116,9 @@ describe("桌面 app 第一次启动", () => {
     })
   })
 
-  it("留一个 localStorage 记号给第二次启动", async () => {
+  it("留一个 localStorage 记号给后面几段", async () => {
     await step("写 localStorage 记号", async () => {
-      const value = `spike-${Date.now()}`
+      const value = `e2e-${Date.now()}`
       await browser.execute(
         (k, v) => localStorage.setItem(k, v),
         MARKER_KEY,
@@ -126,7 +127,7 @@ describe("桌面 app 第一次启动", () => {
       if ((await lsGet(MARKER_KEY)) !== value) throw new Error("没写进去")
       notes.marker = value
       // WebKit 把 localStorage 落盘是异步的，等一下再让 app 退出
-      await browser.pause(3000)
+      await flushStorage()
       return value
     })
   })

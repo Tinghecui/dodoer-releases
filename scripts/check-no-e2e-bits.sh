@@ -6,7 +6,7 @@
 #
 #   用法：scripts/check-no-e2e-bits.sh <文件或目录>...   （比如 dodoer.app、out/、target/release/codeg）
 #   找到就列出命中的文件、返回 1；都没有返回 0。目录递归找，二进制按字节找（grep -a）。
-#   desktop-e2e-spike.yml 拿 e2e 测试版反过来跑一遍，确认它真的找得到（不然这条检查永远是绿的）。
+#   desktop-e2e.yml 拿 e2e 测试版反过来跑一遍，确认它真的找得到（不然这条检查永远是绿的）。
 # 来历：.cowork/journal/2026-11-21-e2e-wdio-plugin.md
 set -euo pipefail
 

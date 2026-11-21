@@ -1,0 +1,18 @@
+# 私有 PR 改到这些文件（每行一个扩展正则，对 PR 改动的文件路径）就自动跑 desktop-e2e：public-sync.yml 把 PR 多推一份到公开 desktop/pr/<n>。
+# 不在列表里的 PR 打标签 desktop-e2e 也会跑。只放桌面版才有的、e2e spec 测得到的东西：改一行就要在 macOS 上编一遍（缓存不中，十几分钟），别放太宽。
+# 来历：.cowork/journal/2026-11-21-desktop-e2e-skeleton.md
+^src-tauri/
+^src/lib/(tauri|platform|updater|deep-link|workspace-restore|window-attention)\.ts$
+^src/lib/transport/
+^src/lib/e2e/
+^src/lib/cowork/(start-page|message-queue-storage)\.ts$
+^src/components/cowork/start-home\.tsx$
+^src/components/layout/(window-controls|app-title-bar|workspace-chrome-controller)\.tsx$
+^src/components/workspace/
+^src/app/(layout|page)\.tsx$
+^src/app/settings/
+^src/app/workspace/layout\.tsx$
+^next\.config\.ts$
+^scripts/desktop-e2e/
+^scripts/check-no-e2e-bits\.sh$
+^\.github/public/workflows/desktop-e2e(-artifacts)?\.yml$

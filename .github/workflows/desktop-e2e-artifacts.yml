@@ -1,0 +1,64 @@
+# 公开镜像 Tinghecui/dodoer-releases：desktop-e2e 每次 run 结束后，把它的产物（artifact desktop-e2e-out-*：截图、WebdriverIO 日志、app 日志、
+# 每一步的结果）搬到私有仓库 cowork-codeg 的 Release「ai-qa-artifacts」（附件 desktop-e2e-<run id>-<机器>-attempt<N>.zip，留 14 天，
+# 跟 AI QA 的产物放一起），再删掉公开的那份（文件在私有仓库 .github/public/workflows/ 里维护）。
+# 为什么另起一个 workflow：私有仓库的令牌 AIQA_PRIVATE_TOKEN 在 environment ai-qa 里，ai-qa 只放 main 上的运行进来；
+# desktop-e2e 在 desktop/pr/<n> 上跑的是 PR 的代码，不能碰这个令牌。workflow_run 用的是 main 上的这个文件。
+# 不 checkout、不解开、不执行触发它的 run 里的任何东西：artifact 原样（zip）转传。
+# 另一个入口 workflow_dispatch（-f run=<run id>）：GITHUB_TOKEN 派出来的 run、以后 release-train 用 workflow_call 调 desktop-e2e 的那次
+# （那次的 workflow_run 是 release-train 的名字，不触发这里）补搬用。
+# 来历：源仓库 .cowork/journal/2026-11-21-desktop-e2e-skeleton.md
+name: desktop-e2e-artifacts
+run-name: "desktop-e2e-artifacts ${{ inputs.run || github.event.workflow_run.id }}"
+
+on:
+  workflow_run:
+    workflows: [desktop-e2e]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run:
+        description: "desktop-e2e 那次运行的 id（只填数字）"
+        required: true
+
+permissions:
+  contents: read
+  actions: write # 删公开的 artifact
+
+jobs:
+  move:
+    runs-on: ubuntu-latest
+    environment: ai-qa
+    timeout-minutes: 15
+    steps:
+      - name: 搬到私有 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+          SOURCE_REPO: Tinghecui/cowork-codeg
+          RELEASE: ai-qa-artifacts
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "run 要是数字"; exit 1; }
+          [[ -n "$PRIVATE_TOKEN" ]] || { echo "::error::没有 AIQA_PRIVATE_TOKEN"; exit 1; }
+          wf=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" -q .name)
+          [[ "$wf" == desktop-e2e || "$wf" == release-train ]] || { echo "::error::run $RUN_ID 是 $wf，不是 desktop-e2e"; exit 1; }
+          GH_TOKEN="$PRIVATE_TOKEN" gh release view "$RELEASE" -R "$SOURCE_REPO" >/dev/null \
+            || { echo "::error::私有仓库没有 Release $RELEASE（AI QA 的 sealed.sh 建的）"; exit 1; }
+          d=$(mktemp -d); n=0
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
+            -q '.artifacts[] | select(.expired | not) | select(.name | test("^desktop-e2e-out-[A-Za-z0-9._-]+$")) | "\(.id) \(.name)"' > "$d/list"
+          while read -r id name; do
+            asset="desktop-e2e-${RUN_ID}-${name#desktop-e2e-out-}.zip"
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$d/$asset"
+            GH_TOKEN="$PRIVATE_TOKEN" gh release upload "$RELEASE" "$d/$asset" -R "$SOURCE_REPO" --clobber
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
+            echo "- $name → https://github.com/$SOURCE_REPO/releases/download/$RELEASE/$asset" | tee -a "$GITHUB_STEP_SUMMARY"
+            n=$((n + 1))
+          done < "$d/list"
+          echo "搬了 $n 个（run $RUN_ID）"
+          # 留 14 天（同 AI QA 的产物）；删不掉不算失败
+          old=$(date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          GH_TOKEN="$PRIVATE_TOKEN" gh api "repos/$SOURCE_REPO/releases/tags/$RELEASE" \
+            -q ".assets[] | select((.name | startswith(\"desktop-e2e-\")) and .created_at < \"$old\") | .id" \
+            | while read -r aid; do GH_TOKEN="$PRIVATE_TOKEN" gh api -X DELETE "repos/$SOURCE_REPO/releases/assets/$aid" >/dev/null || true; done

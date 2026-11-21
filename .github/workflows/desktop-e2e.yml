@@ -1,0 +1,240 @@
+# 公开镜像 Tinghecui/dodoer-releases：桌面版 e2e（文件在私有仓库 cowork-codeg 的 .github/public/workflows/ 里维护）。
+# 在 GitHub 托管的 macos-15（arm64）和 ubuntu-22.04 上编桌面版的「e2e 测试版」（debug、cargo feature `e2e`、版本号 1.999.0，
+# 前端带 @wdio/tauri-plugin），用 WebdriverIO + @wdio/tauri-service 驱动它：macOS 走 app 里内嵌的 WebDriver 服务器，
+# Linux 走官方 tauri-driver。两边跑同一套 spec（scripts/desktop-e2e/specs/，scripts/desktop-e2e/run.sh 按段开几次 app = 退出重开）。
+# 来历：源仓库 .cowork/journal/2026-11-21-spike-macos-webdriver.md、2026-11-21-e2e-wdio-plugin.md、2026-11-21-desktop-e2e-skeleton.md。
+#
+# 触发：
+# - 私有 PR 打了 desktop-e2e 标签，或改到了 scripts/desktop-e2e/paths.txt 列的桌面文件：public-sync 推到 desktop/pr/<n>，这里跑，
+#   结果报回 PR（「公开 CI / desktop-e2e」，report-status.yml）。只报告：不是必需检查、不关合并闸、不拦发版
+# - 每晚 20:29 UTC（北京时间 04:29）跑公开 main（= product 头）。红了 report-status 报回 product 的那个提交，那边开 ci-red issue
+# - workflow_call：留给 release-train 以后调（拦不拦发版用户还没定，现在没有调用方）；workflow_dispatch：手动跑选的分支
+#
+# 产物（截图、WebdriverIO 日志、app 日志、每一步的结果）先传成这次 run 的 artifact（留 1 天），desktop-e2e-artifacts.yml 在 run 结束后
+# 把它们搬到私有仓库 Release「ai-qa-artifacts」、删掉公开的这份。公开日志里只有编译输出和摘要表（run.sh），WebdriverIO 的输出不进公开日志；
+# ai-qa-seal.yml 照样按 denylist 核对每次 run 的日志。
+# 编好的程序按源码哈希缓存（命中两三分钟一轮）；Rust 依赖的缓存只在 main 上存（PR 分支读得到 main 的缓存，不各存一份占配额）。
+name: desktop-e2e
+
+on:
+  push:
+    branches: ["desktop/pr/**"]
+  schedule:
+    # 避开 18:23 AI QA、18:37 desktop-macos、19:47 desktop-linux、21:00 desktop-macos-intel 和每小时 :17 / :41 那两个
+    - cron: "29 20 * * *"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # workflow_call 时 github.workflow 是调用方的名字，所以带上事件名，不和 PR / 每晚的抢
+  group: desktop-e2e-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+env:
+  RUST_BACKTRACE: short
+  # 同 desktop-linux.yml / test.yml：调试信息只留行号表、并行 2、不要增量
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_BUILD_JOBS: "2"
+  CARGO_INCREMENTAL: "0"
+  CI: "true"
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  e2e:
+    name: ${{ matrix.os }}：e2e 测试版 + WebdriverIO
+    strategy:
+      fail-fast: false
+      matrix:
+        # 以后加 macos-15-intel、windows-2025（源仓库 ~/work/reports 的方案 P3 / P5）
+        os: [macos-15, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 按提交 sha 取：desktop/pr/<n> 在 PR 合并、关闭时就删了；也保证编的就是 report-status 报回去的那个提交
+          ref: ${{ github.sha }}
+
+      - name: 系统包（Linux：WebKitGTK、WebKitWebDriver、xvfb）
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev webkit2gtk-driver xvfb dbus-x11
+
+      # restore / save 分开：WebdriverIO 那步红了也要把编好的程序存下来，重跑才不用重编
+      - name: 编好的程序（缓存）
+        id: bin
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            src-tauri/target/debug/codeg
+            src-tauri/target/debug/codeg-server
+            src-tauri/target/debug/codeg-mcp
+            src-tauri/target/debug/codeg-cli
+            src-tauri/target/debug/codeg-computer-helper
+            src-tauri/target/debug/web
+          key: desktop-e2e-bin-v1-${{ runner.os }}-${{ hashFiles('src-tauri/**', 'src/**', 'public/**', 'patches/**', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'rust-toolchain.toml', '*.config.*') }}
+
+      - name: Rust 版本（读 rust-toolchain.toml）
+        id: toolchain
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml 2>/dev/null || true)
+          echo "channel=${channel:-stable}" >> "$GITHUB_OUTPUT"
+      # Linux 命中缓存也要装：tauri-driver 在 ~/.cargo/bin，跟着 Rust 依赖的缓存走
+      - name: Install Rust
+        if: steps.bin.outputs.cache-hit != 'true' || runner.os == 'Linux'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+      - name: Rust cache
+        if: steps.bin.outputs.cache-hit != 'true' || runner.os == 'Linux'
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          shared-key: desktop-e2e
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: tauri-driver（Linux）
+        if: runner.os == 'Linux'
+        run: command -v tauri-driver || cargo install tauri-driver --locked
+
+      - name: 腾磁盘（Linux）
+        if: runner.os == 'Linux' && steps.bin.outputs.cache-hit != 'true'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - uses: pnpm/action-setup@v4
+        if: steps.bin.outputs.cache-hit != 'true'
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: pnpm install
+        if: steps.bin.outputs.cache-hit != 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: 前端（静态导出，e2e 版：带 @wdio/tauri-plugin）
+        if: steps.bin.outputs.cache-hit != 'true'
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          # src/lib/e2e/wdio-plugin.ts：只有这样编的前端才带插件的前端那一半
+          NEXT_PUBLIC_CODEG_E2E: "1"
+        run: |
+          set -euo pipefail
+          t0=$(date +%s)
+          pnpm build
+          echo "- 前端 pnpm build：$(( $(date +%s) - t0 )) 秒" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: sidecar（codeg-server 等，debug）
+        if: steps.bin.outputs.cache-hit != 'true'
+        working-directory: src-tauri
+        run: |
+          set -euo pipefail
+          t0=$(date +%s)
+          cargo build --bin codeg-mcp --bin codeg-computer-helper --bin codeg-cli --bin codeg-server \
+            --no-default-features --features mcp-bin,computer-helper,cli-bin,server-bin
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p binaries
+          for b in codeg-mcp codeg-computer-helper codeg-cli codeg-server; do
+            cp "target/debug/$b" "binaries/$b-$triple"
+          done
+          echo "- sidecar：$(( $(date +%s) - t0 )) 秒" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 桌面主程序（tauri build --debug --no-bundle --features e2e）
+        if: steps.bin.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          t0=$(date +%s)
+          # 版本号给一个比哪个正式版都大的（同 desktop-linux.yml）；withGlobalTauri 只在测试版开（@wdio/tauri-plugin 要 window.__TAURI__）
+          pnpm tauri build --debug --no-bundle --features e2e \
+            --config src-tauri/tauri.jenny.conf.json --config src-tauri/tauri.cowork-desktop.conf.json \
+            --config '{"version":"1.999.0","build":{"beforeBuildCommand":""}}' \
+            --config '{"app":{"withGlobalTauri":true}}'
+          test -x src-tauri/target/debug/codeg
+          echo "- 桌面主程序：$(( $(date +%s) - t0 )) 秒" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 存编好的程序
+        if: steps.bin.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            src-tauri/target/debug/codeg
+            src-tauri/target/debug/codeg-server
+            src-tauri/target/debug/codeg-mcp
+            src-tauri/target/debug/codeg-cli
+            src-tauri/target/debug/codeg-computer-helper
+            src-tauri/target/debug/web
+          key: ${{ steps.bin.outputs.cache-primary-key }}
+
+      - name: 程序自报（--desktop-edition）
+        run: src-tauri/target/debug/codeg --desktop-edition
+
+      # 反过来验发版检查：e2e 测试版必须被它拦下，不然那条检查永远是绿的
+      - name: 发版检查认得出 e2e 测试版（应当失败）
+        # 程序和前端分开查：一起传的话只要一边认出来（或者少了文件退出 2）就算过，另一边失效了看不出来
+        run: |
+          set -uo pipefail
+          for t in src-tauri/target/debug/codeg src-tauri/target/debug/web; do
+            test -e "$t" || { echo "::error::没有 $t"; exit 1; }
+            rc=0; bash scripts/check-no-e2e-bits.sh "$t" > /dev/null 2>&1 || rc=$?
+            [[ "$rc" == 1 ]] || { echo "::error::check-no-e2e-bits.sh 没认出 e2e 测试版的 $t（退出码 ${rc}）"; exit 1; }
+            echo "check-no-e2e-bits.sh 认出了 e2e 测试版的 $t"
+          done
+
+      - name: WebdriverIO 依赖（npm，不进 pnpm 项目）
+        working-directory: scripts/desktop-e2e
+        run: npm install --no-package-lock --no-audit --no-fund --loglevel=error
+
+      - name: WebdriverIO：第一次启动 → 退出重开 → 再退出重开
+        env:
+          E2E_OUT: ${{ github.workspace }}/e2e-out
+        run: |
+          set -uo pipefail
+          # 数据目录（CODEG_DATA_DIR / CODEG_HOME）每次 run 一个新的，几段共用
+          export E2E_DATA_DIR=$(mktemp -d)
+          rc=0
+          bash scripts/desktop-e2e/run.sh || rc=$?
+          # app 自己的日志在数据目录的 logs/ 下
+          cp -R "$E2E_DATA_DIR/logs" e2e-out/app-logs 2>/dev/null || true
+          exit "$rc"
+
+      # 留 1 天：desktop-e2e-artifacts.yml 在 run 结束后搬到私有 Release 并删掉这份（搬没成的 1 天后自己过期）
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-e2e-out-${{ matrix.os }}-attempt${{ github.run_attempt }}
+          path: e2e-out
+          if-no-files-found: warn
+          retention-days: 1
+
+  # 正常编的前端（不带 NEXT_PUBLIC_CODEG_E2E）里不能有 @wdio/tauri-plugin：守卫是编译期的（next.config.ts 的 CODEG_E2E），
+  # 这里确认打包器真的把那个 import 丢了。只在每晚 / 手动跑（PR 上不多编一遍前端）；正式包的程序和前端由 cowork-desktop-build.sh 每次发版检查
+  prod-frontend:
+    name: 正常编的前端不带 WebdriverIO 插件
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile
+      - name: pnpm build（不带 e2e）
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: pnpm build
+      - name: check-no-e2e-bits.sh out/
+        run: |
+          bash scripts/check-no-e2e-bits.sh out
+          echo "- 正常编的前端 out/：$(find out -name '*.js' | wc -l) 个 js，没有 WebdriverIO 插件" >> "$GITHUB_STEP_SUMMARY"

@@ -5497,7 +5497,8 @@
     "openFailed": "Remote-Arbeitsbereich konnte nicht geöffnet werden",
     "restoreFailed": "Remote-Arbeitsbereich „{name}“ konnte nicht erneut geöffnet werden",
     "connectionLoadFailed": "Remote-Verbindung konnte nicht geladen werden: {message}",
-    "connectionExpired": "Die Remote-Verbindung „{name}“ ist abgelaufen. Aktualisiere ihr Token und lade dieses Fenster neu."
+    "connectionExpired": "Die Remote-Verbindung „{name}“ ist abgelaufen. Aktualisiere ihr Token und lade dieses Fenster neu.",
+    "connectionTokenUnreadable": "Das Token der Remote-Verbindung „{name}“ konnte nicht aus dem Systemschlüsselbund gelesen werden (die Schlüsselbund-Abfrage wurde eventuell abgelehnt). Beende dodoer, öffne es erneut und klicke in der Abfrage auf „Erlauben“, oder öffne diesen Arbeitsbereich erneut über das Portal mit „In Desktop-App öffnen“."
   },
   "ServerFileBrowser": {
     "title": "Serverdatei auswählen",

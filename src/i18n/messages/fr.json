@@ -5497,7 +5497,8 @@
     "openFailed": "Échec de l’ouverture de l’espace de travail distant",
     "restoreFailed": "Impossible de rouvrir l’espace de travail distant « {name} »",
     "connectionLoadFailed": "Échec du chargement de la connexion distante : {message}",
-    "connectionExpired": "La connexion distante « {name} » a expiré. Mettez son jeton à jour, puis rechargez cette fenêtre."
+    "connectionExpired": "La connexion distante « {name} » a expiré. Mettez son jeton à jour, puis rechargez cette fenêtre.",
+    "connectionTokenUnreadable": "Impossible de lire le jeton de la connexion distante « {name} » dans le trousseau du système (la demande du trousseau a peut-être été refusée). Quittez puis rouvrez dodoer et cliquez sur Autoriser, ou rouvrez cet espace depuis le portail avec « Ouvrir dans l’app de bureau »."
   },
   "ServerFileBrowser": {
     "title": "Sélectionner un fichier serveur",

@@ -5517,7 +5517,8 @@
     "openFailed": "打开远端工作区失败",
     "restoreFailed": "无法重新打开远端工作区“{name}”",
     "connectionLoadFailed": "加载远端连接失败：{message}",
-    "connectionExpired": "远端连接“{name}”已失效。请更新 Token 后重新加载此窗口。"
+    "connectionExpired": "远端连接“{name}”已失效。请更新 Token 后重新加载此窗口。",
+    "connectionTokenUnreadable": "读不到远端连接“{name}”保存在系统钥匙串里的 Token（钥匙串弹框可能被拒绝了）。请退出并重新打开 dodoer，在弹框里点“允许”；或者从门户重新点“在桌面 app 里打开”。"
   },
   "BackupSettings": {
     "tabs": {

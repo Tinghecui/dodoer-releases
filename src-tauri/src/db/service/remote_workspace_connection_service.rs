@@ -250,27 +250,29 @@ fn forget_token(vault: Option<&dyn TokenVault>, stored: &str) {
     }
 }
 
-fn resolve_token(vault: Option<&dyn TokenVault>, id: i32, stored: String) -> String {
+/// 读出来的令牌，和「钥匙串没读出来」（第二项为 true，令牌为空）。
+fn resolve_token(vault: Option<&dyn TokenVault>, id: i32, stored: String) -> (String, bool) {
     let Some(key) = keychain_key(&stored) else {
-        return stored;
+        return (stored, false);
     };
     let found = match vault {
         Some(vault) => vault.get(key),
         None => Err("no keychain in this build".to_string()),
     };
     match found {
-        Ok(Some(token)) => token,
+        Ok(Some(token)) => (token, false),
         // An empty token fails the connection with an auth error; editing it
         // or clicking the portal link again stores a new one.
         Ok(None) => {
             tracing::warn!("[remote-workspace] connection {id}: keychain entry is missing");
-            String::new()
+            (String::new(), false)
         }
+        // 弹框被拒绝、钥匙串锁着：标出来，窗口提示读不到钥匙串，不说令牌过期。
         Err(err) => {
             tracing::warn!(
                 "[remote-workspace] connection {id}: could not read the keychain: {err}"
             );
-            String::new()
+            (String::new(), true)
         }
     }
 }
@@ -279,15 +281,17 @@ fn to_info(
     model: remote_workspace_connection::Model,
     vault: Option<&dyn TokenVault>,
 ) -> RemoteWorkspaceConnectionInfo {
+    let (token, token_unreadable) = resolve_token(vault, model.id, model.token);
     RemoteWorkspaceConnectionInfo {
         id: model.id,
         name: model.name,
         base_url: model.base_url,
-        token: resolve_token(vault, model.id, model.token),
+        token,
         headers: serde_json::from_str(&model.headers).unwrap_or_default(),
         sort_order: model.sort_order,
         created_at: model.created_at,
         updated_at: model.updated_at,
+        token_unreadable,
     }
 }
 
@@ -321,11 +325,18 @@ async fn to_infos(
     });
     rows.into_iter()
         .map(|mut row| {
+            let mut unreadable = false;
             if keychain_key(&row.token).is_some() {
-                row.token = resolved.get(&row.id).cloned().unwrap_or_default();
+                // 没读完（线程池出错）也算钥匙串没读出来。
+                (row.token, unreadable) = resolved
+                    .get(&row.id)
+                    .cloned()
+                    .unwrap_or((String::new(), true));
             }
             // Already resolved (or plain): nothing left for `to_info` to read.
-            to_info(row, None)
+            let mut info = to_info(row, None);
+            info.token_unreadable = unreadable;
+            info
         })
         .collect()
 }
@@ -1151,6 +1162,52 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(fixed.token, "secret-new");
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_keychain_is_reported_apart_from_a_missing_entry() {
+        // macOS 钥匙串弹框被拒绝：令牌是空的，但要标出来是没读到，
+        // 窗口才不会把远端的 401 说成令牌过期。
+        let db = fresh_in_memory_db().await;
+        let vault = leaked(MemoryVault::default());
+        let created = create_with(
+            &db.conn,
+            "Cowork",
+            "https://remote.example.test",
+            "secret-a",
+            &[],
+            Some(vault),
+        )
+        .await
+        .unwrap();
+        assert!(!created.token_unreadable);
+
+        let readable = get_with(&db.conn, created.id, Some(vault))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(readable.token, "secret-a");
+        assert!(!readable.token_unreadable);
+
+        let denied = leaked(MemoryVault::broken());
+        let read = get_with(&db.conn, created.id, Some(denied))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.token, "");
+        assert!(read.token_unreadable);
+        let listed = list_with(&db.conn, Some(denied)).await.unwrap();
+        assert!(listed[0].token_unreadable);
+        assert_eq!(listed[0].token, "");
+
+        // 钥匙串里没有这一条：照旧是空令牌，不算读不到。
+        vault.entries.lock().unwrap().clear();
+        let missing = get_with(&db.conn, created.id, Some(vault))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(missing.token, "");
+        assert!(!missing.token_unreadable);
     }
 
     /// Remembers which thread each `get` ran on: a keychain read may sit on

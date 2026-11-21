@@ -5517,7 +5517,8 @@
     "openFailed": "Failed to open remote workspace",
     "restoreFailed": "Couldn't reopen remote workspace \"{name}\"",
     "connectionLoadFailed": "Failed to load remote connection: {message}",
-    "connectionExpired": "Remote connection \"{name}\" is expired. Update its token and reload this window."
+    "connectionExpired": "Remote connection \"{name}\" is expired. Update its token and reload this window.",
+    "connectionTokenUnreadable": "Couldn't read the token of remote connection \"{name}\" from the system keychain (the keychain prompt may have been denied). Quit and reopen dodoer and click Allow in the prompt, or open this workspace again from the portal with \"Open in desktop app\"."
   },
   "BackupSettings": {
     "tabs": {

@@ -46,4 +46,9 @@ pub struct RemoteWorkspaceConnectionInfo {
     pub sort_order: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// 令牌存在系统钥匙串里、这次没读出来（钥匙串弹框被拒绝、钥匙串锁着）。
+    /// 这时 `token` 是空的；窗口据此提示读不到钥匙串，而不是说令牌过期。
+    /// 钥匙串里根本没有这一条（`Ok(None)`）不算。
+    #[serde(default)]
+    pub token_unreadable: bool,
 }

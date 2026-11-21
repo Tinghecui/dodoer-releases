@@ -544,6 +544,7 @@ pub async fn connection_info(
             sort_order: 0,
             created_at: now,
             updated_at: now,
+            token_unreadable: false,
         },
     ))
 }

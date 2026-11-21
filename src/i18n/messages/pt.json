@@ -5497,7 +5497,8 @@
     "openFailed": "Não foi possível abrir o espaço de trabalho remoto",
     "restoreFailed": "Não foi possível reabrir o espaço de trabalho remoto \"{name}\"",
     "connectionLoadFailed": "Não foi possível carregar a conexão remota: {message}",
-    "connectionExpired": "A conexão remota \"{name}\" expirou. Atualize o token dela e recarregue esta janela."
+    "connectionExpired": "A conexão remota \"{name}\" expirou. Atualize o token dela e recarregue esta janela.",
+    "connectionTokenUnreadable": "Não foi possível ler o token da conexão remota \"{name}\" no chaveiro do sistema (o aviso do chaveiro pode ter sido recusado). Feche e reabra o dodoer e clique em Permitir no aviso, ou abra este espaço de novo pelo portal com \"Abrir no app para desktop\"."
   },
   "ServerFileBrowser": {
     "title": "Selecionar arquivo do servidor",

@@ -88,3 +88,29 @@ describe("RemoteConnectionGate failure recovery", () => {
     expect(screen.getByText("Workspace stays open")).toBeInTheDocument()
   })
 })
+
+describe("RemoteConnectionGate unreadable keychain", () => {
+  it("says the keychain could not be read instead of calling the token expired", async () => {
+    mocks.readConnection.mockResolvedValue({
+      id: 17,
+      name: "Cowork · tester",
+      base_url: "http://remote.test:3210",
+      token: "",
+      token_unreadable: true,
+    })
+    await act(async () => {
+      render(
+        <NextIntlClientProvider locale="en" messages={enMessages}>
+          <RemoteConnectionGate>
+            <div>Workspace stays open</div>
+          </RemoteConnectionGate>
+        </NextIntlClientProvider>
+      )
+    })
+
+    expect(mocks.configure).not.toHaveBeenCalled()
+    expect(screen.queryByText("Workspace stays open")).not.toBeInTheDocument()
+    expect(screen.queryByText(/expired/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/keychain/i)).toHaveTextContent("Cowork · tester")
+  })
+})

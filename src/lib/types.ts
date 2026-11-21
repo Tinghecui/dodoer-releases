@@ -92,6 +92,8 @@ export interface RemoteWorkspaceConnection {
   sort_order: number
   created_at: string
   updated_at: string
+  /** 令牌在系统钥匙串里、这次没读出来（弹框被拒绝等），token 为空 */
+  token_unreadable?: boolean
 }
 
 export interface RemoteWorkspaceConnectionInput {

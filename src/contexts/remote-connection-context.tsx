@@ -41,6 +41,8 @@ interface RemoteConnectionState {
   loadedWindowId: string | null
   error: string | null
   expired: boolean
+  /** 令牌在钥匙串里没读出来，和过期分开说 */
+  tokenUnreadable: boolean
 }
 
 const RemoteConnectionContext =
@@ -141,6 +143,7 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
     loadedWindowId: null,
     error: null,
     expired: false,
+    tokenUnreadable: false,
   })
 
   useEffect(() => {
@@ -155,6 +158,19 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
     getRemoteWorkspaceConnection(remoteConnectionId)
       .then((next) => {
         if (cancelled) return
+        // 钥匙串没读出来（弹框被拒绝）：令牌是空的，连上去只会被远端拒绝、
+        // 被说成过期。不配 transport，直接说读不到钥匙串。
+        if (next.token_unreadable) {
+          setState({
+            connection: next,
+            loadedId: remoteConnectionId,
+            loadedWindowId: remoteWindowId,
+            error: null,
+            expired: false,
+            tokenUnreadable: true,
+          })
+          return
+        }
         configureRemoteDesktopTransport({
           id: next.id,
           name: next.name,
@@ -172,6 +188,7 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
           loadedWindowId: remoteWindowId,
           error: null,
           expired: false,
+          tokenUnreadable: false,
         })
       })
       .catch((err) => {
@@ -183,6 +200,7 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
           loadedWindowId: remoteWindowId,
           error: toErrorMessage(err),
           expired: false,
+          tokenUnreadable: false,
         })
       })
 
@@ -238,6 +256,10 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
     hasRemoteConnection && loadedCurrentRemoteWindow ? state.error : null
   const expired =
     hasRemoteConnection && loadedCurrentRemoteWindow ? state.expired : false
+  const tokenUnreadable =
+    hasRemoteConnection && loadedCurrentRemoteWindow
+      ? state.tokenUnreadable
+      : false
   const connection =
     hasRemoteConnection && loadedCurrentRemoteWindow ? state.connection : null
 
@@ -254,6 +276,16 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
     return (
       <RemoteConnectionDeadEnd
         message={t("connectionLoadFailed", { message: error })}
+      />
+    )
+  }
+
+  if (tokenUnreadable) {
+    return (
+      <RemoteConnectionDeadEnd
+        message={t("connectionTokenUnreadable", {
+          name: connection?.name ?? "",
+        })}
       />
     )
   }

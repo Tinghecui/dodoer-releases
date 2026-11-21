@@ -133,6 +133,16 @@ pub async fn terminal_kill(
     Ok(Json(()))
 }
 
+/// 终端里是不是还有程序在跑，关闭前要不要确认（#1136）。`null` 是不知道
+/// （终端不在了，或者 Windows 上判断不了），调用方照直接关处理。
+pub async fn terminal_is_busy(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<TerminalIdParams>,
+) -> Result<Json<Option<bool>>, AppCommandError> {
+    let manager = &state.terminal_manager;
+    Ok(Json(manager.foreground_busy(&params.terminal_id)))
+}
+
 pub async fn terminal_list(
     Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<Vec<TerminalInfo>>, AppCommandError> {

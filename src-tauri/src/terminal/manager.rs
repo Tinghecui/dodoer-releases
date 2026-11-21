@@ -78,6 +78,11 @@ struct TerminalInstance {
     scrollback: Arc<Mutex<Scrollback>>,
     /// Temp files (credential store + helper script) to clean up on exit.
     temp_files: Vec<std::path::PathBuf>,
+    /// 外壳带 `-c` 跑一条命令（「命令」菜单起的终端）：外壳活着就是命令还在跑。
+    runs_command: bool,
+    /// 起终端时外壳的可执行文件。后来换了（普通终端里 `exec sleep 300`），
+    /// 就是外壳被程序替换了，算在跑。查不了的平台是 None。
+    shell_exe: Option<std::path::PathBuf>,
 }
 
 pub struct TerminalManager {
@@ -487,6 +492,7 @@ impl TerminalManager {
             .unwrap_or_else(resolve_shell);
         let mut cmd = CommandBuilder::new(&shell);
         configure_shell_command(&mut cmd, &shell, opts.initial_command.as_deref());
+        let runs_command = opts.initial_command.is_some();
         cmd.cwd(&opts.working_dir);
 
         // Inject extra environment variables (e.g. git credential helper config)
@@ -523,6 +529,8 @@ impl TerminalManager {
             .map_err(|e| TerminalError::SpawnFailed(e.to_string()))?;
 
         drop(pair.slave);
+        // spawn 返回时子进程已经 exec 成外壳了，这时记下的就是外壳本身。
+        let shell_exe = child.process_id().and_then(process_exe);
 
         let writer = pair
             .master
@@ -553,6 +561,8 @@ impl TerminalManager {
             generation: generation.clone(),
             scrollback: scrollback.clone(),
             temp_files: opts.temp_files,
+            runs_command,
+            shell_exe,
         };
 
         {
@@ -712,6 +722,43 @@ impl TerminalManager {
             generation,
             cols: size.map(|size| size.cols),
             rows: size.map(|size| size.rows),
+        }
+    }
+
+    /// 终端里是不是还有程序在跑（关闭前要不要问一句，#1136）。关闭会结束整棵
+    /// 进程树，所以这几种都算在跑：
+    /// - 「命令」菜单起的终端，外壳还没退出（外壳可能直接 exec 成了命令）；
+    /// - 前台进程组不是外壳自己（前台跑着命令）；
+    /// - 外壳被程序替换了（`exec sleep 300`，可执行文件和起终端时不一样）；
+    /// - 外壳下面还有子进程（`sleep 300 &` 这样的后台任务）。
+    ///
+    /// 终端不在了、或者判断不了（Windows），返回 None。
+    pub fn foreground_busy(&self, terminal_id: &str) -> Option<bool> {
+        let mut terminals = lock_terminals(&self.terminals);
+        let instance = terminals.get_mut(terminal_id)?;
+        if instance.runs_command && matches!(instance._child.try_wait(), Ok(None)) {
+            return Some(true);
+        }
+        #[cfg(unix)]
+        {
+            let shell = instance._child.process_id()? as libc::pid_t;
+            let leader = instance.master.process_group_leader()?;
+            if leader != shell {
+                return Some(true);
+            }
+            if let (Some(was), Some(now)) = (&instance.shell_exe, process_exe(shell as u32)) {
+                if *was != now {
+                    return Some(true);
+                }
+            }
+            // 查子进程要扫进程表，放到锁外面做。
+            drop(terminals);
+            Some(has_child_process(shell).unwrap_or(false))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = instance;
+            None
         }
     }
 
@@ -1071,6 +1118,79 @@ fn process_alive(pid: u32) -> bool {
 #[cfg(not(unix))]
 fn process_alive(_pid: u32) -> bool {
     false
+}
+
+/// 进程现在的可执行文件路径：Linux 读 /proc/<pid>/exe，macOS 用
+/// `proc_pidpath`；别的平台和查不了时返回 None。
+#[cfg(target_os = "linux")]
+fn process_exe(pid: u32) -> Option<std::path::PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn process_exe(pid: u32) -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let mut buf = vec![0u8; 4096];
+    // SAFETY: 缓冲区长度如实传入，返回值是写进去的字节数。
+    let n = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if n <= 0 {
+        return None;
+    }
+    buf.truncate(n as usize);
+    Some(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&buf)))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_exe(_pid: u32) -> Option<std::path::PathBuf> {
+    None
+}
+
+/// `pid` 下面有没有还在跑的子进程（僵尸不算）。Linux 扫 /proc，别的 unix 用
+/// `pgrep -P`；查不了返回 None。
+#[cfg(target_os = "linux")]
+fn has_child_process(pid: libc::pid_t) -> Option<bool> {
+    let entries = std::fs::read_dir("/proc").ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // 格式是 `pid (comm) state ppid ...`，comm 里可能有空格和括号，从最后一个 `)` 往后数。
+        let Some(rest) = stat.rfind(')').map(|i| &stat[i + 1..]) else {
+            continue;
+        };
+        let mut fields = rest.split_whitespace();
+        let state = fields.next();
+        let ppid = fields.next().and_then(|f| f.parse::<libc::pid_t>().ok());
+        if ppid == Some(pid) && state != Some("Z") && state != Some("X") {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn has_child_process(pid: libc::pid_t) -> Option<bool> {
+    // pgrep 找到返回 0，一个都没有返回 1，别的是出错。
+    let output = std::process::Command::new("pgrep")
+        .arg("-P")
+        .arg(pid.to_string())
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    match output.status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
 }
 
 fn cleanup_temp_files(files: &mut Vec<std::path::PathBuf>) {
@@ -1501,6 +1621,149 @@ mod tests {
 
         manager.kill(id).expect("close");
         assert!(!manager.snapshot(id).exists);
+    }
+
+    /// 关闭前的确认靠它（#1136）：外壳空着是 Some(false)，前台跑着命令是
+    /// Some(true)，命令结束回到提示符又是 Some(false)；没有这个终端是 None。
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn foreground_busy_tells_a_running_command_from_an_idle_shell() {
+        use std::time::{Duration, Instant};
+
+        async fn wait_for(manager: &TerminalManager, id: &str, want: Option<bool>) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let got = manager.foreground_busy(id);
+                if got == want {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "foreground_busy stayed {got:?}, want {want:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+
+        let manager = TerminalManager::new();
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut opts = sleeping_shell(&id, "");
+        opts.initial_command = None;
+        manager
+            .spawn_with_id(opts, EventEmitter::Noop)
+            .expect("spawn");
+        wait_for(&manager, &id, Some(false)).await;
+
+        manager.write(&id, b"sleep 2\n").expect("write");
+        wait_for(&manager, &id, Some(true)).await;
+        wait_for(&manager, &id, Some(false)).await;
+
+        manager.kill(&id).expect("close");
+        assert_eq!(manager.foreground_busy(&id), None);
+        assert_eq!(manager.foreground_busy("no-such-terminal"), None);
+    }
+
+    /// 后台任务也算在跑（#1136 返工）：`sleep 3 &` 以后前台回到外壳，
+    /// 但关闭照样会结束它，要算 Some(true)；它结束了才回到 Some(false)。
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn foreground_busy_counts_a_background_job() {
+        use std::time::{Duration, Instant};
+
+        let manager = TerminalManager::new();
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut opts = sleeping_shell(&id, "");
+        opts.initial_command = None;
+        manager
+            .spawn_with_id(opts, EventEmitter::Noop)
+            .expect("spawn");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while manager.foreground_busy(&id) != Some(false) {
+            assert!(Instant::now() < deadline, "idle shell never settled");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        manager.write(&id, b"sleep 3 &\n").expect("write");
+        // 等外壳把 sleep 放到后台、回到提示符，再看它是不是还算在跑。
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert_eq!(manager.foreground_busy(&id), Some(true));
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while manager.foreground_busy(&id) != Some(false) {
+            assert!(Instant::now() < deadline, "background job never finished");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        manager.kill(&id).expect("close");
+    }
+
+    /// 「命令」菜单起的终端（外壳带 `-c` 跑一条命令）：命令跑着就算在跑，
+    /// 哪怕外壳直接 exec 成了命令、前台进程组还是它自己。
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn foreground_busy_counts_a_command_terminal() {
+        use std::time::Duration;
+
+        let manager = TerminalManager::new();
+        // zsh 跑 `-c` 的最后一条命令时直接 exec，这里用 `exec sleep` 模拟。
+        let cases = [
+            ("/bin/sh", "sleep 30"),
+            ("/bin/bash", "sleep 30"),
+            ("/bin/sh", "exec sleep 30"),
+        ];
+        for (shell, command) in cases {
+            if !std::path::Path::new(shell).exists() {
+                continue;
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            let mut opts = sleeping_shell(&id, command);
+            opts.shell = Some(shell.to_string());
+            manager
+                .spawn_with_id(opts, EventEmitter::Noop)
+                .expect("spawn");
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            assert_eq!(
+                manager.foreground_busy(&id),
+                Some(true),
+                "{shell} -c {command}"
+            );
+            manager.kill(&id).expect("close");
+        }
+    }
+
+    /// 普通终端里 `exec sleep`（#1136 第 3 次返工）：外壳被程序换掉，进程号和
+    /// 前台进程组都没变、也没有子进程，但关闭照样会结束它，要算 Some(true)。
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn foreground_busy_counts_a_shell_replaced_by_exec() {
+        use std::time::{Duration, Instant};
+
+        let manager = TerminalManager::new();
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut opts = sleeping_shell(&id, "");
+        opts.initial_command = None;
+        manager
+            .spawn_with_id(opts, EventEmitter::Noop)
+            .expect("spawn");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while manager.foreground_busy(&id) != Some(false) {
+            assert!(Instant::now() < deadline, "idle shell never settled");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        manager.write(&id, b"exec sleep 30\n").expect("write");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let got = manager.foreground_busy(&id);
+            if got == Some(true) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "foreground_busy stayed {got:?} after exec, want Some(true)"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        manager.kill(&id).expect("close");
     }
 
     /// 同一个 id 起第二次是 `AlreadyExists`（409），文字照旧带 `already exists`。

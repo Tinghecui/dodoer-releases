@@ -155,6 +155,17 @@ pub fn terminal_kill(
     }
 }
 
+/// 终端里是不是还有程序在跑（见 [`TerminalManager::foreground_busy`]），
+/// 关闭前要不要确认（#1136）。
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub fn terminal_is_busy(
+    terminal_id: String,
+    manager: State<'_, TerminalManager>,
+) -> Result<Option<bool>, TerminalError> {
+    Ok(manager.foreground_busy(&terminal_id))
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub fn terminal_list(

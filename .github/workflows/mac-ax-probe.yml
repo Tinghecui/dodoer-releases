@@ -6,7 +6,7 @@
 #   3) `peekaboo mcp` 作为 MCP 服务起不起得来、tools/list 和 see 调不调得通。
 # 元素清单、截图做成 artifact（7 天）。只有新加、改了这个文件的 pr/** 推送才跑，也能手动跑。
 name: mac-ax-probe
-# round 3
+# round 5
 run-name: "mac-ax-probe ${{ github.ref_name }}"
 
 on:
@@ -242,6 +242,39 @@ jobs:
           process.exit(0)
           EOF
           node "$RUNNER_TEMP/mcp-probe.mjs" "$HOME/peekaboo/peekaboo" "$O/mcp-probe.json"
+
+      # 第 5 轮：M6a 试跑里 MCP 空闲几分钟以后所有调用报「No such file or directory」。第 4 轮连着调没复现；
+      # 文档说自动起的 daemon 空闲 300 秒就退出。A：不管它，空闲 320 秒再调；B：先 `peekaboo daemon start`（常驻），同样空闲再调
+      - name: mcp idle 320s (A auto daemon, B manual daemon)
+        timeout-minutes: 20
+        run: |
+          set +e -uo pipefail
+          cd "$O"
+          cat > "$RUNNER_TEMP/mcp-idle.mjs" <<'EOF'
+          import { spawn } from "node:child_process"
+          const [bin, idle] = process.argv.slice(2)
+          const p = spawn(bin, ["mcp", "serve", "--allow-foreground"], { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, PEEKABOO_DISABLE_TOOLS: "browser" } })
+          let buf = "", id = 0; const waiters = new Map()
+          p.stdout.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); try { const m = JSON.parse(line); waiters.get(m.id)?.(m) } catch {} } })
+          const call = (method, params) => new Promise((res) => { const n = ++id; const t = setTimeout(() => res({ timeout: true }), 60000); waiters.set(n, (m) => { clearTimeout(t); res(m) }); p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: n, method, params }) + "\n") })
+          const text = (m) => m.timeout ? "TIMEOUT" : (m.result?.content || []).filter((c) => c.type === "text").map((c) => c.text).join(" ").replace(/\s+/g, " ").slice(0, 160) + (m.result?.isError ? " [isError]" : "")
+          const step = async (name, args) => console.log(`${new Date().toISOString().slice(11, 19)} ${name} → ${text(await call("tools/call", { name, arguments: args }))}`)
+          await call("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "idle", version: "0" } })
+          p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n")
+          await step("see", { app_target: "dodoer" })
+          await step("window", { action: "list", app: "dodoer" })
+          console.log(`idle ${idle}s`); await new Promise((r) => setTimeout(r, Number(idle) * 1000))
+          await step("window", { action: "list", app: "dodoer" })
+          await step("see", { app_target: "dodoer" })
+          await step("drag", { from_coords: "318,400", to_coords: "600,420", foreground: true, duration: 500, steps: 10 })
+          p.kill(); setTimeout(() => process.exit(0), 500)
+          EOF
+          ls "$HOME/Library/Application Support/Peekaboo/" 2>&1
+          echo "=== A auto daemon"; node "$RUNNER_TEMP/mcp-idle.mjs" "$HOME/peekaboo/peekaboo" 320 2>&1 | tee mcp-idle-A.txt | grep -v '^\['
+          ls "$HOME/Library/Application Support/Peekaboo/" 2>&1
+          echo "=== B manual daemon"; peekaboo daemon start 2>&1 | tail -3; peekaboo daemon status 2>&1 | head -8
+          node "$RUNNER_TEMP/mcp-idle.mjs" "$HOME/peekaboo/peekaboo" 320 2>&1 | tee mcp-idle-B.txt | grep -v '^\['
+          peekaboo daemon status 2>&1 | head -8
 
       - uses: actions/upload-artifact@v4
         if: always()

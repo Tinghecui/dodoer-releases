@@ -1432,6 +1432,10 @@ pub struct GitHeadInfo {
     pub detached: bool,
     /// Short commit hash; present when detached and at least one commit exists.
     pub short_sha: Option<String>,
+    /// Full hash of the commit `HEAD` points at, on a branch or detached.
+    /// `None` on an unborn branch or not a repo. 前端靠它发现终端里的
+    /// commit / reset / amend（分支名不变）并刷新提交面板。
+    pub head_sha: Option<String>,
 }
 
 async fn git_output(
@@ -1450,17 +1454,22 @@ async fn git_output(
 /// cost a single git invocation; the rarer unborn-branch and non-repository
 /// cases fall through to `symbolic-ref` and `--is-inside-work-tree`.
 pub(crate) async fn resolve_git_head(path: &str) -> Result<GitHeadInfo, AppCommandError> {
-    // `rev-parse --abbrev-ref HEAD` prints the branch name, the literal "HEAD"
-    // when detached, and fails on an unborn branch or a non-repository.
-    let head = git_output(path, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
+    // `rev-parse HEAD --abbrev-ref HEAD` prints the full commit hash, then the
+    // branch name (the literal "HEAD" when detached); it fails on an unborn
+    // branch or a non-repository. 一次调用同时拿到提交和分支名，轮询不多花一次 git。
+    let head = git_output(path, &["rev-parse", "HEAD", "--abbrev-ref", "HEAD"]).await?;
     if head.status.success() {
-        let name = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        let stdout = String::from_utf8_lossy(&head.stdout).to_string();
+        let mut lines = stdout.lines().map(str::trim);
+        let head_sha = lines.next().filter(|s| !s.is_empty()).map(str::to_string);
+        let name = lines.next().unwrap_or("").to_string();
         if !name.is_empty() && name != "HEAD" {
             return Ok(GitHeadInfo {
                 is_repo: true,
                 branch: Some(name),
                 detached: false,
                 short_sha: None,
+                head_sha,
             });
         }
         // Detached HEAD — surface the short commit so the UI can label it.
@@ -1475,6 +1484,7 @@ pub(crate) async fn resolve_git_head(path: &str) -> Result<GitHeadInfo, AppComma
             branch: None,
             detached: true,
             short_sha,
+            head_sha,
         });
     }
 
@@ -1489,6 +1499,7 @@ pub(crate) async fn resolve_git_head(path: &str) -> Result<GitHeadInfo, AppComma
                 branch: Some(name),
                 detached: false,
                 short_sha: None,
+                head_sha: None,
             });
         }
     }
@@ -1504,6 +1515,7 @@ pub(crate) async fn resolve_git_head(path: &str) -> Result<GitHeadInfo, AppComma
         branch: None,
         detached: false,
         short_sha: None,
+        head_sha: None,
     })
 }
 
@@ -7813,6 +7825,7 @@ mod tests {
         let info = resolve_git_head(dir.path().to_str().unwrap())
             .await
             .expect("resolve");
+        assert!(info.head_sha.is_some(), "branch HEAD carries its commit");
         assert_eq!(
             info,
             GitHeadInfo {
@@ -7820,7 +7833,32 @@ mod tests {
                 branch: Some("feature".into()),
                 detached: false,
                 short_sha: None,
+                head_sha: info.head_sha.clone(),
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_git_head_reports_commit_on_branch() {
+        // 终端里 git commit：分支名不变，head_sha 要跟着变（#1175）
+        let dir = tempfile::tempdir().expect("tempdir");
+        git_run(dir.path(), &["init", "-q"]);
+        git_run(dir.path(), &["commit", "-q", "--allow-empty", "-m", "c1"]);
+        let path = dir.path().to_str().unwrap();
+
+        let first = resolve_git_head(path).await.expect("resolve");
+        let sha1 = first.head_sha.clone().expect("head_sha on a branch");
+        assert_eq!(sha1.len(), 40, "full hash, got {sha1:?}");
+        assert!(first.branch.is_some());
+        assert_eq!(first.short_sha, None, "short_sha stays detached-only");
+
+        git_run(dir.path(), &["commit", "-q", "--allow-empty", "-m", "c2"]);
+        let second = resolve_git_head(path).await.expect("resolve");
+        assert_eq!(second.branch, first.branch);
+        assert_ne!(
+            second.head_sha,
+            Some(sha1),
+            "new commit must change head_sha"
         );
     }
 
@@ -7858,6 +7896,7 @@ mod tests {
                 branch: None,
                 detached: false,
                 short_sha: None,
+                head_sha: None,
             }
         );
     }

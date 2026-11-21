@@ -2013,9 +2013,11 @@ export function GitLogTab() {
   // detached (a detached HEAD has no name, so branch↔detached and
   // detached→another-commit checkouts would otherwise be invisible). null while
   // the folder is unpolled / not a repo — never compared against.
+  // 分支名后面再带上 HEAD 指向的提交：终端里 git commit / reset / amend 不改
+  // 分支名，只看分支名的话提交面板永远不会自己刷新（#1175）。
   const polledHeadSignature =
     polledHead?.is_repo === true
-      ? (polledHead.branch ?? polledHead.short_sha)
+      ? `${polledHead.branch ?? ""}@${polledHead.head_sha ?? polledHead.short_sha ?? ""}`
       : null
   const lastPolledHeadRef = useRef<{
     folderId: number

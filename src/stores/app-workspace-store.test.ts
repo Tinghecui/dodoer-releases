@@ -322,6 +322,30 @@ describe("refreshFolder — branch null-guard", () => {
   })
 })
 
+describe("applyGitHead", () => {
+  it("records a new HEAD commit even when the branch name is unchanged", () => {
+    // 终端里 git commit 只改提交、不改分支名（#1175）
+    const store = useAppWorkspaceStore.getState()
+    store.applyGitHead(3, {
+      is_repo: true,
+      branch: "main",
+      detached: false,
+      short_sha: null,
+      head_sha: "a".repeat(40),
+    })
+    useAppWorkspaceStore.getState().applyGitHead(3, {
+      is_repo: true,
+      branch: "main",
+      detached: false,
+      short_sha: null,
+      head_sha: "b".repeat(40),
+    })
+    expect(useAppWorkspaceStore.getState().gitHeads.get(3)?.head_sha).toBe(
+      "b".repeat(40)
+    )
+  })
+})
+
 describe("applyFolderRemove", () => {
   it("drops the folder and its branch/HEAD entries from every list", () => {
     const store = useAppWorkspaceStore.getState()

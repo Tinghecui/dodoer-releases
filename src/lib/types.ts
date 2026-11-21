@@ -5455,6 +5455,11 @@ export interface GitHeadInfo {
   detached: boolean
   /** Short commit hash, present when detached. */
   short_sha: string | null
+  /**
+   * Full commit hash HEAD points at (on a branch or detached); null on an
+   * unborn branch or non-repo. Optional for older backends that don't send it.
+   */
+  head_sha?: string | null
 }
 
 /**

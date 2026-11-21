@@ -567,7 +567,8 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
         existing.is_repo !== head.is_repo ||
         existing.branch !== head.branch ||
         existing.detached !== head.detached ||
-        existing.short_sha !== head.short_sha
+        existing.short_sha !== head.short_sha ||
+        (existing.head_sha ?? null) !== (head.head_sha ?? null)
       ) {
         const next = new Map(gitHeads)
         next.set(folderId, head)

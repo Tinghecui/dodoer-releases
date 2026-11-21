@@ -32,6 +32,8 @@ const state = vi.hoisted(() => ({
   deferBranches: false,
   pendingBranches: [] as PendingBranchList[],
   listeners: new Map<string, (payload: { folder_id: number }) => void>(),
+  // What the active folder's HEAD poll last wrote (store `gitHeads`).
+  gitHeads: new Map<number, unknown>(),
 }))
 
 // The tab reads the folder through useDeferredValue, which lags a switch until
@@ -122,7 +124,7 @@ vi.mock("@/hooks/use-git-quick-actions", () => ({
 vi.mock("@/stores/app-workspace-store", () => ({
   useAppWorkspaceStore: (
     selector: (state: { gitHeads: Map<number, unknown> }) => unknown
-  ) => selector({ gitHeads: new Map() }),
+  ) => selector({ gitHeads: state.gitHeads }),
 }))
 
 vi.mock("@/lib/platform", async (importOriginal) => ({
@@ -177,8 +179,96 @@ describe("Commits tab branch query", () => {
     state.deferBranches = false
     state.pendingBranches = []
     state.listeners.clear()
+    state.gitHeads = new Map()
   })
   afterEach(() => cleanup())
+
+  it("refetches the HEAD view when the poll sees a new commit on the same branch", async () => {
+    // 终端里 git commit：分支名不变，只有 HEAD 指向的提交变了（#1175）
+    state.gitHeads = new Map([
+      [
+        1,
+        {
+          is_repo: true,
+          branch: "mainA",
+          detached: false,
+          short_sha: null,
+          head_sha: "a1",
+        },
+      ],
+    ])
+    const view = renderTab()
+    await waitFor(() => expect(state.gitLog).toHaveBeenCalled())
+    await screen.findByText("mainA")
+    const before = state.gitLog.mock.calls.length
+
+    state.gitHeads = new Map([
+      [
+        1,
+        {
+          is_repo: true,
+          branch: "mainA",
+          detached: false,
+          short_sha: null,
+          head_sha: "b2",
+        },
+      ],
+    ])
+    view.rerender(tabTree())
+    await waitFor(() =>
+      expect(state.gitLog.mock.calls.length).toBeGreaterThan(before)
+    )
+    expect(state.gitLog).toHaveBeenLastCalledWith(
+      "/worktrees/a",
+      100,
+      "HEAD",
+      undefined,
+      0,
+      undefined,
+      false,
+      false
+    )
+  })
+
+  it("does not refetch a pinned branch view when only the HEAD commit moves", async () => {
+    window.localStorage.setItem(
+      "codeg:gitlog:selection:/worktrees/a",
+      JSON.stringify({ branch: "mainA", author: null })
+    )
+    state.gitHeads = new Map([
+      [
+        1,
+        {
+          is_repo: true,
+          branch: "mainA",
+          detached: false,
+          short_sha: null,
+          head_sha: "a1",
+        },
+      ],
+    ])
+    const view = renderTab()
+    await waitFor(() => expect(state.gitLog).toHaveBeenCalled())
+    await screen.findByText("mainA")
+    await act(async () => {})
+    const before = state.gitLog.mock.calls.length
+
+    state.gitHeads = new Map([
+      [
+        1,
+        {
+          is_repo: true,
+          branch: "mainA",
+          detached: false,
+          short_sha: null,
+          head_sha: "b2",
+        },
+      ],
+    ])
+    view.rerender(tabTree())
+    await act(async () => {})
+    expect(state.gitLog.mock.calls.length).toBe(before)
+  })
 
   it("queries only the current worktree HEAD on first open", async () => {
     renderTab()

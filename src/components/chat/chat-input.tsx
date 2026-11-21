@@ -153,6 +153,29 @@ interface ChatInputProps {
   tall?: boolean
 }
 
+// 卡片里自己接管按下的元素：按在这些上面，焦点归它们，不抢到编辑区。
+const COMPOSER_OWN_PRESS_SELECTOR =
+  'button, a[href], input, textarea, select, label, [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), [role="button"], [role="combobox"], [role="menuitem"], [role="option"], [role="listbox"], [role="slider"], [role="checkbox"], [role="switch"], [role="tab"]'
+
+/**
+ * 按下这一下要不要把光标放进编辑区（#1038）。
+ * 编辑区已经有焦点、按在卡片里的控件上、或者按的是传送门里的内容
+ * （弹出菜单在 DOM 上不在卡片里，React 事件却会冒泡上来），都不管。
+ * 收起条本身是个按钮，但它就是「点这里开始写」，要算进来。
+ */
+export function shouldFocusEditorOnPress(
+  container: HTMLElement | null,
+  target: EventTarget | null
+): boolean {
+  if (!container || !(target instanceof Element)) return false
+  if (!container.contains(target)) return false
+  const editor = container.querySelector('[contenteditable="true"]')
+  if (editor?.contains(document.activeElement)) return false
+  if (target.closest("[data-composer-collapsed-bar]")) return true
+  const own = target.closest(COMPOSER_OWN_PRESS_SELECTOR)
+  return !own || !container.contains(own)
+}
+
 export const ChatInput = memo(function ChatInput({
   hasMessages = false,
   status,
@@ -423,7 +446,11 @@ export const ChatInput = memo(function ChatInput({
       // selection bookkeeping is untouched; the composer's OWN context menu
       // still arms, since its trigger is nested below this wrapper.
       onPointerDown={(event) => {
-        if (collapsed) expandAndFocus()
+        // #1038：鼠标移上去时输入框就已经展开，按下时 collapsed 早是 false。
+        // 所以不看 collapsed，看编辑区有没有焦点：没有、且按的不是卡片里的
+        // 某个控件（收起条除外），就把光标放进编辑区，不然接着打的字会丢。
+        if (shouldFocusEditorOnPress(containerRef.current, event.target))
+          expandAndFocus()
         else setFocused(true)
         if (event.pointerType !== "mouse") event.stopPropagation()
       }}

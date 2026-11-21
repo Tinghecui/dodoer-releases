@@ -13,9 +13,13 @@ vi.mock("@/components/chat/message-input", () => ({
   MessageInput: (props: Record<string, unknown>) => {
     lastProps.current = props
     return (
-      <button type="button" data-testid="agent-icon">
-        agent
-      </button>
+      <div data-testid="composer-card">
+        {/* 编辑区：真组件里是 contenteditable，tabIndex 让 jsdom 认它可聚焦 */}
+        <div contentEditable tabIndex={0} data-testid="editor" />
+        <button type="button" data-testid="agent-icon">
+          agent
+        </button>
+      </div>
     )
   },
 }))
@@ -363,6 +367,46 @@ describe("ChatInput automatic collapse", () => {
     expect(container).toHaveAttribute("data-composer-state", "expanded")
     pointerDown(document.body, "touch")
     expect(container).toHaveAttribute("data-composer-state", "collapsed")
+  })
+
+  // #1038：鼠标一移上去就展开了，按下时已经不是收起状态；以前只有收起时按下
+  // 才把光标放进编辑区，点到卡片空白处的这一下光标没进去，接着打的字全丢了。
+  it("puts the caret in the editor when the press lands after hover already opened it", () => {
+    const { container } = setup()
+    fireEvent.mouseEnter(container)
+    expect(container).toHaveAttribute("data-composer-state", "expanded")
+    const card = screen.getByTestId("composer-card")
+    pointerDown(card, "mouse")
+    fireEvent.click(card)
+    act(() => {
+      vi.advanceTimersByTime(50)
+    })
+    expect(document.activeElement).toBe(screen.getByTestId("editor"))
+  })
+
+  it("puts the caret in the editor when the folded bar itself is pressed", () => {
+    const { container } = setup()
+    const bar = container.querySelector<HTMLElement>(
+      "[data-composer-collapsed-bar]"
+    )!
+    pointerDown(bar, "mouse")
+    fireEvent.click(bar)
+    act(() => {
+      vi.advanceTimersByTime(50)
+    })
+    expect(document.activeElement).toBe(screen.getByTestId("editor"))
+  })
+
+  it("leaves a press on a composer control to that control", () => {
+    const { container } = setup()
+    fireEvent.mouseEnter(container)
+    const control = screen.getByTestId("agent-icon")
+    pointerDown(control, "mouse")
+    act(() => control.focus())
+    act(() => {
+      vi.advanceTimersByTime(50)
+    })
+    expect(document.activeElement).toBe(control)
   })
 
   it("waits a moment before folding, and a return in time keeps it open", () => {

@@ -39,7 +39,8 @@ jobs:
           - os: macos-15
             features: e2e
           - os: ubuntu-22.04
-            features: ""
+            # Linux 也带 e2e：只多 tauri-plugin-wdio（WebDriver 服务器那个插件只在 macOS 引入，Linux 走 tauri-driver）
+            features: e2e
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
     steps:
@@ -74,7 +75,7 @@ jobs:
             src-tauri/target/debug/codeg-computer-helper
             src-tauri/target/debug/web
             src-tauri/Cargo.lock
-          key: desktop-e2e-spike-bin-v1-${{ runner.os }}-${{ hashFiles('src-tauri/**', 'src/**', 'public/**', 'package.json', 'pnpm-lock.yaml', 'rust-toolchain.toml', '*.config.*') }}
+          key: desktop-e2e-spike-bin-v2-${{ runner.os }}-${{ matrix.features }}-${{ hashFiles('src-tauri/**', 'src/**', 'public/**', 'package.json', 'pnpm-lock.yaml', 'rust-toolchain.toml', '*.config.*') }}
 
       - name: Rust 版本（读 rust-toolchain.toml）
         id: toolchain
@@ -113,10 +114,12 @@ jobs:
         if: steps.bin.outputs.cache-hit != 'true'
         run: pnpm install --frozen-lockfile
 
-      - name: 前端（静态导出）
+      - name: 前端（静态导出，e2e 版：带 @wdio/tauri-plugin）
         if: steps.bin.outputs.cache-hit != 'true'
         env:
           NODE_OPTIONS: --max-old-space-size=4096
+          # src/lib/e2e/wdio-plugin.ts：只有这样编的前端才带插件的前端那一半
+          NEXT_PUBLIC_CODEG_E2E: ${{ matrix.features == 'e2e' && '1' || '' }}
         run: |
           set -euo pipefail
           t0=$(date +%s)
@@ -142,6 +145,8 @@ jobs:
         if: steps.bin.outputs.cache-hit != 'true'
         env:
           FEATURES: ${{ matrix.features }}
+          # @wdio/tauri-plugin 的前端那一半要 window.__TAURI__；只在测试版的配置里开，正式包不开
+          E2E_GLOBAL_TAURI: ${{ matrix.features == 'e2e' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           t0=$(date +%s)
@@ -149,7 +154,8 @@ jobs:
           if [[ -n "$FEATURES" ]]; then extra=(--features "$FEATURES"); fi
           pnpm tauri build --debug --no-bundle "${extra[@]}" \
             --config src-tauri/tauri.jenny.conf.json --config src-tauri/tauri.cowork-desktop.conf.json \
-            --config '{"version":"1.999.0","build":{"beforeBuildCommand":""}}'
+            --config '{"version":"1.999.0","build":{"beforeBuildCommand":""}}' \
+            --config "{\"app\":{\"withGlobalTauri\":${E2E_GLOBAL_TAURI}}}"
           test -x src-tauri/target/debug/codeg
           ls -la src-tauri/target/debug/codeg
           echo "- ${{ matrix.os }} 桌面主程序：$(( $(date +%s) - t0 )) 秒" >> "$GITHUB_STEP_SUMMARY"
@@ -175,10 +181,13 @@ jobs:
           git diff -- src-tauri/Cargo.lock > cargo-lock.diff || true
           mkdir -p e2e-out && cp src-tauri/Cargo.lock e2e-out/Cargo.lock
 
-      - name: 二进制里有没有 WebDriver 插件
+      # 反过来验发版检查：e2e 测试版必须被它拦下，不然那条检查永远是绿的
+      - name: 发版检查认得出 e2e 测试版（应当失败）
         run: |
-          n=$(strings -a src-tauri/target/debug/codeg | grep -c 'WDIO WebDriver plugin initialized' || true)
-          echo "- ${{ matrix.os }}：codeg 里 WebDriver 插件的字符串出现 ${n} 次（feature=${{ matrix.features || '无' }}）" >> "$GITHUB_STEP_SUMMARY"
+          if bash scripts/check-no-e2e-bits.sh src-tauri/target/debug/codeg src-tauri/target/debug/web; then
+            echo "::error::check-no-e2e-bits.sh 没认出 e2e 测试版"; exit 1
+          fi
+          echo "- ${{ matrix.os }}：check-no-e2e-bits.sh 认出了 e2e 测试版（程序和前端）" >> "$GITHUB_STEP_SUMMARY"
 
       - name: WebdriverIO 依赖（npm，不进 pnpm 项目）
         working-directory: scripts/desktop-e2e
@@ -234,3 +243,29 @@ jobs:
             cargo-lock.diff
           if-no-files-found: warn
           retention-days: 14
+
+  # 正常编的前端（不带 NEXT_PUBLIC_CODEG_E2E）里不能有 @wdio/tauri-plugin：守卫是编译期的（next.config.ts 的 CODEG_E2E），
+  # 这里确认打包器真的把那个 import 丢了。正式包的程序那一半由 cowork-desktop-build.sh 每次发版检查
+  prod-frontend:
+    name: 正常编的前端不带 WebdriverIO 插件
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile
+      - name: pnpm build（不带 e2e）
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: pnpm build
+      - name: check-no-e2e-bits.sh out/
+        run: |
+          bash scripts/check-no-e2e-bits.sh out
+          echo "- 正常编的前端 out/：$(find out -name '*.js' | wc -l) 个 js，没有 WebdriverIO 插件" >> "$GITHUB_STEP_SUMMARY"

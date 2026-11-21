@@ -1,127 +1,116 @@
-// 第一次启动（新装）：读主窗口 DOM、点按钮回开始页、开设置窗口并切过去、留一个 localStorage 记号给第二次启动查
+// 第一次启动（新装）：读主窗口、用 Radix 菜单回开始页、开设置窗口并切过去、留一个 localStorage 记号给第二次启动查。
+// 文字一律读具体元素的 innerText（textOf），不读 body 的 getText。切窗口用 tauri-service 按 Tauri 窗口标签切（要 tauri-plugin-wdio）
 import {
   MAIN_VIEW_KEY,
   MARKER_KEY,
-  click,
   codegPids,
   invoke,
   lsGet,
   notes,
+  pointerClick,
   shot,
   step,
+  textOf,
   waitForUi,
   writeResult,
 } from "./lib.mjs"
 
 describe("桌面 app 第一次启动", () => {
-  let main = null
-
   after(() => writeResult())
 
-  it("主窗口画出来，读得到 DOM", async () => {
-    await step("主窗口界面画出来", async () => {
+  it("主窗口画出来，tauri-plugin-wdio 两半都在", async () => {
+    await step("主窗口界面画出来（window.wdioTauri 在）", async () => {
       const s = await waitForUi()
       if (s.tauri !== "object")
         throw new Error(`没有 __TAURI_INTERNALS__：${JSON.stringify(s)}`)
-      main = await browser.getWindowHandle()
-      notes.mainHandle = main
       notes.pids = codegPids()
       return s
     })
-    await step("$('body').getText() 读到文字", async () => {
-      const text = await $("body").getText()
-      if (!text.trim()) throw new Error("body 没有文字")
-      notes.bodyText = text.slice(0, 300)
-      // 对照：页面自己算的 innerText（W3C 的 getElementText 应该和它一样，只含看得见的文字）
-      const inner = await browser.execute(() => document.body.innerText)
-      notes.bodyInnerText = inner.slice(0, 300)
-      notes.getTextMatchesInnerText = text.trim() === inner.trim()
-      return {
-        getText: text.slice(0, 120),
-        innerText: inner.slice(0, 120),
-        same: notes.getTextMatchesInnerText,
-      }
+    await step("browser.tauri：窗口标签、当前窗口", async () => {
+      const windows = await browser.tauri.listWindows()
+      if (!windows.includes("main"))
+        throw new Error(`窗口里没有 main：${JSON.stringify(windows)}`)
+      const label = await browser.tauri.execute(({ core }) =>
+        core.invoke("plugin:wdio|get_active_window_label")
+      )
+      return { windows, label }
+    })
+    await step("新装直接进本机工作区：空会话区的文字", async () => {
+      await $('button[title="Quick actions"]').waitForDisplayed({
+        timeout: 60000,
+      })
+      const view = await lsGet(MAIN_VIEW_KEY)
+      if (view !== "local") throw new Error(`${MAIN_VIEW_KEY}=${view}`)
+      const text = await browser.execute(() => document.body.innerText)
+      if (!text.includes("No open chats"))
+        throw new Error(`没有「No open chats」：${text.slice(0, 200)}`)
+      return { view }
     })
     await shot("01-launch")
   })
 
-  it("新装直接进本机工作区，点「Quick actions」→「Back to start page」回到开始页", async () => {
-    await step("本机工作区画出来（有 Quick actions 按钮）", async () => {
-      await $('button[title="Quick actions"]').waitForDisplayed({
-        timeout: 60000,
-      })
-      return { view: await lsGet(MAIN_VIEW_KEY) }
+  it("Quick actions →「Back to start page」回到开始页", async () => {
+    await step("点 Quick actions（派发 pointer 事件），菜单打开", async () => {
+      await pointerClick('button[title="Quick actions"]')
+      await $("[role='menuitem']").waitForDisplayed({ timeout: 10000 })
+      return (await $$("[role='menuitem']").length) + " 个菜单项"
     })
-    await step("点 Quick actions，菜单打开", () =>
-      click(
-        'button[title="Quick actions"]',
-        async () => (await $$("[role='menuitem']").length) > 0,
-        "quick-actions"
-      )
+    await step(
+      "点 Back to start page，开始页的标题和「本机」那一段",
+      async () => {
+        await pointerClick(
+          "//*[@role='menuitem'][contains(., 'Back to start page')]"
+        )
+        await $("#start-local").waitForExist({ timeout: 20000 })
+        const h1 = await textOf("h1")
+        const local = await textOf("#start-local")
+        if (h1 !== "Where do you want to work?") throw new Error(`h1=${h1}`)
+        if (local !== "Work on this computer")
+          throw new Error(`#start-local=${local}`)
+        const view = await lsGet(MAIN_VIEW_KEY)
+        if (view !== "start") throw new Error(`${MAIN_VIEW_KEY}=${view}`)
+        return { h1, local, view }
+      }
     )
-    await step("点菜单里的 Back to start page，开始页出来", async () => {
-      const how = await click(
-        "//*[@role='menuitem'][contains(., 'Back to start page')]",
-        async () => await $("#start-local").isExisting(),
-        "back-to-start"
-      )
-      const h1 = await $("h1").getText()
-      const local = await $("#start-local").getText()
-      const view = await lsGet(MAIN_VIEW_KEY)
-      if (view !== "start")
-        throw new Error(`${MAIN_VIEW_KEY}=${JSON.stringify(view)}`)
-      notes.startPage = { h1, local }
-      return { how, h1, local, view }
-    })
     await shot("02-start-page")
   })
 
-  it("开设置窗口、切过去读 DOM、关掉、切回主窗口", async () => {
-    await step("open_settings_window 开出第二个窗口句柄", async () => {
-      const r = await invoke("open_settings_window", { section: "web-service" })
+  it("开设置窗口、按标签切过去读 DOM、切回主窗口关掉它", async () => {
+    await step("open_settings_window，窗口列表里多了 settings", async () => {
+      const r = await invoke("open_settings_window", {
+        section: "web-service",
+      })
       if (r && "err" in r) throw new Error(`open_settings_window：${r.err}`)
       await browser.waitUntil(
-        async () => (await browser.getWindowHandles()).length > 1,
-        { timeout: 30000, timeoutMsg: "没出现第二个窗口句柄" }
+        async () => (await browser.tauri.listWindows()).includes("settings"),
+        { timeout: 30000, timeoutMsg: "窗口列表里没有 settings" }
       )
-      const handles = await browser.getWindowHandles()
-      notes.handlesWithSettings = handles
-      return handles
+      return await browser.tauri.listWindows()
     })
-    await step("切到设置窗口，读得到它的 DOM", async () => {
-      let found = null
-      await browser.waitUntil(
-        async () => {
-          for (const h of await browser.getWindowHandles()) {
-            await browser.switchToWindow(h)
-            if ((await browser.getUrl()).includes("/settings")) {
-              found = h
-              return true
-            }
-          }
-          return false
-        },
-        { timeout: 30000, timeoutMsg: "没有地址带 /settings 的窗口" }
-      )
+    await step("tauri.switchWindow('settings')，读得到它的 DOM", async () => {
+      await browser.tauri.switchWindow("settings")
       await waitForUi(60000)
       const url = await browser.getUrl()
+      if (!url.includes("/settings")) throw new Error(`url=${url}`)
       const title = await browser.getTitle()
-      const text = (await $("body").getText()).slice(0, 200)
+      const text = await browser.execute(() => document.body.innerText)
+      if (!text.includes("Web Service"))
+        throw new Error(`设置窗口里没有「Web Service」：${text.slice(0, 200)}`)
       await shot("03-settings")
-      return { handle: found, url, title, text }
+      return { url, title }
     })
     await step("切回主窗口，从主窗口关掉设置窗口", async () => {
       // 先切回去：在设置窗口里关它自己，回不来结果（no such window）
-      await browser.switchToWindow(main)
+      await browser.tauri.switchWindow("main")
       const r = await invoke("plugin:window|close", { label: "settings" })
       if (r && "err" in r) throw new Error(`close：${r.err}`)
       await browser.waitUntil(
-        async () => (await browser.getWindowHandles()).length === 1,
+        async () => !(await browser.tauri.listWindows()).includes("settings"),
         { timeout: 20000, timeoutMsg: "设置窗口没关掉" }
       )
       return {
         url: await browser.getUrl(),
-        handles: await browser.getWindowHandles(),
+        windows: await browser.tauri.listWindows(),
       }
     })
   })

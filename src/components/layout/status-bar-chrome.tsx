@@ -42,6 +42,12 @@
  * server's setting alone, and so does handing a remembered switch back when
  * the window opens (`docs/agent-chrome.md` 7, #980).
  *
+ * 远端窗口里，开了这个开关或交出了标签时，下面列出服务器上的智能体还缺的
+ * 几样（#1060）：这台电脑的浏览器工具关着、交出了标签但开关关着——各带一个
+ * 「打开」按钮，不替用户自动开；服务器连着几台电脑、当前对话的浏览器不在
+ * 这台时，提醒选这台并给一个「选这台」按钮（只改浏览器那一样）；当前对话已经
+ * 选了这台就不提。
+ *
  * Under each tab an agent has been at, the last thing it did there, and the
  * whole record a click away (`chrome::activity`, `docs/agent-chrome.md`
  * 13.4): kept by the backend for as long as the connection lasts, asked for
@@ -89,6 +95,7 @@ import {
 } from "@/components/settings/chrome-connect-settings"
 import { ChromeEvalPanelSwitch } from "@/components/settings/chrome-eval-switch"
 import { useMinuteNow } from "@/hooks/use-minute-now"
+import { useTabStore } from "@/contexts/tab-context"
 import { openSettingsWindow, setCodegMcpToolGroup } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
@@ -122,7 +129,13 @@ import {
   subscribeChromeSites,
   type ChromeSites,
 } from "@/lib/browser/chrome-sites"
-import { lendBrowserSwitch } from "@/lib/cowork/remote-browser"
+import { useConversationDeviceState } from "@/lib/cowork/conversation-device"
+import { getThisDevice } from "@/lib/cowork/host-devices"
+import {
+  lendBrowserSwitch,
+  remoteBrowserReach,
+  type RemoteBrowserReach,
+} from "@/lib/cowork/remote-browser"
 import { isDesktop } from "@/lib/platform"
 import { isRemoteDesktopMode } from "@/lib/transport"
 import { formatTimeAgo } from "@/lib/relative-time"
@@ -155,11 +168,11 @@ function rememberAgents(scope: string, on: boolean) {
 
 /** Agents on a server reach Chrome through the tabs this app lends it, which
  *  takes the app's own browser tools being on. Nothing to do in a local
- *  window; a failure leaves the switch as it is, to be seen in the list of
- *  computers. */
-function lendBrowser() {
-  lendBrowserSwitch("browser").catch((error) => {
+ *  window; a failure leaves the switch as it is, and is told (#1060). */
+function lendBrowser(onFail: (error: unknown) => void): Promise<void> {
+  return lendBrowserSwitch("browser").catch((error) => {
     console.error("[StatusBarChrome] failed to lend the browser:", error)
+    onFail(error)
   })
 }
 
@@ -179,6 +192,25 @@ function ChromeItem({ className }: { className?: string }) {
     Record<string, ChromeActivityEntry[]>
   >({})
   const scope = chromeAgentsScope(getCurrentWindowLabel())
+  // 远端窗口：服务器上的智能体还缺哪几样才看得到这台电脑的标签（#1060）
+  const [reach, setReach] = useState<RemoteBrowserReach | null>(null)
+  const [reachAsked, setReachAsked] = useState(0)
+  /** 交给智能体的标签（读或操作）。 */
+  const [shared, setShared] = useState<ReadonlySet<string>>(() => new Set())
+  /** 这台电脑在服务器设备簿里的 id；老版本的 app 没有。 */
+  const [thisDeviceId, setThisDeviceId] = useState<string | null>(null)
+  // 当前对话在数据库里的编号（新对话还没存进去时没有），和输入框下面的
+  // 「选电脑」按钮问的是同一个；面板关着时不问，免得多一路定时轮询
+  const activeConversationId = useTabStore((s) => {
+    const tab = s.tabs.find((x) => x.id === s.activeTabId)
+    if (!tab || tab.kind !== "conversation") return null
+    return tab.conversationId ?? null
+  })
+  const deviceState = useConversationDeviceState(
+    open && isRemoteDesktopMode() ? activeConversationId : null
+  )
+  const lendFailed = (error: unknown) =>
+    toast.error(t("lendFailed", { message: toErrorMessage(error) }))
 
   // The switch as the backend has it; once per app run, the remembered one
   // is handed back to it first.
@@ -192,13 +224,15 @@ function ChromeItem({ className }: { className?: string }) {
         !on && rememberedAgents(scope) ? chromeSetAgents(true) : on
       )
       .then((on) => {
-        if (on) lendBrowser()
+        if (on) void lendBrowser(lendFailed)
         settle(on)
       })
       .catch(() => {})
     return () => {
       cancelled = true
     }
+    // `lendFailed` 只是出提示，换了也不用重来
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope])
 
   // Another window of the same scope may have changed it since.
@@ -214,6 +248,25 @@ function ChromeItem({ className }: { className?: string }) {
       cancelled = true
     }
   }, [open])
+
+  // 面板打开时、点了「打开」以后再问一次：设置窗口里也能改
+  useEffect(() => {
+    if (!open || !isRemoteDesktopMode()) return
+    let cancelled = false
+    remoteBrowserReach()
+      .then((next) => {
+        if (!cancelled) setReach(next)
+      })
+      .catch(() => {})
+    getThisDevice()
+      .then((device) => {
+        if (!cancelled) setThisDeviceId(device?.id ?? null)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [open, reachAsked])
 
   useEffect(() => {
     let cancelled = false
@@ -322,7 +375,7 @@ function ChromeItem({ className }: { className?: string }) {
       const now = await chromeSetAgents(on)
       setAgents(now)
       rememberAgents(scope, on)
-      if (now) lendBrowser()
+      if (now) await lendBrowser(lendFailed)
     } catch (error) {
       toast.error(t("agentsFailed", { message: toErrorMessage(error) }))
       return
@@ -338,6 +391,35 @@ function ChromeItem({ className }: { className?: string }) {
         )
       }
     }
+    if (on) setReachAsked((n) => n + 1)
+  }
+
+  const turnOnBrowserTools = async () => {
+    await lendBrowser(lendFailed)
+    setReachAsked((n) => n + 1)
+  }
+
+  /** 给当前对话选这台电脑：能分开选时只改浏览器那一样，命令行那台不动。 */
+  const pickThisComputer = async () => {
+    if (!deviceState || !thisDeviceId) return
+    try {
+      await deviceState.pick(
+        thisDeviceId,
+        deviceState.canSplit ? "browser" : undefined
+      )
+    } catch (error) {
+      toast.error(t("reachPickFailed", { message: toErrorMessage(error) }))
+    }
+  }
+
+  const noteLevel = (tabId: string, level: GrantLevel) => {
+    setShared((was) => {
+      if ((level !== "none") === was.has(tabId)) return was
+      const next = new Set(was)
+      if (level === "none") next.delete(tabId)
+      else next.add(tabId)
+      return next
+    })
   }
 
   /** On keeps the list in force; off pauses it. The list itself goes back as
@@ -382,6 +464,32 @@ function ChromeItem({ className }: { className?: string }) {
         ? t("statusWaiting")
         : t("statusDisconnected")
   const sitesPaused = sites?.paused === true
+  // 只算还在列表里的标签：关掉的标签不再算交出
+  const anyShared = tabs.some((tab) => shared.has(tab.id))
+  // 当前对话浏览器用的那台：能分开选的服务器看浏览器那一样，否则只有一台
+  const conversationBrowser = deviceState
+    ? deviceState.canSplit
+      ? (deviceState.answer.browserDevice ?? null)
+      : deviceState.answer.device
+    : null
+  /** 当前对话已经选了这台：不用再提选电脑。 */
+  const pickedHere =
+    thisDeviceId !== null && conversationBrowser?.id === thisDeviceId
+  /** 能在这里替当前对话选这台。 */
+  const canPickHere =
+    deviceState !== null && deviceState.canPick && thisDeviceId !== null
+  // 没交出标签、也没开开关时，用户还没想让服务器上的智能体用，不提示
+  const reachItems =
+    reach && isRemoteDesktopMode() && (agents || anyShared)
+      ? {
+          tools: !reach.browserTools,
+          agents: !agents && anyShared,
+          pick: reach.devices > 1 && !pickedHere,
+        }
+      : null
+  const showReach =
+    reachItems !== null &&
+    (reachItems.tools || reachItems.agents || reachItems.pick)
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -477,6 +585,65 @@ function ChromeItem({ className }: { className?: string }) {
           </p>
         </div>
 
+        {showReach && reachItems ? (
+          <div
+            data-server-reach=""
+            className="space-y-1 rounded-lg border border-amber-500/50 bg-amber-500/5 px-2 py-1.5"
+          >
+            <p className="text-2xs font-medium">{t("reachTitle")}</p>
+            {reachItems.tools ? (
+              <div className="flex items-start justify-between gap-2">
+                <p className="min-w-0 text-3xs text-amber-600 dark:text-amber-400">
+                  {t("reachToolsOff")}
+                </p>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  aria-label={t("reachToolsTurnOn")}
+                  onClick={() => void turnOnBrowserTools()}
+                >
+                  {t("reachTurnOn")}
+                </Button>
+              </div>
+            ) : null}
+            {reachItems.agents ? (
+              <div className="flex items-start justify-between gap-2">
+                <p className="min-w-0 text-3xs text-amber-600 dark:text-amber-400">
+                  {t("reachAgentsOff")}
+                </p>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  aria-label={t("reachAgentsTurnOn")}
+                  onClick={() => void switchAgents(true)}
+                >
+                  {t("reachTurnOn")}
+                </Button>
+              </div>
+            ) : null}
+            {reachItems.pick && canPickHere ? (
+              <div className="flex items-start justify-between gap-2">
+                <p className="min-w-0 text-3xs text-amber-600 dark:text-amber-400">
+                  {t("reachPickOther")}
+                </p>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  aria-label={t("reachPickThisLabel")}
+                  onClick={() => void pickThisComputer()}
+                >
+                  {t("reachPickThis")}
+                </Button>
+              </div>
+            ) : reachItems.pick ? (
+              // 没有打开的对话、服务器不收选择或不知道这台是哪台：只能文字提醒
+              <p className="text-3xs text-amber-600 dark:text-amber-400">
+                {t("reachPickDevice")}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
         {/* An app that knows nothing of the pause answers without it. */}
         {typeof sites?.paused === "boolean" ? (
           <div
@@ -528,6 +695,7 @@ function ChromeItem({ className }: { className?: string }) {
                     activity={activity[tab.id] ?? EMPTY}
                     ownScope={scope}
                     onShare={(level) => void share(tab.id, level)}
+                    onLevel={(level) => noteLevel(tab.id, level)}
                     onJump={() => void jump(tab.id)}
                   />
                 ))}
@@ -566,6 +734,7 @@ function ChromeTabRow({
   activity,
   ownScope,
   onShare,
+  onLevel,
   onJump,
 }: {
   tab: ChromeTab
@@ -573,6 +742,8 @@ function ChromeTabRow({
   activity: ChromeActivityEntry[]
   ownScope: string
   onShare: (level: GrantLevel) => void
+  /** 这个标签现在交给智能体的级别（智能体自己开的标签算没交出）。 */
+  onLevel: (level: GrantLevel) => void
   onJump: () => void
 }) {
   const t = useTranslations("ChromeSettings")
@@ -587,6 +758,12 @@ function ChromeTabRow({
     ? state.ownerWindow.startsWith(AGENT_OWNER_PREFIX)
     : (tab.openedByAgent ?? false)
   const Icon = openedByAgent ? Bot : Globe
+  const handed = openedByAgent ? "none" : level
+  useEffect(() => {
+    onLevel(handed)
+    // 只在级别变了时报
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handed])
   return (
     <li className="px-2 py-1.5">
       <div className="flex items-center gap-2">

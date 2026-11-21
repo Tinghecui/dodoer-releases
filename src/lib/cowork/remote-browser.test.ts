@@ -19,9 +19,15 @@ vi.mock("@/lib/transport", () => ({
   }),
 }))
 
+const listHostDevices = vi.fn()
+vi.mock("@/lib/cowork/host-devices", () => ({
+  listHostDevices: () => listHostDevices(),
+}))
+
 import {
   HOST_BRIDGE_FEATURE,
   lendBrowserSwitch,
+  remoteBrowserReach,
   resetServerTakesTabsForTests,
   serverTakesTabs,
   useCanShareWithAgents,
@@ -99,5 +105,37 @@ describe("lendBrowserSwitch", () => {
     await lendBrowserSwitch("computer")
     await lendBrowserSwitch("delegation")
     expect(shellCall).not.toHaveBeenCalled()
+  })
+})
+
+describe("remoteBrowserReach", () => {
+  it("has nothing to say in a local window", async () => {
+    remote.mockReturnValue(false)
+    expect(await remoteBrowserReach()).toBeNull()
+    expect(shellCall).not.toHaveBeenCalled()
+  })
+
+  it("reads this computer's browser tools and counts the server's computers", async () => {
+    remote.mockReturnValue(true)
+    shellCall.mockResolvedValue({ enabled: false, eval: false } as never)
+    listHostDevices.mockResolvedValue({
+      devices: [{ id: "a" }, { id: "b" }],
+      unnamedHosts: 0,
+    })
+    expect(await remoteBrowserReach()).toEqual({
+      browserTools: false,
+      devices: 2,
+    })
+    expect(shellCall).toHaveBeenCalledWith("get_browser_tools_settings")
+  })
+
+  it("counts one computer when the server cannot list them", async () => {
+    remote.mockReturnValue(true)
+    shellCall.mockResolvedValue({ enabled: true, eval: false } as never)
+    listHostDevices.mockRejectedValue(new Error("old server"))
+    expect(await remoteBrowserReach()).toEqual({
+      browserTools: true,
+      devices: 1,
+    })
   })
 })

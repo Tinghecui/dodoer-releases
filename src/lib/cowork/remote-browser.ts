@@ -6,6 +6,7 @@
 import { useEffect, useState } from "react"
 
 import { serverHasFeature } from "@/lib/cowork/compat"
+import { listHostDevices } from "@/lib/cowork/host-devices"
 import {
   getShellTransport,
   getTransport,
@@ -90,4 +91,27 @@ export async function lendBrowserSwitch(key: string): Promise<void> {
     })
   }
   await shell.call("set_codeg_mcp_tool_group", { key, enabled: true })
+}
+
+/** 远端窗口里，服务器上的智能体要看到这台电脑的 Chrome 标签还要看的两样
+ *  （#1060）：这台电脑自己的浏览器工具开没开（关着就不向服务器借出标签），
+ *  服务器记着几台电脑（多于一台时，对话要在「选电脑」里选这台）。 */
+export interface RemoteBrowserReach {
+  browserTools: boolean
+  devices: number
+}
+
+/** 本地窗口没有可说的，给 `null`。服务器记的电脑问不到（老服务器）时按一台算。 */
+export async function remoteBrowserReach(): Promise<RemoteBrowserReach | null> {
+  if (!isRemoteDesktopMode()) return null
+  const settings = await getShellTransport().call<{ enabled?: boolean }>(
+    "get_browser_tools_settings"
+  )
+  let devices = 1
+  try {
+    devices = (await listHostDevices()).devices.length
+  } catch {
+    // 问不到：不提示选电脑
+  }
+  return { browserTools: settings?.enabled === true, devices }
 }

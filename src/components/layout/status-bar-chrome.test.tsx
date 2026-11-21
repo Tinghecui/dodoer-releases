@@ -23,6 +23,29 @@ const mocks = vi.hoisted(() => ({
   chromeActivity: vi.fn(),
   heardActivity: null as (() => void) | null,
   lendBrowserSwitch: vi.fn<(key: string) => Promise<void>>(async () => {}),
+  /** 远端窗口里服务器上的智能体够不够得着这台电脑的 Chrome。 */
+  reach: { browserTools: true, devices: 1 } as {
+    browserTools: boolean
+    devices: number
+  } | null,
+  remoteBrowserReach: vi.fn(),
+  /** 当前对话：标签 id 和数据库里的对话编号。 */
+  activeTab: null as { id: string; conversationId: number | null } | null,
+  /** 当前对话选的设备，`null` 是服务器还没回答（或本地窗口）。 */
+  deviceState: null as {
+    answer: {
+      device: { id: string } | null
+      browserDevice?: { id: string } | null
+    }
+    canPick: boolean
+    canSplit: boolean
+  } | null,
+  devicePick: vi.fn<(id: string | null, part?: string) => Promise<void>>(
+    async () => {}
+  ),
+  /** 问 `useConversationDeviceState` 时给的对话编号。 */
+  askedConversation: [] as (number | null)[],
+  thisDeviceId: "dev-here" as string | null,
   windowLabel: "main",
   /** The backend's switch for the window's scope. */
   lent: false,
@@ -97,6 +120,32 @@ vi.mock("@/lib/browser/window-label", () => ({
 }))
 vi.mock("@/lib/cowork/remote-browser", () => ({
   lendBrowserSwitch: mocks.lendBrowserSwitch,
+  remoteBrowserReach: mocks.remoteBrowserReach,
+}))
+vi.mock("@/contexts/tab-context", () => ({
+  useTabStore: <T,>(
+    selector: (s: {
+      tabs: { id: string; kind: string; conversationId: number | null }[]
+      activeTabId: string | null
+    }) => T
+  ) =>
+    selector({
+      tabs: mocks.activeTab
+        ? [{ ...mocks.activeTab, kind: "conversation" }]
+        : [],
+      activeTabId: mocks.activeTab?.id ?? null,
+    }),
+}))
+vi.mock("@/lib/cowork/conversation-device", () => ({
+  useConversationDeviceState: (conversationId: number | null) => {
+    mocks.askedConversation.push(conversationId)
+    if (conversationId == null || !mocks.deviceState) return null
+    return { ...mocks.deviceState, pick: mocks.devicePick }
+  },
+}))
+vi.mock("@/lib/cowork/host-devices", () => ({
+  getThisDevice: async () =>
+    mocks.thisDeviceId ? { id: mocks.thisDeviceId, name: "here" } : null,
 }))
 vi.mock("@/lib/platform", () => ({ isDesktop: () => mocks.desktop }))
 // Its own test: `chrome-eval-switch.test.tsx`.
@@ -203,7 +252,16 @@ beforeEach(() => {
   mocks.chromeActivate.mockReset().mockResolvedValue(undefined)
   mocks.chromeActivity.mockReset().mockResolvedValue({})
   mocks.heardActivity = null
-  mocks.lendBrowserSwitch.mockClear()
+  mocks.lendBrowserSwitch.mockReset().mockResolvedValue(undefined)
+  mocks.reach = { browserTools: true, devices: 1 }
+  mocks.remoteBrowserReach
+    .mockReset()
+    .mockImplementation(async () => mocks.reach)
+  mocks.activeTab = null
+  mocks.deviceState = null
+  mocks.devicePick.mockReset().mockResolvedValue(undefined)
+  mocks.askedConversation = []
+  mocks.thisDeviceId = "dev-here"
   mocks.windowLabel = "main"
   mocks.grants.clear()
   mocks.owners.clear()
@@ -812,6 +870,178 @@ describe("StatusBarChrome", () => {
     await press("Connect to Chrome")
     expect(mocks.toast.error).toHaveBeenCalledWith(
       "Chrome connection failed: no such command"
+    )
+  })
+})
+
+describe("StatusBarChrome and what the server's agents still need (#1060)", () => {
+  const SHARED: ChromeTab[] = [{ ...TABS[0], level: "control" }, TABS[1]]
+
+  function remoteWindow() {
+    mocks.windowLabel = "remote-workspace-7"
+    mocks.remote = true
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+  }
+
+  const checklist = () => document.querySelector("[data-server-reach]")
+
+  it("lists this computer's browser tools and the agents switch when a tab is handed over", async () => {
+    remoteWindow()
+    mocks.chromeTabs.mockResolvedValue(SHARED)
+    mocks.reach = { browserTools: false, devices: 1 }
+    await mount()
+    await openPanel()
+    expect(checklist()).not.toBeNull()
+    expect(
+      screen.getByText(/This computer's browser tools are off/)
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        /Tabs you hand over are seen only by agents on this computer/
+      )
+    ).toBeInTheDocument()
+    // 一台电脑：不用选
+    expect(screen.queryByText(/Pick a computer/)).toBeNull()
+
+    mocks.reach = { browserTools: true, devices: 1 }
+    await press("Turn on this computer's browser tools")
+    expect(mocks.lendBrowserSwitch).toHaveBeenCalledWith("browser")
+    expect(
+      screen.queryByText(/This computer's browser tools are off/)
+    ).toBeNull()
+
+    await press("Turn on Let agents use my Chrome")
+    expect(mocks.chromeSetAgents).toHaveBeenLastCalledWith(true)
+    expect(mocks.setCodegMcpToolGroup).toHaveBeenCalledWith("browser", true)
+    expect(checklist()).toBeNull()
+  })
+
+  it("tells to pick this computer when the server knows several", async () => {
+    remoteWindow()
+    mocks.lent = true
+    mocks.reach = { browserTools: true, devices: 2 }
+    await mount()
+    await openPanel()
+    expect(checklist()).not.toBeNull()
+    expect(screen.getByText(/Pick a computer/)).toBeInTheDocument()
+  })
+
+  it("picks this computer for the open conversation from the checklist", async () => {
+    remoteWindow()
+    mocks.lent = true
+    mocks.reach = { browserTools: true, devices: 2 }
+    mocks.activeTab = { id: "conv-a", conversationId: 41 }
+    mocks.deviceState = {
+      answer: {
+        device: { id: "dev-other" },
+        browserDevice: { id: "dev-other" },
+      },
+      canPick: true,
+      canSplit: true,
+    }
+    await mount()
+    await openPanel()
+    expect(checklist()).not.toBeNull()
+    expect(
+      screen.getByText(/this conversation's agent uses another computer/)
+    ).toBeInTheDocument()
+    mocks.devicePick.mockImplementation(async () => {
+      mocks.deviceState = {
+        answer: {
+          device: { id: "dev-other" },
+          browserDevice: { id: "dev-here" },
+        },
+        canPick: true,
+        canSplit: true,
+      }
+    })
+    await press("Pick this computer for this conversation's browser")
+    // 能分开选时只改浏览器那一样，命令行那台不动
+    expect(mocks.devicePick).toHaveBeenCalledWith("dev-here", "browser")
+    expect(mocks.askedConversation).toContain(41)
+  })
+
+  it("says nothing about picking once the conversation uses this computer", async () => {
+    remoteWindow()
+    mocks.lent = true
+    mocks.reach = { browserTools: true, devices: 2 }
+    mocks.activeTab = { id: "conv-a", conversationId: 41 }
+    mocks.deviceState = {
+      answer: {
+        device: { id: "dev-other" },
+        browserDevice: { id: "dev-here" },
+      },
+      canPick: true,
+      canSplit: true,
+    }
+    await mount()
+    await openPanel()
+    expect(checklist()).toBeNull()
+  })
+
+  it("picks the one device of a server that cannot split", async () => {
+    remoteWindow()
+    mocks.lent = true
+    mocks.reach = { browserTools: true, devices: 3 }
+    mocks.activeTab = { id: "conv-a", conversationId: 41 }
+    mocks.deviceState = {
+      answer: { device: null },
+      canPick: true,
+      canSplit: false,
+    }
+    await mount()
+    await openPanel()
+    await press("Pick this computer for this conversation's browser")
+    expect(mocks.devicePick).toHaveBeenCalledWith("dev-here", undefined)
+  })
+
+  it("says so when this computer could not be picked", async () => {
+    remoteWindow()
+    mocks.lent = true
+    mocks.reach = { browserTools: true, devices: 2 }
+    mocks.activeTab = { id: "conv-a", conversationId: 41 }
+    mocks.deviceState = {
+      answer: { device: null, browserDevice: null },
+      canPick: true,
+      canSplit: true,
+    }
+    mocks.devicePick.mockRejectedValue(new Error("offline"))
+    await mount()
+    await openPanel()
+    await press("Pick this computer for this conversation's browser")
+    expect(mocks.toast.error).toHaveBeenCalledWith(
+      expect.stringContaining("offline")
+    )
+  })
+
+  it("says nothing while nothing is handed over and the switch is off", async () => {
+    remoteWindow()
+    mocks.chromeTabs.mockResolvedValue(TABS)
+    mocks.reach = { browserTools: false, devices: 2 }
+    await mount()
+    await openPanel()
+    expect(checklist()).toBeNull()
+  })
+
+  it("has no checklist in a local window", async () => {
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    mocks.chromeTabs.mockResolvedValue(SHARED)
+    mocks.reach = null
+    await mount()
+    await openPanel()
+    expect(checklist()).toBeNull()
+  })
+
+  it("says so when this computer's browser tools could not be turned on", async () => {
+    remoteWindow()
+    mocks.lendBrowserSwitch.mockRejectedValue(new Error("denied"))
+    await mount()
+    await openPanel()
+    await userEvent.click(
+      screen.getByRole("switch", { name: "Let agents use my Chrome" })
+    )
+    expect(mocks.toast.error).toHaveBeenCalledWith(
+      expect.stringContaining("denied")
     )
   })
 })

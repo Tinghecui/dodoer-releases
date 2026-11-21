@@ -258,7 +258,10 @@ fn decode_rows<T: DeserializeOwned>(domain: &str, value: &Value) -> Result<Vec<T
 pub struct ModelProviderDto {
     pub name: String,
     pub api_url: String,
-    pub api_key: String,
+    /// `None` = 导出时用户选了不带密钥，文件里没有这个字段；导入时保留本机
+    /// 已有的密钥，新建的供应商密钥留空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
     #[serde(default)]
     pub agent_types_json: String,
     pub agent_type: String,
@@ -280,7 +283,7 @@ fn collect_model_providers(
                 .map(|m| ModelProviderDto {
                     name: m.name,
                     api_url: m.api_url,
-                    api_key: m.api_key,
+                    api_key: Some(m.api_key),
                     agent_types_json: m.agent_types_json,
                     agent_type: m.agent_type,
                     model: m.model,
@@ -321,7 +324,9 @@ fn apply_model_providers<'a>(
                 Some(existing) => {
                     let mut active = existing.into_active_model();
                     active.api_url = Set(dto.api_url);
-                    active.api_key = Set(dto.api_key);
+                    if let Some(api_key) = dto.api_key {
+                        active.api_key = Set(api_key);
+                    }
                     active.agent_types_json = Set(dto.agent_types_json);
                     active.model = Set(dto.model);
                     active.updated_at = Set(now);
@@ -332,7 +337,7 @@ fn apply_model_providers<'a>(
                         id: NotSet,
                         name: Set(dto.name),
                         api_url: Set(dto.api_url),
-                        api_key: Set(dto.api_key),
+                        api_key: Set(dto.api_key.unwrap_or_default()),
                         agent_types_json: Set(dto.agent_types_json),
                         agent_type: Set(dto.agent_type),
                         model: Set(dto.model),

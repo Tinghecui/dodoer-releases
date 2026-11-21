@@ -79,7 +79,9 @@ describe("local file transfer picks its runtime", () => {
 
     const summary = await exportConfigToFile()
 
-    expect(call).toHaveBeenCalledWith("config_sync_export_content", {})
+    expect(call).toHaveBeenCalledWith("config_sync_export_content", {
+      includeSecrets: true,
+    })
     expect(save).not.toHaveBeenCalled()
     // The bytes went out as a download, and the object URL is released rather
     // than leaked for the life of the document.
@@ -101,8 +103,31 @@ describe("local file transfer picks its runtime", () => {
     expect(save).toHaveBeenCalledTimes(1)
     expect(call).toHaveBeenCalledWith("config_sync_export_file", {
       destPath: "/Users/someone/config.json",
+      includeSecrets: true,
     })
-    expect(call).not.toHaveBeenCalledWith("config_sync_export_content", {})
+    expect(call).not.toHaveBeenCalledWith(
+      "config_sync_export_content",
+      expect.anything()
+    )
+  })
+
+  // 确认框里勾了「不导出 API 密钥」，两种运行环境都要把这个选择带给后端。
+  it("passes the omit-secrets choice to the backend in both runtimes", async () => {
+    desktop.mockReturnValue(false)
+    call.mockResolvedValue({ content: "{}", counts: {} })
+    await exportConfigToFile({ includeSecrets: false })
+    expect(call).toHaveBeenCalledWith("config_sync_export_content", {
+      includeSecrets: false,
+    })
+
+    call.mockClear()
+    desktop.mockReturnValue(true)
+    save.mockResolvedValue("/Users/someone/config.json")
+    await exportConfigToFile({ includeSecrets: false })
+    expect(call).toHaveBeenCalledWith("config_sync_export_file", {
+      destPath: "/Users/someone/config.json",
+      includeSecrets: false,
+    })
   })
 
   // 系统文件对话框里的类型名是用户看得见的产品名，和界面一样写 CoTeam。

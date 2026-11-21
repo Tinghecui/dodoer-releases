@@ -39,6 +39,14 @@ pub struct SettingsParams {
     pub settings: ConfigSyncSettingsInput,
 }
 
+/// 没传 `includeSecrets` 就照旧带密钥，老前端调用不变。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportParams {
+    #[serde(default)]
+    pub include_secrets: Option<bool>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentParams {
@@ -108,9 +116,11 @@ pub async fn config_sync_download_apply(
 
 pub async fn config_sync_export_content(
     Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ExportParams>,
 ) -> Result<Json<ConfigExportContent>, AppCommandError> {
     crate::cowork::ensure_not_portal("Config export")?;
-    export_content_core(&state.db.conn, APP_VERSION)
+    let include_secrets = params.include_secrets.unwrap_or(true);
+    export_content_core(&state.db.conn, APP_VERSION, include_secrets)
         .await
         .map(Json)
 }

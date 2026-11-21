@@ -195,14 +195,23 @@ interface ConfigExportContent {
   counts: DomainCounts
 }
 
+export interface ConfigExportOptions {
+  /** `false` = 导出确认框里勾了「不导出 API 密钥」：文件里不带模型服务商的
+   *  密钥，导入时保留目标机器已有的密钥。默认带上。 */
+  includeSecrets?: boolean
+}
+
 /** `null` when the user dismissed the save dialog. */
-export async function exportConfigToFile(): Promise<ConfigExportSummary | null> {
+export async function exportConfigToFile(
+  options: ConfigExportOptions = {}
+): Promise<ConfigExportSummary | null> {
   const fileName = defaultExportFileName()
+  const includeSecrets = options.includeSecrets ?? true
 
   if (!isLocalDesktop()) {
     const built = await getTransport().call<ConfigExportContent>(
       "config_sync_export_content",
-      {}
+      { includeSecrets }
     )
     downloadTextFile(fileName, built.content)
     // The browser owns the destination from here, so the "path" is the name
@@ -218,6 +227,7 @@ export async function exportConfigToFile(): Promise<ConfigExportSummary | null> 
   if (!destPath) return null
   return getTransport().call<ConfigExportSummary>("config_sync_export_file", {
     destPath,
+    includeSecrets,
   })
 }
 

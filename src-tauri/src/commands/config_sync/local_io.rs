@@ -87,8 +87,12 @@ pub struct ConfigImportResult {
 pub async fn build_export_core(
     conn: &DatabaseConnection,
     app_version: &str,
+    include_secrets: bool,
 ) -> Result<ConfigExportFile, AppCommandError> {
-    let snapshot = collect_snapshot_core(conn).await?;
+    let mut snapshot = collect_snapshot_core(conn).await?;
+    if !include_secrets {
+        omit_provider_api_keys(&mut snapshot);
+    }
     let bytes = serialize_snapshot(&snapshot)?;
     let manifest = build_manifest(&bytes, app_version, snapshot.counts(), ENCRYPTION_NONE);
     Ok(ConfigExportFile {
@@ -96,6 +100,69 @@ pub async fn build_export_core(
         manifest,
         config: snapshot,
     })
+}
+
+/// 用户在导出确认框里勾了「不导出密钥」：把模型服务商的 `apiKey` 整个去掉
+/// （不是写成空串）。导入时没有这个字段就保留那台机器自己的密钥，见
+/// `domains::apply_model_providers`；空串仍表示「密钥被清空了」。
+///
+/// 供应商绑到智能体时，同一把密钥也会被写进智能体的环境变量（比如
+/// `ANTHROPIC_AUTH_TOKEN`），所以 `agentSettings` 的 `envJson` 里值等于某把
+/// 供应商密钥的变量也一起去掉，不管变量叫什么；别的变量照旧导出。
+fn omit_provider_api_keys(snapshot: &mut ConfigSnapshot) {
+    let mut keys: Vec<String> = Vec::new();
+    if let Some(serde_json::Value::Array(rows)) = snapshot
+        .domains
+        .get_mut(super::domains::DOMAIN_MODEL_PROVIDERS)
+    {
+        for row in rows {
+            if let serde_json::Value::Object(fields) = row {
+                if let Some(serde_json::Value::String(key)) = fields.remove("apiKey") {
+                    let key = key.trim();
+                    if !key.is_empty() {
+                        keys.push(key.to_string());
+                    }
+                }
+            }
+        }
+    }
+    if keys.is_empty() {
+        return;
+    }
+    let Some(serde_json::Value::Array(rows)) = snapshot
+        .domains
+        .get_mut(super::domains::DOMAIN_AGENT_SETTINGS)
+    else {
+        return;
+    };
+    for row in rows {
+        let serde_json::Value::Object(fields) = row else {
+            continue;
+        };
+        let Some(serde_json::Value::String(raw)) = fields.get("envJson") else {
+            continue;
+        };
+        let Ok(mut env) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(raw)
+        else {
+            continue;
+        };
+        let before = env.len();
+        env.retain(|_, value| {
+            !matches!(value, serde_json::Value::String(v) if keys.iter().any(|k| k == v.trim()))
+        });
+        if env.len() == before {
+            continue;
+        }
+        let replaced = if env.is_empty() {
+            serde_json::Value::Null
+        } else {
+            match serde_json::to_string(&env) {
+                Ok(text) => serde_json::Value::String(text),
+                Err(_) => serde_json::Value::Null,
+            }
+        };
+        fields.insert("envJson".to_string(), replaced);
+    }
 }
 
 /// The export as text, for a caller with somewhere other than a local path to
@@ -112,8 +179,9 @@ pub struct ConfigExportContent {
 pub async fn export_content_core(
     conn: &DatabaseConnection,
     app_version: &str,
+    include_secrets: bool,
 ) -> Result<ConfigExportContent, AppCommandError> {
-    let export = build_export_core(conn, app_version).await?;
+    let export = build_export_core(conn, app_version, include_secrets).await?;
     let content = serde_json::to_string_pretty(&export).map_err(|e| {
         AppCommandError::task_execution_failed("Serialize config export").with_detail(e.to_string())
     })?;
@@ -127,8 +195,9 @@ pub async fn export_to_file_core(
     conn: &DatabaseConnection,
     app_version: &str,
     dest: &Path,
+    include_secrets: bool,
 ) -> Result<ConfigExportSummary, AppCommandError> {
-    let export = build_export_core(conn, app_version).await?;
+    let export = build_export_core(conn, app_version, include_secrets).await?;
     let bytes = serde_json::to_vec_pretty(&export).map_err(|e| {
         AppCommandError::task_execution_failed("Serialize config export").with_detail(e.to_string())
     })?;
@@ -332,7 +401,7 @@ pub async fn save_rollback(conn: &DatabaseConnection, dir: &Path) -> Option<Stri
 mod tests {
     use super::super::snapshot::SCHEMA_VERSION;
     use super::*;
-    use crate::db::entities::quick_message;
+    use crate::db::entities::{model_provider, quick_message};
     use crate::db::test_helpers::fresh_in_memory_db;
     use sea_orm::{ActiveModelTrait, ActiveValue::NotSet, EntityTrait, Set};
 
@@ -351,6 +420,136 @@ mod tests {
         .expect("seed");
     }
 
+    async fn seed_provider(conn: &DatabaseConnection, api_key: &str) {
+        let now = chrono::Utc::now();
+        model_provider::ActiveModel {
+            id: NotSet,
+            name: Set("Fake Provider".to_string()),
+            api_url: Set("https://provider.example.invalid".to_string()),
+            api_key: Set(api_key.to_string()),
+            agent_types_json: Set("[\"claude_code\"]".to_string()),
+            agent_type: Set("claude_code".to_string()),
+            model: Set(None),
+            created_at: Set(now),
+            updated_at: Set(now),
+        }
+        .insert(conn)
+        .await
+        .expect("seed provider");
+    }
+
+    /// 默认导出照旧带密钥：换电脑直接导入就能用。
+    #[tokio::test]
+    async fn an_export_with_secrets_carries_the_api_key() {
+        let source = fresh_in_memory_db().await;
+        seed_provider(&source.conn, "sk-fake-source-key").await;
+        let built = export_content_core(&source.conn, "9.9.9", true)
+            .await
+            .expect("export");
+        assert!(built.content.contains("sk-fake-source-key"));
+    }
+
+    /// 勾了「不导出密钥」：文件里没有密钥明文；导入到已经有同名供应商的
+    /// 机器上，不能拿空值把那边自己的密钥冲掉。
+    #[tokio::test]
+    async fn an_export_without_secrets_omits_the_api_key_and_keeps_the_targets() {
+        let source = fresh_in_memory_db().await;
+        seed_provider(&source.conn, "sk-fake-source-key").await;
+        let built = export_content_core(&source.conn, "9.9.9", false)
+            .await
+            .expect("export");
+        assert!(
+            !built.content.contains("sk-fake-source-key"),
+            "export without secrets still contains the key: {}",
+            built.content
+        );
+        assert_eq!(built.counts.get("modelProviders"), Some(&1));
+
+        let target = fresh_in_memory_db().await;
+        seed_provider(&target.conn, "sk-fake-target-key").await;
+        let rollbacks = tempfile::tempdir().expect("tempdir");
+        import_bytes_core(
+            &target.conn,
+            &EventEmitter::Noop,
+            built.content.as_bytes(),
+            rollbacks.path(),
+        )
+        .await
+        .expect("import");
+        let providers = model_provider::Entity::find()
+            .all(&target.conn)
+            .await
+            .expect("providers");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].api_key, "sk-fake-target-key");
+
+        // 新机器上没有这个供应商：照样建出来，密钥留空等用户自己填。
+        let fresh = fresh_in_memory_db().await;
+        import_bytes_core(
+            &fresh.conn,
+            &EventEmitter::Noop,
+            built.content.as_bytes(),
+            rollbacks.path(),
+        )
+        .await
+        .expect("import into fresh");
+        let providers = model_provider::Entity::find()
+            .all(&fresh.conn)
+            .await
+            .expect("providers");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].api_key, "");
+    }
+
+    /// 供应商绑到智能体以后，同一把密钥会出现在智能体的环境变量里：勾了
+    /// 「不导出密钥」，环境变量里这把密钥也要去掉，别的变量照旧导出。
+    #[tokio::test]
+    async fn an_export_without_secrets_drops_the_bound_key_from_agent_env() {
+        use crate::db::entities::agent_setting;
+        let source = fresh_in_memory_db().await;
+        seed_provider(&source.conn, "sk-fake-bound-key").await;
+        let provider = model_provider::Entity::find()
+            .one(&source.conn)
+            .await
+            .expect("provider")
+            .expect("seeded");
+        let now = chrono::Utc::now();
+        agent_setting::ActiveModel {
+            id: NotSet,
+            agent_type: Set("claude_code".to_string()),
+            registry_id: Set("claude_code".to_string()),
+            enabled: Set(true),
+            sort_order: Set(0),
+            installed_version: Set(None),
+            env_json: Set(Some(
+                "{\"ANTHROPIC_AUTH_TOKEN\":\"sk-fake-bound-key\",\"ANTHROPIC_MODEL\":\"fake-model\"}"
+                    .to_string(),
+            )),
+            model_provider_id: Set(Some(provider.id)),
+            created_at: Set(now),
+            updated_at: Set(now),
+        }
+        .insert(&source.conn)
+        .await
+        .expect("seed agent setting");
+
+        let built = export_content_core(&source.conn, "9.9.9", false)
+            .await
+            .expect("export");
+        assert!(
+            !built.content.contains("sk-fake-bound-key"),
+            "export without secrets still contains the bound key: {}",
+            built.content
+        );
+        assert!(built.content.contains("fake-model"));
+        assert_eq!(built.counts.get("agentSettings"), Some(&1));
+
+        let with_keys = export_content_core(&source.conn, "9.9.9", true)
+            .await
+            .expect("export");
+        assert!(with_keys.content.contains("ANTHROPIC_AUTH_TOKEN"));
+    }
+
     #[tokio::test]
     async fn exported_file_imports_into_another_machine() {
         let source = fresh_in_memory_db().await;
@@ -358,7 +557,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let dest = dir.path().join("nested").join("codeg-config.json");
-        let summary = export_to_file_core(&source.conn, "9.9.9", &dest)
+        let summary = export_to_file_core(&source.conn, "9.9.9", &dest, true)
             .await
             .expect("export");
         assert!(dest.exists());
@@ -494,7 +693,9 @@ mod tests {
     async fn a_reformatted_export_still_imports() {
         let source = fresh_in_memory_db().await;
         seed_message(&source.conn, "Reformatted").await;
-        let export = build_export_core(&source.conn, "1.0.0").await.expect("build");
+        let export = build_export_core(&source.conn, "1.0.0", true)
+            .await
+            .expect("build");
 
         let compact = serde_json::to_vec(&export).expect("compact bytes");
         let dir = tempfile::tempdir().expect("tempdir");
@@ -574,7 +775,9 @@ mod tests {
         let rollbacks = tempfile::tempdir().expect("tempdir");
         let source = fresh_in_memory_db().await;
         seed_message(&source.conn, "Incoming").await;
-        let export = build_export_core(&source.conn, "9.9.9").await.expect("export");
+        let export = build_export_core(&source.conn, "9.9.9", true)
+            .await
+            .expect("export");
         let bytes = serde_json::to_vec(&export).expect("bytes");
 
         let target = fresh_in_memory_db().await;

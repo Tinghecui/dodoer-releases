@@ -16,6 +16,7 @@ import {
   claimStoredQueue,
   readStoredQueue,
   releaseStoredQueue,
+  subscribeStoredQueueLanded,
   writeStoredQueue,
 } from "@/lib/cowork/message-queue-storage"
 
@@ -428,6 +429,29 @@ export function useMessageQueue(
     // alsoReadKey 只在第一次读回时用，变了不重新认领
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storageKey, commit, loseClaim])
+
+  // #1042 返工：挂着的时候别处把排队消息搬到这个 key 下（「新建会话」复用
+  // 了这个草稿、领回关掉的草稿寄存的消息），当场读进来排在前面，算读回的。
+  // 还没认领到的不用管：认领确认后第一次读回会读到。
+  useEffect(() => {
+    if (!storageKey) return
+    return subscribeStoredQueueLanded(storageKey, () => {
+      if (
+        ownedKeyRef.current !== storageKey ||
+        storageKeyRef.current !== storageKey
+      )
+        return
+      const seen = new Set(
+        [...inFlightRef.current, ...queueRef.current].map((item) => item.id)
+      )
+      const landed = readStoredQueue(storageKey).filter(
+        (item) => !seen.has(item.id)
+      )
+      if (landed.length === 0) return
+      for (const item of landed) restoredIdsRef.current.add(item.id)
+      commit([...landed, ...queueRef.current])
+    })
+  }, [storageKey, commit])
 
   // Mirror every committed queue while the claim is ours (the key arriving
   // later — a draft that just got saved — writes what is queued once it is

@@ -299,6 +299,150 @@ export function moveStoredDraftQueue(fromTabId: string, toTabId: string): void {
   // 新键确实存下了才清旧键（超出存储上限时旧的那份留着）
   const landed = new Set(readStoredQueue(to).map((item) => item.id))
   if (moving.every((item) => landed.has(item.id))) writeStoredQueue(from, [])
+  noteStoredQueueLanded(to)
+}
+
+// #1042：草稿关掉时没有补出来的草稿接着用（网页版标签跟着项目走、项目里
+// 只剩它，或者还开着别的标签），排队区存的消息先寄存起来，这个项目下一个
+// 新建或重开的草稿领走。每个关掉的草稿单独寄存一份（不合并：几个草稿的新
+// 工作树选择可能不一样，合起来也可能超过排队区的上限被截掉），项目名下记
+// 一张清单：寄存在哪、原来的工作目录和新工作树选择。消息就留在关掉的草稿
+// 自己的键下，不另外复制一份（第 2 次返工：存储满了复制不成功，消息就会
+// 落在清单里没有的键下，再也领不到）。
+
+function parkListKey(folderId: number): string {
+  return `${draftMessageQueueStorageKey(`closed-folder-${folderId}`)}:parks`
+}
+
+/** 寄存时跟着消息一起记下的草稿设置。 */
+export interface ParkedDraftHandoff {
+  workingDir?: string
+  /** 原草稿的新工作树选择（形状由调用方检查）。 */
+  pendingWorktree?: unknown
+}
+
+interface ParkEntry extends ParkedDraftHandoff {
+  /** 消息存在哪个「标签号」名下（关掉的草稿自己的标签号）。 */
+  tabId: string
+}
+
+function readParkList(store: Storage, folderId: number): ParkEntry[] {
+  try {
+    const parsed: unknown = JSON.parse(
+      store.getItem(parkListKey(folderId)) ?? "null"
+    )
+    if (!Array.isArray(parsed)) return []
+    const out: ParkEntry[] = []
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== "object") continue
+      const e = entry as Record<string, unknown>
+      if (typeof e.tabId !== "string" || !e.tabId) continue
+      out.push({
+        tabId: e.tabId,
+        ...(typeof e.workingDir === "string"
+          ? { workingDir: e.workingDir }
+          : {}),
+        ...(e.pendingWorktree != null
+          ? { pendingWorktree: e.pendingWorktree }
+          : {}),
+      })
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+function writeParkList(
+  store: Storage,
+  folderId: number,
+  list: ParkEntry[]
+): void {
+  try {
+    if (list.length === 0) store.removeItem(parkListKey(folderId))
+    else store.setItem(parkListKey(folderId), JSON.stringify(list))
+  } catch {
+    // 存储不可用：清单还是旧的那份。
+  }
+}
+
+/** 把关掉的草稿 `fromTabId` 排队区存的消息寄存到项目 `folderId` 名下，
+ *  单独一份，连同它自己的设置。 */
+export function parkStoredDraftQueue(
+  fromTabId: string,
+  folderId: number,
+  handoff: ParkedDraftHandoff
+): void {
+  if (!hasStoredDraftQueue(fromTabId)) return
+  const store = storage()
+  if (!store) return
+  const list = readParkList(store, folderId).filter(
+    (e) => e.tabId !== fromTabId
+  )
+  writeParkList(store, folderId, [...list, { ...handoff, tabId: fromTabId }])
+}
+
+/** 项目 `folderId` 寄存着关掉的草稿的消息时，把最后关掉、`accept` 认可的
+ *  那一份搬给草稿 `toTabId`，返回它的设置；没有可领的返回 null。一次只领
+ *  一份，领过的就没了，别的留给之后的草稿。 */
+export function claimParkedDraftQueue(
+  folderId: number,
+  toTabId: string,
+  accept: (handoff: ParkedDraftHandoff) => boolean = () => true
+): ParkedDraftHandoff | null {
+  const store = storage()
+  if (!store) return null
+  const before = readParkList(store, folderId)
+  if (before.length === 0) return null
+  // 消息已经没了的（别处清掉了）顺手从清单里去掉
+  const list = before.filter((e) => hasStoredDraftQueue(e.tabId))
+  let claimed: ParkEntry | null = null
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (!accept(list[i])) continue
+    claimed = list[i]
+    moveStoredDraftQueue(claimed.tabId, toTabId)
+    // 没搬完（存不下）就留在清单里，下次还能领。
+    if (!hasStoredDraftQueue(claimed.tabId)) list.splice(i, 1)
+    break
+  }
+  if (list.length !== before.length || claimed) {
+    writeParkList(store, folderId, list)
+  }
+  if (!claimed) return null
+  return {
+    ...(claimed.workingDir != null ? { workingDir: claimed.workingDir } : {}),
+    ...(claimed.pendingWorktree != null
+      ? { pendingWorktree: claimed.pendingWorktree }
+      : {}),
+  }
+}
+
+// #1042 返工：搬进来的草稿排队区可能正挂在界面上（「新建会话」复用了已有
+// 的草稿），那边的排队区只在挂载时读一次存储，搬完要通知它读进来，不然看
+// 不到，它下次改队列还会用内存里的那份把搬来的覆盖掉。
+const landedListeners = new Map<string, Set<() => void>>()
+
+/** 有别处把排队消息搬到 `key` 下（`moveStoredDraftQueue`）时调 `listener`。 */
+export function subscribeStoredQueueLanded(
+  key: string,
+  listener: () => void
+): () => void {
+  let set = landedListeners.get(key)
+  if (!set) {
+    set = new Set()
+    landedListeners.set(key, set)
+  }
+  set.add(listener)
+  return () => {
+    const current = landedListeners.get(key)
+    if (!current) return
+    current.delete(listener)
+    if (current.size === 0) landedListeners.delete(key)
+  }
+}
+
+function noteStoredQueueLanded(key: string): void {
+  for (const listener of [...(landedListeners.get(key) ?? [])]) listener()
 }
 
 /** Mirror `queue` into `key`; an empty queue removes the entry. Never

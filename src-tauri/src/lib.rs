@@ -13,12 +13,6 @@
 // allow there as an unused attribute (an error under clippy's -D warnings).
 #![cfg_attr(all(test, debug_assertions), allow(linker_messages))]
 
-// The `e2e` feature opens an unauthenticated WebDriver port on 127.0.0.1 that
-// drives the whole app. Test builds are debug builds; a release build with it
-// on is a mistake that must not reach users.
-#[cfg(all(feature = "e2e", not(debug_assertions)))]
-compile_error!("the `e2e` feature is for debug test builds only");
-
 pub mod acp;
 pub mod acp_transcript;
 // Cowork fork: a rename in codeg reaches the agent's own session (Claude Code).
@@ -803,11 +797,6 @@ mod tauri_app {
         }
 
         let builder = tauri::Builder::default();
-
-        // `e2e` test builds: the in-app WebDriver server WebdriverIO drives
-        // the WKWebView through (see the feature in Cargo.toml).
-        #[cfg(all(feature = "e2e", target_os = "macos"))]
-        let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
 
         // The default menu minus its ⌘W "Close Window", which closed the
         // workspace whenever ⌘W was pressed inside a page (see `app_menu`).

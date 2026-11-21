@@ -101,9 +101,7 @@ async fn prepare_remote_git_cmd_for_url(
 /// Classify a git remote command error, detecting authentication failures.
 pub(crate) fn classify_remote_git_error(operation: &str, stderr: &[u8]) -> AppCommandError {
     let msg = crate::git_credential::without_handed_tokens(String::from_utf8_lossy(stderr).trim());
-    // WARN，不是 ERROR：git 自己拒绝（没有远程、认证不过、网络不通）不是服务器故障，
-    // ERROR 会被遥测当成错误事件上报（CODEG-SERVER-D）。真回成 5xx 的，请求那层另报。
-    tracing::warn!("[GIT_CMD] {} failed, stderr: {}", operation, msg);
+    tracing::error!("[GIT_CMD] {} failed, stderr: {}", operation, msg);
     let lower = msg.to_lowercase();
 
     if lower.contains("authentication failed")
@@ -4769,23 +4767,11 @@ pub struct DirectoryEntry {
     pub has_children: bool,
 }
 
-/// 要列的路径不是目录，是调用方的错：不存在算「找不到」（404），是文件之类的
-/// 算「输入不对」（400）。原来报成 `io_error`，网页接口回 500，遥测把它当成
-/// 服务器出错上报（CODEG-SERVER-B）。提示文字和 detail 不变。
-fn not_a_directory(root: &Path, path: String) -> AppCommandError {
-    let code = if root.exists() {
-        crate::app_error::AppErrorCode::InvalidInput
-    } else {
-        crate::app_error::AppErrorCode::NotFound
-    };
-    AppCommandError::new(code, "Path is not a directory").with_detail(path)
-}
-
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn list_directory_entries(path: String) -> Result<Vec<DirectoryEntry>, AppCommandError> {
     let root = PathBuf::from(&path);
     if !root.is_dir() {
-        return Err(not_a_directory(&root, path));
+        return Err(AppCommandError::io_error("Path is not a directory").with_detail(path));
     }
 
     let mut entries: Vec<DirectoryEntry> = Vec::new();
@@ -4861,7 +4847,7 @@ pub async fn list_directory_with_files(
 ) -> Result<Vec<DirectoryItem>, AppCommandError> {
     let root = PathBuf::from(&path);
     if !root.is_dir() {
-        return Err(not_a_directory(&root, path));
+        return Err(AppCommandError::io_error("Path is not a directory").with_detail(path));
     }
 
     let mut items: Vec<DirectoryItem> = Vec::new();
@@ -7275,29 +7261,6 @@ pub async fn create_conversation_worktree(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// CODEG-SERVER-B：列一个不是目录的路径是调用方的错，不是 `io_error`（500）。
-    #[tokio::test]
-    async fn listing_a_path_that_is_not_a_directory_is_the_callers_error() {
-        use crate::app_error::AppErrorCode;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("notes.txt");
-        std::fs::write(&file, b"x").expect("write");
-        let file = file.to_string_lossy().to_string();
-        let missing = dir.path().join("gone").to_string_lossy().to_string();
-
-        let err = list_directory_entries(file.clone()).await.unwrap_err();
-        assert!(matches!(err.code, AppErrorCode::InvalidInput), "{err:?}");
-        assert_eq!(err.message, "Path is not a directory");
-        assert_eq!(err.detail.as_deref(), Some(file.as_str()));
-        let err = list_directory_entries(missing.clone()).await.unwrap_err();
-        assert!(matches!(err.code, AppErrorCode::NotFound), "{err:?}");
-
-        let err = list_directory_with_files(file).await.unwrap_err();
-        assert!(matches!(err.code, AppErrorCode::InvalidInput), "{err:?}");
-        let err = list_directory_with_files(missing).await.unwrap_err();
-        assert!(matches!(err.code, AppErrorCode::NotFound), "{err:?}");
-    }
 
     fn git_in(dir: &Path, args: &[&str]) {
         let out = std::process::Command::new("git")

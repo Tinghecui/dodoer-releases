@@ -270,48 +270,6 @@ describe("workspace state store error text", () => {
   })
 })
 
-describe("workspace state store when the first start fails", () => {
-  // 打开项目时启动流的请求就失败了（#1135）：后端没有我们的登记，故障消除后
-  // 点「重试」只补拉快照会一直 not_found，要重新走一遍启动。
-  it("starts the stream again on a manual retry after the first start failed", async () => {
-    const root = "/machine/firststart1"
-    mockedApi.startWorkspaceStateStream.mockImplementationOnce(() =>
-      Promise.reject({ error: "boom from server" })
-    )
-    const store = getWorkspaceStateStore(root)
-    const token = store.acquire("full")
-    await drain()
-    expect(store.getSnapshot().health).toBe("degraded")
-    expect(store.getSnapshot().error).toBe("boom from server")
-
-    // 故障消除；后端里还没有这条流，没重新启动之前补拉都是 not_found。
-    let registered = false
-    mockedApi.startWorkspaceStateStream.mockImplementation((r: string) => {
-      if (r === root) registered = true
-      return Promise.resolve(fullSnapshot(r))
-    })
-    mockedApi.getWorkspaceSnapshot.mockImplementation((r: string) =>
-      r !== root || registered
-        ? Promise.resolve(fullSnapshot(r))
-        : Promise.reject({
-            code: "not_found",
-            message: "Workspace stream is not running for this root",
-          })
-    )
-    await store.requestResync("manual_retry")
-    await drain()
-
-    expect(callsFor(mockedApi.startWorkspaceStateStream, root)).toBe(2)
-    expect(callsFor(mockedApi.stopWorkspaceStateStream, root)).toBe(0)
-    const state = store.getSnapshot()
-    expect(state.health).toBe("healthy")
-    expect(state.error).toBeNull()
-
-    store.release(token)
-    await vi.advanceTimersByTimeAsync(700)
-  })
-})
-
 describe("workspace state store after the backend restarts", () => {
   // 本机服务（或远端服务）重启以后，新进程里没有这个根目录的流（#1114）。
   const notRunning = () =>

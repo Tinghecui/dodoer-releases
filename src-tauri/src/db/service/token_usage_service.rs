@@ -212,9 +212,7 @@ pub async fn fetch_facts(
 /// never recorded usage — empty sessions, agents that store no token counts,
 /// transcripts the agent's own retention already deleted. Side by side those
 /// two stories read as a bug ("1 050 sessions" in the status bar, "829" on the
-/// dashboard). 用量页顶部现在由 [`session_owners`] 归好的有用量会话加上
-/// [`factless_workspace_conversations`] 拼出来（子会话只有自己花了 token 时
-/// 也算到顶层会话上）；这里留着同一套可见规则的按行计数。
+/// dashboard), so the headline uses this count instead.
 ///
 /// Two disjoint groups sum to the answer, both restricted to the workspace
 /// list's visibility rules (live row, not a loop run, top level, live folder):
@@ -231,6 +229,8 @@ pub async fn workspace_conversation_count(
     conn: &DatabaseConnection,
     q: &FactQuery,
 ) -> Result<u64, DbError> {
+    use sea_orm::sea_query::{Expr, Query};
+
     if q.is_empty_selection() {
         return Ok(0);
     }
@@ -286,202 +286,10 @@ pub async fn workspace_conversation_count(
         .await?
         .len() as u64;
 
-    let factless_count = factless_workspace_conversations(conn, q).await?.len() as u64;
-
-    Ok(usage_count + factless_count)
-}
-
-/// 用量明细在「数会话」「列会话」时归到哪一个侧栏会话。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionOwner {
-    /// 侧栏里看得到的那个顶层会话。
-    pub id: i32,
-    pub agent_type: String,
-    pub folder_id: i32,
-}
-
-/// 侧栏把标题像 Jenny Loop 节点对话的普通会话收进 Loop 那一行、不单独列出；
-/// Jenny 的尝试工作区（attempts）没有 Loop 行，里面的会话照常列出。和
-/// `conversation_service::list_all_filtered` 的 `include_loops` 口径一致。
-async fn loop_attempt_folders(
-    conn: &DatabaseConnection,
-) -> Result<std::collections::HashSet<i32>, DbError> {
-    Ok(folder::Entity::find()
-        .filter(folder::Column::Path.contains("/attempts/"))
-        .all(conn)
-        .await?
-        .into_iter()
-        .filter(|f| crate::jenny_loop::is_jenny_attempt_workspace(std::path::Path::new(&f.path)))
-        .map(|f| f.id)
-        .collect())
-}
-
-/// 这个顶层会话在侧栏里算不算自动化运行（Loop 行本身，或被收进 Loop 的节点对话）。
-fn is_automation_run(
-    kind: &conversation::ConversationKind,
-    title: Option<&str>,
-    folder_id: i32,
-    attempt_folders: &std::collections::HashSet<i32>,
-) -> bool {
-    *kind == conversation::ConversationKind::Loop
-        || (!attempt_folders.contains(&folder_id)
-            && title.is_some_and(crate::jenny_loop::is_loop_session_title))
-}
-
-/// 给每个会话 id 找到它在侧栏里对应的会话：
-///
-///  * 委托出去的子会话（含子会话再委托的）沿 `parent_id` 一路归到顶层会话；
-///  * 顶层是自动化运行（Loop 行，或标题是 Loop 节点对话、被侧栏收进 Loop 的），
-///    归为 `None`；
-///  * 这条链上任何一个会话已删除、或所在文件夹已移除，也归为 `None`。
-///
-/// 归为 `None` 的 token 照样算进总量和文件夹，只是不算会话、不进排行。
-/// 只沿用到的那几条 `parent_id` 往上查，不扫整张表。
-pub async fn session_owners(
-    conn: &DatabaseConnection,
-    ids: &[i32],
-) -> Result<HashMap<i32, Option<SessionOwner>>, DbError> {
-    // (id, parent_id, kind, 未删除, agent_type, folder_id, title)
-    type Node = (
-        i32,
-        Option<i32>,
-        conversation::ConversationKind,
-        bool,
-        String,
-        i32,
-        Option<String>,
-    );
-    type Row = (
-        i32,
-        Option<i32>,
-        conversation::ConversationKind,
-        Option<DateTime<Utc>>,
-        String,
-        i32,
-        Option<String>,
-    );
-    let mut nodes: HashMap<i32, Node> = HashMap::new();
-    let mut pending: Vec<i32> = ids.to_vec();
-    pending.sort_unstable();
-    pending.dedup();
-    while !pending.is_empty() {
-        let mut found: Vec<Node> = Vec::new();
-        for chunk in pending.chunks(500) {
-            let rows: Vec<Row> = conversation::Entity::find()
-                .filter(conversation::Column::Id.is_in(chunk.to_vec()))
-                .select_only()
-                .column(conversation::Column::Id)
-                .column(conversation::Column::ParentId)
-                .column(conversation::Column::Kind)
-                .column(conversation::Column::DeletedAt)
-                .column(conversation::Column::AgentType)
-                .column(conversation::Column::FolderId)
-                .column(conversation::Column::Title)
-                .into_tuple()
-                .all(conn)
-                .await?;
-            found.extend(rows.into_iter().map(
-                |(id, parent, kind, deleted, agent, folder, title)| {
-                    (id, parent, kind, deleted.is_none(), agent, folder, title)
-                },
-            ));
-        }
-        let parents: Vec<i32> = found.iter().filter_map(|n| n.1).collect();
-        for node in found {
-            nodes.insert(node.0, node);
-        }
-        let mut next: Vec<i32> = parents
-            .into_iter()
-            .filter(|p| !nodes.contains_key(p))
-            .collect();
-        next.sort_unstable();
-        next.dedup();
-        pending = next;
+    if q.models.is_some() {
+        return Ok(usage_count);
     }
 
-    let live_folders: std::collections::HashSet<i32> = folder::Entity::find()
-        .filter(folder::Column::DeletedAt.is_null())
-        .select_only()
-        .column(folder::Column::Id)
-        .into_tuple::<i32>()
-        .all(conn)
-        .await?
-        .into_iter()
-        .collect();
-    let attempt_folders = loop_attempt_folders(conn).await?;
-
-    let mut out = HashMap::new();
-    for &id in ids {
-        // 沿 parent_id 找顶层；链上有会话行不在了、已删除、文件夹已移除，或成了环，
-        // 都归为 None。
-        let mut cursor = id;
-        let mut seen = std::collections::HashSet::new();
-        let root = loop {
-            let Some(node) = nodes.get(&cursor) else {
-                break None;
-            };
-            if !seen.insert(cursor) || !node.3 || !live_folders.contains(&node.5) {
-                break None;
-            }
-            match node.1 {
-                Some(parent) => cursor = parent,
-                None => break Some(node),
-            }
-        };
-        let owner = root.and_then(|(rid, _, kind, _, agent, folder, title)| {
-            (!is_automation_run(kind, title.as_deref(), *folder, &attempt_folders)).then(|| {
-                SessionOwner {
-                    id: *rid,
-                    agent_type: agent.clone(),
-                    folder_id: *folder,
-                }
-            })
-        });
-        out.insert(id, owner);
-    }
-    Ok(out)
-}
-
-/// 侧栏看得到、但一条用量明细都没有的会话（空会话、不记 token 的智能体）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FactlessConversation {
-    pub id: i32,
-    pub agent_type: String,
-    pub folder_id: i32,
-    pub updated_at: DateTime<Utc>,
-}
-
-/// 侧栏看得到、但一条用量明细都没有的会话（空会话、不记 token 的智能体）。
-/// 用量页顶部「会话数」= 有用量的侧栏会话（按 [`session_owners`] 归好的）+ 这些，
-/// 按文件夹和排行也把它们按 0 token 算进去，三处才是同一个数。
-/// 时间范围按会话自己的 `updated_at` 算；按模型筛选时一个都不算（没有明细说不出模型）。
-pub async fn factless_workspace_conversations(
-    conn: &DatabaseConnection,
-    q: &FactQuery,
-) -> Result<Vec<FactlessConversation>, DbError> {
-    use sea_orm::sea_query::{Expr, Query};
-
-    if q.is_empty_selection() || q.models.is_some() {
-        return Ok(Vec::new());
-    }
-    let live_folders: Vec<i32> = folder::Entity::find()
-        .filter(folder::Column::DeletedAt.is_null())
-        .select_only()
-        .column(folder::Column::Id)
-        .into_tuple()
-        .all(conn)
-        .await?;
-    let allowed: Vec<i32> = match &q.folder_ids {
-        Some(ids) => ids
-            .iter()
-            .copied()
-            .filter(|id| live_folders.contains(id))
-            .collect(),
-        None => live_folders,
-    };
-    if allowed.is_empty() {
-        return Ok(Vec::new());
-    }
     let mut factless = conversation::Entity::find()
         .filter(conversation::Column::DeletedAt.is_null())
         .filter(conversation::Column::Kind.ne(conversation::ConversationKind::Loop))
@@ -495,6 +303,9 @@ pub async fn factless_workspace_conversations(
                     .to_owned(),
             ),
         );
+    // `updated_at` is the only activity signal a factless session has; for the
+    // unbounded window (the case the status bar is compared against) the
+    // predicate vanishes entirely.
     if let Some(start) = q.start {
         factless = factless.filter(conversation::Column::UpdatedAt.gte(start));
     }
@@ -504,40 +315,9 @@ pub async fn factless_workspace_conversations(
     if let Some(ref agents) = q.agent_types {
         factless = factless.filter(conversation::Column::AgentType.is_in(agents.clone()));
     }
-    type Row = (
-        i32,
-        conversation::ConversationKind,
-        i32,
-        Option<String>,
-        String,
-        DateTime<Utc>,
-    );
-    let rows: Vec<Row> = factless
-        .select_only()
-        .column(conversation::Column::Id)
-        .column(conversation::Column::Kind)
-        .column(conversation::Column::FolderId)
-        .column(conversation::Column::Title)
-        .column(conversation::Column::AgentType)
-        .column(conversation::Column::UpdatedAt)
-        .into_tuple()
-        .all(conn)
-        .await?;
-    let attempt_folders = loop_attempt_folders(conn).await?;
-    Ok(rows
-        .into_iter()
-        .filter(|(_, kind, folder, title, ..)| {
-            !is_automation_run(kind, title.as_deref(), *folder, &attempt_folders)
-        })
-        .map(
-            |(id, _, folder_id, _, agent_type, updated_at)| FactlessConversation {
-                id,
-                agent_type,
-                folder_id,
-                updated_at,
-            },
-        )
-        .collect())
+    let factless_count = factless.count(conn).await?;
+
+    Ok(usage_count + factless_count)
 }
 
 /// Replace every fact row of one conversation and stamp its sync state.
@@ -1666,99 +1446,6 @@ mod tests {
                 .expect("count"),
             1
         );
-    }
-
-    #[tokio::test]
-    async fn session_owners_follow_the_sidebar_rules() {
-        use sea_orm::{ActiveModelTrait, IntoActiveModel};
-
-        let db = fresh_in_memory_db().await;
-        let live = seed_folder(&db, "/tmp/tu-own-a").await;
-        let gone = seed_folder(&db, "/tmp/tu-own-b").await;
-        let edit = |id: i32| {
-            let conn = db.conn.clone();
-            async move {
-                conversation::Entity::find_by_id(id)
-                    .one(&conn)
-                    .await
-                    .expect("query")
-                    .expect("row")
-                    .into_active_model()
-            }
-        };
-
-        let root = seed_conversation(&db, live, AgentType::ClaudeCode).await;
-        let child = seed_conversation(&db, live, AgentType::Codex).await;
-        let mut a = edit(child).await;
-        a.parent_id = Set(Some(root));
-        a.kind = Set(conversation::ConversationKind::Delegate);
-        a.update(&db.conn).await.expect("child");
-
-        // 父会话被删掉的子会话：侧栏里两个都看不到。
-        let dead_root = seed_conversation(&db, live, AgentType::ClaudeCode).await;
-        let orphan = seed_conversation(&db, live, AgentType::ClaudeCode).await;
-        let mut a = edit(orphan).await;
-        a.parent_id = Set(Some(dead_root));
-        a.update(&db.conn).await.expect("orphan");
-        let mut a = edit(dead_root).await;
-        a.deleted_at = Set(Some(at("2026-08-01T00:00:00Z")));
-        a.update(&db.conn).await.expect("delete root");
-
-        let looped = seed_conversation(&db, live, AgentType::ClaudeCode).await;
-        let mut a = edit(looped).await;
-        a.kind = Set(conversation::ConversationKind::Loop);
-        a.update(&db.conn).await.expect("loop");
-
-        let in_gone = seed_conversation(&db, gone, AgentType::ClaudeCode).await;
-        // 顶层会话的文件夹还在，子会话自己的文件夹移除了。
-        let child_in_gone = seed_conversation(&db, gone, AgentType::ClaudeCode).await;
-        let mut a = edit(child_in_gone).await;
-        a.parent_id = Set(Some(root));
-        a.kind = Set(conversation::ConversationKind::Delegate);
-        a.update(&db.conn).await.expect("child in removed folder");
-        // 种类是普通会话、标题是 Loop 节点对话的：侧栏把它收进 Loop。
-        let loop_node = seed_conversation(&db, live, AgentType::ClaudeCode).await;
-        let mut a = edit(loop_node).await;
-        a.title = Set(Some(
-            "你是 Loop v2 的独立节点对话。只完成下面这个节点".into(),
-        ));
-        a.update(&db.conn).await.expect("loop node");
-        let mut f = folder::Entity::find_by_id(gone)
-            .one(&db.conn)
-            .await
-            .expect("query")
-            .expect("row")
-            .into_active_model();
-        f.deleted_at = Set(Some(at("2026-08-01T00:00:00Z")));
-        f.update(&db.conn).await.expect("remove folder");
-
-        let owners = session_owners(
-            &db.conn,
-            &[
-                root,
-                child,
-                orphan,
-                looped,
-                in_gone,
-                child_in_gone,
-                loop_node,
-            ],
-        )
-        .await
-        .expect("owners");
-        let root_owner = Some(SessionOwner {
-            id: root,
-            agent_type: "claude_code".into(),
-            folder_id: live,
-        });
-        assert_eq!(owners[&root], root_owner);
-        // 子会话归到顶层，带的是顶层的智能体。
-        assert_eq!(owners[&child], root_owner);
-        assert_eq!(owners[&orphan], None);
-        assert_eq!(owners[&looped], None);
-        assert_eq!(owners[&in_gone], None);
-        assert_eq!(owners[&child_in_gone], None);
-        assert_eq!(owners[&loop_node], None);
     }
 
     #[tokio::test]

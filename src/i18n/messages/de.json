@@ -3310,8 +3310,6 @@
       "moreActions": "Weitere Git-Aktionen"
     },
     "gitChangesTab": {
-      "loadFailed": "Änderungen konnten nicht geladen werden",
-      "retry": "Erneut versuchen",
       "workspace": "Arbeitsbereich",
       "noChanges": "Keine lokalen Änderungen",
       "notAGitRepoTitle": "Kein Git-Repository",
@@ -5227,9 +5225,7 @@
       "title": "Titel",
       "titlePlaceholder": "Gib dieser Nachricht einen kurzen Titel",
       "content": "Inhalt",
-      "contentPlaceholder": "Gib hier den Nachrichteninhalt ein",
-      "titleRequired": "Bitte gib einen Titel ein",
-      "contentRequired": "Bitte gib einen Inhalt ein"
+      "contentPlaceholder": "Gib hier den Nachrichteninhalt ein"
     },
     "confirmDelete": {
       "title": "Schnellnachricht löschen?",
@@ -6009,18 +6005,6 @@
     "agentsOffline": "Eingeschaltet, aber Chrome ist nicht verbunden: Agenten können keine Seiten öffnen, bis du es verbindest oder dies ausschaltest.",
     "agentsFailed": "Der Schalter ließ sich nicht umlegen: {message}",
     "agentsServerToolsFailed": "Die Browser-Werkzeuge des Servers ließen sich nicht einschalten ({message}). Schalte „Integrierten Browser lesen und steuern“ unter Einstellungen → Zusammenarbeit ein.",
-    "lendFailed": "Die Browser-Werkzeuge dieses Computers wurden nicht eingeschaltet ({message}); die Agenten des Servers sehen seine Tabs nicht.",
-    "reachTitle": "Damit die Agenten des Servers deine Tabs sehen",
-    "reachToolsOff": "Die Browser-Werkzeuge dieses Computers sind aus, daher leiht er dem Server keine Tabs.",
-    "reachToolsTurnOn": "Browser-Werkzeuge dieses Computers einschalten",
-    "reachAgentsOff": "Übergebene Tabs sehen nur Agenten auf diesem Computer, bis „Agenten mein Chrome benutzen lassen“ an ist.",
-    "reachAgentsTurnOn": "Agenten mein Chrome benutzen lassen einschalten",
-    "reachPickDevice": "Dieser Server kennt mehrere Computer: Wähle im Gespräch unter dem Eingabefeld („Pick a computer“) diesen aus.",
-    "reachPickOther": "Dieser Server kennt mehrere Computer, und der Browser dieser Unterhaltung nutzt einen anderen (oder noch keinen).",
-    "reachPickThis": "Diesen wählen",
-    "reachPickThisLabel": "Diesen Computer für den Browser dieser Unterhaltung wählen",
-    "reachPickFailed": "Dieser Computer konnte nicht gewählt werden: {message}",
-    "reachTurnOn": "Einschalten",
     "evalSwitch": "Agenten in Tabs, die sie bedienen dürfen, Code ausführen lassen",
     "evalRisk": "Nur in Tabs, die Agenten zum Lesen und Bedienen übergeben wurden – nie in nur lesbaren oder nicht geteilten, nie auf sensiblen Websites. Code, den ein Agent dort ausführt, kann alles auf dieser Website lesen, auch Anmeldedaten, die die Seite sieht, und kann dort alles in deinem Namen tun. Klicken und Tippen brauchen das nicht; lass es aus, solange du es nicht brauchst.",
     "evalFailed": "Der Schalter ließ sich nicht umlegen: {message}",

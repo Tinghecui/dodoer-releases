@@ -86,14 +86,6 @@ mcp-bin = []
 browser-child = ["dep:tauri-runtime-wry", "dep:webview2-com", "dep:windows"]
 # Dev-only puppet driven by a JSON control file (see src/browser/smoke.rs).
 browser-smoke = []
-# End-to-end test builds only: registers an in-app W3C WebDriver server
-# (`tauri-plugin-wdio-webdriver`, 127.0.0.1:4445 or TAURI_WEBDRIVER_PORT) so
-# WebdriverIO can drive the WKWebView on macOS, where tauri-driver has no
-# backend. Anyone on the machine could drive the app through that port, so it
-# must never ship: `lib.rs` refuses to compile it without debug_assertions and
-# no release script turns it on. Linux and Windows keep using tauri-driver.
-# Spike: .cowork/journal/2026-11-21-spike-macos-webdriver.md.
-e2e = ["dep:tauri-plugin-wdio-webdriver"]
 
 [[bin]]
 name = "codeg"
@@ -325,8 +317,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 # helper and the driver. Both already in the lock tree via security-framework.
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
-# Only with the `e2e` feature (test builds); see the feature's comment.
-tauri-plugin-wdio-webdriver = { version = "1.5.1", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Threading", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_StationsAndDesktops", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Console", "Win32_System_Registry"] }

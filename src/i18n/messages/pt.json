@@ -3310,8 +3310,6 @@
       "moreActions": "Mais ações do Git"
     },
     "gitChangesTab": {
-      "loadFailed": "Falha ao carregar as alterações",
-      "retry": "Tentar novamente",
       "workspace": "espaço de trabalho",
       "noChanges": "Sem alterações locais",
       "notAGitRepoTitle": "Não é um repositório Git",
@@ -5227,9 +5225,7 @@
       "title": "Título",
       "titlePlaceholder": "Dê um título curto a esta mensagem",
       "content": "Conteúdo",
-      "contentPlaceholder": "Digite aqui o conteúdo da mensagem",
-      "titleRequired": "Informe um título",
-      "contentRequired": "Informe o conteúdo"
+      "contentPlaceholder": "Digite aqui o conteúdo da mensagem"
     },
     "confirmDelete": {
       "title": "Excluir mensagem rápida?",
@@ -6009,18 +6005,6 @@
     "agentsOffline": "Ligado, mas o Chrome não está conectado: os agentes não conseguirão abrir páginas até você conectá-lo ou desligar isto.",
     "agentsFailed": "Não foi possível mudar o interruptor: {message}",
     "agentsServerToolsFailed": "Não foi possível ligar as ferramentas de navegador do servidor ({message}). Ligue “Ler e conduzir o navegador integrado” em Configurações → Colaboração.",
-    "lendFailed": "As ferramentas de navegador deste computador não foram ativadas ({message}); os agentes do servidor não veem suas abas.",
-    "reachTitle": "Para os agentes do servidor verem suas abas",
-    "reachToolsOff": "As ferramentas de navegador deste computador estão desligadas, então ele não empresta nenhuma aba ao servidor.",
-    "reachToolsTurnOn": "Ativar as ferramentas de navegador deste computador",
-    "reachAgentsOff": "As abas que você entrega só são vistas pelos agentes deste computador até “Deixar os agentes usarem meu Chrome” estar ligado.",
-    "reachAgentsTurnOn": "Ativar Deixar os agentes usarem meu Chrome",
-    "reachPickDevice": "Este servidor conhece vários computadores: na conversa, escolha este sob a caixa de mensagem (“Pick a computer”).",
-    "reachPickOther": "Este servidor conhece vários computadores, e o navegador desta conversa usa outro (ou nenhum ainda).",
-    "reachPickThis": "Escolher este",
-    "reachPickThisLabel": "Escolher este computador para o navegador desta conversa",
-    "reachPickFailed": "Não foi possível escolher este computador: {message}",
-    "reachTurnOn": "Ativar",
     "evalSwitch": "Deixar os agentes executarem código nos separadores onde podem agir",
     "evalRisk": "Só nos separadores entregues aos agentes para ler e agir — nunca nos só de leitura ou não partilhados, nunca em sites sensíveis. O código que um agente executa aí pode ler tudo nesse site, incluindo os dados de início de sessão que a página vê, e pode fazer qualquer coisa aí em seu nome. Clicar e escrever não precisam disto; deixe desligado a menos que precise.",
     "evalFailed": "Não foi possível mudar o interruptor: {message}",

@@ -49,10 +49,8 @@ import {
 } from "@/lib/message-input-draft"
 import { discardAskSelectionPrompts } from "@/lib/ask-selection-handoff"
 import {
-  claimParkedDraftQueue,
   hasStoredDraftQueue,
   moveStoredDraftQueue,
-  parkStoredDraftQueue,
 } from "@/lib/cowork/message-queue-storage"
 import {
   MAX_CONVERSATION_TABS,
@@ -159,9 +157,6 @@ interface DraftRetargetRequest {
   workingDir: string
   agentType: AgentType
   provisional: boolean
-  /** 换项目时照样会清掉新工作树选择；复用的草稿领回了关掉的草稿的选择
-   *  （#1042）时，换完项目把它放回去。 */
-  pendingWorktree?: ConversationWorktreeSpec
 }
 
 /**
@@ -2390,25 +2385,6 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       } else {
         set({ rawTabs: next })
       }
-      // Cowork（#1042）：没有补草稿接着用时，排队区存着的消息和新工作树选择
-      // 寄存在项目名下，这个项目下一个新建或重开的草稿领走
-      // （openNewConversationTab），不能留在关掉的标签名下找不回。
-      if (
-        closingDraftKey &&
-        !draftKeyHandedOver &&
-        closingTab.isChat !== true &&
-        closingTab.folderId != null &&
-        hasStoredDraftQueue(closingTab.id)
-      ) {
-        parkStoredDraftQueue(closingTab.id, closingTab.folderId, {
-          ...(closingTab.workingDir != null
-            ? { workingDir: closingTab.workingDir }
-            : {}),
-          ...(closingTab.pendingWorktree
-            ? { pendingWorktree: closingTab.pendingWorktree }
-            : {}),
-        })
-      }
       if (closingDraftKey && !draftKeyHandedOver) {
         clearMessageInputDraftV2(closingDraftKey)
       }
@@ -2893,26 +2869,6 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
             targetGroup
       )
 
-    // Cowork（#1042）：这个项目寄存着关掉的草稿没发出去的消息时，交给这次
-    // 新建或重开的草稿，一次领一份（最后关掉的那份）。搬草稿（retargetTabId）
-    // 不算新建，不领。复用的草稿自己排队区还存着消息时不领：两份的新工作树
-    // 选择可能不一样，混在一起重试会走错目录；寄存的那份留给之后的草稿。
-    // 只交给工作目录对得上的草稿（不管带没带新工作树选择），不然重试就在
-    // 别的目录里发了。复用的是别的项目的草稿也照领：它换到这个项目时把领回
-    // 的新工作树选择一起带上（DraftRetargetRequest.pendingWorktree）。
-    const claimed =
-      movingDraft ||
-      (existingTab != null && hasStoredDraftQueue(existingTab.id))
-        ? null
-        : claimParkedDraftQueue(
-            folderId,
-            existingTab?.id ?? tabId,
-            (handoff) => (handoff.workingDir ?? workingDir) === workingDir
-          )
-    const claimedWorktree = claimed
-      ? sanitizeWorktreeSpec(claimed.pendingWorktree)
-      : undefined
-
     if (!existingTab) {
       const newTab: TabItemInternal = {
         id: tabId,
@@ -2924,7 +2880,6 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         isPinned: true,
         workingDir,
         agentTypeProvisional: provisional,
-        ...(claimedWorktree ? { pendingWorktree: claimedWorktree } : {}),
       }
       set({
         rawTabs: insertTab(prevState.rawTabs, newTab, options?.index),
@@ -2932,8 +2887,6 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         groupOf: { ...prevState.groupOf, [tabId]: targetGroup },
       })
       recomputeTabs()
-      // 领回的新工作树选择跟着草稿过刷新，像 setDraftWorktree 那样落盘。
-      if (claimedWorktree) persistGroupState()
       runtime.activateConversationPane()
       return { tabId, agentType: targetAgent, folderId }
     }
@@ -2962,23 +2915,13 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       options?.index == null
         ? prevState.rawTabs
         : moveTabToSlot(prevState.rawTabs, existingTab.id, options.index)
-    // 领回了关掉的草稿的消息（#1042）：新工作树选择换成那份消息自己的，
-    // 它没选就清掉草稿原来的（重开时 index 不清，消息不能带上无关的选择）。
-    const restoreWorktree =
-      claimed != null && existingTab.pendingWorktree !== claimedWorktree
-    const clearedRawTabs =
-      clearWorktree || restoreWorktree
-        ? nextRawTabs.map((tab) =>
-            tab.id === existingTab.id
-              ? {
-                  ...tab,
-                  pendingWorktree: restoreWorktree
-                    ? claimedWorktree
-                    : undefined,
-                }
-              : tab
-          )
-        : nextRawTabs
+    const clearedRawTabs = clearWorktree
+      ? nextRawTabs.map((tab) =>
+          tab.id === existingTab.id
+            ? { ...tab, pendingWorktree: undefined }
+            : tab
+        )
+      : nextRawTabs
     const changed = clearedRawTabs !== prevState.rawTabs
 
     if (folderChanged || agentChanged) {
@@ -2993,7 +2936,6 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
             workingDir,
             agentType: targetAgent,
             provisional,
-            ...(claimedWorktree ? { pendingWorktree: claimedWorktree } : {}),
           },
         ],
       })
@@ -3016,7 +2958,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       focusTab(existingTab.id)
     }
     // 清掉的选择也要落盘，不然刷新后又从存档里恢复出来。
-    if (clearWorktree || restoreWorktree) persistGroupState()
+    if (clearWorktree) persistGroupState()
     runtime.activateConversationPane()
     // Every branch above leaves the tab on `targetAgent` in `folderId` — either
     // already there, or once its queued retarget lands.
@@ -3943,14 +3885,12 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
                   agentType: request.agentType,
                   agentTypeProvisional: request.provisional,
                   isChat: false,
-                  pendingWorktree: request.pendingWorktree,
+                  pendingWorktree: undefined,
                 }
               : tab
           ),
         })
         recomputeTabs()
-        // 放回的新工作树选择（#1042）也要落盘，刷新后还在。
-        if (request.pendingWorktree) persistGroupState()
         if (followScope) {
           useFolderTabsStore
             .getState()

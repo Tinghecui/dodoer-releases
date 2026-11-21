@@ -6,11 +6,7 @@ import {
   useMessageQueue,
 } from "./use-message-queue"
 import type { PromptDraft } from "@/lib/types"
-import {
-  CLAIM_SETTLE_MS,
-  draftMessageQueueStorageKey,
-  moveStoredDraftQueue,
-} from "@/lib/cowork/message-queue-storage"
+import { CLAIM_SETTLE_MS } from "@/lib/cowork/message-queue-storage"
 
 /** Wait out the claim confirmation (`acquireStoredQueue`). */
 const settle = () =>
@@ -1119,33 +1115,5 @@ describe("deliveredClientMessageIds", () => {
     ])
     expect([...ids].sort()).toEqual(["optimistic-a", "optimistic-b"])
     expect(deliveredClientMessageIds(null, undefined).size).toBe(0)
-  })
-})
-
-// #1042 返工：挂着的草稿被「新建会话」复用、领回了关掉的草稿寄存的消息时，
-// 排队区要当场显示出来，之后改队列也不能把领回的那条覆盖掉。
-describe("useMessageQueue: a queue handed over while mounted (#1042)", () => {
-  beforeEach(() => {
-    window.localStorage.clear()
-    window.sessionStorage.clear()
-  })
-
-  it("shows what moveStoredDraftQueue lands on its key, and keeps it stored", async () => {
-    const LIVE = draftMessageQueueStorageKey("tab-live")
-    const { result, unmount } = renderHook(() => useMessageQueue(LIVE))
-    await settle()
-    act(() => result.current.enqueue(draft("D"), null))
-    window.localStorage.setItem(
-      draftMessageQueueStorageKey("parked-x"),
-      JSON.stringify([
-        { id: "x1", draft: draft("X"), modeId: null, failure: "send" },
-      ])
-    )
-    act(() => moveStoredDraftQueue("parked-x", "tab-live"))
-    expect(texts(result.current.queue)).toEqual(["X", "D"])
-    expect(result.current.queue[0].failed).toBe(true)
-    act(() => result.current.enqueue(draft("E"), null))
-    expect(window.localStorage.getItem(LIVE)).toContain('"displayText":"X"')
-    unmount()
   })
 })

@@ -203,7 +203,7 @@ export function ComposerAddMenu({
                   onClick={() => shortcuts.insertQuickMessage(message)}
                 >
                   <span className="truncate">
-                    {message.title.trim() || (
+                    {message.title || (
                       <span className="italic text-muted-foreground">
                         {t("quickMessageUntitled")}
                       </span>

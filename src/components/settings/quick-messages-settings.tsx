@@ -131,11 +131,7 @@ export function QuickMessagesSettings() {
   const [draftTitle, setDraftTitle] = useState("")
   const [draftContent, setDraftContent] = useState("")
   const [saving, setSaving] = useState(false)
-  // 点过保存且标题或内容是空白时，才在字段下面显示必填提示（#979）
-  const [showRequired, setShowRequired] = useState(false)
-  // 点「新建」只在页面上开一份空白草稿，点保存且通过校验才建记录，
-  // 免得没填或填了空格就留下一条空条目（#979）
-  const [newDraft, setNewDraft] = useState(false)
+  const [creating, setCreating] = useState(false)
   const [deleteTargetId, setDeleteTargetId] = useState<number | null>(null)
   const [deleting, setDeleting] = useState(false)
 
@@ -192,54 +188,15 @@ export function QuickMessagesSettings() {
     [messages, selectedId]
   )
 
-  // 只在换了正在编辑的对象（换了条目、进出新建草稿）时才重置表单。拖动排序
-  // 会给每条生成新对象（sort_order 变了），保存返回会换掉条目的标题、内容，
-  // 这两种都不能重置，否则用户还没保存的字会被清掉。标题、内容从 ref 里读
-  const selectedMessageId = selectedMessage?.id ?? null
-  const selectedMessageRef = useRef<QuickMessage | null>(null)
   useEffect(() => {
-    selectedMessageRef.current = selectedMessage
-  }, [selectedMessage])
-  // 新草稿创建成功、用户在请求返回前又接着打了字时设成 true，
-  // 下一次换到新条目时保留表单里的字，不用存进去的值覆盖
-  const keepDraftOnSwitchRef = useRef(false)
-  // 表单上次按条目重置以后，用户在输入框里改过没有。光比内容不够：
-  // 用户可能打了字又删回原样，那也是用户的输入，保存返回时不能覆盖
-  const editedSinceResetRef = useRef(false)
-
-  useEffect(() => {
-    if (keepDraftOnSwitchRef.current) {
-      keepDraftOnSwitchRef.current = false
-      // 留下的是用户在等待时打的字，算改过
-      editedSinceResetRef.current = true
-      return
-    }
-    editedSinceResetRef.current = false
-    const current = selectedMessageRef.current
-    if (newDraft) {
-      setDraftTitle("")
-      setDraftContent("")
-    } else if (selectedMessageId !== null && current) {
-      setDraftTitle(current.title)
-      setDraftContent(current.content)
+    if (selectedMessage) {
+      setDraftTitle(selectedMessage.title)
+      setDraftContent(selectedMessage.content)
     } else {
       setDraftTitle("")
       setDraftContent("")
     }
-    setShowRequired(false)
-  }, [selectedMessageId, newDraft])
-
-  // 保存返回时拿来对比：用户点了保存以后又打过字没有
-  const latestDraftRef = useRef({ title: "", content: "" })
-  useEffect(() => {
-    latestDraftRef.current = { title: draftTitle, content: draftContent }
-  }, [draftTitle, draftContent])
-
-  // 保存返回时拿来判断：现在表单上编辑的是不是刚存的那一条
-  const editingIdRef = useRef<number | null>(null)
-  useEffect(() => {
-    editingIdRef.current = newDraft ? null : selectedMessageId
-  }, [newDraft, selectedMessageId])
+  }, [selectedMessage])
 
   useEffect(() => {
     if (selectedId === null && messages.length > 0) {
@@ -257,14 +214,12 @@ export function QuickMessagesSettings() {
   }, [messages, searchQuery])
 
   const isDirty = useMemo(() => {
-    // 新建的草稿还没存过，保存按钮一直可点，点了才看得到必填提示
-    if (newDraft) return true
     if (!selectedMessage) return false
     return (
       draftTitle !== selectedMessage.title ||
       draftContent !== selectedMessage.content
     )
-  }, [newDraft, selectedMessage, draftTitle, draftContent])
+  }, [selectedMessage, draftTitle, draftContent])
 
   const persistReorder = useCallback(
     async (ids: number[]) => {
@@ -289,93 +244,36 @@ export function QuickMessagesSettings() {
     pendingOrderRef.current = reordered.map((m) => m.id)
   }, [])
 
-  // 每次换了正在编辑的对象（点新建、点列表里的条目）就加一。保存是异步的，
-  // 返回时编号变了说明用户已经切走，不能再动表单和选中项，免得覆盖新的输入
-  const editSessionRef = useRef(0)
-
-  const handleCreate = useCallback(() => {
-    editSessionRef.current += 1
-    setNewDraft(true)
-    requestAnimationFrame(() => {
-      titleInputRef.current?.focus()
-    })
-  }, [])
-
-  const handleSelect = useCallback((id: number) => {
-    editSessionRef.current += 1
-    setNewDraft(false)
-    setSelectedId(id)
-  }, [])
-
-  const titleMissing = draftTitle.trim() === ""
-  const contentMissing = draftContent.trim() === ""
+  const handleCreate = useCallback(async () => {
+    setCreating(true)
+    try {
+      const created = await quickMessagesCreate({ title: "", content: "" })
+      setMessages((prev) => [...prev, created])
+      setSelectedId(created.id)
+      toast.success(t("toasts.created"))
+      requestAnimationFrame(() => {
+        titleInputRef.current?.focus()
+      })
+    } catch (err) {
+      const message = toErrorMessage(err)
+      toast.error(t("toasts.createFailed"), { description: message })
+    } finally {
+      setCreating(false)
+    }
+  }, [t])
 
   const handleSave = useCallback(async () => {
-    if (!newDraft && !selectedMessage) return
-    // 全是空格的标题、内容不保存，免得列表里多出看不见文字的条目（#979）
-    const title = draftTitle.trim()
-    const content = draftContent.trim()
-    if (!title || !content) {
-      setShowRequired(true)
-      return
-    }
+    if (!selectedMessage) return
     setSaving(true)
-    const session = editSessionRef.current
-    // 点保存时表单里的原样内容；返回时表单变了，说明用户在等待时又打了字
-    const submittedTitle = draftTitle
-    const submittedContent = draftContent
-    const typedSinceSubmit = () =>
-      latestDraftRef.current.title !== submittedTitle ||
-      latestDraftRef.current.content !== submittedContent
-    // 保存中切走又切回同一条、切回后一个字没改时，表单显示的是保存前的旧值。
-    // 没切走过，或者切回后改过（哪怕删回了原样），都不算
-    const beforeSave = selectedMessage
-    const showsRowBeforeSave = () =>
-      beforeSave !== null &&
-      editSessionRef.current !== session &&
-      editingIdRef.current === beforeSave.id &&
-      !editedSinceResetRef.current &&
-      latestDraftRef.current.title === beforeSave.title &&
-      latestDraftRef.current.content === beforeSave.content
-    if (newDraft || !selectedMessage) {
-      try {
-        const created = await quickMessagesCreate({ title, content })
-        setMessages((prev) => [...prev, created])
-        if (editSessionRef.current === session) {
-          editSessionRef.current += 1
-          keepDraftOnSwitchRef.current = typedSinceSubmit()
-          setSelectedId(created.id)
-          setNewDraft(false)
-        }
-        toast.success(t("toasts.created"))
-      } catch (err) {
-        // 没建成就留在草稿里，填的字不丢，可以再点保存
-        const message = toErrorMessage(err)
-        toast.error(t("toasts.createFailed"), { description: message })
-      } finally {
-        setSaving(false)
-      }
-      return
-    }
     try {
       const updated = await quickMessagesUpdate({
         id: selectedMessage.id,
-        title,
-        content,
+        title: draftTitle,
+        content: draftContent,
       })
       setMessages((prev) =>
         prev.map((m) => (m.id === updated.id ? updated : m))
       )
-      // 存进去的是去掉首尾空格的值，上面的重置不会因为保存触发，这里自己同步。
-      // 用户已经切到别的条目、或者等待时又打了字，就不动表单，免得覆盖新的输入。
-      // 切走又切回这一条、表单还是保存前的旧值时也要同步，不然再点保存会把新值改回去
-      if (
-        (editSessionRef.current === session && !typedSinceSubmit()) ||
-        showsRowBeforeSave()
-      ) {
-        setDraftTitle(updated.title)
-        setDraftContent(updated.content)
-      }
       toast.success(t("toasts.saved"))
     } catch (err) {
       const message = toErrorMessage(err)
@@ -383,7 +281,7 @@ export function QuickMessagesSettings() {
     } finally {
       setSaving(false)
     }
-  }, [newDraft, selectedMessage, draftTitle, draftContent, t])
+  }, [selectedMessage, draftTitle, draftContent, t])
 
   const handleDelete = useCallback(async () => {
     if (deleteTargetId === null) return
@@ -394,7 +292,6 @@ export function QuickMessagesSettings() {
       setMessages((prev) => {
         const next = prev.filter((m) => m.id !== target)
         if (selectedId === target) {
-          editSessionRef.current += 1
           setSelectedId(next[0]?.id ?? null)
         }
         return next
@@ -483,8 +380,23 @@ export function QuickMessagesSettings() {
                     onChange={(event) => setSearchQuery(event.target.value)}
                     placeholder={t("searchPlaceholder")}
                   />
-                  <Button size="sm" onClick={handleCreate} disabled={saving}>
-                    <Plus className="h-3.5 w-3.5" />
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      handleCreate().catch((err) => {
+                        console.error(
+                          "[QuickMessagesSettings] create failed:",
+                          err
+                        )
+                      })
+                    }}
+                    disabled={creating}
+                  >
+                    {creating ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Plus className="h-3.5 w-3.5" />
+                    )}
                     {t("actions.new")}
                   </Button>
                 </div>
@@ -508,9 +420,9 @@ export function QuickMessagesSettings() {
                     <QuickMessageReorderItem
                       key={m.id}
                       message={m}
-                      selected={!newDraft && selectedId === m.id}
+                      selected={selectedId === m.id}
                       reordering={reordering}
-                      onSelect={handleSelect}
+                      onSelect={(id) => setSelectedId(id)}
                       onDragStart={() => {
                         /* no-op: list re-render handles dragging state */
                       }}
@@ -534,7 +446,7 @@ export function QuickMessagesSettings() {
                             className="text-muted-foreground cursor-grab active:cursor-grabbing rounded p-0.5 hover:bg-muted"
                             title={t("actions.dragSort")}
                             aria-label={t("actions.dragSortMessage", {
-                              name: m.title.trim() || t("untitled"),
+                              name: m.title || t("untitled"),
                             })}
                             onPointerDown={startDrag}
                             onClick={(event) => event.stopPropagation()}
@@ -544,13 +456,13 @@ export function QuickMessagesSettings() {
                           </button>
                           <div className="min-w-0 flex-1">
                             <div className="text-sm font-medium truncate">
-                              {m.title.trim() || (
+                              {m.title || (
                                 <span className="italic text-muted-foreground">
                                   {t("untitled")}
                                 </span>
                               )}
                             </div>
-                            {m.content.trim() && (
+                            {m.content && (
                               <div className="text-2xs text-muted-foreground truncate mt-0.5">
                                 {m.content}
                               </div>
@@ -569,7 +481,7 @@ export function QuickMessagesSettings() {
 
           <ResizablePanel defaultSize={66} minSize={rightMinSize}>
             <div className="h-full flex-1 min-h-0 min-w-0 rounded-lg border bg-card overflow-hidden lg:rounded-l-none lg:border-l-0">
-              {newDraft || selectedMessage ? (
+              {selectedMessage ? (
                 <div className="h-full flex flex-col">
                   <div className="flex-1 overflow-y-auto p-4 space-y-4">
                     <div className="space-y-1.5">
@@ -580,26 +492,9 @@ export function QuickMessagesSettings() {
                         id="quick-message-title"
                         ref={titleInputRef}
                         value={draftTitle}
-                        onChange={(event) => {
-                          editedSinceResetRef.current = true
-                          setDraftTitle(event.target.value)
-                        }}
+                        onChange={(event) => setDraftTitle(event.target.value)}
                         placeholder={t("fields.titlePlaceholder")}
-                        aria-invalid={showRequired && titleMissing}
-                        aria-describedby={
-                          showRequired && titleMissing
-                            ? "quick-message-title-error"
-                            : undefined
-                        }
                       />
-                      {showRequired && titleMissing && (
-                        <p
-                          id="quick-message-title-error"
-                          className="text-xs text-destructive"
-                        >
-                          {t("fields.titleRequired")}
-                        </p>
-                      )}
                     </div>
                     <div className="space-y-1.5">
                       <Label
@@ -611,44 +506,24 @@ export function QuickMessagesSettings() {
                       <Textarea
                         id="quick-message-content"
                         value={draftContent}
-                        onChange={(event) => {
-                          editedSinceResetRef.current = true
+                        onChange={(event) =>
                           setDraftContent(event.target.value)
-                        }}
+                        }
                         placeholder={t("fields.contentPlaceholder")}
                         className="min-h-[16.25rem]"
-                        aria-invalid={showRequired && contentMissing}
-                        aria-describedby={
-                          showRequired && contentMissing
-                            ? "quick-message-content-error"
-                            : undefined
-                        }
                       />
-                      {showRequired && contentMissing && (
-                        <p
-                          id="quick-message-content-error"
-                          className="text-xs text-destructive"
-                        >
-                          {t("fields.contentRequired")}
-                        </p>
-                      )}
                     </div>
                   </div>
                   <div className="border-t px-4 py-3 flex items-center justify-between gap-2">
-                    {newDraft || !selectedMessage ? (
-                      // 草稿还没存，没有可删的记录
-                      <span />
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setDeleteTargetId(selectedMessage.id)}
-                        className="text-red-500 hover:text-red-500"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        {t("actions.delete")}
-                      </Button>
-                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setDeleteTargetId(selectedMessage.id)}
+                      className="text-red-500 hover:text-red-500"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      {t("actions.delete")}
+                    </Button>
                     <Button
                       size="sm"
                       onClick={() => {
@@ -691,7 +566,7 @@ export function QuickMessagesSettings() {
             <AlertDialogTitle>{t("confirmDelete.title")}</AlertDialogTitle>
             <AlertDialogDescription>
               {t("confirmDelete.message", {
-                name: deleteTargetMessage?.title.trim() || t("untitled"),
+                name: deleteTargetMessage?.title || t("untitled"),
               })}
             </AlertDialogDescription>
           </AlertDialogHeader>

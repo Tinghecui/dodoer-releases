@@ -137,15 +137,7 @@ const store = vi.hoisted(() => ({
     additions: number
     deletions: number
   }[],
-  health: "healthy" as "healthy" | "resyncing" | "degraded",
-  error: null as string | null,
-  seq: 1,
 }))
-const requestResyncMock = vi.hoisted(() =>
-  vi.fn(async (reason?: string) => {
-    void reason
-  })
-)
 
 const gitCommitMock = vi.hoisted(() =>
   vi.fn(async () => ({ committed_files: 1 }))
@@ -181,15 +173,15 @@ vi.mock("@/hooks/use-sorted-available-agents", () => ({
 vi.mock("@/hooks/use-workspace-state-store", () => ({
   useWorkspaceStateStore: () => ({
     rootPath: "/repo",
-    seq: store.seq,
+    seq: 1,
     version: 1,
-    health: store.health,
+    health: "healthy",
     tree: [],
     git: store.git,
-    error: store.error,
+    error: null,
     degraded: false,
     isGitRepo: true,
-    requestResync: requestResyncMock,
+    requestResync: async () => {},
     restart: async () => {},
     subscribeEnvelopes: () => () => {},
   }),
@@ -1142,182 +1134,5 @@ describe("GitChangesTab rollback of untracked entries (#854)", () => {
     renderTab()
     const own = ownMenu("README.md")
     expect(within(own).getByRole("button", { name: "Rollback" })).toBeEnabled()
-  })
-})
-
-// ---------------------------------------------------------------------------
-// 读取改动失败（#1135）：工具栏和「更多 Git 操作」还在，列表位置给出错说明和
-// 「重试」，点重试重新拉快照；重拉进行中按钮不可点。
-// ---------------------------------------------------------------------------
-
-describe("GitChangesTab load failure", () => {
-  afterEach(() => {
-    store.health = "healthy"
-    store.error = null
-    store.git = []
-    store.seq = 1
-  })
-
-  function renderFailed() {
-    store.git = []
-    store.health = "degraded"
-    store.error = "boom from server"
-    requestResyncMock.mockClear()
-    return renderTab()
-  }
-
-  it("keeps the toolbar and offers a retry that resyncs", async () => {
-    renderFailed()
-    expect(screen.getByText("Failed to load changes")).toBeInTheDocument()
-    expect(screen.getByText("boom from server")).toBeInTheDocument()
-    expect(
-      screen.getByRole("button", { name: "More Git actions" })
-    ).toBeInTheDocument()
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Retry" }))
-    })
-    expect(requestResyncMock).toHaveBeenCalledTimes(1)
-    expect(requestResyncMock).toHaveBeenCalledWith("manual_retry")
-  })
-
-  it("does not commit or write a message from the stale list while failed", async () => {
-    // 失败前读到过改动：列表被出错区遮住，不能拿缓存的路径提交
-    store.git = flatGit(1)
-    store.health = "degraded"
-    store.error = "boom from server"
-    gitCommitMock.mockClear()
-    const view = renderTab()
-    const input = screen.getByPlaceholderText(
-      "Commit message (Enter to commit)"
-    )
-    fireEvent.change(input, { target: { value: "修复提交" } })
-    await act(async () => {
-      fireEvent.keyDown(input, { key: "Enter" })
-    })
-    expect(gitCommitMock).not.toHaveBeenCalled()
-    expect(
-      screen.queryByRole("button", { name: "Generate a commit message" })
-    ).not.toBeInTheDocument()
-    // 重拉期间（resyncing，出错说明还在）同样不能提交
-    store.health = "resyncing"
-    rerenderTab(view)
-    await act(async () => {
-      fireEvent.keyDown(input, { key: "Enter" })
-    })
-    expect(gitCommitMock).not.toHaveBeenCalled()
-    // 读取恢复后照常提交
-    store.health = "healthy"
-    store.error = null
-    rerenderTab(view)
-    await act(async () => {
-      fireEvent.keyDown(input, { key: "Enter" })
-    })
-    expect(gitCommitMock).toHaveBeenCalledTimes(1)
-  })
-
-  it("does not auto-commit a message that arrives after the load failed", async () => {
-    // 失败前已经开始写提交说明（设成写完自动提交），写的过程中读取失败
-    store.git = flatGit(1)
-    store.health = "healthy"
-    store.error = null
-    gitCommitMock.mockClear()
-    generateMock.mockReset()
-    const view = renderTab()
-    let finish!: (value: Generated) => void
-    generateMock.mockReturnValueOnce(
-      new Promise((resolve) => {
-        finish = resolve
-      })
-    )
-    fireEvent.click(
-      screen.getByRole("button", { name: "Generate a commit message" })
-    )
-    store.health = "degraded"
-    store.error = "boom from server"
-    rerenderTab(view)
-    expect(screen.getByText("Failed to load changes")).toBeInTheDocument()
-    await act(async () => {
-      finish({
-        message: "fix: stale",
-        agent_type: "claude_code",
-        auto_commit: true,
-      })
-    })
-    // 说明留在提交框里给用户看，不按看不到的缓存列表自动提交
-    expect(gitCommitMock).not.toHaveBeenCalled()
-    expect(
-      (
-        screen.getByPlaceholderText(
-          "Commit message (Enter to commit)"
-        ) as HTMLTextAreaElement
-      ).value
-    ).toBe("fix: stale")
-  })
-
-  it("keeps the error in place with the retry disabled while it runs", async () => {
-    renderFailed()
-    let finish: () => void = () => {}
-    requestResyncMock.mockImplementationOnce(
-      () => new Promise<void>((resolve) => (finish = resolve))
-    )
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Retry" }))
-    })
-    expect(screen.getByText("Failed to load changes")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Retry" })).toBeDisabled()
-    await act(async () => {
-      finish()
-    })
-    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled()
-  })
-  function rerenderTab(view: ReturnType<typeof renderTab>) {
-    view.rerender(
-      <NextIntlClientProvider locale="en" messages={enMessages}>
-        <GitChangesTab />
-      </NextIntlClientProvider>
-    )
-  }
-
-  it("keeps the error and toolbar while a first-load retry runs at seq 0", async () => {
-    store.seq = 0
-    const view = renderFailed()
-    let finish: () => void = () => {}
-    requestResyncMock.mockImplementationOnce(() => {
-      // store 里重拉期间是 resyncing，error 留着上次的
-      store.health = "resyncing"
-      return new Promise<void>((resolve) => (finish = resolve))
-    })
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Retry" }))
-    })
-    rerenderTab(view)
-    expect(screen.getByText("Failed to load changes")).toBeInTheDocument()
-    expect(screen.getByText("boom from server")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Retry" })).toBeDisabled()
-    expect(
-      screen.getByRole("button", { name: "More Git actions" })
-    ).toBeInTheDocument()
-    await act(async () => {
-      store.health = "degraded"
-      finish()
-    })
-  })
-
-  it("keeps the error in place while another path resyncs after a failure", () => {
-    store.seq = 0
-    const view = renderFailed()
-    // 菜单里的「刷新」等别的入口发起的重拉：组件本地没有重试标记
-    store.health = "resyncing"
-    rerenderTab(view)
-    expect(screen.getByText("Failed to load changes")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Retry" })).toBeDisabled()
-    expect(
-      screen.getByRole("button", { name: "More Git actions" })
-    ).toBeInTheDocument()
-    // 重拉成功：出错区消失
-    store.health = "healthy"
-    store.seq = 1
-    rerenderTab(view)
-    expect(screen.queryByText("Failed to load changes")).not.toBeInTheDocument()
   })
 })

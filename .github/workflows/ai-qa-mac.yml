@@ -27,13 +27,10 @@ on:
         description: "连验收机上的哪个员工（qa4–qa6 留给 Mac；同时跑的几批要连服务器时各用一个）"
         default: "qa4"
       driver:
-        description: "怎么操作 Mac：cliclick（截图 + System Events + cliclick）、native（Claude Code 自带的 computer use，先探测，用不了就退回 cliclick）或 peekaboo（辅助功能树 MCP，按元素 ID 点；拿不到权限就红）"
+        description: "怎么操作 Mac：cliclick（截图 + System Events + cliclick）或 native（Claude Code 自带的 computer use，先探测，用不了就退回 cliclick）"
         type: choice
-        options: [cliclick, native, peekaboo]
+        options: [cliclick, native]
         default: cliclick
-      ref:
-        description: "源仓库的分支（空 = 默认分支）。不是默认分支 = 试跑：只写 summary，不记台账、不评论 PR、不开 issue"
-        default: ""
       max_turns:
         default: "600"
       minutes:
@@ -62,7 +59,6 @@ jobs:
       FROM_VERSION: ${{ inputs.from_version }}
       EMPLOYEE: ${{ inputs.employee || 'qa4' }}
       DRIVER: ${{ inputs.driver || 'cliclick' }}
-      REF: ${{ inputs.ref }}
       MAX_TURNS: ${{ inputs.max_turns || '600' }}
       MINUTES: ${{ inputs.minutes || '200' }}
       MODEL: ${{ inputs.model || vars.AIQA_MODEL || 'claude-opus-5-5' }}
@@ -83,19 +79,6 @@ jobs:
           set -euo pipefail
           url="https://x-access-token:${AIQA_PRIVATE_TOKEN}@github.com/${SOURCE_REPO}.git"
           git init -q .
-          git fetch -q --depth 1 "$url" "${REF:-HEAD}" 2>/dev/null || { echo "fetch failed"; exit 1; }
+          git fetch -q --depth 1 "$url" HEAD 2>/dev/null || { echo "fetch failed"; exit 1; }
           git checkout -q --detach FETCH_HEAD
-          # 试跑（ref 是非默认分支）：这个 workflow 总是从 main 来，脚本却来自那个分支。分支太旧、脚本还不认试跑的话，
-          # 它会照常写台账、评论 PR、开 issue：认不出试跑标记（AIQA-TRIAL-GUARD）就不跑。AIQA_TRIAL 由这里定，不靠分支里的脚本自己判断
-          if [[ -n "${REF:-}" ]]; then
-            def=$(curl -fsSL -H "Authorization: Bearer ${AIQA_PRIVATE_TOKEN}" "https://api.github.com/repos/${SOURCE_REPO}" | jq -r .default_branch)
-            [[ -n "$def" && "$def" != null ]] || { echo "查不到源仓库的默认分支"; exit 1; }
-            if [[ "$REF" != "$def" ]]; then
-              for f in .cowork/ai-qa/mac/run.sh .cowork/ai-qa/mac/record.mjs; do
-                grep -q 'AIQA-TRIAL-GUARD' "$f" 2>/dev/null || { echo "::error::分支 $REF 的 $f 不认试跑（没有 AIQA-TRIAL-GUARD），跑了会写台账、评论 PR、开 issue。先把默认分支合进这个分支"; exit 1; }
-              done
-              export AIQA_TRIAL=1
-              echo "试跑：源仓库分支 ${REF}（不记台账、不评论 PR、不开 issue）"
-            fi
-          fi
           exec bash .cowork/ai-qa/mac/sealed.sh

@@ -970,13 +970,19 @@ fn unregister(name: &str) {
     }
 }
 
-/// `remove_dir_all` plus one recovery pass for read-only children.
+/// `remove_dir_all` plus one recovery pass for what the first pass could not
+/// get through.
 ///
 /// Windows refuses to delete a file carrying `FILE_ATTRIBUTE_READONLY`, and
 /// read-only extracted payloads are not hypothetical — the macOS Antigravity
-/// build writes its cached CA bundles as `r-xr-xr-x`. On Unix the attribute is
-/// irrelevant to deletion (write permission on the PARENT is what matters), so
-/// the recovery pass is a no-op there and the first call already succeeded.
+/// build writes its cached CA bundles as `r-xr-xr-x`. On Unix a file's own
+/// mode is irrelevant to deleting it, but its DIRECTORY's is: a directory the
+/// owner cannot read, search and write keeps everything below it, and a child
+/// can leave one behind — a test suite that makes a `chmod 000` directory to
+/// test its own permission errors did, on every run, and none of those launch
+/// directories was ever reclaimed (CODEG-SERVER logs "giving up on … Permission
+/// denied", 2026-11-18). The recovery pass gives such directories back to
+/// their owner before the second attempt.
 fn remove_dir_robust(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
@@ -998,14 +1004,28 @@ fn remove_dir_robust(path: &Path) -> std::io::Result<()> {
 
 fn clear_readonly_recursive(path: &Path) -> std::io::Result<()> {
     let meta = std::fs::symlink_metadata(path)?;
+    // Never follow a symlink out of the tree we are clearing.
+    let is_dir = meta.is_dir() && !meta.file_type().is_symlink();
     let mut perms = meta.permissions();
     if perms.readonly() {
         #[allow(clippy::permissions_set_readonly_false)]
         perms.set_readonly(false);
         let _ = std::fs::set_permissions(path, perms);
     }
-    // Never follow a symlink out of the tree we are clearing.
-    if meta.is_dir() && !meta.file_type().is_symlink() {
+    // Before descending: listing the directory and unlinking its entries need
+    // all three owner bits, whatever the child left there.
+    #[cfg(unix)]
+    if is_dir {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode();
+        if mode & 0o700 != 0o700 {
+            let _ = std::fs::set_permissions(
+                path,
+                std::fs::Permissions::from_mode((mode | 0o700) & 0o7777),
+            );
+        }
+    }
+    if is_dir {
         for entry in std::fs::read_dir(path)?.flatten() {
             let _ = clear_readonly_recursive(&entry.path());
         }
@@ -1555,6 +1575,32 @@ mod tests {
         let mut perms = std::fs::metadata(&file).expect("meta").permissions();
         perms.set_readonly(true);
         std::fs::set_permissions(&file, perms).expect("set readonly");
+
+        assert!(remove_dir_robust(&target).is_ok());
+        assert!(!target.exists());
+    }
+
+    /// What a child's test suite left on the production box: directories the
+    /// owner can neither list nor search, some of them with files inside.
+    #[cfg(unix)]
+    #[test]
+    fn remove_dir_robust_deletes_directories_the_owner_was_locked_out_of() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("launch");
+        let locked = target.join("srv").join("chats");
+        std::fs::create_dir_all(locked.join("inner")).expect("create");
+        std::fs::write(locked.join("inner").join("a.md"), b"x").expect("write");
+        let write_only = target.join("write-only");
+        std::fs::create_dir_all(&write_only).expect("create");
+        std::fs::write(write_only.join("b.md"), b"x").expect("write");
+        for (path, mode) in [
+            (locked.join("inner"), 0o000),
+            (locked.clone(), 0o000),
+            (write_only, 0o200),
+        ] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("lock");
+        }
 
         assert!(remove_dir_robust(&target).is_ok());
         assert!(!target.exists());

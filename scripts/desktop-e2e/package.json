@@ -1,0 +1,14 @@
+{
+  "name": "codeg-desktop-e2e-spike",
+  "private": true,
+  "type": "module",
+  "description": "WebdriverIO spike: one spec driving the desktop app on macOS (embedded WebDriver) and Linux (tauri-driver). Installed with npm in CI only, not part of the pnpm project.",
+  "devDependencies": {
+    "@wdio/cli": "9.33.1",
+    "@wdio/local-runner": "9.33.1",
+    "@wdio/mocha-framework": "9.33.1",
+    "@wdio/spec-reporter": "9.33.1",
+    "@wdio/tauri-service": "1.5.1",
+    "webdriverio": "9.33.1"
+  }
+}

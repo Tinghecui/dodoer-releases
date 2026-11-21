@@ -5227,7 +5227,9 @@
       "title": "제목",
       "titlePlaceholder": "이 메시지에 짧은 제목을 지정하세요",
       "content": "내용",
-      "contentPlaceholder": "여기에 메시지 내용을 입력하세요"
+      "contentPlaceholder": "여기에 메시지 내용을 입력하세요",
+      "titleRequired": "제목을 입력하세요",
+      "contentRequired": "내용을 입력하세요"
     },
     "confirmDelete": {
       "title": "빠른 메시지를 삭제하시겠습니까?",

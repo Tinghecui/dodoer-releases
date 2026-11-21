@@ -5227,7 +5227,9 @@
       "title": "Título",
       "titlePlaceholder": "Asigna un título corto a este mensaje",
       "content": "Contenido",
-      "contentPlaceholder": "Escribe aquí el contenido del mensaje"
+      "contentPlaceholder": "Escribe aquí el contenido del mensaje",
+      "titleRequired": "Introduce un título",
+      "contentRequired": "Introduce el contenido"
     },
     "confirmDelete": {
       "title": "¿Eliminar mensaje rápido?",

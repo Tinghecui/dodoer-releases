@@ -5227,7 +5227,9 @@
       "title": "タイトル",
       "titlePlaceholder": "このメッセージに短いタイトルを付けてください",
       "content": "内容",
-      "contentPlaceholder": "ここにメッセージ内容を入力してください"
+      "contentPlaceholder": "ここにメッセージ内容を入力してください",
+      "titleRequired": "タイトルを入力してください",
+      "contentRequired": "内容を入力してください"
     },
     "confirmDelete": {
       "title": "クイックメッセージを削除しますか？",

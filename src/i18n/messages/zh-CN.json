@@ -5247,7 +5247,9 @@
       "title": "标题",
       "titlePlaceholder": "为此消息取一个简短的标题",
       "content": "内容",
-      "contentPlaceholder": "在此输入消息内容"
+      "contentPlaceholder": "在此输入消息内容",
+      "titleRequired": "请填写标题",
+      "contentRequired": "请填写内容"
     },
     "confirmDelete": {
       "title": "删除快捷消息？",

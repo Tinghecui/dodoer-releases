@@ -5227,7 +5227,9 @@
       "title": "العنوان",
       "titlePlaceholder": "أعطِ هذه الرسالة عنوانًا قصيرًا",
       "content": "المحتوى",
-      "contentPlaceholder": "اكتب محتوى الرسالة هنا"
+      "contentPlaceholder": "اكتب محتوى الرسالة هنا",
+      "titleRequired": "يرجى إدخال عنوان",
+      "contentRequired": "يرجى إدخال المحتوى"
     },
     "confirmDelete": {
       "title": "حذف الرسالة السريعة؟",

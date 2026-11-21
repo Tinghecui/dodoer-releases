@@ -5227,7 +5227,9 @@
       "title": "標題",
       "titlePlaceholder": "為此訊息取一個簡短的標題",
       "content": "內容",
-      "contentPlaceholder": "在此輸入訊息內容"
+      "contentPlaceholder": "在此輸入訊息內容",
+      "titleRequired": "請填寫標題",
+      "contentRequired": "請填寫內容"
     },
     "confirmDelete": {
       "title": "刪除快捷訊息？",

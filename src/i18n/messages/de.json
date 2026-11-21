@@ -5227,7 +5227,9 @@
       "title": "Titel",
       "titlePlaceholder": "Gib dieser Nachricht einen kurzen Titel",
       "content": "Inhalt",
-      "contentPlaceholder": "Gib hier den Nachrichteninhalt ein"
+      "contentPlaceholder": "Gib hier den Nachrichteninhalt ein",
+      "titleRequired": "Bitte gib einen Titel ein",
+      "contentRequired": "Bitte gib einen Inhalt ein"
     },
     "confirmDelete": {
       "title": "Schnellnachricht löschen?",

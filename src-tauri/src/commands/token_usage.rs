@@ -51,7 +51,7 @@ use crate::commands::conversations::get_folder_conversation_core;
 use crate::db::entities::folder;
 use crate::db::service::app_metadata_service;
 use crate::db::service::token_usage_service::{
-    self as usage_service, FactQuery, UsageFact, UsageFactRow,
+    self as usage_service, FactQuery, SessionOwner, UsageFact, UsageFactRow,
 };
 use crate::models::conversation::DbConversationDetail;
 use crate::models::message::MessageTurn;
@@ -398,7 +398,8 @@ struct Acc {
 }
 
 impl Acc {
-    fn add(&mut self, row: &UsageFactRow) {
+    /// `session` 是这条明细在「数会话」时归到的侧栏会话；`None` 只算 token。
+    fn add(&mut self, row: &UsageFactRow, session: Option<i32>) {
         // Stored counters are non-negative by construction (`clamp_i64` on a
         // u64), but read them defensively: a hand-edited DB must not be able to
         // produce a negative total that reads as "less than nothing".
@@ -409,7 +410,9 @@ impl Acc {
         self.total += row.total_tokens.max(0) as u64;
         self.duration_ms += row.duration_ms.max(0) as u64;
         self.turns += 1;
-        self.conversations.insert(row.conversation_id);
+        if let Some(id) = session {
+            self.conversations.insert(id);
+        }
     }
 
     fn into_totals(self, active_days: u32) -> TokenUsageTotals {
@@ -456,6 +459,27 @@ pub(crate) struct AggregateOptions<'a> {
     /// real answer (the UI renders it as "new"), and collapsing it to `None`
     /// would make a first-ever period look like one with no comparison at all.
     pub compare_previous: bool,
+    /// 会话 id → 它在侧栏里对应的会话（见 `usage_service::session_owners`）。
+    /// 映射里值为 `None` 的（自动化运行、已删除、文件夹已移除）只算 token，
+    /// 不算会话数、不进排行；映射里没有的 id 按它自己算。
+    pub session_owners: &'a HashMap<i32, Option<SessionOwner>>,
+    /// 按文件夹筛选时选中的文件夹（已展开工作副本）；`None` 是不限文件夹。
+    /// 顶层会话的文件夹不在里面时，分布不记到它那里（见 `aggregate_report`）。
+    pub folder_scope: Option<&'a HashSet<i32>>,
+}
+
+impl AggregateOptions<'_> {
+    /// 这条明细在「数会话」「列会话」时归到哪个侧栏会话。
+    fn owner_of(&self, row: &UsageFactRow) -> Option<SessionOwner> {
+        match self.session_owners.get(&row.conversation_id) {
+            Some(owner) => owner.clone(),
+            None => Some(SessionOwner {
+                id: row.conversation_id,
+                agent_type: row.agent_type.clone(),
+                folder_id: row.folder_id,
+            }),
+        }
+    }
 }
 
 /// Fold filtered facts into everything one dashboard render needs.
@@ -478,6 +502,9 @@ pub(crate) fn aggregate_report(
     let mut by_model: HashMap<String, Acc> = HashMap::new();
     let mut heat: HashMap<(u8, u8), (u64, u64)> = HashMap::new();
     let mut per_conversation: HashMap<i32, (u64, u64, DateTime<Utc>, String, i32)> = HashMap::new();
+    // 顶层会话的文件夹不在筛选范围里时，它在分布里改记到哪个选中的文件夹
+    // （第一次碰到的那条明细的文件夹），一个会话只落在一个文件夹里。
+    let mut fallback_folder: HashMap<i32, i32> = HashMap::new();
     let mut active_dates: HashSet<NaiveDate> = HashSet::new();
     let mut first_activity: Option<DateTime<Utc>> = None;
     let mut last_activity: Option<DateTime<Utc>> = None;
@@ -485,23 +512,34 @@ pub(crate) fn aggregate_report(
     for row in rows {
         let local = local_naive(row.occurred_at, tz);
         let date = local.date();
+        let owner = opts.owner_of(row);
+        let session = owner.as_ref().map(|o| o.id);
 
-        totals.add(row);
+        totals.add(row, session);
         by_bucket
             .entry(bucket_start_date(date, bucket))
             .or_default()
-            .add(row);
-        by_folder.entry(row.folder_id).or_default().add(row);
+            .add(row, session);
+        // 并进顶层会话的用量记在顶层会话的文件夹，父子分属两个文件夹（任务
+        // worktree）时会话只算一次；只算 token 的（自动化运行等）记在自己的文件夹。
+        // 按文件夹筛选、顶层会话的文件夹没选中时，记在选中的子会话文件夹，
+        // 分布里不出现没选的文件夹。
+        let folder_key = match owner.as_ref() {
+            None => row.folder_id,
+            Some(o) if opts.folder_scope.is_none_or(|s| s.contains(&o.folder_id)) => o.folder_id,
+            Some(o) => *fallback_folder.entry(o.id).or_insert(row.folder_id),
+        };
+        by_folder.entry(folder_key).or_default().add(row, session);
         by_agent
             .entry(row.agent_type.clone())
             .or_default()
-            .add(row);
+            .add(row, session);
         // A turn whose transcript never named a model still spent tokens, so it
         // is counted under an explicit "unknown" slice rather than dropped.
         by_model
             .entry(row.model.clone().unwrap_or_else(|| UNKNOWN_MODEL.to_string()))
             .or_default()
-            .add(row);
+            .add(row, session);
 
         let cell = heat
             .entry((
@@ -512,17 +550,20 @@ pub(crate) fn aggregate_report(
         cell.0 += row.total_tokens.max(0) as u64;
         cell.1 += 1;
 
-        let entry = per_conversation.entry(row.conversation_id).or_insert((
-            0,
-            0,
-            row.occurred_at,
-            row.agent_type.clone(),
-            row.folder_id,
-        ));
-        entry.0 += row.total_tokens.max(0) as u64;
-        entry.1 += 1;
-        if row.occurred_at > entry.2 {
-            entry.2 = row.occurred_at;
+        // 排行按侧栏会话列：子会话的用量并进顶层会话，标签也用顶层会话的。
+        if let Some(owner) = owner {
+            let entry = per_conversation.entry(owner.id).or_insert((
+                0,
+                0,
+                row.occurred_at,
+                owner.agent_type,
+                owner.folder_id,
+            ));
+            entry.0 += row.total_tokens.max(0) as u64;
+            entry.1 += 1;
+            if row.occurred_at > entry.2 {
+                entry.2 = row.occurred_at;
+            }
         }
 
         active_dates.insert(date);
@@ -608,7 +649,7 @@ pub(crate) fn aggregate_report(
         let mut prev = Acc::default();
         let mut prev_dates: HashSet<NaiveDate> = HashSet::new();
         for row in previous_rows {
-            prev.add(row);
+            prev.add(row, opts.owner_of(row).map(|o| o.id));
             prev_dates.insert(local_naive(row.occurred_at, tz).date());
         }
         prev.into_totals(prev_dates.len() as u32)
@@ -825,6 +866,20 @@ pub async fn token_usage_report_core(
     };
 
     let folder_labels = folder_label_map(conn).await?;
+    let mut fact_ids: Vec<i32> = rows
+        .iter()
+        .chain(previous_rows.iter())
+        .map(|r| r.conversation_id)
+        .collect();
+    fact_ids.sort_unstable();
+    fact_ids.dedup();
+    let session_owners = usage_service::session_owners(conn, &fact_ids)
+        .await
+        .map_err(AppCommandError::from)?;
+    let folder_scope: Option<HashSet<i32>> = query
+        .folder_ids
+        .as_ref()
+        .map(|ids| ids.iter().copied().collect());
     let opts = AggregateOptions {
         bucket: filter.bucket,
         tz_offset_minutes: normalize_tz_offset(filter.tz_offset_minutes),
@@ -833,18 +888,35 @@ pub async fn token_usage_report_core(
         folder_labels: &folder_labels,
         truncated,
         compare_previous: comparable,
+        session_owners: &session_owners,
+        folder_scope: folder_scope.as_ref(),
     };
     let mut report = aggregate_report(&rows, &previous_rows, &opts);
 
     // The headline session count follows the workspace list, not the fact
-    // table. The fold's distinct-id count includes delegation children the
-    // sidebar hides and misses sessions that never recorded usage (empty ones,
+    // table: it also includes sessions that never recorded usage (empty ones,
     // agents without token counts, transcripts the agent's retention already
-    // deleted) — so with an unbounded range it would visibly disagree with the
-    // status bar's session counter. The strip's averages divide by the same
-    // number, so the cell stays self-consistent.
-    report.totals.conversation_count =
-        usage_service::workspace_conversation_count(conn, &query).await?;
+    // deleted) — so with an unbounded range it agrees with the status bar's
+    // session counter. The strip's averages divide by the same number, so the
+    // cell stays self-consistent.
+    //
+    // 有用量的那部分用和排行、按文件夹同一份归属（子会话并进顶层会话，自动化
+    // 运行、已删除、文件夹已移除的不算），三处才是同一个数：父会话这段时间自己
+    // 没花 token、只有子会话花了，也算它一个。
+    let mut sessions: HashSet<i32> = rows
+        .iter()
+        .filter_map(|r| opts.owner_of(r).map(|o| o.id))
+        .collect();
+    let factless = usage_service::factless_workspace_conversations(conn, &query)
+        .await
+        .map_err(AppCommandError::from)?;
+    // 没有用量的会话也按 0 token 记进按文件夹和排行，和顶部是同一份会话。
+    let factless: Vec<_> = factless
+        .into_iter()
+        .filter(|c| sessions.insert(c.id))
+        .collect();
+    add_factless_sessions(&mut report, &factless, &folder_labels);
+    report.totals.conversation_count = sessions.len() as u64;
 
     // Titles are the one thing the fold can't produce — resolve just the ids
     // that made the top list.
@@ -863,6 +935,54 @@ pub async fn token_usage_report_core(
     }
 
     Ok(report)
+}
+
+/// 把侧栏里有、但这段时间没有用量明细的会话按 0 token 补进按文件夹和排行：
+/// 文件夹的会话数加一（没有这一项就补一个 0 token 的），排行还有空位就按 id
+/// 顺序接在后面（0 token 排在最后，和排行的平局规则一致）。
+fn add_factless_sessions(
+    report: &mut TokenUsageReport,
+    factless: &[usage_service::FactlessConversation],
+    folder_labels: &HashMap<i32, String>,
+) {
+    if factless.is_empty() {
+        return;
+    }
+    for c in factless {
+        let key = c.folder_id.to_string();
+        match report.by_folder.iter_mut().find(|f| f.key == key) {
+            Some(item) => item.conversation_count += 1,
+            None => {
+                let label = folder_labels
+                    .get(&c.folder_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("#{}", c.folder_id));
+                let mut acc = Acc::default();
+                acc.conversations.insert(c.id);
+                report.by_folder.push(acc.into_breakdown(key, label));
+            }
+        }
+    }
+    sort_breakdown(&mut report.by_folder);
+
+    let mut rest: Vec<&usage_service::FactlessConversation> = factless.iter().collect();
+    rest.sort_by_key(|c| c.id);
+    let room = TOP_CONVERSATIONS.saturating_sub(report.top_conversations.len());
+    report
+        .top_conversations
+        .extend(
+            rest.into_iter()
+                .take(room)
+                .map(|c| TokenUsageConversationItem {
+                    conversation_id: c.id,
+                    title: None,
+                    agent_type: c.agent_type.clone(),
+                    folder_label: folder_labels.get(&c.folder_id).cloned(),
+                    total_tokens: 0,
+                    turn_count: 0,
+                    last_activity_at: c.updated_at,
+                }),
+        );
 }
 
 /// Clamp a client-supplied UTC offset to the range real zones occupy
@@ -1317,7 +1437,16 @@ mod tests {
             folder_labels: labels,
             truncated: false,
             compare_previous: false,
+            session_owners: no_owners(),
+            folder_scope: None,
         }
+    }
+
+    /// 空映射：每条明细按它自己的会话算。
+    fn no_owners() -> &'static HashMap<i32, Option<SessionOwner>> {
+        static EMPTY: std::sync::OnceLock<HashMap<i32, Option<SessionOwner>>> =
+            std::sync::OnceLock::new();
+        EMPTY.get_or_init(HashMap::new)
     }
 
     /// Same as [`opts`] but with the comparison window switched on.
@@ -2035,5 +2164,300 @@ mod tests {
             1,
             "the failed settle and its retry must both preserve recorded usage"
         );
+    }
+
+    /// 用量页的「会话数」、按文件夹的会话数合计、「消耗最高的会话」行数要和
+    /// 侧栏同一个口径：委托出去的子会话并进发起它的顶层会话，自动化运行只算
+    /// token、不算会话、不进排行。token 总量照旧把三者都算上。
+    #[tokio::test]
+    async fn delegates_fold_into_their_root_and_loop_runs_only_count_tokens() {
+        use crate::db::entities::conversation;
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
+        use sea_orm::{ActiveModelTrait, IntoActiveModel, Set};
+
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/tu-owner").await;
+        let fact = |key: &str, at: &str, tokens: i64| usage_service::UsageFact {
+            turn_key: key.into(),
+            occurred_at: ts(at),
+            model: Some("claude-opus-5".into()),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            duration_ms: 0,
+        };
+        async fn reshape(
+            db: &crate::db::AppDatabase,
+            id: i32,
+            parent: Option<i32>,
+            kind: conversation::ConversationKind,
+        ) {
+            let mut active = conversation::Entity::find_by_id(id)
+                .one(&db.conn)
+                .await
+                .expect("query")
+                .expect("row")
+                .into_active_model();
+            active.parent_id = Set(parent);
+            active.kind = Set(kind);
+            active.update(&db.conn).await.expect("reshape");
+        }
+
+        let root = seed_conversation(&db, folder, crate::models::AgentType::ClaudeCode).await;
+        let child = seed_conversation(&db, folder, crate::models::AgentType::ClaudeCode).await;
+        reshape(
+            &db,
+            child,
+            Some(root),
+            conversation::ConversationKind::Delegate,
+        )
+        .await;
+        // 孙会话：子会话再委托出去的，也要一路归到顶层。
+        let grandchild = seed_conversation(&db, folder, crate::models::AgentType::Codex).await;
+        reshape(
+            &db,
+            grandchild,
+            Some(child),
+            conversation::ConversationKind::Delegate,
+        )
+        .await;
+        let looped = seed_conversation(&db, folder, crate::models::AgentType::ClaudeCode).await;
+        reshape(&db, looped, None, conversation::ConversationKind::Loop).await;
+
+        for (id, key, tokens) in [
+            (root, "r", 100),
+            (child, "c", 40),
+            (grandchild, "g", 5),
+            (looped, "l", 7),
+        ] {
+            usage_service::replace_conversation_facts(
+                &db.conn,
+                id,
+                ts("2026-08-01T12:00:00Z"),
+                &[fact(key, "2026-08-01T10:00:00Z", tokens)],
+            )
+            .await
+            .expect("write facts");
+        }
+
+        let report = token_usage_report_core(&db.conn, TokenUsageFilter::default())
+            .await
+            .expect("report");
+
+        // 花掉的 token 一条不少。
+        assert_eq!(report.totals.total_tokens, 152);
+        assert_eq!(report.totals.conversation_count, 1);
+
+        // 排行只有顶层会话一行，token 是它和子孙之和。
+        let top: Vec<(i32, u64)> = report
+            .top_conversations
+            .iter()
+            .map(|c| (c.conversation_id, c.total_tokens))
+            .collect();
+        assert_eq!(top, vec![(root, 145)]);
+
+        // 按文件夹：token 含自动化运行，会话数和顶部一致。
+        let folder_count: u64 = report.by_folder.iter().map(|f| f.conversation_count).sum();
+        let folder_tokens: u64 = report.by_folder.iter().map(|f| f.total_tokens).sum();
+        assert_eq!(folder_count, report.totals.conversation_count);
+        assert_eq!(folder_tokens, 152);
+    }
+
+    /// 返工补的几种：子会话和父会话不在同一个文件夹、选的时间段里只有子会话花了
+    /// token、标题是 Loop 节点对话的普通会话、子会话所在文件夹已移除。顶部会话数、
+    /// 按文件夹会话数合计、排行行数三处还是同一个数，token 总量一条不少。
+    #[tokio::test]
+    async fn session_counts_agree_across_folders_windows_and_loop_titled_runs() {
+        use crate::db::entities::{conversation, folder as folder_entity};
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
+        use sea_orm::{ActiveModelTrait, IntoActiveModel, Set};
+
+        let db = fresh_in_memory_db().await;
+        let home = seed_folder(&db, "/tmp/tu-agree-home").await;
+        let worktree = seed_folder(&db, "/tmp/tu-agree-worktree").await;
+        let removed = seed_folder(&db, "/tmp/tu-agree-removed").await;
+        let fact = |key: &str, at: &str, tokens: i64| usage_service::UsageFact {
+            turn_key: key.into(),
+            occurred_at: ts(at),
+            model: Some("claude-opus-5".into()),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            duration_ms: 0,
+        };
+        let edit = |id: i32| {
+            let conn = db.conn.clone();
+            async move {
+                conversation::Entity::find_by_id(id)
+                    .one(&conn)
+                    .await
+                    .expect("query")
+                    .expect("row")
+                    .into_active_model()
+            }
+        };
+
+        let root = seed_conversation(&db, home, crate::models::AgentType::ClaudeCode).await;
+        // 子会话在另一个（任务 worktree）文件夹里。
+        let child = seed_conversation(&db, worktree, crate::models::AgentType::Codex).await;
+        let mut a = edit(child).await;
+        a.parent_id = Set(Some(root));
+        a.kind = Set(conversation::ConversationKind::Delegate);
+        a.update(&db.conn).await.expect("child");
+        // 子会话所在文件夹后来移除了。
+        let stray = seed_conversation(&db, removed, crate::models::AgentType::ClaudeCode).await;
+        let mut a = edit(stray).await;
+        a.parent_id = Set(Some(root));
+        a.kind = Set(conversation::ConversationKind::Delegate);
+        a.update(&db.conn).await.expect("stray");
+        // Jenny Loop 的节点对话：种类是普通会话，侧栏靠标题把它收进 Loop。
+        let node = seed_conversation(&db, home, crate::models::AgentType::ClaudeCode).await;
+        let mut a = edit(node).await;
+        a.title = Set(Some(
+            "你是 Loop v2 的独立节点对话。只完成下面这个节点".into(),
+        ));
+        a.update(&db.conn).await.expect("loop node");
+
+        for (id, key, at, tokens) in [
+            (root, "r", "2026-08-01T10:00:00Z", 100),
+            (child, "c", "2026-08-02T10:00:00Z", 40),
+            (stray, "s", "2026-08-02T11:00:00Z", 3),
+            (node, "n", "2026-08-02T12:00:00Z", 7),
+        ] {
+            usage_service::replace_conversation_facts(
+                &db.conn,
+                id,
+                ts("2026-08-03T00:00:00Z"),
+                &[fact(key, at, tokens)],
+            )
+            .await
+            .expect("write facts");
+        }
+        let mut f = folder_entity::Entity::find_by_id(removed)
+            .one(&db.conn)
+            .await
+            .expect("query")
+            .expect("row")
+            .into_active_model();
+        f.deleted_at = Set(Some(ts("2026-08-03T00:00:00Z")));
+        f.update(&db.conn).await.expect("remove folder");
+
+        let counts = |r: &TokenUsageReport| {
+            (
+                r.totals.conversation_count,
+                r.by_folder
+                    .iter()
+                    .map(|f| f.conversation_count)
+                    .sum::<u64>(),
+                r.top_conversations
+                    .iter()
+                    .map(|c| (c.conversation_id, c.total_tokens))
+                    .collect::<Vec<_>>(),
+            )
+        };
+
+        // 不限时间：父子分属两个文件夹，会话只在顶层会话的文件夹里算一次。
+        let all = token_usage_report_core(&db.conn, TokenUsageFilter::default())
+            .await
+            .expect("report");
+        assert_eq!(all.totals.total_tokens, 150);
+        assert_eq!(counts(&all), (1, 1, vec![(root, 140)]));
+
+        // 只看 8 月 2 日：父会话自己这天没花 token，子会话花了，顶部也要算它一个。
+        let day2 = token_usage_report_core(
+            &db.conn,
+            TokenUsageFilter {
+                start: Some(ts("2026-08-02T00:00:00Z")),
+                end: Some(ts("2026-08-03T00:00:00Z")),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("report");
+        assert_eq!(day2.totals.total_tokens, 50);
+        assert_eq!(counts(&day2), (1, 1, vec![(root, 40)]));
+
+        // 只选子会话所在的工作副本：父会话的文件夹没选，分布里不能冒出它，
+        // 用量和会话记在选中的那个文件夹。
+        let scoped = token_usage_report_core(
+            &db.conn,
+            TokenUsageFilter {
+                folder_ids: Some(vec![worktree]),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("report");
+        let folders: Vec<(i32, u64, u64)> = scoped
+            .by_folder
+            .iter()
+            .map(|f| {
+                (
+                    f.key.parse().expect("folder key"),
+                    f.total_tokens,
+                    f.conversation_count,
+                )
+            })
+            .collect();
+        assert_eq!(folders, vec![(worktree, 40, 1)]);
+        assert_eq!(counts(&scoped), (1, 1, vec![(root, 40)]));
+    }
+
+    /// 侧栏里有、但一条用量都没有的会话（空会话）也算进顶部会话数，按文件夹和
+    /// 排行也要按 0 token 把它算进去，三处还是同一个数。
+    #[tokio::test]
+    async fn factless_sessions_count_in_folders_and_ranking_too() {
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
+
+        let db = fresh_in_memory_db().await;
+        let home = seed_folder(&db, "/tmp/tu-factless-home").await;
+        let other = seed_folder(&db, "/tmp/tu-factless-other").await;
+        let used = seed_conversation(&db, home, crate::models::AgentType::ClaudeCode).await;
+        let empty_home = seed_conversation(&db, home, crate::models::AgentType::Codex).await;
+        let empty_other = seed_conversation(&db, other, crate::models::AgentType::ClaudeCode).await;
+        usage_service::replace_conversation_facts(
+            &db.conn,
+            used,
+            ts("2026-08-03T00:00:00Z"),
+            &[usage_service::UsageFact {
+                turn_key: "u".into(),
+                occurred_at: ts("2026-08-01T10:00:00Z"),
+                model: Some("claude-opus-5".into()),
+                input_tokens: 30,
+                output_tokens: 0,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                duration_ms: 0,
+            }],
+        )
+        .await
+        .expect("write facts");
+
+        let report = token_usage_report_core(&db.conn, TokenUsageFilter::default())
+            .await
+            .expect("report");
+        let mut folders: Vec<(i32, u64, u64)> = report
+            .by_folder
+            .iter()
+            .map(|f| {
+                (
+                    f.key.parse().expect("folder key"),
+                    f.total_tokens,
+                    f.conversation_count,
+                )
+            })
+            .collect();
+        folders.sort_unstable();
+        let ranking: Vec<(i32, u64)> = report
+            .top_conversations
+            .iter()
+            .map(|c| (c.conversation_id, c.total_tokens))
+            .collect();
+        assert_eq!(report.totals.conversation_count, 3);
+        assert_eq!(report.totals.total_tokens, 30);
+        assert_eq!(folders, vec![(home, 30, 2), (other, 0, 1)]);
+        assert_eq!(ranking, vec![(used, 30), (empty_home, 0), (empty_other, 0)]);
     }
 }

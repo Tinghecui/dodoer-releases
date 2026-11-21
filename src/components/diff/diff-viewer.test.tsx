@@ -1,4 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react"
+import { readdirSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 // Shared recorder for the fake Monaco pair below. Declared through
@@ -18,7 +20,21 @@ const harness = vi.hoisted(() => {
       modifiedEndLineNumber: number
     }>
   } = { current: [] }
-  return { events, state, lineChanges }
+  // What the fake single-pane editor was given: its text and the whole-line
+  // decorations the component put on it.
+  const single: {
+    value: string | null
+    decorations: Array<{
+      range: { startLineNumber: number; endLineNumber: number }
+      options: {
+        className?: string
+        isWholeLine?: boolean
+        linesDecorationsClassName?: string
+        marginClassName?: string
+      }
+    }>
+  } = { value: null, decorations: [] }
+  return { events, state, lineChanges, single }
 })
 
 // Stand-in for `@monaco-editor/react`'s DiffEditor that reproduces the two
@@ -90,7 +106,35 @@ vi.mock("@monaco-editor/react", async () => {
     return createElement("div", { "data-testid": "mock-diff-editor" })
   }
 
+  // Stand-in for the library's default (single-pane) Editor.
+  const Editor = ({
+    value,
+    onMount,
+  }: {
+    value?: string
+    onMount?: (editor: unknown, monaco: unknown) => void
+  }) => {
+    useEffect(() => {
+      harness.single.value = value ?? null
+      onMount?.(
+        {
+          createDecorationsCollection: (
+            decorations: typeof harness.single.decorations
+          ) => {
+            harness.single.decorations = decorations
+            return { clear: () => {}, set: () => {} }
+          },
+        },
+        {}
+      )
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+    return createElement("div", { "data-testid": "mock-single-editor" })
+  }
+
   return {
+    default: Editor,
+    Editor,
     DiffEditor,
     useMonaco: () => null,
     loader: { config: () => {} },
@@ -165,6 +209,8 @@ describe("DiffViewer change counts", () => {
     harness.events.length = 0
     harness.state.attached = null
     harness.lineChanges.current = []
+    harness.single.value = null
+    harness.single.decorations = []
   })
 
   const expectCounts = async (add: string, del: string) => {
@@ -238,4 +284,144 @@ describe("DiffViewer change counts", () => {
     )
     await expectCounts("+3", "-1")
   })
+})
+
+describe("DiffViewer one-sided diffs", () => {
+  beforeEach(() => {
+    harness.events.length = 0
+    harness.state.attached = null
+    harness.lineChanges.current = []
+    harness.single.value = null
+    harness.single.decorations = []
+  })
+
+  const decoratedLines = () =>
+    harness.single.decorations.map((d) => ({
+      start: d.range.startLineNumber,
+      end: d.range.endLineNumber,
+      className: d.options.className,
+      isWholeLine: d.options.isWholeLine,
+    }))
+
+  it("shows an untracked file as one pane of added lines, not a side-by-side diff", async () => {
+    // Monaco's own diff for "" → "alpha\nbeta\n": the empty HEAD side's blank
+    // line comes back as a deletion next to three insertions (#1037).
+    harness.lineChanges.current = [
+      {
+        originalStartLineNumber: 1,
+        originalEndLineNumber: 1,
+        modifiedStartLineNumber: 1,
+        modifiedEndLineNumber: 3,
+      },
+    ]
+    render(<DiffViewer original="" modified={"alpha\nbeta\n"} />)
+
+    expect(await screen.findByTestId("mock-single-editor")).toBeInTheDocument()
+    expect(screen.queryByTestId("mock-diff-editor")).not.toBeInTheDocument()
+    expect(harness.single.value).toBe("alpha\nbeta\n")
+    // Lines 1 and 2 only: the blank line after the final newline is not added.
+    expect(decoratedLines()).toEqual([
+      { start: 1, end: 2, className: "line-insert", isWholeLine: true },
+    ])
+    expect(screen.getByText("+2")).toBeInTheDocument()
+    expect(screen.getByText("-0")).toBeInTheDocument()
+    expect(screen.getByText(/1\s*change$/)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Prev/ })).toBeDisabled()
+    expect(screen.getByRole("button", { name: /Next/ })).toBeDisabled()
+  })
+
+  it("shows a deleted file as one pane of removed lines", async () => {
+    render(<DiffViewer original={"a\nb\nc"} modified="" />)
+
+    expect(await screen.findByTestId("mock-single-editor")).toBeInTheDocument()
+    expect(screen.queryByTestId("mock-diff-editor")).not.toBeInTheDocument()
+    expect(harness.single.value).toBe("a\nb\nc")
+    expect(decoratedLines()).toEqual([
+      { start: 1, end: 3, className: "line-delete", isWholeLine: true },
+    ])
+    expect(screen.getByText("+0")).toBeInTheDocument()
+    expect(screen.getByText("-3")).toBeInTheDocument()
+  })
+
+  it("keeps the side-by-side diff when both sides have content", async () => {
+    render(<DiffViewer original="a" modified="b" />)
+    expect(await screen.findByTestId("mock-diff-editor")).toBeInTheDocument()
+    expect(screen.queryByTestId("mock-single-editor")).not.toBeInTheDocument()
+  })
+
+  it("tears the side-by-side diff down cleanly when the next file is one-sided", async () => {
+    // The commit dialog keeps one viewer open while the user clicks from an
+    // edited file to a new one, so only the diff editor unmounts.
+    const { rerender } = render(<DiffViewer original="a" modified="b" />)
+    expect(await screen.findByTestId("mock-diff-editor")).toBeInTheDocument()
+
+    rerender(<DiffViewer original="" modified={"alpha\n"} />)
+    expect(await screen.findByTestId("mock-single-editor")).toBeInTheDocument()
+
+    expect(harness.events).toEqual([
+      "original:dispose",
+      "modified:dispose",
+      "editor:dispose",
+    ])
+  })
+})
+
+// The single pane is a plain Monaco editor, not a diff editor, so its row
+// colours and gutter signs only show if Monaco's stylesheet applies those
+// classes under `.monaco-editor` too, not only under `.monaco-diff-editor`.
+// Checked against the Monaco build the app actually serves (copied to
+// public/vs on install), so an upgrade that renames or rescopes them fails
+// here instead of quietly leaving the pane uncoloured.
+describe("DiffViewer one-sided styling against the shipped Monaco CSS", () => {
+  const monacoMin = join(process.cwd(), "node_modules/monaco-editor/min/vs")
+  const css = readFileSync(join(monacoMin, "editor/editor.main.css"), "utf8")
+  // Every `selector { body }` rule, selectors split on commas.
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+    selectors: m[1].split(",").map((sel) => sel.trim().replace(/\s+/g, " ")),
+    body: m[2],
+  }))
+  const editorRules = (cls: string) =>
+    rules.filter((r) => r.selectors.includes(`.monaco-editor .${cls}`))
+  // Monaco registers its diff gutter icons by name; the `codicon-<name>`
+  // class only gets a glyph if that name is registered in the served build.
+  const editorJs = readdirSync(monacoMin)
+    .filter((f) => /^editor.*\.js$/.test(f))
+    .map((f) => readFileSync(join(monacoMin, f), "utf8"))
+    .join("\n")
+
+  beforeEach(() => {
+    harness.single.value = null
+    harness.single.decorations = []
+  })
+
+  it.each([
+    { name: "added", original: "", modified: "alpha\nbeta\n" },
+    { name: "removed", original: "alpha\nbeta\n", modified: "" },
+  ])(
+    "every class on a $name pane is styled in a plain editor",
+    async ({ original, modified }) => {
+      render(<DiffViewer original={original} modified={modified} />)
+      await screen.findByTestId("mock-single-editor")
+      const [decoration] = harness.single.decorations
+      const { className, marginClassName, linesDecorationsClassName } =
+        decoration.options
+
+      // Row and gutter backgrounds.
+      for (const cls of [className!, marginClassName!]) {
+        expect(
+          editorRules(cls).some((r) => /background-color\s*:/.test(r.body)),
+          `.monaco-editor .${cls} has a background`
+        ).toBe(true)
+      }
+      // The +/− sign next to the line numbers.
+      const [sign, ...icon] = linesDecorationsClassName!.split(/\s+/)
+      expect(
+        editorRules(sign).length,
+        `.monaco-editor .${sign}`
+      ).toBeGreaterThan(0)
+      expect(icon[0]).toBe("codicon")
+      const iconName = icon[1].replace(/^codicon-/, "")
+      expect(editorJs).toContain(`"${iconName}"`)
+    }
+  )
 })

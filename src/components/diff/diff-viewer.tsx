@@ -11,7 +11,7 @@ import {
 import dynamic from "next/dynamic"
 import { ChevronLeft, ChevronRight } from "lucide-react"
 import { useMonaco } from "@monaco-editor/react"
-import type { DiffOnMount } from "@monaco-editor/react"
+import type { DiffOnMount, OnMount } from "@monaco-editor/react"
 import type { editor as MonacoEditorNs } from "monaco-editor"
 import {
   defineMonacoThemes,
@@ -31,6 +31,19 @@ const MonacoDiffEditor = dynamic(
   { ssr: false }
 )
 
+// Single-pane editor for a diff with one empty side (new / untracked file,
+// deleted file). Side by side, Monaco treats the empty side as one blank line
+// and pairs it badly — a red "deleted" line on the left and an extra blank "+"
+// line on the right for a plain new file (#1037) — so there is nothing to
+// compare and the non-empty side is shown alone, marked added or removed.
+const MonacoEditor = dynamic(
+  async () => {
+    const mod = await import("@monaco-editor/react")
+    return { default: mod.default }
+  },
+  { ssr: false }
+)
+
 // Commit-synchronous on the client so the teardown below runs in the deletion
 // commit — strictly before the library's passive unmount cleanup, whatever the
 // parent/child effect order is; a no-op-safe passive effect during the
@@ -44,6 +57,50 @@ function countLines(text: string): number {
   if (text === "") return 0
   const parts = text.split("\n").length
   return text.endsWith("\n") ? parts - 1 : parts
+}
+
+// @monaco-editor/react tears the diff editor down in the wrong order on
+// unmount: it disposes both text models and only then the widget. Monaco
+// flags that as a self-check bug ("TextModel got disposed before
+// DiffEditorWidget model got reset") and its default handler rethrows it from
+// a timeout, i.e. an uncaught error in the dev overlay on every diff→file tab
+// switch or dialog close. Do the teardown first, correctly: detach the models
+// (which drops the widget's onWillDispose listeners), then dispose them —
+// nothing else in the app owns or tracks them, since no model path is passed
+// and Monaco hands out an anonymous URI per model. The library then reads a
+// null model and only disposes the widget.
+//
+// Rendered as a sibling of the diff editor so it unmounts with it — whether
+// the whole viewer closes or only the diff editor gives way to the
+// single-pane view of a one-sided file.
+//
+// This assumes the subtree is being DESTROYED. Layout cleanup also fires when
+// a subtree is merely hidden (`<Activity mode="hidden">`, a Suspense
+// fallback); no host does that today, and if one ever wraps a diff that way
+// the models must be re-created on re-show instead of disposed here.
+function DiffEditorTeardown({
+  editorRef,
+  timerRef,
+}: {
+  editorRef: React.RefObject<MonacoEditorNs.IStandaloneDiffEditor | null>
+  timerRef: React.RefObject<ReturnType<typeof setTimeout> | null>
+}) {
+  useIsomorphicLayoutEffect(
+    () => () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
+      const editor = editorRef.current
+      editorRef.current = null
+      const model = editor?.getModel()
+      editor?.setModel(null)
+      model?.original.dispose()
+      model?.modified.dispose()
+    },
+    [editorRef, timerRef]
+  )
+  return null
 }
 
 export interface DiffViewerProps {
@@ -107,37 +164,6 @@ export function DiffViewer({
     initialDiffReadRef.current = setTimeout(updateDiffs, 300)
   }, [])
 
-  // @monaco-editor/react tears the diff editor down in the wrong order on
-  // unmount: it disposes both text models and only then the widget. Monaco
-  // flags that as a self-check bug ("TextModel got disposed before
-  // DiffEditorWidget model got reset") and its default handler rethrows it from
-  // a timeout, i.e. an uncaught error in the dev overlay on every diff→file tab
-  // switch or dialog close. Do the teardown first, correctly: detach the models
-  // (which drops the widget's onWillDispose listeners), then dispose them —
-  // nothing else in the app owns or tracks them, since no model path is passed
-  // and Monaco hands out an anonymous URI per model. The library then reads a
-  // null model and only disposes the widget.
-  //
-  // This assumes the subtree is being DESTROYED. Layout cleanup also fires when
-  // a subtree is merely hidden (`<Activity mode="hidden">`, a Suspense
-  // fallback); no host does that today, and if one ever wraps a diff that way
-  // the models must be re-created on re-show instead of disposed here.
-  useIsomorphicLayoutEffect(
-    () => () => {
-      if (initialDiffReadRef.current) {
-        clearTimeout(initialDiffReadRef.current)
-        initialDiffReadRef.current = null
-      }
-      const editor = diffEditorRef.current
-      diffEditorRef.current = null
-      const model = editor?.getModel()
-      editor?.setModel(null)
-      model?.original.dispose()
-      model?.modified.dispose()
-    },
-    []
-  )
-
   const navigateToChange = useCallback(
     (index: number) => {
       const editor = diffEditorRef.current
@@ -198,6 +224,73 @@ export function DiffViewer({
     ]
   )
 
+  // One side empty and the other not: show the non-empty side alone.
+  const oneSided =
+    (original === "") !== (modified === "")
+      ? original === ""
+        ? ("added" as const)
+        : ("removed" as const)
+      : null
+  const oneSidedText = oneSided === "added" ? modified : original
+
+  // Same options as the diff, minus the diff-only ones.
+  const singleOptions =
+    useMemo<MonacoEditorNs.IStandaloneEditorConstructionOptions>(
+      () => ({
+        readOnly: true,
+        domReadOnly: true,
+        automaticLayout: true,
+        fontSize: (editorFontSize * zoomLevel) / 100,
+        fontFamily: editorFontStack,
+        fontLigatures: editorLigatures,
+        wordWrap: editorWordWrap ? "on" : "off",
+        minimap: { enabled: false },
+        unicodeHighlight: MONACO_UNICODE_HIGHLIGHT_OPTIONS,
+        scrollBeyondLastLine: false,
+        overviewRulerLanes: 0,
+      }),
+      [
+        zoomLevel,
+        editorFontStack,
+        editorFontSize,
+        editorLigatures,
+        editorWordWrap,
+      ]
+    )
+
+  const handleSingleMount: OnMount = useCallback(
+    (editor) => {
+      if (!oneSided) return
+      const lines = countLines(oneSidedText)
+      if (lines === 0) return
+      // Monaco's own diff line styles (green / red row, "+" / "−" gutter
+      // sign). The blank line after a final newline is not part of the file's
+      // content and stays undecorated.
+      const kind = oneSided === "added" ? "insert" : "delete"
+      editor.createDecorationsCollection([
+        {
+          range: {
+            startLineNumber: 1,
+            startColumn: 1,
+            endLineNumber: lines,
+            endColumn: 1,
+          },
+          options: {
+            className: `line-${kind}`,
+            isWholeLine: true,
+            linesDecorationsClassName: `${kind}-sign codicon codicon-diff-${
+              kind === "insert" ? "insert" : "remove"
+            }`,
+            marginClassName: `gutter-${kind}`,
+          },
+        },
+      ])
+    },
+    // The editor is keyed on the content below, so a mount always sees the
+    // text it decorates.
+    [oneSided, oneSidedText]
+  )
+
   const { additions, deletions } = useMemo(() => {
     // A side that is empty (new / untracked file, deleted file) is still one
     // blank line to Monaco, and its diff scoring prefers pairing that blank
@@ -231,39 +324,44 @@ export function DiffViewer({
     return { additions: add, deletions: del }
   }, [diffChanges, original, modified])
 
+  // A one-sided diff is a single change; there is nothing to step through.
+  const changeCount = oneSided ? 1 : diffChanges.length
+
   return (
     <div className={cn("flex h-full flex-col", className)}>
       <div className="flex items-center gap-3 border-b bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground">
         <span className="font-medium">{originalLabel}</span>
         <span className="text-muted-foreground/60">↔</span>
         <span className="font-medium">{modifiedLabel}</span>
-        {diffChanges.length > 0 && (
+        {changeCount > 0 && (
           <>
             <span className="ml-2 font-mono text-tone-success">
               +{additions}
             </span>
             <span className="font-mono text-tone-danger">-{deletions}</span>
             <span>
-              {diffChanges.length}{" "}
-              {diffChanges.length === 1 ? "change" : "changes"}
+              {changeCount} {changeCount === 1 ? "change" : "changes"}
             </span>
             <div className="ml-auto flex items-center gap-1">
               <button
                 type="button"
                 onClick={handlePrevChange}
-                disabled={currentChangeIndex <= 0}
+                disabled={oneSided !== null || currentChangeIndex <= 0}
                 className="rounded border border-border bg-background px-2 py-0.5 text-3xs disabled:opacity-40 hover:bg-muted transition-colors inline-flex items-center gap-1"
               >
                 <ChevronLeft className="h-3 w-3" />
                 Prev
               </button>
               <span className="tabular-nums text-3xs">
-                {currentChangeIndex + 1} / {diffChanges.length}
+                {oneSided ? 1 : currentChangeIndex + 1} / {changeCount}
               </span>
               <button
                 type="button"
                 onClick={handleNextChange}
-                disabled={currentChangeIndex >= diffChanges.length - 1}
+                disabled={
+                  oneSided !== null ||
+                  currentChangeIndex >= diffChanges.length - 1
+                }
                 className="rounded border border-border bg-background px-2 py-0.5 text-3xs disabled:opacity-40 hover:bg-muted transition-colors inline-flex items-center gap-1"
               >
                 Next
@@ -274,20 +372,43 @@ export function DiffViewer({
         )}
       </div>
       <div className="min-h-0 flex-1">
-        <MonacoDiffEditor
-          original={original}
-          modified={modified}
-          language={language}
-          theme={editorTheme}
-          beforeMount={defineMonacoThemes}
-          onMount={handleEditorMount}
-          loading={
-            <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-              Loading diff viewer...
-            </div>
-          }
-          options={diffOptions}
-        />
+        {oneSided ? (
+          <MonacoEditor
+            key={`${oneSided}:${oneSidedText}`}
+            value={oneSidedText}
+            language={language}
+            theme={editorTheme}
+            beforeMount={defineMonacoThemes}
+            onMount={handleSingleMount}
+            loading={
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                Loading diff viewer...
+              </div>
+            }
+            options={singleOptions}
+          />
+        ) : (
+          <>
+            <DiffEditorTeardown
+              editorRef={diffEditorRef}
+              timerRef={initialDiffReadRef}
+            />
+            <MonacoDiffEditor
+              original={original}
+              modified={modified}
+              language={language}
+              theme={editorTheme}
+              beforeMount={defineMonacoThemes}
+              onMount={handleEditorMount}
+              loading={
+                <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                  Loading diff viewer...
+                </div>
+              }
+              options={diffOptions}
+            />
+          </>
+        )}
       </div>
     </div>
   )

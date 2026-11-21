@@ -203,12 +203,18 @@ export function QuickMessagesSettings() {
   // 新草稿创建成功、用户在请求返回前又接着打了字时设成 true，
   // 下一次换到新条目时保留表单里的字，不用存进去的值覆盖
   const keepDraftOnSwitchRef = useRef(false)
+  // 表单上次按条目重置以后，用户在输入框里改过没有。光比内容不够：
+  // 用户可能打了字又删回原样，那也是用户的输入，保存返回时不能覆盖
+  const editedSinceResetRef = useRef(false)
 
   useEffect(() => {
     if (keepDraftOnSwitchRef.current) {
       keepDraftOnSwitchRef.current = false
+      // 留下的是用户在等待时打的字，算改过
+      editedSinceResetRef.current = true
       return
     }
+    editedSinceResetRef.current = false
     const current = selectedMessageRef.current
     if (newDraft) {
       setDraftTitle("")
@@ -228,6 +234,12 @@ export function QuickMessagesSettings() {
   useEffect(() => {
     latestDraftRef.current = { title: draftTitle, content: draftContent }
   }, [draftTitle, draftContent])
+
+  // 保存返回时拿来判断：现在表单上编辑的是不是刚存的那一条
+  const editingIdRef = useRef<number | null>(null)
+  useEffect(() => {
+    editingIdRef.current = newDraft ? null : selectedMessageId
+  }, [newDraft, selectedMessageId])
 
   useEffect(() => {
     if (selectedId === null && messages.length > 0) {
@@ -315,6 +327,16 @@ export function QuickMessagesSettings() {
     const typedSinceSubmit = () =>
       latestDraftRef.current.title !== submittedTitle ||
       latestDraftRef.current.content !== submittedContent
+    // 保存中切走又切回同一条、切回后一个字没改时，表单显示的是保存前的旧值。
+    // 没切走过，或者切回后改过（哪怕删回了原样），都不算
+    const beforeSave = selectedMessage
+    const showsRowBeforeSave = () =>
+      beforeSave !== null &&
+      editSessionRef.current !== session &&
+      editingIdRef.current === beforeSave.id &&
+      !editedSinceResetRef.current &&
+      latestDraftRef.current.title === beforeSave.title &&
+      latestDraftRef.current.content === beforeSave.content
     if (newDraft || !selectedMessage) {
       try {
         const created = await quickMessagesCreate({ title, content })
@@ -345,8 +367,12 @@ export function QuickMessagesSettings() {
         prev.map((m) => (m.id === updated.id ? updated : m))
       )
       // 存进去的是去掉首尾空格的值，上面的重置不会因为保存触发，这里自己同步。
-      // 用户已经切到别的条目、或者等待时又打了字，就不动表单，免得覆盖新的输入
-      if (editSessionRef.current === session && !typedSinceSubmit()) {
+      // 用户已经切到别的条目、或者等待时又打了字，就不动表单，免得覆盖新的输入。
+      // 切走又切回这一条、表单还是保存前的旧值时也要同步，不然再点保存会把新值改回去
+      if (
+        (editSessionRef.current === session && !typedSinceSubmit()) ||
+        showsRowBeforeSave()
+      ) {
         setDraftTitle(updated.title)
         setDraftContent(updated.content)
       }
@@ -554,7 +580,10 @@ export function QuickMessagesSettings() {
                         id="quick-message-title"
                         ref={titleInputRef}
                         value={draftTitle}
-                        onChange={(event) => setDraftTitle(event.target.value)}
+                        onChange={(event) => {
+                          editedSinceResetRef.current = true
+                          setDraftTitle(event.target.value)
+                        }}
                         placeholder={t("fields.titlePlaceholder")}
                         aria-invalid={showRequired && titleMissing}
                         aria-describedby={
@@ -582,9 +611,10 @@ export function QuickMessagesSettings() {
                       <Textarea
                         id="quick-message-content"
                         value={draftContent}
-                        onChange={(event) =>
+                        onChange={(event) => {
+                          editedSinceResetRef.current = true
                           setDraftContent(event.target.value)
-                        }
+                        }}
                         placeholder={t("fields.contentPlaceholder")}
                         className="min-h-[16.25rem]"
                         aria-invalid={showRequired && contentMissing}

@@ -2347,7 +2347,7 @@ export function MessageInput({
                   <MessageSquareText className="size-4 shrink-0 text-primary/80" />
                   <div className="flex min-w-0 flex-1 items-center gap-2">
                     <span className="shrink-0 font-medium">
-                      {message.title || t("quickMessageUntitled")}
+                      {message.title.trim() || t("quickMessageUntitled")}
                     </span>
                     <span
                       className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
@@ -2576,7 +2576,7 @@ export function MessageInput({
                       onSelect={() => menuShortcuts.insertQuickMessage(message)}
                     >
                       <span className="truncate">
-                        {message.title || (
+                        {message.title.trim() || (
                           <span className="italic text-muted-foreground">
                             {t("quickMessageUntitled")}
                           </span>

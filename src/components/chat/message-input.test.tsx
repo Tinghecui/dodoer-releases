@@ -2045,6 +2045,31 @@ describe("MessageInput slash menu quick messages", () => {
     expect(within(menu).getByText("QA 问候")).toBeInTheDocument()
   })
 
+  it("shows Untitled for an old entry whose title is only spaces", async () => {
+    const api = await import("@/lib/api")
+    vi.mocked(api.quickMessagesList).mockResolvedValue([
+      { ...QUICK, title: "   " },
+    ])
+    await typeInEditor("/", { availableCommands: [], commandsLoading: false })
+    const menu = await screen.findByTestId("slash-menu")
+    expect(within(menu).getByText("Untitled")).toBeInTheDocument()
+  })
+
+  it("shows Untitled in the add menu for an old entry whose title is only spaces", async () => {
+    const api = await import("@/lib/api")
+    vi.mocked(api.quickMessagesList).mockResolvedValue([
+      { ...QUICK, title: "   " },
+    ])
+    await typeInEditor("")
+    const add = screen.getByRole("button", { name: "Add" })
+    fireEvent.keyDown(add, { key: "Enter" })
+    const sub = await screen.findByRole("menuitem", { name: "Quick messages" })
+    fireEvent.keyDown(sub, { key: "ArrowRight" })
+    expect(
+      await screen.findByRole("menuitem", { name: "Untitled" })
+    ).toBeInTheDocument()
+  })
+
   it("closes when the spaced text after `/` matches no title", async () => {
     const api = await import("@/lib/api")
     vi.mocked(api.quickMessagesList).mockResolvedValue([
@@ -3319,6 +3344,42 @@ describe("MessageInput right-click token selection", () => {
     // the address it holds still gets its own row.
     await screen.findByRole("menuitem", { name: "Send email" })
     expect(selectedText(editor)).toBe("adam@example.com")
+  })
+
+  it("shows Untitled in the quick message submenu for a spaces-only title", async () => {
+    const api = await import("@/lib/api")
+    vi.mocked(api.quickMessagesList).mockResolvedValue([
+      {
+        id: 1,
+        title: "   ",
+        content: "老条目的内容",
+        sort_order: 0,
+        created_at: "",
+        updated_at: "",
+      },
+    ])
+    try {
+      const editor = await mountWithEditor()
+      seed(editor, "hello", 1)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      })
+
+      fireEvent.contextMenu(editingSurface(), { clientX: 40, clientY: 12 })
+
+      const sub = await screen.findByRole("menuitem", {
+        name: "Quick messages",
+      })
+      fireEvent.keyDown(sub, { key: "ArrowRight" })
+      // 快捷消息读回来以后菜单会重画一次，等到最后那份里有「未命名」
+      await waitFor(() =>
+        expect(
+          screen.getByRole("menuitem", { name: "Untitled" })
+        ).toBeInTheDocument()
+      )
+    } finally {
+      vi.mocked(api.quickMessagesList).mockResolvedValue([])
+    }
   })
 
   it("still picks the token up where the native menu takes over", async () => {

@@ -492,4 +492,146 @@ describe("QuickMessagesSettings 空白校验", () => {
       (screen.getByLabelText(qm.fields.title) as HTMLInputElement).value
     ).toBe("First typing")
   })
+
+  it("保存中切走再切回同一条但没打字，返回后表单换成存进去的值，再保存不会改回旧值", async () => {
+    api.quickMessagesList.mockResolvedValue([
+      message({ id: 1, title: "First", content: "one" }),
+      message({ id: 2, title: "Second", content: "two", sort_order: 1 }),
+    ])
+    let resolveUpdate: (m: QuickMessage) => void = () => {}
+    api.quickMessagesUpdate.mockImplementation(
+      () =>
+        new Promise<QuickMessage>((resolve) => {
+          resolveUpdate = resolve
+        })
+    )
+    const user = userEvent.setup()
+    renderPage()
+
+    const title = (await screen.findByLabelText(
+      qm.fields.title
+    )) as HTMLInputElement
+    await waitFor(() => expect(title.value).toBe("First"))
+    await user.type(title, " edited")
+    await user.click(screen.getByRole("button", { name: qm.actions.save }))
+    await waitFor(() => expect(api.quickMessagesUpdate).toHaveBeenCalled())
+
+    await user.click(screen.getByText("Second"))
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText(qm.fields.title) as HTMLInputElement).value
+      ).toBe("Second")
+    )
+    await user.click(screen.getByText("First"))
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText(qm.fields.title) as HTMLInputElement).value
+      ).toBe("First")
+    )
+
+    resolveUpdate(message({ id: 1, title: "First edited", content: "one" }))
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(qm.toasts.saved)
+    )
+
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText(qm.fields.title) as HTMLInputElement).value
+      ).toBe("First edited")
+    )
+    // 表单和存进去的一样，保存按钮回到不可点，不会把新值覆盖回旧值
+    expect(
+      (
+        screen.getByRole("button", {
+          name: qm.actions.save,
+        }) as HTMLButtonElement
+      ).disabled
+    ).toBe(true)
+  })
+
+  it("保存中不切走、把改动删回保存前的内容，返回后不被覆盖", async () => {
+    api.quickMessagesList.mockResolvedValue([
+      message({ id: 1, title: "First", content: "one" }),
+    ])
+    let resolveUpdate: (m: QuickMessage) => void = () => {}
+    api.quickMessagesUpdate.mockImplementation(
+      () =>
+        new Promise<QuickMessage>((resolve) => {
+          resolveUpdate = resolve
+        })
+    )
+    const user = userEvent.setup()
+    renderPage()
+
+    const title = (await screen.findByLabelText(
+      qm.fields.title
+    )) as HTMLInputElement
+    await waitFor(() => expect(title.value).toBe("First"))
+    await user.type(title, " edited")
+    await user.click(screen.getByRole("button", { name: qm.actions.save }))
+    await waitFor(() => expect(api.quickMessagesUpdate).toHaveBeenCalled())
+
+    // 等待时把刚加的 " edited" 删掉，表单恰好回到保存前的内容
+    await user.type(
+      screen.getByLabelText(qm.fields.title),
+      "{Backspace}".repeat(" edited".length)
+    )
+    expect(
+      (screen.getByLabelText(qm.fields.title) as HTMLInputElement).value
+    ).toBe("First")
+
+    resolveUpdate(message({ id: 1, title: "First edited", content: "one" }))
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(qm.toasts.saved)
+    )
+
+    expect(
+      (screen.getByLabelText(qm.fields.title) as HTMLInputElement).value
+    ).toBe("First")
+  })
+
+  it("保存中切走再切回同一条、打字后又删回旧值，返回后不被覆盖", async () => {
+    api.quickMessagesList.mockResolvedValue([
+      message({ id: 1, title: "First", content: "one" }),
+      message({ id: 2, title: "Second", content: "two", sort_order: 1 }),
+    ])
+    let resolveUpdate: (m: QuickMessage) => void = () => {}
+    api.quickMessagesUpdate.mockImplementation(
+      () =>
+        new Promise<QuickMessage>((resolve) => {
+          resolveUpdate = resolve
+        })
+    )
+    const user = userEvent.setup()
+    renderPage()
+
+    const title = (await screen.findByLabelText(
+      qm.fields.title
+    )) as HTMLInputElement
+    await waitFor(() => expect(title.value).toBe("First"))
+    await user.type(title, " edited")
+    await user.click(screen.getByRole("button", { name: qm.actions.save }))
+    await waitFor(() => expect(api.quickMessagesUpdate).toHaveBeenCalled())
+
+    await user.click(screen.getByText("Second"))
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText(qm.fields.title) as HTMLInputElement).value
+      ).toBe("Second")
+    )
+    await user.click(screen.getByText("First"))
+    const titleNow = screen.getByLabelText(qm.fields.title) as HTMLInputElement
+    await waitFor(() => expect(titleNow.value).toBe("First"))
+    await user.type(titleNow, "X{Backspace}")
+    expect(titleNow.value).toBe("First")
+
+    resolveUpdate(message({ id: 1, title: "First edited", content: "one" }))
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(qm.toasts.saved)
+    )
+
+    expect(
+      (screen.getByLabelText(qm.fields.title) as HTMLInputElement).value
+    ).toBe("First")
+  })
 })

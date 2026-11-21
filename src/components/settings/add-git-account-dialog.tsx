@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useState } from "react"
+import { useCallback, useId, useState } from "react"
 import { Eye, EyeOff } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useImeGuard } from "@/hooks/use-ime-guard"
@@ -17,6 +17,33 @@ import {
 } from "@/components/ui/dialog"
 import { saveAccountToken } from "@/lib/api"
 import type { GitHubAccount } from "@/lib/types"
+
+/** 把用户填的服务器地址规范成 http(s) 地址；不是合法地址时返回 null。
+ *  没写协议、又像主机名（字母、数字、`.-:`，没有空格）的补上 `https://`，
+ *  其余的交给 `URL` 解析，协议必须是 http 或 https，主机不能为空。 */
+export function normalizeGitServerUrl(input: string): string | null {
+  const trimmed = input.trim()
+  if (!trimmed) return null
+  const candidate =
+    !trimmed.includes("://") && /^[A-Za-z0-9.\-:]+(\/\S*)?$/.test(trimmed)
+      ? `https://${trimmed}`
+      : trimmed
+  if (/\s/.test(candidate)) return null
+  let parsed: URL
+  try {
+    parsed = new URL(candidate)
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null
+  if (!parsed.hostname) return null
+  // 保留用户写的路径，只去掉路径末尾多余的斜杠；
+  // 查询参数和 # 后面的内容原样保留，不然存下来的就不是用户填的地址
+  const tailAt = candidate.search(/[?#]/)
+  const head = tailAt === -1 ? candidate : candidate.slice(0, tailAt)
+  const tail = tailAt === -1 ? "" : candidate.slice(tailAt)
+  return head.replace(/\/+$/, "") + tail
+}
 
 interface AddGitAccountDialogProps {
   open: boolean
@@ -39,6 +66,9 @@ export function AddGitAccountDialog({
   const [password, setPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 地址的错误单独存，显示在地址输入框下面，让用户就地看到哪里填错了
+  const [serverError, setServerError] = useState<string | null>(null)
+  const serverErrorId = useId()
 
   const resetForm = useCallback(() => {
     setServerUrl("")
@@ -46,6 +76,7 @@ export function AddGitAccountDialog({
     setPassword("")
     setShowPassword(false)
     setError(null)
+    setServerError(null)
   }, [])
 
   const handleOpenChange = useCallback(
@@ -62,7 +93,12 @@ export function AddGitAccountDialog({
     const trimmedPass = password.trim()
 
     if (!trimmedUrl) {
-      setError(t("gitAccount.serverRequired"))
+      setServerError(t("gitAccount.serverRequired"))
+      return
+    }
+    const normalizedUrl = normalizeGitServerUrl(trimmedUrl)
+    if (!normalizedUrl) {
+      setServerError(t("gitAccount.serverInvalid"))
       return
     }
     if (!trimmedUser) {
@@ -76,7 +112,7 @@ export function AddGitAccountDialog({
 
     const account: GitHubAccount = {
       id: randomUUID(),
-      server_url: trimmedUrl,
+      server_url: normalizedUrl,
       username: trimmedUser,
       scopes: [],
       avatar_url: null,
@@ -128,10 +164,18 @@ export function AddGitAccountDialog({
               onChange={(e) => {
                 setServerUrl(e.target.value)
                 setError(null)
+                setServerError(null)
               }}
               placeholder={t("gitAccount.serverUrlPlaceholder")}
+              aria-invalid={serverError ? true : undefined}
+              aria-describedby={serverError ? serverErrorId : undefined}
               autoFocus
             />
+            {serverError && (
+              <p id={serverErrorId} className="text-xs text-red-400">
+                {serverError}
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">

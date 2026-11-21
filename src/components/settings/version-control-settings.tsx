@@ -42,6 +42,7 @@ import {
   validateGitLabToken,
   validateGiteaToken,
   validateCnbToken,
+  probeGitServer,
   getAccountToken,
   deleteAccountToken,
 } from "@/lib/api"
@@ -89,8 +90,8 @@ function isCnbAccount(account: GitHubAccount): boolean {
 }
 
 /** Which "who am I" endpoint tests an account's stored token, or `null` for a
- *  plain git credential — those validate against nothing, so the most that can
- *  be said is that the keyring still holds the secret. */
+ *  plain git credential — those have no token API, so the test only probes
+ *  whether the server answers at all (`probeGitServer`). */
 function validatorFor(
   account: GitHubAccount
 ): typeof validateGitHubToken | null {
@@ -407,9 +408,18 @@ export function VersionControlSettings() {
             )
           }
         } else {
-          // A plain git credential has no API to validate against,
-          // just confirm the token exists in keyring.
-          toast.success(t("connectionSuccess"))
+          // 普通 Git 服务器没有统一的令牌校验接口：真去连一下服务器，
+          // 连得上也只能说明服务器可达，令牌本身验证不了。
+          const result = await probeGitServer(account.server_url)
+          if (result.success) {
+            toast.success(t("gitAccount.serverReachable"))
+          } else {
+            toast.error(
+              t("connectionFailed", {
+                message: result.message ?? "Unknown error",
+              })
+            )
+          }
         }
       } catch (err) {
         const message = toErrorMessage(err)

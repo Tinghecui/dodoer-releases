@@ -624,3 +624,182 @@ struct CnbError {
     #[serde(default)]
     errmsg: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Plain git server probe
+// ---------------------------------------------------------------------------
+
+/// 普通 Git 服务器账号的「测试」用到的超时：连不上的地址不该让按钮一直转。
+const GIT_SERVER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// 把账号里存的服务器地址规范成 http(s) 地址：没写协议的补 `https://`，
+/// 协议不是 http/https、没有主机名、根本解析不了的都拒绝。
+fn parse_git_server_url(server_url: &str) -> Result<reqwest::Url, AppCommandError> {
+    let trimmed = server_url.trim();
+    if trimmed.is_empty() {
+        return Err(AppCommandError::invalid_input("A server URL is required"));
+    }
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    let invalid =
+        || AppCommandError::invalid_input(format!("Not an http(s) server URL: {trimmed}"));
+    if candidate.chars().any(char::is_whitespace) {
+        return Err(invalid());
+    }
+    let url = reqwest::Url::parse(&candidate).map_err(|_| invalid())?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none_or(str::is_empty) {
+        return Err(invalid());
+    }
+    Ok(url)
+}
+
+/// 普通 Git 服务器（Bitbucket、自建服务等）没有统一的令牌校验接口，
+/// 只能确认服务器能不能连上：对地址发一次 GET，收到任何 HTTP 响应（包括 401、404）
+/// 都算连得上；DNS 解析失败、连不上、超时、TLS 出错时 `success: false`，
+/// `message` 里写原因。地址本身不合法时直接返回错误。
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn probe_git_server(
+    server_url: String,
+) -> Result<GitHubTokenValidation, AppCommandError> {
+    let url = parse_git_server_url(&server_url)?;
+    // 不跟随重定向：3xx 本身就是服务器回的 HTTP 响应，跟过去目标连不上会被误报成连不上
+    let client = reqwest::Client::builder()
+        .timeout(GIT_SERVER_PROBE_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| {
+            AppCommandError::network("Failed to build HTTP client").with_detail(e.to_string())
+        })?;
+    let (success, message) = match client.get(url).header("User-Agent", "codeg").send().await {
+        Ok(_) => (true, None),
+        Err(e) => (false, Some(describe_probe_error(&e))),
+    };
+    Ok(GitHubTokenValidation {
+        success,
+        username: None,
+        scopes: vec![],
+        avatar_url: None,
+        message,
+    })
+}
+
+/// reqwest 自己的错误文字只有「error sending request for url (…)」，
+/// 真正的原因（DNS、拒绝连接、证书）在 source 链里，一起拼出来。
+fn describe_probe_error(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        return format!("timed out after {}s", GIT_SERVER_PROBE_TIMEOUT.as_secs());
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let mut source = std::error::Error::source(e);
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !text.is_empty() && !parts.iter().any(|p| p.contains(&text)) {
+            parts.push(text);
+        }
+        source = cause.source();
+    }
+    if parts.is_empty() {
+        e.to_string()
+    } else {
+        parts.join(": ")
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn rejects_addresses_that_are_not_http_urls() {
+        for bad in [
+            "not a url !!",
+            "ftp://git.example.test",
+            "",
+            "https://",
+            "file:///tmp/x",
+        ] {
+            assert!(
+                parse_git_server_url(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn adds_https_to_a_bare_host() {
+        let url = parse_git_server_url(" git.example.test ").unwrap();
+        assert_eq!(url.as_str(), "https://git.example.test/");
+    }
+
+    #[tokio::test]
+    async fn invalid_address_is_an_error() {
+        assert!(probe_git_server("not a url !!".into()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn unreachable_server_reports_failure_with_reason() {
+        // 先占一个端口再放掉，保证这个端口上没人监听
+        let listener = std::net::TcpListener::bind("localhost:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let result = probe_git_server(format!("http://localhost:{port}"))
+            .await
+            .unwrap();
+        assert!(!result.success, "a closed port must not count as reachable");
+        let message = result.message.unwrap_or_default();
+        assert!(!message.is_empty());
+        // 原因要写出来，不能只有 reqwest 那句笼统的 error sending request
+        assert!(!message.starts_with("error sending request"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn any_http_response_counts_as_reachable() {
+        let listener = tokio::net::TcpListener::bind("localhost:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                )
+                .await;
+        });
+
+        let result = probe_git_server(format!("http://localhost:{port}/scm"))
+            .await
+            .unwrap();
+        assert!(result.success, "{:?}", result.message);
+    }
+
+    #[tokio::test]
+    async fn redirect_response_counts_as_reachable_without_following() {
+        // 重定向指向一个没人监听的端口：服务器已经回了 HTTP 响应，不能跟过去再报失败
+        let closed = std::net::TcpListener::bind("localhost:0").unwrap();
+        let closed_port = closed.local_addr().unwrap().port();
+        drop(closed);
+
+        let listener = tokio::net::TcpListener::bind("localhost:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nlocation: http://localhost:{closed_port}/login\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+            );
+            let _ = sock.write_all(response.as_bytes()).await;
+        });
+
+        let result = probe_git_server(format!("http://localhost:{port}"))
+            .await
+            .unwrap();
+        assert!(result.success, "{:?}", result.message);
+    }
+}

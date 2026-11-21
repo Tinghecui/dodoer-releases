@@ -491,6 +491,8 @@
       "passwordHint": "サーバーのパスワードまたはアクセストークンを入力してください。",
       "add": "追加",
       "serverRequired": "サーバー URL を入力してください。",
+      "serverInvalid": "http(s) のアドレスを入力してください（例: https://git.example.com）。",
+      "serverReachable": "サーバーには接続できますが、この種類のアカウントではトークンを検証できません。",
       "usernameRequired": "ユーザー名を入力してください。",
       "passwordRequired": "パスワードを入力してください。"
     }

@@ -495,6 +495,7 @@
     "POST /api/pet_update_meta": "web",
     "POST /api/prepare_workspace_file_search": "web",
     "POST /api/preview_folder_links": "web",
+    "POST /api/probe_git_server": "web",
     "POST /api/probe_terminal_shell_path": "web",
     "POST /api/probe_web_service_port": "web",
     "POST /api/quick_messages_create": "web",

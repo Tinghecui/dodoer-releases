@@ -19,6 +19,7 @@ vi.mock("@/lib/api", () => ({
   validateGitLabToken: vi.fn(),
   validateGiteaToken: vi.fn(),
   validateCnbToken: vi.fn(),
+  probeGitServer: vi.fn(),
   getAccountToken: vi.fn(),
   deleteAccountToken: vi.fn(),
   saveAccountToken: vi.fn(),
@@ -42,7 +43,10 @@ import {
   testGitPath,
   updateGitHubAccounts,
   updateGitSettings,
+  getAccountToken,
+  probeGitServer,
 } from "@/lib/api"
+import { toast } from "sonner"
 import type { GitHubAccount } from "@/lib/types"
 
 const mockDetectGit = vi.mocked(detectGit)
@@ -383,5 +387,74 @@ describe("VersionControlSettings read failure", () => {
         custom_path: "/opt/git/bin/git",
       })
     )
+  })
+})
+
+describe("VersionControlSettings plain git account test", () => {
+  const T = enMessages.VersionControlSettings
+  const plain = account({
+    id: "acc-git",
+    server_url: "https://git.invalid",
+    username: "qa-user",
+    provider: undefined,
+    scopes: [],
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDetectGit.mockResolvedValue({
+      installed: true,
+      version: "git version 2.39.0",
+      path: "/usr/bin/git",
+    })
+    mockGetGitSettings.mockResolvedValue({ custom_path: null })
+    mockGetGitHubAccounts.mockResolvedValue({ accounts: [plain] })
+    vi.mocked(getAccountToken).mockResolvedValue("secret")
+  })
+
+  async function clickTest() {
+    renderWithIntl()
+    const heading = await screen.findByText(T.gitAccount.sectionTitle)
+    const section = heading.closest("section") as HTMLElement
+    fireEvent.click(
+      await within(section).findByRole("button", { name: T.testConnection })
+    )
+  }
+
+  // 回归 #1049：普通 Git 账号点「测试」不连服务器，钥匙串里有令牌就报「连接成功」。
+  it("reports why the server could not be reached", async () => {
+    vi.mocked(probeGitServer).mockResolvedValue({
+      success: false,
+      username: null,
+      scopes: [],
+      avatar_url: null,
+      message: "dns error: no such host",
+    })
+
+    await clickTest()
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalled())
+    expect(probeGitServer).toHaveBeenCalledWith("https://git.invalid")
+    expect(toast.error).toHaveBeenCalledWith(
+      "Connection failed: dns error: no such host"
+    )
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it("says the server is reachable but the token cannot be checked", async () => {
+    vi.mocked(probeGitServer).mockResolvedValue({
+      success: true,
+      username: null,
+      scopes: [],
+      avatar_url: null,
+      message: null,
+    })
+
+    await clickTest()
+
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(T.gitAccount.serverReachable)
+    )
+    expect(toast.success).not.toHaveBeenCalledWith(T.connectionSuccess)
   })
 })

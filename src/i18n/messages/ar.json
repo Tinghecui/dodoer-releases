@@ -491,6 +491,8 @@
       "passwordHint": "أدخل كلمة مرور الخادم أو رمز الوصول.",
       "add": "إضافة",
       "serverRequired": "عنوان الخادم مطلوب.",
+      "serverInvalid": "أدخل عنوان http(s)، مثل https://git.example.com.",
+      "serverReachable": "يمكن الوصول إلى الخادم، لكن لا يمكن التحقق من الرمز لهذا النوع من الحسابات.",
       "usernameRequired": "اسم المستخدم مطلوب.",
       "passwordRequired": "كلمة المرور مطلوبة."
     }

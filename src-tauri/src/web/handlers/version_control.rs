@@ -24,6 +24,12 @@ pub struct TestGitPathParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProbeGitServerParams {
+    pub server_url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ValidateGitHubTokenParams {
     pub server_url: String,
     pub token: String,
@@ -187,6 +193,14 @@ pub async fn validate_cnb_token(
     Json(params): Json<ValidateGitHubTokenParams>,
 ) -> Result<Json<GitHubTokenValidation>, AppCommandError> {
     let result = vc_commands::validate_cnb_token(params.server_url, params.token).await?;
+    Ok(Json(result))
+}
+
+/// 普通 Git 服务器账号没有令牌校验接口，「测试」只看服务器能不能连上。
+pub async fn probe_git_server(
+    Json(params): Json<ProbeGitServerParams>,
+) -> Result<Json<GitHubTokenValidation>, AppCommandError> {
+    let result = vc_commands::probe_git_server(params.server_url).await?;
     Ok(Json(result))
 }
 

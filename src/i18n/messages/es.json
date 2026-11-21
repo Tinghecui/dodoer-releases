@@ -491,6 +491,8 @@
       "passwordHint": "Introduce tu contraseña o token de acceso del servidor.",
       "add": "Añadir",
       "serverRequired": "La URL del servidor es obligatoria.",
+      "serverInvalid": "Introduce una dirección http(s), por ejemplo https://git.example.com.",
+      "serverReachable": "El servidor es accesible, pero el token de este tipo de cuenta no se puede verificar.",
       "usernameRequired": "El nombre de usuario es obligatorio.",
       "passwordRequired": "La contraseña es obligatoria."
     }

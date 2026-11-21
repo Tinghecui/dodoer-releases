@@ -491,6 +491,8 @@
       "passwordHint": "输入服务器的密码或个人访问令牌。",
       "add": "添加",
       "serverRequired": "请输入服务器地址。",
+      "serverInvalid": "请输入 http(s) 地址，例如 https://git.example.com。",
+      "serverReachable": "服务器能连上，但这类账号没法验证令牌。",
       "usernameRequired": "请输入用户名。",
       "passwordRequired": "请输入密码。"
     }

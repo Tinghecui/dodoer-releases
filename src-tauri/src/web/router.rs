@@ -1055,6 +1055,10 @@ pub fn build_router_with_proxy_auth(
             post(handlers::version_control::validate_cnb_token),
         )
         .route(
+            "/probe_git_server",
+            post(handlers::version_control::probe_git_server),
+        )
+        .route(
             "/save_account_token",
             post(handlers::version_control::save_account_token),
         )

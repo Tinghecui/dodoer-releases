@@ -491,6 +491,8 @@
       "passwordHint": "Geben Sie das Passwort oder Zugriffstoken des Servers ein.",
       "add": "Hinzufügen",
       "serverRequired": "Server-URL ist erforderlich.",
+      "serverInvalid": "Gib eine http(s)-Adresse ein, z. B. https://git.example.com.",
+      "serverReachable": "Der Server ist erreichbar, aber das Token dieser Kontoart lässt sich nicht prüfen.",
       "usernameRequired": "Benutzername ist erforderlich.",
       "passwordRequired": "Passwort ist erforderlich."
     }

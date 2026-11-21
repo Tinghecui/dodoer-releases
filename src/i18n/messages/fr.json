@@ -491,6 +491,8 @@
       "passwordHint": "Entrez le mot de passe ou le jeton d'accès du serveur.",
       "add": "Ajouter",
       "serverRequired": "L'URL du serveur est requise.",
+      "serverInvalid": "Saisissez une adresse http(s), par exemple https://git.example.com.",
+      "serverReachable": "Le serveur est joignable, mais le jeton de ce type de compte ne peut pas être vérifié.",
       "usernameRequired": "Le nom d'utilisateur est requis.",
       "passwordRequired": "Le mot de passe est requis."
     }

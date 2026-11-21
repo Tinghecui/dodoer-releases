@@ -2295,6 +2295,14 @@ export async function validateCnbToken(
   return getTransport().call("validate_cnb_token", { serverUrl, token })
 }
 
+/** 普通 Git 服务器账号没有统一的令牌校验接口：只对服务器地址发一次 GET，
+ *  收到任何 HTTP 响应就算能连上，连不上时 `message` 里是原因。 */
+export async function probeGitServer(
+  serverUrl: string
+): Promise<GitHubTokenValidation> {
+  return getTransport().call("probe_git_server", { serverUrl })
+}
+
 export async function updateGitHubAccounts(
   settings: GitHubAccountsSettings
 ): Promise<GitHubAccountsSettings> {

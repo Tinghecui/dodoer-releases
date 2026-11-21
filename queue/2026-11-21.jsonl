@@ -121,3 +121,4 @@
 {"t":"2026-11-21T19:40:09Z","running":[],"queued":[]}
 {"t":"2026-11-21T19:50:10Z","running":[],"queued":[]}
 {"t":"2026-11-21T20:00:10Z","running":[],"queued":[]}
+{"t":"2026-11-21T20:10:16Z","running":[{"wf":"release-train","run":44943893215,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-21T20:00:30Z"},{"wf":"desktop-macos","run":44944083530,"job":"dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-21T20:02:10Z"}],"queued":[]}

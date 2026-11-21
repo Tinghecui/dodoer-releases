@@ -1,0 +1,253 @@
+# 公开镜像 Tinghecui/dodoer-releases：Mac 测试员换「辅助功能树」驱动（Peekaboo）的可行性探测（spike B，2026-11-21）。
+# 设计和结论见源仓库 .cowork/journal/2026-11-21-spike-mac-ax-driver.md。
+# 不用任何 secret：装最新发布的 dodoer.app（公开 Release）、装固定版本的 Peekaboo，看
+#   1) 从 bash 启动的 peekaboo 拿不拿得到「屏幕录制」「辅助功能」，拿不到就用 sudo 往 TCC.db 加一条再看；
+#   2) `see` 列不列得出 WKWebView 里的按钮、输入框、文字，原生菜单、对话框；
+#   3) `peekaboo mcp` 作为 MCP 服务起不起得来、tools/list 和 see 调不调得通。
+# 元素清单、截图做成 artifact（7 天）。只有新加、改了这个文件的 pr/** 推送才跑，也能手动跑。
+name: mac-ax-probe
+# round 3
+run-name: "mac-ax-probe ${{ github.ref_name }}"
+
+on:
+  push:
+    branches: ["pr/**"]
+    paths: [".github/workflows/mac-ax-probe.yml"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "被测的桌面版 tag（空 = 最新 v1.x Release）"
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  PEEKABOO_VERSION: "4.9.10"
+  PEEKABOO_SHA256: "ebd37b07edc9c6f7f526086ec762ce9f50efd508db713e1c0bf2b36f69714037"
+
+jobs:
+  probe:
+    # 合进去以后别的 PR 的 pr/<n> 也带着这个文件：推送时只在提交说明里写了 mac-ax-probe 的才跑
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, 'mac-ax-probe')
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      O: /Users/runner/probe
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: install dodoer.app
+        run: |
+          set -euo pipefail
+          mkdir -p "$O/shots" "$O/dl"
+          tag="${{ inputs.version }}"
+          [[ -n "$tag" ]] || tag=$(gh release list -R "$GITHUB_REPOSITORY" --limit 60 --json tagName -q '[.[] | select(.tagName | test("^v1\\."))][0].tagName')
+          echo "$tag" > "$O/app-version.txt"
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p dodoer-macos-arm64.zip -D "$O/dl"
+          ditto -x -k "$O/dl/dodoer-macos-arm64.zip" /Applications/
+          xattr -dr com.apple.quarantine /Applications/dodoer.app || true
+          open /Applications/dodoer.app
+          sleep 25
+          pgrep -lx codeg
+          screencapture -x "$O/shots/00-start.png"
+          echo "app $tag"
+
+      - name: install peekaboo (pinned)
+        run: |
+          set -euo pipefail
+          cd "$O/dl"
+          curl -fsSL -o pkb.tgz "https://github.com/openclaw/Peekaboo/releases/download/v${PEEKABOO_VERSION}/peekaboo-macos-arm64.tar.gz"
+          echo "${PEEKABOO_SHA256}  pkb.tgz" | shasum -a 256 -c -
+          mkdir -p "$HOME/peekaboo" && tar xzf pkb.tgz -C "$HOME/peekaboo" --strip-components 1
+          echo "$HOME/peekaboo" >> "$GITHUB_PATH"
+          "$HOME/peekaboo/peekaboo" --version
+          codesign -dv "$HOME/peekaboo/peekaboo" 2>&1 | grep -E 'Identifier|TeamIdentifier|Authority' || true
+
+      - name: TCC before
+        run: |
+          set +e -uo pipefail
+          sw_vers; csrutil status || true
+          q="select service, client, client_type, auth_value from access where service in ('kTCCServiceAccessibility','kTCCServiceScreenCapture','kTCCServicePostEvent','kTCCServiceListenEvent') order by service, client;"
+          { echo "## system"; sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "$q"; echo "## user"; sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "$q"; } | tee "$O/tcc-before.txt" || true
+          ps -o pid,ppid,comm -p $$ -p $PPID || true
+          # 进程链（TCC 认「负责的进程」）
+          p=$$; for i in 1 2 3 4 5 6 7 8; do ps -o pid=,ppid=,comm= -p "$p" | tee -a "$O/proc-chain.txt"; p=$(ps -o ppid= -p "$p" | tr -d ' '); [[ "$p" -gt 1 ]] || break; done
+
+      - name: permissions (as launched from bash)
+        run: |
+          set +e -uo pipefail
+          peekaboo permissions status --all-sources --json | tee "$O/perm-sources-1.json" || true
+          peekaboo permissions status --json > "$O/perm-1.json" || true
+          cat "$O/perm-1.json"; peekaboo permissions status --all-sources || true
+
+      - name: TCC insert fallback (only if needed)
+        run: |
+          set +e -uo pipefail
+          need=$(jq -r '[.. | objects | select(has("isGranted") and .isRequired == true and .isGranted == false)] | length' "$O/perm-1.json" 2>/dev/null || echo unknown)
+          echo "required-but-missing: $need"
+          if [[ "$need" == 0 ]]; then echo "no insert needed" | tee "$O/tcc-insert.txt"; exit 0; fi
+          bin="$HOME/peekaboo/peekaboo"; now=$(date +%s)
+          for db in "/Library/Application Support/com.apple.TCC/TCC.db" "$HOME/Library/Application Support/com.apple.TCC/TCC.db"; do
+            for svc in kTCCServiceAccessibility kTCCServiceScreenCapture kTCCServicePostEvent; do
+              sudo sqlite3 "$db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('$svc', '$bin', 1, 2, 4, 1, 0, $now);" \
+                && echo "inserted $svc into $db" || echo "insert $svc into $db FAILED"
+            done
+          done 2>&1 | tee "$O/tcc-insert.txt"
+          peekaboo permissions status --json | tee "$O/perm-2.json" || true
+          peekaboo permissions status --all-sources || true
+
+      - name: see local window (WKWebView)
+        run: |
+          set +e -uo pipefail
+          cd "$O"
+          pid=$(pgrep -x codeg | head -1)
+          peekaboo app list --json > app-list.json 2>&1
+          peekaboo window list --app codeg --json > window-list.json 2>&1
+          jq -c '.data.windows[]? | {window_id, window_title, observation_capability, is_on_screen}' window-list.json
+          # 进程名 codeg、显示名 dodoer、bundle id app.codeg：挑一个 see 认的写法（第一次探测 --app codeg 走 Bridge 时报 application selector 不一致）
+          sel=""
+          for s in "--app codeg" "--app dodoer" "--app app.codeg" "--pid $pid" "--app codeg --no-remote" "--app dodoer --no-remote"; do
+            t0=$(date +%s)
+            # shellcheck disable=SC2086
+            peekaboo see $s --json --path "shots/10-see.png" > see-try.json 2> see-try.err
+            ok=$(jq -r '.success' see-try.json 2>/dev/null)
+            echo "see $s → success=$ok $(( $(date +%s) - t0 ))s $(jq -r '.error.message // ""' see-try.json 2>/dev/null)" | tee -a see-selectors.txt
+            if [[ "$ok" == true && -z "$sel" ]]; then sel="$s"; cp see-try.json see-local.json; fi
+          done
+          echo "$sel" > selector.txt; echo "selector: $sel"
+          peekaboo see --mode screen --json --path shots/12-see-screen.png > see-screen.json 2> see-screen.err
+          for f in see-local.json see-screen.json; do
+            echo "== $f: $(wc -c < "$f") bytes; element_count=$(jq '.data.element_count' "$f") interactable=$(jq '.data.interactable_count' "$f")"
+            jq -r '[.data.ui_elements[]? | .role] | group_by(.) | map("\(.[0])=\(length)") | join(" ")' "$f"
+          done
+
+      - name: open a chat, click / type by element id, re-see
+        run: |
+          set +e -uo pipefail
+          cd "$O"
+          sel=$(cat selector.txt)
+          els() { jq -r '.data.ui_elements[]? | "\(.id) \(.role) | \(.label // .title // .value // "" | tostring | .[0:70]) | \(.is_actionable // "")"' "$1"; }
+          snap=$(jq -r '.data.snapshot_id // empty' see-local.json)
+          id=$(jq -r '[.data.ui_elements[]? | select(.role == "button" and ((.label // .title // "") | test("^New chat$")))][0].id // empty' see-local.json)
+          echo "snapshot=$snap New chat=$id"
+          t0=$(date +%s)
+          peekaboo click --on "$id" --snapshot "$snap" --json > click-1.json 2>&1; echo "click rc=$? $(( $(date +%s) - t0 ))s"
+          jq -c '{success, error: .error.message, data: (.data | tostring | .[0:400])}' click-1.json
+          sleep 3
+          # shellcheck disable=SC2086
+          peekaboo see $sel --json --path shots/20-after-new-chat.png > see-2.json 2>&1
+          echo "after click: element_count=$(jq '.data.element_count' see-2.json)"; els see-2.json | head -80
+          snap=$(jq -r '.data.snapshot_id // empty' see-2.json)
+          tid=$(jq -r '[.data.ui_elements[]? | select(.role | test("text";"i"))][0].id // empty' see-2.json)
+          echo "text element: $tid"
+          if [[ -n "$tid" ]]; then
+            peekaboo click --on "$tid" --snapshot "$snap" --json > click-text.json 2>&1; jq -c '{success, error: .error.message}' click-text.json
+            peekaboo type "typed by peekaboo" --app codeg --json > type.json 2>&1; jq -c '{success, error: .error.message}' type.json
+            peekaboo type " fg" --app codeg --foreground --json > type-fg.json 2>&1; jq -c '{success, error: .error.message}' type-fg.json
+            # shellcheck disable=SC2086
+            peekaboo see $sel --json --path shots/21-after-type.png > see-3.json 2>&1
+            snap=$(jq -r '.data.snapshot_id // empty' see-3.json)
+            jq -r '.data.ui_elements[]? | select((.value // "" | tostring | test("peekaboo|fg"))) | "\(.id) \(.role) value=\(.value)"' see-3.json
+            peekaboo set-value "set by peekaboo" --on "$tid" --snapshot "$snap" --json > setvalue.json 2>&1; jq -c '{success, error: .error.message}' setvalue.json
+            # shellcheck disable=SC2086
+            peekaboo see $sel --json --path shots/22-after-setvalue.png > see-4.json 2>&1
+            jq -r '.data.ui_elements[]? | select((.value // "" | tostring | test("peekaboo"))) | "\(.id) \(.role) value=\(.value)"' see-4.json
+          fi
+          # 设置（网页里的弹层）：Cmd+, 后再 see
+          peekaboo press cmd+comma --app codeg --foreground --json > hotkey.json 2>&1; jq -c '{success, error: .error.message}' hotkey.json
+          sleep 2
+          # shellcheck disable=SC2086
+          peekaboo see $sel --json --path shots/23-settings.png > see-settings.json 2>&1
+          echo "settings: element_count=$(jq '.data.element_count' see-settings.json)"; els see-settings.json | head -60
+          peekaboo press cmd+w --app dodoer --foreground --json > /dev/null 2>&1
+          sleep 1
+          peekaboo type "typed by peekaboo (exact app)" --app dodoer --json > type-exact.json 2>&1; jq -c '{success, error: .error.message}' type-exact.json
+
+      - name: native menu and dialog
+        run: |
+          set +e -uo pipefail
+          cd "$O"
+          peekaboo menu list --app codeg --json > menu-list.json 2>&1 || echo "menu list rc=$?"
+          jq -r '.. | objects | select(has("title")) | .title' menu-list.json 2>/dev/null | head -80 | tr '\n' '|'; echo
+          sel=$(cat selector.txt)
+          # 关于窗口（原生面板）：应用菜单的第一项
+          osascript -e 'tell application "System Events" to tell process "codeg" to click menu item 1 of menu 1 of menu bar item 2 of menu bar 1' || true
+          sleep 2
+          peekaboo window list --app codeg --json > window-list-2.json 2>&1 || true
+          peekaboo see $sel --json --path shots/30-about.png > see-about.json 2>&1 || true
+          jq -r '.data.ui_elements[]? | "\(.id) \(.role) | \(.label // .title // .value // "" | tostring | .[0:60])"' see-about.json 2>/dev/null | head -30
+          peekaboo dialog list --app dodoer --json > dialog-about.json 2>&1; jq -c '{success, error: .error.message, data: (.data | tostring | .[0:600])}' dialog-about.json
+          peekaboo press cmd+w --app dodoer --foreground --json > /dev/null 2>&1
+          # 打开文件夹（系统的 NSOpenPanel）
+          osascript -e 'tell application "System Events" to tell process "codeg" to keystroke "o" using command down' || true
+          sleep 3
+          peekaboo see $sel --json --path shots/31-open-panel.png > see-open-panel.json 2>&1 || true
+          peekaboo dialog list --app dodoer --json > dialog-list.json 2>&1 || true
+          jq -c '{success, error: .error.message, data: (.data | tostring | .[0:1500])}' dialog-list.json
+          jq -r '.data.ui_elements[]? | "\(.id) \(.role) | \(.label // .title // .value // "" | tostring | .[0:60])"' see-open-panel.json 2>/dev/null | head -30
+          osascript -e 'tell application "System Events" to key code 53' || true
+          screencapture -x shots/39-end.png
+
+      - name: peekaboo mcp over stdio
+        run: |
+          set +e -uo pipefail
+          cd "$O"
+          cat > "$RUNNER_TEMP/mcp-probe.mjs" <<'EOF'
+          import { spawn } from "node:child_process"
+          import { writeFileSync } from "node:fs"
+          const [bin, out] = process.argv.slice(2)
+          const p = spawn(bin, ["mcp"], { stdio: ["pipe", "pipe", "inherit"] })
+          let buf = "", id = 0
+          const waiters = new Map()
+          p.stdout.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); try { const m = JSON.parse(line); waiters.get(m.id)?.(m); } catch {} } })
+          const call = (method, params) => new Promise((res, rej) => { const n = ++id; const t = setTimeout(() => rej(new Error(`timeout ${method}`)), 90000); waiters.set(n, (m) => { clearTimeout(t); res(m) }); p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: n, method, params }) + "\n") })
+          const res = {}
+          try {
+            let t = Date.now()
+            res.init = await call("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "probe", version: "0" } })
+            p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n")
+            res.list = await call("tools/list", {})
+            const tools = res.list.result?.tools || []
+            console.log(`init+list ${Date.now() - t}ms, ${tools.length} tools: ${tools.map((x) => x.name).join(", ")}`)
+            const see = tools.find((x) => x.name === "see")
+            console.log("see schema:", JSON.stringify(see?.inputSchema?.properties || {}).slice(0, 1500))
+            const props = see?.inputSchema?.properties || {}
+            const args = "app_target" in props ? { app_target: "dodoer" } : "app" in props ? { app: "dodoer" } : {}
+            t = Date.now()
+            res.see = await call("tools/call", { name: "see", arguments: args })
+            const text = (res.see.result?.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n")
+            console.log(`see ${Date.now() - t}ms, isError=${res.see.result?.isError}, text ${text.length} chars, images ${(res.see.result?.content || []).filter((c) => c.type === "image").length}`)
+            console.log(text.slice(0, 4000))
+            const ids = [...text.matchAll(/\b(elem_\d+)\b[^\n]*New chat/g)].map((m) => m[1])
+            const snap = (text.match(/ps1_[0-9a-f]{32}/) || [])[0]
+            console.log("MCP New chat ids:", ids.join(","), "snapshot:", snap)
+            const click = tools.find((x) => x.name === "click")
+            console.log("click schema keys:", Object.keys(click?.inputSchema?.properties || {}).join(","))
+            if (ids[0]) {
+              const cp = click?.inputSchema?.properties || {}
+              const cargs = { ...("on" in cp ? { on: ids[0] } : { element: ids[0] }), ...(snap && "snapshot" in cp ? { snapshot: snap } : {}) }
+              t = Date.now()
+              res.click = await call("tools/call", { name: "click", arguments: cargs })
+              console.log(`click ${Date.now() - t}ms isError=${res.click.result?.isError}:`, (res.click.result?.content || []).filter((c) => c.type === "text").map((c) => c.text).join(" ").slice(0, 600))
+            }
+            res.perm = await call("tools/call", { name: "permissions", arguments: {} }).catch((e) => ({ error: String(e) }))
+          } catch (e) { console.log("MCP probe error:", e.message) }
+          for (const k of Object.keys(res)) for (const c of res[k]?.result?.content || []) if (c.type === "image") c.data = `<${c.data.length} b64 chars>`
+          writeFileSync(out, JSON.stringify(res, null, 2))
+          p.kill()
+          process.exit(0)
+          EOF
+          node "$RUNNER_TEMP/mcp-probe.mjs" "$HOME/peekaboo/peekaboo" "$O/mcp-probe.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-ax-probe-${{ github.run_id }}
+          path: |
+            /Users/runner/probe
+            !/Users/runner/probe/dl
+          retention-days: 7

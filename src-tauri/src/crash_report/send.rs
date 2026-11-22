@@ -32,14 +32,19 @@ const RETRY_EVERY: Duration = Duration::from_secs(10 * 60);
 const CALL_TIMEOUT_MS: u64 = 15_000;
 
 /// The app, for [`wake`] to start the sending with.
-static APP: OnceLock<AppHandle> = OnceLock::new();
+///
+/// Behind an `Arc` and never dropped: `AppHandle::clone`/`drop` off the main
+/// thread race `tao`'s non-atomic `Rc<EventLoopRunner>` (see
+/// `web::event_bridge::EventEmitter`), and [`wake`] runs on whatever thread
+/// queued the report. The one clone is taken on the main thread, in `start`.
+static APP: OnceLock<Arc<AppHandle>> = OnceLock::new();
 /// The sending loop is running (it waits for [`wake`] once nothing is left).
 static RUNNING: AtomicBool = AtomicBool::new(false);
 /// A report was queued: send now rather than at the next retry.
 static WAKE: Notify = Notify::const_new();
 
-pub fn remember(app: &AppHandle) {
-    let _ = APP.set(app.clone());
+pub fn remember(app: &AppHandle) -> Arc<AppHandle> {
+    Arc::clone(APP.get_or_init(|| Arc::new(app.clone())))
 }
 
 /// Start the sending: earlier runs' records are turned into reports first,
@@ -47,7 +52,7 @@ pub fn remember(app: &AppHandle) {
 /// left. Once nothing is, the loop waits for [`wake`] (a report queued in this
 /// run), so that one goes out within a minute, not at the next start. It ends
 /// when the switch is turned off or the quit has finished.
-pub fn spawn(app: AppHandle) {
+pub fn spawn(app: Arc<AppHandle>) {
     if RUNNING.swap(true, Ordering::SeqCst) {
         WAKE.notify_one();
         return;
@@ -71,7 +76,7 @@ pub fn wake() {
     if RUNNING.load(Ordering::SeqCst) {
         WAKE.notify_one();
     } else if let Some(app) = APP.get() {
-        spawn(app.clone());
+        spawn(Arc::clone(app));
     }
 }
 

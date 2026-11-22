@@ -1949,7 +1949,7 @@ pub async fn folder_pr_statuses(
 ) -> Result<Vec<forge::pr_status::FolderPrStatusEntry>, AppCommandError> {
     Ok(forge::pr_status::folder_pr_statuses_core(
         &db,
-        &EventEmitter::Tauri(app),
+        &EventEmitter::from_app(&app),
         folder_ids,
         force.unwrap_or(false),
     )
@@ -1968,7 +1968,7 @@ pub async fn conversation_pr_statuses(
 ) -> Result<Vec<forge::pr_status::ConversationPrStatusEntry>, AppCommandError> {
     Ok(forge::pr_status::conversation_pr_statuses_core(
         &db,
-        &EventEmitter::Tauri(app),
+        &EventEmitter::from_app(&app),
         conversation_ids,
         force.unwrap_or(false),
     )
@@ -2134,7 +2134,7 @@ pub async fn work_task_create_from_forge(
     db: tauri::State<'_, AppDatabase>,
     draft: ForgeTaskDraft,
 ) -> Result<ForgeCreateResult, AppCommandError> {
-    work_task_create_from_forge_core(&EventEmitter::Tauri(app), &db, draft).await
+    work_task_create_from_forge_core(&EventEmitter::from_app(&app), &db, draft).await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -2144,7 +2144,7 @@ pub async fn work_task_create_from_forge_issues(
     db: tauri::State<'_, AppDatabase>,
     draft: ForgeIssuesTaskDraft,
 ) -> Result<ForgeIssuesCreateResult, AppCommandError> {
-    work_task_create_from_forge_issues_core(&EventEmitter::Tauri(app), &db, draft).await
+    work_task_create_from_forge_issues_core(&EventEmitter::from_app(&app), &db, draft).await
 }
 
 #[cfg(feature = "tauri-runtime")]

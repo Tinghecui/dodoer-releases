@@ -69,7 +69,7 @@ pub fn start(app: &tauri::AppHandle, conn: &DatabaseConnection, data_dir: &Path)
     });
     let lending = Lending::new(Sshd::new(data_dir.to_path_buf()), lent);
     let mut changes = lending.subscribe();
-    let emitter = EventEmitter::Tauri(app.clone());
+    let emitter = EventEmitter::from_app(app);
     let sockets = app.clone();
     tauri::async_runtime::spawn(async move {
         while changes.changed().await.is_ok() {

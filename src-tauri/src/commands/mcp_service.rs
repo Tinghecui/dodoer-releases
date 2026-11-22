@@ -452,7 +452,7 @@ pub async fn set_codeg_mcp_tool_group(
     {
         // `app.emit` fans out to every window, so the settings window's own
         // switch for this group converges with the one just flipped here.
-        let emitter = EventEmitter::Tauri(app.clone());
+        let emitter = EventEmitter::from_app(&app);
         let lends = key.starts_with("browser");
         set_codeg_mcp_tool_group_core(
             &db.conn,

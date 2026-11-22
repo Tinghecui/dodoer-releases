@@ -305,7 +305,7 @@ pub async fn perform_app_update(
     trigger: Option<String>,
 ) -> Result<AppUpdateState, AppCommandError> {
     let handle = state.inner().clone();
-    let emitter = EventEmitter::Tauri(app.clone());
+    let emitter = EventEmitter::from_app(&app);
     let trigger = Trigger::from_param(trigger.as_deref());
 
     let (started, snap) = transition(&handle, || update_state::try_begin(&handle, &emitter));
@@ -423,7 +423,7 @@ pub async fn perform_app_rollback(
     };
 
     let handle = state.inner().clone();
-    let emitter = EventEmitter::Tauri(app.clone());
+    let emitter = EventEmitter::from_app(&app);
     let (started, snap) = transition(&handle, || update_state::try_begin(&handle, &emitter));
     if !started {
         // An update is already downloading or staged; leave it be.
@@ -637,7 +637,7 @@ pub fn restore_staged_at_start(app: &tauri::AppHandle, data_dir: &Path) {
         use tauri::Manager;
         app.state::<AppUpdateStateHandle>().inner().clone()
     };
-    let emitter = EventEmitter::Tauri(app.clone());
+    let emitter = EventEmitter::from_app(app);
     // Fresh from start the state is `Idle`; `try_begin` claims it the way a
     // download would, so nothing else can be started meanwhile.
     let (started, _) = transition(&handle, || update_state::try_begin(&handle, &emitter));
@@ -1235,7 +1235,7 @@ async fn restart_into_update(
     handle: AppUpdateStateHandle,
     how: ApplyHow,
 ) -> Result<(), AppCommandError> {
-    let emitter = EventEmitter::Tauri(app.clone());
+    let emitter = EventEmitter::from_app(&app);
     // Atomically claim the relaunch (flips to `Restarting`) only if an update is
     // genuinely staged — same authority check as the server `restart_impl`.
     // Guards a stale window / direct IPC call from relaunching during

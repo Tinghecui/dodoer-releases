@@ -1209,7 +1209,7 @@ pub async fn acp_update_deepseek_model_catalog(
     models: Option<Vec<DeepSeekCatalogModel>>,
     app: tauri::AppHandle,
 ) -> Result<(), AcpError> {
-    let emitter = EventEmitter::Tauri(app);
+    let emitter = EventEmitter::from_app(&app);
     update_deepseek_model_catalog_core(models, &emitter)
 }
 

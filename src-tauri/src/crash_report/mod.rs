@@ -167,12 +167,14 @@ pub fn start(app: &tauri::AppHandle) {
         }
     }
     write_run_marker(&Phase::default());
-    watchdog::spawn(app.clone());
     // Kept so a report queued later in this run (`push_update`) can start
-    // the sending when it is not running.
-    send::remember(app);
+    // the sending when it is not running. Also the only `AppHandle` clone the
+    // watchdog thread and the sending get: cloned here on the main thread and
+    // never dropped, so their threads only touch the `Arc` count.
+    let app = send::remember(app);
+    watchdog::spawn(std::sync::Arc::clone(&app));
     if on {
-        send::spawn(app.clone());
+        send::spawn(app);
     }
 }
 

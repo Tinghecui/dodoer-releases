@@ -367,7 +367,7 @@ mod tauri_app {
         let running_terminals = |app: &tauri::AppHandle| {
             app.try_state::<TerminalManager>()
                 .map(|tm| {
-                    let emitter = web::event_bridge::EventEmitter::Tauri(app.clone());
+                    let emitter = web::event_bridge::EventEmitter::from_app(app);
                     tm.count_live_by_owner_window(label, Some(&emitter))
                 })
                 .unwrap_or(0)
@@ -956,6 +956,18 @@ mod tauri_app {
             // same download progress; lets the upgrade UI survive navigation.
             .manage(crate::update::new_update_state_handle())
             .setup(|app| {
+                // Retain the one `AppHandle` this process will ever clone for
+                // event emission, right here on the main thread, before any
+                // worker that emits is spawned. Every `EventEmitter::Tauri`
+                // afterwards just clones an atomic `Arc`.
+                //
+                // This is a correctness requirement, not an optimisation:
+                // `AppHandle::clone`/`drop` reach `tao`'s non-atomic
+                // `Rc<EventLoopRunner>`, so letting the ACP connection threads
+                // do it races the event loop and aborts the process with
+                // `0xC0000374`. See `web::event_bridge::EventEmitter`.
+                web::event_bridge::install_tauri_app_handle(app.handle());
+
                 // jenny fork: a signal (`kill`, the installer's TERM after its
                 // 60 s wait, launchd) quits like ⌘Q, through `shut_down`.
                 // Without this the process just died, and the Apps page's
@@ -1153,8 +1165,8 @@ mod tauri_app {
                     &db.conn,
                 ));
                 if let Some(hub) = crate::logging::hub::log_hub() {
-                    hub.set_emitter(crate::web::event_bridge::EventEmitter::Tauri(
-                        app.handle().clone(),
+                    hub.set_emitter(crate::web::event_bridge::EventEmitter::from_app(
+                        app.handle(),
                     ));
                 }
 
@@ -1202,7 +1214,7 @@ mod tauri_app {
                 // (`boot`, steps in its order); what follows each step here is
                 // what only the desktop app has. Every `boot` call that spawns
                 // runs inside `block_on`, which gives it Tauri's tokio runtime.
-                let emitter = web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                let emitter = web::event_bridge::EventEmitter::from_app(app.handle());
 
                 // Seed the close-behavior atomic. `CloseRequested` is a
                 // synchronous callback that reads the cache, not the database,

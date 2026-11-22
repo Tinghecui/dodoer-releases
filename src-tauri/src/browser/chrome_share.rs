@@ -669,7 +669,7 @@ pub fn publish_tabs(app: &AppHandle) {
         return;
     };
     let tabs = panel_tabs(&registry, link.tabs());
-    emit_event(&EventEmitter::Tauri(app.clone()), TABS_EVENT, tabs);
+    emit_event(&EventEmitter::from_app(app), TABS_EVENT, tabs);
 }
 
 /// Put the person's edits to the sensitive sites in force (and in the data

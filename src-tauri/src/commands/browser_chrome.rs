@@ -33,7 +33,7 @@ static ANNOUNCING: Once = Once::new();
 /// way to hear of it.
 fn announce(app: &AppHandle, link: &ChromeLink) {
     ANNOUNCING.call_once(|| {
-        let emitter = EventEmitter::Tauri(app.clone());
+        let emitter = EventEmitter::from_app(app);
         let mut changes = link.changes();
         let to_status = emitter.clone();
         tauri::async_runtime::spawn(async move {
@@ -223,7 +223,7 @@ pub async fn browser_chrome_set_sites(
 ) -> Result<ChromeSites, AppCommandError> {
     let kept: ChromeSites =
         chrome_share::set_sites(&app, &registry, blocked, allowed, paused)?.into();
-    emit_event(&EventEmitter::Tauri(app.clone()), SITES_EVENT, &kept);
+    emit_event(&EventEmitter::from_app(&app), SITES_EVENT, &kept);
     Ok(kept)
 }
 

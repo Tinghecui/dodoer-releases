@@ -146,7 +146,7 @@ impl MainStack {
     }
 }
 
-pub fn spawn(app: AppHandle) {
+pub fn spawn(app: Arc<AppHandle>) {
     let spawned = std::thread::Builder::new()
         .name("crash-report-watchdog".to_string())
         .spawn(move || watch(app));
@@ -169,7 +169,7 @@ fn phase(app: &AppHandle) -> Phase {
     }
 }
 
-fn watch(app: AppHandle) {
+fn watch(app: Arc<AppHandle>) {
     let mut sides = [Side::new(Beat::Main), Side::new(Beat::Tokio)];
     let mut last_tick = Instant::now();
     // What the running marker last said, and when; `None` = not written.

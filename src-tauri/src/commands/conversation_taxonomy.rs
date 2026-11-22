@@ -132,6 +132,11 @@ pub async fn conversation_taxonomy_assign(
     conversation_id: i32,
     category_id: Option<String>,
 ) -> Result<TaxonomyView, AppCommandError> {
-    conversation_taxonomy_assign_core(&EventEmitter::Tauri(app), &db, conversation_id, category_id)
-        .await
+    conversation_taxonomy_assign_core(
+        &EventEmitter::from_app(&app),
+        &db,
+        conversation_id,
+        category_id,
+    )
+    .await
 }

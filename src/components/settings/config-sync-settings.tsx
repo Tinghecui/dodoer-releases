@@ -18,6 +18,7 @@ import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Collapsible,
   CollapsibleContent,
@@ -200,6 +201,8 @@ export function ConfigSyncSettings() {
     | "import"
     | "rollback"
   >(null)
+  const [exportConfirmOpen, setExportConfirmOpen] = useState(false)
+  const [exportOmitSecrets, setExportOmitSecrets] = useState(false)
   const [pendingImport, setPendingImport] = useState<PickedConfigImport | null>(
     null
   )
@@ -491,10 +494,19 @@ export function ConfigSyncSettings() {
     }
   }, [appliedDescription, localize, refreshRollbacks, t])
 
+  /** 导出的文件里有模型服务商的 API 密钥明文，先弹确认框说清楚，
+   *  并让用户可以选不导出密钥。 */
+  const handleRequestExport = useCallback(() => {
+    setExportOmitSecrets(false)
+    setExportConfirmOpen(true)
+  }, [])
+
   const handleExport = useCallback(async () => {
+    const includeSecrets = !exportOmitSecrets
+    setExportConfirmOpen(false)
     setBusy("export")
     try {
-      const summary = await exportConfigToFile()
+      const summary = await exportConfigToFile({ includeSecrets })
       // `null` = the user dismissed the save dialog, which is not an error.
       if (summary && mounted.current) toast.success(t("exported"))
     } catch (err) {
@@ -502,7 +514,7 @@ export function ConfigSyncSettings() {
     } finally {
       if (mounted.current) setBusy(null)
     }
-  }, [localize, t])
+  }, [exportOmitSecrets, localize, t])
 
   /**
    * Deliberately outside the `busy` gate, unlike every other action here.
@@ -651,7 +663,7 @@ export function ConfigSyncSettings() {
           <Button
             variant="outline"
             size="sm"
-            onClick={handleExport}
+            onClick={handleRequestExport}
             disabled={busy !== null}
           >
             {busy === "export" ? (
@@ -1091,6 +1103,43 @@ export function ConfigSyncSettings() {
           </div>
         ) : null}
       </div>
+
+      <AlertDialog open={exportConfirmOpen} onOpenChange={setExportConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("exportConfirmTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("exportConfirmBody")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="config-sync-export-omit-secrets"
+              checked={exportOmitSecrets}
+              onCheckedChange={(checked) =>
+                setExportOmitSecrets(checked === true)
+              }
+            />
+            <Label
+              htmlFor="config-sync-export-omit-secrets"
+              className="text-sm font-normal"
+            >
+              {t("exportOmitSecrets")}
+            </Label>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault()
+                void handleExport()
+              }}
+            >
+              {t("exportConfirmAction")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={pendingImport !== null}

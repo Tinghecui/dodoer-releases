@@ -69,6 +69,7 @@ import enMessages from "@/i18n/messages/en.json"
 import {
   applyConfigRollback,
   downloadAndApplyConfig,
+  exportConfigToFile,
   getConfigSyncSettings,
   getConfigSyncState,
   importPickedConfig,
@@ -755,5 +756,52 @@ describe("ConfigSyncSettings — load failure", () => {
     ).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: t.saveButton }))
     await waitFor(() => expect(updateConfigSyncSettings).toHaveBeenCalled())
+  })
+})
+
+describe("ConfigSyncSettings — export warns about API keys first", () => {
+  // 导出的文件里有模型服务商的 API 密钥明文：先弹确认框说清楚，
+  // 并让用户可以选不导出密钥（#1113）。
+  it("asks before exporting and exports with keys by default", async () => {
+    vi.mocked(exportConfigToFile).mockResolvedValue({ path: "x", counts: {} })
+    await renderLoaded()
+
+    fireEvent.click(screen.getByRole("button", { name: t.exportButton }))
+
+    expect(await screen.findByText(t.exportConfirmTitle)).toBeInTheDocument()
+    expect(screen.getByText(t.exportConfirmBody)).toBeInTheDocument()
+    expect(exportConfigToFile).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole("button", { name: t.exportConfirmAction }))
+    await waitFor(() =>
+      expect(exportConfigToFile).toHaveBeenCalledWith({ includeSecrets: true })
+    )
+  })
+
+  it("leaves the keys out when the user ticks the box", async () => {
+    vi.mocked(exportConfigToFile).mockResolvedValue({ path: "x", counts: {} })
+    await renderLoaded()
+
+    fireEvent.click(screen.getByRole("button", { name: t.exportButton }))
+    fireEvent.click(
+      await screen.findByRole("checkbox", { name: t.exportOmitSecrets })
+    )
+    fireEvent.click(screen.getByRole("button", { name: t.exportConfirmAction }))
+
+    await waitFor(() =>
+      expect(exportConfigToFile).toHaveBeenCalledWith({ includeSecrets: false })
+    )
+  })
+
+  it("does nothing when the user cancels", async () => {
+    await renderLoaded()
+
+    fireEvent.click(screen.getByRole("button", { name: t.exportButton }))
+    fireEvent.click(await screen.findByRole("button", { name: t.cancel }))
+
+    await waitFor(() =>
+      expect(screen.queryByText(t.exportConfirmTitle)).not.toBeInTheDocument()
+    )
+    expect(exportConfigToFile).not.toHaveBeenCalled()
   })
 })

@@ -86,9 +86,17 @@ mod tauri_commands {
     #[tauri::command]
     pub async fn config_sync_export_file(
         dest_path: String,
+        include_secrets: Option<bool>,
         db: State<'_, AppDatabase>,
     ) -> Result<ConfigExportSummary, AppCommandError> {
-        export_to_file_core(&db.conn, APP_VERSION, Path::new(&dest_path)).await
+        // 没传就照旧带密钥，老前端调用不变
+        export_to_file_core(
+            &db.conn,
+            APP_VERSION,
+            Path::new(&dest_path),
+            include_secrets.unwrap_or(true),
+        )
+        .await
     }
 
     /// Read-only: powers the "this file contains…" confirmation before any
@@ -185,9 +193,10 @@ mod tauri_commands {
 
     #[tauri::command]
     pub async fn config_sync_export_content(
+        include_secrets: Option<bool>,
         db: State<'_, AppDatabase>,
     ) -> Result<ConfigExportContent, AppCommandError> {
-        export_content_core(&db.conn, APP_VERSION).await
+        export_content_core(&db.conn, APP_VERSION, include_secrets.unwrap_or(true)).await
     }
 
     #[tauri::command]

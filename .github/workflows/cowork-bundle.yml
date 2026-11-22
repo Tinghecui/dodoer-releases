@@ -1,0 +1,198 @@
+# 公开镜像 Tinghecui/dodoer-releases：私有仓库 Tinghecui/cowork 的打包、发布测试和发版（文件在 cowork-codeg 的 .github/public/workflows/ 里维护）。
+# 由 cowork 那边 release.yml 的 meta 派过来（push main、tag v*、改了 deploy/** 等的 PR）。和 cowork 自己的 release.yml 做的事一样：
+# 测试（调 cowork-test.yml）‖ 打包（deploy/ci/bundle.sh：下载 runtime 和 codeg 的包、build-bundle.sh、干净的 Ubuntu 24.04 容器里装一遍），
+# 两路都过了才把 Release 发到 cowork（tag v<版本>、三个附件，同 cowork 的 publish）。
+# 发布包含 cowork 的代码，从不进这个公开仓库：打好直接传成 cowork 上的草稿 Release，测试都过了再转正，没过就删（cowork-ci/release.sh）。
+# 封口同 cowork-test.yml；status「公开 CI / bundle」「公开 CI / publish」打在 cowork 那个提交上。
+# 设计见 cowork 仓库 .cowork/journal/2026-11-22-cowork-ci-public-runners.md。
+name: cowork-bundle
+run-name: "cowork-bundle ${{ inputs.version }} ${{ inputs.publish == 'yes' && '发版' || inputs.publish == 'draft' && '预演' || (inputs.pr && format('PR {0}', inputs.pr) || '只打包') }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "要打包的 cowork 提交（40 位；PR 时是 GitHub 的合并提交）"
+        required: true
+      head:
+        description: "打 commit status 的提交（PR 头；空 = sha）"
+        default: ""
+      pr:
+        description: "PR 号（空 = 不是 PR）"
+        default: ""
+      version:
+        description: "package.json 的 version"
+        required: true
+      publish:
+        description: "no = 只打包和发布测试；yes = 都过了就发 Release；draft = 发版预演（传成 tag ci-dryrun-<run id> 的草稿，不转正，要手动删）"
+        type: choice
+        options: ["no", "yes", "draft"]
+        default: "no"
+      run_tests:
+        description: "也跑测试（push main 时要；PR 的测试 cowork-test 另外在跑）"
+        type: boolean
+        default: false
+      tools_sha:
+        description: "（预演用）被测的老提交里没有 deploy/ci/bundle.sh 时，用这个提交里的"
+        default: ""
+
+permissions:
+  contents: read
+
+# 发版按版本排队（同一个版本连着合两次：后一次开始时 Release 已经在了，只测不发）；PR 上新推送取消旧的
+concurrency:
+  group: "${{ inputs.publish == 'yes' && format('cowork-bundle-v{0}', inputs.version) || format('cowork-bundle-{0}', inputs.pr || inputs.sha) }}"
+  cancel-in-progress: ${{ inputs.publish != 'yes' && inputs.pr != '' }}
+
+jobs:
+  test:
+    if: inputs.run_tests
+    uses: ./.github/workflows/cowork-test.yml
+    with:
+      sha: ${{ inputs.sha }}
+      head: ${{ inputs.head || inputs.sha }}
+
+  bundle:
+    runs-on: ubuntu-24.04
+    environment: cowork-ci
+    timeout-minutes: 40
+    outputs:
+      release_id: ${{ steps.draft.outputs.id }}
+    env:
+      W: /home/runner/cowork-ci
+      SHA: ${{ inputs.sha }}
+      HEAD_SHA: ${{ inputs.head || inputs.sha }}
+      PR: ${{ inputs.pr }}
+      VERSION: ${{ inputs.version }}
+      PUBLISH: ${{ inputs.publish }}
+      TOOLS_SHA: ${{ inputs.tools_sha }}
+    steps:
+      - name: 检查输入
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$PR" =~ ^[0-9]*$ && "$TOOLS_SHA" =~ ^([0-9a-f]{40})?$ ]] || { echo "输入不对"; exit 1; }
+          [[ "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || { echo "版本号不对"; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          path: shell
+          sparse-checkout: .github/workflows/cowork-ci
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 只读令牌
+        id: ro
+        env:
+          BOT_APP_ID: ${{ vars.BOT_APP_ID }}
+          BOT_APP_KEY: ${{ secrets.BOT_APP_KEY }}
+        run: |
+          t=$(node shell/.github/workflows/cowork-ci/app-token.mjs cowork,cowork-runtime contents=read) || exit 1
+          echo "::add-mask::$t"
+          echo "token=$t" >> "$GITHUB_OUTPUT"
+
+      - name: 打包、装一遍（封口）
+        env:
+          COWORK_TOKEN: ${{ steps.ro.outputs.token }}
+        run: bash shell/.github/workflows/cowork-ci/sealed.sh bundle
+
+      - name: 传成草稿 Release
+        id: draft
+        if: inputs.publish != 'no'
+        env:
+          BOT_APP_ID: ${{ vars.BOT_APP_ID }}
+          BOT_APP_KEY: ${{ secrets.BOT_APP_KEY }}
+        run: |
+          GH_TOKEN=$(node shell/.github/workflows/cowork-ci/app-token.mjs cowork contents=write) || exit 1
+          echo "::add-mask::$GH_TOKEN"
+          export GH_TOKEN
+          unset BOT_APP_KEY
+          bash shell/.github/workflows/cowork-ci/release.sh draft
+
+      - name: 传日志、打 status
+        if: always() && steps.ro.outcome != 'skipped'
+        env:
+          BOT_APP_ID: ${{ vars.BOT_APP_ID }}
+          BOT_APP_KEY: ${{ secrets.BOT_APP_KEY }}
+        run: |
+          GH_TOKEN=$(node shell/.github/workflows/cowork-ci/app-token.mjs cowork contents=write,statuses=write) || exit 1
+          echo "::add-mask::$GH_TOKEN"
+          export GH_TOKEN
+          unset BOT_APP_KEY
+          bash shell/.github/workflows/cowork-ci/report.sh bundle bundle release-draft
+
+  # 测试和打包都过了才转正（test 可能是跳过的：PR、手工 tag 且这个提交已经测过）
+  publish:
+    needs: [test, bundle]
+    if: ${{ !cancelled() && inputs.publish == 'yes' && needs.bundle.result == 'success' && needs.bundle.outputs.release_id != '' && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    environment: cowork-ci
+    timeout-minutes: 10
+    env:
+      W: /home/runner/cowork-ci
+      SHA: ${{ inputs.sha }}
+      HEAD_SHA: ${{ inputs.head || inputs.sha }}
+      VERSION: ${{ inputs.version }}
+      PUBLISH: ${{ inputs.publish }}
+      RELEASE_ID: ${{ needs.bundle.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: shell
+          sparse-checkout: .github/workflows/cowork-ci
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 转正
+        env:
+          BOT_APP_ID: ${{ vars.BOT_APP_ID }}
+          BOT_APP_KEY: ${{ secrets.BOT_APP_KEY }}
+        run: |
+          GH_TOKEN=$(node shell/.github/workflows/cowork-ci/app-token.mjs cowork contents=write,statuses=write) || exit 1
+          echo "::add-mask::$GH_TOKEN"
+          export GH_TOKEN
+          unset BOT_APP_KEY
+          rc=0
+          bash shell/.github/workflows/cowork-ci/release.sh publish "$RELEASE_ID" || rc=$?
+          bash shell/.github/workflows/cowork-ci/report.sh publish release-publish || true
+          exit "$rc"
+
+  # 草稿没转正（测试或打包没过、转正失败、被取消）：删掉，status「公开 CI / publish」打成失败
+  cleanup:
+    needs: [test, bundle, publish]
+    if: ${{ always() && inputs.publish == 'yes' && needs.bundle.outputs.release_id != '' && needs.publish.result != 'success' }}
+    runs-on: ubuntu-24.04
+    environment: cowork-ci
+    timeout-minutes: 10
+    env:
+      W: /home/runner/cowork-ci
+      SHA: ${{ inputs.sha }}
+      HEAD_SHA: ${{ inputs.head || inputs.sha }}
+      VERSION: ${{ inputs.version }}
+      PUBLISH: ${{ inputs.publish }}
+      RELEASE_ID: ${{ needs.bundle.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: shell
+          sparse-checkout: .github/workflows/cowork-ci
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 删草稿
+        env:
+          BOT_APP_ID: ${{ vars.BOT_APP_ID }}
+          BOT_APP_KEY: ${{ secrets.BOT_APP_KEY }}
+        run: |
+          GH_TOKEN=$(node shell/.github/workflows/cowork-ci/app-token.mjs cowork contents=write,statuses=write) || exit 1
+          echo "::add-mask::$GH_TOKEN"
+          export GH_TOKEN
+          unset BOT_APP_KEY
+          bash shell/.github/workflows/cowork-ci/release.sh discard "$RELEASE_ID" || true
+          # publish 那一步没有跑出结果文件：status 打成 failure（没发）
+          mkdir -p "$W/st" && echo 1 > "$W/st/rc-release-publish"
+          bash shell/.github/workflows/cowork-ci/report.sh publish release-publish release-discard || true
+          exit 1

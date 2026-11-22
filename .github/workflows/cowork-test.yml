@@ -1,0 +1,98 @@
+# 公开镜像 Tinghecui/dodoer-releases：跑私有仓库 Tinghecui/cowork 的测试（文件在 cowork-codeg 的 .github/public/workflows/ 里维护）。
+# 由 cowork 那边的 test.yml（PR）或 release.yml（push main）派过来；cowork-bundle.yml 也调它。
+# 封口：克隆和测试的输出全进文件，这份日志里只有 COWORK-BEGIN、不带名字的进度、COWORK-END（cowork-ci/sealed.sh），
+# 日志传到 cowork 的 Release「ci-logs」，结果打成 cowork 那个提交上的 commit status「公开 CI / unit」「公开 CI / linux」（cowork-ci/report.sh）。
+# 运行结束后 ai-qa-seal.yml 核对这份日志。凭证在 Environment「cowork-ci」里，只有 main 分支用得到。
+# 设计见 cowork 仓库 .cowork/journal/2026-11-22-cowork-ci-public-runners.md。
+name: cowork-test
+run-name: "cowork-test ${{ inputs.pr && format('PR {0}', inputs.pr) || inputs.sha }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "要测的 cowork 提交（40 位；PR 时是 GitHub 的合并提交）"
+        required: true
+      head:
+        description: "打 commit status 的提交（PR 头；空 = sha）"
+        default: ""
+      pr:
+        description: "PR 号（按 sha 取不到时退回 refs/pull/<n>/merge；空 = 不是 PR）"
+        default: ""
+  workflow_call:
+    inputs:
+      sha:
+        type: string
+        required: true
+      head:
+        type: string
+        default: ""
+      pr:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# 同一个 PR 新推送取消旧的那次（旧的头提交上的 status 会是 error，不碍事）；main 上的不取消
+concurrency:
+  group: cowork-test-${{ inputs.pr && format('pr-{0}', inputs.pr) || inputs.sha }}-${{ github.event_name }}
+  cancel-in-progress: ${{ inputs.pr != '' }}
+
+jobs:
+  test:
+    name: ${{ matrix.suite }}
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [unit, linux]
+    runs-on: ubuntu-24.04
+    environment: cowork-ci
+    timeout-minutes: 25
+    env:
+      W: /home/runner/cowork-ci
+      SHA: ${{ inputs.sha }}
+      HEAD_SHA: ${{ inputs.head || inputs.sha }}
+      PR: ${{ inputs.pr }}
+    steps:
+      - name: 检查输入
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$PR" =~ ^[0-9]*$ ]] || { echo "输入不对：sha、head 要 40 位十六进制，pr 要数字"; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          path: shell
+          sparse-checkout: .github/workflows/cowork-ci
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # 跑 cowork 代码的那一步只拿只读令牌；App 的私钥只在换令牌的这几步里
+      - name: 只读令牌
+        id: ro
+        env:
+          BOT_APP_ID: ${{ vars.BOT_APP_ID }}
+          BOT_APP_KEY: ${{ secrets.BOT_APP_KEY }}
+        run: |
+          t=$(node shell/.github/workflows/cowork-ci/app-token.mjs cowork contents=read) || exit 1
+          echo "::add-mask::$t"
+          echo "token=$t" >> "$GITHUB_OUTPUT"
+
+      - name: 跑（封口）
+        env:
+          COWORK_TOKEN: ${{ steps.ro.outputs.token }}
+        run: bash shell/.github/workflows/cowork-ci/sealed.sh "${{ matrix.suite }}"
+
+      - name: 传日志、打 status
+        if: always() && steps.ro.outcome != 'skipped'
+        env:
+          BOT_APP_ID: ${{ vars.BOT_APP_ID }}
+          BOT_APP_KEY: ${{ secrets.BOT_APP_KEY }}
+        run: |
+          GH_TOKEN=$(node shell/.github/workflows/cowork-ci/app-token.mjs cowork contents=write,statuses=write) || exit 1
+          echo "::add-mask::$GH_TOKEN"
+          export GH_TOKEN
+          unset BOT_APP_KEY
+          bash shell/.github/workflows/cowork-ci/report.sh "${{ matrix.suite }}" "${{ matrix.suite }}"

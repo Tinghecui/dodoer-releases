@@ -735,6 +735,7 @@ function BranchSelector({
   currentBranch,
   selectedBranch,
   onBranchChange,
+  onOpen,
 }: {
   branchList: GitBranchList
   currentBranch: string | null
@@ -742,9 +743,17 @@ function BranchSelector({
   // HEAD_BRANCH_FILTER = the dynamic "whatever branch I'm on" view.
   selectedBranch: string | null
   onBranchChange: (branch: string | null) => void
+  // 打开时重新读一次分支：终端里 git branch 不动 HEAD、也不发 git 事件，
+  // 不在这里读，新分支要等整页刷新才看得到（#1281）。先显示旧列表，新的回来再换。
+  onOpen?: () => void
 }) {
   const t = useTranslations("Folder.gitLogTab.branchSelector")
   const [popoverOpen, setPopoverOpen] = useState(false)
+
+  const handleOpenChange = (open: boolean) => {
+    setPopoverOpen(open)
+    if (open) onOpen?.()
+  }
 
   const handleSelect = (branch: string | null) => {
     setPopoverOpen(false)
@@ -765,7 +774,7 @@ function BranchSelector({
     // All branches view shows just the "Branch" label; a clear button appears
     // for HEAD or a named branch to return to All branches.
     <div className="-ml-1 flex min-w-0 shrink items-center rounded-full transition-colors hover:bg-foreground/10 has-data-[state=open]:bg-foreground/10">
-      <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+      <Popover open={popoverOpen} onOpenChange={handleOpenChange}>
         <PopoverTrigger asChild>
           <Button
             variant="ghost"
@@ -1208,6 +1217,7 @@ function LogHeader({
   currentBranch,
   selectedBranch,
   onBranchChange,
+  onBranchSelectorOpen,
   onRefresh,
   refreshing,
   meName,
@@ -1225,6 +1235,7 @@ function LogHeader({
   currentBranch: string | null
   selectedBranch: string | null
   onBranchChange: (branch: string | null) => void
+  onBranchSelectorOpen: () => void
   onRefresh: () => void
   refreshing: boolean
   meName: string | null
@@ -1269,6 +1280,7 @@ function LogHeader({
             currentBranch={currentBranch}
             selectedBranch={selectedBranch}
             onBranchChange={onBranchChange}
+            onOpen={onBranchSelectorOpen}
           />
           <AuthorFilter
             meName={meName}
@@ -1779,7 +1791,13 @@ export function GitLogTab() {
   const handleRefresh = useCallback(() => {
     void fetchLog({ inline: true })
     void refreshCurrentUser()
-  }, [fetchLog, refreshCurrentUser])
+    // 分支列表也一起刷：终端里新建、删掉的分支不会有 git 事件（#1281）
+    void refreshBranches()
+  }, [fetchLog, refreshCurrentUser, refreshBranches])
+
+  const handleBranchSelectorOpen = useCallback(() => {
+    void refreshBranches()
+  }, [refreshBranches])
 
   // Append the next page (older commits) via the backend `skip` offset. Reads
   // live length/flags from refs; a generation mismatch means a page-0 reload
@@ -2142,6 +2160,7 @@ export function GitLogTab() {
           currentBranch={currentBranch}
           selectedBranch={selectedBranch}
           onBranchChange={handleBranchChange}
+          onBranchSelectorOpen={handleBranchSelectorOpen}
           onRefresh={handleRefresh}
           refreshing={loading || refreshing}
           meName={meName}
@@ -2210,6 +2229,7 @@ export function GitLogTab() {
         currentBranch={currentBranch}
         selectedBranch={selectedBranch}
         onBranchChange={handleBranchChange}
+        onBranchSelectorOpen={handleBranchSelectorOpen}
         onRefresh={handleRefresh}
         refreshing={loading || refreshing}
         meName={meName}

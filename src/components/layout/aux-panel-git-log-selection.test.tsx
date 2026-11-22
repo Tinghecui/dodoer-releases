@@ -31,6 +31,9 @@ const state = vi.hoisted(() => ({
   gitNewBranch: vi.fn(async () => {}),
   deferBranches: false,
   pendingBranches: [] as PendingBranchList[],
+  // 终端里另外建的本地分支（不经过应用，不发 git 事件）
+  extraLocal: [] as string[],
+  listBranchCalls: 0,
   listeners: new Map<string, (payload: { folder_id: number }) => void>(),
   // What the active folder's HEAD poll last wrote (store `gitHeads`).
   gitHeads: new Map<number, unknown>(),
@@ -50,13 +53,19 @@ vi.mock("react", async (importOriginal) => {
 
 // virtua renders no rows under jsdom (no layout): render every commit.
 vi.mock("virtua", () => ({
+  // 分支选择器的列表直接传子元素，没有 data
   Virtualizer: ({
     data,
     children,
   }: {
-    data: unknown[]
-    children: (item: unknown, index: number) => ReactNode
-  }) => <>{data.map((item, index) => children(item, index))}</>,
+    data?: unknown[]
+    children: ReactNode | ((item: unknown, index: number) => ReactNode)
+  }) =>
+    typeof children === "function" ? (
+      <>{(data ?? []).map((item, index) => children(item, index))}</>
+    ) : (
+      <>{children}</>
+    ),
 }))
 
 // The commit list mounts virtua only once the OverlayScrollbars viewport exists,
@@ -83,12 +92,15 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   getGitBranch: async (path: string) =>
     path === "/worktrees/a" ? "mainA" : "mainB",
   gitListAllBranches: (path: string) =>
-    state.deferBranches
+    (state.listBranchCalls++, state.deferBranches)
       ? new Promise<GitBranchList>((resolve, reject) => {
           state.pendingBranches.push({ path, resolve, reject })
         })
       : Promise.resolve({
-          local: [path === "/worktrees/a" ? "mainA" : "mainB"],
+          local: [
+            path === "/worktrees/a" ? "mainA" : "mainB",
+            ...state.extraLocal,
+          ],
           remote: [],
           worktree_branches: [],
           main_worktree_branch: null,
@@ -142,6 +154,12 @@ vi.mock("@/lib/platform", async (importOriginal) => ({
   },
 }))
 
+// 分支选择器的列表读缩放比例，测试里没有 AppearanceProvider
+vi.mock("@/hooks/use-appearance", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/use-appearance")>()),
+  useZoomLevel: () => ({ zoomLevel: 100, setZoomLevel: () => {} }),
+}))
+
 vi.mock("@/components/layout/remote-manage-dialog", () => ({
   RemoteManageDialog: () => null,
 }))
@@ -178,6 +196,8 @@ describe("Commits tab branch query", () => {
     state.gitNewBranch.mockClear()
     state.deferBranches = false
     state.pendingBranches = []
+    state.extraLocal = []
+    state.listBranchCalls = 0
     state.listeners.clear()
     state.gitHeads = new Map()
   })
@@ -268,6 +288,34 @@ describe("Commits tab branch query", () => {
     view.rerender(tabTree())
     await act(async () => {})
     expect(state.gitLog.mock.calls.length).toBe(before)
+  })
+
+  it("re-reads branches when the branch selector opens (#1281)", async () => {
+    // 终端里 git branch qa-x：HEAD 没动，不会有 git 事件，也不会触发轮询刷新
+    renderTab()
+    const trigger = await screen.findByTitle(
+      "Follows the current branch (mainA)"
+    )
+    await act(async () => {})
+    const before = state.listBranchCalls
+    state.extraLocal = ["qa-x"]
+
+    fireEvent.click(trigger)
+    expect(await screen.findByText("qa-x")).toBeInTheDocument()
+    expect(state.listBranchCalls).toBe(before + 1)
+  })
+
+  it("re-reads branches on Refresh commit history (#1281)", async () => {
+    renderTab()
+    await screen.findByTitle("Follows the current branch (mainA)")
+    await act(async () => {})
+    const before = state.listBranchCalls
+    state.extraLocal = ["qa-x"]
+
+    const menu = screen.getByRole("button", { name: "More Git actions" })
+    fireEvent.keyDown(menu, { key: "Enter" })
+    fireEvent.click(await screen.findByText("Refresh commit history"))
+    await waitFor(() => expect(state.listBranchCalls).toBe(before + 1))
   })
 
   it("queries only the current worktree HEAD on first open", async () => {

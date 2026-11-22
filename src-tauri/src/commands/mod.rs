@@ -35,6 +35,7 @@ pub mod computer;
 /// the shared codeg-mcp plumbing reads them.
 pub mod computer_tools;
 pub mod config_sync;
+pub mod conversation_sync;
 pub mod conversation_tags;
 pub mod conversation_taxonomy;
 pub mod conversations;

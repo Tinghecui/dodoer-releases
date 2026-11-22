@@ -571,6 +571,7 @@
     "POST /api/stop_workbench_app": "web",
     "POST /api/stop_workspace_state_stream": "web",
     "POST /api/submit_session_feedback": "web",
+    "POST /api/sync_conversation_list": "手机 app（coteam-ios 的 ListFeed.swift；404 / 405 / 501 时退回整份重取）",
     "POST /api/telemetry_envelope": "web",
     "POST /api/terminal_kill": "web",
     "POST /api/terminal_list": "web",

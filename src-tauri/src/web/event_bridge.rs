@@ -11,6 +11,18 @@ use crate::acp::types::{
 };
 use crate::acp::{AcpEvent, EventBusMetrics, EventEnvelope, InternalEventBus, SessionState};
 
+/// Cowork：`web` 外面经这里用编了号的对话列表（移植 dodoer #946）。
+pub use super::conversation_journal::{
+    ConversationListCursor, SnapshotReason, JOURNAL_CAPACITY, MAX_REPLAY,
+};
+
+/// Cowork（移植 dodoer #946）：读的那一刻的 `{generation, seq}`，和客户端位置之后的变化，
+/// 或者它为什么要整份重取。
+pub type ConversationChangesSince = (
+    ConversationListCursor,
+    Result<Vec<Arc<serde_json::Value>>, SnapshotReason>,
+);
+
 /// Broadcast-delivered event.
 ///
 /// `payload` is wrapped in `Arc` so cloning across broadcast receivers is
@@ -36,6 +48,10 @@ pub struct WebEventBroadcaster {
     /// 只在内存里（重启就没了）。只在很短的同步代码里拿着，从不跨 `.await`，拿着它时也不去拿
     /// 别的锁（里面只会往 `sender` 发消息）。
     background_slots: std::sync::Mutex<BackgroundSlots>,
+    /// Cowork 加的（移植 dodoer #946）：给每条 `conversation://changed` 编号，留最近的给
+    /// `sync_conversation_list` 补发。编号和广播在这把锁里一起做，编号的先后就是广播的先后。
+    /// 叶子锁：拿着它时只往 `sender` 发消息。
+    conversation_journal: std::sync::Mutex<super::conversation_journal::ConversationJournal>,
 }
 
 /// Cowork 加的：一个对话在「留下来的『?』」表里的一格。
@@ -120,6 +136,7 @@ impl WebEventBroadcaster {
         Self {
             sender,
             background_slots: std::sync::Mutex::new(HashMap::new()),
+            conversation_journal: std::sync::Mutex::new(Default::default()),
         }
     }
 
@@ -182,24 +199,60 @@ impl WebEventBroadcaster {
     /// `Value` so Tauri callers can reuse it without serializing twice.
     pub fn send(&self, channel: &str, payload: &impl Serialize) -> Option<Arc<serde_json::Value>> {
         let value = Arc::new(serde_json::to_value(payload).ok()?);
-        if self.sender.receiver_count() > 0 {
-            let _ = self.sender.send(WebEvent {
-                channel: channel.to_string(),
-                payload: value.clone(),
-            });
-        }
-        Some(value)
+        Some(self.send_shared(channel, value))
     }
 
     /// Broadcast a pre-serialized `Value` without re-serialization.
     pub fn send_value(&self, channel: &str, payload: Arc<serde_json::Value>) {
-        if self.sender.receiver_count() == 0 {
-            return;
+        let _ = self.send_shared(channel, payload);
+    }
+
+    /// Broadcast a pre-serialized `Value` and return what went out.
+    ///
+    /// Cowork 加的（移植 dodoer #946）：`conversation://changed` 不管有没有人听都编上号
+    /// （加上 `generation`、`seq` 两个字段，返回的就是编了号的），老客户端不认识这两个字段，
+    /// 照旧读 `kind`。别的频道原样发。
+    pub fn send_shared(
+        &self,
+        channel: &str,
+        payload: Arc<serde_json::Value>,
+    ) -> Arc<serde_json::Value> {
+        if channel != CONVERSATION_CHANGED_EVENT {
+            self.broadcast(channel, &payload);
+            return payload;
         }
-        let _ = self.sender.send(WebEvent {
-            channel: channel.to_string(),
-            payload,
-        });
+        let mut journal = self.lock_conversation_journal();
+        let stamped = journal.record(payload);
+        self.broadcast(channel, &stamped);
+        stamped
+    }
+
+    fn broadcast(&self, channel: &str, payload: &Arc<serde_json::Value>) {
+        if self.sender.receiver_count() > 0 {
+            let _ = self.sender.send(WebEvent {
+                channel: channel.to_string(),
+                payload: payload.clone(),
+            });
+        }
+    }
+
+    fn lock_conversation_journal(
+        &self,
+    ) -> std::sync::MutexGuard<'_, super::conversation_journal::ConversationJournal> {
+        self.conversation_journal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Cowork 加的（移植 dodoer #946）：现在的 `{generation, seq}`，和 `cursor` 之后的
+    /// 变化（最多 `max` 条），或者客户端为什么要整份重取。
+    pub fn conversation_changes_since(
+        &self,
+        cursor: Option<&ConversationListCursor>,
+        max: usize,
+    ) -> ConversationChangesSince {
+        let journal = self.lock_conversation_journal();
+        (journal.cursor(), journal.since(cursor, max))
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<WebEvent> {
@@ -277,6 +330,26 @@ impl EventEmitter {
             }
             EventEmitter::WebOnly { broadcaster, .. } => Some(Arc::clone(broadcaster)),
             EventEmitter::Noop => None,
+        }
+    }
+
+    /// Cowork 加的（移植 dodoer #946）：见 [`WebEventBroadcaster::conversation_changes_since`]。
+    /// 没有广播器就没有编号，客户端都整份重取。
+    pub fn conversation_changes_since(
+        &self,
+        cursor: Option<&ConversationListCursor>,
+        max: usize,
+    ) -> ConversationChangesSince {
+        match self.web_broadcaster() {
+            Some(web) => web.conversation_changes_since(cursor, max),
+            None => {
+                let empty = super::conversation_journal::ConversationJournal::with_capacity(1);
+                let reason = match empty.since(cursor, max) {
+                    Err(reason) => reason,
+                    Ok(_) => SnapshotReason::GenerationChanged,
+                };
+                (empty.cursor(), Err(reason))
+            }
         }
     }
 
@@ -658,13 +731,15 @@ pub fn emit_event(emitter: &EventEmitter, event: &str, payload: impl Serialize) 
             let Ok(value) = serde_json::to_value(&payload) else {
                 return;
             };
-            let shared = Arc::new(value);
+            let mut shared = Arc::new(value);
+            // Cowork：先经广播器（`conversation://changed` 在那里编号），桌面窗口收到的和
+            // 网页端是同一份。
+            if let Some(web) = app.try_state::<Arc<WebEventBroadcaster>>() {
+                shared = web.send_shared(event, shared);
+            }
             // `&Value` is Copy, so Tauri's `Clone` bound is satisfied without
             // copying the payload — Tauri serializes through the reference.
             let _ = app.emit(event, shared.as_ref());
-            if let Some(web) = app.try_state::<Arc<WebEventBroadcaster>>() {
-                web.send_value(event, Arc::clone(&shared));
-            }
             Some(shared)
         }
         EventEmitter::WebOnly { broadcaster, .. } => broadcaster.send(event, &payload),

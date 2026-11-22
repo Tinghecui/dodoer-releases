@@ -45,6 +45,37 @@ pub async fn list_all_conversations(
     Ok(Json(rows))
 }
 
+/// Cowork 加的（移植 dodoer #946）：手机 app 带上次看到的 `{generation, seq}`，拿缺的变化，
+/// 补不上时拿整份列表（`mode: "snapshot"`）。
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncConversationListParams {
+    pub generation: Option<String>,
+    pub seq: Option<u64>,
+    pub include_children: Option<bool>,
+    pub include_loops: Option<bool>,
+}
+
+pub async fn sync_conversation_list(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<SyncConversationListParams>,
+) -> Result<Json<crate::commands::conversation_sync::ConversationListSync>, AppCommandError> {
+    use crate::commands::conversation_sync as sync;
+    let result = sync::sync_conversation_list_core(
+        &state.db.conn,
+        &state.emitter,
+        &state.chat_channel_manager,
+        &state.connection_manager,
+        sync::SyncConversationListOptions {
+            cursor: sync::cursor_from(params.generation, params.seq),
+            include_children: params.include_children.unwrap_or(false),
+            include_loops: params.include_loops.unwrap_or(false),
+        },
+    )
+    .await?;
+    Ok(Json(result))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListChildConversationsParams {

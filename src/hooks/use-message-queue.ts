@@ -15,8 +15,10 @@ import {
   canClaimStoredQueue,
   claimStoredQueue,
   readStoredQueue,
+  registerLiveQueue,
   releaseStoredQueue,
   subscribeStoredQueueLanded,
+  subscribeStoredQueueLeft,
   writeStoredQueue,
 } from "@/lib/cowork/message-queue-storage"
 
@@ -452,6 +454,33 @@ export function useMessageQueue(
       commit([...landed, ...queueRef.current])
     })
   }, [storageKey, commit])
+
+  // #1191 返工：挂着的时候别处把这个 key 下的排队消息搬走了（Ctrl+T 把草稿
+  // 翻成聊天草稿，消息寄存到项目名下等着回项目时领），当场从排队区放下，
+  // 不然还显示着、会在聊天里重试，下次改队列也会把它写回这个 key。
+  useEffect(() => {
+    if (!storageKey) return
+    return subscribeStoredQueueLeft(storageKey, (ids) => {
+      if (storageKeyRef.current !== storageKey) return
+      const kept = queueRef.current.filter((item) => !ids.has(item.id))
+      if (kept.length === queueRef.current.length) return
+      for (const id of ids) restoredIdsRef.current.delete(id)
+      commit(kept)
+    })
+  }, [storageKey, commit])
+
+  // #1191 第 3 次返工：登记内存里的消息（存储存不下的也在），让标签那边
+  // （「新建会话」、Ctrl+T）知道这个草稿的排队区不是空的。挪到别的 key 下
+  // （moveStorageTo）以后这个 key 不再算有。第 4 次返工：交整条消息，
+  // 标签那边比得出改过的内容有没有存进去。
+  useEffect(() => {
+    if (!storageKey) return
+    return registerLiveQueue(storageKey, () =>
+      storageKeyRef.current === storageKey
+        ? [...inFlightRef.current, ...queueRef.current]
+        : []
+    )
+  }, [storageKey])
 
   // Mirror every committed queue while the claim is ours (the key arriving
   // later — a draft that just got saved — writes what is queued once it is

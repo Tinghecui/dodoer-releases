@@ -7,6 +7,7 @@ import {
 import {
   draftMessageQueueStorageKey,
   readStoredQueue,
+  registerLiveQueue,
 } from "@/lib/cowork/message-queue-storage"
 import {
   resetAppWorkspaceStore,
@@ -15,6 +16,7 @@ import {
 import { resetFolderTabsStore, useFolderTabsStore } from "./folder-tabs-store"
 import { resetTabStore, useTabStore } from "./tab-store"
 import type { ConversationWorktreeSpec, FolderDetail } from "@/lib/types"
+import type { QueuedMessage } from "@/hooks/use-message-queue"
 
 vi.mock("@/lib/api", () => ({
   listOpenedTabs: vi.fn(),
@@ -256,6 +258,148 @@ describe("closing a draft whose queue holds an unsent message (#1042)", () => {
     expect(reopened.tabId).toBe(blank.tabId)
     expect(queuedIds(reopened.tabId)).toEqual(["q1"])
     expect(tab(reopened.tabId)?.pendingWorktree).toBeUndefined()
+  })
+
+  // #1191：领回消息后切到别的聊天再点同一项目的「新建会话」，复用的是这个
+  // 排队区有消息的草稿，新工作树选择不能被 #837 的重置清掉。
+  it("reusing a draft whose queue still holds the claimed message keeps its worktree choice", () => {
+    useFolderTabsStore.getState().setEnabled(true)
+    const oldId = queuedDraft()
+    useTabStore.getState().closeTab(oldId)
+    const next = useTabStore.getState().openNewConversationTab(1, "/demo")
+    expectClaimedBy(next.tabId, oldId)
+
+    useTabStore.getState().openChatModeTab()
+    const again = useTabStore.getState().openNewConversationTab(1, "/demo")
+    expect(again.tabId).toBe(next.tabId)
+    expect(queuedIds(again.tabId)).toEqual(["q1"])
+    expect(tab(again.tabId)?.pendingWorktree).toEqual(spec)
+  })
+
+  // #1191 返工：没开文件夹标签时，Ctrl+T 会把这个项目草稿直接翻成聊天草稿。
+  // 排队区的消息和新工作树选择要先寄存到项目名下，回到项目新建时领回。
+  it("tabs not following the folder: Ctrl+T parks the queue, the project's next new draft gets it and the worktree back", async () => {
+    const oldId = queuedDraft()
+    useTabStore.getState().openTab(1, 7, "claude_code", true)
+    useTabStore.getState().closeTab(oldId)
+    const next = useTabStore.getState().openNewConversationTab(1, "/demo")
+    expectClaimedBy(next.tabId, oldId)
+
+    const chat = useTabStore.getState().openChatModeTab()
+    expect(chat.tabId).toBe(next.tabId)
+    expect(tab(chat.tabId)?.isChat).toBe(true)
+    // 聊天草稿里不带这条消息，免得重试在聊天里发出去
+    expect(queuedIds(chat.tabId)).toEqual([])
+
+    const back = useTabStore.getState().openNewConversationTab(1, "/demo")
+    expect(back.tabId).toBe(chat.tabId)
+    expect(queuedIds(back.tabId)).toEqual(["q1"])
+    expect(tab(back.tabId)?.pendingWorktree).toEqual(spec)
+    useTabStore.getState().consumeDraftRetargets()
+    await vi.waitFor(() => expect(tab(back.tabId)?.folderId).toBe(1))
+    expect(tab(back.tabId)?.workingDir).toBe("/demo")
+    expect(tab(back.tabId)?.pendingWorktree).toEqual(spec)
+  })
+
+  // #1191 第 2 次返工：寄存不成（存储满了复制不了消息，或者清单写不进去）时
+  // 不能把草稿翻成聊天草稿，消息和新工作树选择都留在原来的项目草稿上。
+  const ctrlTWithFullStorage = (fails: (key: string) => boolean) => {
+    const oldId = queuedDraft()
+    useTabStore.getState().openTab(1, 7, "claude_code", true)
+    useTabStore.getState().closeTab(oldId)
+    const next = useTabStore.getState().openNewConversationTab(1, "/demo")
+    expectClaimedBy(next.tabId, oldId)
+    const before = Object.keys(localStorage).sort()
+    const setItem = Storage.prototype.setItem
+    const spy = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(function (this: Storage, key: string, value: string) {
+        if (fails(key)) throw new DOMException("full", "QuotaExceededError")
+        setItem.call(this, key, value)
+      })
+    const chat = useTabStore.getState().openChatModeTab()
+    spy.mockRestore()
+    expect(chat.tabId).toBe(next.tabId)
+    expect(chat.folderId).toBe(1)
+    expect(tab(next.tabId)?.isChat).not.toBe(true)
+    expect(tab(next.tabId)?.folderId).toBe(1)
+    expect(tab(next.tabId)?.workingDir).toBe("/demo")
+    expect(tab(next.tabId)?.pendingWorktree).toEqual(spec)
+    expect(queuedIds(next.tabId)).toEqual(["q1"])
+    // 没留下清单里没有的副本
+    expect(Object.keys(localStorage).sort()).toEqual(before)
+  }
+
+  it("tabs not following the folder: Ctrl+T with storage too full to copy the queue keeps the project draft", () => {
+    ctrlTWithFullStorage(
+      (key) => key.includes(":draft-") && !key.endsWith(":parks")
+    )
+  })
+
+  it("tabs not following the folder: Ctrl+T whose park list cannot be written keeps the project draft", () => {
+    ctrlTWithFullStorage((key) => key.endsWith(":parks"))
+  })
+
+  // #1191 第 3 次返工：排队区的消息存储存不下、只在内存里（挂着的排队区
+  // 登记的）时，「新建会话」复用这个草稿也不能清掉新工作树选择。
+  const memoryOnlyDraft = (ids: string[] = ["m1"]) => {
+    const draft = useTabStore.getState().openNewConversationTab(1, "/demo")
+    useTabStore.getState().setDraftWorktree(draft.tabId, spec)
+    const items: QueuedMessage[] = ids.map((id) => ({
+      id,
+      draft: {
+        blocks: [{ type: "text", text: `queue-920 ${id}` }],
+        displayText: `queue-920 ${id}`,
+      },
+      modeId: null,
+    }))
+    const unregister = registerLiveQueue(
+      draftMessageQueueStorageKey(draft.tabId),
+      () => items
+    )
+    return { tabId: draft.tabId, unregister }
+  }
+
+  it("a reused draft whose queue is held only in memory keeps its worktree choice", () => {
+    useFolderTabsStore.getState().setEnabled(true)
+    const { tabId, unregister } = memoryOnlyDraft()
+    useTabStore.getState().openChatModeTab()
+    const again = useTabStore.getState().openNewConversationTab(1, "/demo")
+    unregister()
+    expect(again.tabId).toBe(tabId)
+    expect(tab(tabId)?.pendingWorktree).toEqual(spec)
+  })
+
+  it("tabs not following the folder: Ctrl+T on a draft whose queue is held only in memory keeps the project draft", () => {
+    const { tabId, unregister } = memoryOnlyDraft()
+    const chat = useTabStore.getState().openChatModeTab()
+    unregister()
+    expect(chat.tabId).toBe(tabId)
+    expect(chat.folderId).toBe(1)
+    expect(tab(tabId)?.isChat).not.toBe(true)
+    expect(tab(tabId)?.workingDir).toBe("/demo")
+    expect(tab(tabId)?.pendingWorktree).toEqual(spec)
+  })
+
+  it("tabs not following the folder: Ctrl+T when part of the queue is only in memory keeps it all on the project draft", () => {
+    const { tabId, unregister } = memoryOnlyDraft(["q1", "m1"])
+    storeQueue(tabId)
+    const before = Object.keys(localStorage).sort()
+    const chat = useTabStore.getState().openChatModeTab()
+    unregister()
+    expect(chat.folderId).toBe(1)
+    expect(tab(tabId)?.isChat).not.toBe(true)
+    expect(tab(tabId)?.pendingWorktree).toEqual(spec)
+    expect(queuedIds(tabId)).toEqual(["q1"])
+    expect(Object.keys(localStorage).sort()).toEqual(before)
+  })
+
+  it("a reused draft with an empty queue still has its worktree choice reset (#837)", () => {
+    const draft = useTabStore.getState().openNewConversationTab(1, "/demo")
+    useTabStore.getState().setDraftWorktree(draft.tabId, spec)
+    const again = useTabStore.getState().openNewConversationTab(1, "/demo")
+    expect(again.tabId).toBe(draft.tabId)
+    expect(tab(again.tabId)?.pendingWorktree).toBeUndefined()
   })
 
   it("storage too full to copy the queue on close still leaves it claimable", () => {

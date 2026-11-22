@@ -9,6 +9,8 @@ import type { PromptDraft } from "@/lib/types"
 import {
   CLAIM_SETTLE_MS,
   draftMessageQueueStorageKey,
+  draftQueueFullyStored,
+  draftQueueHoldsMessages,
   moveStoredDraftQueue,
 } from "@/lib/cowork/message-queue-storage"
 
@@ -1146,6 +1148,78 @@ describe("useMessageQueue: a queue handed over while mounted (#1042)", () => {
     expect(result.current.queue[0].failed).toBe(true)
     act(() => result.current.enqueue(draft("E"), null))
     expect(window.localStorage.getItem(LIVE)).toContain('"displayText":"X"')
+    unmount()
+  })
+
+  // #1191 返工：挂着的草稿翻成聊天草稿、排队区的消息被搬去寄存时，这边要
+  // 当场放下，之后改队列也不能把搬走的那条写回来。
+  it("drops what moveStoredDraftQueue takes away from its key, and does not write it back", async () => {
+    const LIVE = draftMessageQueueStorageKey("tab-live")
+    window.localStorage.setItem(
+      LIVE,
+      JSON.stringify([
+        { id: "x1", draft: draft("X"), modeId: null, failure: "send" },
+      ])
+    )
+    const { result, unmount } = renderHook(() => useMessageQueue(LIVE))
+    await settle()
+    expect(texts(result.current.queue)).toEqual(["X"])
+    act(() => moveStoredDraftQueue("tab-live", "parked-y"))
+    expect(texts(result.current.queue)).toEqual([])
+    act(() => result.current.enqueue(draft("E"), null))
+    expect(window.localStorage.getItem(LIVE)).not.toContain('"displayText":"X"')
+    expect(
+      window.localStorage.getItem(draftMessageQueueStorageKey("parked-y"))
+    ).toContain('"displayText":"X"')
+    unmount()
+  })
+
+  // #1191 第 3 次返工：存储存不下（这里模拟存储满）的消息只在内存里，
+  // 标签那边也要知道这个草稿的排队区不是空的。卸载后不再算。
+  it("reports what it holds in memory even when storage cannot take it", async () => {
+    const LIVE = draftMessageQueueStorageKey("tab-mem")
+    const { result, unmount } = renderHook(() => useMessageQueue(LIVE))
+    await settle()
+    const setItem = Storage.prototype.setItem
+    Storage.prototype.setItem = function (key: string, value: string) {
+      if (key === LIVE) throw new DOMException("full", "QuotaExceededError")
+      setItem.call(this, key, value)
+    }
+    try {
+      act(() => result.current.enqueue(draft("M"), null))
+    } finally {
+      Storage.prototype.setItem = setItem
+    }
+    expect(window.localStorage.getItem(LIVE)).toBeNull()
+    expect(draftQueueHoldsMessages("tab-mem")).toBe(true)
+    expect(draftQueueFullyStored("tab-mem")).toBe(false)
+    unmount()
+    expect(draftQueueHoldsMessages("tab-mem")).toBe(false)
+  })
+
+  // #1191 第 4 次返工：改过的消息存不进去时，存储里还是同一个 id 的旧版本，
+  // 只比 id 会当成都存好了，Ctrl+T 就寄存旧版本、放下内存里的新版本。
+  it("does not count an edit that storage could not take as stored", async () => {
+    const LIVE = draftMessageQueueStorageKey("tab-edit")
+    const { result, unmount } = renderHook(() => useMessageQueue(LIVE))
+    await settle()
+    act(() => result.current.enqueue(draft("old"), null))
+    expect(window.localStorage.getItem(LIVE)).toContain('"displayText":"old"')
+    expect(draftQueueFullyStored("tab-edit")).toBe(true)
+    const id = result.current.queue[0].id
+    const setItem = Storage.prototype.setItem
+    Storage.prototype.setItem = function (key: string, value: string) {
+      if (key === LIVE) throw new DOMException("full", "QuotaExceededError")
+      setItem.call(this, key, value)
+    }
+    try {
+      act(() => result.current.updateItem(id, draft("new")))
+    } finally {
+      Storage.prototype.setItem = setItem
+    }
+    expect(window.localStorage.getItem(LIVE)).toContain('"displayText":"old"')
+    expect(texts(result.current.queue)).toEqual(["new"])
+    expect(draftQueueFullyStored("tab-edit")).toBe(false)
     unmount()
   })
 })

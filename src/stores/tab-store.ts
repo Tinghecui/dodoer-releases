@@ -50,6 +50,8 @@ import {
 import { discardAskSelectionPrompts } from "@/lib/ask-selection-handoff"
 import {
   claimParkedDraftQueue,
+  draftQueueFullyStored,
+  draftQueueHoldsMessages,
   hasStoredDraftQueue,
   moveStoredDraftQueue,
   parkStoredDraftQueue,
@@ -2908,9 +2910,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     // 只交给工作目录对得上的草稿（不管带没带新工作树选择），不然重试就在
     // 别的目录里发了。复用的是别的项目的草稿也照领：它换到这个项目时把领回
     // 的新工作树选择一起带上（DraftRetargetRequest.pendingWorktree）。
+    // #1191 第 3 次返工：只在内存里、存储存不下的消息也算存着。
     const claimed =
       movingDraft ||
-      (existingTab != null && hasStoredDraftQueue(existingTab.id))
+      (existingTab != null && draftQueueHoldsMessages(existingTab.id))
         ? null
         : claimParkedDraftQueue(
             folderId,
@@ -2955,10 +2958,18 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     // 上次选的分支（可能正是创建失败、刷新后又恢复出来的那个）不再跟着。
     // 搬草稿（retargetTabId，工作树建好后的那一步）和按原位置重新打开（index）
     // 不算新建，照旧保留。
+    // #1191：草稿排队区还存着没发出去的消息、又留在原来的项目和目录时也不清：
+    // 这份选择是那些消息重试要用的，清了重试就悄悄发到主分支上。
+    // 第 3 次返工：只在内存里、存储存不下的消息也算。
+    const keepForQueue =
+      !folderChanged &&
+      !workingDirChanged &&
+      draftQueueHoldsMessages(existingTab.id)
     const clearWorktree =
       !movingDraft &&
       options?.index == null &&
       options?.keepDraftWorktree !== true &&
+      !keepForQueue &&
       existingTab.pendingWorktree != null
 
     // The singleton means a reopened draft resolves to THIS draft rather than a
@@ -3134,6 +3145,52 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       // (folderId + isChat together), so a send issued before any async teardown
       // can never still create/send in the old folder. The agent is re-resolved
       // for chat mode (no folder default).
+      // #1191 返工：排队区存着没发出去的消息时，先像关草稿那样（#1042）连同
+      // 目录和新工作树选择寄存到项目名下，回这个项目新建时领回；不然消息
+      // 跟着翻成聊天草稿、选择被清，重试就在聊天或主分支上发了。消息搬到
+      // 一个不用的标签号下寄存，聊天草稿自己的排队区不再带着它。用户自己
+      // 把草稿搬进聊天（movingDraft）的照旧跟着走。
+      // 第 2 次返工：寄存不成（存储满了消息复制不过去，或者清单写不进去）
+      // 就把消息搬回原处、不翻这个草稿，留在项目里带着消息和选择等重试，
+      // 不让消息落在清单里没有的键下，也不清掉新工作树选择。
+      // 第 3 次返工：排队区有只在内存里、存储存不下的消息时也算寄存不成：
+      // 寄存只搬得走存储里的那份，内存里的会留在聊天草稿里。
+      if (
+        !movingDraft &&
+        existingTab.isChat !== true &&
+        existingTab.folderId !== 0 &&
+        draftQueueHoldsMessages(existingTab.id)
+      ) {
+        const parkId = makeNewConversationTabId()
+        const movable =
+          hasStoredDraftQueue(existingTab.id) &&
+          draftQueueFullyStored(existingTab.id)
+        if (movable) moveStoredDraftQueue(existingTab.id, parkId)
+        const parked =
+          movable &&
+          !hasStoredDraftQueue(existingTab.id) &&
+          parkStoredDraftQueue(parkId, existingTab.folderId, {
+            ...(existingTab.workingDir != null
+              ? { workingDir: existingTab.workingDir }
+              : {}),
+            ...(existingTab.pendingWorktree
+              ? { pendingWorktree: existingTab.pendingWorktree }
+              : {}),
+          })
+        if (!parked) {
+          if (movable) moveStoredDraftQueue(parkId, existingTab.id)
+          console.warn(
+            "[TabStore] could not park the draft queue; keeping the project draft"
+          )
+          focusTab(existingTab.id)
+          runtime.activateConversationPane()
+          return {
+            tabId: existingTab.id,
+            agentType: existingTab.agentType,
+            folderId: existingTab.folderId,
+          }
+        }
+      }
       set({
         activeTabId: existingTab.id,
         rawTabs: prevState.rawTabs.map((tab) =>

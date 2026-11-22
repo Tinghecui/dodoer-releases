@@ -298,7 +298,10 @@ export function moveStoredDraftQueue(fromTabId: string, toTabId: string): void {
   writeStoredQueue(to, [...moving, ...kept])
   // 新键确实存下了才清旧键（超出存储上限时旧的那份留着）
   const landed = new Set(readStoredQueue(to).map((item) => item.id))
-  if (moving.every((item) => landed.has(item.id))) writeStoredQueue(from, [])
+  if (moving.every((item) => landed.has(item.id))) {
+    writeStoredQueue(from, [])
+    noteStoredQueueLeft(from, ids)
+  }
   noteStoredQueueLanded(to)
 }
 
@@ -367,19 +370,21 @@ function writeParkList(
 }
 
 /** 把关掉的草稿 `fromTabId` 排队区存的消息寄存到项目 `folderId` 名下，
- *  单独一份，连同它自己的设置。 */
+ *  单独一份，连同它自己的设置。返回清单里是不是确实记下了这一份（#1191：
+ *  存储满了清单写不进去时，调用方要知道消息领不回来）。 */
 export function parkStoredDraftQueue(
   fromTabId: string,
   folderId: number,
   handoff: ParkedDraftHandoff
-): void {
-  if (!hasStoredDraftQueue(fromTabId)) return
+): boolean {
+  if (!hasStoredDraftQueue(fromTabId)) return false
   const store = storage()
-  if (!store) return
+  if (!store) return false
   const list = readParkList(store, folderId).filter(
     (e) => e.tabId !== fromTabId
   )
   writeParkList(store, folderId, [...list, { ...handoff, tabId: fromTabId }])
+  return readParkList(store, folderId).some((e) => e.tabId === fromTabId)
 }
 
 /** 项目 `folderId` 寄存着关掉的草稿的消息时，把最后关掉、`accept` 认可的
@@ -443,6 +448,103 @@ export function subscribeStoredQueueLanded(
 
 function noteStoredQueueLanded(key: string): void {
   for (const listener of [...(landedListeners.get(key) ?? [])]) listener()
+}
+
+// #1191 返工：反过来，挂着的排队区的消息被搬走了（草稿翻成聊天草稿，消息
+// 寄存到项目名下），那边要放下这几条，不然还显示着，下次改队列又写回来。
+const leftListeners = new Map<string, Set<(ids: Set<string>) => void>>()
+
+/** 有别处把 `key` 下的排队消息搬走（`moveStoredDraftQueue`）时调 `listener`，
+ *  带上搬走的那几条的 id。 */
+export function subscribeStoredQueueLeft(
+  key: string,
+  listener: (ids: Set<string>) => void
+): () => void {
+  let set = leftListeners.get(key)
+  if (!set) {
+    set = new Set()
+    leftListeners.set(key, set)
+  }
+  set.add(listener)
+  return () => {
+    const current = leftListeners.get(key)
+    if (!current) return
+    current.delete(listener)
+    if (current.size === 0) leftListeners.delete(key)
+  }
+}
+
+function noteStoredQueueLeft(key: string, ids: Set<string>): void {
+  for (const listener of [...(leftListeners.get(key) ?? [])]) listener(ids)
+}
+
+// #1191 第 3 次返工：排队区的消息不一定存得进存储（太大超过上限、存储满了），
+// 这时存储里看不到它，「新建会话」和 Ctrl+T 还以为排队区是空的。挂着的排队区
+// 在这里登记一个读当前内存里消息 id 的函数，按 key 查得到。
+// 第 4 次返工：登记的是整条消息，不只是 id：改过的消息存不进去时，存储里
+// 还是同一个 id 的旧版本，要比内容才看得出没存好。
+const liveQueueReaders = new Map<string, Set<() => readonly QueuedMessage[]>>()
+
+/** 挂着的排队区登记 `key` 下内存里的消息（`read` 每次调都读当前的）。 */
+export function registerLiveQueue(
+  key: string,
+  read: () => readonly QueuedMessage[]
+): () => void {
+  let set = liveQueueReaders.get(key)
+  if (!set) {
+    set = new Set()
+    liveQueueReaders.set(key, set)
+  }
+  set.add(read)
+  return () => {
+    const current = liveQueueReaders.get(key)
+    if (!current) return
+    current.delete(read)
+    if (current.size === 0) liveQueueReaders.delete(key)
+  }
+}
+
+/** 草稿标签 `tabId` 挂着的排队区内存里的消息 id（存没存进存储都算）。 */
+export function liveDraftQueueIds(tabId: string): Set<string> {
+  const ids = new Set<string>()
+  const key = draftMessageQueueStorageKey(tabId)
+  for (const read of liveQueueReaders.get(key) ?? []) {
+    for (const item of read()) ids.add(item.id)
+  }
+  return ids
+}
+
+/** 草稿标签 `tabId` 的排队区有消息：存储里存着，或者挂着的排队区内存里有。 */
+export function draftQueueHoldsMessages(tabId: string): boolean {
+  return hasStoredDraftQueue(tabId) || liveDraftQueueIds(tabId).size > 0
+}
+
+/** 寄存时要原样带走的内容（发送失败的原因读回来会变成 "restored"，不算）。 */
+function storedContent(item: QueuedMessage): string {
+  return JSON.stringify([
+    item.draft,
+    item.modeId,
+    item.adoptSendTimeMode === true,
+    item.clientMessageId || null,
+    item.firstOfConversation === true,
+  ])
+}
+
+/** 草稿标签 `tabId` 挂着的排队区内存里的消息都原样存进了存储（没挂着的
+ *  算是）：同一个 id 在存储里的内容也要和内存里的一样，改过没存进去的不算。 */
+export function draftQueueFullyStored(tabId: string): boolean {
+  const key = draftMessageQueueStorageKey(tabId)
+  const readers = liveQueueReaders.get(key)
+  if (!readers || readers.size === 0) return true
+  const stored = new Map(
+    readStoredQueue(key).map((item) => [item.id, storedContent(item)])
+  )
+  for (const read of readers) {
+    for (const item of read()) {
+      if (stored.get(item.id) !== storedContent(item)) return false
+    }
+  }
+  return true
 }
 
 /** Mirror `queue` into `key`; an empty queue removes the entry. Never

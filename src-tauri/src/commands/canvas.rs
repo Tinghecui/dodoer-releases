@@ -123,6 +123,10 @@ pub struct CreateCanvasBoard {
     pub description: Option<String>,
     #[serde(default)]
     pub color: Option<String>,
+    /// 当前打开的项目（可以是 worktree）。画布记在它的项目下，只在那个项目的
+    /// 画布列表里出现；不给 = 不属于哪个项目，每个项目里都显示。
+    #[serde(default)]
+    pub folder_id: Option<i32>,
 }
 
 /// Field-by-field board patch: absent = untouched, empty string clears.
@@ -683,10 +687,13 @@ pub(crate) async fn cleanup_canvas_for_deleted_conversation(
 // ---------------------------------------------------------------------------
 
 /// Every board, most recently edited first, with its node count and thumbnail.
+/// 给了 `folder_id` 只列那个项目的画布和不属于任何项目的画布（见
+/// `canvas_service::list_boards`）。
 pub async fn canvas_list_boards_core(
     db: &AppDatabase,
+    folder_id: Option<i32>,
 ) -> Result<Vec<CanvasBoardSummary>, AppCommandError> {
-    let summaries = canvas_service::list_boards(&db.conn)
+    let summaries = canvas_service::list_boards(&db.conn, folder_id)
         .await
         .map_err(map_db)?;
     Ok(summaries
@@ -710,6 +717,7 @@ pub async fn canvas_create_board_core(
             name: input.name,
             description: input.description,
             color: input.color,
+            folder_id: input.folder_id,
         },
     )
     .await
@@ -835,8 +843,9 @@ pub async fn canvas_list_nodes(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn canvas_list_boards(
     db: tauri::State<'_, AppDatabase>,
+    folder_id: Option<i32>,
 ) -> Result<Vec<CanvasBoardSummary>, AppCommandError> {
-    canvas_list_boards_core(&db).await
+    canvas_list_boards_core(&db, folder_id).await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -2407,6 +2416,7 @@ mod board_tests {
                 name: Some("  Sprint map  ".into()),
                 description: Some("   ".into()),
                 color: Some("blue".into()),
+                ..Default::default()
             },
         )
         .await
@@ -2524,7 +2534,7 @@ mod board_tests {
         tick().await;
         let newer = new_board(&db, "Newer").await;
 
-        let listed = canvas_list_boards_core(&db).await.expect("list");
+        let listed = canvas_list_boards_core(&db, None).await.expect("list");
         assert_eq!(
             listed.iter().map(|b| b.board.id).collect::<Vec<_>>(),
             vec![newer, older]
@@ -2557,7 +2567,7 @@ mod board_tests {
         .expect("terminal")
         .value;
 
-        let listed = canvas_list_boards_core(&db).await.expect("list");
+        let listed = canvas_list_boards_core(&db, None).await.expect("list");
         assert_eq!(
             listed.iter().map(|b| b.board.id).collect::<Vec<_>>(),
             vec![older, newer],
@@ -2592,7 +2602,7 @@ mod board_tests {
             .await
             .expect("note");
         }
-        let listed = canvas_list_boards_core(&db).await.expect("list");
+        let listed = canvas_list_boards_core(&db, None).await.expect("list");
         let summary = &listed[0];
         assert_eq!(summary.node_count, total as i64, "the count is not capped");
         assert_eq!(
@@ -2604,5 +2614,97 @@ mod board_tests {
             summary.preview.iter().all(|r| r.width >= 105.0),
             "the five smallest are the ones left out"
         );
+    }
+
+    /// 画布按项目分开（#1193）：在项目里建的画布只在这个项目的列表里出现，
+    /// worktree 算它仓库的；不属于任何项目的（老画布判断不出归属的）每个项目都有；
+    /// 不带项目取的是全部。
+    #[tokio::test]
+    async fn boards_are_listed_per_project() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let demo = seed_folder(&db, "/tmp/qa-demo").await;
+        let docs = seed_folder(&db, "/tmp/qa-docs").await;
+        let worktree = crate::db::service::folder_service::add_folder_with_parent(
+            &db.conn,
+            "/tmp/qa-demo-wt",
+            Some(demo),
+        )
+        .await
+        .expect("worktree")
+        .id;
+        let create = |name: &'static str, folder_id: Option<i32>| {
+            let db = &db;
+            async move {
+                canvas_create_board_core(
+                    &noop(),
+                    db,
+                    CreateCanvasBoard {
+                        name: Some(name.into()),
+                        folder_id,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect("create")
+            }
+        };
+        let shared = create("shared", None).await;
+        let in_demo = create("demo", Some(demo)).await;
+        let in_docs = create("docs", Some(docs)).await;
+        let in_worktree = create("worktree", Some(worktree)).await;
+        assert_eq!(in_demo.folder_id, Some(demo));
+        assert_eq!(
+            in_worktree.folder_id,
+            Some(demo),
+            "a worktree files under its repo"
+        );
+        assert_eq!(shared.folder_id, None);
+
+        let ids = |listed: Vec<CanvasBoardSummary>| {
+            let mut ids: Vec<i32> = listed.iter().map(|b| b.board.id).collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(
+            ids(canvas_list_boards_core(&db, Some(docs))
+                .await
+                .expect("docs")),
+            vec![shared.id, in_docs.id]
+        );
+        assert_eq!(
+            ids(canvas_list_boards_core(&db, Some(demo))
+                .await
+                .expect("demo")),
+            vec![shared.id, in_demo.id, in_worktree.id]
+        );
+        assert_eq!(
+            ids(canvas_list_boards_core(&db, Some(worktree))
+                .await
+                .expect("wt")),
+            vec![shared.id, in_demo.id, in_worktree.id]
+        );
+        assert_eq!(
+            ids(canvas_list_boards_core(&db, None).await.expect("all")),
+            vec![shared.id, in_demo.id, in_docs.id, in_worktree.id]
+        );
+        // 不认识的文件夹：只剩不属于任何项目的画布，不报错。
+        assert_eq!(
+            ids(canvas_list_boards_core(&db, Some(9999))
+                .await
+                .expect("gone")),
+            vec![shared.id]
+        );
+        // 往不存在的项目里建画布是错的，不能悄悄建成「所有项目都显示」。
+        let missing = canvas_create_board_core(
+            &noop(),
+            &db,
+            CreateCanvasBoard {
+                folder_id: Some(9999),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("no such folder");
+        assert!(is_not_found(&missing));
     }
 }

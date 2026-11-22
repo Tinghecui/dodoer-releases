@@ -3642,6 +3642,8 @@ export interface CreateCanvasBoardInput {
   name?: string
   description?: string
   color?: string
+  /** 在哪个项目里建（可以是 worktree，记在它的项目下）；不给 = 每个项目都显示。 */
+  folderId?: number | null
 }
 
 /** Field-by-field board patch: absent = untouched, empty string clears. */
@@ -3682,9 +3684,12 @@ export async function assignConversationCategory(
 }
 
 /** Every canvas, most recently edited first, each with its node count and a
- *  thumbnail's worth of node footprints. */
-export async function canvasListBoards(): Promise<CanvasBoardSummary[]> {
-  return getTransport().call("canvas_list_boards", {})
+ *  thumbnail's worth of node footprints. 给了 `folderId` 只列那个项目的画布，
+ *  外加不属于任何项目的画布；null 列全部。 */
+export async function canvasListBoards(
+  folderId: number | null = null
+): Promise<CanvasBoardSummary[]> {
+  return getTransport().call("canvas_list_boards", { folderId })
 }
 
 export async function canvasCreateBoard(

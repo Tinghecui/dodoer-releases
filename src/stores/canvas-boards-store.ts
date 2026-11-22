@@ -47,6 +47,13 @@ interface CanvasBoardsState {
   /** A list read is out. Lets an empty list show a spinner instead of the
    *  "no canvases" call to action until the read says it really is empty. */
   refetching: boolean
+  /** 列表按哪个项目取（项目根文件夹的 id，见 `canvasProjectOf`）；null = 不分
+   *  项目、全部列出。画布按项目分开（#1193）：列表里只有这个项目的画布和不属于
+   *  任何项目的画布，别的项目的画布事件不进列表。 */
+  folderId: number | null
+  /** 换项目。变了就丢掉在途的读、把列表里别的项目的画布拿掉并标成没读完，开着的
+   *  画布属于别的项目就退回列表。返回有没有变：变了调用方接着 `refetch()`。 */
+  setFolder: (folderId: number | null) => boolean
   /** The board the canvas route shows, or null for the list. Session memory:
    *  leaving the route and coming back returns to the same board, while a
    *  fresh start (like every full-page route) begins at the list. */
@@ -64,7 +71,8 @@ interface CanvasBoardsState {
   scope: () => number
   /** The answer to our own create: added unless an event or read has already
    *  shown the board (that row is at least as new), it was deleted meanwhile,
-   *  or `scope` is stale. Returns whether the answer still belongs here. */
+   *  it belongs to another project than the one listed now, or `scope` is
+   *  stale. Returns whether the answer still belongs here. */
   applyCreatedBoard: (board: CanvasBoard, scope: number) => boolean
   /** The answer to our own delete: drop and tombstone the board, unless
    *  `scope` is stale. Returns whether the answer still belongs here. */
@@ -84,6 +92,16 @@ type BoardOp =
   | { kind: "created"; board: CanvasBoard }
   | { kind: "delete"; id: number }
 
+/** `board` 在按 `folderId` 取的列表里该不该出现。 */
+export function boardInFolder(
+  board: CanvasBoard,
+  folderId: number | null
+): boolean {
+  return (
+    folderId == null || board.folder_id == null || board.folder_id === folderId
+  )
+}
+
 /** Display order only — never used to decide which of two rows is newer. */
 function compareRecent(a: CanvasBoardSummary, b: CanvasBoardSummary): number {
   const ta = Date.parse(a.board.updated_at)
@@ -96,13 +114,16 @@ function compareRecent(a: CanvasBoardSummary, b: CanvasBoardSummary): number {
 function applyOp(
   boards: readonly CanvasBoardSummary[],
   op: BoardOp,
-  deleted: ReadonlySet<number>
+  deleted: ReadonlySet<number>,
+  folderId: number | null
 ): readonly CanvasBoardSummary[] {
   if (op.kind === "delete") {
     const next = boards.filter((s) => s.board.id !== op.id)
     return next.length === boards.length ? boards : next
   }
   if (deleted.has(op.board.id)) return boards
+  // 别的项目的画布不进这个项目的列表（画布不会换项目，所以也不会在列表里）。
+  if (!boardInFolder(op.board, folderId)) return boards
   const index = boards.findIndex((s) => s.board.id === op.board.id)
   if (index < 0) {
     // New to us: no nodes yet as far as this client knows — the counts and
@@ -136,7 +157,7 @@ const deletedBoards = new Set<number>()
 export const useCanvasBoardsStore = create<CanvasBoardsState>((set, get) => {
   const apply = (op: BoardOp) => {
     opsSinceFetch?.push(op)
-    const boards = applyOp(get().boards, op, deletedBoards)
+    const boards = applyOp(get().boards, op, deletedBoards, get().folderId)
     if (boards !== get().boards) set({ boards })
   }
   const forget = (boardId: number) => {
@@ -149,8 +170,33 @@ export const useCanvasBoardsStore = create<CanvasBoardsState>((set, get) => {
     hydrated: false,
     loadError: null,
     refetching: false,
+    folderId: null,
     activeBoardId: null,
     closedNotice: null,
+
+    setFolder: (folderId) => {
+      if (get().folderId === folderId) return false
+      // 上一个项目的读回来时已经不算数了。
+      fetchEpoch++
+      fetchInFlight = null
+      fetchAgain = false
+      opsSinceFetch = null
+      const { boards, activeBoardId } = get()
+      const active = boards.find((s) => s.board.id === activeBoardId)
+      set({
+        folderId,
+        boards: boards.filter((s) => boardInFolder(s.board, folderId)),
+        // 没读到这个项目的列表之前显示加载中，不显示「还没有画布」。
+        hydrated: false,
+        loadError: null,
+        refetching: false,
+        activeBoardId:
+          active && !boardInFolder(active.board, folderId)
+            ? null
+            : activeBoardId,
+      })
+      return true
+    },
 
     openBoard: (boardId) => set({ activeBoardId: boardId }),
 
@@ -167,6 +213,8 @@ export const useCanvasBoardsStore = create<CanvasBoardsState>((set, get) => {
 
     applyCreatedBoard: (board, scope) => {
       if (scope !== scopeEpoch) return false
+      // 建的时候在别的项目，回来时已经换了项目：不打开它。
+      if (!boardInFolder(board, get().folderId)) return false
       apply({ kind: "created", board })
       return true
     },
@@ -193,6 +241,7 @@ export const useCanvasBoardsStore = create<CanvasBoardsState>((set, get) => {
         return fetchInFlight
       }
       const epoch = fetchEpoch
+      const folderId = get().folderId
       opsSinceFetch = []
       set({ refetching: true })
       const settle = () => {
@@ -203,14 +252,15 @@ export const useCanvasBoardsStore = create<CanvasBoardsState>((set, get) => {
           void get().refetch()
         }
       }
-      fetchInFlight = canvasListBoards()
+      fetchInFlight = canvasListBoards(folderId)
         .then((list) => {
           if (epoch !== fetchEpoch) return
           let boards: readonly CanvasBoardSummary[] = list.filter(
-            (s) => !deletedBoards.has(s.board.id)
+            (s) =>
+              !deletedBoards.has(s.board.id) && boardInFolder(s.board, folderId)
           )
           for (const op of opsSinceFetch ?? []) {
-            boards = applyOp(boards, op, deletedBoards)
+            boards = applyOp(boards, op, deletedBoards, folderId)
           }
           set({ boards, hydrated: true, loadError: null, refetching: false })
           settle()
@@ -237,6 +287,8 @@ export const useCanvasBoardsStore = create<CanvasBoardsState>((set, get) => {
         hydrated: false,
         loadError: null,
         refetching: false,
+        // 项目 id 也是这个后端的；新后端的项目由 `useCanvasBoardsFolder` 重新设上。
+        folderId: null,
         activeBoardId: null,
         closedNotice: null,
       })

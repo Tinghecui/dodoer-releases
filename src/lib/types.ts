@@ -1255,6 +1255,9 @@ export interface CanvasBoard {
   description: string | null
   /** Theme-preset color name (FolderThemeColor vocabulary), or null. */
   color: string | null
+  /** 所属项目（项目根文件夹的 id）；null = 不属于哪个项目，每个项目的画布列表
+   *  里都显示。旧版本的后端不带这个字段，当成 null。 */
+  folder_id?: number | null
   created_at: string
   /** Last change to the board OR anything on it — node writes stamp it too,
    *  which is what the list is ordered by. */

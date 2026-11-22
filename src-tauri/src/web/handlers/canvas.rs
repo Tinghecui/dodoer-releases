@@ -14,11 +14,19 @@ use crate::models::canvas::{
     CanvasBoard, CanvasBoardSummary, CanvasMutation, CanvasNode, CanvasSnapshot,
 };
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ListBoardsParams {
+    #[serde(default)]
+    pub folder_id: Option<i32>,
+}
+
 pub async fn canvas_list_boards(
     Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ListBoardsParams>,
 ) -> Result<Json<Vec<CanvasBoardSummary>>, AppCommandError> {
     Ok(Json(
-        canvas_commands::canvas_list_boards_core(&state.db).await?,
+        canvas_commands::canvas_list_boards_core(&state.db, params.folder_id).await?,
     ))
 }
 

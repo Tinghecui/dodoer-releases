@@ -1099,6 +1099,8 @@ pub struct NewCanvasBoard {
     pub name: Option<String>,
     pub description: Option<String>,
     pub color: Option<String>,
+    /// 在哪个项目里建的（可以是 worktree，记下的是它的项目）；`None` = 不属于哪个项目。
+    pub folder_id: Option<i32>,
 }
 
 /// Field-by-field patch, same convention as [`CanvasNodePatch`]: `None` leaves a
@@ -1158,12 +1160,50 @@ fn normalize_board_text(
     Ok(text)
 }
 
+/// `folder_id` 所属的项目：worktree 归到它的仓库（`parent_id` 已经拍平成根）。
+/// 聊天模式背后的临时文件夹不是项目，给 `None`；文件夹不存在或已删除给 `NotFound`。
+async fn project_of_folder<C: ConnectionTrait>(
+    conn: &C,
+    folder_id: i32,
+) -> Result<Option<i32>, DbError> {
+    let row = folder::Entity::find_by_id(folder_id)
+        .filter(folder::Column::DeletedAt.is_null())
+        .one(conn)
+        .await?
+        .ok_or_else(|| DbError::NotFound(format!("folder {folder_id} not found")))?;
+    if row.kind != folder::FolderKind::Regular {
+        return Ok(None);
+    }
+    Ok(Some(row.parent_id.unwrap_or(row.id)))
+}
+
 /// Every board, most recently edited first, each with its node count and a
 /// thumbnail's worth of footprints. One read transaction, so a board and the
 /// nodes counted under it can't come from two different moments.
-pub async fn list_boards(conn: &DatabaseConnection) -> Result<Vec<BoardSummary>, DbError> {
+///
+/// 给了 `folder_id` 就只列这个项目的画布（`folder_id` 是 worktree 时按它的项目算），
+/// 外加不属于任何项目的画布（`canvas_board.folder_id` 为 NULL，每个项目里都显示）。
+/// 不给就列全部。
+pub async fn list_boards(
+    conn: &DatabaseConnection,
+    folder_id: Option<i32>,
+) -> Result<Vec<BoardSummary>, DbError> {
     let txn = conn.begin().await?;
-    let boards = canvas_board::Entity::find()
+    let mut query = canvas_board::Entity::find();
+    if let Some(folder_id) = folder_id {
+        // 文件夹已经不在了（或者是聊天文件夹）：只剩不属于任何项目的画布。
+        let project = match project_of_folder(&txn, folder_id).await {
+            Ok(project) => project,
+            Err(DbError::NotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
+        let column = canvas_board::Column::FolderId;
+        query = match project {
+            Some(project) => query.filter(column.eq(project).or(column.is_null())),
+            None => query.filter(column.is_null()),
+        };
+    }
+    let boards = query
         .order_by_desc(canvas_board::Column::UpdatedAt)
         .order_by_desc(canvas_board::Column::Id)
         .all(&txn)
@@ -1229,6 +1269,10 @@ pub async fn create_board(
     let description =
         normalize_board_text(input.description, MAX_BOARD_DESCRIPTION_LEN, "description")?;
     let color = normalize_color(input.color)?;
+    let folder_id = match input.folder_id {
+        Some(id) => project_of_folder(conn, id).await?,
+        None => None,
+    };
     let _guard = revision_lock().lock().await;
     let now = Utc::now();
     let row = canvas_board::ActiveModel {
@@ -1236,6 +1280,7 @@ pub async fn create_board(
         name: Set(name),
         description: Set(description),
         color: Set(color),
+        folder_id: Set(folder_id),
         created_at: Set(now),
         updated_at: Set(now),
     }
@@ -1363,6 +1408,7 @@ mod tests {
                 name: None,
                 description: None,
                 color: None,
+                folder_id: None,
             },
         )
         .await

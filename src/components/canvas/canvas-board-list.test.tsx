@@ -9,7 +9,8 @@ import {
   canvasListBoards,
   canvasUpdateBoard,
 } from "@/lib/api"
-import type { CanvasBoard, CanvasBoardSummary } from "@/lib/types"
+import type { CanvasBoard, CanvasBoardSummary, FolderDetail } from "@/lib/types"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useCanvasBoardsStore } from "@/stores/canvas-boards-store"
 import { CanvasBoardList } from "./canvas-board-list"
 
@@ -85,6 +86,7 @@ async function openCardMenu(name: string) {
 }
 
 beforeEach(() => {
+  useAppWorkspaceStore.setState({ activeFolderId: null, allFolders: [] })
   useCanvasBoardsStore.getState().reset()
   localStorage.clear()
   mockList.mockReset()
@@ -130,6 +132,8 @@ describe("CanvasBoardList", () => {
       name: "Roadmap",
       description: "",
       color: "",
+      // 没有当前项目：不属于哪个项目。
+      folderId: null,
     })
     await waitFor(() =>
       expect(useCanvasBoardsStore.getState().activeBoardId).toBe(7)
@@ -361,5 +365,94 @@ describe("CanvasBoardList", () => {
     expect(container.querySelector(".animate-spin")).toBeTruthy()
     await act(async () => resolve([]))
     expect(await screen.findByText("No canvases yet")).toBeTruthy()
+  })
+
+  describe("per project (#1193)", () => {
+    function folder(
+      id: number,
+      over: Partial<FolderDetail> = {}
+    ): FolderDetail {
+      return {
+        id,
+        name: `project-${id}`,
+        path: `/tmp/project-${id}`,
+        parent_id: null,
+        kind: "regular",
+        ...over,
+      } as FolderDetail
+    }
+    const DEMO = summary(board(11, { name: "Demo canvas", folder_id: 1 }))
+    const DOCS = summary(board(12, { name: "Docs canvas", folder_id: 2 }))
+    const SHARED = summary(
+      board(13, { name: "Shared canvas", folder_id: null })
+    )
+
+    beforeEach(() => {
+      // 后端只回这个项目的画布和不属于任何项目的画布。
+      mockList.mockImplementation(async (folderId?: number | null) =>
+        [DEMO, DOCS, SHARED].filter(
+          (s) =>
+            folderId == null ||
+            s.board.folder_id == null ||
+            s.board.folder_id === folderId
+        )
+      )
+      useAppWorkspaceStore.setState({
+        activeFolderId: 1,
+        allFolders: [folder(1), folder(2), folder(3, { parent_id: 1 })],
+      })
+    })
+
+    it("lists the current project's canvases and re-reads when the project changes", async () => {
+      renderList()
+      expect(
+        await screen.findByRole("button", { name: "Demo canvas" })
+      ).toBeTruthy()
+      expect(screen.getByRole("button", { name: "Shared canvas" })).toBeTruthy()
+      expect(screen.queryByRole("button", { name: "Docs canvas" })).toBeNull()
+      expect(mockList).toHaveBeenLastCalledWith(1)
+
+      act(() => useAppWorkspaceStore.setState({ activeFolderId: 2 }))
+      expect(
+        await screen.findByRole("button", { name: "Docs canvas" })
+      ).toBeTruthy()
+      expect(screen.queryByRole("button", { name: "Demo canvas" })).toBeNull()
+      expect(screen.getByRole("button", { name: "Shared canvas" })).toBeTruthy()
+      expect(mockList).toHaveBeenLastCalledWith(2)
+      // 每次读都带着项目。
+      expect(mockList.mock.calls.every(([id]) => id === 1 || id === 2)).toBe(
+        true
+      )
+    })
+
+    it("a worktree shows its repository's canvases", async () => {
+      useAppWorkspaceStore.setState({ activeFolderId: 3 })
+      renderList()
+      expect(
+        await screen.findByRole("button", { name: "Demo canvas" })
+      ).toBeTruthy()
+      expect(mockList).toHaveBeenLastCalledWith(1)
+    })
+
+    it("creates the canvas in the current project", async () => {
+      mockCreate.mockResolvedValue(board(20, { name: "New", folder_id: 2 }))
+      useAppWorkspaceStore.setState({ activeFolderId: 2 })
+      renderList()
+      await screen.findByRole("button", { name: "Docs canvas" })
+      await userEvent.click(
+        screen.getAllByRole("button", { name: "New canvas" })[0]
+      )
+      const dialog = await screen.findByRole("dialog")
+      await userEvent.type(within(dialog).getByLabelText("Name"), "New")
+      await userEvent.click(
+        within(dialog).getByRole("button", { name: "Create" })
+      )
+      await waitFor(() =>
+        expect(mockCreate).toHaveBeenCalledWith(
+          expect.objectContaining({ folderId: 2 })
+        )
+      )
+      expect(useCanvasBoardsStore.getState().activeBoardId).toBe(20)
+    })
   })
 })

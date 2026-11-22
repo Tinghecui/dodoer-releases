@@ -500,7 +500,7 @@ async fn handle_event(
             else {
                 return Ok(());
             };
-            let (conversation_id, last_text, claimed, next_turn_started, terminal_failed) = {
+            let (conversation_id, last_text, claimed, next_turn_started, terminal_failure) = {
                 let mut snap = state_arc.write().await;
                 // Re-entrant for this worker: a retry of this same envelope
                 // claims again and goes on. Only a CLI run's fallback that
@@ -518,9 +518,11 @@ async fn handle_event(
                     // 标成已解决，error 要到下一条 prompt 的 UserMessage 才清。
                     snap.session_failures
                         .values()
-                        .any(|f| f.severity == "error" && !f.resolved),
+                        .find(|f| f.severity == "error" && !f.resolved)
+                        .cloned(),
                 )
             };
+            let terminal_failed = terminal_failure.is_some();
             // cowork-codeg#421：CLI 被杀时适配器照旧回 `end_turn`，失败只在
             // SessionFailure 里。这一轮按失败算（`unknown` → Cancelled，侧栏
             // 「本轮未完成」；委派的父会话也收到失败而不是成功结果）。
@@ -533,6 +535,21 @@ async fn handle_event(
             let Some(cid) = conversation_id else {
                 return Ok(());
             };
+            // #1120：失败说明存下来，刷新后补回对话（见 `turn_failure`）；这一轮
+            // 不是这样收尾的，就把上一轮的清掉。存不下只少一行说明，不挡状态。
+            if !next_turn_started {
+                let kept = match &terminal_failure {
+                    Some(record) => {
+                        let failure =
+                            crate::acp::turn_failure::from_record(record, chrono::Utc::now());
+                        crate::acp::turn_failure::save(db_conn, cid, &failure).await
+                    }
+                    None => crate::acp::turn_failure::clear(db_conn, cid).await,
+                };
+                if let Err(e) = kept {
+                    tracing::warn!(conversation_id = cid, error = %e, "[lifecycle] turn failure not kept");
+                }
+            }
             if claimed {
                 write_turn_status(db_conn, &state_arc, &emitter, cid, stop_reason).await?;
                 if stop_reason == "cancelled" {
@@ -4503,6 +4520,50 @@ mod tests {
                 "failure: {failure:?}"
             );
         }
+    }
+
+    /// #1120：这一轮因为连接断了失败，失败说明存下来，刷新后补回对话里；
+    /// 下一轮正常结束就清掉。
+    #[tokio::test]
+    async fn handle_event_keeps_a_failed_turn_s_account_until_the_next_turn() {
+        use crate::acp::turn_failure;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/turn-failure-kept").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection_with_state("c1", Some(conv.id));
+        let mut record = session_failure("t1:error", "error", false);
+        record.actions = vec!["new_session".into()];
+        conn.state
+            .write()
+            .await
+            .session_failures
+            .insert(record.id.clone(), record);
+        let state = conn.state.clone();
+        mgr.connections.lock().await.insert("c1".to_string(), conn);
+
+        handle_event(&db.conn, &mgr, &turn_complete(1, "end_turn"), None, None)
+            .await
+            .unwrap();
+        let saved = turn_failure::load(&db.conn, conv.id)
+            .await
+            .expect("the failure is kept");
+        assert_eq!(saved.message, "The connection to Claude was lost.");
+        assert_eq!(
+            saved.kind.as_deref(),
+            Some(turn_failure::KIND_CONNECTION_LOST)
+        );
+
+        // 下一轮：失败被下一条 prompt 清掉，这一轮正常结束。
+        state.write().await.session_failures.clear();
+        handle_event(&db.conn, &mgr, &turn_complete(2, "end_turn"), None, None)
+            .await
+            .unwrap();
+        assert_eq!(turn_failure::load(&db.conn, conv.id).await, None);
     }
 
     /// The `cancelled` write is conditional: a row the user's stop already

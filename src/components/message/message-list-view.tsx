@@ -44,7 +44,10 @@ import { TurnStats } from "./turn-stats"
 import { LiveTurnStats } from "./live-turn-stats"
 import { LiveRunsChip, type LiveRunsList } from "./live-runs-chip"
 import { ModelLabelProvider } from "./model-label-context"
-import { TurnErrorAgentProvider } from "./turn-error-part"
+import {
+  TurnErrorAgentProvider,
+  TurnErrorLineProvider,
+} from "./turn-error-part"
 import { KnownInvocationsProvider } from "./known-invocations-context"
 import { DelegationStatusIndexProvider } from "./delegation-status-index-context"
 import { useTranscriptKnownInvocations } from "./use-transcript-known-invocations"
@@ -1361,8 +1364,15 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   if (group.role === "system") {
     // A failed turn's line is the agent's account of the failure, not a
     // message the system sent: it closes the round in place, unboxed.
+    // Cowork（#1120 返工）：告诉失败行它是哪一轮，「重试」只画在对话最后那一行。
     if (isTurnErrorGroup(group)) {
-      return <ContentPartsRenderer parts={group.parts} role="system" />
+      return (
+        <TurnErrorLineProvider
+          value={sourceTurns?.[sourceTurns.length - 1]?.id ?? null}
+        >
+          <ContentPartsRenderer parts={group.parts} role="system" />
+        </TurnErrorLineProvider>
+      )
     }
     return <CollapsibleSystemMessage parts={group.parts} />
   }

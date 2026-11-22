@@ -9273,7 +9273,7 @@ mod tests {
         assert!(
             matches!(
                 turns[1].blocks.as_slice(),
-                [ContentBlock::TurnError { message }] if message == failure
+                [ContentBlock::TurnError { message, .. }] if message == failure
             ),
             "{:?}",
             turns[1].blocks
@@ -9319,7 +9319,7 @@ mod tests {
             .iter()
             .map(|t| match t.blocks.as_slice() {
                 [ContentBlock::Text { text }] => text.clone(),
-                [ContentBlock::TurnError { message }] => format!("failed: {message}"),
+                [ContentBlock::TurnError { message, .. }] => format!("failed: {message}"),
                 other => panic!("unexpected blocks {other:?}"),
             })
             .collect();

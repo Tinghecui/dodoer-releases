@@ -293,8 +293,11 @@ export type ContentBlock =
    * closing the round, and the live stream does the same with the failure the
    * adapter reported (`buildStreamingTurnsFromLiveMessage`). Drawn as one muted
    * line, never as a reply.
+   *
+   * Cowork 加的（#1120）：`kind` 是哪一类失败（见 `TurnErrorKind`），界面据此
+   * 换成本地化的说明和按钮；多数失败没有。
    */
-  | { type: "turn_error"; message: string }
+  | { type: "turn_error"; message: string; kind?: TurnErrorKind | null }
   /**
    * Frontend-only, LIVE-stream synthetic block. It is NEVER persisted and
    * NEVER emitted by the Rust JSONL parsers — the persisted plan path is a
@@ -4249,6 +4252,13 @@ export interface PluginLoadFailure {
   /** The entry's path, for a directory entry that did not load at all. */
   path?: string | null
 }
+
+/**
+ * Cowork 加的（#1120）：「本轮失败」那一行是哪一类失败。`connection_lost`：智能体
+ * 底下的进程没了、连接断了（connection 类、建议开新会话的 error 级失败记录），
+ * 要重新连上才能接着用。Rust `acp::turn_failure::KIND_CONNECTION_LOST`。
+ */
+export type TurnErrorKind = "connection_lost"
 
 export interface SessionFailureRecord {
   id: string

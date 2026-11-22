@@ -296,7 +296,11 @@ function renderPart(
       )
     case "turn-error":
       return (
-        <TurnErrorPart key={`turn-error-${keyId}`} message={part.message} />
+        <TurnErrorPart
+          key={`turn-error-${keyId}`}
+          message={part.message}
+          kind={part.kind}
+        />
       )
     default:
       return null

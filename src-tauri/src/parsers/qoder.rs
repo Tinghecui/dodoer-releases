@@ -2853,7 +2853,7 @@ mod tests {
         assert!(
             matches!(
                 detail.turns[1].blocks.as_slice(),
-                [ContentBlock::TurnError { message }]
+                [ContentBlock::TurnError { message, .. }]
                     if message == r#"{"pricingUrl":"https://qoder.com/pricing?client=qoder"}"#
             ),
             "{:?}",

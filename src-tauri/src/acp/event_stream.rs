@@ -517,7 +517,9 @@ fn content_block_size(block: &crate::models::message::ContentBlock) -> usize {
         // `{"type":"text","text":…}` / `{"type":"thinking","text":…}`
         CB::Text { text } | CB::Thinking { text } => 32 + json_str_len(text),
         // `{"type":"turn_error","message":…}`
-        CB::TurnError { message } => 40 + json_str_len(message),
+        CB::TurnError { message, kind } => {
+            40 + json_str_len(message) + kind.as_deref().map_or(0, |k| 9 + json_str_len(k))
+        }
         CB::Image {
             data,
             mime_type,
@@ -1016,6 +1018,7 @@ mod tests {
                 },
                 ContentBlock::TurnError {
                     message: "stream \"disconnected\"\n".repeat(50),
+                    kind: Some("connection_lost".into()),
                 },
                 ContentBlock::Image {
                     data: "AAAA".repeat(32),

@@ -98,6 +98,7 @@ import type {
   ToolApprovalInfo,
   ToolCallImageWire,
   UserMessageBlock,
+  TurnErrorKind,
 } from "@/lib/types"
 import {
   dismissSessionFailures,
@@ -185,6 +186,7 @@ import {
   modelSwitchSentence,
 } from "@/lib/cowork/model-switch"
 import { openAgentSignIn, signInViaPortal } from "@/lib/cowork/sign-in"
+import { turnErrorKindOf } from "@/lib/cowork/failed-turn"
 
 /**
  * A session id we are willing to interpolate into a shell command we hand the
@@ -334,7 +336,13 @@ export type LiveContentBlock =
    * turn (see `TURN_FAILED`); `fromAgent` is whether `message` is the agent's
    * own words rather than codeg's verdict.
    */
-  | { type: "turn_error"; message: string; fromAgent: boolean }
+  | {
+      type: "turn_error"
+      message: string
+      fromAgent: boolean
+      /** Cowork（#1120）：哪一类失败，见 `TurnErrorKind`。 */
+      kind?: TurnErrorKind
+    }
 
 export interface LiveMessage {
   id: string
@@ -894,6 +902,8 @@ type Action =
       message: string
       /** The agent's own words, as opposed to codeg's verdict. */
       fromAgent: boolean
+      /** Cowork（#1120）：哪一类失败，见 `TurnErrorKind`。 */
+      kind?: TurnErrorKind
     }
   | {
       type: "CLAUDE_API_RETRY"
@@ -3262,7 +3272,8 @@ function connectionsReducer(
         if (current.fromAgent && !action.fromAgent) return state
         if (
           current.message === message &&
-          current.fromAgent === action.fromAgent
+          current.fromAgent === action.fromAgent &&
+          current.kind === action.kind
         ) {
           return state
         }
@@ -3278,6 +3289,7 @@ function connectionsReducer(
               type: "turn_error" as const,
               message,
               fromAgent: action.fromAgent,
+              ...(action.kind ? { kind: action.kind } : {}),
             },
           ],
         },
@@ -6146,6 +6158,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 own ||
                 tFailure(sessionFailureCategoryLabelKey(e.record.category)),
               fromAgent: own.length > 0,
+              // #1120：连接断了的那种，界面换成中文说明和「重试」。
+              kind: turnErrorKindOf(e.record),
             })
           }
           if (quiet || !failureConn) break

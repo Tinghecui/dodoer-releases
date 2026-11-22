@@ -1394,7 +1394,13 @@ export function buildStreamingTurnsFromLiveMessage(
     if (block.type === "turn_error") {
       groups.push({
         role: "system",
-        blocks: [{ type: "turn_error", message: block.message }],
+        blocks: [
+          {
+            type: "turn_error",
+            message: block.message,
+            ...(block.kind ? { kind: block.kind } : {}),
+          },
+        ],
       })
       groups.push({ role: "assistant", blocks: [] })
       currentGroupHasCompletedTool = false

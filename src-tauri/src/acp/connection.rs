@@ -20348,7 +20348,7 @@ fn response_session_failure(
 /// 「The connection to Claude was lost.」，建议开新会话。适配器进程还活着，所以连接本身
 /// 不会断，后台计数一直挂着，侧栏就一直是沙漏。网络重试中的 `warning`、只建议 `retry`
 /// 的失败、额度和请求类的错误都不算：下一条消息还能在这条连接上接着走。
-fn session_failure_ends_session(record: &SessionFailureRecord) -> bool {
+pub(crate) fn session_failure_ends_session(record: &SessionFailureRecord) -> bool {
     record.severity == "error"
         && record.category == "connection"
         && record.actions.iter().any(|a| a == "new_session")

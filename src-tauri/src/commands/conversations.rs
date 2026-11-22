@@ -1781,6 +1781,11 @@ pub async fn get_folder_conversation_core(
         .await
         .unwrap_or_default();
     inject_tool_approvals(&mut turns, &approvals);
+    // Cowork 加的（#1120）：上一轮失败时存下的说明，智能体自己没记下的，补成
+    // 最后一行（见 `acp::turn_failure`）。读不到只少这一行。
+    if let Some(failure) = crate::acp::turn_failure::load(conn, conversation_id).await {
+        crate::acp::turn_failure::inject(&mut turns, &failure);
+    }
 
     Ok((
         DbConversationDetail {

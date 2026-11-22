@@ -5093,6 +5093,64 @@ fn brief_suffix(brief: Option<String>) -> Vec<PromptInputBlock> {
         .unwrap_or_default()
 }
 
+/// 委托子智能体能沿用的父会话模式（#1119）：父子是同一种智能体、父连接报过模式、
+/// 当前模式在它可选的模式里，才原样给出；别的情况给 `None`，子智能体照它自己的默认。
+/// 先看会话模式；没报会话模式列表、模式走配置项 `mode` 的智能体（Kiro、Hermes、
+/// ZCode 这类）看那个配置项。
+fn inheritable_parent_mode(
+    parent: &crate::acp::session_state::SessionState,
+    child_agent: AgentType,
+) -> Option<crate::acp::delegation::spawner::InheritedMode> {
+    use crate::acp::delegation::spawner::InheritedMode;
+    if parent.agent_type != child_agent {
+        return None;
+    }
+    if let (Some(modes), Some(current)) = (
+        parent.modes.as_ref(),
+        parent.current_mode.as_deref().filter(|m| !m.is_empty()),
+    ) {
+        if modes.available_modes.iter().any(|m| m.id == current) {
+            return Some(InheritedMode::Session(current.to_string()));
+        }
+    }
+    let select = parent
+        .config_options
+        .as_ref()?
+        .iter()
+        .find(|o| o.id == InheritedMode::CONFIG_ID)
+        .and_then(|o| match &o.kind {
+            crate::acp::types::SessionConfigKindInfo::Select(sel) => Some(sel),
+            _ => None,
+        })?;
+    let current = select.current_value.as_str();
+    let offered = select
+        .options
+        .iter()
+        .chain(select.groups.iter().flat_map(|g| g.options.iter()))
+        .any(|o| o.value == current);
+    (offered && !current.is_empty()).then(|| InheritedMode::ConfigOption(current.to_string()))
+}
+
+/// 连接现在的配置项 `mode` 的值（#1119），没有这个配置项给 `None`。
+fn current_mode_config_value(state: &crate::acp::session_state::SessionState) -> Option<String> {
+    use crate::acp::delegation::spawner::InheritedMode;
+    state
+        .config_options
+        .as_ref()?
+        .iter()
+        .find(|o| o.id == InheritedMode::CONFIG_ID)
+        .and_then(|o| match &o.kind {
+            crate::acp::types::SessionConfigKindInfo::Select(sel) => {
+                Some(sel.current_value.clone())
+            }
+            _ => None,
+        })
+}
+
+/// 等智能体确认换好模式的上限（#1119）。新起的子连接还要先等完握手
+/// （`spawn_handshake_timeout`），这个是握手之外再多等的。
+const MODE_CONFIRM_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
 #[derive(Clone)]
 pub struct ConnectionManagerSpawner {
     pub manager: Arc<ConnectionManager>,
@@ -5336,6 +5394,81 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
             .await
             .map(|_| ())
             .map_err(|e| SpawnerError::Send(e.to_string()))
+    }
+
+    async fn parent_mode_for_child(
+        &self,
+        parent_connection_id: &str,
+        agent_type: AgentType,
+    ) -> Option<crate::acp::delegation::spawner::InheritedMode> {
+        let state = {
+            let conns = self.manager.connections.lock().await;
+            conns.get(parent_connection_id)?.state.clone()
+        };
+        let s = state.read().await;
+        inheritable_parent_mode(&s, agent_type)
+    }
+
+    async fn ensure_mode(
+        &self,
+        conn_id: &str,
+        mode: &crate::acp::delegation::spawner::InheritedMode,
+    ) -> Result<(), crate::acp::delegation::spawner::SpawnerError> {
+        use crate::acp::delegation::spawner::{InheritedMode, SpawnerError};
+        let state = self
+            .manager
+            .get_state(conn_id)
+            .await
+            .ok_or_else(|| SpawnerError::Spawn(format!("connection {conn_id} not found")))?;
+        let mode_id = mode.value();
+        let already = {
+            let s = state.read().await;
+            match mode {
+                InheritedMode::Session(m) => s.current_mode.as_deref() == Some(m.as_str()),
+                InheritedMode::ConfigOption(v) => {
+                    current_mode_config_value(&s).as_deref() == Some(v.as_str())
+                }
+            }
+        };
+        if already {
+            return Ok(());
+        }
+        // 等智能体确认换好了再往下走：没确认就发提示词，子智能体可能还按原来的
+        // 模式执行命令。新起的连接会话还没建好时 `current_mode` 还是空的，切换命令
+        // 排在命令队列里，等会话建好、启动偏好套完才处理，排在提示词前面；
+        // 所以上限要把握手的时间也算进去。
+        let wait = self.manager.spawn_handshake_timeout + MODE_CONFIRM_WAIT;
+        // 配置项模式走 `set_config_option`，确认回来的是配置项现在的值。
+        let answer = match mode {
+            InheritedMode::Session(_) => {
+                tokio::time::timeout(
+                    wait,
+                    self.manager.set_mode_and_wait(conn_id, mode_id.to_string()),
+                )
+                .await
+            }
+            InheritedMode::ConfigOption(_) => {
+                tokio::time::timeout(
+                    wait,
+                    self.manager.set_config_option_and_wait(
+                        conn_id,
+                        InheritedMode::CONFIG_ID.to_string(),
+                        mode_id.to_string(),
+                    ),
+                )
+                .await
+            }
+        };
+        match answer {
+            Ok(Ok(SetterOutcome::Confirmed { current })) if current == mode_id => Ok(()),
+            Ok(Ok(other)) => Err(SpawnerError::Spawn(format!(
+                "agent did not confirm mode {mode_id}: {other:?}"
+            ))),
+            Ok(Err(e)) => Err(SpawnerError::Spawn(e.to_string())),
+            Err(_) => Err(SpawnerError::Spawn(format!(
+                "agent did not answer the switch to mode {mode_id} in time"
+            ))),
+        }
     }
 
     async fn has_live_connection_for_conversation(&self, conversation_id: i32) -> bool {
@@ -11476,6 +11609,85 @@ mod tests {
         SessionConfigKindInfo, SessionConfigOptionInfo, SessionConfigSelectInfo, SessionModeInfo,
         SessionModeStateInfo,
     };
+
+    use crate::acp::delegation::spawner::InheritedMode;
+
+    /// #1119：同一种智能体、模式在可选列表里，才沿用父会话的模式。
+    #[test]
+    fn inheritable_parent_mode_only_for_same_agent_and_known_mode() {
+        let mut parent = crate::acp::session_state::SessionState::new(
+            "parent".into(),
+            AgentType::ClaudeCode,
+            None,
+            "main".into(),
+            None,
+        );
+        // 还没报过模式
+        assert_eq!(
+            inheritable_parent_mode(&parent, AgentType::ClaudeCode),
+            None
+        );
+        parent.modes = Some(sample_modes());
+        parent.current_mode = Some("default".into());
+        assert_eq!(
+            inheritable_parent_mode(&parent, AgentType::ClaudeCode),
+            Some(InheritedMode::Session("default".into()))
+        );
+        // 不同的智能体，模式 id 对不上
+        assert_eq!(inheritable_parent_mode(&parent, AgentType::Codex), None);
+        // 当前模式不在可选列表里
+        parent.current_mode = Some("gone".into());
+        assert_eq!(
+            inheritable_parent_mode(&parent, AgentType::ClaudeCode),
+            None
+        );
+    }
+
+    /// #1119：模式走配置项 `mode`、没报会话模式列表的智能体（Kiro、Hermes 这类），
+    /// 同一种智能体也要沿用父会话配置项里的模式。
+    #[test]
+    fn inheritable_parent_mode_reads_mode_config_option() {
+        let mut parent = crate::acp::session_state::SessionState::new(
+            "parent".into(),
+            AgentType::Kiro,
+            None,
+            "main".into(),
+            None,
+        );
+        parent.config_options = Some(vec![mode_config_option("kiro_default")]);
+        assert_eq!(
+            inheritable_parent_mode(&parent, AgentType::Kiro),
+            Some(InheritedMode::ConfigOption("kiro_default".into()))
+        );
+        // 不同的智能体不沿用
+        assert_eq!(
+            inheritable_parent_mode(&parent, AgentType::ClaudeCode),
+            None
+        );
+        // 当前值不在可选项里
+        parent.config_options = Some(vec![mode_config_option("gone")]);
+        assert_eq!(inheritable_parent_mode(&parent, AgentType::Kiro), None);
+    }
+
+    fn mode_config_option(current: &str) -> SessionConfigOptionInfo {
+        let opt = |v: &str| crate::acp::types::SessionConfigSelectOptionInfo {
+            value: v.into(),
+            name: v.into(),
+            description: None,
+        };
+        SessionConfigOptionInfo {
+            id: "mode".into(),
+            name: "Mode".into(),
+            description: None,
+            category: Some("mode".into()),
+            kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+                current_value: current.into(),
+                options: vec![opt("kiro_default"), opt("kiro_planner")],
+                groups: vec![],
+            }),
+            recommended_value: None,
+        }
+    }
 
     fn sample_modes() -> SessionModeStateInfo {
         SessionModeStateInfo {

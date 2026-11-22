@@ -158,8 +158,10 @@ export function WebVersionNotice() {
         if (pageFilesGone) return
         const release = payload?.release
         // The release this page was built from (inlined by next.config.ts).
+        // 没打 tag 编的包（QA 包、PR 包）这里是空的；服务器只在真的换了
+        // 目录时才发这个事件，页面不知道自己是哪版时照样提示。
         const pageRelease = process.env.CODEG_RELEASE_VERSION
-        if (!release || !pageRelease || release === pageRelease) return
+        if (!release || release === pageRelease) return
         toast(t("webAssetsChangedTitle", { version: release }), {
           id: WEB_VERSION_TOAST_ID,
           description: t("webAssetsChangedDescription"),

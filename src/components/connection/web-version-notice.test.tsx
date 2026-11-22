@@ -256,12 +256,22 @@ describe("WebVersionNotice", () => {
       expect(mocks.toast).not.toHaveBeenCalled()
     })
 
-    it("stays quiet when the page does not know its own release", async () => {
+    it("offers a reload when the page does not know its own release", async () => {
+      // 没打 tag 编出来的包（QA 包、PR 包）页面里没有版本号；服务器只在
+      // 真的换了目录时才发这个事件，所以照样提示。
       vi.stubEnv("CODEG_RELEASE_VERSION", "")
       renderNotice()
       await settle()
-      emitAssetsChanged("cowork-codeg-v0.6.40")
-      expect(mocks.toast).not.toHaveBeenCalled()
+      mocks.toast.mockClear()
+      emitAssetsChanged("0.0.0-qa")
+      expect(mocks.toast).toHaveBeenCalledTimes(1)
+      const [title, options] = mocks.toast.mock.calls[0]
+      expect(title).toBe("A new version of the interface is ready (0.0.0-qa)")
+      expect(options).toMatchObject({
+        id: WEB_VERSION_TOAST_ID,
+        description:
+          "Reload the page to use it. You can also keep working without reloading.",
+      })
     })
 
     it("does not listen in a desktop window", async () => {

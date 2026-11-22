@@ -2123,7 +2123,8 @@
     "toasts": {
       "failed": "Não foi possível gerar a mensagem de commit",
       "openSettings": "Configurações",
-      "autoCommitSkipped": "Commit automático não feito: as alterações mudaram enquanto a mensagem era escrita. Confira-a e faça o commit."
+      "autoCommitSkipped": "Commit automático não feito: as alterações mudaram enquanto a mensagem era escrita. Confira-a e faça o commit.",
+      "autoCommitSkippedLoadFailed": "Commit automático não feito: não foi possível carregar as alterações. Carregue de novo, confira a lista e faça o commit."
     },
     "errors": {
       "noChanges": "Não há alterações para descrever.",

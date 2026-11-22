@@ -2123,7 +2123,8 @@
     "toasts": {
       "failed": "Impossible de générer un message de commit",
       "openSettings": "Paramètres",
-      "autoCommitSkipped": "Pas de commit automatique : les modifications ont bougé pendant l'écriture du message. Vérifiez-le, puis faites le commit."
+      "autoCommitSkipped": "Pas de commit automatique : les modifications ont bougé pendant l'écriture du message. Vérifiez-le, puis faites le commit.",
+      "autoCommitSkippedLoadFailed": "Pas de commit automatique : impossible de charger les modifications. Rechargez-les, vérifiez la liste, puis faites le commit."
     },
     "errors": {
       "noChanges": "Il n'y a aucune modification à décrire.",

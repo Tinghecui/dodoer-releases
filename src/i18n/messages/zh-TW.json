@@ -2123,7 +2123,8 @@
     "toasts": {
       "failed": "無法產生提交訊息",
       "openSettings": "設定",
-      "autoCommitSkipped": "未自動提交：產生期間變更有變化，請檢查提交訊息後再提交。"
+      "autoCommitSkipped": "未自動提交：產生期間變更有變化，請檢查提交訊息後再提交。",
+      "autoCommitSkippedLoadFailed": "未自動提交：變更讀取失敗。請重試讀取、確認清單後再提交。"
     },
     "errors": {
       "noChanges": "沒有可描述的變更。",

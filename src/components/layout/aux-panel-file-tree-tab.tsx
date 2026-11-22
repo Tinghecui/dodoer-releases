@@ -2859,25 +2859,6 @@ export function FileTreeTab() {
     )
   }
 
-  if (error) {
-    return (
-      <div className="p-3 text-xs">
-        <p className="font-medium text-destructive">{t("loadFailed")}</p>
-        <p className="mt-1 break-words text-muted-foreground">{error}</p>
-        <Button
-          variant="ghost"
-          size="xs"
-          className="mt-2"
-          onClick={() => {
-            void fetchTree()
-          }}
-        >
-          {t("retry")}
-        </Button>
-      </div>
-    )
-  }
-
   return (
     <div className="flex flex-col h-full">
       {workspaceState.degraded && (
@@ -2886,27 +2867,49 @@ export function FileTreeTab() {
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <ScrollArea className="flex-1 min-h-0 pb-1" x="scroll">
-            <FileTree
-              key={folder?.path ?? "file-tree-empty"}
-              ref={treeContainerRef}
-              keyboardNavigation
-              onKeyDown={handleTreeKeyDown}
-              // `px-1.5 pt-1.5` inset the row highlight from the panel's sides
-              // and from the title strip above, so a selected root row doesn't
-              // sit flush against the strip. Rows repeat the top inset as a
-              // scroll margin: keyboard navigation scrolls the focused row to
-              // the nearest edge, which would otherwise scroll the padding
-              // away when stepping back up to the root.
-              className="border-0 rounded-none bg-transparent w-max min-w-full px-1.5 pt-1.5 focus:outline-none focus-visible:outline-none [&_[data-tree-row-path]]:scroll-mt-1.5"
-              expanded={expandedPaths}
-              onExpandedChange={setExpandedPaths}
-              selectedPath={focusedTreePath}
-              onSelect={handleTreeSelect}
-            >
-              {folder?.path && (
-                <DesktopDropDirContext.Provider value={desktopDropDir}>
-                  <ContextMenu>
-                    {/*
+            {/* 读取失败不再把整块面板换成一行红字（#1158）：降级横幅、右键菜单
+                和对话框照旧在，列表的位置给出错说明和「重试」。 */}
+            {error ? (
+              <div className="p-3 text-xs">
+                <p className="font-medium text-destructive">
+                  {t("loadFailed")}
+                </p>
+                <p className="mt-1 break-words text-muted-foreground">
+                  {error}
+                </p>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="mt-2"
+                  onClick={() => {
+                    void fetchTree()
+                  }}
+                >
+                  {t("retry")}
+                </Button>
+              </div>
+            ) : (
+              <FileTree
+                key={folder?.path ?? "file-tree-empty"}
+                ref={treeContainerRef}
+                keyboardNavigation
+                onKeyDown={handleTreeKeyDown}
+                // `px-1.5 pt-1.5` inset the row highlight from the panel's sides
+                // and from the title strip above, so a selected root row doesn't
+                // sit flush against the strip. Rows repeat the top inset as a
+                // scroll margin: keyboard navigation scrolls the focused row to
+                // the nearest edge, which would otherwise scroll the padding
+                // away when stepping back up to the root.
+                className="border-0 rounded-none bg-transparent w-max min-w-full px-1.5 pt-1.5 focus:outline-none focus-visible:outline-none [&_[data-tree-row-path]]:scroll-mt-1.5"
+                expanded={expandedPaths}
+                onExpandedChange={setExpandedPaths}
+                selectedPath={focusedTreePath}
+                onSelect={handleTreeSelect}
+              >
+                {folder?.path && (
+                  <DesktopDropDirContext.Provider value={desktopDropDir}>
+                    <ContextMenu>
+                      {/*
                       asChild merges the Radix trigger's pointerdown /
                       contextmenu handlers and its `WebkitTouchCallout: none`
                       style onto the row itself instead of a wrapper <span>,
@@ -2920,190 +2923,191 @@ export function FileTreeTab() {
                       long-press or the ⋯ button. Hence the provider sits
                       outside, and RootDropFolder spreads `...props`.
                     */}
-                    <ContextMenuTrigger asChild>
-                      <RootDropFolder name={rootNodeName} dnd={treeDndValue}>
-                        {nodes.map((node) => (
-                          <RenderNode
-                            key={node.path}
-                            node={node}
-                            depth={1}
-                            expandedPaths={expandedPaths}
-                            workspacePath={folder.path}
-                            activeSessionTabId={activeSessionTabId}
-                            dnd={treeDndValue}
-                            gitEnabled={gitEnabled}
-                            webMode={webMode}
-                            folderUploadSupported={folderUploadSupported}
-                            gitStatusByPath={gitStatusByPath}
-                            gitChangedDirPaths={gitChangedDirPaths}
-                            untrackedDirPaths={untrackedDirPaths}
-                            gitignoreIgnoredPaths={gitignoreIgnoredPaths}
-                            ancestorGitignoreIgnored={false}
-                            ancestorUntracked={false}
-                            onOpenFilePreview={(path) => {
-                              void openFilePreview(path)
+                      <ContextMenuTrigger asChild>
+                        <RootDropFolder name={rootNodeName} dnd={treeDndValue}>
+                          {nodes.map((node) => (
+                            <RenderNode
+                              key={node.path}
+                              node={node}
+                              depth={1}
+                              expandedPaths={expandedPaths}
+                              workspacePath={folder.path}
+                              activeSessionTabId={activeSessionTabId}
+                              dnd={treeDndValue}
+                              gitEnabled={gitEnabled}
+                              webMode={webMode}
+                              folderUploadSupported={folderUploadSupported}
+                              gitStatusByPath={gitStatusByPath}
+                              gitChangedDirPaths={gitChangedDirPaths}
+                              untrackedDirPaths={untrackedDirPaths}
+                              gitignoreIgnoredPaths={gitignoreIgnoredPaths}
+                              ancestorGitignoreIgnored={false}
+                              ancestorUntracked={false}
+                              onOpenFilePreview={(path) => {
+                                void openFilePreview(path)
+                              }}
+                              onOpenFileDiff={(path) => {
+                                void openWorkingTreeDiff(path)
+                              }}
+                              onOpenDirDiff={(path) => {
+                                void openWorkingTreeDiff(path, {
+                                  mode: "overview",
+                                })
+                              }}
+                              onOpenCommitWindow={handleOpenCommitWindow}
+                              onRequestCompareWithBranch={
+                                handleRequestCompareWithBranch
+                              }
+                              onRequestRollback={handleRequestRollback}
+                              onOpenDirInTerminal={handleOpenDirInTerminal}
+                              onRequestCreate={handleRequestCreate}
+                              onRequestAddToVcs={handleAddToVcs}
+                              onRequestRename={handleRequestRename}
+                              onRequestDelete={handleRequestDelete}
+                              onRequestUpload={handleRequestUpload}
+                              onRequestDownloadFile={(target) =>
+                                void handleRequestDownloadFile(target)
+                              }
+                              onRequestDownloadDir={(target) =>
+                                void handleRequestDownloadDir(target)
+                              }
+                              onRefresh={fetchTree}
+                            />
+                          ))}
+                        </RootDropFolder>
+                      </ContextMenuTrigger>
+                      <ContextMenuContent>
+                        <ContextMenuSub>
+                          <ContextMenuSubTrigger>
+                            {t("new")}
+                          </ContextMenuSubTrigger>
+                          <ContextMenuSubContent>
+                            <ContextMenuItem
+                              onSelect={() => handleRequestCreate("", "file")}
+                            >
+                              {t("newFile")}
+                            </ContextMenuItem>
+                            <ContextMenuItem
+                              onSelect={() => handleRequestCreate("", "dir")}
+                            >
+                              {t("newDirectory")}
+                            </ContextMenuItem>
+                          </ContextMenuSubContent>
+                        </ContextMenuSub>
+                        <ContextMenuSub>
+                          <ContextMenuSubTrigger disabled={!gitEnabled}>
+                            {t("git")}
+                          </ContextMenuSubTrigger>
+                          <ContextMenuSubContent>
+                            <ContextMenuItem
+                              onSelect={() => handleOpenCommitWindow()}
+                              disabled={!gitEnabled}
+                            >
+                              {t("actions.commitCode")}
+                            </ContextMenuItem>
+                            <ContextMenuItem
+                              onSelect={() => void handleAddToVcs(rootTarget)}
+                              disabled={!gitEnabled}
+                            >
+                              {t("actions.addToVcs")}
+                            </ContextMenuItem>
+                            <ContextMenuItem
+                              onSelect={() =>
+                                void openWorkingTreeDiff(".", {
+                                  mode: "overview",
+                                })
+                              }
+                              disabled={!gitEnabled}
+                            >
+                              {tCommon("viewDiff")}
+                            </ContextMenuItem>
+                            <ContextMenuItem
+                              onSelect={() =>
+                                handleRequestCompareWithBranch(rootTarget)
+                              }
+                              disabled={!gitEnabled}
+                            >
+                              {t("compareWithBranch")}
+                            </ContextMenuItem>
+                            <ContextMenuItem
+                              variant="destructive"
+                              onSelect={() => handleRequestRollback(rootTarget)}
+                              disabled={!gitEnabled}
+                            >
+                              {t("actions.rollback")}
+                            </ContextMenuItem>
+                          </ContextMenuSubContent>
+                        </ContextMenuSub>
+                        <ContextMenuItem
+                          onSelect={() => {
+                            void fetchTree()
+                          }}
+                        >
+                          {t("reloadFromDisk")}
+                        </ContextMenuItem>
+                        <ContextMenuSub>
+                          <ContextMenuSubTrigger>
+                            {t("openIn")}
+                          </ContextMenuSubTrigger>
+                          <OpenInSubContent
+                            explorerLabel={systemExplorerLabel}
+                            terminalLabel={t("openInTerminal")}
+                            codeLabel={t("openInCode")}
+                            onOpenExplorer={() => {
+                              void revealItemInDir(folder.path)
                             }}
-                            onOpenFileDiff={(path) => {
-                              void openWorkingTreeDiff(path)
+                            onOpenTerminal={() => {
+                              void handleOpenDirInTerminal(
+                                folder.path,
+                                rootNodeName
+                              )
                             }}
-                            onOpenDirDiff={(path) => {
-                              void openWorkingTreeDiff(path, {
-                                mode: "overview",
+                            onOpenCode={() => {
+                              void openInCode(folder.path).catch((error) => {
+                                toast.error(t("toasts.openInCodeFailed"), {
+                                  description: toErrorMessage(error),
+                                })
                               })
                             }}
-                            onOpenCommitWindow={handleOpenCommitWindow}
-                            onRequestCompareWithBranch={
-                              handleRequestCompareWithBranch
-                            }
-                            onRequestRollback={handleRequestRollback}
-                            onOpenDirInTerminal={handleOpenDirInTerminal}
-                            onRequestCreate={handleRequestCreate}
-                            onRequestAddToVcs={handleAddToVcs}
-                            onRequestRename={handleRequestRename}
-                            onRequestDelete={handleRequestDelete}
-                            onRequestUpload={handleRequestUpload}
-                            onRequestDownloadFile={(target) =>
-                              void handleRequestDownloadFile(target)
-                            }
-                            onRequestDownloadDir={(target) =>
-                              void handleRequestDownloadDir(target)
-                            }
-                            onRefresh={fetchTree}
                           />
-                        ))}
-                      </RootDropFolder>
-                    </ContextMenuTrigger>
-                    <ContextMenuContent>
-                      <ContextMenuSub>
-                        <ContextMenuSubTrigger>
-                          {t("new")}
-                        </ContextMenuSubTrigger>
-                        <ContextMenuSubContent>
-                          <ContextMenuItem
-                            onSelect={() => handleRequestCreate("", "file")}
-                          >
-                            {t("newFile")}
-                          </ContextMenuItem>
-                          <ContextMenuItem
-                            onSelect={() => handleRequestCreate("", "dir")}
-                          >
-                            {t("newDirectory")}
-                          </ContextMenuItem>
-                        </ContextMenuSubContent>
-                      </ContextMenuSub>
-                      <ContextMenuSub>
-                        <ContextMenuSubTrigger disabled={!gitEnabled}>
-                          {t("git")}
-                        </ContextMenuSubTrigger>
-                        <ContextMenuSubContent>
-                          <ContextMenuItem
-                            onSelect={() => handleOpenCommitWindow()}
-                            disabled={!gitEnabled}
-                          >
-                            {t("actions.commitCode")}
-                          </ContextMenuItem>
-                          <ContextMenuItem
-                            onSelect={() => void handleAddToVcs(rootTarget)}
-                            disabled={!gitEnabled}
-                          >
-                            {t("actions.addToVcs")}
-                          </ContextMenuItem>
-                          <ContextMenuItem
-                            onSelect={() =>
-                              void openWorkingTreeDiff(".", {
-                                mode: "overview",
-                              })
-                            }
-                            disabled={!gitEnabled}
-                          >
-                            {tCommon("viewDiff")}
-                          </ContextMenuItem>
-                          <ContextMenuItem
-                            onSelect={() =>
-                              handleRequestCompareWithBranch(rootTarget)
-                            }
-                            disabled={!gitEnabled}
-                          >
-                            {t("compareWithBranch")}
-                          </ContextMenuItem>
-                          <ContextMenuItem
-                            variant="destructive"
-                            onSelect={() => handleRequestRollback(rootTarget)}
-                            disabled={!gitEnabled}
-                          >
-                            {t("actions.rollback")}
-                          </ContextMenuItem>
-                        </ContextMenuSubContent>
-                      </ContextMenuSub>
-                      <ContextMenuItem
-                        onSelect={() => {
-                          void fetchTree()
-                        }}
-                      >
-                        {t("reloadFromDisk")}
-                      </ContextMenuItem>
-                      <ContextMenuSub>
-                        <ContextMenuSubTrigger>
-                          {t("openIn")}
-                        </ContextMenuSubTrigger>
-                        <OpenInSubContent
-                          explorerLabel={systemExplorerLabel}
-                          terminalLabel={t("openInTerminal")}
-                          codeLabel={t("openInCode")}
-                          onOpenExplorer={() => {
-                            void revealItemInDir(folder.path)
-                          }}
-                          onOpenTerminal={() => {
-                            void handleOpenDirInTerminal(
-                              folder.path,
-                              rootNodeName
-                            )
-                          }}
-                          onOpenCode={() => {
-                            void openInCode(folder.path).catch((error) => {
-                              toast.error(t("toasts.openInCodeFailed"), {
-                                description: toErrorMessage(error),
-                              })
-                            })
-                          }}
-                        />
-                      </ContextMenuSub>
-                      <ContextMenuSub>
-                        <ContextMenuSubTrigger>
-                          {t("copy")}
-                        </ContextMenuSubTrigger>
-                        <FileTreeCopySubContent
-                          name={rootNodeName}
-                          // The root's path relative to itself. "." is the
-                          // only spelling that stays pasteable (`git add .`);
-                          // the literal answer, "", would copy nothing at all.
-                          relativePath="."
-                          absolutePath={folder.path}
-                          kind="dir"
-                          remote={webMode}
-                        />
-                      </ContextMenuSub>
-                      {webMode && (
-                        <>
-                          <ContextMenuItem
-                            onSelect={() => handleRequestUpload("")}
-                          >
-                            {t("upload")}
-                          </ContextMenuItem>
-                          <ContextMenuItem
-                            onSelect={() =>
-                              void handleRequestDownloadDir(rootTarget)
-                            }
-                          >
-                            {t("downloadAsZip")}
-                          </ContextMenuItem>
-                        </>
-                      )}
-                    </ContextMenuContent>
-                  </ContextMenu>
-                </DesktopDropDirContext.Provider>
-              )}
-            </FileTree>
+                        </ContextMenuSub>
+                        <ContextMenuSub>
+                          <ContextMenuSubTrigger>
+                            {t("copy")}
+                          </ContextMenuSubTrigger>
+                          <FileTreeCopySubContent
+                            name={rootNodeName}
+                            // The root's path relative to itself. "." is the
+                            // only spelling that stays pasteable (`git add .`);
+                            // the literal answer, "", would copy nothing at all.
+                            relativePath="."
+                            absolutePath={folder.path}
+                            kind="dir"
+                            remote={webMode}
+                          />
+                        </ContextMenuSub>
+                        {webMode && (
+                          <>
+                            <ContextMenuItem
+                              onSelect={() => handleRequestUpload("")}
+                            >
+                              {t("upload")}
+                            </ContextMenuItem>
+                            <ContextMenuItem
+                              onSelect={() =>
+                                void handleRequestDownloadDir(rootTarget)
+                              }
+                            >
+                              {t("downloadAsZip")}
+                            </ContextMenuItem>
+                          </>
+                        )}
+                      </ContextMenuContent>
+                    </ContextMenu>
+                  </DesktopDropDirContext.Provider>
+                )}
+              </FileTree>
+            )}
           </ScrollArea>
         </ContextMenuTrigger>
         <ContextMenuContent>

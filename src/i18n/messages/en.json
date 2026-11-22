@@ -2123,7 +2123,8 @@
     "toasts": {
       "failed": "Couldn't generate a commit message",
       "openSettings": "Settings",
-      "autoCommitSkipped": "Not committed automatically: the changes moved while the message was being written. Check it, then commit."
+      "autoCommitSkipped": "Not committed automatically: the changes moved while the message was being written. Check it, then commit.",
+      "autoCommitSkippedLoadFailed": "Not committed automatically: the changes couldn't be loaded. Retry loading, check the list, then commit."
     },
     "errors": {
       "noChanges": "There are no changes to describe.",

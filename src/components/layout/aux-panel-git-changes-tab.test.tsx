@@ -1222,6 +1222,7 @@ describe("GitChangesTab load failure", () => {
     store.error = null
     gitCommitMock.mockClear()
     generateMock.mockReset()
+    const infoSpy = vi.spyOn(toast, "info")
     const view = renderTab()
     let finish!: (value: Generated) => void
     generateMock.mockReturnValueOnce(
@@ -1245,6 +1246,14 @@ describe("GitChangesTab load failure", () => {
     })
     // 说明留在提交框里给用户看，不按看不到的缓存列表自动提交
     expect(gitCommitMock).not.toHaveBeenCalled()
+    // 提示说的是读取失败，不是「改动有变化」（#1158 第 8 条）
+    expect(infoSpy).toHaveBeenCalledWith(
+      enMessages.CommitMessageGeneration.toasts.autoCommitSkippedLoadFailed
+    )
+    expect(infoSpy).not.toHaveBeenCalledWith(
+      enMessages.CommitMessageGeneration.toasts.autoCommitSkipped
+    )
+    infoSpy.mockRestore()
     expect(
       (
         screen.getByPlaceholderText(

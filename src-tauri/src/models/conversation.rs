@@ -97,6 +97,11 @@ pub struct DbConversationSummary {
     /// 查询补上。只在为真时上线。
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub task_canceled: bool,
+    /// Cowork 加的（dodoer #797 的格式）：这个对话在等用户做什么，`list_all_conversations`
+    /// 从活着的连接填上（`acp::awaiting::fill_list_awaiting`），别处都是 `None`。不落库；
+    /// 什么都没等时不出现在 JSON 里，老客户端看不到变化。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub awaiting: Option<crate::acp::awaiting::ConversationAwaiting>,
 }
 
 /// A conversation tag as the UI sees it. `folder_id` is the scope: `None` for

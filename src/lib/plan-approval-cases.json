@@ -1,0 +1,92 @@
+[
+  {
+    "name": "ExitPlanMode named in _meta.claudeCode",
+    "tool_call": {
+      "toolCallId": "t1",
+      "title": "Approve Plan",
+      "kind": "switch_mode",
+      "rawInput": { "plan": "1. edit README" },
+      "_meta": {
+        "permission": { "title": "Ready to code?" },
+        "claudeCode": { "toolName": "ExitPlanMode" }
+      }
+    },
+    "plan": true
+  },
+  {
+    "name": "bare AIR request with only the plan",
+    "tool_call": {
+      "toolCallId": "t1",
+      "rawInput": { "plan": "1. edit README" }
+    },
+    "plan": true
+  },
+  {
+    "name": "non-AIR shape names the tool",
+    "tool_call": { "name": "ExitPlanMode", "rawInput": {} },
+    "plan": true
+  },
+  {
+    "name": "tool_name spelled with an underscore",
+    "tool_call": { "tool_name": "exit_plan_mode" },
+    "plan": true
+  },
+  {
+    "name": "serialized as a JSON string",
+    "tool_call": "{\"kind\":\"switch_mode\",\"raw_input\":{\"plan\":\"do it\"}}",
+    "plan": true
+  },
+  {
+    "name": "codex plan review marker",
+    "tool_call": {
+      "title": "Implement this plan?",
+      "_meta": { "codex": { "kind": "plan_review", "planItemId": "p1" } }
+    },
+    "plan": true
+  },
+  {
+    "name": "plan under a capital Plan key",
+    "tool_call": { "Plan": "1. go" },
+    "plan": true
+  },
+  { "name": "no tool call", "tool_call": null, "plan": false },
+  { "name": "empty tool call", "tool_call": {}, "plan": false },
+  {
+    "name": "ordinary Bash permission",
+    "tool_call": {
+      "title": "ls -la",
+      "kind": "execute",
+      "rawInput": { "command": "ls -la" },
+      "_meta": { "claudeCode": { "toolName": "Bash" } }
+    },
+    "plan": false
+  },
+  {
+    "name": "EnterPlanMode carries no plan",
+    "tool_call": {
+      "title": "Enter plan mode",
+      "kind": "switch_mode",
+      "rawInput": {},
+      "_meta": { "claudeCode": { "toolName": "EnterPlanMode" } }
+    },
+    "plan": false
+  },
+  {
+    "name": "a plan in the input of a non-plan-mode tool",
+    "tool_call": {
+      "kind": "edit",
+      "rawInput": { "plan": "x", "file_path": "/a" }
+    },
+    "plan": false
+  },
+  {
+    "name": "a blank plan is no plan",
+    "tool_call": { "rawInput": { "plan": "   " } },
+    "plan": false
+  },
+  {
+    "name": "an unparsable string",
+    "tool_call": "not json",
+    "plan": false
+  }
+]

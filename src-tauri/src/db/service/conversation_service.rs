@@ -1620,6 +1620,8 @@ fn conv_to_summary(r: conversation::Model) -> DbConversationSummary {
         // Backfilled by `fill_summary_extras`, like `child_count`.
         tag_ids: Vec::new(),
         task_canceled: false,
+        // 只有列表接口从活着的连接填（`acp::awaiting::fill_list_awaiting`）。
+        awaiting: None,
     }
 }
 

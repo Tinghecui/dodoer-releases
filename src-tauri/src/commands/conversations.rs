@@ -3916,6 +3916,7 @@ mod tests {
             interrupted_at: None,
             tag_ids: Vec::new(),
             task_canceled: false,
+            awaiting: None,
         }
     }
 
@@ -8797,6 +8798,7 @@ mod tests {
                 interrupted_at: None,
                 tag_ids: Vec::new(),
                 task_canceled: false,
+                awaiting: None,
             },
             turns,
             session_stats: None,

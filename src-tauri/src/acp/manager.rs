@@ -3601,10 +3601,48 @@ impl ConnectionManager {
     /// 没断开的连接（和 [`Self::list_background_pending`] 一样），几个提示同时在时按前端
     /// 叠的顺序：权限请求、提问、计划审批。按对话 id 排序。
     pub async fn list_awaiting_user(&self) -> Vec<crate::acp::types::AwaitingUserEntry> {
+        use crate::acp::awaiting::BlockingPrompt;
         use crate::acp::types::{AwaitingUserEntry, AwaitingUserKind};
+        let by_conversation = self
+            .read_newest_per_conversation(|state, conversation_id| {
+                let (kind, tool_call) = match crate::acp::awaiting::blocking_prompt(state)? {
+                    BlockingPrompt::Permission(p) => {
+                        (AwaitingUserKind::Permission, Some(p.tool_call.clone()))
+                    }
+                    BlockingPrompt::Question(_) => (AwaitingUserKind::Question, None),
+                    BlockingPrompt::Plan(_) => (AwaitingUserKind::Plan, None),
+                };
+                Some(AwaitingUserEntry {
+                    conversation_id,
+                    external_id: state.external_id.clone(),
+                    kind,
+                    tool_call,
+                })
+            })
+            .await;
+        let mut entries: Vec<_> = by_conversation.into_values().collect();
+        entries.sort_by_key(|e| e.conversation_id);
+        entries
+    }
+
+    /// Cowork 加的：列表行上的 `awaiting`（`acp::awaiting`）用的，每个对话自己在等什么。
+    /// 和 [`Self::list_awaiting_user`] 同一个判断、同一条连接。
+    pub async fn awaiting_by_conversation(
+        &self,
+    ) -> HashMap<i32, crate::acp::awaiting::ConversationAwaiting> {
+        self.read_newest_per_conversation(|state, _| crate::acp::awaiting::derive(state))
+            .await
+    }
+
+    /// Cowork 加的：每个对话看最新那条没断开的连接（编号最大的），`read` 返回 `None`
+    /// 的对话不列（较旧的连接在等也不算）。
+    async fn read_newest_per_conversation<T>(
+        &self,
+        read: impl Fn(&crate::acp::session_state::SessionState, i32) -> Option<T>,
+    ) -> HashMap<i32, T> {
         let connections = self.connections.lock().await;
-        // 每个对话最新那条活连接的编号和它的条目（什么都没等就是 `None`）。
-        let mut by_conversation: HashMap<i32, (u64, Option<AwaitingUserEntry>)> = HashMap::new();
+        // 每个对话最新那条活连接的编号和它读出来的东西。
+        let mut by_conversation: HashMap<i32, (u64, Option<T>)> = HashMap::new();
         for conn in connections.values() {
             let state = conn.state.read().await;
             if state.status == ConnectionStatus::Disconnected {
@@ -3619,34 +3657,14 @@ impl ConnectionManager {
             if !newer {
                 continue;
             }
-            // 一个问题都没有的提问不出卡片，和前端 `blockingPrompts` 一样不算。
-            let question = state
-                .pending_question
-                .as_ref()
-                .is_some_and(|q| !q.questions.is_empty());
-            let found = if let Some(p) = state.pending_permission.as_ref() {
-                Some((AwaitingUserKind::Permission, Some(p.tool_call.clone())))
-            } else if question {
-                Some((AwaitingUserKind::Question, None))
-            } else if state.pending_plan_approval.is_some() {
-                Some((AwaitingUserKind::Plan, None))
-            } else {
-                None
-            };
-            let entry = found.map(|(kind, tool_call)| AwaitingUserEntry {
-                conversation_id,
-                external_id: state.external_id.clone(),
-                kind,
-                tool_call,
-            });
-            by_conversation.insert(conversation_id, (state.generation, entry));
+            let session: &crate::acp::session_state::SessionState = &state;
+            let value = read(session, conversation_id);
+            by_conversation.insert(conversation_id, (state.generation, value));
         }
-        let mut entries: Vec<_> = by_conversation
-            .into_values()
-            .filter_map(|(_, entry)| entry)
-            .collect();
-        entries.sort_by_key(|e| e.conversation_id);
-        entries
+        by_conversation
+            .into_iter()
+            .filter_map(|(id, (_, value))| value.map(|value| (id, value)))
+            .collect()
     }
 
     /// Cowork 加的：计划内重启停机时记「后台任务会被杀」的对话（`restart_resume`）。
@@ -8737,6 +8755,122 @@ mod tests {
             Some(&serde_json::json!("ExitPlanMode"))
         );
         assert!(entries[0].tool_call.is_none());
+    }
+
+    /// Cowork 加的：列表行上的 `awaiting`。自己在等的带自己的；不在列表里的孙对话在等，
+    /// 带到列表里的祖先上（`via_child`）；结束了的对话不带。
+    #[tokio::test]
+    async fn fill_list_awaiting_marks_rows_and_their_ancestors() {
+        use crate::acp::awaiting::AwaitingReason;
+        use crate::acp::delegation::spawner::DelegationLink;
+        use crate::acp::question::PendingQuestionState;
+        use crate::acp::session_state::PendingPermissionState;
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-awaiting-fill").await;
+        let agent = crate::models::agent::AgentType::ClaudeCode;
+        let root = seed_conversation(&db, folder, agent).await;
+        let other = seed_conversation(&db, folder, agent).await;
+        let done = seed_conversation(&db, folder, agent).await;
+        let quiet = seed_conversation(&db, folder, agent).await;
+        let delegate = |parent: i32, call: &str| DelegationLink {
+            parent_conversation_id: parent,
+            parent_tool_use_id: format!("tu-{call}"),
+            delegation_call_id: format!("dc-{call}"),
+            assistant: None,
+        };
+        let child = conversation_service::create_with_delegation(
+            &db.conn,
+            folder,
+            agent,
+            None,
+            None,
+            Some(delegate(root, "1")),
+        )
+        .await
+        .unwrap()
+        .id;
+        let grandchild = conversation_service::create_with_delegation(
+            &db.conn,
+            folder,
+            agent,
+            None,
+            None,
+            Some(delegate(child, "2")),
+        )
+        .await
+        .unwrap()
+        .id;
+        conversation_service::update_status(&db.conn, done, ConversationStatus::Completed)
+            .await
+            .unwrap();
+        let question = || PendingQuestionState {
+            question_id: "q-1".into(),
+            questions: vec![serde_json::from_value(serde_json::json!({
+                "id": "q1",
+                "question": "Which colour?",
+                "header": "",
+                "multi_select": false,
+                "options": [],
+            }))
+            .unwrap()],
+            created_at: chrono::Utc::now(),
+        };
+        let mgr = ConnectionManager::new();
+        {
+            let mut map = mgr.connections.lock().await;
+            let c1 = fake_connection("c1", Some(grandchild));
+            if let Ok(mut s) = c1.state.try_write() {
+                s.pending_question = Some(question());
+            }
+            map.insert("c1".into(), c1);
+            let c2 = fake_connection("c2", Some(other));
+            if let Ok(mut s) = c2.state.try_write() {
+                s.pending_permission = Some(PendingPermissionState {
+                    request_id: "req-1".into(),
+                    tool_call_id: "tc-1".into(),
+                    tool_call: serde_json::json!({ "toolCallId": "tc-1", "title": "rm" }),
+                    options: vec![],
+                    created_at: chrono::Utc::now(),
+                    queued: 0,
+                });
+            }
+            map.insert("c2".into(), c2);
+            let c3 = fake_connection("c3", Some(done));
+            if let Ok(mut s) = c3.state.try_write() {
+                s.pending_question = Some(question());
+            }
+            map.insert("c3".into(), c3);
+        }
+        let mut rows = crate::commands::conversations::list_all_conversations_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            crate::commands::conversations::ListAllConversationsOptions::default(),
+        )
+        .await
+        .expect("list");
+        crate::acp::awaiting::fill_list_awaiting(&mgr, &db.conn, &mut rows).await;
+        let awaiting = |id: i32| {
+            let row = rows.iter().find(|r| r.id == id).expect("row listed");
+            row.awaiting.as_ref().map(|a| (a.reason, a.via_child))
+        };
+        assert_eq!(awaiting(root), Some((AwaitingReason::Question, true)));
+        assert_eq!(awaiting(other), Some((AwaitingReason::Permission, false)));
+        assert_eq!(awaiting(done), None);
+        assert_eq!(awaiting(quiet), None);
+        assert!(
+            rows.iter().all(|r| r.id != grandchild),
+            "children are not listed"
+        );
+        // 什么都没等时 JSON 里没有这个字段。
+        let quiet_row = rows.iter().find(|r| r.id == quiet).unwrap();
+        let wire = serde_json::to_value(quiet_row).unwrap();
+        assert!(wire.get("awaiting").is_none());
+        let root_row = rows.iter().find(|r| r.id == root).unwrap();
+        let wire = serde_json::to_value(root_row).unwrap();
+        assert_eq!(wire["awaiting"]["reason"], "question");
+        assert_eq!(wire["awaiting"]["via_child"], true);
     }
 
     /// #530 返工：停机恢复名单不跟侧栏的「较新的连接说了算」，任何一条活连接上有后台任务

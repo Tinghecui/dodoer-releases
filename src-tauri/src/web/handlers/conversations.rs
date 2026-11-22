@@ -24,23 +24,25 @@ pub async fn list_all_conversations(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ListAllConversationsParams>,
 ) -> Result<Json<Vec<DbConversationSummary>>, AppCommandError> {
-    Ok(Json(
-        conv_commands::list_all_conversations_core(
-            &state.db.conn,
-            &state.emitter,
-            &state.chat_channel_manager,
-            conv_commands::ListAllConversationsOptions {
-                folder_ids: params.folder_ids,
-                agent_type: params.agent_type,
-                search: params.search,
-                sort_by: params.sort_by,
-                status: params.status,
-                include_children: params.include_children.unwrap_or(false),
-                include_loops: params.include_loops.unwrap_or(false),
-            },
-        )
-        .await?,
-    ))
+    let mut rows = conv_commands::list_all_conversations_core(
+        &state.db.conn,
+        &state.emitter,
+        &state.chat_channel_manager,
+        conv_commands::ListAllConversationsOptions {
+            folder_ids: params.folder_ids,
+            agent_type: params.agent_type,
+            search: params.search,
+            sort_by: params.sort_by,
+            status: params.status,
+            include_children: params.include_children.unwrap_or(false),
+            include_loops: params.include_loops.unwrap_or(false),
+        },
+    )
+    .await?;
+    // Cowork 加的：行上带「在等你」（`acp::awaiting`），手机 app 的「需要你」看它。
+    crate::acp::awaiting::fill_list_awaiting(&state.connection_manager, &state.db.conn, &mut rows)
+        .await;
+    Ok(Json(rows))
 }
 
 #[derive(Deserialize)]

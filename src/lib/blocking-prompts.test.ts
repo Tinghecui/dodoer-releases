@@ -4,6 +4,7 @@ import {
   blockingPrompts,
   isPlanApprovalPermission,
 } from "@/lib/blocking-prompts"
+import planApprovalCases from "@/lib/plan-approval-cases.json"
 
 const PERMISSION = { request_id: "req-1", tool_call: {}, options: [] }
 const QUESTION = {
@@ -155,5 +156,10 @@ describe("isPlanApprovalPermission", () => {
         ask({ kind: "edit", rawInput: { plan: "x", file_path: "/a" } })
       )
     ).toBe(false)
+  })
+
+  // 后端（`acp::awaiting`）读同一份文件，两边的规则不会悄悄分开。
+  it.each(planApprovalCases)("shared case: $name", ({ tool_call, plan }) => {
+    expect(isPlanApprovalPermission(ask(tool_call))).toBe(plan)
   })
 })

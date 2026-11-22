@@ -836,6 +836,21 @@ export interface DbConversationSummary {
    * the tag store and skip unknown ones rather than trusting the count.
    */
   tag_ids?: number[]
+  /**
+   * Cowork（dodoer #797 的格式）：这个对话在等用户做什么。只有
+   * `list_all_conversations` 从活着的连接填上，什么都没等时没有这个字段。网页端
+   * 不读它（侧栏「等你回答」走 `acp_list_awaiting_user`），给手机 app 用。
+   */
+  awaiting?: ConversationAwaiting
+}
+
+/** Mirrors the Rust `acp::awaiting::ConversationAwaiting`. */
+export interface ConversationAwaiting {
+  reason: "permission" | "question" | "plan"
+  /** ISO time the wait began (the prompt's own creation time). */
+  since: string
+  /** The wait is a delegated child's, rolled up onto this row. */
+  via_child: boolean
 }
 
 /** Payload for the global `conversation://changed` side-channel that keeps

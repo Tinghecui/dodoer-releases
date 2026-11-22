@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Keyboard, Minus, Plus, X } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
@@ -11,7 +11,18 @@ import { useIsMac } from "@/hooks/use-is-mac"
 import { useImeGuard } from "@/hooks/use-ime-guard"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
 import { handleMiddleClickClose } from "@/lib/utils"
+import { terminalIsBusy } from "@/lib/api"
 import { Button } from "@/components/ui/button"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { CommandDropdown } from "@/components/layout/command-dropdown"
 import {
   ContextMenu,
@@ -26,6 +37,14 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+
+/** 等用户确认的关闭：哪些终端里还有程序在跑，确认了做什么（#1136）。 */
+interface PendingClose {
+  busyTitles: string[]
+  /** 一次关好几个（「关闭其它」「关闭所有」）时列出忙的终端名。 */
+  several: boolean
+  close: () => void
+}
 
 interface TerminalTabBarProps {
   /** 移动端折叠/展开键栏的开关。仅 isMobile 时父级才传 true。 */
@@ -72,6 +91,79 @@ export function TerminalTabBar({
   const [editValue, setEditValue] = useState("")
   const inputRef = useRef<HTMLInputElement>(null)
 
+  const [pendingClose, setPendingClose] = useState<PendingClose | null>(null)
+
+  // 关终端会结束里面的程序：先问后端哪些终端还有程序在跑，有就弹确认，
+  // 取消了什么都不动；都空闲、查不出来（Windows、终端已经不在）或者查询
+  // 失败时照旧直接关（#1136）。
+  const requestClose = useCallback(
+    async (
+      targets: { id: string; title: string }[],
+      close: () => void,
+      several = false
+    ) => {
+      const flags = await Promise.all(
+        targets.map((target) =>
+          terminalIsBusy(target.id).then(
+            (busy) => busy === true,
+            () => false
+          )
+        )
+      )
+      const busyTitles = targets
+        .filter((_, index) => flags[index])
+        .map((target) => target.title)
+      if (busyTitles.length === 0) {
+        close()
+        return
+      }
+      setPendingClose({ busyTitles, several, close })
+    },
+    []
+  )
+
+  const requestCloseOne = (tab: { id: string; title: string }) =>
+    void requestClose([tab], () => closeTerminal(tab.id))
+
+  // 最新的标签：查询要等后端，等的时候可能又新建了终端。
+  const latestTabsRef = useRef(tabs)
+  useEffect(() => {
+    latestTabsRef.current = tabs
+  }, [tabs])
+
+  // 「关闭其它」「关闭所有」只关查过的那几个：查询期间新建的终端没查过、
+  // 也没列进确认，不能跟着一起关掉、结束里面的程序（#1136）。标签没变时
+  // 照旧走整批关闭。
+  const closeChecked = (
+    checked: { id: string }[],
+    keepId: string | null,
+    closeBatch: () => void
+  ) => {
+    const ids = new Set(checked.map((target) => target.id))
+    const latest = latestTabsRef.current
+    if (latest.every((other) => other.id === keepId || ids.has(other.id))) {
+      closeBatch()
+      return
+    }
+    for (const other of latest) {
+      if (ids.has(other.id)) closeTerminal(other.id)
+    }
+    if (keepId && latest.some((other) => other.id === keepId)) {
+      switchTerminal(keepId)
+    }
+  }
+
+  const requestCloseMany = (
+    targets: { id: string; title: string }[],
+    keepId: string | null,
+    closeBatch: () => void
+  ) =>
+    void requestClose(
+      targets,
+      () => closeChecked(targets, keepId, closeBatch),
+      true
+    )
+
   const startRename = (id: string, title: string) => {
     setEditingId(id)
     setEditValue(title)
@@ -99,7 +191,7 @@ export function TerminalTabBar({
               onClick={() => switchTerminal(tab.id)}
               onMouseDown={(event) => {
                 if (editingId === tab.id) return
-                handleMiddleClickClose(event, () => closeTerminal(tab.id))
+                handleMiddleClickClose(event, () => requestCloseOne(tab))
               }}
               title={`${folderIndex.get(tab.folderId) ?? String(tab.folderId)}  —  ${tab.title}`}
             >
@@ -128,7 +220,7 @@ export function TerminalTabBar({
                 aria-label={t("closeTab", { title: tab.title })}
                 onClick={(e) => {
                   e.stopPropagation()
-                  closeTerminal(tab.id)
+                  requestCloseOne(tab)
                 }}
               >
                 <X className="h-3 w-3" aria-hidden />
@@ -140,16 +232,26 @@ export function TerminalTabBar({
               {t("rename")}
             </ContextMenuItem>
             <ContextMenuSeparator />
-            <ContextMenuItem onSelect={() => closeTerminal(tab.id)}>
+            <ContextMenuItem onSelect={() => requestCloseOne(tab)}>
               {t("close")}
             </ContextMenuItem>
             <ContextMenuItem
-              onSelect={() => closeOtherTerminals(tab.id)}
+              onSelect={() =>
+                requestCloseMany(
+                  tabs.filter((other) => other.id !== tab.id),
+                  tab.id,
+                  () => closeOtherTerminals(tab.id)
+                )
+              }
               disabled={tabs.length <= 1}
             >
               {t("closeOthers")}
             </ContextMenuItem>
-            <ContextMenuItem onSelect={() => closeAllTerminals()}>
+            <ContextMenuItem
+              onSelect={() =>
+                requestCloseMany(tabs, null, () => closeAllTerminals())
+              }
+            >
               {t("closeAll")}
             </ContextMenuItem>
           </ContextMenuContent>
@@ -215,6 +317,40 @@ export function TerminalTabBar({
       >
         <Minus className="h-3 w-3" />
       </Button>
+      <AlertDialog
+        open={pendingClose !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingClose(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("closeBusyTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("closeBusyBody")}
+              {pendingClose?.several && (
+                <>
+                  <br />
+                  {t("closeBusyList", {
+                    titles: pendingClose.busyTitles.join(", "),
+                  })}
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("closeBusyCancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                pendingClose?.close()
+                setPendingClose(null)
+              }}
+            >
+              {t("closeBusyConfirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

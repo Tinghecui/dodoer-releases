@@ -2217,6 +2217,10 @@ pub fn build_router_with_proxy_auth(
             post(handlers::terminal::terminal_snapshot),
         )
         .route("/terminal_kill", post(handlers::terminal::terminal_kill))
+        .route(
+            "/terminal_is_busy",
+            post(handlers::terminal::terminal_is_busy),
+        )
         .route("/terminal_list", post(handlers::terminal::terminal_list))
         .route(
             "/cli_access_status",

@@ -2394,6 +2394,7 @@ mod tauri_app {
                 terminal_commands::terminal_resize,
                 terminal_commands::terminal_snapshot,
                 terminal_commands::terminal_kill,
+                terminal_commands::terminal_is_busy,
                 terminal_commands::terminal_list,
                 mcp_commands::mcp_scan_local,
                 mcp_commands::mcp_list_marketplaces,

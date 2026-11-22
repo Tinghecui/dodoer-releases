@@ -5713,6 +5713,17 @@ export async function terminalStop(terminalId: string): Promise<void> {
   return getTransport().call("terminal_kill", { terminalId, keepOutput: true })
 }
 
+/**
+ * Whether a program is still running in the terminal (its foreground job is
+ * not the shell itself), so closing it would end that program. `null` means
+ * unknown — the terminal is gone, or the platform can't tell (Windows).
+ */
+export async function terminalIsBusy(
+  terminalId: string
+): Promise<boolean | null> {
+  return getTransport().call("terminal_is_busy", { terminalId })
+}
+
 export async function terminalList(): Promise<TerminalInfo[]> {
   return getTransport().call("terminal_list")
 }

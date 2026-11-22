@@ -65,7 +65,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev webkit2gtk-driver xvfb dbus-x11
 
-      # restore / save 分开：WebdriverIO 那步红了也要把编好的程序存下来，重跑才不用重编
+      # restore / save 分开：WebdriverIO 那步红了也要把编好的程序存下来，重跑才不用重编。
+      # out/（前端）也要存：只存 target/debug/web 时，命中缓存的那次 app 认不出 target/debug/web/index.html（多半 debug 版那里是指向
+      # out/ 的链接），退回到不存在的 out/，网页服务 GET / 回 404（#1215 重跑那两次，app 日志「Fallback static dir」）。sidecar 的 codeg-server 也读 out/
       - name: 编好的程序（缓存）
         id: bin
         uses: actions/cache/restore@v4
@@ -77,7 +79,8 @@ jobs:
             src-tauri/target/debug/codeg-cli
             src-tauri/target/debug/codeg-computer-helper
             src-tauri/target/debug/web
-          key: desktop-e2e-bin-v1-${{ runner.os }}-${{ hashFiles('src-tauri/**', 'src/**', 'public/**', 'patches/**', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'rust-toolchain.toml', '*.config.*') }}
+            out
+          key: desktop-e2e-bin-v2-${{ runner.os }}-${{ hashFiles('src-tauri/**', 'src/**', 'public/**', 'patches/**', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'rust-toolchain.toml', '*.config.*') }}
 
       - name: Rust 版本（读 rust-toolchain.toml）
         id: toolchain
@@ -169,6 +172,7 @@ jobs:
             src-tauri/target/debug/codeg-cli
             src-tauri/target/debug/codeg-computer-helper
             src-tauri/target/debug/web
+            out
           key: ${{ steps.bin.outputs.cache-primary-key }}
 
       - name: 程序自报（--desktop-edition）

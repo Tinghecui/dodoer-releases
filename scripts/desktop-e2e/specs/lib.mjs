@@ -1,7 +1,7 @@
 // 各段 spec 共用的小工具：等界面、选主窗口、调 Tauri 命令、点击、截图、把每一步的用时写进 result-phase<N>.json
 // （scripts/desktop-e2e/run.sh 拿它写公开日志里的摘要表）
 import { execFileSync } from "node:child_process"
-import { writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import process from "node:process"
 
@@ -207,3 +207,126 @@ export function codegPids() {
     return []
   }
 }
+
+// ───────── 移植自 scripts/desktop-linux-smoke.mjs 的那几项要用的 ─────────
+
+// 网页服务的端口（「随 app 启动」默认的那个）
+export const WEB_PORT = 3080
+// run.sh 起的「远端服务器」（一个独立的 codeg-server）：地址、令牌、pid。没起来就是空的，相关的项会报没过
+export const REMOTE = {
+  url: process.env.E2E_REMOTE_URL || "",
+  token: process.env.E2E_REMOTE_TOKEN || "",
+  pid: process.env.E2E_REMOTE_PID || "",
+}
+export const REMOTE_NAME = "e2e-remote"
+// 排队消息在 localStorage 里的键（src/lib/cowork/message-queue-storage.ts）：前缀:local:<会话 id>
+export const QUEUE_PREFIX = "cowork:message-queue:v1:local:"
+export const QUEUE_TEXT = "desktop e2e queued message"
+// 几段之间传东西（远程连接 id、会话 id……）：写在 $E2E_OUT/state.json
+const STATE = join(OUT, "state.json")
+export function loadState() {
+  try {
+    return JSON.parse(readFileSync(STATE, "utf8"))
+  } catch {
+    return {}
+  }
+}
+export function saveState(patch) {
+  writeFileSync(STATE, JSON.stringify({ ...loadState(), ...patch }, null, 2))
+}
+
+export function must(cond, detail) {
+  if (!cond) throw new Error(detail)
+}
+// invoke 的结果：成了返回值，没成抛错
+export function ok(r, what) {
+  must(r && !("err" in r), `${what}：${JSON.stringify(r).slice(0, 400)}`)
+  return r.ok
+}
+
+export function pids(name) {
+  try {
+    return execFileSync("pgrep", ["-x", name], { encoding: "utf8" })
+      .split(/\s+/)
+      .filter((s) => /^\d+$/.test(s))
+  } catch {
+    return []
+  }
+}
+
+function run(cmd, args) {
+  try {
+    return execFileSync(cmd, args, {
+      encoding: "utf8",
+      timeout: 15000,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+  } catch {
+    return null
+  }
+}
+
+// 在听的 TCP 端口：[{ addr, port, pids }]。addr 统一成 127.0.0.1 / 0.0.0.0 / ::1 / ::
+// Linux 用 ss（带 sudo：带令牌起的 codeg-server 把自己设成 non-dumpable，不带 sudo 列不出是谁在听，见 desktop-linux-webdriver.mjs），
+// macOS 用 lsof
+export function listeningAll() {
+  const norm = (a) =>
+    a === "*" ? "0.0.0.0" : a.replace(/^\[(.*)\]$/, "$1").replace(/%.*$/, "")
+  if (process.platform === "darwin") {
+    const out =
+      run("sudo", ["-n", "lsof", "-nP", "-iTCP", "-sTCP:LISTEN"]) ??
+      run("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN"]) ??
+      ""
+    return (
+      out
+        .split("\n")
+        .slice(1)
+        // COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME (LISTEN)，NAME 是 127.0.0.1:3080、*:3080、[::1]:3080
+        .map((l) => l.trim().split(/\s+/))
+        .filter((f) => f.length >= 9)
+        .map((f) => {
+          const m = f[8].match(/^(.*):(\d+)$/)
+          return m
+            ? { addr: norm(m[1]), port: Number(m[2]), pids: [f[1]] }
+            : null
+        })
+        .filter(Boolean)
+    )
+  }
+  const out = run("sudo", ["-n", "ss", "-ltnpH"]) ?? run("ss", ["-ltnpH"]) ?? ""
+  return out
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => {
+      const f = l.trim().split(/\s+/)
+      const m = String(f[3] || "").match(/^(.*):(\d+)$/)
+      if (!m) return null
+      return {
+        addr: norm(m[1]),
+        port: Number(m[2]),
+        pids: [...l.matchAll(/pid=(\d+)/g)].map((x) => x[1]),
+      }
+    })
+    .filter(Boolean)
+}
+export const listening = (port) => listeningAll().filter((l) => l.port === port)
+export const fmtListen = (ls) =>
+  ls.map((l) => `${l.addr}:${l.port}(pid ${l.pids.join(",")})`).join(" ")
+
+// 每 interval 调一次 fn，直到它返回真值（返回那个值）；到点返回 null。fn 抛错当作还没好
+export async function waitFor(fn, timeout = 20000, interval = 300) {
+  const deadline = Date.now() + timeout
+  for (;;) {
+    try {
+      const v = await fn()
+      if (v) return v
+    } catch {
+      // 还没好
+    }
+    if (Date.now() >= deadline) return null
+    await new Promise((r) => setTimeout(r, interval))
+  }
+}
+
+// 这个 app 现在有哪些 Tauri 窗口（标签）
+export const windowLabels = () => browser.tauri.listWindows()

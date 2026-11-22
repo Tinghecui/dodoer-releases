@@ -326,6 +326,30 @@ describe("extractLatestPlanEntriesFromMessages — Claude Code Task tools", () =
     expect(extractLatestPlanEntriesFromMessages(cleared)).toEqual([])
   })
 
+  it("keeps a known task name that ends in parentheses", () => {
+    expect(
+      extractLatestPlanEntriesFromMessages([
+        assistant("a1", create("1", "Add login (OAuth)")),
+        assistant("a2", create("2", "Write docs")),
+        assistant(
+          "a3",
+          call(
+            "TaskList",
+            {},
+            "#1 [in_progress] Add login (OAuth)\n#2 [pending] Write docs (main)"
+          )
+        ),
+      ])
+    ).toEqual([
+      {
+        content: "Add login (OAuth)",
+        status: "in_progress",
+        priority: "medium",
+      },
+      { content: "Write docs", status: "pending", priority: "medium" },
+    ])
+  })
+
   it("the later checklist wins between Task tools and TodoWrite", () => {
     const todoWrite = (id: string, content: string) =>
       ({

@@ -103,7 +103,10 @@ type TaskOp =
       status?: string
       activeForm?: string
     }
-  | { kind: "list"; tasks: { id: string; subject: string; status: string }[] }
+  | {
+      kind: "list"
+      tasks: { id: string; subject: string; listed: string; status: string }[]
+    }
 
 // `status` is absent only for a task seen solely through updates that never
 // said its status (see `applyTaskOp`): it is remembered, not shown.
@@ -133,10 +136,15 @@ const TASK_STATUSES = new Set(["pending", "in_progress", "completed"])
 /** `#<id> [<status>] <subject>[ (<owner>)][ [blocked by #a, #b]]` per line. */
 function parseTaskListOutput(
   output: string
-): { id: string; subject: string; status: string }[] | null {
+): { id: string; subject: string; listed: string; status: string }[] | null {
   const text = output.trim()
   if (text === "No tasks found") return []
-  const tasks: { id: string; subject: string; status: string }[] = []
+  const tasks: {
+    id: string
+    subject: string
+    listed: string
+    status: string
+  }[] = []
   for (const line of text.split("\n")) {
     const match = /^#(\S+) \[(pending|in_progress|completed)\] (.+)$/.exec(line)
     // A line that does not parse means a listing this does not understand
@@ -146,6 +154,7 @@ function parseTaskListOutput(
     const blocked = subject.lastIndexOf(" [blocked by ")
     if (blocked > 0 && subject.endsWith("]"))
       subject = subject.slice(0, blocked)
+    const listed = subject
     const owner = subject.lastIndexOf(" (")
     if (owner > 0 && subject.endsWith(")")) {
       const candidate = subject.slice(owner + 2, -1)
@@ -153,7 +162,7 @@ function parseTaskListOutput(
         subject = subject.slice(0, owner)
       }
     }
-    tasks.push({ id: match[1], subject, status: match[2] })
+    tasks.push({ id: match[1], subject, listed, status: match[2] })
   }
   return tasks.length > 0 ? tasks : null
 }
@@ -241,10 +250,17 @@ function applyTaskOp(state: TaskState, op: TaskOp) {
   const previous = new Map(state)
   state.clear()
   for (const task of op.tasks) {
+    const known = previous.get(task.id)
+    // A name that itself ends in "(…)" reads like an owner suffix; the name
+    // TaskCreate or an update gave the task is the one to keep then.
+    const keepKnown =
+      known !== undefined &&
+      (task.listed === known.subject ||
+        task.listed.startsWith(`${known.subject} (`))
     state.set(task.id, {
-      subject: task.subject,
+      subject: keepKnown ? known.subject : task.subject,
       status: task.status,
-      activeForm: previous.get(task.id)?.activeForm,
+      activeForm: known?.activeForm,
     })
   }
 }

@@ -15,17 +15,24 @@ const appId = process.env.BOT_APP_ID || ""
 const key = (process.env.BOT_APP_KEY || "").trim()
 if (!/^\d+$/.test(appId)) fail("没有 BOT_APP_ID")
 if (!key.includes("PRIVATE KEY")) fail("没有 BOT_APP_KEY")
-const repos = (repoArg || "").split(",").map((r) => r.trim()).filter(Boolean)
+const repos = (repoArg || "")
+  .split(",")
+  .map((r) => r.trim())
+  .filter(Boolean)
 if (!repos.length || repos.some((r) => !/^[\w.-]+$/.test(r))) fail("仓库名不对")
 const permissions = {}
 for (const p of (permArg || "").split(",").filter(Boolean)) {
   const [k, v] = p.split("=")
-  if (!/^[a-z_]+$/.test(k || "") || !["read", "write"].includes(v)) fail("权限要写成 名字=read|write")
+  if (!/^[a-z_]+$/.test(k || "") || !["read", "write"].includes(v))
+    fail("权限要写成 名字=read|write")
   permissions[k] = v
 }
 if (!Object.keys(permissions).length) fail("至少要一个权限")
 
-const b64 = (x) => Buffer.from(typeof x === "string" ? x : JSON.stringify(x)).toString("base64url")
+const b64 = (x) =>
+  Buffer.from(typeof x === "string" ? x : JSON.stringify(x)).toString(
+    "base64url"
+  )
 const now = Math.floor(Date.now() / 1000)
 const unsigned = `${b64({ alg: "RS256", typ: "JWT" })}.${b64({ iat: now - 60, exp: now + 540, iss: appId })}`
 let jwt
@@ -41,7 +48,12 @@ const api = async (method, path, body) => {
     try {
       r = await fetch(`https://api.github.com${path}`, {
         method,
-        headers: { authorization: `Bearer ${jwt}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "cowork-ci" },
+        headers: {
+          authorization: `Bearer ${jwt}`,
+          accept: "application/vnd.github+json",
+          "x-github-api-version": "2022-11-28",
+          "user-agent": "cowork-ci",
+        },
         body: body ? JSON.stringify(body) : undefined,
         signal: AbortSignal.timeout(20000),
       })
@@ -57,6 +69,9 @@ const api = async (method, path, body) => {
 }
 
 const inst = await api("GET", `/repos/${OWNER}/${repos[0]}/installation`)
-const tok = await api("POST", `/app/installations/${inst.id}/access_tokens`, { repositories: repos, permissions })
+const tok = await api("POST", `/app/installations/${inst.id}/access_tokens`, {
+  repositories: repos,
+  permissions,
+})
 if (!tok.token) fail("GitHub 没给令牌")
 process.stdout.write(tok.token)

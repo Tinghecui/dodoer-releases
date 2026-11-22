@@ -3027,6 +3027,37 @@ async fn install_npm_to_user_prefix_streaming(
     Ok(())
 }
 
+/// Uninstall the npm packages `agent_type` used to ship as
+/// ([`registry::superseded_npm_packages`]) that are still installed. Best
+/// effort: a failure goes into the install log and the caller carries on, so
+/// the real install still runs and reports its own error if the old command
+/// is still in the way.
+async fn remove_superseded_npm_packages(
+    agent_type: AgentType,
+    task_id: &str,
+    emitter: &EventEmitter,
+) {
+    for old in registry::superseded_npm_packages(agent_type) {
+        if detect_npm_global_version(old).await.is_none() {
+            continue;
+        }
+        emit_agent_install_event(
+            emitter,
+            task_id,
+            AgentInstallEventKind::Log,
+            format!("$ npm uninstall -g {old} (replaced by a new package)"),
+        );
+        if let Err(e) = uninstall_npm_global_package(old).await {
+            emit_agent_install_event(
+                emitter,
+                task_id,
+                AgentInstallEventKind::Log,
+                format!("(warning) uninstall step failed, continuing: {e}"),
+            );
+        }
+    }
+}
+
 async fn uninstall_npm_global_package(package: &str) -> Result<(), AcpError> {
     let package_name = package_name_from_spec(package);
 
@@ -11398,10 +11429,14 @@ pub(crate) fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static s
         // `llm-deepseek` adapter through the launch-environment snapshot —
         // which, when the host installs none (deepseek-acp does not), falls
         // back to `process.env`, so codeg's launch env reaches it. It resolves
-        // per request (`config.baseURL ?? env ?? https://api.deepseek.com`),
-        // NOT at load. `DEEPSEEK_ACP_PROVIDER` is a different thing entirely —
-        // the provider ROUTE id (`deepseek-official`), a registry key rather
-        // than a URL — so it must not ride the base-url slot, or binding a
+        // per request (`config.baseURL ?? env ??
+        // https://api.deepseek.com/anthropic`), NOT at load. Since 0.11 that is
+        // the Anthropic Messages root; a provider still holding the old
+        // OpenAI-compatible `https://api.deepseek.com` is moved there at launch
+        // (`connection::apply_deepseek_env_policy`). `DEEPSEEK_ACP_PROVIDER` is
+        // a different thing entirely — the provider ROUTE id
+        // (`deepseek-official`), a registry key rather than a URL — so it must
+        // not ride the base-url slot, or binding a
         // model provider would write an endpoint into the route selector and
         // break every request. All three keep the generic cascade off the
         // OPENAI_* keys.
@@ -14800,6 +14835,10 @@ pub(crate) async fn acp_prepare_npx_agent_core(
                 }
             }
 
+            // An agent whose package was renamed: the old package still owns
+            // the same command, and npm refuses to install over it.
+            remove_superseded_npm_packages(agent_type, &task_id, emitter).await;
+
             emit_agent_install_event(
                 emitter,
                 &task_id,
@@ -15009,6 +15048,7 @@ pub(crate) async fn acp_uninstall_agent_core(
             }
             registry::AgentDistribution::Npx { package, .. } => {
                 uninstall_npm_global_package(package).await?;
+                remove_superseded_npm_packages(agent_type, &task_id, emitter).await;
             }
             registry::AgentDistribution::Uvx { .. } => {
                 binary_cache::clear_uvx_agent_prepared(agent_type)?;

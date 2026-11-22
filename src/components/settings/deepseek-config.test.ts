@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest"
 
 import {
   buildDeepSeekEnv,
+  DEEPSEEK_DEFAULT_BASE_URL,
   isValidDeepSeekBaseUrl,
+  migrateDeepSeekBaseUrl,
 } from "./deepseek-config-panel"
 
 describe("buildDeepSeekEnv", () => {
@@ -36,10 +38,18 @@ describe("buildDeepSeekEnv", () => {
   })
 
   it("strips trailing slashes from the endpoint", () => {
-    // The adapter concatenates `${baseURL}/chat/completions`.
+    // The adapter concatenates `${baseURL}/v1/messages`.
     expect(
       buildDeepSeekEnv({}, "", "https://gw.example.com//").DEEPSEEK_BASE_URL
     ).toBe("https://gw.example.com")
+  })
+
+  it("moves the retired official endpoint to the Messages one", () => {
+    // 0.11 speaks the Anthropic Messages API; the old OpenAI-compatible root
+    // would 404 on `/v1/messages`.
+    expect(
+      buildDeepSeekEnv({}, "", "https://api.deepseek.com").DEEPSEEK_BASE_URL
+    ).toBe(DEEPSEEK_DEFAULT_BASE_URL)
   })
 
   it("preserves unrelated keys, including a real provider route", () => {
@@ -85,9 +95,9 @@ describe("isValidDeepSeekBaseUrl", () => {
   })
 
   it("rejects a query string or fragment", () => {
-    // The adapter builds `${baseURL}/chat/completions` by concatenation, so a
-    // query would swallow the path: `/v1?api-version=1` requests the path
-    // `/v1` with the query `api-version=1/chat/completions`.
+    // The adapter builds `${baseURL}/v1/messages` by concatenation, so a query
+    // would swallow the path: `/v1?api-version=1` requests the path `/v1` with
+    // the query `api-version=1/v1/messages`.
     expect(
       isValidDeepSeekBaseUrl("https://gw.example.com/v1?api-version=1")
     ).toBe(false)
@@ -104,5 +114,26 @@ describe("isValidDeepSeekBaseUrl", () => {
     expect(isValidDeepSeekBaseUrl("https://user:pass@gw.example.com")).toBe(
       false
     )
+  })
+})
+
+describe("migrateDeepSeekBaseUrl", () => {
+  it("moves only the old official endpoints", () => {
+    for (const old of [
+      "https://api.deepseek.com",
+      "https://api.deepseek.com/",
+      "https://API.DeepSeek.com/v1",
+      " https://api.deepseek.com/v1/ ",
+    ]) {
+      expect(migrateDeepSeekBaseUrl(old)).toBe(DEEPSEEK_DEFAULT_BASE_URL)
+    }
+    expect(migrateDeepSeekBaseUrl("https://api.deepseek.com/anthropic")).toBe(
+      DEEPSEEK_DEFAULT_BASE_URL
+    )
+    // A gateway is the user's to point wherever it serves Messages.
+    expect(migrateDeepSeekBaseUrl("https://gw.example.com/v1")).toBe(
+      "https://gw.example.com/v1"
+    )
+    expect(migrateDeepSeekBaseUrl("")).toBe("")
   })
 })

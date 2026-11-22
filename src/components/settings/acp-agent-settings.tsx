@@ -218,11 +218,10 @@ import {
 import { CodeBuddyConfigPanel } from "./codebuddy-config-panel"
 import { CursorConfigPanel } from "./cursor-config-panel"
 import {
-  DEEPSEEK_DEFAULT_BASE_URL,
   DEEPSEEK_PANEL_ENV_KEYS,
   DeepSeekConfigPanel,
 } from "./deepseek-config-panel"
-import { DeepSeekModelListEditor } from "./deepseek-model-list-editor"
+import { DeepSeekRoutesEditor } from "./deepseek-routes-editor"
 import { MiniMaxCodeConfigPanel } from "./minimax-code-config-panel"
 import { KimiCodeConfigPanel } from "./kimi-code-config-panel"
 import { PiConfigPanel } from "./pi-config-panel"
@@ -12104,20 +12103,12 @@ base_url = "https://api.openai.com/v1"`}
                         )
                       }
                     />
-                    {/* The deployment's model catalog. It lives in the harness'
-                      own `settings.yaml`, not in the agent env, so it has its
-                      own section and its own save — and it is what the
-                      composer's per-session model selector gets to choose
-                      from. */}
-                    <DeepSeekModelListEditor
-                      launchModel={selectedAgent.env.DEEPSEEK_ACP_MODEL}
-                      endpoint={{
-                        baseUrl:
-                          selectedAgent.env.DEEPSEEK_BASE_URL?.trim() ||
-                          DEEPSEEK_DEFAULT_BASE_URL,
-                        apiKey: selectedAgent.env.DEEPSEEK_API_KEY ?? "",
-                      }}
-                    />
+                    {/* Extra model routes (other endpoints, e.g. an OpenAI
+                      Responses gateway). They live in the agent's own
+                      `settings.yaml`, not in the env, so they have their own
+                      section and their own save; their models join the
+                      composer's per-session selector as `<route>::<model>`. */}
+                    <DeepSeekRoutesEditor />
                   </>
                 ) : selectedAgent.agent_type === "qoder" ? (
                   <QoderConfigPanel

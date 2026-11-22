@@ -354,6 +354,43 @@ fn apply_grok_env_policy(merged: &mut Vec<(String, String)>, runtime_env: &BTree
     }
 }
 
+/// The endpoint DeepSeek Harness 0.2 (deepseek-acp 0.11) talks to by default:
+/// DeepSeek's Anthropic Messages API, requested as `${baseURL}/v1/messages`.
+pub(crate) const DEEPSEEK_MESSAGES_BASE_URL: &str = "https://api.deepseek.com/anthropic";
+
+/// Whether `value` is DeepSeek's OLD official endpoint, the OpenAI-compatible
+/// root (`https://api.deepseek.com`, optionally with `/v1`) that deepseek-acp
+/// 0.9 requested `/chat/completions` under. The settings panel's default and
+/// model-provider bindings stored it; under 0.11 it would turn into
+/// `https://api.deepseek.com/v1/messages`, the wrong API. Any other host is a
+/// gateway whose paths are its operator's business, so it is not touched.
+fn is_legacy_deepseek_base_url(value: &str) -> bool {
+    let normalized = value.trim().trim_end_matches('/').to_ascii_lowercase();
+    normalized == "https://api.deepseek.com" || normalized == "https://api.deepseek.com/v1"
+}
+
+/// DeepSeek's launch-time endpoint policy: an old official endpoint
+/// ([`is_legacy_deepseek_base_url`]) becomes [`DEEPSEEK_MESSAGES_BASE_URL`].
+/// Looks at the configured value first, then the one this process would pass
+/// down (`inherited`, an operator's container env), so either is migrated
+/// without rewriting what the user stored. An empty configured value means
+/// "remove the inherited one" to the spawn layer and is left alone.
+fn apply_deepseek_env_policy(merged: &mut Vec<(String, String)>, inherited: Option<String>) {
+    const KEY: &str = "DEEPSEEK_BASE_URL";
+    let current = match merged.iter().find(|(k, _)| k == KEY) {
+        Some((_, v)) => Some(v.clone()),
+        None => inherited,
+    };
+    if !current.as_deref().is_some_and(is_legacy_deepseek_base_url) {
+        return;
+    }
+    tracing::info!(
+        "[ACP][DeepSeek] {KEY} is the old OpenAI-compatible endpoint; using {DEEPSEEK_MESSAGES_BASE_URL}"
+    );
+    merged.retain(|(k, _)| k != KEY);
+    merged.push((KEY.to_string(), DEEPSEEK_MESSAGES_BASE_URL.to_string()));
+}
+
 /// codeg-side knob recording which Antigravity auth method the settings panel
 /// chose. It is NOT read by the agent — the server takes its auth intent from
 /// `auth.type` in `antigravity-acp/settings.json` — so the launch path uses it
@@ -2276,6 +2313,12 @@ async fn build_agent(
                 inherited_codex_config.as_deref(),
             );
             apply_codex_prompt_suggestion_policy(agent_type, &mut merged_env, prompt_suggestions);
+            // DeepSeek ships through npm, so its endpoint migration lives in
+            // this branch (the binary branch never launches it).
+            if agent_type == AgentType::DeepSeek {
+                let inherited = std::env::var("DEEPSEEK_BASE_URL").ok();
+                apply_deepseek_env_policy(&mut merged_env, inherited);
+            }
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under CODEG_ACP_DEBUG so
             // default runs are unchanged; a directory-creation failure silently
@@ -32063,6 +32106,59 @@ mod tests {
             apply_grok_env_policy(&mut env, &rt);
             assert!(!env.iter().any(|(k, _)| k == "XAI_API_KEY"));
         }
+    }
+
+    #[test]
+    fn deepseek_env_policy_moves_only_the_old_official_endpoint() {
+        let base_url = |env: &[(String, String)]| {
+            env.iter()
+                .find(|(k, _)| k == "DEEPSEEK_BASE_URL")
+                .map(|(_, v)| v.clone())
+        };
+
+        // The old official root, with or without `/v1` or a trailing slash,
+        // stored or inherited, becomes the Messages root.
+        for old in [
+            "https://api.deepseek.com",
+            "https://api.deepseek.com/",
+            "https://api.deepseek.com/v1",
+            " HTTPS://API.DEEPSEEK.COM/v1/ ",
+        ] {
+            let mut stored = vec![("DEEPSEEK_BASE_URL".to_string(), old.to_string())];
+            apply_deepseek_env_policy(&mut stored, None);
+            assert_eq!(
+                base_url(&stored).as_deref(),
+                Some(DEEPSEEK_MESSAGES_BASE_URL)
+            );
+            assert_eq!(stored.len(), 1, "{old:?} must be replaced, not duplicated");
+
+            let mut inherited = vec![("PATH".to_string(), "/usr/bin".to_string())];
+            apply_deepseek_env_policy(&mut inherited, Some(old.to_string()));
+            assert_eq!(
+                base_url(&inherited).as_deref(),
+                Some(DEEPSEEK_MESSAGES_BASE_URL)
+            );
+        }
+
+        // The new root, a gateway, or nothing at all is left exactly as is.
+        for kept in [
+            DEEPSEEK_MESSAGES_BASE_URL,
+            "https://gateway.example.test/v1",
+            "https://api.deepseek.com/beta",
+        ] {
+            let mut env = vec![("DEEPSEEK_BASE_URL".to_string(), kept.to_string())];
+            apply_deepseek_env_policy(&mut env, None);
+            assert_eq!(base_url(&env).as_deref(), Some(kept));
+        }
+        let mut unset = vec![("PATH".to_string(), "/usr/bin".to_string())];
+        apply_deepseek_env_policy(&mut unset, None);
+        assert_eq!(base_url(&unset), None);
+
+        // An empty stored value asks the spawn layer to DROP the inherited
+        // one; the inherited old endpoint must not sneak back in over it.
+        let mut cleared = vec![("DEEPSEEK_BASE_URL".to_string(), String::new())];
+        apply_deepseek_env_policy(&mut cleared, Some("https://api.deepseek.com".to_string()));
+        assert_eq!(base_url(&cleared).as_deref(), Some(""));
     }
 
     fn antigravity_runtime(method: &str) -> BTreeMap<String, String> {

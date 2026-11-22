@@ -1253,12 +1253,12 @@ pub fn build_router_with_proxy_auth(
             post(handlers::acp::acp_list_pi_model_capabilities),
         )
         .route(
-            "/acp_load_deepseek_model_catalog",
-            post(handlers::acp::acp_load_deepseek_model_catalog),
+            "/acp_load_deepseek_routes",
+            post(handlers::acp::acp_load_deepseek_routes),
         )
         .route(
-            "/acp_update_deepseek_model_catalog",
-            post(handlers::acp::acp_update_deepseek_model_catalog),
+            "/acp_update_deepseek_routes",
+            post(handlers::acp::acp_update_deepseek_routes),
         )
         .route(
             "/acp_validate_pi_command",

@@ -314,6 +314,22 @@ pub fn all_acp_agents() -> Vec<AgentType> {
     agents
 }
 
+/// npm packages an agent used to ship as and no longer does, for an agent
+/// whose [`AgentDistribution::Npx`] package changed NAME (not just version).
+///
+/// The old package still owns the same command in the npm global bin dir, so
+/// installing the new one over it fails with `EEXIST` until the old one is
+/// gone; installs uninstall these first, and uninstalling the agent removes
+/// them too.
+pub fn superseded_npm_packages(agent_type: AgentType) -> &'static [&'static str] {
+    match agent_type {
+        // 0.11.0 moved to CoTeam's scoped fork; both ship the `deepseek-acp`
+        // command.
+        AgentType::DeepSeek => &["deepseek-acp"],
+        _ => &[],
+    }
+}
+
 pub fn registry_id_for(agent_type: AgentType) -> &'static str {
     match agent_type {
         AgentType::ClaudeCode => "claude-acp",
@@ -7365,18 +7381,50 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             //   跳过列表**要留着**：旧日志里还有那些行，而新形状是 `assistant/message`
             //   自己的一个字段，本来就不会被当成事件行读。
             //
+            //
+            // 0.11.0 起换包：装的是 CoTeam 的分叉版 `@james5642432/deepseek-acp`
+            // （上游 0.11.0 + 尚未合并的 xintaofei/deepseek-acp#17：环境变量
+            // `DEEPSEEK_ACP_PLUGINS` 挂第三方 Cordis 插件，填在通用环境变量框里即可）。
+            // 命令名和协议里报的 agent 名都还是 `deepseek-acp`，所以启动、识别都不变；
+            // 老用户全局目录里那份无 scope 的 `deepseek-acp` 占着同名命令，安装前由
+            // `superseded_npm_packages` 先卸掉。上游合了 #17 之后换回官方包。
+            //
+            // 0.9 → 0.11（内置 DSH 0.1.5-rc.1 → 0.2.2-rc.3）对 codeg 的影响，逐包核对过：
+            //
+            // * 协议能力声明（`initialize`）逐字节不变，实机比对过。
+            // * **不再读 `$DSH_HOME/settings.yaml`**（上游删了 `dsh-settings-file`）。
+            //   官方路由的模型目录写死在适配器里，上面 0.9.0 那段说的「用户文档压过
+            //   composition base」不再成立，`commands::deepseek_settings` 写的
+            //   `llm-deepseek.models` 没人读了。适配器自己的设置文档是
+            //   `$DSH_HOME/deepseek-acp/settings.yaml`，只装 `llm-pi-ai` 段（额外的
+            //   模型路由，例如 OpenAI Responses 兼容网关），没有它时只读导入旧文档里的
+            //   同名段。
+            // * **官方路由改走 Anthropic Messages 接口**：默认端点
+            //   `https://api.deepseek.com/anthropic`，请求 `${baseURL}/v1/messages`。
+            //   存着旧端点（OpenAI 兼容的 `https://api.deepseek.com`）的会话，启动时由
+            //   `connection::apply_deepseek_env_policy` 换成新端点。
+            // * **凭据优先级反过来**：`$DSH_HOME/.credentials.yaml`（`--setup` 写的）
+            //   现在压过 `DEEPSEEK_API_KEY` 环境变量，适配器只在 stderr 提示一行。
+            //   面板的说明文字跟着改了。
+            // * 会话日志格式 v3 → v4（`session.v4.jsonl.zstd`，工具结果是独立的
+            //   `role: 'tool'` 消息），`parsers::deepseek` 两种都读；新事件
+            //   （`llm/retry`、`model/selection` 等）落到 `_ => {}`。目录树、附件库、
+            //   技能根、fork 用的消息 id 都没变。
+            // * 新增 `apply_patch` 工具，输入是 `*** Begin Patch` 文本，与 Codex 同形，
+            //   前端的补丁解析直接认。
+            //
             // Keep `version` and `package` moving together: `version` is what
             // the agents list shows as the upgrade target beside the installed
             // version, so a drift leaves the Upgrade button installing one
             // version while the row keeps calling it stale.
             distribution: AgentDistribution::Npx {
-                version: "0.9.0",
-                package: "deepseek-acp@0.9.0",
+                version: "0.11.0-coteam.1",
+                package: "@james5642432/deepseek-acp@0.11.0-coteam.1",
                 cmd: "deepseek-acp",
                 args: &[],
                 env: &[],
-                // package.json declares `engines.node: ">=22"`.
-                node_required: Some("22.0.0"),
+                // package.json declares `engines.node: ">=22.19.0"`.
+                node_required: Some("22.19.0"),
             },
         },
         AgentType::Qoder => AcpAgentMeta {
@@ -8301,6 +8349,27 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
 mod tests {
     use super::*;
 
+    #[test]
+    fn superseded_npm_packages_never_name_the_current_package() {
+        // Installs uninstall these first; naming the current package would
+        // uninstall what the install is about to put back, every time.
+        for agent_type in builtin_acp_agents() {
+            let AgentDistribution::Npx { package, .. } = get_agent_meta(agent_type).distribution
+            else {
+                assert!(superseded_npm_packages(agent_type).is_empty());
+                continue;
+            };
+            let current = package.rsplit_once('@').map_or(package, |(name, _)| name);
+            for old in superseded_npm_packages(agent_type) {
+                assert_ne!(*old, current, "{agent_type:?}");
+            }
+        }
+        assert_eq!(
+            superseded_npm_packages(AgentType::DeepSeek),
+            ["deepseek-acp"]
+        );
+    }
+
     fn assert_npx_version(
         agent_type: AgentType,
         expected_version: &str,
@@ -8855,9 +8924,9 @@ mod tests {
         );
         assert_npx_version(
             AgentType::DeepSeek,
-            "0.9.0",
-            "deepseek-acp@0.9.0",
-            Some("22.0.0"),
+            "0.11.0-coteam.1",
+            "@james5642432/deepseek-acp@0.11.0-coteam.1",
+            Some("22.19.0"),
         );
         assert_npx_version(
             AgentType::Qoder,

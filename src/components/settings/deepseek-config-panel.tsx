@@ -14,11 +14,30 @@ const DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
 /** Endpoint override. `llm-deepseek` resolves it per request through the
  * launch-environment snapshot, which falls back to `process.env` when the host
  * installs none — deepseek-acp installs none, so codeg's launch env reaches it.
- * Empty ⇒ the adapter's own default, `https://api.deepseek.com`. */
+ * Empty ⇒ the adapter's own default, {@link DEEPSEEK_DEFAULT_BASE_URL}. */
 const DEEPSEEK_BASE_URL_ENV = "DEEPSEEK_BASE_URL"
 
-/** The adapter's public default endpoint, shown as the placeholder. */
-export const DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
+/** The adapter's public default endpoint, shown as the placeholder. Since
+ * deepseek-acp 0.11 (DeepSeek Harness 0.2) it is DeepSeek's Anthropic Messages
+ * root; requests go to `${baseURL}/v1/messages`. */
+export const DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
+
+/**
+ * The endpoint to store for what the user typed. DeepSeek's OLD official
+ * endpoint — the OpenAI-compatible root `https://api.deepseek.com`, with or
+ * without `/v1`, which this panel used to show as its default — becomes the
+ * Messages root: under 0.11 it would request the wrong API. Any other host is
+ * a gateway and is kept as typed (minus trailing slashes). The launch path
+ * applies the same rule to values saved before this existed.
+ */
+export function migrateDeepSeekBaseUrl(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, "")
+  const lower = trimmed.toLowerCase()
+  return lower === "https://api.deepseek.com" ||
+    lower === "https://api.deepseek.com/v1"
+    ? DEEPSEEK_DEFAULT_BASE_URL
+    : trimmed
+}
 
 /** Every env key this panel owns. The settings page folds exactly these into
  * the raw editor's draft after a save, and rebases them onto it when the
@@ -72,8 +91,8 @@ export function buildDeepSeekEnv(
   }
   setOrDelete(DEEPSEEK_API_KEY_ENV, apiKey)
   // Trailing slashes are stripped: the adapter concatenates
-  // `${baseURL}/chat/completions`, so `https://host/` would request `//chat`.
-  setOrDelete(DEEPSEEK_BASE_URL_ENV, baseUrl.trim().replace(/\/+$/, ""))
+  // `${baseURL}/v1/messages`, so `https://host/` would request `//v1`.
+  setOrDelete(DEEPSEEK_BASE_URL_ENV, migrateDeepSeekBaseUrl(baseUrl))
   return env
 }
 
@@ -82,16 +101,16 @@ export function buildDeepSeekEnv(
  * only show up at the first turn.
  *
  * A query string or fragment is rejected for the same reason the trailing
- * slash is stripped: the adapter concatenates `${baseURL}/chat/completions`
- * textually, so `https://gw/v1?api-version=1` would request the path `/v1`
- * with the query `api-version=1/chat/completions` — a request that reaches the
+ * slash is stripped: the adapter concatenates `${baseURL}/v1/messages`
+ * textually, so `https://gw/x?api-version=1` would request the path `/x`
+ * with the query `api-version=1/v1/messages` — a request that reaches the
  * gateway and fails as if the deployment were misconfigured. */
 export function isValidDeepSeekBaseUrl(value: string): boolean {
   const trimmed = value.trim()
   if (!trimmed) return true // empty = use the adapter default
   // Tested on the RAW text, not on the parsed URL: what gets persisted (and
   // concatenated) is this string, and a bare `https://gw/v1?` parses to an
-  // EMPTY `search` while still turning the request into `/v1?/chat/completions`.
+  // EMPTY `search` while still turning the request into `/v1?/v1/messages`.
   if (/[?#]/.test(trimmed)) return false
   try {
     const url = new URL(trimmed)
@@ -115,9 +134,10 @@ export function isValidDeepSeekBaseUrl(value: string): boolean {
  * launch default is still settable by hand as `DEEPSEEK_ACP_MODEL` in the raw
  * env editor below.
  *
- * The list those selectors choose FROM is a different thing and lives in a
- * different file — `llm-deepseek.models` in the harness settings document,
- * edited by the sibling `DeepSeekModelListEditor` under its own section.
+ * The list those selectors choose FROM is built into deepseek-acp since 0.11
+ * (it stopped reading `llm-deepseek.models` from the harness settings
+ * document); extra routes to other providers live in its own
+ * `$DSH_HOME/deepseek-acp/settings.yaml`.
  *
  * Both fields here are plain per-agent env vars, read at spawn — a save reaches
  * sessions started after it, not the ones already running.

@@ -52,8 +52,7 @@ import type {
   Automation,
   AutomationRun,
   AutomationDraft,
-  DeepSeekCatalogModel,
-  DeepSeekModelCatalog,
+  DeepSeekRoutes,
   ForgeAutoScanReport,
   ForgeAutoStatus,
   ForgeApproveResult,
@@ -991,28 +990,25 @@ export async function listPiModelCapabilities(): Promise<PiModelCatalog> {
 }
 
 /**
- * Read the DeepSeek Harness model catalog — `llm-deepseek.models` in
- * `$DSH_HOME/settings.yaml` — for the settings panel. A missing document is
- * "inheriting the agent's built-in list", not an error; an unreadable one
- * arrives as `error` so the panel can refuse to edit it.
+ * Read the DeepSeek agent's extra model routes — the `llm-pi-ai` section of
+ * `$DSH_HOME/deepseek-acp/settings.yaml` — as YAML text. A missing document is
+ * "no routes" (or the routes sessions import from an older document, named in
+ * `importedFrom`); an unreadable one arrives as `error` so the panel can refuse
+ * to edit it.
  */
-export async function loadDeepSeekModelCatalog(): Promise<DeepSeekModelCatalog> {
-  return getTransport().call("acp_load_deepseek_model_catalog", {})
+export async function loadDeepSeekRoutes(): Promise<DeepSeekRoutes> {
+  return getTransport().call("acp_load_deepseek_routes", {})
 }
 
 /**
- * Store the DeepSeek Harness model catalog, replacing `llm-deepseek.models`
- * and leaving every other key (and every comment) in the document alone.
- *
- * `null` — and an empty list — REMOVE the key, so the agent's built-in catalog
- * is inherited again. Invalid entries are rejected before anything is written.
- * The agent reads the document at launch, so a save reaches sessions started
- * after it, not the ones already running.
+ * Store the extra model routes, replacing the `llm-pi-ai` section and keeping
+ * every other key of the document. Empty text removes the section. A route
+ * carrying a plaintext `apiKey` is refused: the key belongs in the agent's
+ * environment, named by `apiKeyEnv`. Sessions read the document at launch, so
+ * a save reaches sessions started after it.
  */
-export async function updateDeepSeekModelCatalog(
-  models: DeepSeekCatalogModel[] | null
-): Promise<void> {
-  return getTransport().call("acp_update_deepseek_model_catalog", { models })
+export async function updateDeepSeekRoutes(yaml: string): Promise<void> {
+  return getTransport().call("acp_update_deepseek_routes", { yaml })
 }
 
 /**

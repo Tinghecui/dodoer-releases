@@ -365,6 +365,8 @@ export interface TabStoreState {
   ) => void
   reorderTabs: (reorderedTabs: TabItem[]) => void
   consumeRemoteActivation: () => boolean
+  /** Cowork（#1210）：焦点是因为关掉了当前标签才挪走的（一次性标记，读了就清）。 */
+  consumeCloseActivation: () => boolean
   onPreviewTabReplaced: (callback: (tabId: string) => void) => () => void
 
   // ── Orchestration (driven by TabRuntimeEffects) ──────────────────────────────
@@ -497,6 +499,9 @@ let runtime: TabRuntime = defaultRuntime()
 let version = 0
 let applyingRemote = false
 let remoteActivationPending = false
+// Cowork（#1210）：关掉当前标签、焦点落到邻居或补出来的草稿上时置位，
+// 让路由同步别把这次焦点变化当成用户打开了会话（不然用量页会被关掉）。
+let closeActivationPending = false
 let pendingRemote: TabsChanged | null = null
 let lastSavedPayload: string | null = null
 let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -2412,6 +2417,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       if (closingDraftKey && !draftKeyHandedOver) {
         clearMessageInputDraftV2(closingDraftKey)
       }
+      if (get().activeTabId !== prevState.activeTabId) {
+        closeActivationPending = true
+      }
       recomputeTabs()
     }
 
@@ -3308,6 +3316,12 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   consumeRemoteActivation: () => {
     if (!remoteActivationPending) return false
     remoteActivationPending = false
+    return true
+  },
+
+  consumeCloseActivation: () => {
+    if (!closeActivationPending) return false
+    closeActivationPending = false
     return true
   },
 
@@ -4259,6 +4273,7 @@ export function useTabActions() {
       setTabRuntimeConversationId: s.setTabRuntimeConversationId,
       reorderTabs: s.reorderTabs,
       consumeRemoteActivation: s.consumeRemoteActivation,
+      consumeCloseActivation: s.consumeCloseActivation,
       onPreviewTabReplaced: s.onPreviewTabReplaced,
     }))
   )
@@ -4283,6 +4298,7 @@ export function resetTabStore() {
   version = 0
   applyingRemote = false
   remoteActivationPending = false
+  closeActivationPending = false
   pendingRemote = null
   lastSavedPayload = null
   serverKnownTabKeys = new Set()

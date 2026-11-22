@@ -16,6 +16,8 @@
 # 产物（截图、WebdriverIO 日志、app 日志、每一步的结果）先传成这次 run 的 artifact（留 1 天），desktop-e2e-artifacts.yml 在 run 结束后
 # 把它们搬到私有仓库 Release「ai-qa-artifacts」、删掉公开的这份。公开日志里只有编译输出和摘要表（run.sh），WebdriverIO 的输出不进公开日志；
 # ai-qa-seal.yml 照样按 denylist 核对每次 run 的日志。
+# main 上的 run（每晚、手动跑 main）搬完产物后，desktop-e2e-artifacts.yml 再按 scripts/desktop-e2e/ledger-map.json 把对得上 PR、故事的步骤
+# 记进 AI QA 的 Mac 台账（env mac-e2e；源仓库 .cowork/journal/2026-11-22-e2e-mac-ledger.md）。PR 上的 run 不记。
 # 编好的程序按源码哈希缓存（命中两三分钟一轮）；Rust 依赖的缓存只在 main 上存（PR 分支读得到 main 的缓存，不各存一份占配额）。
 name: desktop-e2e
 

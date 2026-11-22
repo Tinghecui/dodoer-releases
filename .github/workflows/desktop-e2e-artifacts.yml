@@ -6,7 +6,10 @@
 # 不 checkout、不解开、不执行触发它的 run 里的任何东西：artifact 原样（zip）转传。
 # 另一个入口 workflow_dispatch（-f run=<run id>）：GITHUB_TOKEN 派出来的 run、以后 release-train 用 workflow_call 调 desktop-e2e 的那次
 # （那次的 workflow_run 是 release-train 的名字，不触发这里）补搬用。
-# 来历：源仓库 .cowork/journal/2026-11-21-desktop-e2e-skeleton.md
+# 搬完以后，main 上的 desktop-e2e（每晚、手动跑 main；不是 desktop/pr/<n> 上跑的 PR 代码）再把结果记进 AI QA 的 Mac 台账
+# （私有仓库分支 ai-qa/mac-memory，scripts/desktop-e2e/ledger.mjs 按 ledger-map.json 对到 PR、故事）：脚本取公开 main 上的，
+# 触发它的 run 的 zip 只解出结果 JSON 当数据读。
+# 来历：源仓库 .cowork/journal/2026-11-21-desktop-e2e-skeleton.md、2026-11-22-e2e-mac-ledger.md
 name: desktop-e2e-artifacts
 run-name: "desktop-e2e-artifacts ${{ inputs.run || github.event.workflow_run.id }}"
 
@@ -45,7 +48,8 @@ jobs:
           [[ "$wf" == desktop-e2e || "$wf" == release-train ]] || { echo "::error::run $RUN_ID 是 $wf，不是 desktop-e2e"; exit 1; }
           GH_TOKEN="$PRIVATE_TOKEN" gh release view "$RELEASE" -R "$SOURCE_REPO" >/dev/null \
             || { echo "::error::私有仓库没有 Release $RELEASE（AI QA 的 sealed.sh 建的）"; exit 1; }
-          d=$(mktemp -d); n=0
+          # zip 留在 RUNNER_TEMP，下面记台账那步只从里面解出结果 JSON
+          d="$RUNNER_TEMP/e2e-zips"; mkdir -p "$d"; n=0
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
             -q '.artifacts[] | select(.expired | not) | select(.name | test("^desktop-e2e-out-[A-Za-z0-9._-]+$")) | "\(.id) \(.name)"' > "$d/list"
           while read -r id name; do
@@ -62,3 +66,39 @@ jobs:
           GH_TOKEN="$PRIVATE_TOKEN" gh api "repos/$SOURCE_REPO/releases/tags/$RELEASE" \
             -q ".assets[] | select((.name | startswith(\"desktop-e2e-\")) and .created_at < \"$old\") | .id" \
             | while read -r aid; do GH_TOKEN="$PRIVATE_TOKEN" gh api -X DELETE "repos/$SOURCE_REPO/releases/assets/$aid" >/dev/null || true; done
+
+      # 公开 main 上的脚本（workflow_run 时 github.ref 就是 main；手动跑别的分支进不了 environment ai-qa）
+      - uses: actions/checkout@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          ref: main
+          persist-credentials: false
+          sparse-checkout: scripts/desktop-e2e
+
+      - name: 记进 Mac 台账（只记 main 上的 desktop-e2e）
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE_TOKEN: ${{ secrets.AIQA_PRIVATE_TOKEN }}
+          SOURCE_REPO: Tinghecui/cowork-codeg
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run }}
+        run: |
+          set -euo pipefail
+          IFS='|' read -r wf branch event conclusion sha < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" \
+            -q '[.name, .head_branch, .event, (.conclusion // "none"), .head_sha] | join("|")')
+          if [[ "$wf" != desktop-e2e || "$branch" != main || "$event" == push ]]; then
+            echo "不是 main 上的 desktop-e2e（${wf} / ${branch} / ${event}），不记台账"; exit 0
+          fi
+          [[ "$conclusion" != cancelled ]] || { echo "run 被取消了，不记台账"; exit 0; }
+          # 被测的是哪个私有提交：同步过来的提交说明最后一行 source: cowork-codeg@<sha>（同 report-status.yml）
+          src=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" -q .commit.message | sed -nE 's/^source: cowork-codeg@([0-9a-f]{40})$/\1/p' | tail -1)
+          [[ -n "$src" ]] || { echo "提交说明里没有 source sha，不记台账"; exit 0; }
+          data="$RUNNER_TEMP/e2e-results"; mkdir -p "$data"
+          for z in "$RUNNER_TEMP"/e2e-zips/desktop-e2e-"$RUN_ID"-*.zip; do
+            [[ -f "$z" ]] || continue
+            name=$(basename "$z" .zip); mkdir -p "$data/$name"
+            unzip -q -o "$z" 'result-phase*.json' 'update/result-update.json' 'native/result-native.json' -d "$data/$name" || true
+          done
+          GH_TOKEN="$PRIVATE_TOKEN" node scripts/desktop-e2e/ledger.mjs write "$data" --repo "$SOURCE_REPO" --run "$RUN_ID" \
+            --version "desktop-e2e@${src:0:7}" --run-url "https://github.com/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" \
+            | tee -a "$GITHUB_STEP_SUMMARY"

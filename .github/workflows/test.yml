@@ -69,6 +69,10 @@ jobs:
             workflows:
               - ".github/workflows/**"
               - "scripts/ci/**"
+              - "scripts/desktop-e2e/ledger*"
+              - "scripts/desktop-e2e/update/run.mjs"
+              - "scripts/desktop-e2e/native/run.mjs"
+              - "scripts/desktop-e2e/specs/**"
             frontend: &frontend
               - "src/**"
               - "browser-agent/**"
@@ -123,8 +127,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      # desktop-e2e 记 Mac 台账的脚本（scripts/desktop-e2e/ledger.mjs）：它只在 main 上的 run 之后跑；也核对 ledger-map.json 写的步骤名还在 spec 里
       - name: CI 脚本的测试
-        run: node --test scripts/ci/*.test.mjs
+        run: node --test scripts/ci/*.test.mjs scripts/desktop-e2e/*.test.mjs
 
   frontend-lint:
     name: Frontend lint

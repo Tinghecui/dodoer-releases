@@ -1,0 +1,185 @@
+{
+  "$comment": [
+    "desktop-e2e 的哪几步验的是哪个 PR / 哪条故事（ledger.mjs 按它把每晚、手动跑 main 的结果记进 Mac 台账 ai-qa/mac-memory，env mac-e2e）。",
+    "checks：suite = update（update/run.mjs）/ native（native/run.mjs）/ dom（specs/）；phase 是那一段（update 的 A–E，dom 的 0–3）；",
+    "step 是步骤名里的一段原文（不带 ${...} 变量的那部分），ledger.test.mjs 核对它在那个文件里真有；machine = macos-arm64 / macos-x64 / linux，不写 = 所有 macOS。",
+    "human：这些步骤测不到、还要人亲手验的（照抄 Mac 测试员台账里的 human，测到了就删掉那条）。有 human 的全过也只记 partial，没有的记 pass。",
+    "改了步骤名记得改这里；加了新的覆盖 PR 的步骤，在这里加一条。来历：源仓库 .cowork/journal/2026-11-22-e2e-mac-ledger.md"
+  ],
+  "targets": {
+    "PR269": {
+      "note": "抢先版上又出一版（只有清单），点刷新图标，按钮上的版本号跟着变成新的",
+      "checks": [
+        {
+          "suite": "update",
+          "phase": "A",
+          "step": "抢先版上又出了一版（只有清单的 1.999.2）：点刷新图标"
+        }
+      ],
+      "human": []
+    },
+    "PR480": {
+      "note": "下好的包存在 update/staged/（0700 / 0600），下好以后又出一版，状态栏弹层和设置页都只写下好的那一版",
+      "checks": [
+        {
+          "suite": "update",
+          "phase": "A",
+          "step": "下载完状态栏是「Restart to update」，包存在 update/staged/"
+        },
+        {
+          "suite": "update",
+          "phase": "A",
+          "step": "下好以后又出了更新的一版：状态栏弹层和设置页都只写"
+        }
+      ],
+      "human": []
+    },
+    "PR396": {
+      "note": "状态栏弹层点「Restart to update」：退出、换包、重开进新版、只有一个进程，日志 confirmed running；没有真的智能体回合",
+      "checks": [
+        {
+          "suite": "update",
+          "phase": "A",
+          "step": "状态栏弹层点「Restart to update」：退出、换包、重开进 N+1"
+        },
+        { "suite": "update", "phase": "A", "step": "新版确认跑起来" }
+      ],
+      "human": [
+        "在登录了 Claude 的 Mac 上，等状态栏出现「重启以更新」后先别点，新开一个对话发一句话：智能体能正常回复，算对"
+      ]
+    },
+    "PR648": {
+      "note": "稳定版已是最新 → 切抢先版马上重查、出现升级按钮和「· Early」、主窗口跟着提示 → 切回稳定版提示马上消失；两个设置窗口同步没测",
+      "checks": [
+        {
+          "suite": "update",
+          "phase": "A",
+          "step": "稳定版（默认）点「Check for updates」：已是最新"
+        },
+        { "suite": "update", "phase": "A", "step": "切到抢先版：马上重查" },
+        { "suite": "update", "phase": "A", "step": "主窗口状态栏跟着出现" },
+        {
+          "suite": "update",
+          "phase": "A",
+          "step": "切回稳定版：主窗口的升级提示马上消失"
+        }
+      ],
+      "human": [
+        "开两个设置窗口，在一个里改通道，切到另一个窗口：选中项应跟着变"
+      ]
+    },
+    "PR643": {
+      "note": "Intel 上装着 N+1、稳定版点「Roll back」：确认框写 N，下的是 N 自己的 x64 包（不报找不到包），重启回到 N",
+      "checks": [
+        {
+          "suite": "update",
+          "phase": "B",
+          "machine": "macos-x64",
+          "step": "稳定版、自动更新 Off，点「Roll back」"
+        },
+        {
+          "suite": "update",
+          "phase": "B",
+          "machine": "macos-x64",
+          "step": "确认回退：下的是"
+        },
+        {
+          "suite": "update",
+          "phase": "B",
+          "machine": "macos-x64",
+          "step": "重启：回到 N"
+        }
+      ],
+      "human": []
+    },
+    "PR349": {
+      "note": "Intel 上的客户端：查到新版、下 x64 包、重启进新版，回退也行；走的是假更新源，正式 latest-x64.json 和每天的 Intel 包没走到",
+      "checks": [
+        {
+          "suite": "update",
+          "phase": "A",
+          "machine": "macos-x64",
+          "step": "状态栏弹层点「Restart to update」：退出、换包、重开进 N+1"
+        },
+        {
+          "suite": "update",
+          "phase": "A",
+          "machine": "macos-x64",
+          "step": "新版确认跑起来"
+        },
+        {
+          "suite": "update",
+          "phase": "B",
+          "machine": "macos-x64",
+          "step": "确认回退：下的是"
+        }
+      ],
+      "human": [
+        "在一台 Intel Mac 上装着上一版 dodoer，等北京时间早上 5 点以后新的 Intel 包发出来，在「设置 → 系统 → 软件更新」里点「检查更新」：能看到新版本，装完重启后版本号变了、app 能正常打开，才算对"
+      ]
+    },
+    "PR642": {
+      "note": "下好以后点重启，重启意图（resume:false）一写下就 kill -9，再打开包没坏、日志说重启意图不算数、没有 conversation resumed；当时没有在跑的对话",
+      "checks": [
+        {
+          "suite": "update",
+          "phase": "C",
+          "step": "点重启，重启意图一写下（resume:false）就在安装中途 kill -9 主进程"
+        },
+        {
+          "suite": "update",
+          "phase": "C",
+          "step": "再打开：app 正常起来，包没坏"
+        }
+      ],
+      "human": [
+        "本机对话在跑长任务时点「重启以更新」，在安装中途（或管理员密码框出现时）用活动监视器强制结束 dodoer 再打开：对话只标被打断，不应自动发「服务刚刚升级重启」"
+      ]
+    },
+    "PR592": {
+      "note": "自动安装档：开着一个跑 sleep 的终端时 150 秒不重启（blocked.terminal 变大），关掉以后空闲两次检查自己在后台重启进新版；长任务是终端模拟的，不是智能体回合",
+      "checks": [
+        {
+          "suite": "update",
+          "phase": "D",
+          "step": "开着终端时等 150 秒：没有自动重启"
+        },
+        {
+          "suite": "update",
+          "phase": "D",
+          "step": "关掉终端：空闲两次检查以后自己重启进 N+1"
+        }
+      ],
+      "human": [
+        "本机工作区让一个对话跑几分钟的长任务，同时状态栏是「重启以更新」（自动安装档），离开 5 分钟以上：不应自动重启；update/journal.json 里 blocked.local_turn 应变大",
+        "让服务器上的智能体用这台 Mac 的浏览器做一件超过 5 分钟的事，期间离开电脑：不应自动重启"
+      ]
+    },
+    "N5": {
+      "note": "发现新版 → 下载 → 重启以更新 → 进新版；模拟的旧纯客户端版（去掉 codeg-server）从 latest-client.json 更新成完整版、daemon 是子进程；钥匙串框没测",
+      "checks": [
+        {
+          "suite": "update",
+          "phase": "A",
+          "step": "状态栏弹层点「Restart to update」：退出、换包、重开进 N+1"
+        },
+        { "suite": "update", "phase": "A", "step": "新版确认跑起来" },
+        { "suite": "update", "phase": "E", "step": "装模拟的旧纯客户端版" },
+        {
+          "suite": "update",
+          "phase": "E",
+          "step": "抢先版查到 N+1（从 latest-client.json）"
+        },
+        {
+          "suite": "update",
+          "phase": "E",
+          "step": "换成了完整版：N+1、包里有 codeg-server"
+        }
+      ],
+      "human": [
+        "在装着纯客户端版 1.4.0 并已连过 Cowork 工作区的真 Mac 上，更新到最新版后，钥匙串框里输入本机登录密码点「允许」：远端窗口应直接进到自己的工作区，不用重新登录",
+        "再退出重开一次 app：不应再弹钥匙串框"
+      ]
+    }
+  }
+}

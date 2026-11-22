@@ -341,8 +341,13 @@ async fn download(
 }
 
 /// The updater endpoints in the app's configuration
-/// (`plugins.updater.endpoints`).
+/// (`plugins.updater.endpoints`). An `e2e` test build can be pointed at a
+/// fake feed instead (`crate::e2e::updater_endpoints`).
 fn config_endpoints(app: &tauri::AppHandle) -> Vec<String> {
+    #[cfg(feature = "e2e")]
+    if let Some(endpoints) = crate::e2e::updater_endpoints() {
+        return endpoints;
+    }
     app.config()
         .plugins
         .0
@@ -1018,6 +1023,12 @@ fn updater(
         if !endpoints.is_empty() {
             builder = builder.endpoints(endpoints)?;
         }
+    }
+    // An `e2e` test build checks the fake feed's packages against the run's
+    // test key (`crate::e2e::updater_pubkey`).
+    #[cfg(feature = "e2e")]
+    if let Some(pubkey) = crate::e2e::updater_pubkey() {
+        builder = builder.pubkey(pubkey);
     }
     builder.build()
 }

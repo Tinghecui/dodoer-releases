@@ -3,6 +3,8 @@
 # - Rust：cargo feature `e2e`（src-tauri/src/e2e.rs）注册 tauri-plugin-wdio-webdriver（127.0.0.1 上不用鉴权的 WebDriver 端口）
 #   和 tauri-plugin-wdio（在页面里执行任意脚本）。release 编译开它会 compile_error，这里再从产物上核对一遍
 # - 前端：@wdio/tauri-plugin（src/lib/e2e/vendor/）只在 NEXT_PUBLIC_CODEG_E2E=1 编的前端里，正常编的前端连 chunk 都不该有
+# - 更新流程测试用的开关（同一个 feature 才编进去，src-tauri/src/e2e.rs）：更新地址 / 测试公钥的环境变量 CODEG_E2E_UPDATER_*、
+#   e2e 设置文件 ~/.codeg-e2e.env、插件名 codeg-e2e。正式包里有它们，就能被人指到别的更新源、换成别的签名公钥
 #
 #   用法：scripts/check-no-e2e-bits.sh <文件或目录>...   （比如 dodoer.app、out/、target/release/codeg）
 #   找到就列出命中的文件、返回 1；都没有返回 0。目录递归找，二进制按字节找（grep -a）。
@@ -12,8 +14,8 @@ set -euo pipefail
 
 (($# > 0)) || { echo "用法：$0 <文件或目录>..." >&2; exit 2; }
 
-# 两个插件特有的字符串：Rust 的 crate 名 / 插件名 / 日志，前端 bundle 的全局变量和命令名
-pattern='tauri[-_]plugin[-_]wdio|plugin:wdio\||wdio-webdriver|WDIO WebDriver plugin|WDIO Tauri Plugin|wdioTauri|__wdio_mocks__'
+# 两个插件特有的字符串：Rust 的 crate 名 / 插件名 / 日志，前端 bundle 的全局变量和命令名；再加上更新流程测试的那几个开关
+pattern='tauri[-_]plugin[-_]wdio|plugin:wdio\||wdio-webdriver|WDIO WebDriver plugin|WDIO Tauri Plugin|wdioTauri|__wdio_mocks__|CODEG_E2E_|codeg-e2e'
 
 hits=0
 for target in "$@"; do
@@ -24,7 +26,7 @@ for target in "$@"; do
   done < <(grep -rlaE "$pattern" "$target" || true)
 done
 if ((hits > 0)); then
-  echo "::error::${hits} 个文件带着 WebdriverIO 插件：正式包不能用 \`--features e2e\` 编，前端不能带 NEXT_PUBLIC_CODEG_E2E=1" >&2
+  echo "::error::${hits} 个文件带着 e2e 测试版的东西（WebdriverIO 插件 / 更新流程测试的开关）：正式包不能用 \`--features e2e\` 编，前端不能带 NEXT_PUBLIC_CODEG_E2E=1" >&2
   exit 1
 fi
 echo "没有 e2e 测试版的东西：$*"

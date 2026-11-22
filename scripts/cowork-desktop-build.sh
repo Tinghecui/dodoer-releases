@@ -67,6 +67,8 @@ smoke_app() {
   # 用 node 解析（不依赖 jq）
   report=$("$app/Contents/MacOS/$exe" --desktop-edition)
   echo "$report"
+  # 发版安全：不是 e2e 测试版（e2e 为 false），更新公钥就是 tauri.cowork-desktop.conf.json 里我们自己的那把
+  # （e2e 测试版的更新流程测试换成 CI 里现做的测试公钥，正式包不能带别的公钥）
   REPORT="$report" EDITION="$edition" ENDPOINT="$expect_endpoint" node -e '
     const r = JSON.parse(process.env.REPORT);
     const fail = (m) => { console.error("::error::" + m); process.exit(1); };
@@ -75,6 +77,9 @@ smoke_app() {
     if (!Array.isArray(ep) || ep.length !== 1 || ep[0] !== process.env.ENDPOINT)
       fail(`updater endpoints 是 ${JSON.stringify(ep)}，要的是 ${process.env.ENDPOINT}`);
     if (r.version !== process.env.VERSION) fail(`包里的版本 ${r.version} 不是 ${process.env.VERSION}`);
+    if (r.e2e !== false) fail(`包是 e2e 测试版（e2e=${JSON.stringify(r.e2e)}）`);
+    const key = JSON.parse(require("fs").readFileSync("src-tauri/tauri.cowork-desktop.conf.json", "utf8")).plugins.updater.pubkey;
+    if (r.updaterPubkey !== key) fail(`更新公钥 ${String(r.updaterPubkey).slice(0, 24)}… 不是 tauri.cowork-desktop.conf.json 里的那把`);
   '
   # daemon 是 app 里自带的 codeg-server 子进程（src-tauri/src/local_daemon.rs）。用打好的 .app 自己跑一遍：
   # 起子进程（临时数据目录）、/api/health 带 token 200、错 token 401、kill -9 之后自动重启、停掉后进程不在。

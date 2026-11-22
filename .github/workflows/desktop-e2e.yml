@@ -2,7 +2,9 @@
 # 在 GitHub 托管的 macos-15（arm64）和 ubuntu-22.04 上编桌面版的「e2e 测试版」（debug、cargo feature `e2e`、版本号 1.999.0，
 # 前端带 @wdio/tauri-plugin），用 WebdriverIO + @wdio/tauri-service 驱动它：macOS 走 app 里内嵌的 WebDriver 服务器，
 # Linux 走官方 tauri-driver。两边跑同一套 spec（scripts/desktop-e2e/specs/，scripts/desktop-e2e/run.sh 按段开几次 app = 退出重开）。
-# 来历：源仓库 .cowork/journal/2026-11-21-spike-macos-webdriver.md、2026-11-21-e2e-wdio-plugin.md、2026-11-21-desktop-e2e-skeleton.md。
+# macOS 上接着跑更新流程（scripts/desktop-e2e/update/：测试密钥签的 N / N+1 两个包 + 运行机上的假更新源）。
+# 来历：源仓库 .cowork/journal/2026-11-21-spike-macos-webdriver.md、2026-11-21-e2e-wdio-plugin.md、2026-11-21-desktop-e2e-skeleton.md、
+# 2026-11-22-e2e-update-feed.md。
 #
 # 触发：
 # - 私有 PR 打了 desktop-e2e 标签，或改到了 scripts/desktop-e2e/paths.txt 列的桌面文件：public-sync 推到 desktop/pr/<n>，这里跑，
@@ -66,6 +68,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev webkit2gtk-driver xvfb dbus-x11
 
       # restore / save 分开：WebdriverIO 那步红了也要把编好的程序存下来，重跑才不用重编。
+      # macOS 上连打好的 dodoer.app 一起存（更新流程测试拿它做 N / N+1 两个测试包，v3 起）。
       # out/（前端）也要存：只存 target/debug/web 时，命中缓存的那次 app 认不出 target/debug/web/index.html（多半 debug 版那里是指向
       # out/ 的链接），退回到不存在的 out/，网页服务 GET / 回 404（#1215 重跑那两次，app 日志「Fallback static dir」）。sidecar 的 codeg-server 也读 out/
       - name: 编好的程序（缓存）
@@ -79,8 +82,9 @@ jobs:
             src-tauri/target/debug/codeg-cli
             src-tauri/target/debug/codeg-computer-helper
             src-tauri/target/debug/web
+            src-tauri/target/debug/bundle/macos/dodoer.app
             out
-          key: desktop-e2e-bin-v2-${{ runner.os }}-${{ hashFiles('src-tauri/**', 'src/**', 'public/**', 'patches/**', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'rust-toolchain.toml', '*.config.*') }}
+          key: desktop-e2e-bin-v3-${{ runner.os }}-${{ hashFiles('src-tauri/**', 'src/**', 'public/**', 'patches/**', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'rust-toolchain.toml', '*.config.*') }}
 
       - name: Rust 版本（读 rust-toolchain.toml）
         id: toolchain
@@ -146,19 +150,41 @@ jobs:
           for b in codeg-mcp codeg-computer-helper codeg-cli codeg-server; do
             cp "target/debug/$b" "binaries/$b-$triple"
           done
+          # macOS 打 .app 时 tauri.macos.conf.json 要 binaries/codeg-computer-helper.app（放进 Contents/Helpers/）：
+          # 照 src-tauri/scripts/prepare-sidecars.mjs 的 stageHelperApp 包一层（那个脚本只编 release 版）
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            helper=binaries/codeg-computer-helper.app
+            rm -rf "$helper" && mkdir -p "$helper/Contents/MacOS" "$helper/Contents/Resources"
+            ver=$(node -p 'require("./tauri.conf.json").version')
+            sed "s/{{version}}/$ver/g" macos/codeg-computer-helper.plist > "$helper/Contents/Info.plist"
+            cp target/debug/codeg-computer-helper "$helper/Contents/MacOS/codeg-computer-helper"
+            cp icons/icon.icns "$helper/Contents/Resources/icon.icns"
+            codesign --force --sign - "$helper"
+          fi
           echo "- sidecar：$(( $(date +%s) - t0 )) 秒" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: 桌面主程序（tauri build --debug --no-bundle --features e2e）
+      - name: 桌面主程序（tauri build --debug --features e2e；macOS 打成 .app，Linux 不打包）
         if: steps.bin.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           t0=$(date +%s)
+          # macOS 打成 dodoer.app（更新流程测试要一个真的 .app：更新换的是整个包，重开走 LaunchServices）。ad-hoc 签名
+          # （jenny 配置里的签名证书运行机上没有），不出 tauri 自己的更新包（要真的签名私钥；测试包由 update/prepare.sh 用测试密钥做）。
+          # 打包不改程序本身，target/debug/codeg 照旧给 DOM 那套用。这几个 --config 要放在 jenny 配置后面，不然被它的签名证书盖掉
+          bundle=(--no-bundle)
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            bundle=(--bundles app --config '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-"}}}')
+          fi
           # 版本号给一个比哪个正式版都大的（同 desktop-linux.yml）；withGlobalTauri 只在测试版开（@wdio/tauri-plugin 要 window.__TAURI__）
-          pnpm tauri build --debug --no-bundle --features e2e \
+          pnpm tauri build --debug --features e2e \
             --config src-tauri/tauri.jenny.conf.json --config src-tauri/tauri.cowork-desktop.conf.json \
             --config '{"version":"1.999.0","build":{"beforeBuildCommand":""}}' \
-            --config '{"app":{"withGlobalTauri":true}}'
+            --config '{"app":{"withGlobalTauri":true}}' "${bundle[@]}"
           test -x src-tauri/target/debug/codeg
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            test -x src-tauri/target/debug/bundle/macos/dodoer.app/Contents/MacOS/codeg-server
+            du -sh src-tauri/target/debug/bundle/macos/dodoer.app
+          fi
           echo "- 桌面主程序：$(( $(date +%s) - t0 )) 秒" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 存编好的程序
@@ -172,6 +198,7 @@ jobs:
             src-tauri/target/debug/codeg-cli
             src-tauri/target/debug/codeg-computer-helper
             src-tauri/target/debug/web
+            src-tauri/target/debug/bundle/macos/dodoer.app
             out
           key: ${{ steps.bin.outputs.cache-primary-key }}
 
@@ -189,6 +216,11 @@ jobs:
             [[ "$rc" == 1 ]] || { echo "::error::check-no-e2e-bits.sh 没认出 e2e 测试版的 $t（退出码 ${rc}）"; exit 1; }
             echo "check-no-e2e-bits.sh 认出了 e2e 测试版的 $t"
           done
+          # 更新流程测试的开关（e2e.rs 的 CODEG_E2E_UPDATER_*）也要认得出：改了名字这条检查就失效了
+          grep -aq 'CODEG_E2E_UPDATER_ENDPOINTS' src-tauri/target/debug/codeg \
+            || { echo "::error::e2e 测试版的程序里没有 CODEG_E2E_UPDATER_ENDPOINTS，check-no-e2e-bits.sh 的 pattern 要跟着改"; exit 1; }
+          src-tauri/target/debug/codeg --desktop-edition | grep -q '"e2e":true' \
+            || { echo "::error::e2e 测试版的 --desktop-edition 没说 e2e:true（cowork-desktop-build.sh 靠它拦正式包）"; exit 1; }
 
       - name: WebdriverIO 依赖（npm，不进 pnpm 项目）
         working-directory: scripts/desktop-e2e
@@ -205,6 +237,31 @@ jobs:
           bash scripts/desktop-e2e/run.sh || rc=$?
           # app 自己的日志在数据目录的 logs/ 下
           cp -R "$E2E_DATA_DIR/logs" e2e-out/app-logs 2>/dev/null || true
+          exit "$rc"
+
+      # 更新流程（macOS）：update/prepare.sh 用这次现做的测试密钥做 N = 1.999.0、N+1 = 1.999.1 两个测试包，update/run.mjs 起假更新源、
+      # 装 N 到 ~/Applications，把发现新版 → 下载 → 重启以更新 → 回退 → 切渠道 → 强杀 → 空闲重启 → 旧纯客户端版升级走一遍。
+      # DOM 那套红了也跑。详细输出进 e2e-out/update/（私有 Release），公开日志和 step summary 只有摘要表。
+      # 来历：源仓库 .cowork/journal/2026-11-22-e2e-update-feed.md
+      - name: 更新流程：测试密钥和两个测试包
+        id: update-prep
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: |
+          set -euo pipefail
+          bash scripts/desktop-e2e/update/prepare.sh src-tauri/target/debug/bundle/macos/dodoer.app "$RUNNER_TEMP/e2e-update" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: 更新流程：假更新源 + 两个版本
+        if: ${{ !cancelled() && runner.os == 'macOS' && steps.update-prep.outcome == 'success' }}
+        env:
+          E2E_OUT: ${{ github.workspace }}/e2e-out
+          E2E_UPDATE_WORK: ${{ runner.temp }}/e2e-update
+        run: |
+          set -uo pipefail
+          mkdir -p e2e-out/update
+          rc=0
+          node scripts/desktop-e2e/update/run.mjs > e2e-out/update/run.log 2>&1 || rc=$?
+          cat e2e-out/update/summary.md 2>/dev/null || echo "（没有摘要：run.mjs 没跑完，看私有 Release 里的 update/run.log）"
           exit "$rc"
 
       # 留 1 天：desktop-e2e-artifacts.yml 在 run 结束后搬到私有 Release 并删掉这份（搬没成的 1 天后自己过期）

@@ -743,7 +743,14 @@ mod tauri_app {
         // would re-resolve against their own working directory) and every
         // reader of the variable sees the value the in-process resolver
         // returns.
+        // `e2e` test builds: the test settings from the e2e env file, while
+        // still single-threaded, and the version from the bundle's
+        // Info.plist (see `e2e.rs`).
+        #[cfg(feature = "e2e")]
+        crate::e2e::load_env_file();
         let context = tauri::generate_context!();
+        #[cfg(feature = "e2e")]
+        let context = crate::e2e::with_bundle_version(context);
         // Cowork fork: `codeg --desktop-edition` prints which edition this is
         // (there is one, the full one) and where it updates from, then exits
         // — the desktop build checks its bundle with it.

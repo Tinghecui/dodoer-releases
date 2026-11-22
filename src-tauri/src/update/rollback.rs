@@ -26,12 +26,22 @@ use crate::app_error::AppCommandError;
 /// The file in the source that registers the migrations.
 const MIGRATION_LIST_PATH: &str = "src-tauri/src/db/migration/mod.rs";
 
+/// GitHub's web and API addresses, where a [`ReleaseSource`] normally is.
+const GITHUB_WEB: &str = "https://github.com";
+const GITHUB_API: &str = "https://api.github.com";
+
 /// The GitHub repository the updater checks, and the manifest's file name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseSource {
     /// `<owner>/<repo>`.
     pub repo: String,
     pub manifest: String,
+    /// Where the releases' files are (`https://github.com`), and the API
+    /// that lists them (`https://api.github.com`). Only an `e2e` test build
+    /// has others: a fake update feed on this machine
+    /// ([`ReleaseSource::parse_with`]).
+    pub web: String,
+    pub api: String,
 }
 
 impl ReleaseSource {
@@ -40,14 +50,29 @@ impl ReleaseSource {
     /// None when there is none (a build without such an update source has no
     /// releases to go back to).
     pub fn from_endpoints(endpoints: &[String]) -> Option<Self> {
-        endpoints.iter().find_map(|endpoint| Self::parse(endpoint))
+        let loopback = cfg!(feature = "e2e");
+        endpoints
+            .iter()
+            .find_map(|endpoint| Self::parse_with(endpoint, loopback))
     }
 
-    fn parse(endpoint: &str) -> Option<Self> {
+    /// `loopback`: also take
+    /// `http://127.0.0.1:<port>/<owner>/<repo>/releases/latest/download/<file>`,
+    /// a fake update feed laid out like GitHub, with the API under `/api`.
+    /// Only `e2e` test builds do (the updater endpoint is overridden there,
+    /// `crate::e2e::updater_endpoints`).
+    fn parse_with(endpoint: &str, loopback: bool) -> Option<Self> {
         let url = Url::parse(endpoint).ok()?;
-        if url.scheme() != "https" || url.host_str() != Some("github.com") {
-            return None;
-        }
+        let (web, api) = match (url.scheme(), url.host_str()) {
+            ("https", Some("github.com")) if url.port().is_none() => {
+                (GITHUB_WEB.to_string(), GITHUB_API.to_string())
+            }
+            ("http", Some("127.0.0.1")) if loopback => {
+                let origin = url.origin().ascii_serialization();
+                (origin.clone(), format!("{origin}/api"))
+            }
+            _ => return None,
+        };
         let segments: Vec<&str> = url.path_segments()?.collect();
         match segments.as_slice() {
             [owner, repo, "releases", "latest", "download", file]
@@ -56,6 +81,8 @@ impl ReleaseSource {
                 Some(Self {
                     repo: format!("{owner}/{repo}"),
                     manifest: (*file).to_string(),
+                    web,
+                    api,
                 })
             }
             _ => None,
@@ -65,17 +92,14 @@ impl ReleaseSource {
     /// The repository's releases, newest first. 100 reach back far enough:
     /// the release train keeps 30 of each kind.
     fn releases_url(&self) -> String {
-        format!(
-            "https://api.github.com/repos/{}/releases?per_page=100",
-            self.repo
-        )
+        format!("{}/repos/{}/releases?per_page=100", self.api, self.repo)
     }
 
     /// The manifest the release `tag` was published with.
     pub fn manifest_url(&self, tag: &str) -> String {
         format!(
-            "https://github.com/{}/releases/download/{tag}/{}",
-            self.repo, self.manifest
+            "{}/{}/releases/download/{tag}/{}",
+            self.web, self.repo, self.manifest
         )
     }
 
@@ -83,7 +107,8 @@ impl ReleaseSource {
     /// versions promoted to it, newest first.
     pub fn stable_history_url(&self) -> String {
         format!(
-            "https://github.com/{}/releases/download/{}/{}",
+            "{}/{}/releases/download/{}/{}",
+            self.web,
             self.repo,
             channel::STABLE_TAG,
             channel::HISTORY_FILE
@@ -93,8 +118,8 @@ impl ReleaseSource {
     /// The migration list in the source at `tag`.
     fn migration_list_url(&self, tag: &str) -> String {
         format!(
-            "https://api.github.com/repos/{}/contents/{MIGRATION_LIST_PATH}?ref={tag}",
-            self.repo
+            "{}/repos/{}/contents/{MIGRATION_LIST_PATH}?ref={tag}",
+            self.api, self.repo
         )
     }
 }
@@ -431,7 +456,18 @@ mod tests {
             ReleaseSource {
                 repo: "Tinghecui/dodoer-releases".to_string(),
                 manifest: "latest.json".to_string(),
+                web: "https://github.com".to_string(),
+                api: "https://api.github.com".to_string(),
             }
+        );
+        assert_eq!(
+            source.releases_url(),
+            "https://api.github.com/repos/Tinghecui/dodoer-releases/releases?per_page=100"
+        );
+        assert_eq!(
+            source.migration_list_url("v1.6.0"),
+            "https://api.github.com/repos/Tinghecui/dodoer-releases/contents/\
+             src-tauri/src/db/migration/mod.rs?ref=v1.6.0"
         );
         assert_eq!(
             source.manifest_url("v1.6.0"),
@@ -458,6 +494,35 @@ mod tests {
             );
         }
         assert_eq!(ReleaseSource::from_endpoints(&[]), None);
+    }
+
+    #[test]
+    fn a_loopback_feed_is_a_source_only_when_allowed() {
+        let feed = "http://127.0.0.1:47001/e2e/fake/releases/latest/download/latest-client.json";
+        assert_eq!(ReleaseSource::parse_with(feed, false), None);
+        let source = ReleaseSource::parse_with(feed, true).unwrap();
+        assert_eq!(source.repo, "e2e/fake");
+        assert_eq!(source.manifest, "latest-client.json");
+        assert_eq!(
+            source.manifest_url("v1.999.0"),
+            "http://127.0.0.1:47001/e2e/fake/releases/download/v1.999.0/latest-client.json"
+        );
+        assert_eq!(
+            source.stable_history_url(),
+            "http://127.0.0.1:47001/e2e/fake/releases/download/stable/history.json"
+        );
+        assert_eq!(
+            source.releases_url(),
+            "http://127.0.0.1:47001/api/repos/e2e/fake/releases?per_page=100"
+        );
+        // GitHub stays GitHub; other hosts and https on the loopback are not taken
+        for other in [
+            "http://localhost:47001/e2e/fake/releases/latest/download/latest.json",
+            "https://127.0.0.1:47001/e2e/fake/releases/latest/download/latest.json",
+            "https://github.com:8443/a/b/releases/latest/download/latest.json",
+        ] {
+            assert_eq!(ReleaseSource::parse_with(other, true), None, "{other}");
+        }
     }
 
     #[test]

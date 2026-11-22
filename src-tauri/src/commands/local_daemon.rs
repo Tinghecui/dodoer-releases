@@ -40,6 +40,15 @@ pub fn edition_report(config: &tauri::Config) -> serde_json::Value {
         .and_then(|updater| updater.get("endpoints"))
         .cloned()
         .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    // The release check compares it with the real key, and checks that this
+    // is no `e2e` test build (`scripts/cowork-desktop-build.sh`).
+    let pubkey = config
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|updater| updater.get("pubkey"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     serde_json::json!({
         "edition": "full",
         "clientOnly": false,
@@ -47,6 +56,8 @@ pub fn edition_report(config: &tauri::Config) -> serde_json::Value {
         "identifier": config.identifier,
         "version": config.version,
         "updaterEndpoints": endpoints,
+        "updaterPubkey": pubkey,
+        "e2e": cfg!(feature = "e2e"),
     })
 }
 

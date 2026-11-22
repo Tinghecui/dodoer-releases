@@ -68,7 +68,11 @@ vi.mock("@/lib/updater", () => ({
 }))
 vi.mock("sonner", () => ({ toast: mocks.toast }))
 
-import { WEB_VERSION_TOAST_ID, WebVersionNotice } from "./web-version-notice"
+import {
+  WEB_VERSION_TOAST_ID,
+  WebVersionNotice,
+  resetWebVersionNoticeForTests,
+} from "./web-version-notice"
 import enMessages from "@/i18n/messages/en.json"
 
 function renderNotice() {
@@ -94,6 +98,7 @@ beforeEach(() => {
   mocks.ownRestart.running = false
   mocks.ownRestart.listeners.clear()
   mocks.events.clear()
+  resetWebVersionNoticeForTests()
   vi.stubEnv("NODE_ENV", "production")
   vi.stubEnv("CODEG_APP_VERSION", "0.37.0")
   vi.stubEnv("CODEG_RELEASE_VERSION", "cowork-codeg-v0.6.39")
@@ -275,5 +280,160 @@ describe("WebVersionNotice", () => {
       emitAssetsChanged("cowork-codeg-v0.6.40")
       expect(mocks.toast).not.toHaveBeenCalled()
     })
+  })
+})
+
+describe("WebVersionNotice when the page's files are gone", () => {
+  const fetchMock = vi.fn<typeof fetch>()
+
+  beforeEach(() => {
+    resetWebVersionNoticeForTests()
+    fetchMock.mockReset().mockResolvedValue(new Response(null, { status: 404 }))
+    vi.stubGlobal("fetch", fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    document.head.innerHTML = ""
+  })
+
+  /** A script tag whose file did not load, as the bundler's loader sees it. */
+  function failScript(src: string) {
+    const script = document.createElement("script")
+    script.src = src
+    document.head.appendChild(script)
+    script.dispatchEvent(new Event("error"))
+  }
+
+  /** A chunk import nobody caught, as Turbopack and webpack reject it. */
+  function rejectChunk(message: string) {
+    const reason = Object.assign(new Error(message), { name: "ChunkLoadError" })
+    const event = Object.assign(new Event("unhandledrejection"), { reason })
+    window.dispatchEvent(event)
+  }
+
+  const filesToast = () =>
+    mocks.toast.mock.calls.filter(
+      ([title]) => title === "This page's files have been updated"
+    )
+
+  it("offers a reload once when a build file failed to load and is gone", async () => {
+    renderNotice()
+    await settle()
+
+    act(() => failScript("/_next/static/chunks/gone.js"))
+    await settle()
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/_next/static/chunks/gone.js",
+      expect.objectContaining({ method: "HEAD", cache: "no-store" })
+    )
+    expect(filesToast()).toHaveLength(1)
+    expect(filesToast()[0][1]).toMatchObject({
+      id: WEB_VERSION_TOAST_ID,
+      description:
+        "The server was updated and no longer has some of this page's files. Reload the page to continue.",
+      duration: Infinity,
+      action: { label: "Reload" },
+    })
+
+    act(() => failScript("/_next/static/chunks/also-gone.js"))
+    act(() => rejectChunk("Failed to load chunk /_next/static/chunks/x.js"))
+    await settle()
+    expect(filesToast()).toHaveLength(1)
+  })
+
+  it.each([
+    [
+      "Turbopack",
+      "Failed to load chunk /_next/static/chunks/0a1b.js from module 123",
+    ],
+    [
+      "webpack",
+      "Loading chunk 12 failed.\n(error: http://localhost:3000/_next/static/chunks/0a1b.js)",
+    ],
+  ])("hears a chunk load %s rejected", async (_, message) => {
+    renderNotice()
+    await settle()
+    act(() => rejectChunk(message))
+    await settle()
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/_next/static/chunks/0a1b.js",
+      expect.objectContaining({ method: "HEAD" })
+    )
+    expect(filesToast()).toHaveLength(1)
+  })
+
+  it.each([
+    ["the server is away", () => fetchMock.mockRejectedValue(new TypeError())],
+    [
+      "the file is still there",
+      () => fetchMock.mockResolvedValue(new Response(null, { status: 200 })),
+    ],
+  ])("stays quiet when %s", async (_, arrange) => {
+    arrange()
+    renderNotice()
+    await settle()
+    act(() => failScript("/_next/static/chunks/gone.js"))
+    await settle()
+    expect(filesToast()).toHaveLength(0)
+  })
+
+  it("ignores files that are not this build's", async () => {
+    renderNotice()
+    await settle()
+    act(() => failScript("https://cdn.example.com/_next/static/x.js"))
+    act(() => failScript("/vs/loader.js"))
+    act(() => rejectChunk("Loading chunk 12 failed."))
+    act(() => {
+      window.dispatchEvent(
+        Object.assign(new Event("unhandledrejection"), {
+          reason: new Error("Failed to load chunk /_next/static/x.js"),
+        })
+      )
+    })
+    await settle()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(filesToast()).toHaveLength(0)
+  })
+
+  it("does not listen in the desktop app or its remote windows", async () => {
+    mocks.usesWebTransport.mockReturnValue(false)
+    renderNotice()
+    await settle()
+    act(() => failScript("/_next/static/chunks/gone.js"))
+    await settle()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(filesToast()).toHaveLength(0)
+  })
+
+  it("keeps the notice up when the release check finds the same release", async () => {
+    renderNotice()
+    await settle()
+    act(() => failScript("/_next/static/chunks/gone.js"))
+    await settle()
+    expect(filesToast()).toHaveLength(1)
+    mocks.toast.dismiss.mockClear()
+
+    act(() => mocks.setState("reconnecting"))
+    act(() => mocks.setState("connected"))
+    await settle()
+    expect(mocks.toast.dismiss).not.toHaveBeenCalled()
+  })
+
+  it("keeps the notice up when the server then switches web files", async () => {
+    renderNotice()
+    await settle()
+    act(() => failScript("/_next/static/chunks/gone.js"))
+    await settle()
+    expect(filesToast()).toHaveLength(1)
+    mocks.toast.mockClear()
+
+    act(() => {
+      for (const handler of mocks.events.get("web_assets_changed") ?? []) {
+        handler({ release: "cowork-codeg-v0.6.40" })
+      }
+    })
+    await settle()
+    expect(mocks.toast).not.toHaveBeenCalled()
   })
 })

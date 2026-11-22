@@ -5779,7 +5779,9 @@
     "versionChangedDescription": "This page is still on {version}. Reload it to use the server's version.",
     "reloadPage": "Reload",
     "webAssetsChangedTitle": "A new version of the interface is ready ({version})",
-    "webAssetsChangedDescription": "Reload the page to use it. You can also keep working without reloading."
+    "webAssetsChangedDescription": "Reload the page to use it. You can also keep working without reloading.",
+    "filesChangedTitle": "This page's files have been updated",
+    "filesChangedDescription": "The server was updated and no longer has some of this page's files. Reload the page to continue."
   },
   "LiveFeedback": {
     "placeholder": "Send a note to {agent} while it works…",

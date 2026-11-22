@@ -5779,7 +5779,9 @@
     "versionChangedDescription": "لا تزال هذه الصفحة على الإصدار {version}. أعد تحميلها لاستخدام إصدار الخادم.",
     "reloadPage": "إعادة التحميل",
     "webAssetsChangedTitle": "يتوفر إصدار جديد من الواجهة ({version})",
-    "webAssetsChangedDescription": "أعد تحميل الصفحة لاستخدامه. يمكنك أيضًا مواصلة العمل دون إعادة التحميل."
+    "webAssetsChangedDescription": "أعد تحميل الصفحة لاستخدامه. يمكنك أيضًا مواصلة العمل دون إعادة التحميل.",
+    "filesChangedTitle": "تم تحديث ملفات هذه الصفحة",
+    "filesChangedDescription": "تم تحديث الخادم ولم تعد بعض ملفات هذه الصفحة متوفرة. أعد تحميل الصفحة للمتابعة."
   },
   "LiveFeedback": {
     "placeholder": "أرسل ملاحظة إلى {agent} أثناء عمله…",

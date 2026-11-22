@@ -5779,7 +5779,9 @@
     "versionChangedDescription": "Diese Seite läuft noch mit {version}. Lade sie neu, um die Version des Servers zu verwenden.",
     "reloadPage": "Neu laden",
     "webAssetsChangedTitle": "Eine neue Version der Oberfläche ist bereit ({version})",
-    "webAssetsChangedDescription": "Lade die Seite neu, um sie zu verwenden. Du kannst auch ohne Neuladen weiterarbeiten."
+    "webAssetsChangedDescription": "Lade die Seite neu, um sie zu verwenden. Du kannst auch ohne Neuladen weiterarbeiten.",
+    "filesChangedTitle": "Die Dateien dieser Seite wurden aktualisiert",
+    "filesChangedDescription": "Der Server wurde aktualisiert und hat einige Dateien dieser Seite nicht mehr. Lade die Seite neu, um fortzufahren."
   },
   "LiveFeedback": {
     "placeholder": "Sende {agent} eine Notiz, während er arbeitet…",

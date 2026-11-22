@@ -5779,7 +5779,9 @@
     "versionChangedDescription": "Esta página sigue en la versión {version}. Recárgala para usar la versión del servidor.",
     "reloadPage": "Recargar",
     "webAssetsChangedTitle": "Hay una nueva versión de la interfaz ({version})",
-    "webAssetsChangedDescription": "Recarga la página para usarla. También puedes seguir trabajando sin recargar."
+    "webAssetsChangedDescription": "Recarga la página para usarla. También puedes seguir trabajando sin recargar.",
+    "filesChangedTitle": "Los archivos de esta página se han actualizado",
+    "filesChangedDescription": "El servidor se actualizó y ya no tiene algunos archivos de esta página. Recarga la página para continuar."
   },
   "LiveFeedback": {
     "placeholder": "Envía una nota a {agent} mientras trabaja…",

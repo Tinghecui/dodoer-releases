@@ -5779,7 +5779,9 @@
     "versionChangedDescription": "此页面仍是 {version}，刷新后即可使用服务器上的版本。",
     "reloadPage": "刷新",
     "webAssetsChangedTitle": "界面有新版本（{version}）",
-    "webAssetsChangedDescription": "刷新页面就能用上，不刷新也可以接着用。"
+    "webAssetsChangedDescription": "刷新页面就能用上，不刷新也可以接着用。",
+    "filesChangedTitle": "页面文件已更新",
+    "filesChangedDescription": "服务器已更新，找不到此页面的部分文件。请刷新页面后继续。"
   },
   "LiveFeedback": {
     "placeholder": "在 {agent} 工作时给它留言…",

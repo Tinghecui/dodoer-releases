@@ -5779,7 +5779,9 @@
     "versionChangedDescription": "このページはまだ {version} です。再読み込みするとサーバーのバージョンを使用します。",
     "reloadPage": "再読み込み",
     "webAssetsChangedTitle": "インターフェースの新しいバージョンがあります（{version}）",
-    "webAssetsChangedDescription": "ページを再読み込みすると使えます。再読み込みしなくてもそのまま作業を続けられます。"
+    "webAssetsChangedDescription": "ページを再読み込みすると使えます。再読み込みしなくてもそのまま作業を続けられます。",
+    "filesChangedTitle": "ページのファイルが更新されました",
+    "filesChangedDescription": "サーバーが更新され、このページの一部のファイルが見つかりません。ページを再読み込みしてください。"
   },
   "LiveFeedback": {
     "placeholder": "{agent} の作業中にメモを送る…",

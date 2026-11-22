@@ -93,7 +93,8 @@ cleanup() {
   for p in /proc/[0-9]*; do
     pid=${p#/proc/}
     [[ "$pid" == "$$" || "$pid" == "$BASHPID" ]] && continue
-    if tr '\0' '\n' < "$p/environ" 2> /dev/null | grep -qxF "COWORK_CI_MARK=$COWORK_CI_MARK"; then kill -9 "$pid" 2> /dev/null; fi
+    # 别的用户的进程读不了 environ（Permission denied），整段不出声
+    if { tr '\0' '\n' < "$p/environ"; } 2> /dev/null | grep -qxF "COWORK_CI_MARK=$COWORK_CI_MARK"; then kill -9 "$pid" 2> /dev/null; fi
   done
   return 0
 }

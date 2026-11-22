@@ -217,6 +217,12 @@ function taskOpOf(part: AdaptedContentPart): TaskOp | null {
   return tasks ? { kind: "list", tasks } : null
 }
 
+function isOwnerSuffix(listed: string, name: string): boolean {
+  if (!listed.startsWith(`${name} (`) || !listed.endsWith(")")) return false
+  const owner = listed.slice(name.length + 2, -1)
+  return owner.length > 0 && !owner.includes("(") && !owner.includes(")")
+}
+
 function applyTaskOp(state: TaskState, op: TaskOp) {
   if (op.kind === "create") {
     state.set(op.id, {
@@ -252,11 +258,12 @@ function applyTaskOp(state: TaskState, op: TaskOp) {
   for (const task of op.tasks) {
     const known = previous.get(task.id)
     // A name that itself ends in "(…)" reads like an owner suffix; the name
-    // TaskCreate or an update gave the task is the one to keep then.
+    // TaskCreate or an update gave the task is the one to keep when the list
+    // shows exactly it, or it plus one "(owner)".
     const keepKnown =
       known !== undefined &&
       (task.listed === known.subject ||
-        task.listed.startsWith(`${known.subject} (`))
+        isOwnerSuffix(task.listed, known.subject))
     state.set(task.id, {
       subject: keepKnown ? known.subject : task.subject,
       status: task.status,

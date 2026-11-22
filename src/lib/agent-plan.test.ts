@@ -350,6 +350,24 @@ describe("extractLatestPlanEntriesFromMessages — Claude Code Task tools", () =
     ])
   })
 
+  it("shows a renamed task's listed name even when it extends the old one", () => {
+    expect(
+      extractLatestPlanEntriesFromMessages([
+        assistant("a1", create("1", "Add login")),
+        assistant(
+          "a2",
+          call("TaskList", {}, "#1 [pending] Add login (OAuth) support")
+        ),
+      ])
+    ).toEqual([
+      {
+        content: "Add login (OAuth) support",
+        status: "pending",
+        priority: "medium",
+      },
+    ])
+  })
+
   it("the later checklist wins between Task tools and TodoWrite", () => {
     const todoWrite = (id: string, content: string) =>
       ({

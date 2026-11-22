@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   configure: vi.fn<(config: RemoteTransportConfig) => void>(),
   clear: vi.fn(),
   readConnection: vi.fn(),
+  tokenUpdated: [] as Array<(connectionId: number) => void>,
   status: vi.fn(),
   transport: { id: "remote-transport" },
 }))
@@ -24,6 +25,14 @@ vi.mock("@/lib/transport", () => ({
 }))
 vi.mock("@/lib/remote-workspace", () => ({
   getRemoteWorkspaceConnection: mocks.readConnection,
+  listenRemoteConnectionTokenUpdated: async (
+    handler: (connectionId: number) => void
+  ) => {
+    mocks.tokenUpdated.push(handler)
+    return () => {
+      mocks.tokenUpdated = mocks.tokenUpdated.filter((h) => h !== handler)
+    }
+  },
 }))
 vi.mock("@/stores/backend-scoped-store-reset", () => ({
   resetBackendScopedStores: vi.fn(),
@@ -39,6 +48,9 @@ import { RemoteConnectionGate } from "./remote-connection-context"
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mocks.tokenUpdated = []
+  // 上一条没用完的 mockResolvedValueOnce 不留到下一条
+  mocks.readConnection.mockReset()
   mocks.readConnection.mockResolvedValue({
     id: 17,
     name: "Remote workspace",
@@ -112,5 +124,91 @@ describe("RemoteConnectionGate unreadable keychain", () => {
     expect(screen.queryByText("Workspace stays open")).not.toBeInTheDocument()
     expect(screen.queryByText(/expired/i)).not.toBeInTheDocument()
     expect(screen.getByText(/keychain/i)).toHaveTextContent("Cowork · tester")
+  })
+})
+
+describe("RemoteConnectionGate token updated from the portal", () => {
+  const unreadable = {
+    id: 17,
+    name: "Cowork · tester",
+    base_url: "http://remote.test:3210",
+    token: "",
+    token_unreadable: true,
+  }
+  const fresh = {
+    id: 17,
+    name: "Cowork · tester",
+    base_url: "http://remote.test:3210",
+    token: "fresh-token",
+  }
+
+  async function renderPlainGate() {
+    await act(async () => {
+      render(
+        <NextIntlClientProvider locale="en" messages={enMessages}>
+          <RemoteConnectionGate>
+            <div>Workspace stays open</div>
+          </RemoteConnectionGate>
+        </NextIntlClientProvider>
+      )
+    })
+  }
+
+  async function announce(connectionId: number) {
+    await act(async () => {
+      for (const handler of mocks.tokenUpdated) handler(connectionId)
+    })
+  }
+
+  it("reloads the connection and enters the workspace after re-linking", async () => {
+    mocks.readConnection
+      .mockResolvedValueOnce(unreadable)
+      .mockResolvedValueOnce(fresh)
+    await renderPlainGate()
+    expect(screen.getByText(/keychain/i)).toBeInTheDocument()
+
+    await announce(17)
+
+    expect(mocks.readConnection).toHaveBeenCalledTimes(2)
+    expect(mocks.configure).toHaveBeenCalledTimes(1)
+    expect(mocks.configure.mock.calls[0][0].token).toBe("fresh-token")
+    expect(screen.queryByText(/keychain/i)).not.toBeInTheDocument()
+    expect(screen.getByText("Workspace stays open")).toBeInTheDocument()
+  })
+
+  it("reloads an expired window too", async () => {
+    mocks.readConnection
+      .mockResolvedValueOnce({ ...fresh, token: "old-token" })
+      .mockResolvedValueOnce(fresh)
+    await renderPlainGate()
+    act(() => mocks.configure.mock.calls[0][0].onUnauthorized?.())
+    expect(screen.getByText(/expired/i)).toBeInTheDocument()
+
+    await announce(17)
+
+    expect(mocks.configure).toHaveBeenCalledTimes(2)
+    expect(mocks.configure.mock.calls[1][0].token).toBe("fresh-token")
+    expect(screen.getByText("Workspace stays open")).toBeInTheDocument()
+  })
+
+  it("ignores another connection's update", async () => {
+    mocks.readConnection.mockResolvedValue(unreadable)
+    await renderPlainGate()
+
+    await announce(99)
+
+    expect(mocks.readConnection).toHaveBeenCalledTimes(1)
+    expect(screen.getByText(/keychain/i)).toBeInTheDocument()
+  })
+
+  it("leaves a connected window alone", async () => {
+    await renderPlainGate()
+    expect(screen.getByText("Workspace stays open")).toBeInTheDocument()
+
+    await announce(17)
+
+    expect(mocks.readConnection).toHaveBeenCalledTimes(1)
+    expect(mocks.configure).toHaveBeenCalledTimes(1)
+    expect(mocks.clear).toHaveBeenCalledTimes(1)
   })
 })

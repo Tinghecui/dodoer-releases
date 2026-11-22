@@ -29,6 +29,11 @@ use serde::Deserialize;
 /// Path the token exchange is posted to, on the workspace's own origin.
 pub const TOKEN_PATH: &str = "/_cowork/desktop-token";
 
+/// 窗口已经开着时，换好令牌后发给前端的事件，载荷是连接 id。读不到钥匙串、
+/// 令牌过期而停在提示页的远端窗口收到它会重读连接；前端
+/// `src/lib/remote-workspace.ts` 用同一个名字。
+pub const TOKEN_UPDATED_EVENT: &str = "remote-connection://token-updated";
+
 /// Prefix of the per-device tokens Cowork hands out (`cwdev_…`). Only such a
 /// token is sent back as `previous`; a connection saved with the daemon
 /// password (before devices existed) has nothing to renew.
@@ -181,12 +186,12 @@ pub use desktop::start;
 mod desktop {
     use std::time::Duration;
 
-    use tauri::{AppHandle, Manager};
+    use tauri::{AppHandle, Emitter, Manager};
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
     use super::{
         display_host, exchange_body, parse_token_response, previous_device_token, same_workspace,
-        this_device_name, Exchanged, TOKEN_PATH,
+        this_device_name, Exchanged, TOKEN_PATH, TOKEN_UPDATED_EVENT,
     };
     use crate::commands::remote_workspace::{
         build_remote_workspace_window, validate_remote_health,
@@ -259,7 +264,11 @@ mod desktop {
         }
         .label();
         if app.get_webview_window(&label).is_some() {
-            // Its transport picks the new token up on the next reconnect.
+            // 连着的窗口，transport 下次重连自己换新令牌；停在「读不到钥匙串」
+            // 「令牌过期」提示页的窗口没有下次重连，得告诉它重读一次连接。
+            if let Err(e) = app.emit(TOKEN_UPDATED_EVENT, connection.id) {
+                tracing::warn!("[cowork-connect] emit {TOKEN_UPDATED_EVENT}: {e}");
+            }
             crate::commands::windows::show_and_focus_window(app, &label);
         } else {
             validate_remote_health(&connection.base_url, &connection.token, &connection.headers)
@@ -329,6 +338,13 @@ mod desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_updated_event_matches_the_frontend() {
+        // 名字对不上，前端就收不到，远端窗口又会停在提示页
+        let frontend = include_str!("../../src/lib/remote-workspace.ts");
+        assert!(frontend.contains(&format!("\"{TOKEN_UPDATED_EVENT}\"")));
+    }
 
     #[test]
     fn parses_token_and_optional_name() {

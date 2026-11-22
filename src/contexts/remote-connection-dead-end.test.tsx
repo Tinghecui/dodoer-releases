@@ -39,6 +39,7 @@ vi.mock("@/components/connection/remote-connection-status", () => ({
 vi.mock("@/lib/remote-workspace", () => ({
   getRemoteWorkspaceConnection: mocks.getRemoteWorkspaceConnection,
   openLocalWorkspace: mocks.openLocalWorkspace,
+  listenRemoteConnectionTokenUpdated: async () => () => {},
 }))
 
 vi.mock("@/stores/backend-scoped-store-reset", () => ({

@@ -23,6 +23,7 @@ import { RemoteConnectionStatus } from "@/components/connection/remote-connectio
 import { resetBackendScopedStores } from "@/stores/backend-scoped-store-reset"
 import {
   getRemoteWorkspaceConnection,
+  listenRemoteConnectionTokenUpdated,
   openLocalWorkspace,
 } from "@/lib/remote-workspace"
 import { toErrorMessage } from "@/lib/app-error"
@@ -145,6 +146,37 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
     expired: false,
     tokenUnreadable: false,
   })
+  // 门户重新连接换了令牌时加一，让下面的加载 effect 重读一次连接
+  const [reloadNonce, setReloadNonce] = useState(0)
+  const stuck = state.tokenUnreadable || state.expired
+  const stuckRef = useRef(stuck)
+  useEffect(() => {
+    stuckRef.current = stuck
+  }, [stuck])
+
+  // 读不到钥匙串、令牌过期的窗口是死胡同页，transport 没配或已被拒，
+  // 不会自己再连。门户「在桌面版打开」存好新令牌后会发事件，这里重读一次。
+  // 正常连着的窗口不动：不打断它，transport 下次重连自己换令牌。
+  useEffect(() => {
+    if (remoteConnectionId === null || !Number.isFinite(remoteConnectionId)) {
+      return
+    }
+    let disposed = false
+    let unlisten: (() => void) | null = null
+    listenRemoteConnectionTokenUpdated((connectionId) => {
+      if (connectionId !== remoteConnectionId || !stuckRef.current) return
+      setReloadNonce((n) => n + 1)
+    })
+      .then((fn) => {
+        if (disposed) fn()
+        else unlisten = fn
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [remoteConnectionId])
 
   useEffect(() => {
     if (remoteConnectionId === null || !Number.isFinite(remoteConnectionId)) {
@@ -207,7 +239,7 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [remoteConnectionId, remoteWindowId])
+  }, [remoteConnectionId, remoteWindowId, reloadNonce])
 
   // ── Backend-identity invariant ─────────────────────────────────────────────
   // A workspace realm's backend identity — (remoteConnectionId, remoteWindowId),

@@ -522,203 +522,224 @@ function ChromeItem({ className }: { className?: string }) {
           ) : null}
         </button>
       </PopoverTrigger>
-      <PopoverContent side="top" align="start" className="w-80 gap-2 p-2.5">
-        <span className="flex items-center gap-1.5 truncate text-xs font-medium">
-          {t("title")}
-          <span className="rounded-full bg-muted px-1.5 py-0.5 text-3xs font-medium text-muted-foreground">
-            {t("experimental")}
+      {/* 小屏上（如 1024×768）琥珀色「还缺」提示一出来，面板会比按钮上方的空间
+          还高；Radix 只会平移不会缩小，面板就顶出窗口上沿（#1214）。所以面板最多
+          长到上方剩下的高度，标题和「断开」那一行固定在上面，其余的在下面滚。 */}
+      <PopoverContent
+        side="top"
+        align="start"
+        collisionPadding={8}
+        className="max-h-(--radix-popover-content-available-height) w-80 gap-2 overflow-hidden p-2.5"
+      >
+        <div className="flex shrink-0 flex-col gap-2">
+          <span className="flex items-center gap-1.5 truncate text-xs font-medium">
+            {t("title")}
+            <span className="rounded-full bg-muted px-1.5 py-0.5 text-3xs font-medium text-muted-foreground">
+              {t("experimental")}
+            </span>
           </span>
-        </span>
 
-        <div className="flex items-center justify-between gap-2">
-          <p
-            role="status"
-            className="min-w-0 truncate text-2xs text-muted-foreground"
-          >
-            {statusLine}
-          </p>
-          {state === "connected" ? (
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => void run(chromeDisconnect)}
+          <div className="flex items-center justify-between gap-2">
+            <p
+              role="status"
+              className="min-w-0 truncate text-2xs text-muted-foreground"
             >
-              {t("disconnect")}
-            </Button>
-          ) : state === "waiting" ? (
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => void run(chromeDisconnect)}
-            >
-              {t("cancel")}
-            </Button>
-          ) : (
-            <Button size="xs" onClick={() => void run(() => chromeConnect())}>
-              {t("connect")}
-            </Button>
-          )}
-        </div>
-
-        {problem ? (
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-2xs text-amber-600 dark:text-amber-400">
-            {/* The settings page has the steps and the paste box these
-                problems point at; here they would point at nothing. */}
-            {problem === "switch-off" || NEEDS_PASTE.has(problem)
-              ? t("panelNeedsSettings")
-              : t(PROBLEM_KEYS[problem])}
-          </div>
-        ) : null}
-
-        <div className="rounded-lg border px-2 py-1.5">
-          <label className="flex items-center justify-between gap-2">
-            <span className="text-2xs font-medium">{t("agentsSwitch")}</span>
-            <Switch
-              checked={agents}
-              onCheckedChange={(on) => void switchAgents(on)}
-            />
-          </label>
-          <p className="mt-0.5 text-3xs text-muted-foreground">
-            {agents && state !== "connected"
-              ? t("agentsOffline")
-              : t("agentsHint")}
-          </p>
-        </div>
-
-        {showReach && reachItems ? (
-          <div
-            data-server-reach=""
-            className="space-y-1 rounded-lg border border-amber-500/50 bg-amber-500/5 px-2 py-1.5"
-          >
-            <p className="text-2xs font-medium">{t("reachTitle")}</p>
-            {reachItems.tools ? (
-              <div className="flex items-start justify-between gap-2">
-                <p className="min-w-0 text-3xs text-amber-600 dark:text-amber-400">
-                  {t("reachToolsOff")}
-                </p>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  aria-label={t("reachToolsTurnOn")}
-                  onClick={() => void turnOnBrowserTools()}
-                >
-                  {t("reachTurnOn")}
-                </Button>
-              </div>
-            ) : null}
-            {reachItems.agents ? (
-              <div className="flex items-start justify-between gap-2">
-                <p className="min-w-0 text-3xs text-amber-600 dark:text-amber-400">
-                  {t("reachAgentsOff")}
-                </p>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  aria-label={t("reachAgentsTurnOn")}
-                  onClick={() => void switchAgents(true)}
-                >
-                  {t("reachTurnOn")}
-                </Button>
-              </div>
-            ) : null}
-            {reachItems.pick && canPickHere ? (
-              <div className="flex items-start justify-between gap-2">
-                <p className="min-w-0 text-3xs text-amber-600 dark:text-amber-400">
-                  {t("reachPickOther")}
-                </p>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  aria-label={t("reachPickThisLabel")}
-                  onClick={() => void pickThisComputer()}
-                >
-                  {t("reachPickThis")}
-                </Button>
-              </div>
-            ) : reachItems.pick ? (
-              // 没有打开的对话、服务器不收选择或不知道这台是哪台：只能文字提醒
-              <p className="text-3xs text-amber-600 dark:text-amber-400">
-                {t("reachPickDevice")}
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-
-        {/* An app that knows nothing of the pause answers without it. */}
-        {typeof sites?.paused === "boolean" ? (
-          <div
-            data-sites-row=""
-            className={cn(
-              "rounded-lg border px-2 py-1.5",
-              sitesPaused && "border-amber-500/50 bg-amber-500/5"
+              {statusLine}
+            </p>
+            {state === "connected" ? (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => void run(chromeDisconnect)}
+              >
+                {t("disconnect")}
+              </Button>
+            ) : state === "waiting" ? (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => void run(chromeDisconnect)}
+              >
+                {t("cancel")}
+              </Button>
+            ) : (
+              <Button size="xs" onClick={() => void run(() => chromeConnect())}>
+                {t("connect")}
+              </Button>
             )}
-          >
+          </div>
+        </div>
+
+        {/* 负外边距配同样的内边距：按钮的焦点框不被滚动区裁掉 */}
+        <div
+          data-chrome-panel-body=""
+          className="-mx-2.5 -mb-2.5 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2.5 pb-2.5"
+        >
+          {problem ? (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-2xs text-amber-600 dark:text-amber-400">
+              {/* The settings page has the steps and the paste box these
+                problems point at; here they would point at nothing. */}
+              {problem === "switch-off" || NEEDS_PASTE.has(problem)
+                ? t("panelNeedsSettings")
+                : t(PROBLEM_KEYS[problem])}
+            </div>
+          ) : null}
+
+          <div className="rounded-lg border px-2 py-1.5">
             <label className="flex items-center justify-between gap-2">
-              <span className="text-2xs font-medium">
-                {t("sitesPauseSwitch")}
-              </span>
+              <span className="text-2xs font-medium">{t("agentsSwitch")}</span>
               <Switch
-                checked={!sitesPaused}
-                onCheckedChange={(on) => void switchSites(on)}
+                checked={agents}
+                onCheckedChange={(on) => void switchAgents(on)}
               />
             </label>
-            {sitesPaused ? (
-              <p className="mt-0.5 text-3xs text-amber-600 dark:text-amber-400">
-                {t("sitesPanelPaused")}
-              </p>
-            ) : null}
+            <p className="mt-0.5 text-3xs text-muted-foreground">
+              {agents && state !== "connected"
+                ? t("agentsOffline")
+                : t("agentsHint")}
+            </p>
           </div>
-        ) : null}
 
-        <ChromeEvalPanelSwitch open={open} />
-
-        {state === "connected" ? (
-          <div className="overflow-hidden rounded-lg border">
-            <div className="px-2 py-1.5">
-              <p className="text-2xs font-medium">
-                {t("tabsTitle", { count: tabs.length })}
-              </p>
-              <p className="text-3xs text-muted-foreground">
-                {t("tabsHidden")}
-              </p>
+          {showReach && reachItems ? (
+            <div
+              data-server-reach=""
+              className="space-y-1 rounded-lg border border-amber-500/50 bg-amber-500/5 px-2 py-1.5"
+            >
+              <p className="text-2xs font-medium">{t("reachTitle")}</p>
+              {reachItems.tools ? (
+                <div className="flex items-start justify-between gap-2">
+                  <p className="min-w-0 text-3xs text-amber-600 dark:text-amber-400">
+                    {t("reachToolsOff")}
+                  </p>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    aria-label={t("reachToolsTurnOn")}
+                    onClick={() => void turnOnBrowserTools()}
+                  >
+                    {t("reachTurnOn")}
+                  </Button>
+                </div>
+              ) : null}
+              {reachItems.agents ? (
+                <div className="flex items-start justify-between gap-2">
+                  <p className="min-w-0 text-3xs text-amber-600 dark:text-amber-400">
+                    {t("reachAgentsOff")}
+                  </p>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    aria-label={t("reachAgentsTurnOn")}
+                    onClick={() => void switchAgents(true)}
+                  >
+                    {t("reachTurnOn")}
+                  </Button>
+                </div>
+              ) : null}
+              {reachItems.pick && canPickHere ? (
+                <div className="flex items-start justify-between gap-2">
+                  <p className="min-w-0 text-3xs text-amber-600 dark:text-amber-400">
+                    {t("reachPickOther")}
+                  </p>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    aria-label={t("reachPickThisLabel")}
+                    onClick={() => void pickThisComputer()}
+                  >
+                    {t("reachPickThis")}
+                  </Button>
+                </div>
+              ) : reachItems.pick ? (
+                // 没有打开的对话、服务器不收选择或不知道这台是哪台：只能文字提醒
+                <p className="text-3xs text-amber-600 dark:text-amber-400">
+                  {t("reachPickDevice")}
+                </p>
+              ) : null}
             </div>
-            {tabs.length === 0 ? (
-              <p className="border-t px-2 py-1.5 text-3xs text-muted-foreground">
-                {t("tabsEmpty")}
-              </p>
-            ) : (
-              <ul className="max-h-64 divide-y overflow-y-auto border-t">
-                {tabs.map((tab) => (
-                  <ChromeTabRow
-                    key={tab.id}
-                    tab={tab}
-                    activity={activity[tab.id] ?? EMPTY}
-                    ownScope={scope}
-                    onShare={(level) => void share(tab.id, level)}
-                    onLevel={(level) => noteLevel(tab.id, level)}
-                    onJump={() => void jump(tab.id)}
-                  />
-                ))}
-              </ul>
-            )}
-          </div>
-        ) : null}
+          ) : null}
 
-        <Button
-          size="sm"
-          variant="outline"
-          className="w-full"
-          onClick={() => {
-            setOpen(false)
-            // 直接落到「你自己的 Chrome」那张卡片，它在内置浏览器几张卡片下面（#983）
-            openSettingsWindow("browser", { focus: "chrome" }).catch((err) => {
-              console.error("[StatusBarChrome] failed to open settings:", err)
-            })
-          }}
-        >
-          <Settings2 className="h-3.5 w-3.5" />
-          {t("openSettings")}
-        </Button>
+          {/* An app that knows nothing of the pause answers without it. */}
+          {typeof sites?.paused === "boolean" ? (
+            <div
+              data-sites-row=""
+              className={cn(
+                "rounded-lg border px-2 py-1.5",
+                sitesPaused && "border-amber-500/50 bg-amber-500/5"
+              )}
+            >
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-2xs font-medium">
+                  {t("sitesPauseSwitch")}
+                </span>
+                <Switch
+                  checked={!sitesPaused}
+                  onCheckedChange={(on) => void switchSites(on)}
+                />
+              </label>
+              {sitesPaused ? (
+                <p className="mt-0.5 text-3xs text-amber-600 dark:text-amber-400">
+                  {t("sitesPanelPaused")}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
+          <ChromeEvalPanelSwitch open={open} />
+
+          {state === "connected" ? (
+            <div className="overflow-hidden rounded-lg border">
+              <div className="px-2 py-1.5">
+                <p className="text-2xs font-medium">
+                  {t("tabsTitle", { count: tabs.length })}
+                </p>
+                <p className="text-3xs text-muted-foreground">
+                  {t("tabsHidden")}
+                </p>
+              </div>
+              {tabs.length === 0 ? (
+                <p className="border-t px-2 py-1.5 text-3xs text-muted-foreground">
+                  {t("tabsEmpty")}
+                </p>
+              ) : (
+                <ul className="max-h-64 divide-y overflow-y-auto border-t">
+                  {tabs.map((tab) => (
+                    <ChromeTabRow
+                      key={tab.id}
+                      tab={tab}
+                      activity={activity[tab.id] ?? EMPTY}
+                      ownScope={scope}
+                      onShare={(level) => void share(tab.id, level)}
+                      onLevel={(level) => noteLevel(tab.id, level)}
+                      onJump={() => void jump(tab.id)}
+                    />
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : null}
+
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full"
+            onClick={() => {
+              setOpen(false)
+              // 直接落到「你自己的 Chrome」那张卡片，它在内置浏览器几张卡片下面（#983）
+              openSettingsWindow("browser", { focus: "chrome" }).catch(
+                (err) => {
+                  console.error(
+                    "[StatusBarChrome] failed to open settings:",
+                    err
+                  )
+                }
+              )
+            }}
+          >
+            <Settings2 className="h-3.5 w-3.5" />
+            {t("openSettings")}
+          </Button>
+        </div>
       </PopoverContent>
     </Popover>
   )

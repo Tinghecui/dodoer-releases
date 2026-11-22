@@ -1045,3 +1045,32 @@ describe("StatusBarChrome and what the server's agents still need (#1060)", () =
     )
   })
 })
+
+describe("StatusBarChrome on a short screen", () => {
+  it("caps the panel to the room above the glyph and scrolls below a header that keeps Disconnect in view (#1214)", async () => {
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    await mount()
+    await openPanel()
+    const disconnect = screen.getByRole("button", { name: "Disconnect" })
+    const content = disconnect.closest('[data-slot="popover-content"]')
+    expect(content).not.toBeNull()
+    // 面板最多长到触发按钮上方剩下的高度，不再顶出窗口上沿
+    expect(content!.className).toContain(
+      "max-h-(--radix-popover-content-available-height)"
+    )
+    // 下面的内容在自己的滚动区里滚，标题和 Disconnect 那一行不跟着滚走
+    const body = content!.querySelector("[data-chrome-panel-body]")
+    expect(body).not.toBeNull()
+    expect(body!.className).toContain("overflow-y-auto")
+    expect(body!.className).toContain("min-h-0")
+    expect(body!.contains(disconnect)).toBe(false)
+    expect(
+      body!.contains(screen.getByText("Your own Chrome", { selector: "span" }))
+    ).toBe(false)
+    expect(
+      body!.contains(
+        screen.getByRole("switch", { name: "Let agents use my Chrome" })
+      )
+    ).toBe(true)
+  })
+})

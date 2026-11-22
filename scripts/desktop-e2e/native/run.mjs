@@ -98,6 +98,7 @@ function finish() {
         totalSeconds: (Date.now() - t0) / 1000,
         steps,
         notes,
+        feedRequests: feed?.requests ?? [],
       },
       null,
       2
@@ -396,6 +397,12 @@ try {
       execFileSync("ditto", [join(WORK, "apps", N, "dodoer.app"), APP])
       dataDir = mkdtempSync(join(tmpdir(), "e2e-native-data-"))
       rmSync(join(homedir(), ".codeg", "preferences.json"), { force: true })
+      // 网页那边的存储按 bundle id 存（前面更新流程那几段留下的「查到的更新」「关掉的提示」）
+      for (const d of ["WebKit", "Caches"])
+        rmSync(join(homedir(), "Library", d, "app.codeg"), {
+          recursive: true,
+          force: true,
+        })
       feed.publish(N, { package: pkg(N) })
       feed.promote(N)
       feed.publish(N1, { package: pkg(N1) })
@@ -752,7 +759,17 @@ try {
       await dom.switchToWindow("settings")
       await domClick("#auto-update-mode-off")
       await domClick("#update-channel-early")
-      await waitText(`Upgrade to v${N1}`)
+      // 2026-11-22 公开 main 那次切到抢先版后写的是「已是最新」（假更新源上有 N+1）：再手动查一次，
+      // 两次都没有就失败，假更新源收到的请求记在 result-native.json 的 feedRequests 里
+      const offered = await waitText(`Upgrade to v${N1}`, 20000).then(
+        () => true,
+        () => false
+      )
+      if (!offered) {
+        notes.upgradeNotOfferedFirst = (await bodyText()).slice(0, 600)
+        await domClick("button", "Check for updates")
+        await waitText(`Upgrade to v${N1}`)
+      }
       await domClick("button", `Upgrade to v${N1}`)
       await dom.switchToWindow("main")
       // 下好以后右上角状态按钮上出现小圆点（data-status-update）
@@ -850,6 +867,8 @@ try {
   if (ax) await ax.deleteSession().catch(() => {})
   if (remoteServer) remoteServer.kill()
   await quitApp().catch(() => {})
+  if (dataDir && existsSync(join(dataDir, "logs")))
+    sh("cp", ["-R", join(dataDir, "logs"), join(OUT, "app-logs")])
   rmSync(ENV_FILE, { force: true })
   await feed.close()
 }

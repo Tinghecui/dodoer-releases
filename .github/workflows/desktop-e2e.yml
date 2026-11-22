@@ -2,7 +2,8 @@
 # 在 GitHub 托管的 macos-15（arm64）和 ubuntu-22.04 上编桌面版的「e2e 测试版」（debug、cargo feature `e2e`、版本号 1.999.0，
 # 前端带 @wdio/tauri-plugin），用 WebdriverIO + @wdio/tauri-service 驱动它：macOS 走 app 里内嵌的 WebDriver 服务器，
 # Linux 走官方 tauri-driver。两边跑同一套 spec（scripts/desktop-e2e/specs/，scripts/desktop-e2e/run.sh 按段开几次 app = 退出重开）。
-# macOS 上接着跑更新流程（scripts/desktop-e2e/update/：测试密钥签的 N / N+1 两个包 + 运行机上的假更新源）。
+# macOS 上接着跑更新流程（scripts/desktop-e2e/update/：测试密钥签的 N / N+1 两个包 + 运行机上的假更新源）
+# 和原生层（scripts/desktop-e2e/native/：Appium Mac2 按辅助功能树点菜单、托盘、窗口、对话框）。
 # 来历：源仓库 .cowork/journal/2026-11-21-spike-macos-webdriver.md、2026-11-21-e2e-wdio-plugin.md、2026-11-21-desktop-e2e-skeleton.md、
 # 2026-11-22-e2e-update-feed.md。
 #
@@ -262,6 +263,47 @@ jobs:
           rc=0
           node scripts/desktop-e2e/update/run.mjs > e2e-out/update/run.log 2>&1 || rc=$?
           cat e2e-out/update/summary.md 2>/dev/null || echo "（没有摘要：run.mjs 没跑完，看私有 Release 里的 update/run.log）"
+          exit "$rc"
+
+      # 原生层（macOS）：Appium 4 + Mac2 驱动（版本固定）按辅助功能树点菜单栏、托盘、窗口、文件对话框、「重启以更新」弹层、多窗口焦点。
+      # 用更新流程同一套测试包（「重启以更新」要先下好一个更新），所以排在它后面。Xcode 是运行机自带的；WebDriverAgentMac 第一次连的时候现编。
+      # 来历：源仓库 .cowork/journal/2026-11-22-e2e-native-appium.md
+      - name: 原生层：装 Appium 4.0.0 + appium-mac2-driver 5.0.7，起 Appium
+        id: appium
+        if: ${{ !cancelled() && runner.os == 'macOS' && steps.update-prep.outcome == 'success' }}
+        env:
+          APPIUM_HOME: ${{ runner.temp }}/appium-home
+        run: |
+          set -euo pipefail
+          t0=$(date +%s)
+          npm install --prefix "$RUNNER_TEMP/appium-cli" --no-audit --no-fund --loglevel=error appium@4.0.0
+          appium="$RUNNER_TEMP/appium-cli/node_modules/.bin/appium"
+          "$appium" driver install --source=npm appium-mac2-driver@5.0.7
+          # XCTest 去驱动别的 app 要「自动化模式」，不然每次弹框要密码
+          sudo automationmodetool enable-automationmode-without-authentication || true
+          sudo DevToolsSecurity -enable || true
+          mkdir -p e2e-out/native
+          nohup "$appium" --address 127.0.0.1 --port 4723 --log-level info --log e2e-out/native/appium.log > /dev/null 2>&1 &
+          echo "pid=$!" >> "$GITHUB_OUTPUT"
+          for _ in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:4723/status > /dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:4723/status > /dev/null
+          echo "- Appium 4.0.0 + appium-mac2-driver 5.0.7：$(( $(date +%s) - t0 )) 秒" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 原生层：菜单栏、托盘、设置 / 远程窗口、文件对话框、「重启以更新」弹层、多窗口焦点
+        if: ${{ !cancelled() && runner.os == 'macOS' && steps.appium.outcome == 'success' }}
+        env:
+          E2E_OUT: ${{ github.workspace }}/e2e-out
+          E2E_UPDATE_WORK: ${{ runner.temp }}/e2e-update
+          APPIUM_HOME: ${{ runner.temp }}/appium-home
+        run: |
+          set -uo pipefail
+          rc=0
+          node scripts/desktop-e2e/native/run.mjs > e2e-out/native/run.log 2>&1 || rc=$?
+          cat e2e-out/native/summary.md 2>/dev/null || echo "（没有摘要：native/run.mjs 没跑完，看私有 Release 里的 native/run.log）"
+          kill "${{ steps.appium.outputs.pid }}" 2>/dev/null || true
           exit "$rc"
 
       # 留 1 天：desktop-e2e-artifacts.yml 在 run 结束后搬到私有 Release 并删掉这份（搬没成的 1 天后自己过期）

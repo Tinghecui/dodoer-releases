@@ -9253,9 +9253,12 @@ async fn run_connection(
                         init_started.elapsed()
                     );
                     // An agent that dies on launch fails the handshake with the
-                    // runtime's bare EOF error; its exit report says why.
+                    // runtime's bare EOF error; its exit report says why. With
+                    // no report (a clean exit, stderr left open behind it), the
+                    // lines it printed last are the best evidence left.
                     if lost_the_connection(&e) {
-                        return Err(defer_to_connection_report(e).await);
+                        let e = defer_to_connection_report(e).await;
+                        return Err(with_stderr_tail(e, &stderr_tail));
                     }
                     return Err(e);
                 }
@@ -14506,6 +14509,31 @@ async fn defer_to_connection_report(
     e: agent_client_protocol::Error,
 ) -> agent_client_protocol::Error {
     tokio::time::sleep(CONNECTION_LOSS_GRACE).await;
+    e
+}
+
+/// `e` with the agent's most recent stderr lines appended, capped as a turn's
+/// stderr excerpt is ([`EMPTY_TURN_STDERR_LINES`], [`EMPTY_TURN_STDERR_BYTES`]).
+///
+/// For a handshake whose lost connection [`defer_to_connection_report`] could
+/// not trade for an exit report: the agent exited 0, or its stderr outlived it,
+/// so all `e` says is `Incoming transport closed` — while the last lines the
+/// agent printed (`please log in first`) usually say why. `StderrTail` redacts
+/// each line as it is written, so nothing here is quoted unmasked.
+fn with_stderr_tail(
+    mut e: agent_client_protocol::Error,
+    stderr_tail: &StderrTail,
+) -> agent_client_protocol::Error {
+    let tail = stderr_tail.tail_since(0, EMPTY_TURN_STDERR_LINES, EMPTY_TURN_STDERR_BYTES);
+    if tail.is_empty() {
+        return e;
+    }
+    e.message
+        .push_str(&format!("\nstderr (last {} lines):", tail.lines.len()));
+    for line in &tail.lines {
+        e.message.push_str("\n  ");
+        e.message.push_str(line);
+    }
     e
 }
 
@@ -37224,6 +37252,9 @@ mod tests {
         state: Arc<RwLock<SessionState>>,
         events: tokio::sync::broadcast::Receiver<Arc<crate::acp::types::EventEnvelope>>,
         ended: oneshot::Receiver<Result<(), AcpError>>,
+        /// The connection's stderr buffer, which a spawned agent's `with_debug`
+        /// callback writes; a test writes it for the in-process agent.
+        stderr_tail: Arc<StderrTail>,
         _dir: tempfile::TempDir,
     }
 
@@ -37257,6 +37288,8 @@ mod tests {
             let (ended_tx, ended) = oneshot::channel();
             let runtime = tokio::runtime::Handle::current();
             let (run_state, run_handshake) = (Arc::clone(&state), handshake.clone());
+            let stderr_tail = Arc::new(StderrTail::new());
+            let run_stderr_tail = Arc::clone(&stderr_tail);
             std::thread::Builder::new()
                 .name("acp-conn-handshake-test".to_string())
                 .stack_size(ACP_CONNECTION_STACK_SIZE)
@@ -37280,7 +37313,7 @@ mod tests {
                         HostToolsPolicy::from_env(&BTreeMap::new()),
                         // Watched only for a Claude launch.
                         cwd.join("claude-projects"),
-                        Arc::new(StderrTail::new()),
+                        run_stderr_tail,
                     ));
                     let _ = ended_tx.send(ended);
                 })
@@ -37291,6 +37324,7 @@ mod tests {
                 state,
                 events,
                 ended,
+                stderr_tail,
                 _dir: dir,
             }
         }
@@ -37367,6 +37401,39 @@ mod tests {
             "{emitted:#?}"
         );
         agent.closed().await;
+    }
+
+    /// An agent that exits 0 while Initialize is out leaves no exit report, so
+    /// the handshake's lost connection is all codeg hears; the lines the agent
+    /// printed on its way out ride along with it, masked as they were written.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_handshake_the_agent_quit_cleanly_quotes_its_last_stderr_lines() {
+        let (client_end, agent_end) = agent_client_protocol::Channel::duplex();
+        let mut agent = HandshakeAgent::start(
+            agent_end,
+            HandshakeScript {
+                stall_initialize: true,
+                ..Default::default()
+            },
+        );
+        let run = HandshakeRun::start(client_end).await;
+        assert_eq!(agent.next_request().await, "initialize");
+
+        run.stderr_tail.push("starting agent");
+        run.stderr_tail.push(concat!(
+            "token ghp_",
+            "abcdefghijklmnopqrstuvwxyz01 rejected"
+        ));
+        run.stderr_tail.push("Error: please log in first");
+        // The agent exits 0: its end of the pipe closes and nothing reports why.
+        agent.task.abort();
+        let _ = agent.task.await;
+
+        let (ended, _) = run.ended().await;
+        let error = ended.expect_err("the handshake fails").to_string();
+        assert!(error.contains("Error: please log in first"), "{error}");
+        assert!(error.contains("starting agent"), "{error}");
+        assert!(!error.contains("abcdefghij"), "{error}");
     }
 
     /// The same once Initialize is answered and the agent is opening the

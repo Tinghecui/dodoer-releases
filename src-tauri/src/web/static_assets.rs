@@ -4,7 +4,8 @@
 //! 这个进程的网页仍然和它的程序是同一版。服务端代码没变的版本（两边的 `SERVER-REV`
 //! 一样），Cowork 调 `cowork_reload_web` 把网页换过去，不用重启。换下来的旧目录给
 //! `/_next/static/` 兜底（文件名带内容哈希，不会取错版本），没刷新的旧页面再去取它
-//! 那一版的脚本不会 404。
+//! 那一版的脚本不会 404。`/_next/` 下哪里都找不到的回 404，不回 `index.html`
+//! （移植自 dodoer #778）。
 
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -27,6 +28,11 @@ pub const MAX_PREVIOUS_DIRS: usize = 3;
 
 /// 只有这个前缀下的文件到旧目录兜底。
 const FINGERPRINTED_PREFIX: &str = "/_next/static/";
+
+/// Next.js 的构建产物都在这下面，不是页面路由：找不到就回 404，不回 `index.html`。
+/// 跨着升级没刷新的页面会来这里要上一版的脚本，回 HTML 浏览器会把页面当脚本解析，
+/// 报一个看不懂的语法错；回 404 它报的是加载失败。
+const BUILD_OUTPUT_PREFIX: &str = "/_next/";
 
 /// 服务端代码指纹的文件名（发版时写进安装目录，和程序并排）。
 const SERVER_REV_FILE: &str = "SERVER-REV";
@@ -209,22 +215,28 @@ fn copy_request(parts: &axum::http::request::Parts) -> Request {
 }
 
 /// 取一个静态文件：先在现在的目录找；`/_next/static/` 下的找不到时依次到旧目录
-/// 找；都没有的和原来一样回 `index.html`。
+/// 找。`/_next/` 下都没有的回 404；别的路径是前端路由，和原来一样回 `index.html`。
 pub async fn serve(assets: &StaticAssets, req: Request) -> Response {
     let (current, previous) = {
         let dirs = assets.read_dirs();
         (dirs.current.clone(), dirs.previous.clone())
     };
-    let index = current.join("index.html");
-    if previous.is_empty() || !req.uri().path().starts_with(FINGERPRINTED_PREFIX) {
+    let path = req.uri().path();
+    if !path.starts_with(BUILD_OUTPUT_PREFIX) {
+        let index = current.join("index.html");
         let mut svc = ServeDir::new(&current).fallback(ServeFile::new(index));
         return match svc.call(req).await {
             Ok(resp) => resp.into_response(),
             Err(never) => match never {},
         };
     }
+    let fallbacks: &[PathBuf] = if path.starts_with(FINGERPRINTED_PREFIX) {
+        &previous
+    } else {
+        &[]
+    };
     let (parts, _body) = req.into_parts();
-    for dir in std::iter::once(&current).chain(previous.iter()) {
+    for dir in std::iter::once(&current).chain(fallbacks.iter()) {
         let mut svc = ServeDir::new(dir);
         let resp = match svc.call(copy_request(&parts)).await {
             Ok(resp) => resp,
@@ -234,10 +246,7 @@ pub async fn serve(assets: &StaticAssets, req: Request) -> Response {
             return resp.into_response();
         }
     }
-    match ServeFile::new(index).call(copy_request(&parts)).await {
-        Ok(resp) => resp.into_response(),
-        Err(never) => match never {},
-    }
+    StatusCode::NOT_FOUND.into_response()
 }
 
 // 测试用 Unix 的软链。
@@ -348,6 +357,44 @@ mod tests {
         // `/page-b` → `page-b.html` 也看新目录。
         assert_eq!(server.get("/page-b").await.text(), "page b");
         assert_eq!(server.get("/page-a").await.text(), "index b");
+    }
+
+    /// dodoer #778：`/_next/` 下找不到的回 404（不缓存），别的找不到的照旧回
+    /// `index.html`；换过目录以后旧目录里也没有的同样 404。
+    #[tokio::test]
+    async fn missing_build_files_are_404_and_other_paths_get_the_index() {
+        let (root, link, assets) = setup(Some("rev-1"));
+        let (server, _data) = test_server(Arc::clone(&assets)).await;
+        let found = server.get("/_next/static/a.js").await;
+        assert_eq!(found.status_code(), StatusCode::OK);
+        assert_eq!(found.text(), "js a");
+
+        for path in [
+            "/_next/static/chunks/missing.js",
+            "/_next/data/missing.json",
+            "/_next/missing",
+        ] {
+            let missing = server.get(path).await;
+            assert_eq!(missing.status_code(), StatusCode::NOT_FOUND, "{path}");
+            assert!(!missing.text().contains("index"), "{path}");
+            assert_eq!(
+                missing.header("cache-control").to_str().unwrap(),
+                "no-cache",
+                "{path}"
+            );
+        }
+        let page = server.get("/missing-page").await;
+        assert_eq!(page.status_code(), StatusCode::OK);
+        assert_eq!(page.text(), "index a");
+        assert_eq!(server.get("/").await.text(), "index a");
+
+        let b = install(root.path(), "b", Some("rev-1"), true);
+        point(&link, &b);
+        assert_eq!(assets.reload()["changed"], json!(true));
+        assert_eq!(server.get("/_next/static/a.js").await.text(), "js a");
+        let missing = server.get("/_next/static/missing.js").await;
+        assert_eq!(missing.status_code(), StatusCode::NOT_FOUND);
+        assert_eq!(server.get("/missing-page").await.text(), "index b");
     }
 
     #[tokio::test]

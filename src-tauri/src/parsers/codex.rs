@@ -3293,7 +3293,7 @@ fn parse_codex_subagent_stats(
 }
 
 impl CodexParser {
-    fn parse_conversation_detail(
+    pub(crate) fn parse_conversation_detail(
         &self,
         path: &Path,
         conversation_id: &str,
@@ -5938,6 +5938,12 @@ fn render_agent_message_citations(messages: &mut [UnifiedMessage], cwd: &str) {
         }
         for block in &mut message.content {
             if let ContentBlock::Text { text } = block {
+                // Codex's memory citation block (#635), which codex never shows.
+                if let std::borrow::Cow::Owned(stripped) =
+                    super::codex_memory_citations::strip_memory_citation(text)
+                {
+                    *text = stripped;
+                }
                 if let std::borrow::Cow::Owned(rendered) =
                     super::codex_file_citations::render_file_citations(text, cwd)
                 {

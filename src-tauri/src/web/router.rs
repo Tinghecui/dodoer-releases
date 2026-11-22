@@ -2413,14 +2413,15 @@ async fn static_cache_control(
 ) -> axum::response::Response {
     let fingerprinted = req.uri().path().starts_with("/_next/static/");
     let mut response = next.run(req).await;
-    // An asset that is not there is answered with index.html, which must not
-    // be kept under the asset's name either.
+    // A missing build file is a 404 and anything else missing is answered
+    // with index.html; neither may be kept under the asset's name, which a
+    // rollback can bring back.
     let html = response
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.starts_with("text/html"));
-    if !fingerprinted || html {
+    if !fingerprinted || html || !response.status().is_success() {
         response
             .headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));

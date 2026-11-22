@@ -16,7 +16,7 @@ use sea_orm::{ConnectOptions, Database};
 use super::error::DbError;
 use super::{
     applied_migrations, database_file_name, known_migrations, pre_migrate_dir, restrict_to_owner,
-    UPGRADE_UNDER_WAY,
+    PRE_MIGRATE_KEEP, UPGRADE_UNDER_WAY,
 };
 
 /// 换库时原来的库挪到这里，按时间分目录。
@@ -53,13 +53,16 @@ pub(super) fn finish_interrupted_restore(app_data_dir: &Path) -> Result<(), DbEr
     let leftovers = ["-wal", "-shm"]
         .iter()
         .any(|suffix| sidecar(&db_path, suffix).exists());
-    if leftovers {
+    let replaced = if leftovers {
         let replaced = move_aside(app_data_dir, &db_path)?;
         tracing::warn!(
             "[db] moved what was left of the replaced database to {}",
             replaced.display()
         );
-    }
+        Some(replaced)
+    } else {
+        None
+    };
     std::fs::rename(&restoring, &db_path).map_err(|e| {
         DbError::Migration(format!(
             "could not finish putting back the copy made before an upgrade: moving {} to {} \
@@ -72,6 +75,11 @@ pub(super) fn finish_interrupted_restore(app_data_dir: &Path) -> Result<(), DbEr
     restrict_to_owner(&db_path, 0o600);
     // 放回来的库不是那次升级拷的，下次升级要重新拍。
     let _ = std::fs::remove_file(pre_migrate_dir(app_data_dir).join(UPGRADE_UNDER_WAY));
+    // 这次挪走的目录知道是哪个才清理；不知道（被打断的那次早就挪完了）就留到下次换库，
+    // 免得时钟回拨时把刚换下来的那份当成旧的删掉。
+    if let Some(replaced) = &replaced {
+        prune_replaced(app_data_dir, replaced);
+    }
     tracing::warn!(
         "[db] finished putting back the copy made before an upgrade: {}",
         db_path.display()
@@ -201,6 +209,7 @@ pub(super) async fn restore_copy_before_upgrade(
         );
     }
     let _ = std::fs::remove_file(copies_dir.join(UPGRADE_UNDER_WAY));
+    prune_replaced(app_data_dir, &replaced);
 
     tracing::warn!(
         "[db] this database was upgraded by another version of {product} (migration \
@@ -237,6 +246,10 @@ fn move_aside(app_data_dir: &Path, db_path: &Path) -> Result<PathBuf, DbError> {
             db_path.display()
         ))
     })?;
+    // 每一份都是整个库（所有密钥和对话）：上面几层目录是按默认 umask 建的，一起收紧。
+    if let Some(backups) = root.parent() {
+        restrict_to_owner(backups, 0o700);
+    }
     restrict_to_owner(&root, 0o700);
     restrict_to_owner(&dir, 0o700);
     let file_name = database_file_name();
@@ -256,8 +269,59 @@ fn move_aside(app_data_dir: &Path, db_path: &Path) -> Result<PathBuf, DbError> {
                 db_path.display()
             ))
         })?;
+        restrict_to_owner(&to, 0o600);
     }
     Ok(dir)
+}
+
+/// [`move_aside`] 起的目录名：`YYYYMMDD-HHMMSS`，同一秒里第二次起是 `YYYYMMDD-HHMMSS-<n>`。
+fn is_replaced_stamp(name: &str) -> bool {
+    let (stamp, n) = match name.get(15..) {
+        Some(rest) if !rest.is_empty() => (&name[..15], rest.strip_prefix('-')),
+        _ => (name, Some("1")),
+    };
+    let bytes = stamp.as_bytes();
+    let stamp_ok = bytes.len() == 15
+        && bytes.iter().enumerate().all(|(i, b)| {
+            if i == 8 {
+                *b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        });
+    stamp_ok && n.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// 换库成功以后，换下来的库只留最新的几份（和升级前副本一样多），更早的删掉：每一份
+/// 都是带着全部密钥的整个库。`just_replaced` 绝不删，时钟回拨、它的名字排在最前也不删。
+/// 名字不像换库目录的东西不动。删不掉只记一条警告：换库已经做完了。
+/// 移植自 dodoer #784（`prune_replaced`）。
+fn prune_replaced(app_data_dir: &Path, just_replaced: &Path) {
+    let root = app_data_dir.join(REPLACED_DIR);
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!("[db] could not list {} to prune it: {e}", root.display());
+            return;
+        }
+    };
+    let mut older: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|entry| entry.file_name().to_str().is_some_and(is_replaced_stamp))
+        .map(|entry| entry.path())
+        .filter(|path| path.file_name() != just_replaced.file_name())
+        .collect();
+    older.sort();
+    let excess = older.len().saturating_sub(PRE_MIGRATE_KEEP - 1);
+    for stale in &older[..excess] {
+        if let Err(e) = std::fs::remove_dir_all(stale) {
+            tracing::warn!(
+                "[db] could not delete the old replaced database {}: {e}",
+                stale.display()
+            );
+        }
+    }
 }
 
 /// 副本是不是新版本升级前那一刻的：迁移集合正好等于当前库的迁移去掉这一版不认的。
@@ -644,5 +708,208 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"not a database any more");
         assert!(!dir.path().join(REPLACED_DIR).exists());
         assert_eq!(copies(dir.path()), before);
+    }
+
+    fn replaced_names(dir: &Path) -> BTreeSet<String> {
+        std::fs::read_dir(dir.join(REPLACED_DIR))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Fills the replaced folder with earlier replaced databases.
+    fn earlier_replaced(dir: &Path, stamps: &[&str]) {
+        for stamp in stamps {
+            let folder = dir.join(REPLACED_DIR).join(stamp);
+            std::fs::create_dir_all(&folder).unwrap();
+            for suffix in ["-wal", "-shm", ""] {
+                std::fs::write(
+                    folder.join(format!("{}{suffix}", database_file_name())),
+                    b"an older database",
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    /// Runs the older build on a database a newer one upgraded; returns the name
+    /// of the folder the newer database was moved to.
+    async fn restore_and_find_the_new_folder(dir: &Path) -> String {
+        let before = replaced_names(dir);
+        let db = init_database(dir, "older").await.expect("older build");
+        db.conn.close().await.expect("close");
+        let after = replaced_names(dir);
+        let new: Vec<&String> = after.iter().filter(|n| !before.contains(*n)).collect();
+        assert_eq!(new.len(), 1, "one folder for this restore: {after:?}");
+        new[0].clone()
+    }
+
+    #[tokio::test]
+    async fn a_restore_keeps_only_the_newest_replaced_databases() {
+        let dir = tempfile::tempdir().unwrap();
+        upgraded_by_newer_build(dir.path(), true).await;
+        let earlier = [
+            "20000101-000001",
+            "20000101-000002",
+            "20000101-000003",
+            "20000101-000004",
+            "20000101-000005",
+        ];
+        earlier_replaced(dir.path(), &earlier);
+
+        let new = restore_and_find_the_new_folder(dir.path()).await;
+
+        let left = replaced_names(dir.path());
+        let expected: BTreeSet<String> = [new.as_str(), "20000101-000004", "20000101-000005"]
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        assert_eq!(left, expected);
+        assert_eq!(left.len(), PRE_MIGRATE_KEEP);
+        let kept = dir
+            .path()
+            .join(REPLACED_DIR)
+            .join(&new)
+            .join(database_file_name());
+        assert_eq!(
+            survivors(&kept).await,
+            2,
+            "the database just replaced is kept whole"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_database_just_replaced_is_kept_when_the_clock_went_back() {
+        let dir = tempfile::tempdir().unwrap();
+        upgraded_by_newer_build(dir.path(), true).await;
+        let later = ["29990101-000001", "29990101-000002", "29990101-000003"];
+        earlier_replaced(dir.path(), &later);
+
+        let new = restore_and_find_the_new_folder(dir.path()).await;
+
+        let left = replaced_names(dir.path());
+        let expected: BTreeSet<String> = [new.as_str(), "29990101-000002", "29990101-000003"]
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        assert_eq!(left, expected);
+    }
+
+    #[tokio::test]
+    async fn pruning_leaves_what_the_user_put_there() {
+        let dir = tempfile::tempdir().unwrap();
+        upgraded_by_newer_build(dir.path(), true).await;
+        let earlier = [
+            "20000101-000001",
+            "20000101-000002",
+            "20000101-000003",
+            "20000101-000004",
+        ];
+        earlier_replaced(dir.path(), &earlier);
+        let root = dir.path().join(REPLACED_DIR);
+        std::fs::create_dir_all(root.join("keep-me")).unwrap();
+        std::fs::create_dir_all(root.join("2000-01-01")).unwrap();
+        std::fs::write(root.join("20000101-000000"), b"a file, not a folder").unwrap();
+        std::fs::write(root.join("notes.txt"), b"mine").unwrap();
+
+        let new = restore_and_find_the_new_folder(dir.path()).await;
+
+        let left = replaced_names(dir.path());
+        for name in [
+            new.as_str(),
+            "20000101-000003",
+            "20000101-000004",
+            "keep-me",
+            "2000-01-01",
+            "20000101-000000",
+            "notes.txt",
+        ] {
+            assert!(left.contains(name), "{name} kept: {left:?}");
+        }
+        assert!(!left.contains("20000101-000001"), "{left:?}");
+        assert!(!left.contains("20000101-000002"), "{left:?}");
+    }
+
+    #[test]
+    fn only_folder_names_the_restore_writes_count_as_replaced() {
+        assert!(is_replaced_stamp("20261117-235959"));
+        assert!(is_replaced_stamp("20261117-235959-2"));
+        assert!(is_replaced_stamp("20261117-235959-12"));
+        assert!(!is_replaced_stamp("20261117-235959-"));
+        assert!(!is_replaced_stamp("20261117-235959-x"));
+        assert!(!is_replaced_stamp("20261117-235959x2"));
+        assert!(!is_replaced_stamp("20261117_235959"));
+        assert!(!is_replaced_stamp("20261117-23595"));
+        assert!(!is_replaced_stamp("20261117-2359590"));
+        assert!(!is_replaced_stamp("2026111a-235959"));
+        assert!(!is_replaced_stamp("keep-me"));
+        assert!(!is_replaced_stamp("新20261117-235959"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_restore_deletes_no_replaced_database() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let earlier = [
+            "20000101-000001",
+            "20000101-000002",
+            "20000101-000003",
+            "20000101-000004",
+            "20000101-000005",
+        ];
+        earlier_replaced(dir.path(), &earlier);
+        // A restore cut off after the database was moved aside, whose staged copy
+        // now cannot be put in place: the data dir is read-only.
+        let db_path = dir.path().join(database_file_name());
+        std::fs::write(restoring_path(&db_path), b"staged copy").unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let result = finish_interrupted_restore(dir.path());
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err(), "the restore must fail here");
+        let left = replaced_names(dir.path());
+        for name in earlier {
+            assert!(left.contains(name), "{name} kept: {left:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_replaced_database_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let loose = |path: &Path, mode: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join(database_file_name());
+        // Files and folders made with a loose umask.
+        let suffixes = ["-wal", "-shm", ""];
+        for suffix in suffixes {
+            let file = dir.path().join(format!("{}{suffix}", database_file_name()));
+            std::fs::write(&file, b"newer database").unwrap();
+            loose(&file, 0o644);
+        }
+        let root = dir.path().join(REPLACED_DIR);
+        let backups = root.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&root).unwrap();
+        loose(&backups, 0o755);
+        loose(&root, 0o755);
+
+        let folder = move_aside(dir.path(), &db_path).unwrap();
+
+        assert_eq!(mode(&backups), 0o700);
+        assert_eq!(mode(&root), 0o700);
+        assert_eq!(mode(&folder), 0o700);
+        let files: Vec<PathBuf> = std::fs::read_dir(&folder)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), suffixes.len(), "{files:?}");
+        for file in files {
+            assert_eq!(mode(&file), 0o600, "{}", file.display());
+        }
     }
 }

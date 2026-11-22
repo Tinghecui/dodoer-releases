@@ -18,6 +18,9 @@ pub struct Model {
     /// Theme-preset color name (FolderThemeColor vocabulary).
     #[sea_orm(column_type = "Text", nullable)]
     pub color: Option<String>,
+    /// 画布所属的项目（项目根文件夹的 `folder.id`）。NULL = 不属于哪个项目，在每个
+    /// 项目的画布列表里都显示（升级前建的、判断不出归属的画布就是这样）。软引用。
+    pub folder_id: Option<i32>,
     pub created_at: DateTimeUtc,
     /// Last change to the board OR anything on it: node writes touch it in the
     /// same transaction, which is what the canvas list orders by.

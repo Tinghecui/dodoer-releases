@@ -59,6 +59,7 @@ mod m20261022_000001_work_task_delivery;
 mod m20261106_000001_work_task_source_key;
 mod m20261112_000001_work_task_writeback_drafts;
 mod m20261115_000001_conversation_interrupted_at;
+mod m20261122_000001_canvas_board_folder;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -124,6 +125,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261106_000001_work_task_source_key::Migration),
             Box::new(m20261112_000001_work_task_writeback_drafts::Migration),
             Box::new(m20261115_000001_conversation_interrupted_at::Migration),
+            Box::new(m20261122_000001_canvas_board_folder::Migration),
         ]
     }
 }

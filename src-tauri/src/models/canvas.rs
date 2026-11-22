@@ -102,6 +102,8 @@ pub struct CanvasBoard {
     pub name: Option<String>,
     pub description: Option<String>,
     pub color: Option<String>,
+    /// 所属项目（项目根文件夹的 id）；null = 在所有项目里都显示。
+    pub folder_id: Option<i32>,
     pub created_at: DateTime<Utc>,
     /// Last change to the board or anything on it (node writes stamp it too).
     pub updated_at: DateTime<Utc>,
@@ -114,6 +116,7 @@ impl From<crate::db::entities::canvas_board::Model> for CanvasBoard {
             name: m.name,
             description: m.description,
             color: m.color,
+            folder_id: m.folder_id,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }

@@ -256,4 +256,63 @@ describe("canvas boards store", () => {
     expect(store().hydrated).toBe(false)
     expect(ids()).toEqual([])
   })
+
+  describe("per project (#1193)", () => {
+    it("reads the project's list, and an answer for the previous project never lands", async () => {
+      const stale = deferredList()
+      void store().refetch()
+      expect(mockList).toHaveBeenLastCalledWith(null)
+
+      expect(store().setFolder(2)).toBe(true)
+      expect(store().setFolder(2)).toBe(false)
+      mockList.mockResolvedValueOnce([
+        summary(board(5, { folder_id: 2 })),
+        summary(board(6, { folder_id: null })),
+      ])
+      await store().refetch()
+      expect(mockList).toHaveBeenLastCalledWith(2)
+      stale([summary(board(9, { folder_id: 1 }))])
+      await Promise.resolve()
+      expect(ids()).toEqual([5, 6])
+    })
+
+    it("another project's board events stay out of the list", async () => {
+      store().setFolder(2)
+      await store().refetch()
+      store().handleBoardChanged({
+        kind: "upsert",
+        board: board(7, { folder_id: 1 }),
+      })
+      store().handleBoardChanged({
+        kind: "upsert",
+        board: board(8, { folder_id: 2 }),
+      })
+      store().handleBoardChanged({
+        kind: "upsert",
+        board: board(9, { folder_id: null }),
+      })
+      expect(ids().sort()).toEqual([8, 9])
+      expect(
+        store().applyCreatedBoard(board(10, { folder_id: 1 }), store().scope())
+      ).toBe(false)
+    })
+
+    it("switching project leaves a board of the old one, keeps a shared one open", async () => {
+      store().setFolder(1)
+      mockList.mockResolvedValueOnce([
+        summary(board(1, { folder_id: 1 })),
+        summary(board(3, { folder_id: null })),
+      ])
+      await store().refetch()
+      store().openBoard(1)
+      store().setFolder(2)
+      expect(store().activeBoardId).toBeNull()
+      expect(ids()).toEqual([3])
+      expect(store().hydrated).toBe(false)
+
+      store().openBoard(3)
+      store().setFolder(1)
+      expect(store().activeBoardId).toBe(3)
+    })
+  })
 })

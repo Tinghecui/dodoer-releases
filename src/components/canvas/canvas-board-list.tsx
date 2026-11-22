@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils"
 import { useCanvasBoardsStore } from "@/stores/canvas-boards-store"
 import {
   useCanvasBoardActions,
+  useCanvasBoardsFolder,
   useCanvasBoardStatsRefresh,
 } from "./canvas-board-actions"
 import {
@@ -75,6 +76,8 @@ type FormState = { open: boolean; board: CanvasBoard | null }
  * edit and delete. Clicking a card opens that canvas.
  */
 export function CanvasBoardList() {
+  // 先于下面挂上时的那次读：那次读就按当前项目取。
+  useCanvasBoardsFolder()
   useCanvasBoardStatsRefresh()
   const t = useTranslations("Canvas")
   const boards = useCanvasBoardsStore((s) => s.boards)

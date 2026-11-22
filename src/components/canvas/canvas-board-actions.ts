@@ -14,7 +14,9 @@ import {
   CANVAS_BOARD_CHANGED_EVENT,
   CANVAS_CHANGED_EVENT,
   type CanvasBoardChange,
+  type FolderDetail,
 } from "@/lib/types"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useCanvasBoardsStore } from "@/stores/canvas-boards-store"
 
 /** What the create / edit dialog hands back. Empty strings mean "none": the
@@ -34,16 +36,20 @@ export interface CanvasBoardFormValues {
  */
 export function useCanvasBoardActions() {
   const createBoard = useCallback(async (values: CanvasBoardFormValues) => {
-    const scope = useCanvasBoardsStore.getState().scope()
+    const before = useCanvasBoardsStore.getState()
+    const scope = before.scope()
     try {
       const board = await canvasCreateBoard({
         name: values.name,
         description: values.description,
         color: values.color,
+        // 建在当前项目下，只在这个项目的画布列表里出现。
+        folderId: before.folderId,
       })
       const store = useCanvasBoardsStore.getState()
       // A new canvas is created to be worked on: open it straight away —
-      // unless the answer belongs to a backend this client has since left.
+      // unless the answer belongs to a backend (or a project) this client has
+      // since left.
       if (store.applyCreatedBoard(board, scope)) store.openBoard(board.id)
       return true
     } catch (e) {
@@ -96,6 +102,40 @@ export function useCanvasBoardActions() {
 }
 
 /**
+ * 画布列表按哪个项目取：侧栏当前项目的根文件夹（worktree 归到它的仓库，和思维导图
+ * 一样）。没有当前项目、或者当前是聊天模式背后的文件夹时给 null，列出全部画布。
+ * 项目列表还没取到时先用当前文件夹的 id，后端会自己找到它的项目。
+ */
+export function canvasProjectOf(
+  activeFolderId: number | null,
+  folders: readonly FolderDetail[]
+): number | null {
+  if (activeFolderId == null) return null
+  const folder = folders.find((f) => f.id === activeFolderId)
+  if (!folder) return activeFolderId
+  if (folder.kind === "chat") return null
+  return folder.parent_id ?? folder.id
+}
+
+/**
+ * 让画布列表跟着侧栏的当前项目走（#1193）：项目变了就换成那个项目的画布重新读。
+ * 画布页和列表各挂一次（同一个项目设第二次什么也不做），列表自己挂是为了它挂上
+ * 时那一次读就带上项目，不先读一遍全部。
+ */
+export function useCanvasBoardsFolder(): void {
+  const project = useAppWorkspaceStore((s) =>
+    canvasProjectOf(s.activeFolderId, s.allFolders)
+  )
+  // 也看 store 里的：后端切换时 `reset()` 把它清掉，这里要再设回去。
+  const current = useCanvasBoardsStore((s) => s.folderId)
+  useEffect(() => {
+    if (useCanvasBoardsStore.getState().setFolder(project)) {
+      void useCanvasBoardsStore.getState().refetch()
+    }
+  }, [project, current])
+}
+
+/**
  * Keeps the board list live while the canvas route is mounted — the list
  * itself, and the breadcrumb inside a board, which names the board and must
  * notice it being deleted elsewhere. Subscribe first, read the list once the
@@ -103,6 +143,7 @@ export function useCanvasBoardActions() {
  * transport reconnect since events are dropped while the socket is down.
  */
 export function useCanvasBoardsData(): void {
+  useCanvasBoardsFolder()
   useEffect(() => {
     let disposed = false
     let unlisten: (() => void) | undefined

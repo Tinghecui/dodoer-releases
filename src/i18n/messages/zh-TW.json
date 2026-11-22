@@ -10,6 +10,9 @@
     "settingsDescription": "在 AI 回覆中直接顯示自包含的 HTML/CSS 卡片與圖表，不執行模型腳本或載入外部資源。",
     "settingsEnable": "啟用豐富 HTML 算繪"
   },
+  "DiffViewer": {
+    "eofNewlineChanged": "檔案結尾換行有變更"
+  },
   "Language": {
     "followSystem": "跟隨系統",
     "english": "英文",

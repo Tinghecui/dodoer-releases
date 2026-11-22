@@ -10,6 +10,9 @@
     "settingsDescription": "Display self-contained HTML/CSS cards and diagrams directly in AI replies. Model scripts and external resources are blocked.",
     "settingsEnable": "Enable rich HTML rendering"
   },
+  "DiffViewer": {
+    "eofNewlineChanged": "Newline at end of file changed"
+  },
   "Language": {
     "followSystem": "Follow System",
     "english": "English",

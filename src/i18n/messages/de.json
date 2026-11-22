@@ -10,6 +10,9 @@
     "settingsDescription": "Eigenständige HTML/CSS-Karten und Diagramme direkt in KI-Antworten anzeigen. Modellskripte und externe Ressourcen werden blockiert.",
     "settingsEnable": "Erweiterte HTML-Darstellung aktivieren"
   },
+  "DiffViewer": {
+    "eofNewlineChanged": "Zeilenumbruch am Dateiende geändert"
+  },
   "Language": {
     "followSystem": "Systemsprache verwenden",
     "english": "Englisch",

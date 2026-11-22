@@ -157,6 +157,16 @@ vi.mock("@/hooks/use-appearance", () => ({
   }),
 }))
 
+// The header's labels come from the English messages, so assertions read the
+// same text a user sees.
+vi.mock("next-intl", async () => {
+  const en = (await import("@/i18n/messages/en.json"))
+    .default as unknown as Record<string, Record<string, string>>
+  return {
+    useTranslations: (ns: string) => (key: string) => en[ns]?.[key] ?? key,
+  }
+})
+
 const { DiffViewer } = await import("./diff-viewer")
 const { DiffEditor: MockDiffEditor } =
   (await import("@monaco-editor/react")) as unknown as {
@@ -283,6 +293,130 @@ describe("DiffViewer change counts", () => {
       <DiffViewer original={"a\nb\nc\nd\n"} modified={"a\nB\nc\nd\ne\nf\n"} />
     )
     await expectCounts("+3", "-1")
+  })
+
+  it("does not count the blank line after a newline added to a file that had none (#1252)", async () => {
+    // "edited line" → "edited linesecond line\n": Monaco sees the modified
+    // side as two lines (the second one blank) and reports original 1-1 →
+    // modified 1-2; git and the Changes list say +1 -1.
+    harness.lineChanges.current = [
+      {
+        originalStartLineNumber: 1,
+        originalEndLineNumber: 1,
+        modifiedStartLineNumber: 1,
+        modifiedEndLineNumber: 2,
+      },
+    ]
+    render(
+      <DiffViewer
+        original="edited line"
+        modified={"edited linesecond line\n"}
+      />
+    )
+    await expectCounts("+1", "-1")
+    expect(
+      screen.getByText("Newline at end of file changed")
+    ).toBeInTheDocument()
+  })
+
+  it("does not count the blank line when the original's final newline is removed", async () => {
+    // "a\nb\n" → "a\nB": Monaco's original side is three lines (last blank).
+    harness.lineChanges.current = [
+      {
+        originalStartLineNumber: 2,
+        originalEndLineNumber: 3,
+        modifiedStartLineNumber: 2,
+        modifiedEndLineNumber: 2,
+      },
+    ]
+    render(<DiffViewer original={"a\nb\n"} modified={"a\nB"} />)
+    await expectCounts("+1", "-1")
+    expect(
+      screen.getByText("Newline at end of file changed")
+    ).toBeInTheDocument()
+  })
+
+  it("counts a change to only the final newline as git does (+1 -1)", async () => {
+    // "a" → "a\n": Monaco sees one blank line inserted after line 1, which
+    // clamps to nothing; git rewrites the last line and says +1 -1.
+    harness.lineChanges.current = [
+      {
+        originalStartLineNumber: 1,
+        originalEndLineNumber: 0,
+        modifiedStartLineNumber: 2,
+        modifiedEndLineNumber: 2,
+      },
+    ]
+    render(<DiffViewer original="a" modified={"a\n"} />)
+    await expectCounts("+1", "-1")
+    expect(
+      screen.getByText("Newline at end of file changed")
+    ).toBeInTheDocument()
+  })
+
+  it("adds the rewritten last line to other changes when the final newline changes", async () => {
+    // "x\nb" → "y\nb\n": git says -x -b +y +b, i.e. +2 -2.
+    harness.lineChanges.current = [
+      {
+        originalStartLineNumber: 1,
+        originalEndLineNumber: 1,
+        modifiedStartLineNumber: 1,
+        modifiedEndLineNumber: 1,
+      },
+      {
+        originalStartLineNumber: 2,
+        originalEndLineNumber: 0,
+        modifiedStartLineNumber: 3,
+        modifiedEndLineNumber: 3,
+      },
+    ]
+    render(<DiffViewer original={"x\nb"} modified={"y\nb\n"} />)
+    await expectCounts("+2", "-2")
+  })
+
+  it("does not count the kept last line when a line is appended after it", async () => {
+    // "a\n" → "a\nb": git keeps "a\n" and adds "b", i.e. +1 -0. Monaco
+    // replaces the original's blank line 2 with "b".
+    harness.lineChanges.current = [
+      {
+        originalStartLineNumber: 2,
+        originalEndLineNumber: 2,
+        modifiedStartLineNumber: 2,
+        modifiedEndLineNumber: 2,
+      },
+    ]
+    render(<DiffViewer original={"a\n"} modified={"a\nb"} />)
+    await expectCounts("+1", "-0")
+  })
+
+  it("does not count the kept last line when the last line is removed", async () => {
+    // "a\nb" → "a\n": git removes "b" and keeps "a\n", i.e. +0 -1.
+    harness.lineChanges.current = [
+      {
+        originalStartLineNumber: 2,
+        originalEndLineNumber: 2,
+        modifiedStartLineNumber: 2,
+        modifiedEndLineNumber: 2,
+      },
+    ]
+    render(<DiffViewer original={"a\nb"} modified={"a\n"} />)
+    await expectCounts("+0", "-1")
+  })
+
+  it("shows no end-of-file marker when both sides end with a newline", async () => {
+    harness.lineChanges.current = [
+      {
+        originalStartLineNumber: 1,
+        originalEndLineNumber: 1,
+        modifiedStartLineNumber: 1,
+        modifiedEndLineNumber: 1,
+      },
+    ]
+    render(<DiffViewer original={"a\nb\n"} modified={"A\nb\n"} />)
+    await expectCounts("+1", "-1")
+    expect(
+      screen.queryByText("Newline at end of file changed")
+    ).not.toBeInTheDocument()
   })
 })
 

@@ -10,6 +10,9 @@
     "settingsDescription": "عرض بطاقات ومخططات HTML/CSS مكتفية ذاتياً ضمن ردود الذكاء الاصطناعي. تُحظر نصوص النموذج والموارد الخارجية.",
     "settingsEnable": "تفعيل عرض HTML المنسق"
   },
+  "DiffViewer": {
+    "eofNewlineChanged": "تغيّر سطر جديد في نهاية الملف"
+  },
   "Language": {
     "followSystem": "اتباع النظام",
     "english": "الإنجليزية",

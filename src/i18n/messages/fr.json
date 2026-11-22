@@ -10,6 +10,9 @@
     "settingsDescription": "Afficher des cartes et diagrammes HTML/CSS autonomes dans les réponses de l’IA. Les scripts du modèle et les ressources externes sont bloqués.",
     "settingsEnable": "Activer le rendu HTML enrichi"
   },
+  "DiffViewer": {
+    "eofNewlineChanged": "Saut de ligne en fin de fichier modifié"
+  },
   "Language": {
     "followSystem": "Suivre le système",
     "english": "Anglais",

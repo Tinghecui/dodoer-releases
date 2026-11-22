@@ -10,6 +10,9 @@
     "settingsDescription": "Muestra tarjetas y diagramas HTML/CSS autocontenidos en las respuestas de la IA. Se bloquean los scripts del modelo y los recursos externos.",
     "settingsEnable": "Activar renderizado HTML enriquecido"
   },
+  "DiffViewer": {
+    "eofNewlineChanged": "Cambió el salto de línea al final del archivo"
+  },
   "Language": {
     "followSystem": "Seguir el sistema",
     "english": "Inglés",

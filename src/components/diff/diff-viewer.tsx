@@ -10,6 +10,7 @@ import {
 } from "react"
 import dynamic from "next/dynamic"
 import { ChevronLeft, ChevronRight } from "lucide-react"
+import { useTranslations } from "next-intl"
 import { useMonaco } from "@monaco-editor/react"
 import type { DiffOnMount, OnMount } from "@monaco-editor/react"
 import type { editor as MonacoEditorNs } from "monaco-editor"
@@ -120,6 +121,7 @@ export function DiffViewer({
   language = "plaintext",
   className,
 }: DiffViewerProps) {
+  const t = useTranslations("DiffViewer")
   // Conditionally mounted (only when a diff is shown), so useMonaco() here is
   // already lazy — Monaco is loading for this editor anyway.
   const monaco = useMonaco()
@@ -303,29 +305,79 @@ export function DiffViewer({
         deletions: countLines(original),
       }
     }
+    // Monaco also treats a final newline as starting one more (blank) line, so
+    // when only one side ends with a newline its blank last line shows up in
+    // the change ("edited line" → "edited linesecond line\n" comes back as
+    // original 1-1 → modified 1-2, #1252). Clamp each range to the side's real
+    // line count so that blank line is not counted, the same as git.
+    const origLines = countLines(original)
+    const modLines = countLines(modified)
+    const span = (start: number, end: number, lines: number) =>
+      Math.max(0, Math.min(end, lines) - start + 1)
+    // Whether a side's last real line falls in a counted range.
+    const covers = (start: number, end: number, lines: number) =>
+      start <= lines && Math.min(end, lines) >= lines
+    // Only one side ends with a newline: git compares lines with their
+    // newlines, so the last line of the side without one ("a" vs "a\n")
+    // never equals a line on the other side.
+    const eofDiffers = original.endsWith("\n") !== modified.endsWith("\n")
+    const noNewlineIsOriginal = !original.endsWith("\n")
+    let noNewlineLastCounted = false
     let add = 0
     let del = 0
     for (const change of diffChanges) {
       // Monaco ILineChange: endLineNumber === 0 means no lines on that side
       // Pure insertion: originalEndLineNumber === 0
       // Pure deletion: modifiedEndLineNumber === 0
-      const isInsertion = change.originalEndLineNumber === 0
-      const isDeletion = change.modifiedEndLineNumber === 0
-
-      if (isInsertion) {
-        add += change.modifiedEndLineNumber - change.modifiedStartLineNumber + 1
-      } else if (isDeletion) {
-        del += change.originalEndLineNumber - change.originalStartLineNumber + 1
-      } else {
-        del += change.originalEndLineNumber - change.originalStartLineNumber + 1
-        add += change.modifiedEndLineNumber - change.modifiedStartLineNumber + 1
+      if (change.originalEndLineNumber !== 0) {
+        del += span(
+          change.originalStartLineNumber,
+          change.originalEndLineNumber,
+          origLines
+        )
+        if (noNewlineIsOriginal) {
+          noNewlineLastCounted ||= covers(
+            change.originalStartLineNumber,
+            change.originalEndLineNumber,
+            origLines
+          )
+        }
       }
+      if (change.modifiedEndLineNumber !== 0) {
+        add += span(
+          change.modifiedStartLineNumber,
+          change.modifiedEndLineNumber,
+          modLines
+        )
+        if (!noNewlineIsOriginal) {
+          noNewlineLastCounted ||= covers(
+            change.modifiedStartLineNumber,
+            change.modifiedEndLineNumber,
+            modLines
+          )
+        }
+      }
+    }
+    // If Monaco left that last line unchanged, it paired it with an equal
+    // line on the other side, which git sees as a rewrite: one line on each
+    // side ("a" → "a\n" is +1 -1). If a change already covers it, git agrees
+    // with Monaco and nothing is added ("a\n" → "a\nb" stays +1 -0).
+    if (eofDiffers && !noNewlineLastCounted) {
+      del += 1
+      add += 1
     }
     return { additions: add, deletions: del }
   }, [diffChanges, original, modified])
 
   // A one-sided diff is a single change; there is nothing to step through.
   const changeCount = oneSided ? 1 : diffChanges.length
+
+  // Only one side ends with a newline: git marks this "\\ No newline at end of
+  // file"; the counts above count it the way git does, and this says why.
+  const eofNewlineChanged =
+    !oneSided &&
+    original !== "" &&
+    original.endsWith("\n") !== modified.endsWith("\n")
 
   return (
     <div className={cn("flex h-full flex-col", className)}>
@@ -342,6 +394,11 @@ export function DiffViewer({
             <span>
               {changeCount} {changeCount === 1 ? "change" : "changes"}
             </span>
+            {eofNewlineChanged && (
+              <span className="rounded border border-border px-1 text-3xs">
+                {t("eofNewlineChanged")}
+              </span>
+            )}
             <div className="ml-auto flex items-center gap-1">
               <button
                 type="button"

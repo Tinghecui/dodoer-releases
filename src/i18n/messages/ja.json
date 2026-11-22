@@ -10,6 +10,9 @@
     "settingsDescription": "AI の返信内に自己完結した HTML/CSS カードや図を表示します。モデルのスクリプトと外部リソースはブロックされます。",
     "settingsEnable": "リッチ HTML 表示を有効化"
   },
+  "DiffViewer": {
+    "eofNewlineChanged": "ファイル末尾の改行が変更されました"
+  },
   "Language": {
     "followSystem": "システムに従う",
     "english": "英語",

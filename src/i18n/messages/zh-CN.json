@@ -10,6 +10,9 @@
     "settingsDescription": "在 AI 回复正文中直接展示自包含的 HTML/CSS 卡片和图表，不运行模型脚本或加载外部资源。",
     "settingsEnable": "启用富 HTML 渲染"
   },
+  "DiffViewer": {
+    "eofNewlineChanged": "文件末尾换行有变化"
+  },
   "Language": {
     "followSystem": "跟随系统",
     "english": "英语",

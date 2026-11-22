@@ -90,6 +90,13 @@ pub enum AcpError {
     /// notification's detail under the localized headline.
     #[error("{0}")]
     AgentRuntimeOutdated(String),
+    /// Cowork 加的（#1111）：智能体装上了但没装完整，起不来。codex-acp 驱动的嵌套
+    /// `@openai/codex` 缺了本机平台的可选依赖（`@openai/codex-linux-x64` 这类），
+    /// claude 的原生程序没装上，都是这样：进程一拉起就退出，报错是整段 Node 调用栈。
+    /// 按报错文字认出来（`acp::connection::agent_install_is_broken`）。带的是智能体的
+    /// 原文（去掉启动元数据），前端按代码显示一句人话，原文放第二行。
+    #[error("{0}")]
+    AgentInstallBroken(String),
     /// A prompt for a conversation the user moved to another folder arrived on
     /// a connection that was started in the folder it left. Sending it would
     /// run the turn in the old directory, so it is refused before any side
@@ -156,6 +163,11 @@ impl AcpError {
         Self::AgentAuthRequired(sanitize_protocol_message(&raw.into()))
     }
 
+    /// [`Self::AgentInstallBroken`]，和 [`Self::protocol`] 一样去掉启动元数据。
+    pub fn agent_install_broken(raw: impl Into<String>) -> Self {
+        Self::AgentInstallBroken(sanitize_protocol_message(&raw.into()))
+    }
+
     /// [`Self::PromptImagesTooLarge`] for images that come to `encoded_bytes`
     /// once base64-encoded, against a cap of `limit_bytes`. The wording is
     /// read by `src/lib/prompt-images-too-large.ts`: keep the two in step.
@@ -193,6 +205,7 @@ impl AcpError {
             Self::McpRejectedByAgent(_) => Some("mcp_rejected_by_agent"),
             Self::AgentAuthRequired(_) => Some("agent_auth_required"),
             Self::AgentRuntimeOutdated(_) => Some("agent_runtime_outdated"),
+            Self::AgentInstallBroken(_) => Some("agent_install_broken"),
             Self::ConversationMoved { .. } => Some("conversation_moved"),
             Self::PromptImagesTooLarge(_) => Some("prompt_images_too_large"),
             Self::SessionLost => Some("session_lost"),
@@ -217,7 +230,8 @@ impl From<AcpError> for AppCommandError {
             | AcpError::ConversationMoved { .. } => AppErrorCode::InvalidInput,
             AcpError::SdkNotInstalled(_)
             | AcpError::PlatformNotSupported(_)
-            | AcpError::AgentRuntimeOutdated(_) => AppErrorCode::DependencyMissing,
+            | AcpError::AgentRuntimeOutdated(_)
+            | AcpError::AgentInstallBroken(_) => AppErrorCode::DependencyMissing,
             AcpError::PiProjectTrustRequired(_) => AppErrorCode::PermissionDenied,
             // agent 登录失效（如中继令牌过期）留 500：这是要在 Sentry 里看得见的事。
             AcpError::SpawnFailed(_)
@@ -373,6 +387,7 @@ mod tests {
             AcpError::SdkNotInstalled("claude is not installed".into()),
             AcpError::PlatformNotSupported("plan9".into()),
             AcpError::AgentRuntimeOutdated("upgrade pi".into()),
+            AcpError::agent_install_broken("Missing optional dependency @openai/codex-linux-x64"),
         ] {
             let label = format!("{err:?}");
             assert_eq!(kind(err).0, AppErrorCode::DependencyMissing, "{label}");

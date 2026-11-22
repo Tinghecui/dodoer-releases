@@ -177,6 +177,7 @@ import {
 import { rememberAdvertisedCommands } from "@/lib/advertised-commands-store"
 import { rememberModelLabels } from "@/lib/model-label-store"
 import { useActiveFolder } from "@/contexts/active-folder-context"
+import { agentInstallBrokenTextKey } from "@/lib/cowork/agent-install"
 import { useCoworkText } from "@/lib/cowork/i18n"
 import {
   appendModelSwitch,
@@ -5323,6 +5324,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           return t("backendErrors.agentRuntimeOutdated", {
             agent: agentLabel,
           })
+        // Cowork 加的（#1111）：没装完整。门户后面让员工找管理员重装；智能体的
+        // 原文（Node 调用栈）不进这句，作为第二行跟着（`routeAcpError`）。
+        case "agent_install_broken":
+          return coworkT(agentInstallBrokenTextKey(), { agent: agentLabel })
         case "sdk_not_installed":
           return t("blocked.sdkMissing", { agent: agentLabel })
         case "platform_not_supported":
@@ -5444,11 +5449,15 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       const route = routeAcpError(code)
       const text = localizeBackendError(code, message, agentLabel, agentType)
       const raw = message.trim()
+      const extra = raw && raw !== text ? raw : undefined
+      // 原文要折叠的（#1111），放在后端给的证据前面，一起收进折叠区。
+      const folded = route.rawAsEvidence ? extra : undefined
       return {
         route,
         text,
-        reason: route.rawAsDetail && raw && raw !== text ? raw : undefined,
-        evidence: details?.trim() || undefined,
+        reason: route.rawAsDetail ? extra : undefined,
+        evidence:
+          [folded, details?.trim()].filter(Boolean).join("\n\n") || undefined,
       }
     },
     [localizeBackendError]

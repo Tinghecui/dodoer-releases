@@ -36,6 +36,11 @@ export interface AcpErrorRoute {
    * instead of being lost.
    */
   rawAsDetail: boolean
+  /**
+   * Cowork 加的（#1111）：原文是机器输出（比如 Node 调用栈），不当弹窗的第二行，
+   * 而是收进警报列表那条的折叠区（`evidence`），默认收起。
+   */
+  rawAsEvidence?: boolean
   /** The fix lives in the agent's own settings panel (install, update,
    *  configure), so the notification offers to open it. */
   opensAgentSettings?: boolean
@@ -55,6 +60,16 @@ const ROUTES: Readonly<Record<string, AcpErrorRoute>> = {
     kind: "session",
     level: "error",
     rawAsDetail: true,
+    opensAgentSettings: true,
+  },
+  // Cowork 加的（#1111）：智能体没装完整（比如 Codex 缺本机平台的程序包），一拉起
+  // 就退出。本地化的那句只说没装完整、该找谁重装；智能体的原文（Node 调用栈）
+  // 折叠在第二行（警报列表的折叠区），不进弹窗正文。
+  agent_install_broken: {
+    kind: "session",
+    level: "error",
+    rawAsDetail: false,
+    rawAsEvidence: true,
     opensAgentSettings: true,
   },
   // The session could not be restored and the agent started a new one. It is

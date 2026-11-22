@@ -170,6 +170,24 @@ export function TerminalTabBar({
     setTimeout(() => inputRef.current?.select(), 0)
   }
 
+  // 标签多了在自己的滚动区里横向滚：切到哪个标签，只把这个滚动区滚到让它
+  // 露出来。不用 scrollIntoView，它会顺带把外面 overflow-hidden 的面板也横着
+  // 滚开，整块终端左移、按钮被挤走（#1283）。
+  const stripRef = useRef<HTMLDivElement>(null)
+  const tabRefs = useRef(new Map<string, HTMLDivElement>())
+  useEffect(() => {
+    const strip = stripRef.current
+    const el = activeTabId ? tabRefs.current.get(activeTabId) : undefined
+    if (!strip || !el) return
+    const left = el.offsetLeft
+    const right = left + el.offsetWidth
+    if (left < strip.scrollLeft) {
+      strip.scrollLeft = left
+    } else if (right > strip.scrollLeft + strip.clientWidth) {
+      strip.scrollLeft = right - strip.clientWidth
+    }
+  }, [activeTabId, tabs.length])
+
   const commitRename = () => {
     if (editingId && editValue.trim()) {
       renameTerminal(editingId, editValue.trim())
@@ -178,85 +196,95 @@ export function TerminalTabBar({
   }
 
   return (
-    <div className="flex items-center h-8 bg-muted/50 border-b gap-0.5 px-1 shrink-0">
-      {tabs.map((tab) => (
-        <ContextMenu key={tab.id}>
-          <ContextMenuTrigger asChild>
-            <div
-              className={`flex items-center gap-1 h-6 px-2 rounded-sm text-xs cursor-pointer select-none ${
-                tab.id === activeTabId
-                  ? "bg-background text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              }`}
-              onClick={() => switchTerminal(tab.id)}
-              onMouseDown={(event) => {
-                if (editingId === tab.id) return
-                handleMiddleClickClose(event, () => requestCloseOne(tab))
-              }}
-              title={`${folderIndex.get(tab.folderId) ?? String(tab.folderId)}  —  ${tab.title}`}
-            >
-              {editingId === tab.id ? (
-                <input
-                  ref={inputRef}
-                  className="bg-transparent outline-none border border-primary/50 rounded px-0.5 w-20 text-xs"
-                  value={editValue}
-                  onChange={(e) => setEditValue(e.target.value)}
-                  {...ime.props}
-                  onBlur={commitRename}
-                  onKeyDown={(e) => {
-                    if (ime.isComposing(e)) return
-                    if (e.key === "Enter") commitRename()
-                    if (e.key === "Escape") setEditingId(null)
-                  }}
-                />
-              ) : (
-                <span className="truncate max-w-[7.5rem]">{tab.title}</span>
-              )}
-              <button
-                type="button"
-                className="ml-1 rounded-sm hover:bg-muted-foreground/20 p-0.5"
-                // Cowork: an icon-only control needs its own name — every tab's
-                // close button used to be an unnamed "button" to assistive tech.
-                aria-label={t("closeTab", { title: tab.title })}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  requestCloseOne(tab)
+    <div className="flex items-center h-8 w-full min-w-0 bg-muted/50 border-b gap-0.5 px-1 shrink-0">
+      {/* 标签区自己横向滚动，宽度不超过面板；后面的按钮在滚动区外面（#1283）。 */}
+      <div
+        ref={stripRef}
+        className="relative flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overflow-y-hidden scrollbar-thin"
+      >
+        {tabs.map((tab) => (
+          <ContextMenu key={tab.id}>
+            <ContextMenuTrigger asChild>
+              <div
+                ref={(el) => {
+                  if (el) tabRefs.current.set(tab.id, el)
+                  else tabRefs.current.delete(tab.id)
                 }}
+                className={`flex shrink-0 items-center gap-1 h-6 px-2 rounded-sm text-xs cursor-pointer select-none ${
+                  tab.id === activeTabId
+                    ? "bg-background text-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                }`}
+                onClick={() => switchTerminal(tab.id)}
+                onMouseDown={(event) => {
+                  if (editingId === tab.id) return
+                  handleMiddleClickClose(event, () => requestCloseOne(tab))
+                }}
+                title={`${folderIndex.get(tab.folderId) ?? String(tab.folderId)}  —  ${tab.title}`}
               >
-                <X className="h-3 w-3" aria-hidden />
-              </button>
-            </div>
-          </ContextMenuTrigger>
-          <ContextMenuContent>
-            <ContextMenuItem onSelect={() => startRename(tab.id, tab.title)}>
-              {t("rename")}
-            </ContextMenuItem>
-            <ContextMenuSeparator />
-            <ContextMenuItem onSelect={() => requestCloseOne(tab)}>
-              {t("close")}
-            </ContextMenuItem>
-            <ContextMenuItem
-              onSelect={() =>
-                requestCloseMany(
-                  tabs.filter((other) => other.id !== tab.id),
-                  tab.id,
-                  () => closeOtherTerminals(tab.id)
-                )
-              }
-              disabled={tabs.length <= 1}
-            >
-              {t("closeOthers")}
-            </ContextMenuItem>
-            <ContextMenuItem
-              onSelect={() =>
-                requestCloseMany(tabs, null, () => closeAllTerminals())
-              }
-            >
-              {t("closeAll")}
-            </ContextMenuItem>
-          </ContextMenuContent>
-        </ContextMenu>
-      ))}
+                {editingId === tab.id ? (
+                  <input
+                    ref={inputRef}
+                    className="bg-transparent outline-none border border-primary/50 rounded px-0.5 w-20 text-xs"
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    {...ime.props}
+                    onBlur={commitRename}
+                    onKeyDown={(e) => {
+                      if (ime.isComposing(e)) return
+                      if (e.key === "Enter") commitRename()
+                      if (e.key === "Escape") setEditingId(null)
+                    }}
+                  />
+                ) : (
+                  <span className="truncate max-w-[7.5rem]">{tab.title}</span>
+                )}
+                <button
+                  type="button"
+                  className="ml-1 rounded-sm hover:bg-muted-foreground/20 p-0.5"
+                  // Cowork: an icon-only control needs its own name — every tab's
+                  // close button used to be an unnamed "button" to assistive tech.
+                  aria-label={t("closeTab", { title: tab.title })}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    requestCloseOne(tab)
+                  }}
+                >
+                  <X className="h-3 w-3" aria-hidden />
+                </button>
+              </div>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem onSelect={() => startRename(tab.id, tab.title)}>
+                {t("rename")}
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              <ContextMenuItem onSelect={() => requestCloseOne(tab)}>
+                {t("close")}
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() =>
+                  requestCloseMany(
+                    tabs.filter((other) => other.id !== tab.id),
+                    tab.id,
+                    () => closeOtherTerminals(tab.id)
+                  )
+                }
+                disabled={tabs.length <= 1}
+              >
+                {t("closeOthers")}
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() =>
+                  requestCloseMany(tabs, null, () => closeAllTerminals())
+                }
+              >
+                {t("closeAll")}
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+        ))}
+      </div>
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -309,7 +337,7 @@ export function TerminalTabBar({
       <Button
         variant="ghost"
         size="icon"
-        className="h-6 w-6 shrink-0 ml-auto"
+        className="h-6 w-6 shrink-0"
         onClick={toggle}
         title={t("hideTerminal", {
           shortcut: formatShortcutLabel(shortcuts.toggle_terminal, isMac),

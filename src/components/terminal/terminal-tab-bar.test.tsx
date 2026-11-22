@@ -24,6 +24,7 @@ const busy = vi.hoisted(() => ({
 const folder = vi.hoisted(() => ({ activeFolderId: 1 as number | null }))
 const shown = vi.hoisted(() => ({
   visibleTabs: null as null | { id: string; title: string; folderId: number }[],
+  activeTabId: "t1",
 }))
 
 const allTabs = [
@@ -35,7 +36,7 @@ vi.mock("@/contexts/terminal-context", () => ({
   useTerminalContext: () => ({
     tabs: allTabs,
     visibleTabs: shown.visibleTabs ?? allTabs,
-    activeTabId: "t1",
+    activeTabId: shown.activeTabId,
     switchTerminal: () => {},
     closeTerminal: terminal.closeTerminal,
     closeOtherTerminals: terminal.closeOtherTerminals,
@@ -293,5 +294,78 @@ describe("TerminalTabBar close confirmation", () => {
     )
     expect(terminal.closeTerminal).toHaveBeenCalledTimes(1)
     expect(terminal.closeOtherTerminals).not.toHaveBeenCalled()
+  })
+})
+
+// #1283：标签多了以后标签栏不能把整块终端面板撑宽、横着滚开；标签在自己的
+// 滚动区里横向滚动，新建、隐藏这些按钮在滚动区外面一直看得到。
+describe("TerminalTabBar overflow", () => {
+  const manyTabs = Array.from({ length: 8 }, (_, i) => ({
+    id: `t${i + 1}`,
+    title: `Terminal ${i + 1}`,
+    folderId: 1,
+  }))
+
+  beforeEach(() => {
+    shown.visibleTabs = manyTabs
+    shown.activeTabId = "t1"
+  })
+
+  it("keeps the tabs in their own horizontal scroller, buttons outside it", () => {
+    renderBar()
+    const firstTab = screen.getByText("Terminal 1").closest("[title]")!
+    const scroller = firstTab.parentElement!
+    expect(scroller).toHaveClass("overflow-x-auto", "min-w-0", "flex-1")
+    for (const tab of manyTabs) {
+      expect(scroller).toContainElement(screen.getByText(tab.title))
+    }
+    expect(firstTab).toHaveClass("shrink-0")
+    const newButton = screen.getByRole("button", { name: "New Terminal" })
+    expect(scroller).not.toContainElement(newButton)
+    const hide = screen.getByTitle(/Hide Terminal/)
+    expect(scroller).not.toContainElement(hide)
+    // 外层不比面板宽：min-w-0 让它能缩
+    expect(scroller.parentElement).toHaveClass("min-w-0")
+  })
+
+  it("scrolls the tab strip itself, not its ancestors, to the active tab", () => {
+    const view = renderBar()
+    const scroller = screen.getByText("Terminal 1").closest("[title]")!
+      .parentElement as HTMLElement
+    const panel = scroller.parentElement as HTMLElement
+    // jsdom 没有布局：给滚动区 200px 宽，每个标签 100px 宽、依次排开。
+    Object.defineProperty(scroller, "clientWidth", { value: 200 })
+    manyTabs.forEach((tab, i) => {
+      const el = screen.getByText(tab.title).closest("[title]") as HTMLElement
+      Object.defineProperty(el, "offsetLeft", { value: i * 100 })
+      Object.defineProperty(el, "offsetWidth", { value: 100 })
+    })
+    const intoView = vi
+      .spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(() => {})
+    try {
+      shown.activeTabId = "t7"
+      view.rerender(
+        <NextIntlClientProvider locale="en" messages={enMessages}>
+          <TerminalTabBar />
+        </NextIntlClientProvider>
+      )
+      // 第 7 个标签在 600～700：滚到 500 让它贴着右边露出来。
+      expect(scroller.scrollLeft).toBe(500)
+      expect(panel.scrollLeft).toBe(0)
+      // 不用 scrollIntoView：它会顺带把外面 overflow-hidden 的容器也滚开。
+      expect(intoView).not.toHaveBeenCalled()
+
+      shown.activeTabId = "t1"
+      view.rerender(
+        <NextIntlClientProvider locale="en" messages={enMessages}>
+          <TerminalTabBar />
+        </NextIntlClientProvider>
+      )
+      expect(scroller.scrollLeft).toBe(0)
+    } finally {
+      intoView.mockRestore()
+      shown.activeTabId = "t1"
+    }
   })
 })

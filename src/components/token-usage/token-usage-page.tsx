@@ -512,20 +512,6 @@ export function TokenUsagePage() {
     }
   }, [])
 
-  // 侧栏的会话列表变了（本窗口或别的客户端删了、新建了会话，#1194）：
-  // 单个会话的删除不发 bulk-changed，页面一直开着就停在旧数。跟着 store
-  // 里的会话个数重读；挂载时的值不算，连删几条合成一次（防抖 300ms）。
-  const conversationCount = useAppWorkspaceStore((s) => s.conversations.length)
-  const lastCountRef = useRef(conversationCount)
-  useEffect(() => {
-    if (lastCountRef.current === conversationCount) return
-    lastCountRef.current = conversationCount
-    const timer = setTimeout(() => {
-      void loadRef.current()
-    }, 300)
-    return () => clearTimeout(timer)
-  }, [conversationCount])
-
   const runSync = useCallback(
     async (mode: "incremental" | "full", opts?: { silent?: boolean }) => {
       setSyncing(true)
@@ -547,6 +533,136 @@ export function TokenUsagePage() {
       }
     },
     [load, t]
+  )
+
+  // 侧栏的会话列表变了就重读：本窗口或别的客户端删了、新建了会话（#1194），
+  // 单个会话的删除不发 bulk-changed，页面一直开着就停在旧数；改了标题（#1211），
+  // 报表里的标题是出报表时现取的，重读一次就对。签名是各会话的 id 加标题，
+  // 新建、删除、改名都会变；挂载时的值不算，连着几次合成一次（防抖 300ms）。
+  const listSignature = useAppWorkspaceStore((s) =>
+    s.conversations.map((c) => `${c.id}\u0000${c.title ?? ""}`).join("\u0001")
+  )
+  const lastListSigRef = useRef(listSignature)
+  useEffect(() => {
+    if (lastListSigRef.current === listSignature) return
+    lastListSigRef.current = listSignature
+    const timer = setTimeout(() => {
+      void loadRef.current()
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [listSignature])
+
+  // 页面开着时一轮聊完（#1211）：这一轮的 token 要增量同步进明细表才算得上，
+  // 只重读还是 0。会话离开「进行中」、或不在进行中的会话 updated_at 变了，
+  // 就静默增量同步一次（它结束时会重读）。连续的变化合成一次（防抖 1s）；
+  // 本页的同步还没跑完时不再起第二个（后端会报「已经在同步」），跑完再补一次。
+  // 别的窗口正在同步时也先不起：那次同步可能在这一轮结束前就开始了，
+  // 等它结束（状态不再是 running）再补一次。
+  // 改名也会改 updated_at，标题跟着变了的那次不算回合结束，所以签名里带上标题。
+  const turnSignature = useAppWorkspaceStore((s) =>
+    s.conversations
+      .map(
+        (c) =>
+          `${c.id}\u0000${c.status}\u0000${c.updated_at}\u0000${c.title ?? ""}`
+      )
+      .join("\u0001")
+  )
+  const lastTurnRef = useRef<
+    Map<number, { status: string; updated: string; title: string }>
+  >(new Map())
+  const turnSeededRef = useRef(false)
+  const runSyncRef = useRef(runSync)
+  useEffect(() => {
+    runSyncRef.current = runSync
+  }, [runSync])
+  const statusRef = useRef(status)
+  useEffect(() => {
+    statusRef.current = status
+  }, [status])
+  const syncingRef = useRef(syncing)
+  useEffect(() => {
+    syncingRef.current = syncing
+  }, [syncing])
+  const autoSyncInFlightRef = useRef(false)
+  const autoSyncPendingRef = useRef(false)
+  const autoSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 别的窗口在同步时来的请求，等它结束再补
+  const autoSyncAfterExternalRef = useRef(false)
+  const autoSync = useCallback(async () => {
+    autoSyncTimerRef.current = null
+    if (autoSyncInFlightRef.current) {
+      autoSyncPendingRef.current = true
+      return
+    }
+    if (statusRef.current?.running) {
+      autoSyncAfterExternalRef.current = true
+      return
+    }
+    // 用户手点的刷新还在跑：等它跑完再来
+    if (syncingRef.current) {
+      autoSyncTimerRef.current = setTimeout(() => {
+        void autoSync()
+      }, 1000)
+      return
+    }
+    autoSyncInFlightRef.current = true
+    try {
+      do {
+        autoSyncPendingRef.current = false
+        await runSyncRef.current("incremental", { silent: true })
+      } while (autoSyncPendingRef.current)
+    } finally {
+      autoSyncInFlightRef.current = false
+    }
+  }, [])
+  useEffect(() => {
+    const next = new Map<
+      number,
+      { status: string; updated: string; title: string }
+    >()
+    for (const c of useAppWorkspaceStore.getState().conversations)
+      next.set(c.id, {
+        status: c.status,
+        updated: c.updated_at,
+        title: c.title ?? "",
+      })
+    const prev = lastTurnRef.current
+    lastTurnRef.current = next
+    if (!turnSeededRef.current) {
+      turnSeededRef.current = true
+      return
+    }
+    let finished = false
+    for (const [id, cur] of next) {
+      const before = prev.get(id)
+      if (!before || cur.status === "in_progress") continue
+      if (
+        before.status === "in_progress" ||
+        // 只是改了名（标题变了，状态没变）：后端顺带改的 updated_at 不算
+        (before.updated !== cur.updated && before.title === cur.title)
+      ) {
+        finished = true
+        break
+      }
+    }
+    if (!finished) return
+    // 不放进 effect 的清理：之后来一个不相干的变化不能把这次同步取消掉
+    if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current)
+    autoSyncTimerRef.current = setTimeout(() => {
+      void autoSync()
+    }, 1000)
+  }, [turnSignature, autoSync])
+  // 别的窗口的同步结束了（进度事件让本页重读，状态不再是 running），补上之前搁下的那次
+  useEffect(() => {
+    if (!autoSyncAfterExternalRef.current || !status || status.running) return
+    autoSyncAfterExternalRef.current = false
+    void autoSync()
+  }, [status, autoSync])
+  useEffect(
+    () => () => {
+      if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current)
+    },
+    []
   )
 
   // Catch the facts up once per page mount when they are behind the

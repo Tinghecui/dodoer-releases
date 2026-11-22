@@ -670,4 +670,35 @@ describe("WebTransport.call when the server rate-limits (429)", () => {
     expect(await result).toMatchObject({ code: "rate_limited" })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
+
+  // 团队服务（cowork_team）限流时回 `{ error: { code, message } }`，message 是
+  // 能直接给人看的原因，不能被换成通用的「请求太频繁」。
+  it("keeps the server's own message from a JSON 429 body", async () => {
+    const t = new WebTransport("http://localhost")
+    fetchMock.mockResolvedValue({
+      ...resp429("0"),
+      json: async () => ({
+        error: { code: "rate_limited", message: "留言太频繁，1 分钟后再试" },
+      }),
+    })
+    const result = t.call("cowork_team", { op: "comment_add" })
+    const settled = result.catch((e: unknown) => e)
+    await vi.runAllTimersAsync()
+    expect(await settled).toEqual({
+      code: "rate_limited",
+      message: "留言太频繁，1 分钟后再试",
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps a flat { code, message } 429 body's message too", async () => {
+    const t = new WebTransport("http://localhost")
+    fetchMock.mockResolvedValue({
+      ...resp429("0"),
+      json: async () => ({ code: "rate_limited", message: "慢一点" }),
+    })
+    const result = t.call("create_folder_group").catch((e: unknown) => e)
+    await vi.runAllTimersAsync()
+    expect(await result).toEqual({ code: "rate_limited", message: "慢一点" })
+  })
 })

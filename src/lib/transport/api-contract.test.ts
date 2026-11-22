@@ -19,6 +19,7 @@ import { dirname, join } from "node:path"
 import { afterAll, describe, expect, it } from "vitest"
 import {
   CONTRACT_FILE,
+  FRONT_PROXY_COMMANDS,
   ROOT,
   UNKNOWN_CALLER,
   WEB,
@@ -96,6 +97,14 @@ describe("api-contract.json against the sources", () => {
 
   it("has a route for every command and URL the frontend sends", () => {
     expect(built.problems).toEqual([])
+  })
+
+  it("lets through only the commands a proxy in front of the server answers", () => {
+    // cowork_team 由 CoTeam 的 nginx 回答，server 上没有它也不算对不上。
+    expect(Object.keys(FRONT_PROXY_COMMANDS)).toEqual(["cowork_team"])
+    expect(frontendCalls().commands.has("cowork_team")).toBe(true)
+    for (const caller of Object.values(FRONT_PROXY_COMMANDS))
+      expect(caller).toBeTruthy()
   })
 
   it("names who calls each route the frontend does not", () => {

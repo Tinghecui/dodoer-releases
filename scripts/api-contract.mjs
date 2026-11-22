@@ -31,6 +31,15 @@ export const WEB = "web"
 export const UNKNOWN_CALLER = "?"
 /** Transports that pass on a command they were given; their `call(command)` is not a call site. */
 export const FORWARDERS = ["src/lib/transport/local-daemon-transport.ts"]
+/**
+ * 前端经 transport 调、但不由 codeg-server 回答的命令：CoTeam 部署时由 server
+ * 前面的 nginx 接走（桌面远程窗口的 Rust 代发也经过它）。没有 nginx 时 server
+ * 回 501，前端当作这项功能不可用。值写明谁回答它。server 自己挂上了同名路由时
+ * 照常按路由算。
+ */
+export const FRONT_PROXY_COMMANDS = {
+  cowork_team: "CoTeam 的 nginx（会话分享，src/lib/cowork/team.ts）",
+}
 
 const read = (root, rel) => readFileSync(join(root, rel), "utf8")
 
@@ -568,6 +577,7 @@ export function buildContract(root = ROOT, previous = readContract(root)) {
   for (const [command, places] of front.commands) {
     const route = `POST /api/${command}`
     if (routes.includes(route)) webRoutes.add(route)
+    else if (Object.hasOwn(FRONT_PROXY_COMMANDS, command)) continue
     else if (routes.some((r) => r.endsWith(` /api/${command}`)))
       problems.push(
         `前端经 transport 调 ${command}（${places[0]}），transport 发的是 POST，server 上它不是`

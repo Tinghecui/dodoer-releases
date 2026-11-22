@@ -60,8 +60,16 @@ function rateLimitDelayMs(retryAfter: string | null, attempt: number): number {
   return RATE_LIMIT_BASE_DELAY_MS * 2 ** attempt + jitter
 }
 
-/** 限流时抛给调用方的错误：`rate_limited`，文字是看得懂的「请求太频繁」。 */
-function rateLimitedError(): { code: string; message: string } {
+/**
+ * 限流时抛给调用方的错误：`rate_limited`。服务端在响应体里写了原因的
+ * （团队服务是 `{ error: { code, message } }`，codeg 是 `{ code, message }`），
+ * 照抄它的文字；没写（nginx 自己的 HTML 页）就用看得懂的「请求太频繁」。
+ */
+function rateLimitedError(serverMessage: string | null): {
+  code: string
+  message: string
+} {
+  if (serverMessage) return { code: RATE_LIMITED_CODE, message: serverMessage }
   const locale =
     typeof document === "undefined" ? "en" : document.documentElement.lang
   return {
@@ -70,9 +78,25 @@ function rateLimitedError(): { code: string; message: string } {
   }
 }
 
+/** 从 429 的响应体里取服务端写的原因；不是 JSON 或没写就是 null。 */
+function rateLimitMessage(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null
+  const r = body as Record<string, unknown>
+  const nested =
+    r.error && typeof r.error === "object"
+      ? (r.error as Record<string, unknown>)
+      : null
+  const message = nested?.message ?? r.message
+  return typeof message === "string" && message.trim() !== "" ? message : null
+}
+
 type CallOutcome<T> =
   | { kind: "ok"; value: T }
-  | { kind: "rateLimited"; retryAfter: string | null }
+  | {
+      kind: "rateLimited"
+      retryAfter: string | null
+      serverMessage: string | null
+    }
 // Upper bound on how long `subscribe()` will wait for the server `__ready__`
 // frame. Generous enough to cover slow local servers and remote round-trips
 // (typical: <100ms local, <1s WAN), but bounded so an older server (no
@@ -223,7 +247,7 @@ export class WebTransport implements Transport {
       const outcome = await this.callOnce<T>(command, args, options)
       if (outcome.kind === "ok") return outcome.value
       if (!retryable || attempt >= RATE_LIMIT_MAX_RETRIES) {
-        throw rateLimitedError()
+        throw rateLimitedError(outcome.serverMessage)
       }
       const delay = rateLimitDelayMs(outcome.retryAfter, attempt)
       await new Promise<void>((resolve) => window.setTimeout(resolve, delay))
@@ -290,9 +314,14 @@ export class WebTransport implements Transport {
       throw new Error("Unauthorized")
     }
     if (res.status === 429) {
+      const body: unknown =
+        typeof res.json === "function"
+          ? await res.json().catch(() => null)
+          : null
       return {
         kind: "rateLimited",
         retryAfter: res.headers?.get("retry-after") ?? null,
+        serverMessage: rateLimitMessage(body),
       }
     }
     if (!res.ok) {

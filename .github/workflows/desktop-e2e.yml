@@ -1,5 +1,5 @@
 # 公开镜像 Tinghecui/dodoer-releases：桌面版 e2e（文件在私有仓库 cowork-codeg 的 .github/public/workflows/ 里维护）。
-# 在 GitHub 托管的 macos-15（arm64）和 ubuntu-22.04 上编桌面版的「e2e 测试版」（debug、cargo feature `e2e`、版本号 1.999.0，
+# 在 GitHub 托管的 macos-15（arm64）和 ubuntu-22.04 上（每晚和手动跑时再加 macos-15-intel）编桌面版的「e2e 测试版」（debug、cargo feature `e2e`、版本号 1.999.0，
 # 前端带 @wdio/tauri-plugin），用 WebdriverIO + @wdio/tauri-service 驱动它：macOS 走 app 里内嵌的 WebDriver 服务器，
 # Linux 走官方 tauri-driver。两边跑同一套 spec（scripts/desktop-e2e/specs/，scripts/desktop-e2e/run.sh 按段开几次 app = 退出重开）。
 # macOS 上接着跑更新流程（scripts/desktop-e2e/update/：测试密钥签的 N / N+1 两个包 + 运行机上的假更新源）
@@ -51,8 +51,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 以后加 macos-15-intel、windows-2025（源仓库 ~/work/reports 的方案 P3 / P5）
-        os: [macos-15, ubuntu-22.04]
+        # macos-15-intel（Intel Mac）只在每晚和手动跑时加：Intel 运行机慢（debug 编一遍半小时上下），PR 上每推一次都编一遍不值，
+        # macOS 运行机也和 AI QA Mac 共用。Intel 上跑 DOM 那套和更新流程的 A（升级）、B（回退，PR643 / PR349），不跑原生层。
+        # 以后加 windows-2025（源仓库 ~/work/reports 的方案 P5）。来历：源仓库 .cowork/journal/2026-11-22-e2e-intel.md
+        os: ${{ fromJSON(github.event_name == 'push' && '["macos-15","ubuntu-22.04"]' || '["macos-15","macos-15-intel","ubuntu-22.04"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
     steps:
@@ -85,7 +87,7 @@ jobs:
             src-tauri/target/debug/web
             src-tauri/target/debug/bundle/macos/dodoer.app
             out
-          key: desktop-e2e-bin-v3-${{ runner.os }}-${{ hashFiles('src-tauri/**', 'src/**', 'public/**', 'patches/**', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'rust-toolchain.toml', '*.config.*') }}
+          key: desktop-e2e-bin-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src-tauri/**', 'src/**', 'public/**', 'patches/**', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'rust-toolchain.toml', '*.config.*') }}
 
       - name: Rust 版本（读 rust-toolchain.toml）
         id: toolchain
@@ -257,6 +259,8 @@ jobs:
         env:
           E2E_OUT: ${{ github.workspace }}/e2e-out
           E2E_UPDATE_WORK: ${{ runner.temp }}/e2e-update
+          # Intel 只跑升级和回退（PR643 / PR349 是 Intel 上回退找不到包）；强杀、空闲重启、旧纯客户端版和架构无关，arm64 上跑过就够
+          E2E_UPDATE_PHASES: ${{ runner.arch == 'X64' && 'A B' || 'A B C D E' }}
         run: |
           set -uo pipefail
           mkdir -p e2e-out/update
@@ -270,7 +274,7 @@ jobs:
       # 来历：源仓库 .cowork/journal/2026-11-22-e2e-native-appium.md
       - name: 原生层：装 Appium 4.0.0 + appium-mac2-driver 5.0.7，起 Appium
         id: appium
-        if: ${{ !cancelled() && runner.os == 'macOS' && steps.update-prep.outcome == 'success' }}
+        if: ${{ !cancelled() && runner.os == 'macOS' && runner.arch == 'ARM64' && steps.update-prep.outcome == 'success' }}
         env:
           APPIUM_HOME: ${{ runner.temp }}/appium-home
         run: |

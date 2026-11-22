@@ -771,8 +771,20 @@ try {
       )
       if (main) notes.restartFocus = await focusWindow(main.title)
       // 状态按钮的 aria-label 是「Status · Update …」（cowork/status-indicator.tsx）
-      const STATUS_BTN = `//XCUIElementTypeButton[starts-with(@label, 'Status') or starts-with(@title, 'Status')]`
-      const PILL = `//XCUIElementTypeButton[contains(@title, 'Restart to update') or contains(@label, 'Restart to update')]`
+      // 开弹层的按钮（aria-haspopup）在 AX 里是 PopUpButton，不是 Button：状态按钮的 label 是「Status · update available」；
+      // 药丸是 PopUpButton，弹层里那个「Restart to update」是 Button
+      // 只在主窗口里找（设置窗口在它后面，也有「Restart to update」）
+      const inMain = main
+        ? `//XCUIElementTypeWindow[@title=${JSON.stringify(main.title)}]`
+        : ""
+      const button = (cond) =>
+        `${inMain}//*[(self::XCUIElementTypeButton or self::XCUIElementTypePopUpButton) and (${cond})]`
+      const STATUS_BTN = button(
+        "starts-with(@label, 'Status') or starts-with(@title, 'Status')"
+      )
+      const PILL = button(
+        "contains(@title, 'Restart to update') or contains(@label, 'Restart to update')"
+      )
       const updatePopOpen = () =>
         dom
           .execute(() =>
@@ -801,22 +813,20 @@ try {
         JSON.stringify(appPids()) === JSON.stringify(pidBefore),
         "收起弹层 app 却重启了"
       )
-      // 再开一次，点弹层里的那个「Restart to update」（药丸在下面，弹层在它上面：取 y 最小的）
+      // 再开一次，点弹层里的那个「Restart to update」：它是普通 Button（药丸是 PopUpButton），取看得见的那个
       await escape().catch(() => {})
       await openPill()
-      const buttons = await ax.$$(PILL)
+      const buttons = await ax.$$(
+        `${inMain}//XCUIElementTypeButton[contains(@title, 'Restart to update') or contains(@label, 'Restart to update')]`
+      )
       let target = null
-      let minY = Infinity
       for (const el of buttons) {
         const r = await ax.getElementRect(el.elementId).catch(() => null)
-        if (r && r.y < minY) {
-          minY = r.y
-          target = el
-        }
+        if (r && r.width > 0 && r.height > 0) target = el
       }
       must(
-        buttons.length >= 2 && target,
-        `AX 里「Restart to update」按钮 ${buttons.length} 个`
+        target,
+        `弹层里没有看得见的「Restart to update」按钮（${buttons.length} 个）`
       )
       await target.click()
       const d2 = Date.now() + 240000

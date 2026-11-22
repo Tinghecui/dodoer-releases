@@ -359,6 +359,96 @@ describe("workspace state store when the first start fails", () => {
     expect(callsFor(mockedApi.startWorkspaceStateStream, root)).toBe(1)
     expect(callsFor(mockedApi.stopWorkspaceStateStream, root)).toBe(1)
   })
+
+  // 断网时打开项目，启动请求失败（#1247）：连接重连上以后要自己重新启动，
+  // 不能停在「加载文件列表失败」等人点重试。
+  it("starts again by itself when the connection comes back after a failed first start", async () => {
+    const root = "/machine/firststart4"
+    mockedApi.startWorkspaceStateStream.mockImplementationOnce(() =>
+      Promise.reject(new TypeError("Failed to fetch"))
+    )
+    const store = getWorkspaceStateStore(root)
+    const token = store.acquire("full")
+    await drain()
+    expect(store.getSnapshot().health).toBe("degraded")
+
+    fireReconnect()
+    await drain()
+
+    expect(callsFor(mockedApi.startWorkspaceStateStream, root)).toBe(2)
+    expect(callsFor(mockedApi.stopWorkspaceStateStream, root)).toBe(0)
+    expect(store.getSnapshot().health).toBe("healthy")
+    expect(store.getSnapshot().error).toBeNull()
+
+    store.release(token)
+    await vi.advanceTimersByTimeAsync(700)
+  })
+
+  // 连接没断、只是浏览器离线又上线（不会有重连通知）：靠上线事件兜底。
+  it("starts again by itself when the browser goes back online after a failed first start", async () => {
+    const root = "/machine/firststart5"
+    mockedApi.startWorkspaceStateStream.mockImplementationOnce(() =>
+      Promise.reject(new TypeError("Failed to fetch"))
+    )
+    const store = getWorkspaceStateStore(root)
+    const token = store.acquire("full")
+    await drain()
+    expect(store.getSnapshot().health).toBe("degraded")
+
+    window.dispatchEvent(new Event("online"))
+    await drain()
+
+    expect(callsFor(mockedApi.startWorkspaceStateStream, root)).toBe(2)
+    expect(store.getSnapshot().health).toBe("healthy")
+
+    store.release(token)
+    await vi.advanceTimersByTimeAsync(700)
+  })
+
+  // 重连和上线一起来、或重连通知来了好几次：只重新启动一次，不并发两个启动。
+  it("starts only once when reconnect and online arrive together", async () => {
+    const root = "/machine/firststart6"
+    mockedApi.startWorkspaceStateStream.mockImplementationOnce(() =>
+      Promise.reject(new TypeError("Failed to fetch"))
+    )
+    const store = getWorkspaceStateStore(root)
+    const token = store.acquire("full")
+    await drain()
+
+    fireReconnect()
+    window.dispatchEvent(new Event("online"))
+    fireReconnect()
+    await drain()
+
+    expect(callsFor(mockedApi.startWorkspaceStateStream, root)).toBe(2)
+    expect(store.getSnapshot().health).toBe("healthy")
+
+    // 起来以后再来上线事件，不会再启动一次。
+    window.dispatchEvent(new Event("online"))
+    await drain()
+    expect(callsFor(mockedApi.startWorkspaceStateStream, root)).toBe(2)
+
+    store.release(token)
+    await vi.advanceTimersByTimeAsync(700)
+  })
+
+  // 启动失败、用户已经离开（没人订阅了）：之后重连不再去启动。
+  it("does not start after reconnect once nobody holds the store", async () => {
+    const root = "/machine/firststart7"
+    mockedApi.startWorkspaceStateStream.mockImplementationOnce(() =>
+      Promise.reject(new TypeError("Failed to fetch"))
+    )
+    const store = getWorkspaceStateStore(root)
+    const token = store.acquire("full")
+    await drain()
+    store.release(token)
+    await vi.advanceTimersByTimeAsync(700)
+
+    fireReconnect()
+    window.dispatchEvent(new Event("online"))
+    await drain()
+    expect(callsFor(mockedApi.startWorkspaceStateStream, root)).toBe(1)
+  })
 })
 
 describe("workspace state store when the snapshot read fails", () => {

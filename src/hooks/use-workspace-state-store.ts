@@ -570,6 +570,9 @@ class WorkspaceStateStore {
           health: "degraded",
           error: toErrorMessage(error),
         }))
+        if (this.isLifecycleActive(lifecycleId)) {
+          this.armRestartOnReconnect()
+        }
       }
     }
 
@@ -578,6 +581,33 @@ class WorkspaceStateStore {
     })
 
     await this.starting
+  }
+
+  // 启动流失败（多半是断网，#1247）：没有 started，上面那个重连监听也没挂，
+  // 网络回来以后没人再去启动，文件面板就一直停在「加载文件列表失败」。
+  // 这里挂一次性的监听：连接重连上了，或浏览器从离线回到在线（连接没断过、
+  // 不会发重连通知时兜底），就当作点了一次「重试」。只等事件、不定时重试；
+  // 再失败会重新挂上，等下一次网络恢复。shutdown 时一起取消。
+  private armRestartOnReconnect = () => {
+    this.offReconnect?.()
+    let fired = false
+    const trigger = () => {
+      if (fired) return
+      fired = true
+      off()
+      if (this.offReconnect === off) this.offReconnect = null
+      if (this.tokenCount > 0) {
+        void this.requestResync("transport_reconnect")
+      }
+    }
+    const offTransport = onTransportReconnect(trigger)
+    const hasWindow = typeof window !== "undefined"
+    if (hasWindow) window.addEventListener("online", trigger)
+    const off = () => {
+      offTransport?.()
+      if (hasWindow) window.removeEventListener("online", trigger)
+    }
+    this.offReconnect = off
   }
 
   private shutdown = async (

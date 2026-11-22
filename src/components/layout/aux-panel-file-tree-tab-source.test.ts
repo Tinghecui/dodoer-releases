@@ -480,4 +480,15 @@ describe("aux file tree keeps the panel when loading fails", () => {
     expect(errorBlock).toBeGreaterThan(scroll)
     expect(tree).toBeGreaterThan(errorBlock)
   })
+
+  it("keeps the top banner when starting the live stream failed (#1279)", () => {
+    // 订阅启动失败只设 health=degraded、不设 degraded，提示条也要出来。
+    expect(auxSource).toMatch(
+      /\{shouldShowWorkspaceDegradedBanner\(workspaceState\) && \(\s*<WorkspaceDegradedBanner/
+    )
+    // 列表处已经有「重试」，提示条只在退回轮询时才带重试按钮。
+    expect(auxSource).toMatch(
+      /onRetry=\{workspaceState\.degraded \? workspaceState\.restart : undefined\}/
+    )
+  })
 })

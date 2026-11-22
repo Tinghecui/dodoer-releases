@@ -7,7 +7,13 @@ import {
 } from "overlayscrollbars-react"
 import type { OverlayScrollbarsComponentProps } from "overlayscrollbars-react"
 
-type ScrollAreaProps = {
+// 其余的 DOM 属性和事件处理原样放到宿主元素上：ScrollArea 常被当成
+// ContextMenuTrigger asChild 这类 Slot 的子元素，Slot 塞进来的 onContextMenu、
+// data-state 等要落到真实元素上，不然外层的右键菜单不起作用（#1279）。
+type ScrollAreaProps = Omit<
+  React.HTMLAttributes<HTMLDivElement>,
+  "onScroll" | "dir" | "children"
+> & {
   children: React.ReactNode
   className?: string
   x?: "scroll" | "hidden"
@@ -65,6 +71,7 @@ export function ScrollArea({
   onViewportRef,
   dir,
   ref,
+  ...rest
 }: ScrollAreaProps) {
   const options = useMemo<OverlayScrollbarsComponentProps["options"]>(
     () => ({
@@ -91,6 +98,7 @@ export function ScrollArea({
 
   return (
     <OverlayScrollbarsComponent
+      {...rest}
       ref={ref}
       className={className}
       dir={dir}

@@ -1,8 +1,14 @@
-import { act, render } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import { createRef } from "react"
 import type { OverlayScrollbarsComponentRef } from "overlayscrollbars-react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "./context-menu"
 import { ScrollArea } from "./scroll-area"
 
 // Runs the real component and library. The init is `defer`red into an idle
@@ -74,5 +80,36 @@ describe("ScrollArea", () => {
 
   it("still runs the check where `direction: rtl` can flip the axis", () => {
     expect(updateArmsScrollBlock("scroll")).toBe(true)
+  })
+
+  // 文件页签、Git 日志页签都把 ScrollArea 当成 ContextMenuTrigger asChild 的
+  // 子元素：Slot 塞进来的事件处理要落到真实的 DOM 元素上，不然整块区域右键
+  // 什么都不弹（#1279）。
+  it("passes extra DOM props and handlers through to the host element", () => {
+    const onContextMenu = vi.fn()
+    render(
+      <ScrollArea data-testid="area" onContextMenu={onContextMenu}>
+        <div />
+      </ScrollArea>
+    )
+    fireEvent.contextMenu(screen.getByTestId("area"))
+    expect(onContextMenu).toHaveBeenCalledTimes(1)
+  })
+
+  it("opens a context menu whose trigger is the area itself", () => {
+    render(
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <ScrollArea>
+            <p>blank space</p>
+          </ScrollArea>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem>New</ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+    )
+    fireEvent.contextMenu(screen.getByText("blank space"))
+    expect(screen.getByText("New")).toBeTruthy()
   })
 })

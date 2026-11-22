@@ -31,7 +31,10 @@ import { useWorkspaceStateStore } from "@/hooks/use-workspace-state-store"
 import { detectPlatform } from "@/hooks/use-platform"
 import { findOwningFolder } from "@/lib/file-open-target"
 import { AuxPanelNoFolderEmpty } from "@/components/layout/aux-panel-no-folder-empty"
-import { WorkspaceDegradedBanner } from "@/components/layout/workspace-degraded-banner"
+import {
+  WorkspaceDegradedBanner,
+  shouldShowWorkspaceDegradedBanner,
+} from "@/components/layout/workspace-degraded-banner"
 import { WorkspaceUploadDialog } from "@/components/layout/workspace-upload-dialog"
 import { OpenInSubContent } from "@/components/layout/open-in-menu"
 import { RowMoreButton } from "@/components/layout/row-more-button"
@@ -2861,8 +2864,12 @@ export function FileTreeTab() {
 
   return (
     <div className="flex flex-col h-full">
-      {workspaceState.degraded && (
-        <WorkspaceDegradedBanner onRetry={workspaceState.restart} />
+      {/* 订阅启动失败时（#1279）列表处已经有「重试」，提示条只提示、不再放
+          第二个重试按钮。 */}
+      {shouldShowWorkspaceDegradedBanner(workspaceState) && (
+        <WorkspaceDegradedBanner
+          onRetry={workspaceState.degraded ? workspaceState.restart : undefined}
+        />
       )}
       <ContextMenu>
         <ContextMenuTrigger asChild>

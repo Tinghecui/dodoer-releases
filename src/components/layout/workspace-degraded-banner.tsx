@@ -5,6 +5,16 @@ import { RefreshCw, TriangleAlert } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 
+// 顶部「实时更新不可用」提示条什么时候出现：后端报告监视退回轮询
+// （degraded），或者订阅启动 / 补拉失败（health=degraded，列表处显示出错说明
+// 和「重试」）。两种情况实时更新都用不了，提示条都要在（#1279）。
+export function shouldShowWorkspaceDegradedBanner(state: {
+  degraded: boolean
+  health: string
+}): boolean {
+  return state.degraded || state.health === "degraded"
+}
+
 interface WorkspaceDegradedBannerProps {
   onRetry?: () => void | Promise<void>
 }

@@ -243,6 +243,20 @@ const EMPTY_CHILD_TO_PARENT: ReadonlyMap<number, number> = new Map()
 const EMPTY_CONTAINER_CHILDREN: ReadonlyMap<number, readonly number[]> =
   new Map()
 
+// 列表空白处菜单的触发器套着文件夹行、分组标题、会话卡片各自的菜单触发器。
+// Radix 的触屏/笔长按在每个触发器的 pointerdown 上各起一个 700ms 计时器，
+// pointerdown 冒泡上来，外层也起一个，到点两个菜单都开（#1378）。按下的地方
+// 在里层触发器里时，在外层这里 preventDefault：外层的 Radix 处理看到
+// defaultPrevented 就不起计时器，只剩里层那一行的菜单。鼠标不管（Radix 本来
+// 就不对鼠标起长按，右键靠 contextmenu 事件，里层已经拦住），也免得挡掉焦点。
+function suppressOuterLongPressInsideRowMenu(event: React.PointerEvent) {
+  if (event.pointerType === "mouse") return
+  const target = event.target
+  if (!(target instanceof Element)) return
+  const trigger = target.closest('[data-slot="context-menu-trigger"]')
+  if (trigger && trigger !== event.currentTarget) event.preventDefault()
+}
+
 function FolderDisclosureChevron({ expanded }: { expanded: boolean }) {
   return (
     <ChevronRight
@@ -3974,6 +3988,7 @@ export function SidebarConversationList({
           <ContextMenuTrigger asChild>
             <div
               className="flex-1 min-h-0 relative"
+              onPointerDown={suppressOuterLongPressInsideRowMenu}
               onPointerDownCapture={handleBlankMenuPointerDown}
               onPointerUpCapture={handleBlankMenuPointerEnd}
               onPointerCancelCapture={handleBlankMenuPointerEnd}

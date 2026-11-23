@@ -39,10 +39,14 @@ interface UseLongPressToOpenMenuOptions {
  * descendants' triggers, say). One pointerdown bubbles through every ancestor,
  * so each arms its own timer and each dispatches its own contextmenu from its
  * OWN element — the ancestors' menus open right after the intended one and the
- * outermost wins the screen. Radix's built-in long-press is safe there because
- * all the triggers share ONE bubbling event and the innermost `preventDefault`s
- * it; separate dispatches carry no such interlock. Use it on flat lists, or on
- * a single trigger with no trigger ancestors.
+ * outermost wins the screen. Use it on flat lists, or on a single trigger with
+ * no trigger ancestors.
+ *
+ * Radix's built-in touch long-press is NOT safe when nested either: only the
+ * right-click `contextmenu` event is `preventDefault`ed by the innermost
+ * trigger. Each trigger arms its own 700ms timer on the bubbling pointerdown,
+ * so an ancestor trigger must skip its timer itself (the sidebar list does it
+ * by `preventDefault`ing pointerdowns that land inside a nested trigger).
  */
 export function useLongPressToOpenMenu({
   enabled = true,

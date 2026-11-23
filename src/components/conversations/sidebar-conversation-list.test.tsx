@@ -3126,6 +3126,86 @@ describe("SidebarConversationList — import local sessions on mobile", () => {
   })
 })
 
+// #1378：触屏长按里层的行（文件夹、会话卡片、分组标题）只开这一行的菜单，
+// 列表空白处的菜单不能跟着一起开
+describe("SidebarConversationList — touch long-press opens one menu", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ now: FIXED })
+    const folders = [
+      { ...folder(1, "Folder 1"), sort_order: 1, group_id: null },
+      { ...folder(5, "Member"), sort_order: 1, group_id: 7 },
+    ] as FolderDetail[]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      folderGroups: [{ id: 7, name: "Work", color: "inherit", sort_order: 2 }],
+      conversations: [conv(11, 1)],
+    })
+    store.activeTabId = null
+    store.tabSpec = []
+  })
+  afterEach(() => {
+    window.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    vi.useRealTimers()
+  })
+
+  function longPress(el: Element) {
+    const down = new Event("pointerdown", { bubbles: true, cancelable: true })
+    Object.assign(down, {
+      pointerId: 1,
+      pointerType: "touch",
+      button: 0,
+      clientX: 10,
+      clientY: 10,
+    })
+    act(() => {
+      el.dispatchEvent(down)
+    })
+    act(() => {
+      vi.advanceTimersByTime(800)
+    })
+  }
+
+  function menuTexts() {
+    return Array.from(document.querySelectorAll('[role="menuitem"]')).map(
+      (el) => el.textContent ?? ""
+    )
+  }
+
+  it("长按文件夹：只开文件夹菜单", () => {
+    render(tree())
+    longPress(document.querySelector('[data-folder-id="1"]')!)
+    expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1)
+    expect(menuTexts().some((t) => t.includes("Set alias…"))).toBe(true)
+    expect(menuTexts().some((t) => t.includes("Clone Repository"))).toBe(false)
+  })
+
+  it("长按会话卡片：只开会话菜单", () => {
+    render(tree())
+    longPress(document.querySelector('[data-conversation-id="11"]')!)
+    expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1)
+    expect(menuTexts().some((t) => t.trim() === "Delete")).toBe(true)
+    expect(menuTexts().some((t) => t.includes("Clone Repository"))).toBe(false)
+  })
+
+  it("长按分组标题：只开分组菜单", () => {
+    render(tree())
+    longPress(document.querySelector('[data-folder-group-id="7"]')!)
+    expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1)
+    expect(menuTexts().some((t) => t.includes("Clone Repository"))).toBe(false)
+  })
+
+  it("长按列表空白处：照旧开空白处菜单", () => {
+    render(tree())
+    const scroll = document.querySelector(
+      'div.flex-1.min-h-0.relative[data-slot="context-menu-trigger"]'
+    )
+    longPress(scroll!)
+    expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1)
+    expect(menuTexts().some((t) => t.includes("Clone Repository"))).toBe(true)
+  })
+})
+
 // #1379：触屏长按「文件夹」标题打开的是列表的空白处菜单，松手后浏览器补发的
 // click 不能再落到标题上把分组收起来；普通点按照旧能收起。
 describe("SidebarConversationList — 触屏长按分组标题", () => {

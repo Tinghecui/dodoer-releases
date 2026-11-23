@@ -13,7 +13,7 @@ function PetPageInner() {
   if (!petId) {
     return (
       <div
-        className="flex h-screen w-screen items-center justify-center text-xs text-muted-foreground"
+        className="flex h-dvh w-screen items-center justify-center text-xs text-muted-foreground"
         style={{ background: "transparent" }}
       >
         {t("missingPetIdParam")}

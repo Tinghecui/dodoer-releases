@@ -174,7 +174,7 @@ export function ComputerIndicator() {
     : null
 
   return (
-    <div className="flex h-screen w-screen items-start justify-center overflow-hidden">
+    <div className="flex h-dvh w-screen items-start justify-center overflow-hidden">
       <style>{TRANSPARENT}</style>
       <div
         ref={stripRef}

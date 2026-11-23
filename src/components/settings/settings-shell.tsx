@@ -382,7 +382,7 @@ export function SettingsShell({ children }: SettingsShellProps) {
   )
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden bg-background text-foreground">
+    <div className="h-dvh flex flex-col overflow-hidden bg-background text-foreground">
       {/* Liquid Glass: in the settings window only the top toolbar is
           glass (handoff 6.2); the pages under it are content. */}
       <AppTitleBar

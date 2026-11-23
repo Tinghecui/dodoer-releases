@@ -1375,7 +1375,7 @@ function NavScenario() {
   return (
     <div
       data-scenario="nav"
-      className="ws-surface ms-auto flex h-screen flex-col border-s border-border ws-chrome-border"
+      className="ws-surface ms-auto flex h-dvh flex-col border-s border-border ws-chrome-border"
       style={{
         width: Number(params.get("width") ?? 348),
         height: height ? Number(height) : undefined,
@@ -1535,7 +1535,7 @@ export default function ActivityGalleryPage() {
     <StaticConnectionStoreProvider store={STORE}>
       <StaticDelegationProvider value={DELEGATION}>
         <StaticWorkspaceActionsProvider value={WORKSPACE}>
-          <div className="chat-motion-scope min-h-screen bg-background text-foreground">
+          <div className="chat-motion-scope min-h-dvh bg-background text-foreground">
             {view === "nav" ? (
               <NavScenario />
             ) : view === "async-tasks" ? (

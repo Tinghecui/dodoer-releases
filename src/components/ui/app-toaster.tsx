@@ -5,6 +5,7 @@ import { createPortal } from "react-dom"
 import { useTheme } from "next-themes"
 import { Toaster, toast, useSonner, type ToasterProps } from "sonner"
 
+import { useIsMobile } from "@/hooks/use-mobile"
 import {
   acquireNativeSurfaceOcclusion,
   subscribeNativeSurfaceReclaim,
@@ -65,7 +66,21 @@ function ToastOcclusion() {
   return null
 }
 
+/**
+ * 手机布局下提示条的位置：顶部居中，每一边让出对应的安全区（刘海、横屏时
+ * 两侧的圆角）。右下角在手机上正好压着输入框和发送按钮，底部还有横条。
+ * sonner 窄屏（600px 以下）用 mobileOffset，横屏的手机比它宽，用 offset，
+ * 两个都给。
+ */
+const MOBILE_TOAST_OFFSET = {
+  top: "max(1rem, env(safe-area-inset-top))",
+  right: "max(1rem, env(safe-area-inset-right))",
+  bottom: "max(1rem, env(safe-area-inset-bottom))",
+  left: "max(1rem, env(safe-area-inset-left))",
+}
+
 export function AppToaster(props: ToasterProps) {
+  const isMobile = useIsMobile()
   const { resolvedTheme } = useTheme()
   const theme = props.theme ?? (resolvedTheme === "dark" ? "dark" : "light")
   const mounted = useSyncExternalStore(subscribeNever, onClient, onServer)
@@ -79,7 +94,15 @@ export function AppToaster(props: ToasterProps) {
   // stacking context, above every overlay, wherever it is mounted from.
   return createPortal(
     <>
-      <Toaster {...props} theme={theme} />
+      <Toaster
+        {...props}
+        {...(isMobile && {
+          position: "top-center",
+          offset: MOBILE_TOAST_OFFSET,
+          mobileOffset: MOBILE_TOAST_OFFSET,
+        })}
+        theme={theme}
+      />
       {/* Its own component so the toast list it watches re-renders nothing
           but itself. */}
       <ToastOcclusion />

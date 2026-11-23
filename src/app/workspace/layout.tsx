@@ -95,6 +95,7 @@ import { FileWorkspaceHeader } from "@/components/files/file-workspace-header"
 import { FileWorkspacePanel } from "@/components/files/file-workspace-panel"
 import { ExternalConflictDialog } from "@/components/files/external-conflict-dialog"
 import { AppToaster } from "@/components/ui/app-toaster"
+import { SIDE_DRAWER_SAFE_AREA_CLASS } from "@/components/ui/drawer-safe-area"
 import {
   DeepLinkBootstrap,
   PetFocusBridge,
@@ -722,7 +723,10 @@ function MobileFolderWorkspaceShell({
       >
         <DrawerContent
           showCloseButton={false}
-          className="w-[85%] max-w-[22.5rem] p-0"
+          className={cn(
+            "w-[85%] max-w-[22.5rem] p-0",
+            SIDE_DRAWER_SAFE_AREA_CLASS
+          )}
         >
           <DrawerTitle className="sr-only">Sidebar</DrawerTitle>
           <Sidebar />
@@ -741,7 +745,10 @@ function MobileFolderWorkspaceShell({
       >
         <DrawerContent
           showCloseButton={false}
-          className="w-[85%] max-w-[22.5rem] p-0"
+          className={cn(
+            "w-[85%] max-w-[22.5rem] p-0",
+            SIDE_DRAWER_SAFE_AREA_CLASS
+          )}
         >
           <DrawerTitle className="sr-only">Panel</DrawerTitle>
           <AuxPanel />
@@ -754,7 +761,7 @@ function MobileFolderWorkspaceShell({
         swipeDirection="down"
         disablePointerDismissal={false}
       >
-        <DrawerContent showCloseButton={false} className="h-[95vh] p-0">
+        <DrawerContent showCloseButton={false} className="h-[95dvh] p-0">
           <DrawerTitle className="sr-only">Terminal</DrawerTitle>
           <div className="h-full min-h-0 overflow-hidden">
             <TerminalPanel />

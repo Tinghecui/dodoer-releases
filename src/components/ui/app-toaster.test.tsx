@@ -104,3 +104,58 @@ describe("AppToaster occlusion", () => {
     await waitFor(() => expect(isNativeSurfaceOccluded()).toBe(false))
   })
 })
+
+/**
+ * 手机布局下提示条放到顶部居中，并让出刘海的安全区：右下角在手机上正好是
+ * 输入框和发送按钮，横条也在那里。桌面布局还是调用方给的位置。
+ */
+describe("AppToaster on the mobile layout", () => {
+  const realMatchMedia = window.matchMedia
+  function setMobile(mobile: boolean) {
+    window.matchMedia = ((query: string) => ({
+      matches: mobile && query.includes("max-width: 767px"),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia
+  }
+  afterEach(async () => {
+    await settleToasts()
+    window.matchMedia = realMatchMedia
+  })
+
+  async function toasterFor(text: string) {
+    toast.message(text)
+    await screen.findByText(text)
+    return document.querySelector<HTMLElement>("ol[data-sonner-toaster]")!
+  }
+
+  it("shows toasts top-center clear of the safe area on a phone", async () => {
+    setMobile(true)
+    render(<AppToaster position="bottom-right" />)
+    const list = await toasterFor("saved on the phone")
+    expect(list.dataset.yPosition).toBe("top")
+    expect(list.dataset.xPosition).toBe("center")
+    expect(list.style.getPropertyValue("--mobile-offset-top")).toContain(
+      "env(safe-area-inset-top)"
+    )
+    expect(list.style.getPropertyValue("--offset-top")).toContain(
+      "env(safe-area-inset-top)"
+    )
+  })
+
+  it("keeps the caller's position on the desktop layout", async () => {
+    setMobile(false)
+    render(<AppToaster position="bottom-right" />)
+    const list = await toasterFor("saved on the desktop")
+    expect(list.dataset.yPosition).toBe("bottom")
+    expect(list.dataset.xPosition).toBe("right")
+    expect(list.style.getPropertyValue("--offset-top")).not.toContain(
+      "safe-area"
+    )
+  })
+})

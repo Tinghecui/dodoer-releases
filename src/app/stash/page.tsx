@@ -73,7 +73,7 @@ function StashPageInner() {
   }, [pageTitle])
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
+    <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       <AppTitleBar
         center={
           <div className="text-sm font-semibold tracking-tight">

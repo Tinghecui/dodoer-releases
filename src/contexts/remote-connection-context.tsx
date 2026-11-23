@@ -93,7 +93,7 @@ export function useResetBackendScopedStoresOnIdentityChange(
  */
 function RemoteConnectionDeadEnd({ message }: { message: string }) {
   return (
-    <div className="flex h-screen flex-col items-center justify-center gap-3 bg-background p-6 text-center text-sm">
+    <div className="flex h-dvh flex-col items-center justify-center gap-3 bg-background p-6 text-center text-sm">
       <p className="text-destructive">{message}</p>
       {isDesktop() && <OpenLocalWorkspaceButton />}
     </div>
@@ -297,7 +297,7 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
 
   if (loading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background text-sm text-muted-foreground">
+      <div className="flex h-dvh items-center justify-center bg-background text-sm text-muted-foreground">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
         {t("loadingConnection")}
       </div>

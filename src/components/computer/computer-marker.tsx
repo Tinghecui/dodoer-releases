@@ -52,7 +52,7 @@ export function ComputerMarker() {
 
   return (
     <div
-      className="pointer-events-none flex h-screen w-screen items-center justify-center"
+      className="pointer-events-none flex h-dvh w-screen items-center justify-center"
       aria-hidden="true"
     >
       <style>{TRANSPARENT}</style>

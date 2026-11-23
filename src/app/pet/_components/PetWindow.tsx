@@ -307,7 +307,7 @@ export function PetWindow({ petId }: PetWindowProps) {
   if (error) {
     return (
       <div
-        className="flex h-screen w-screen items-center justify-center text-xs text-destructive"
+        className="flex h-dvh w-screen items-center justify-center text-xs text-destructive"
         style={{ background: "transparent" }}
         title={error}
       >
@@ -319,7 +319,7 @@ export function PetWindow({ petId }: PetWindowProps) {
   if (!pet || !spritesheetUrl) {
     return (
       <div
-        className="flex h-screen w-screen items-center justify-center"
+        className="flex h-dvh w-screen items-center justify-center"
         style={{ background: "transparent" }}
       >
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -329,7 +329,7 @@ export function PetWindow({ petId }: PetWindowProps) {
 
   return (
     <div
-      className="relative flex h-screen w-screen select-none items-center justify-center"
+      className="relative flex h-dvh w-screen select-none items-center justify-center"
       style={{ background: "transparent" }}
       onPointerDown={drag.onPointerDown}
     >

@@ -158,7 +158,7 @@ export function StartHome({ onOpenLocal }: { onOpenLocal?: () => void }) {
   )
 
   return (
-    <div className="flex h-screen flex-col items-center justify-center overflow-y-auto bg-background p-6 text-sm">
+    <div className="flex h-dvh flex-col items-center justify-center overflow-y-auto bg-background p-6 text-sm">
       <div className="w-full max-w-md space-y-5">
         <div className="space-y-2 text-center">
           <h1 className="text-lg font-semibold">{t("startTitle")}</h1>

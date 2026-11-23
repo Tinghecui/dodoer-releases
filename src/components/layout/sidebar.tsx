@@ -59,6 +59,7 @@ import { useZoomLevel } from "@/hooks/use-appearance"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
 import { isDesktop } from "@/lib/platform"
+import { armComposerTypeahead } from "@/lib/composer-typeahead"
 import { GLASS_PANE_INSET, leftChromeButtonsWidth } from "@/lib/window-chrome"
 import { GLASS_RAISED_CARD_CLASS, glassClassName } from "@/components/ui/glass"
 import {
@@ -484,11 +485,14 @@ export function Sidebar({
     // Defense-in-depth: with no active folder (e.g. a cold start that recovered
     // to nothing, or all folders closed) fall back to folderless chat mode
     // rather than no-op, so this entry point is never a dead end.
+    // #1302：新输入框晚几帧才拿到焦点，这期间打的字先接住。
     if (!activeFolder) {
-      openChatModeTab()
+      armComposerTypeahead(openChatModeTab()?.tabId)
       return
     }
-    openNewConversationTab(activeFolder.id, activeFolder.path)
+    armComposerTypeahead(
+      openNewConversationTab(activeFolder.id, activeFolder.path)?.tabId
+    )
   }, [
     activeFolder,
     openChatModeTab,

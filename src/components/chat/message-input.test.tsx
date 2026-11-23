@@ -31,6 +31,10 @@ import {
   emitAttachSessionToSession,
 } from "@/lib/session-attachment-events"
 import type { DbConversationSummary } from "@/lib/types"
+import {
+  armComposerTypeahead,
+  resetComposerTypeaheadForTests,
+} from "@/lib/composer-typeahead"
 
 // MessageInput holds its RichComposer handle internally and does not forward a
 // ref, so capture that handle through a partial mock that still renders the real
@@ -4129,5 +4133,180 @@ describe("MessageInput cancelling a queue edit (#425)", () => {
     await nextFrame()
     await nextFrame()
     expect(composerHandle.current?.isEmpty()).toBe(true)
+  })
+})
+
+// #1302：点「新建会话」或按 Ctrl+T 到新输入框拿到焦点之间打的字，先落在接键框
+// 里，新输入框准备好时接过来，一个字都不丢。
+describe("MessageInput 接住新建会话那一下打的字", () => {
+  afterEach(() => {
+    resetComposerTypeaheadForTests()
+    cleanup()
+  })
+
+  function typeIntoCatcher(text: string) {
+    const el = document.querySelector<HTMLTextAreaElement>(
+      "textarea[data-composer-typeahead]"
+    )!
+    el.value += text
+    el.dispatchEvent(new Event("input", { bubbles: true }))
+  }
+
+  it("新草稿的输入框挂载后，接键框里的字进到输入框、光标在里面", async () => {
+    armComposerTypeahead("tab-new")
+    typeIntoCatcher("不要用工具，直接回复数字 42")
+    const { container } = renderInput({
+      attachmentTabId: "tab-new",
+      isActive: true,
+    })
+    const editor = () => container.querySelector('[role="textbox"]')
+    await waitFor(
+      () => expect(editor()?.textContent).toBe("不要用工具，直接回复数字 42"),
+      { timeout: 5000 }
+    )
+    await nextFrame()
+    expect(document.activeElement).toBe(editor())
+    expect(document.querySelector("textarea[data-composer-typeahead]")).toBe(
+      null
+    )
+  })
+
+  it("新建会话复用了已经准备好的草稿时，也把字接过来", async () => {
+    const { container } = renderInput({
+      attachmentTabId: "tab-reused",
+      isActive: true,
+    })
+    const editor = () => container.querySelector('[role="textbox"]')
+    await waitFor(() => expect(editor()).not.toBeNull(), { timeout: 5000 })
+    await nextFrame()
+    await nextFrame()
+    act(() => {
+      armComposerTypeahead("tab-reused")
+      typeIntoCatcher("ABCDEF")
+    })
+    await waitFor(() => expect(editor()?.textContent).toBe("ABCDEF"), {
+      timeout: 5000,
+    })
+  })
+
+  it("输入框准备好之前按了 Esc：准备好后不抢焦点，点回输入框时再补字", async () => {
+    const origin = document.createElement("button")
+    document.body.appendChild(origin)
+    origin.focus()
+    armComposerTypeahead("tab-esc")
+    typeIntoCatcher("AB")
+    document
+      .querySelector<HTMLTextAreaElement>("textarea[data-composer-typeahead]")!
+      .dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      )
+    expect(document.activeElement).toBe(origin)
+    const { container } = renderInput({
+      attachmentTabId: "tab-esc",
+      isActive: true,
+    })
+    const editor = () =>
+      container.querySelector<HTMLElement>('[role="textbox"]')
+    await waitFor(() => expect(editor()).not.toBeNull(), { timeout: 5000 })
+    await nextFrame()
+    await nextFrame()
+    await nextFrame()
+    expect(document.activeElement).toBe(origin)
+    expect(editor()?.textContent).toBe("")
+    act(() => {
+      editor()!.focus()
+    })
+    await waitFor(() => expect(editor()?.textContent).toBe("AB"), {
+      timeout: 5000,
+    })
+    origin.remove()
+  })
+
+  it("输入法组合中等交接时点了别处，之后点回这个输入框时把字补进去", async () => {
+    armComposerTypeahead("tab-ime")
+    const el = document.querySelector<HTMLTextAreaElement>(
+      "textarea[data-composer-typeahead]"
+    )!
+    el.value = "不要用工具"
+    el.dispatchEvent(new CompositionEvent("compositionstart"))
+    el.value = "不要用工具zhijie"
+    const outside = document.createElement("button")
+    document.body.appendChild(outside)
+    const { container } = renderInput({
+      attachmentTabId: "tab-ime",
+      isActive: true,
+    })
+    const editor = () =>
+      container.querySelector<HTMLElement>('[role="textbox"]')
+    await waitFor(() => expect(editor()).not.toBeNull(), { timeout: 5000 })
+    await nextFrame()
+    await nextFrame()
+    // 组合还没结束，聚焦 effect 只是登记了等交接。
+    expect(editor()?.textContent).toBe("")
+    act(() => {
+      outside.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }))
+    })
+    // 失焦后浏览器确认组合、发 compositionend，这时才撤。
+    act(() => {
+      el.value = "不要用工具直接"
+      el.dispatchEvent(new CompositionEvent("compositionend"))
+    })
+    expect(document.querySelector("textarea[data-composer-typeahead]")).toBe(
+      null
+    )
+    act(() => {
+      editor()!.focus()
+    })
+    await waitFor(() => expect(editor()?.textContent).toBe("不要用工具直接"), {
+      timeout: 5000,
+    })
+    outside.remove()
+  })
+
+  it("输入法组合中点回了这个输入框，组合确认后把确认的字补进去", async () => {
+    armComposerTypeahead("tab-ime2")
+    const el = document.querySelector<HTMLTextAreaElement>(
+      "textarea[data-composer-typeahead]"
+    )!
+    el.dispatchEvent(new CompositionEvent("compositionstart"))
+    el.value = "ni"
+    const { container } = renderInput({
+      attachmentTabId: "tab-ime2",
+      isActive: true,
+    })
+    const editor = () =>
+      container.querySelector<HTMLElement>('[role="textbox"]')
+    await waitFor(() => expect(editor()).not.toBeNull(), { timeout: 5000 })
+    await nextFrame()
+    await nextFrame()
+    act(() => {
+      editor()!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }))
+      editor()!.focus()
+    })
+    expect(editor()?.textContent).toBe("")
+    act(() => {
+      el.value = "你"
+      el.dispatchEvent(new CompositionEvent("compositionend"))
+    })
+    await waitFor(() => expect(editor()?.textContent).toBe("你"), {
+      timeout: 5000,
+    })
+  })
+
+  it("别的标签的接键框不动", async () => {
+    armComposerTypeahead("tab-other")
+    typeIntoCatcher("xyz")
+    const { container } = renderInput({
+      attachmentTabId: "tab-mine",
+      isActive: true,
+    })
+    const editor = () => container.querySelector('[role="textbox"]')
+    await waitFor(() => expect(editor()).not.toBeNull(), { timeout: 5000 })
+    await nextFrame()
+    await nextFrame()
+    expect(editor()?.textContent).toBe("")
+    expect(
+      document.querySelector("textarea[data-composer-typeahead]")
+    ).not.toBeNull()
   })
 })

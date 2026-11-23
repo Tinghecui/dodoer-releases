@@ -6,6 +6,7 @@ import type { PanInfo } from "motion/react"
 import { Maximize2, Minimize2, SquarePen } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { cn } from "@/lib/utils"
+import { armComposerTypeahead } from "@/lib/composer-typeahead"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
@@ -232,6 +233,7 @@ export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
   // never a dead end. Group strips seed from the GROUP's own selection (its
   // folder / chat mode) rather than the globally-active folder: each group is
   // its own workspace slice, and the focused group may be a different one.
+  // #1302：新输入框晚几帧才拿到焦点，这期间打的字先接住。
   const handleNewConversation = useCallback(() => {
     openConversations()
     const groupOptions = groupId != null ? { targetGroup: groupId } : undefined
@@ -242,14 +244,16 @@ export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
         ? allFolders.find((f) => f.id === selTab.folderId)
         : undefined
       if (selTab?.isChat === true || selFolder?.kind === "chat") {
-        openChatModeTab(groupOptions)
+        armComposerTypeahead(openChatModeTab(groupOptions)?.tabId)
         return
       }
       if (selTab && selFolder) {
-        openNewConversationTab(
-          selFolder.id,
-          selTab.workingDir ?? selFolder.path,
-          groupOptions
+        armComposerTypeahead(
+          openNewConversationTab(
+            selFolder.id,
+            selTab.workingDir ?? selFolder.path,
+            groupOptions
+          )?.tabId
         )
         return
       }
@@ -257,10 +261,13 @@ export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
       // active-folder default.
     }
     if (!activeFolder) {
-      openChatModeTab(groupOptions)
+      armComposerTypeahead(openChatModeTab(groupOptions)?.tabId)
       return
     }
-    openNewConversationTab(activeFolder.id, activeFolder.path, groupOptions)
+    armComposerTypeahead(
+      openNewConversationTab(activeFolder.id, activeFolder.path, groupOptions)
+        ?.tabId
+    )
   }, [
     activeFolder,
     allFolders,

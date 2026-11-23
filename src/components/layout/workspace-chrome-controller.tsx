@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { openSettingsWindow } from "@/lib/api"
+import { armComposerTypeahead } from "@/lib/composer-typeahead"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
 import { useSidebarContext } from "@/contexts/sidebar-context"
@@ -249,7 +250,10 @@ export function WorkspaceChromeController() {
         // Return to the conversation workspace if a route (e.g. Automations) was
         // covering the content region, else the new tab opens unseen.
         openConversations()
-        openNewConversationTab(activeFolder.id, activeFolder.path)
+        // #1302：新输入框晚几帧才拿到焦点，这期间打的字先接住。
+        armComposerTypeahead(
+          openNewConversationTab(activeFolder.id, activeFolder.path)?.tabId
+        )
         return
       }
       if (matchShortcutEvent(e, shortcuts.open_folder)) {

@@ -54,6 +54,7 @@ import {
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { COWORK_BUILD } from "@/lib/cowork/brand"
 import { useCoworkText } from "@/lib/cowork/i18n"
+import { armComposerTypeahead } from "@/lib/composer-typeahead"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
@@ -2622,11 +2623,14 @@ export function SidebarConversationList({
     // to nothing) fall back to folderless chat mode rather than no-op — the
     // same defense the sidebar's own "New chat" row takes, so neither entry
     // point is ever a dead end.
+    // #1302：新输入框晚几帧才拿到焦点，这期间打的字先接住。
     if (!activeFolder) {
-      openChatModeTab()
+      armComposerTypeahead(openChatModeTab()?.tabId)
       return
     }
-    openNewConversationTab(activeFolder.id, activeFolder.path)
+    armComposerTypeahead(
+      openNewConversationTab(activeFolder.id, activeFolder.path)?.tabId
+    )
   }, [activeFolder, openChatModeTab, openNewConversationTab, openConversations])
 
   const handleNewConversationForFolder = useCallback(
@@ -2636,7 +2640,7 @@ export function SidebarConversationList({
       // Starting a conversation returns to the conversation workspace if a
       // workbench route (e.g. Automations) was taking over the content region.
       openConversations()
-      openNewConversationTab(folderId, folder.path)
+      armComposerTypeahead(openNewConversationTab(folderId, folder.path)?.tabId)
     },
     [folderIndex, openNewConversationTab, openConversations]
   )

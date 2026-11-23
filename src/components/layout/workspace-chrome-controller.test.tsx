@@ -13,6 +13,8 @@ import {
   type CloseShortcutPayload,
 } from "@/lib/menu-close-shortcut"
 
+import { resetComposerTypeaheadForTests } from "@/lib/composer-typeahead"
+
 import { WorkspaceChromeController } from "./workspace-chrome-controller"
 
 const state = vi.hoisted(() => ({
@@ -43,6 +45,11 @@ const spies = vi.hoisted(() => ({
   closeCurrentWindow: vi.fn(() => Promise.resolve()),
   subscribe: vi.fn(),
   markConversationUnread: vi.fn(),
+  openNewConversationTab: vi.fn(() => ({
+    tabId: "draft-new",
+    agentType: "claude_code",
+    folderId: 1,
+  })),
 }))
 
 vi.mock("@/lib/api", () => ({ openSettingsWindow: vi.fn() }))
@@ -74,7 +81,7 @@ vi.mock("@/stores/tab-store", () => ({
 }))
 vi.mock("@/contexts/tab-context", () => ({
   useTabActions: () => ({
-    openNewConversationTab: vi.fn(),
+    openNewConversationTab: spies.openNewConversationTab,
     openTab: vi.fn(),
     switchTab: spies.switchTab,
     closeTab: spies.closeTab,
@@ -483,5 +490,21 @@ describe("WorkspaceChromeController — mark unread", () => {
     event.preventDefault()
     fireEvent(document, event)
     expect(spies.markConversationUnread).not.toHaveBeenCalled()
+  })
+})
+
+// #1302：新输入框晚几帧才拿到焦点，Ctrl+T 的同一个事件里就要有地方接字。
+describe("WorkspaceChromeController — 新建会话快捷键", () => {
+  afterEach(() => resetComposerTypeaheadForTests())
+
+  it("按下后焦点立刻落到给新草稿的接键框", async () => {
+    await renderController()
+    // DEFAULT_SHORTCUTS 里新建会话是 mod+t。
+    fireEvent.keyDown(document, { key: "t", code: "KeyT", ctrlKey: true })
+    expect(spies.openNewConversationTab).toHaveBeenCalledWith(1, "/repo")
+    const catcher = document.querySelector("textarea[data-composer-typeahead]")
+    expect(catcher).not.toBeNull()
+    expect(catcher?.getAttribute("data-composer-typeahead")).toBe("draft-new")
+    expect(document.activeElement).toBe(catcher)
   })
 })

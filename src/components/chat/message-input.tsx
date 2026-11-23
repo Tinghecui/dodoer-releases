@@ -85,6 +85,11 @@ import {
 } from "@/lib/session-settings"
 import { useAgentSkills } from "@/hooks/use-agent-skills"
 import { isPrimaryPointerCoarse } from "@/hooks/use-is-coarse-pointer"
+import {
+  hasComposerTypeahead,
+  subscribeComposerTypeahead,
+  takeComposerTypeahead,
+} from "@/lib/composer-typeahead"
 import { useAgentVocabulary } from "@/hooks/use-agent-vocabulary"
 import {
   clearMessageInputDraftV2,
@@ -761,18 +766,87 @@ export function MessageInput({
   // each one a listener and a re-render on every pointer change. As a
   // dependency here it would also focus an idle composer when the pointer turns
   // fine (a 2-in-1 docking to its mouse).
+  //
+  // #1302：新建会话那一下到这里聚焦之间打的字，由接键框先收着
+  // （lib/composer-typeahead），聚焦时接到光标处（草稿恢复之后，即末尾）。
+  // 正在输入法组合时先不挪焦点（会打断组合），等交接时再聚焦。用户在输入框
+  // 准备好之前按 Esc / 点了别处的，接键框认领但不交字，这里也不聚焦，焦点留在
+  // 用户放的地方。
+  const focusAndClaimTypeahead = useCallback(() => {
+    const taken = takeComposerTypeahead(attachmentTabId, (text) => {
+      const ed = editorRef.current
+      if (!ed) return
+      ed.focus()
+      if (text) ed.insertTextAtCursor(text)
+    })
+    if (!taken.claimed) editorRef.current?.focus()
+    return taken.cancel
+  }, [attachmentTabId])
   useEffect(() => {
     // Historical chat composers manage expansion explicitly; autofocus on
     // activation or turn completion would reopen their collapsed input.
     if (!isActive || !composerReady || isPrompting || suppressAutoFocus) return
     if (isPrimaryPointerCoarse()) return
+    let cancelTake: (() => void) | null = null
     const raf = requestAnimationFrame(() => {
-      editorRef.current?.focus()
+      cancelTake = focusAndClaimTypeahead()
     })
     // Dropped if the tab goes inactive or a turn starts before the frame runs.
     // A tiled group keeps that composer on screen, where it would take the caret.
-    return () => cancelAnimationFrame(raf)
-  }, [isActive, composerReady, isPrompting, suppressAutoFocus])
+    return () => {
+      cancelAnimationFrame(raf)
+      cancelTake?.()
+    }
+  }, [
+    isActive,
+    composerReady,
+    isPrompting,
+    suppressAutoFocus,
+    focusAndClaimTypeahead,
+  ])
+  // 「新建会话」复用了已经开着、已经准备好的这个草稿时，上面的聚焦不会再跑：
+  // 接键框一打开就把焦点和字收回来。
+  useEffect(() => {
+    if (!isActive || !composerReady || suppressAutoFocus || !attachmentTabId)
+      return
+    let raf: number | null = null
+    let cancelTake: (() => void) | null = null
+    const unsubscribe = subscribeComposerTypeahead((tabId) => {
+      if (tabId !== attachmentTabId) return
+      if (raf != null) cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => {
+        raf = null
+        cancelTake = focusAndClaimTypeahead()
+      })
+    })
+    return () => {
+      unsubscribe()
+      if (raf != null) cancelAnimationFrame(raf)
+      cancelTake?.()
+    }
+  }, [
+    isActive,
+    composerReady,
+    suppressAutoFocus,
+    attachmentTabId,
+    focusAndClaimTypeahead,
+  ])
+
+  // 接键框被 Esc、点别处撤掉（包括输入法组合中被点别处打断时），字还留给这个
+  // 标签：输入框下次拿到焦点（用户点回来）时补到光标处；组合还没确认的，等
+  // 确认后再补。
+  const handleEditorFocus = useCallback(() => {
+    if (hasComposerTypeahead(attachmentTabId)) {
+      takeComposerTypeahead(
+        attachmentTabId,
+        (text) => {
+          if (text) editorRef.current?.insertTextAtCursor(text)
+        },
+        { focused: true }
+      )
+    }
+    onFocus?.()
+  }, [attachmentTabId, onFocus])
 
   // Re-hydrate when the user (re)edits a *different* queue item after the
   // initial mount hydration above. Keyed on the item id (not display text) so
@@ -2458,7 +2532,7 @@ export function MessageInput({
                 onChange={handleComposerChange}
                 onReady={handleComposerReady}
                 onSubmit={handleSend}
-                onFocus={onFocus}
+                onFocus={handleEditorFocus}
                 onPasteFiles={attach.handlePasteFiles}
                 onDropFiles={attach.handleEditorDrop}
                 onPlainPaste={handlePlainPasteShortcut}

@@ -12,6 +12,7 @@ import {
 import { useTranslations } from "next-intl"
 import { openSettingsWindow } from "@/lib/api"
 import { isDesktop } from "@/lib/platform"
+import { armComposerTypeahead } from "@/lib/composer-typeahead"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
 import { usePlatform } from "@/hooks/use-platform"
@@ -70,11 +71,14 @@ export function FolderTitleBar() {
   // there's none, so this entry point is never a dead end.
   const handleNewConversation = useCallback(() => {
     openConversations()
+    // #1302：新输入框晚几帧才拿到焦点，这期间打的字先接住。
     if (!activeFolder) {
-      openChatModeTab()
+      armComposerTypeahead(openChatModeTab()?.tabId)
       return
     }
-    openNewConversationTab(activeFolder.id, activeFolder.path)
+    armComposerTypeahead(
+      openNewConversationTab(activeFolder.id, activeFolder.path)?.tabId
+    )
   }, [activeFolder, openChatModeTab, openNewConversationTab, openConversations])
 
   return (

@@ -73,6 +73,13 @@ import { MessageResponse } from "@/components/ai-elements/message"
 import { MarkdownImageProvider } from "@/components/ai-elements/markdown-local-image"
 import { AgentIcon } from "@/components/agent-icon"
 import { getAgentLabel } from "@/lib/custom-agents"
+import { useCoworkText } from "@/lib/cowork/i18n"
+import { useCachedCoworkInfo } from "@/lib/cowork/info"
+import {
+  isSignInFailureText,
+  openAgentSignIn,
+  signInViaPortal,
+} from "@/lib/cowork/sign-in"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useFolderForgeRemote } from "@/lib/forge-provider-cache"
@@ -443,6 +450,17 @@ export function TaskDetailSheet({
     const model = snap?.config_labels?.model
     return model ? `${name} · ${model}` : name
   }, [task, agentType])
+
+  // #1403：智能体没有登录凭据而失败的，失败说明旁边给去登录 / 配置的入口（和对话
+  // 里那一行失败的「去登录」是同一个去处）。
+  const tFailure = useTranslations("Folder.chat.sessionFailure")
+  const coworkT = useCoworkText()
+  const coworkInfo = useCachedCoworkInfo()
+  const signInFailure =
+    task?.status === "failed" &&
+    agentType != null &&
+    isTaskSignInFailure(task.last_error)
+  const signInPortal = signInFailure && signInViaPortal(agentType, coworkInfo)
 
   // The project's forge remote, for an ordinary reviewed task that could be
   // delivered to a pull request. Read again whenever the sheet opens on one:
@@ -917,6 +935,21 @@ export function TaskDetailSheet({
                     />
                     <span className="min-w-0 whitespace-pre-wrap break-words">
                       {task.last_error}
+                      {signInFailure ? (
+                        <>
+                          {" "}
+                          <button
+                            type="button"
+                            data-task-error-sign-in=""
+                            onClick={() => openAgentSignIn(agentType)}
+                            className="cursor-pointer font-medium text-foreground underline underline-offset-2 hover:text-foreground/80"
+                          >
+                            {signInPortal
+                              ? coworkT("signInViaPortal")
+                              : tFailure("action.login")}
+                          </button>
+                        </>
+                      ) : null}
                     </span>
                   </div>
                 </CollapsibleBlock>
@@ -1866,6 +1899,19 @@ function InfoRow({ label, children }: { label: string; children: ReactNode }) {
 }
 
 /** Full date-time, minute precision — the Details grid. */
+/** #1403：任务的失败说明是不是在说智能体没有登录凭据——engine 写的中文说明、
+ *  智能体的原话（-32000「Authentication required」、「Not logged in」这类）都算。 */
+function isTaskSignInFailure(lastError: string | null | undefined): boolean {
+  const text = lastError?.trim()
+  if (!text) return false
+  return (
+    text.includes("没有登录凭据") ||
+    /\bauthentication required\b/i.test(text) ||
+    /\bsign in again\b/i.test(text) ||
+    isSignInFailureText(text)
+  )
+}
+
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
     year: "numeric",

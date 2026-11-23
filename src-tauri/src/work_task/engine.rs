@@ -196,8 +196,17 @@ pub fn engine() -> Option<Arc<TaskEngine>> {
 #[derive(Default)]
 struct TurnSignal {
     error: Option<String>,
+    /// #1403：`error` 是带 ACP 稳定代码 `agent_auth_required` 的报错（缺登录凭据），
+    /// 原话里不一定有能认出来的词（比如「relay token expired」）。跟着 `error` 一起清。
+    credential: bool,
     baselined: bool,
     baseline: Option<(i32, i32, i32)>,
+    /// #1403：连接已经以 `Disconnected` 或终止的 `Error` 收尾。
+    ended: bool,
+    /// #1403：连接还活着的时候会话就被标成了 Cancelled——用户在对话里点了停止
+    /// （`ConnectionManager::cancel` 先改会话再等智能体回 TurnComplete）。连接断开
+    /// 以后 lifecycle 补的那次 Cancelled 在 `ended` 之后到，不算。
+    stopped: bool,
 }
 
 pub struct TaskEngine {
@@ -724,6 +733,41 @@ fn is_turn_progress(payload: &AcpEvent) -> bool {
         payload,
         AcpEvent::ContentDelta { .. } | AcpEvent::Thinking { .. } | AcpEvent::ToolCall { .. }
     )
+}
+
+/// 智能体的报错是不是在要登录凭据（-32000 Authentication required、没登录、
+/// 密钥无效）。用量上限的提示里也会提到 /login，那不算。
+fn is_credential_error(message: &str) -> bool {
+    let text = message.to_lowercase();
+    if text.contains("limit") {
+        return false;
+    }
+    [
+        "authentication required",
+        "auth_required",
+        "authentication_error",
+        "not logged in",
+        "sign in",
+        "/login",
+        "login expired",
+        "invalid api key",
+        "unauthorized",
+        "credential",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
+/// #1403：连接断开、没等到 TurnComplete 的那一轮，失败说明用中文写，后面附上
+/// 智能体的原话。缺凭据的单独说，任务详情据此给出去配置的入口。
+/// `credential`：报错带着 ACP 的 `agent_auth_required` 代码，原话怎么写都算缺凭据。
+fn describe_lost_turn_error(message: &str, credential: bool) -> String {
+    let message = message.trim();
+    if credential || is_credential_error(message) {
+        format!("智能体没有登录凭据，去 Agents 设置里配置好再重试。原始报错：{message}")
+    } else {
+        format!("智能体的连接断开了，这一轮没有跑完。原始报错：{message}")
+    }
 }
 
 fn first_nonempty<'a>(parts: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
@@ -1577,6 +1621,7 @@ impl TaskEngine {
                 error: None,
                 baselined: true,
                 baseline,
+                ..Default::default()
             },
         );
 
@@ -2760,7 +2805,13 @@ impl TaskEngine {
     /// before the connection is indexed, and this loop can dequeue the
     /// compaction's `Error` only afterwards — events at or below that
     /// watermark are the compaction's, not the work turn's (#538).
-    async fn note_turn_agent_error(&self, conn_id: &str, seq: u64, message: String) {
+    async fn note_turn_agent_error(
+        &self,
+        conn_id: &str,
+        seq: u64,
+        message: String,
+        credential: bool,
+    ) {
         if !self.index.lock().await.contains_key(conn_id) {
             return;
         }
@@ -2773,12 +2824,41 @@ impl TaskEngine {
         {
             return;
         }
-        self.turn_signals
-            .lock()
-            .await
-            .entry(conn_id.to_string())
-            .or_default()
-            .error = Some(tail_chars(&message, TURN_ERROR_TAIL_CHARS));
+        let mut signals = self.turn_signals.lock().await;
+        let signal = signals.entry(conn_id.to_string()).or_default();
+        signal.error = Some(tail_chars(&message, TURN_ERROR_TAIL_CHARS));
+        signal.credential = credential;
+    }
+
+    /// #1403：记下这条任务连接是怎么停的——先断开（智能体报错、进程退出）还是
+    /// 连接还在时会话就被取消了（用户在对话里点停止）。清扫时据此分开失败和取消。
+    async fn note_turn_end(&self, conn_id: &str, payload: &AcpEvent) {
+        let ended = matches!(
+            payload,
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Disconnected
+            } | AcpEvent::Error { terminal: true, .. }
+        );
+        let stopped = matches!(
+            payload,
+            AcpEvent::ConversationStatusChanged {
+                status: ConversationStatus::Cancelled,
+                ..
+            }
+        );
+        if !ended && !stopped {
+            return;
+        }
+        if !self.index.lock().await.contains_key(conn_id) {
+            return;
+        }
+        let mut signals = self.turn_signals.lock().await;
+        let signal = signals.entry(conn_id.to_string()).or_default();
+        if ended {
+            signal.ended = true;
+        } else if !signal.ended {
+            signal.stopped = true;
+        }
     }
 
     /// Forget the error noted for this connection's turn, keeping its
@@ -2796,21 +2876,31 @@ impl TaskEngine {
     async fn clear_turn_agent_error(&self, conn_id: &str) {
         if let Some(signal) = self.turn_signals.lock().await.get_mut(conn_id) {
             signal.error = None;
+            signal.credential = false;
         }
     }
 
     async fn on_event(self: &Arc<Self>, env: &EventEnvelope) {
         if let Some(message) = reported_agent_error(&env.payload) {
-            self.note_turn_agent_error(&env.connection_id, env.seq, message)
+            let credential = matches!(
+                &env.payload,
+                AcpEvent::Error { code: Some(code), .. } if code == "agent_auth_required"
+            );
+            self.note_turn_agent_error(&env.connection_id, env.seq, message, credential)
                 .await;
         } else if is_turn_progress(&env.payload) {
             self.clear_turn_agent_error(&env.connection_id).await;
         }
+        self.note_turn_end(&env.connection_id, &env.payload).await;
         match &env.payload {
             AcpEvent::StatusChanged {
                 status: ConnectionStatus::Prompting,
             } => {
                 self.clear_turn_agent_error(&env.connection_id).await;
+                // 新的一轮开始了：上一轮的停止不算这一轮的。
+                if let Some(signal) = self.turn_signals.lock().await.get_mut(&env.connection_id) {
+                    signal.stopped = false;
+                }
             }
             AcpEvent::TurnComplete { stop_reason, .. } => {
                 // A pre-prompt compaction's completion is the LAUNCH's signal,
@@ -6394,6 +6484,14 @@ impl TaskEngine {
             }
             // Connection gone. If the produced conversation reached a terminal
             // status the TurnComplete was merely dropped — settle from it.
+            // #1403：这一轮记下的报错在 retire 时会一起丢掉，先取出来。
+            let (noted_error, noted_credential, stopped) = self
+                .turn_signals
+                .lock()
+                .await
+                .get(&conn_id)
+                .map(|s| (s.error.clone(), s.credential, s.stopped))
+                .unwrap_or_default();
             self.retire_connection(&conn_id, task.id).await;
             let conv_status = match task.conversation_id {
                 Some(cid) => self.conversation_status(cid).await,
@@ -6419,14 +6517,38 @@ impl TaskEngine {
                     }
                     settled
                 }
+                // #1403：连接报错断开（比如智能体没有登录凭据）时，lifecycle 也会把
+                // 会话标成 Cancelled。这一轮有报错的，是失败不是取消，带上原因；
+                // 没有报错的才是用户停止、TurnComplete 丢了。用户在连接还活着时
+                // 点了停止的，这一轮之前有过报错也照旧是取消。
                 Some(ConversationStatus::Cancelled) => {
-                    work_task_service::cancel_running_generation(
-                        &self.db.conn,
-                        task.id,
-                        task.run_seq,
-                    )
-                    .await
-                    .unwrap_or(false)
+                    let failure = if stopped {
+                        None
+                    } else {
+                        match noted_error {
+                            Some(error) => Some((error, noted_credential)),
+                            None => self.saved_turn_failure(&task).await.map(|e| (e, false)),
+                        }
+                    };
+                    match failure {
+                        Some((error, credential)) => work_task_service::fail(
+                            &self.db.conn,
+                            task.id,
+                            &[WorkTaskStatus::Running, WorkTaskStatus::AwaitingInput],
+                            Some(task.run_seq),
+                            "agent_error",
+                            Some(describe_lost_turn_error(&error, credential)),
+                        )
+                        .await
+                        .unwrap_or(false),
+                        None => work_task_service::cancel_running_generation(
+                            &self.db.conn,
+                            task.id,
+                            task.run_seq,
+                        )
+                        .await
+                        .unwrap_or(false),
+                    }
                 }
                 _ => work_task_service::fail(
                     &self.db.conn,
@@ -6550,6 +6672,17 @@ impl TaskEngine {
             .ok()
             .flatten()
             .map(|m| m.status)
+    }
+
+    /// 会话上存的本轮失败说明（#1120），只认这一代开跑以后存的：更早的是上一轮的。
+    async fn saved_turn_failure(
+        &self,
+        task: &crate::db::entities::work_task::Model,
+    ) -> Option<String> {
+        let conv_id = task.conversation_id?;
+        let started_at = task.started_at?;
+        let failure = crate::acp::turn_failure::load(&self.db.conn, conv_id).await?;
+        (failure.at >= started_at).then_some(failure.message)
     }
 
     async fn cancel_conversation(&self, conversation_id: i32) {
@@ -10749,6 +10882,250 @@ mod tests {
         assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
     }
 
+    /// #1403：智能体起不来（没有登录凭据），连接报错后断开，没有 TurnComplete；会话被
+    /// lifecycle 标成 Cancelled。清扫时要记成失败、带上原因，不能记成「已取消」。
+    #[tokio::test]
+    async fn reconcile_fails_a_run_whose_connection_died_on_an_error() {
+        let (engine, task_id) = running_task().await;
+        let conv_id = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task")
+            .conversation_id
+            .expect("conversation");
+        engine
+            .on_event(&envelope_at(
+                PARENT_CONN,
+                1,
+                AcpEvent::Error {
+                    message: "Authentication required".into(),
+                    agent_type: "codex".into(),
+                    code: Some("agent_auth_required".into()),
+                    details: None,
+                    terminal: true,
+                },
+            ))
+            .await;
+        conversation_service::update_status(
+            &engine.db.conn,
+            conv_id,
+            ConversationStatus::Cancelled,
+        )
+        .await
+        .expect("conversation status");
+
+        engine.reconcile_once().await;
+
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task");
+        assert_eq!(task.status, WorkTaskStatus::Failed);
+        assert_eq!(task.failure_reason.as_deref(), Some("agent_error"));
+        let error = task.last_error.expect("last_error");
+        assert!(error.contains("没有登录凭据"), "{error}");
+        assert!(error.contains("Authentication required"), "{error}");
+    }
+
+    /// #1403 返工：报错带着 ACP 的 `agent_auth_required` 代码时，原话里没有能认出来的
+    /// 词也算缺凭据（详情据「没有登录凭据」给去登录的入口）。lifecycle 在连接断开后
+    /// 补发的那次 Cancelled 不能被当成用户停止。
+    #[tokio::test]
+    async fn reconcile_reads_the_auth_required_code_of_a_lost_turn() {
+        let (engine, task_id) = running_task().await;
+        let conv_id = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task")
+            .conversation_id
+            .expect("conversation");
+        engine
+            .on_event(&envelope_at(
+                PARENT_CONN,
+                1,
+                AcpEvent::Error {
+                    message: "relay token expired".into(),
+                    agent_type: "codex".into(),
+                    code: Some("agent_auth_required".into()),
+                    details: None,
+                    terminal: true,
+                },
+            ))
+            .await;
+        engine
+            .on_event(&envelope_at(
+                PARENT_CONN,
+                2,
+                AcpEvent::StatusChanged {
+                    status: ConnectionStatus::Disconnected,
+                },
+            ))
+            .await;
+        conversation_service::update_status(
+            &engine.db.conn,
+            conv_id,
+            ConversationStatus::Cancelled,
+        )
+        .await
+        .expect("conversation status");
+        engine
+            .on_event(&envelope_at(
+                PARENT_CONN,
+                3,
+                AcpEvent::ConversationStatusChanged {
+                    conversation_id: conv_id,
+                    status: ConversationStatus::Cancelled,
+                },
+            ))
+            .await;
+
+        engine.reconcile_once().await;
+
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task");
+        assert_eq!(task.status, WorkTaskStatus::Failed);
+        let error = task.last_error.expect("last_error");
+        assert!(error.contains("没有登录凭据"), "{error}");
+        assert!(error.contains("relay token expired"), "{error}");
+    }
+
+    /// #1403 返工：智能体先报了一条不终止的错，用户随即在对话里点停止（连接还活着时
+    /// 会话就被标成 Cancelled），之后连接在 TurnComplete 前断开。这是用户停止，仍记
+    /// 「已取消」，不能把那条报错当成失败原因。
+    #[tokio::test]
+    async fn reconcile_cancels_a_run_the_user_stopped_after_an_error() {
+        let (engine, task_id) = running_task().await;
+        let conv_id = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task")
+            .conversation_id
+            .expect("conversation");
+        engine
+            .on_event(&envelope_at(
+                PARENT_CONN,
+                1,
+                AcpEvent::Error {
+                    message: "tool failed: permission denied".into(),
+                    agent_type: "codex".into(),
+                    code: None,
+                    details: None,
+                    terminal: false,
+                },
+            ))
+            .await;
+        conversation_service::update_status(
+            &engine.db.conn,
+            conv_id,
+            ConversationStatus::Cancelled,
+        )
+        .await
+        .expect("conversation status");
+        engine
+            .on_event(&envelope_at(
+                PARENT_CONN,
+                2,
+                AcpEvent::ConversationStatusChanged {
+                    conversation_id: conv_id,
+                    status: ConversationStatus::Cancelled,
+                },
+            ))
+            .await;
+        engine
+            .on_event(&envelope_at(
+                PARENT_CONN,
+                3,
+                AcpEvent::StatusChanged {
+                    status: ConnectionStatus::Disconnected,
+                },
+            ))
+            .await;
+
+        engine.reconcile_once().await;
+
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task");
+        assert_eq!(task.status, WorkTaskStatus::Canceled);
+        assert_eq!(task.last_error, None);
+    }
+
+    /// #1403：本轮存下的失败说明（#1120）也算原因：连接已经没了、engine 没收到报错时用它。
+    #[tokio::test]
+    async fn reconcile_fails_a_cancelled_run_with_its_saved_turn_failure() {
+        let (engine, task_id) = running_task().await;
+        let conv_id = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task")
+            .conversation_id
+            .expect("conversation");
+        crate::acp::turn_failure::save(
+            &engine.db.conn,
+            conv_id,
+            &crate::acp::turn_failure::PersistedTurnFailure {
+                message: "The connection to Codex was lost.".into(),
+                kind: Some(crate::acp::turn_failure::KIND_CONNECTION_LOST.into()),
+                at: chrono::Utc::now() + chrono::Duration::seconds(1),
+            },
+        )
+        .await
+        .expect("save turn failure");
+        conversation_service::update_status(
+            &engine.db.conn,
+            conv_id,
+            ConversationStatus::Cancelled,
+        )
+        .await
+        .expect("conversation status");
+
+        engine.reconcile_once().await;
+
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task");
+        assert_eq!(task.status, WorkTaskStatus::Failed);
+        let error = task.last_error.expect("last_error");
+        assert!(
+            error.contains("The connection to Codex was lost."),
+            "{error}"
+        );
+    }
+
+    /// #1403：上一轮留下的失败说明比这一代开跑早，不算这一轮的；没有报错的 Cancelled
+    /// 仍是用户在聊天里停止、TurnComplete 丢了，照旧记成「已取消」。
+    #[tokio::test]
+    async fn reconcile_still_cancels_a_cancelled_run_without_an_error() {
+        let (engine, task_id) = running_task().await;
+        let conv_id = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task")
+            .conversation_id
+            .expect("conversation");
+        crate::acp::turn_failure::save(
+            &engine.db.conn,
+            conv_id,
+            &crate::acp::turn_failure::PersistedTurnFailure {
+                message: "old failure".into(),
+                kind: None,
+                at: chrono::Utc::now() - chrono::Duration::hours(1),
+            },
+        )
+        .await
+        .expect("save turn failure");
+        conversation_service::update_status(
+            &engine.db.conn,
+            conv_id,
+            ConversationStatus::Cancelled,
+        )
+        .await
+        .expect("conversation status");
+
+        engine.reconcile_once().await;
+
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task");
+        assert_eq!(task.status, WorkTaskStatus::Canceled);
+        assert_eq!(task.last_error, None);
+    }
+
     /// #834：用户已经看过、标成「已完成」的会话不改写，但取消任务后「?」照样清掉。
     #[tokio::test]
     async fn canceling_a_task_keeps_a_completed_conversation_but_clears_its_mark() {
@@ -11018,6 +11395,7 @@ mod tests {
                 error: None,
                 baselined: true,
                 baseline: Some((0, 0, 0)),
+                ..Default::default()
             },
         );
         engine.mark_compaction_turn(PARENT_CONN, 4).await;
@@ -11072,6 +11450,7 @@ mod tests {
                 error: None,
                 baselined: true,
                 baseline: Some((0, 0, 0)),
+                ..Default::default()
             },
         );
         engine.mark_compaction_turn(PARENT_CONN, 4).await;
@@ -11138,6 +11517,7 @@ mod tests {
                 error: None,
                 baselined: true,
                 baseline: Some((3, 10, 1)),
+                ..Default::default()
             },
         );
         engine
@@ -11181,6 +11561,7 @@ mod tests {
                 error: None,
                 baselined: true,
                 baseline: None,
+                ..Default::default()
             },
         );
         engine
@@ -11274,6 +11655,7 @@ mod tests {
                     error: None,
                     baselined: true,
                     baseline: stats,
+                    ..Default::default()
                 },
             );
             fail_turn_with_upstream_error(&engine).await;
@@ -11308,6 +11690,7 @@ mod tests {
                     error: None,
                     baselined: true,
                     baseline: Some((0, 0, 0)),
+                    ..Default::default()
                 },
             );
             fail_turn_with_upstream_error(&engine).await;
@@ -11351,6 +11734,7 @@ mod tests {
                 error: None,
                 baselined: true,
                 baseline: Some((0, 0, 0)),
+                ..Default::default()
             },
         );
         fail_turn_with_upstream_error(&engine).await;
@@ -11435,6 +11819,7 @@ mod tests {
                 error: None,
                 baselined: true,
                 baseline: Some((0, 0, 0)),
+                ..Default::default()
             },
         );
         engine
@@ -11597,6 +11982,7 @@ mod tests {
                     error: None,
                     baselined: true,
                     baseline: Some((1, 1, 1)),
+                    ..Default::default()
                 },
             );
             engine

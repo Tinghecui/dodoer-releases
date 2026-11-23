@@ -18,12 +18,12 @@ import {
 } from "@/lib/terminal/shortcuts"
 import {
   applyTermMods,
-  kbdLiftPx,
   termKeySeq,
   type TermKeyBarKey,
   type TermMods,
 } from "@/lib/terminal/keybar"
 import { TermKeybar } from "@/components/terminal/term-keybar"
+import { useVisualViewport } from "@/hooks/use-visual-viewport"
 import {
   TerminalLinkMenu,
   terminalLinkClickOpensMenu,
@@ -236,39 +236,9 @@ export function TerminalView({
   // 键盘打开时 visualViewport 被压缩：算出底部被遮住的像素数 kbdLift，
   // 用 max-height 钳制 xterm + 键栏所在的 flex 容器 —— 键栏作为最后一个
   // flex 子项自然抬到键盘上方；xterm 随容器变小，原有 ResizeObserver 自动
-  // refit + 发 terminal_resize。
-  const [kbdLift, setKbdLift] = useState(0)
-  useEffect(() => {
-    if (!keybarVisible) {
-      setKbdLift(0)
-      return
-    }
-    const vv = window.visualViewport
-    if (!vv) return
-    let raf = 0
-    let last = -1
-    const update = () => {
-      raf = 0
-      const lift = kbdLiftPx(window.innerHeight, vv.height, vv.offsetTop)
-      if (lift !== last) {
-        last = lift
-        setKbdLift(lift)
-      }
-    }
-    const schedule = () => {
-      if (!raf) raf = requestAnimationFrame(update)
-    }
-    vv.addEventListener("resize", schedule)
-    vv.addEventListener("scroll", schedule)
-    window.addEventListener("resize", schedule)
-    update()
-    return () => {
-      if (raf) cancelAnimationFrame(raf)
-      vv.removeEventListener("resize", schedule)
-      vv.removeEventListener("scroll", schedule)
-      window.removeEventListener("resize", schedule)
-    }
-  }, [keybarVisible])
+  // refit + 发 terminal_resize。遮挡像素数和工作区根容器共用同一份全局
+  // 可见区域跟踪（算法仍是 kbdLiftPx），不再自己监听。
+  const kbdLift = useVisualViewport(keybarVisible).keyboardLift
 
   useEffect(() => {
     isActiveRef.current = isActive

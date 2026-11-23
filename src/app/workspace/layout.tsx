@@ -118,6 +118,7 @@ import {
   rightChromeReserve,
 } from "@/lib/window-chrome"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { WorkspaceViewportRoot } from "./workspace-viewport-root"
 import { ConversationSeenTracker } from "@/components/conversations/conversation-seen-tracker"
 import { usePlatform } from "@/hooks/use-platform"
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
@@ -1449,7 +1450,7 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
   const fillStyle = FILL_MODE_STYLE[workspaceBgFillMode]
 
   return (
-    <div className="fixed inset-0 flex flex-col overflow-hidden bg-background text-foreground pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]">
+    <WorkspaceViewportRoot isMobile={isMobile} mobileFooter={<StatusBar />}>
       {/* 用户背景图片：铺在整个工作区底层。根 div 是 fixed，已建立层叠上下文，故
           -z-10 绘于自身 bg-background 之上、所有流内容之下。遮罩是朝 --background 的
           面纱（明暗自适配），保证内容可读；结构性面板的半透明由 globals.css 的
@@ -1492,7 +1493,7 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
       ) : (
         <FolderWorkspaceShell>{children}</FolderWorkspaceShell>
       )}
-      {isMobile && <StatusBar />}
+      {/* 手机布局的底部状态栏由 WorkspaceViewportRoot 渲染在最后：键盘弹起时收起。 */}
       {/* Desktop window chrome, pinned to the window corners so it never moves —
           or re-mounts — when the side panels open/close (that re-parenting is
           what made the old in-header clusters flicker). Left = sidebar toggle +
@@ -1524,7 +1525,7 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
         duration={TOAST_DURATION_MS}
         closeButton
       />
-    </div>
+    </WorkspaceViewportRoot>
   )
 }
 

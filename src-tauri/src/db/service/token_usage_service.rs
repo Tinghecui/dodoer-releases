@@ -300,6 +300,18 @@ pub struct SessionOwner {
     pub folder_id: i32,
 }
 
+/// 一条用量明细在用量页里怎么算（见 [`session_owners`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UsageOwner {
+    /// 归到侧栏里看得到的这个会话：算 token，也算会话、进排行。
+    Session(SessionOwner),
+    /// 只算 token，不算会话、不进排行（自动化运行、文件夹已移除的）。
+    TokenOnly,
+    /// 整条不算（会话或它的上级会话已删除）：删掉的会话连同它委托出去的
+    /// 子会话一起从用量页消失。
+    Excluded,
+}
+
 /// 侧栏把标题像 Jenny Loop 节点对话的普通会话收进 Loop 那一行、不单独列出；
 /// Jenny 的尝试工作区（attempts）没有 Loop 行，里面的会话照常列出。和
 /// `conversation_service::list_all_filtered` 的 `include_loops` 口径一致。
@@ -332,15 +344,17 @@ fn is_automation_run(
 ///
 ///  * 委托出去的子会话（含子会话再委托的）沿 `parent_id` 一路归到顶层会话；
 ///  * 顶层是自动化运行（Loop 行，或标题是 Loop 节点对话、被侧栏收进 Loop 的），
-///    归为 `None`；
-///  * 这条链上任何一个会话已删除、或所在文件夹已移除，也归为 `None`。
+///    或这条链上有会话所在文件夹已移除、链成了环，归为 [`UsageOwner::TokenOnly`]：
+///    token 照样算进总量和文件夹，只是不算会话、不进排行；
+///  * 这条链上任何一个会话已删除（含上级会话的行已经不在了），归为
+///    [`UsageOwner::Excluded`]，整条不算：删掉会话只软删它自己这一行，
+///    它委托出去的子会话还留着，不排除的话文件夹会剩下「0 个会话 xxK」。
 ///
-/// 归为 `None` 的 token 照样算进总量和文件夹，只是不算会话、不进排行。
 /// 只沿用到的那几条 `parent_id` 往上查，不扫整张表。
 pub async fn session_owners(
     conn: &DatabaseConnection,
     ids: &[i32],
-) -> Result<HashMap<i32, Option<SessionOwner>>, DbError> {
+) -> Result<HashMap<i32, UsageOwner>, DbError> {
     // (id, parent_id, kind, 未删除, agent_type, folder_id, title)
     type Node = (
         i32,
@@ -412,31 +426,46 @@ pub async fn session_owners(
 
     let mut out = HashMap::new();
     for &id in ids {
-        // 沿 parent_id 找顶层；链上有会话行不在了、已删除、文件夹已移除，或成了环，
-        // 都归为 None。
+        // 沿 parent_id 找顶层；链上有会话行不在了或已删除，整条不算；文件夹已移除、
+        // 成了环的只算 token。要走完整条链：子会话的文件夹移除了、父会话又删了，
+        // 也是整条不算。
         let mut cursor = id;
         let mut seen = std::collections::HashSet::new();
+        let mut token_only = false;
         let root = loop {
             let Some(node) = nodes.get(&cursor) else {
                 break None;
             };
-            if !seen.insert(cursor) || !node.3 || !live_folders.contains(&node.5) {
+            if !node.3 {
                 break None;
+            }
+            if !seen.insert(cursor) {
+                token_only = true;
+                break Some(node);
+            }
+            if !live_folders.contains(&node.5) {
+                token_only = true;
             }
             match node.1 {
                 Some(parent) => cursor = parent,
                 None => break Some(node),
             }
         };
-        let owner = root.and_then(|(rid, _, kind, _, agent, folder, title)| {
-            (!is_automation_run(kind, title.as_deref(), *folder, &attempt_folders)).then(|| {
-                SessionOwner {
-                    id: *rid,
-                    agent_type: agent.clone(),
-                    folder_id: *folder,
+        let owner = match root {
+            None => UsageOwner::Excluded,
+            Some(_) if token_only => UsageOwner::TokenOnly,
+            Some((rid, _, kind, _, agent, folder, title)) => {
+                if is_automation_run(kind, title.as_deref(), *folder, &attempt_folders) {
+                    UsageOwner::TokenOnly
+                } else {
+                    UsageOwner::Session(SessionOwner {
+                        id: *rid,
+                        agent_type: agent.clone(),
+                        folder_id: *folder,
+                    })
                 }
-            })
-        });
+            }
+        };
         out.insert(id, owner);
     }
     Ok(out)
@@ -1746,7 +1775,7 @@ mod tests {
         )
         .await
         .expect("owners");
-        let root_owner = Some(SessionOwner {
+        let root_owner = UsageOwner::Session(SessionOwner {
             id: root,
             agent_type: "claude_code".into(),
             folder_id: live,
@@ -1754,11 +1783,12 @@ mod tests {
         assert_eq!(owners[&root], root_owner);
         // 子会话归到顶层，带的是顶层的智能体。
         assert_eq!(owners[&child], root_owner);
-        assert_eq!(owners[&orphan], None);
-        assert_eq!(owners[&looped], None);
-        assert_eq!(owners[&in_gone], None);
-        assert_eq!(owners[&child_in_gone], None);
-        assert_eq!(owners[&loop_node], None);
+        // 父会话删了：子会话跟着整条不算（#1284）。
+        assert_eq!(owners[&orphan], UsageOwner::Excluded);
+        assert_eq!(owners[&looped], UsageOwner::TokenOnly);
+        assert_eq!(owners[&in_gone], UsageOwner::TokenOnly);
+        assert_eq!(owners[&child_in_gone], UsageOwner::TokenOnly);
+        assert_eq!(owners[&loop_node], UsageOwner::TokenOnly);
     }
 
     #[tokio::test]

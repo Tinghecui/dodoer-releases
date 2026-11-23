@@ -96,6 +96,35 @@ describe("no usable agent fails the waiting message", () => {
     expect(usable).not.toContain('"prompting"')
   })
 
+  // #1323：连接失败过、服务又好了，点一次「重试」就重连并在连上后发出去，
+  // 不弹「打开 Agents 设置」（Cowork 下凭据在门户，这个指引有误导）。
+  it("reconnects and then retries on a failed connection, without the Agents settings toast (#1323)", () => {
+    for (const [start, target] of [
+      ["const handleQueueRetry = useCallback(", "retryAfterReconnect.note(id)"],
+      [
+        "const handleQueueRetryAll = useCallback(",
+        'retryAfterReconnect.note("all")',
+      ],
+    ]) {
+      const fn = between(start, "const queueHeadFailure =")
+      const branch = fn.slice(
+        fn.indexOf('if (agentUnavailable === "connect_failed") {'),
+        fn.indexOf("toast.error")
+      )
+      expect(branch).toContain(target)
+      expect(branch).toContain("handleFocus()")
+      expect(branch).toContain("return")
+    }
+    const effect = between(
+      "retryAfterReconnect.observe({",
+      "// Cowork 加的（#423）"
+    )
+    expect(effect).toContain("ready: connectionReady")
+    expect(effect).toContain("unavailable: agentUnavailable")
+    expect(effect).toContain("mqRetryAll()")
+    expect(effect).toContain("mqRetry(target)")
+  })
+
   it("routes both composers' retry and hint through the panel", () => {
     expect(source).not.toContain("onQueueRetry={mqRetry}")
     expect(source.split("onQueueRetry={handleQueueRetry}")).toHaveLength(3)

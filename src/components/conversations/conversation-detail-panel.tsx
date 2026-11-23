@@ -175,6 +175,7 @@ import {
   settleEndedTurn,
 } from "@/lib/cowork/session-lost-retry"
 import { createUncertainSendWatch } from "@/lib/cowork/uncertain-send"
+import { createRetryAfterReconnect } from "@/lib/cowork/retry-after-reconnect"
 import {
   failedTurnRequeueKind,
   isLostConnectionLine,
@@ -3418,6 +3419,26 @@ const ConversationTabView = memo(function ConversationTabView({
   // the message would sit under "waiting for the agent" forever (#200). Start
   // it here, the same way handleSend does; a connection already coming up or
   // up is left alone.
+  //
+  // #1323：连接失败过的（不是没装），不弹「打开 Agents 设置」（Cowork 下凭据
+  // 在门户，这个指引有误导），记下这条、重新连接，连上以后由下面的 effect 替
+  // 用户清掉失败标记、交给自动发送，服务恢复后点一次就能发出去。重连又失败的，
+  // 失败提示由连接那边照常弹，消息照旧标着失败、带重试。
+  const [retryAfterReconnect] = useState(createRetryAfterReconnect)
+  useEffect(() => {
+    const target = retryAfterReconnect.observe({
+      ready: connectionReady,
+      unavailable: agentUnavailable,
+    })
+    if (target === "all") mqRetryAll()
+    else if (target != null) mqRetry(target)
+  }, [
+    connectionReady,
+    agentUnavailable,
+    retryAfterReconnect,
+    mqRetry,
+    mqRetryAll,
+  ])
   const handleQueueRetry = useCallback(
     (id: string) => {
       if (agentUnavailableReason == null) {
@@ -3425,6 +3446,11 @@ const ConversationTabView = memo(function ConversationTabView({
         const status = connStatusRef.current
         if (status == null || status === "disconnected" || status === "error")
           handleFocus()
+        return
+      }
+      if (agentUnavailable === "connect_failed") {
+        retryAfterReconnect.note(id)
+        handleFocus()
         return
       }
       handleFocus()
@@ -3438,6 +3464,8 @@ const ConversationTabView = memo(function ConversationTabView({
     },
     [
       agentUnavailableReason,
+      agentUnavailable,
+      retryAfterReconnect,
       mqRetry,
       handleFocus,
       tabId,
@@ -3494,6 +3522,12 @@ const ConversationTabView = memo(function ConversationTabView({
         handleFocus()
       return
     }
+    // #1323：同上面单条的重试。
+    if (agentUnavailable === "connect_failed") {
+      retryAfterReconnect.note("all")
+      handleFocus()
+      return
+    }
     handleFocus()
     toast.error(agentUnavailableReason, {
       id: `queue-agent-unavailable:${tabId}`,
@@ -3504,6 +3538,8 @@ const ConversationTabView = memo(function ConversationTabView({
     })
   }, [
     agentUnavailableReason,
+    agentUnavailable,
+    retryAfterReconnect,
     mqRetryAll,
     handleFocus,
     tabId,

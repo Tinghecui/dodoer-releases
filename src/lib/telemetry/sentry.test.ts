@@ -333,6 +333,42 @@ describe("noteWs", () => {
     )
   })
 
+  it("logs the drop when the socket was torn down for a lost network, once it is back", () => {
+    start(CONFIG, "web")
+    noteWs({ type: "connecting" })
+    noteWs({ type: "ready", attempts: 0 })
+    noteWs({ type: "reconnecting", reason: "network_lost" })
+    // 断网期间发出去的日志会丢，所以「closed」要等连回来再发
+    expect(sdk.logger.warn).not.toHaveBeenCalledWith(
+      "Event socket closed",
+      expect.anything()
+    )
+    noteWs({ type: "connecting" })
+    noteWs({ type: "ready", attempts: 0 })
+    expect(sdk.logger.warn).toHaveBeenCalledWith(
+      "Event socket closed",
+      expect.objectContaining({
+        code: 0,
+        clean: false,
+        reason: "network_lost",
+      })
+    )
+    expect(sdk.logger.info).toHaveBeenCalledWith(
+      "Event socket back",
+      expect.objectContaining({ attempts: 0 })
+    )
+  })
+
+  it("times the first connect from the moment given", () => {
+    start(CONFIG, "web")
+    const now = performance.now()
+    noteWs({ type: "connecting" }, now - 250)
+    noteWs({ type: "ready", attempts: 0 }, now)
+    expect(sdk.logger.info).toHaveBeenCalledWith("Event socket ready", {
+      connect_ms: 250,
+    })
+  })
+
   it("ends the reconnect when the session expired", () => {
     start(CONFIG, "web")
     noteWs({ type: "reconnecting", reason: "network_lost" })

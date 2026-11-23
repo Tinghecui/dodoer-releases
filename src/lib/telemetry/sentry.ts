@@ -497,9 +497,31 @@ let reconnect: { span: Span; since: number } | null = null
  *  come through the app), and how often it closed on this page. */
 let wsState: WsNote["type"] | "none" = "none"
 let wsCloses = 0
+/** A live socket the transport dropped itself (network lost, "Reconnect
+ *  now"): no close event comes for it, and the link is likely down, so a log
+ *  sent now would be lost. Logged as "Event socket closed" once it is back. */
+let droppedLive: {
+  reason: string
+  aliveMs: number
+  page: ReturnType<typeof pageState>
+} | null = null
 
-export function noteWs(note: WsNote): void {
-  const now = performance.now()
+function logDroppedLive(): void {
+  if (!droppedLive) return
+  logger.warn("Event socket closed", {
+    code: 0,
+    clean: false,
+    alive_ms: droppedLive.aliveMs,
+    reason: droppedLive.reason,
+    ...droppedLive.page,
+  })
+  droppedLive = null
+}
+
+/** `at` is when it happened (`performance.now()`), for steps noted before
+ *  telemetry started and replayed now. */
+export function noteWs(note: WsNote, at?: number): void {
+  const now = at ?? performance.now()
   wsState = note.type
   if (note.type === "closed") wsCloses++
   switch (note.type) {
@@ -511,6 +533,7 @@ export function noteWs(note: WsNote): void {
         connectingSince === null ? null : Math.round(now - connectingSince)
       connectingSince = null
       readySince = now
+      logDroppedLive()
       if (reconnect) {
         reconnect.span.setAttribute("codeg.attempts", note.attempts)
         reconnect.span.setStatus({ code: SPAN_OK })
@@ -540,6 +563,13 @@ export function noteWs(note: WsNote): void {
       return
     }
     case "reconnecting":
+      if (note.reason !== "closed" && readySince !== null && !droppedLive) {
+        droppedLive = {
+          reason: note.reason,
+          aliveMs: Math.round(now - readySince),
+          page: pageState(),
+        }
+      }
       readySince = null
       if (!reconnect) {
         reconnect = {
@@ -553,6 +583,8 @@ export function noteWs(note: WsNote): void {
       return
     case "unauthorized":
       readySince = null
+      // 拿到 401 说明网是通的，这时发得出去
+      logDroppedLive()
       if (reconnect) {
         reconnect.span.setStatus({
           code: SPAN_ERROR,
@@ -687,6 +719,7 @@ export function resetForTests(): void {
   reconnect = null
   wsState = "none"
   wsCloses = 0
+  droppedLive = null
   if (heldTimer !== null) clearTimeout(heldTimer)
   heldTimer = null
   failureSurface = "web"

@@ -69,6 +69,30 @@ describe("while telemetry is off", () => {
 })
 
 describe("startTelemetry", () => {
+  it("replays the event socket steps noted before it started, with their times", async () => {
+    noteWs({ type: "connecting" })
+    noteWs({ type: "ready", attempts: 0 })
+    expect(backend.noteWs).not.toHaveBeenCalled()
+    await startTelemetry(CONFIG, "web")
+    expect(backend.noteWs).toHaveBeenCalledTimes(2)
+    expect(backend.noteWs).toHaveBeenNthCalledWith(
+      1,
+      { type: "connecting" },
+      expect.any(Number)
+    )
+    expect(backend.noteWs).toHaveBeenNthCalledWith(
+      2,
+      { type: "ready", attempts: 0 },
+      expect.any(Number)
+    )
+    noteWs({ type: "closed", code: 1006, wasClean: false })
+    expect(backend.noteWs).toHaveBeenLastCalledWith({
+      type: "closed",
+      code: 1006,
+      wasClean: false,
+    })
+  })
+
   it("loads the SDK once and sends the errors kept so far", async () => {
     const first = new Error("before start")
     reportError(first, { where: "boot" })

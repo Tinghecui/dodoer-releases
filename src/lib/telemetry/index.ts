@@ -3,7 +3,8 @@
 // `import()` once the server's `cowork_info` says telemetry is on, so a
 // workspace without it never downloads the SDK and every call here is a
 // no-op. Errors caught before that are kept (at most 20) and sent once it
-// starts.
+// starts; so are the event socket's steps (it connects before telemetry
+// starts), with the time each happened.
 
 /** The API command envelopes go through (`transport.ts`); must match
  *  `ENVELOPE_COMMAND` in src-tauri/src/telemetry/mod.rs. Never timed itself. */
@@ -112,6 +113,7 @@ export interface FeedbackContext {
 type Backend = typeof import("./sentry")
 
 const MAX_EARLY_ERRORS = 20
+const MAX_EARLY_WS_NOTES = 20
 const NO_HEADERS: Record<string, string> = Object.freeze({}) as Record<
   string,
   string
@@ -122,6 +124,7 @@ const NO_TURN: Turn = { noteEvent: () => {}, end: () => {} }
 let backend: Backend | null = null
 let starting: Promise<void> | null = null
 let early: Array<{ error: unknown; context?: Record<string, unknown> }> = []
+let earlyWs: Array<{ note: WsNote; at: number }> = []
 const listeners = new Set<() => void>()
 
 /**
@@ -140,10 +143,14 @@ export function startTelemetry(
       const kept = early
       early = []
       for (const { error, context } of kept) loaded.reportError(error, context)
+      const keptWs = earlyWs
+      earlyWs = []
+      for (const { note, at } of keptWs) loaded.noteWs(note, at)
       for (const listener of listeners) listener()
     })
     .catch((err: unknown) => {
       early = []
+      earlyWs = []
       console.warn("[telemetry] could not start:", err)
     })
   return starting
@@ -180,9 +187,18 @@ export function beginApiCall(command: string, surface: Surface): ApiCall {
   return backend.beginApiCall(command, surface)
 }
 
-/** Note a step of the event socket's life. Dropped while telemetry is off. */
+/** Note a step of the event socket's life. Before telemetry starts the
+ *  latest 20 steps are kept (with when they happened) and replayed once it
+ *  does: the socket connects on page load, earlier than `cowork_info` turns
+ *  telemetry on, and without this "Event socket ready" was never sent. */
 export function noteWs(note: WsNote): void {
-  backend?.noteWs(note)
+  if (backend) {
+    backend.noteWs(note)
+  } else {
+    // 只留最近的 20 条：遥测一直不开的页面也不会越攒越多
+    if (earlyWs.length >= MAX_EARLY_WS_NOTES) earlyWs.shift()
+    earlyWs.push({ note, at: performance.now() })
+  }
 }
 
 /** Start timing a turn this tab sends to `agent`; end it exactly once. */
@@ -226,6 +242,7 @@ export function resetTelemetryForTests(): void {
   backend = null
   starting = null
   early = []
+  earlyWs = []
   listeners.clear()
 }
 

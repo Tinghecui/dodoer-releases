@@ -58,4 +58,38 @@ describe("useRoomAbove", () => {
     rerender({ active: false })
     expect(result.current).toBeNull()
   })
+
+  it("re-measures on the next frame, after the root has shrunk to the new visible height", () => {
+    const vv = stubVisualViewport(0)
+    // 手动推进的 requestAnimationFrame：工作区根容器的 --app-vvh 是在下一帧才写进去的。
+    let frames: FrameRequestCallback[] = []
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      frames.push(cb)
+      return frames.length
+    })
+    vi.stubGlobal("cancelAnimationFrame", () => {})
+    const flushFrame = () => {
+      const pending = frames
+      frames = []
+      for (const cb of pending) cb(0)
+    }
+    const anchor = document.createElement("div")
+    let top = 600
+    anchor.getBoundingClientRect = () => ({ top }) as DOMRect
+    const ref = { current: anchor }
+
+    const { result } = renderHook(() => useRoomAbove(ref, true, 6))
+    expect(result.current).toBe(586)
+
+    // 视口变矮：resize 时布局还是旧的，下一帧根容器变矮、输入框才往上移。
+    vv.height = 300
+    act(() => {
+      vv.dispatchEvent(new Event("resize"))
+    })
+    top = 400
+    act(() => {
+      flushFrame()
+    })
+    expect(result.current).toBe(386)
+  })
 })

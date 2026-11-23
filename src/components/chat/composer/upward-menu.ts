@@ -2,6 +2,8 @@
 
 import { useLayoutEffect, useState, type RefObject } from "react"
 
+import { useVisualViewport } from "@/hooks/use-visual-viewport"
+
 /**
  * 从输入框往上弹的菜单的最大高度。
  *
@@ -52,6 +54,12 @@ export function roomAbovePx(
  * 只靠 CSS 的 `--app-vvh` 只知道可见区域多高，不知道输入框占了多少；这里量
  * 锚点的实际位置，键盘开合（visualViewport 的 resize / scroll）、窗口变化、
  * 输入框变高（ResizeObserver）时重量。
+ *
+ * 视口变化时工作区根容器的 `--app-vvh` 要等 useVisualViewport 在下一帧写进去，
+ * 事件当时量到的还是旧布局下输入框的位置；之后根容器变矮、输入框整体上移，
+ * 输入框自己的尺寸没变，ResizeObserver 不会再触发。所以事件里除了当场量一次，
+ * 还排到下一帧再量（排在 useVisualViewport 那一帧之后）；可见区域的快照变了
+ * （包括键盘开合时底部状态栏被去掉、React 重排之后）也重量一次。
  */
 export function useRoomAbove(
   anchorRef: RefObject<HTMLElement | null>,
@@ -59,6 +67,11 @@ export function useRoomAbove(
   gap: number
 ): number | null {
   const [room, setRoom] = useState<number | null>(null)
+  const {
+    height: vvHeight,
+    offsetTop: vvTop,
+    keyboardOpen,
+  } = useVisualViewport(active)
 
   useLayoutEffect(() => {
     const anchor = anchorRef.current
@@ -68,20 +81,30 @@ export function useRoomAbove(
       const top = anchor.getBoundingClientRect().top
       setRoom(roomAbovePx(top, vv?.offsetTop ?? 0, gap))
     }
+    let raf = 0
+    const onViewportChange = () => {
+      update()
+      if (raf) cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        update()
+      })
+    }
     update()
-    vv?.addEventListener("resize", update)
-    vv?.addEventListener("scroll", update)
-    window.addEventListener("resize", update)
+    vv?.addEventListener("resize", onViewportChange)
+    vv?.addEventListener("scroll", onViewportChange)
+    window.addEventListener("resize", onViewportChange)
     const observer =
       typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null
     observer?.observe(anchor)
     return () => {
-      vv?.removeEventListener("resize", update)
-      vv?.removeEventListener("scroll", update)
-      window.removeEventListener("resize", update)
+      if (raf) cancelAnimationFrame(raf)
+      vv?.removeEventListener("resize", onViewportChange)
+      vv?.removeEventListener("scroll", onViewportChange)
+      window.removeEventListener("resize", onViewportChange)
       observer?.disconnect()
     }
-  }, [anchorRef, active, gap])
+  }, [anchorRef, active, gap, vvHeight, vvTop, keyboardOpen])
 
   // 关着时不用旧的量值；下次打开时 effect 会先重量一次。
   return active ? room : null

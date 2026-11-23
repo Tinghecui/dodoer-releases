@@ -2639,6 +2639,8 @@
         "prompting": "응답 중...",
         "error": "연결 오류",
         "disconnected": "연결 끊김",
+        "agentExited": "에이전트 프로세스 종료됨",
+        "agentExitedHint": "에이전트 프로세스가 종료되었습니다. 다음 메시지를 보내면 다시 시작됩니다.",
         "tooltip": "{agent}: {status}",
         "tooltipError": "{agent}: {error}",
         "title": "에이전트 연결",

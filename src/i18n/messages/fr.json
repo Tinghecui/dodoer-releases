@@ -2639,6 +2639,8 @@
         "prompting": "Réponse...",
         "error": "Erreur de connexion",
         "disconnected": "Déconnecté",
+        "agentExited": "Processus de l’agent arrêté",
+        "agentExitedHint": "Le processus de l’agent s’est arrêté. Il redémarrera à l’envoi du prochain message.",
         "tooltip": "{agent} : {status}",
         "tooltipError": "{agent} : {error}",
         "title": "Connexion de l'agent",

@@ -2639,6 +2639,8 @@
         "prompting": "جارٍ الرد...",
         "error": "خطأ في الاتصال",
         "disconnected": "غير متصل",
+        "agentExited": "انتهت عملية الوكيل",
+        "agentExitedHint": "انتهت عملية الوكيل. ستُعاد تشغيلها عند إرسال الرسالة التالية.",
         "tooltip": "{agent}: {status}",
         "tooltipError": "{agent}: {error}",
         "title": "اتصال الوكيل",

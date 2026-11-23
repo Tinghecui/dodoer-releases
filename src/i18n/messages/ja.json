@@ -2639,6 +2639,8 @@
         "prompting": "応答中...",
         "error": "接続エラー",
         "disconnected": "未接続",
+        "agentExited": "エージェントのプロセスが終了しました",
+        "agentExitedHint": "エージェントのプロセスは終了しています。次のメッセージを送信すると再起動します。",
         "tooltip": "{agent}：{status}",
         "tooltipError": "{agent}：{error}",
         "title": "エージェント接続",

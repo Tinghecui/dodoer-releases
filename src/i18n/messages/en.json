@@ -2639,6 +2639,8 @@
         "prompting": "Responding...",
         "error": "Connection error",
         "disconnected": "Disconnected",
+        "agentExited": "Agent process exited",
+        "agentExitedHint": "The agent process has exited. It will restart when you send the next message.",
         "tooltip": "{agent} - {status}",
         "tooltipError": "{agent} - {error}",
         "title": "Agent connection",

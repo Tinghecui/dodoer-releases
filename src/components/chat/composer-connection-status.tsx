@@ -15,6 +15,11 @@ import {
   useAcpActions,
   useConnectionStore,
 } from "@/contexts/acp-connections-context"
+import { useTabStore } from "@/contexts/tab-context"
+import {
+  backgroundPendingFor,
+  useBackgroundPendingStore,
+} from "@/stores/background-pending-store"
 import { AgentIcon } from "@/components/agent-icon"
 import { Button } from "@/components/ui/button"
 import {
@@ -28,7 +33,15 @@ import { cn } from "@/lib/utils"
 // Connection-only states. The session "prompting" state is intentionally
 // collapsed into "connected" (the connection stays up while the agent responds),
 // and anything unknown falls back to "disconnected".
-type ConnStatusKey = "connected" | "connecting" | "error" | "disconnected"
+// `agentExited`（#441）：连接还在，但服务器判出里面的智能体进程已经退出（侧栏的
+// 「?」，原因 agent_exited）——转接进程活着、干活的子进程没了。不能再说「已连接」，
+// 和侧栏一致地说进程没了；下一条消息会让转接进程重新拉起它。
+type ConnStatusKey =
+  | "connected"
+  | "connecting"
+  | "error"
+  | "disconnected"
+  | "agentExited"
 
 // Heart icons per connection state (HeartCrack stands in for the requested
 // HeartX, which lucide does not ship). The steady "connected" state carries no
@@ -44,6 +57,7 @@ const STATUS_ICON: Record<
   connecting: { Icon: HeartPulse, className: "text-amber-500 animate-pulse" },
   error: { Icon: HeartCrack, className: "text-red-500" },
   disconnected: { Icon: HeartOff, className: "text-muted-foreground/60" },
+  agentExited: { Icon: HeartCrack, className: "text-amber-500" },
 }
 
 function toConnStatus(status: string | null): ConnStatusKey {
@@ -55,6 +69,8 @@ function toConnStatus(status: string | null): ConnStatusKey {
       return "connecting"
     case "error":
       return "error"
+    case "agentExited":
+      return "agentExited"
     default:
       return "disconnected"
   }
@@ -137,9 +153,24 @@ export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
     getConnectErrorSnapshot
   )
   const failedConnect = !conn && !connectPending ? connectError : undefined
-  const status =
-    conn?.status ??
-    (connectPending ? "connecting" : failedConnect ? "error" : null)
+  // 侧栏「?」的来源（#441）：这个标签的会话在服务器那边是不是被判成「智能体进程
+  // 已退出」。只看空闲的活连接：在响应中说明进程已经重新拉起来了，断开 / 出错
+  // 的照旧显示连接本身的状态。
+  const conversationId = useTabStore((s) => {
+    const tab = s.tabs.find((x) => x.id === tabId)
+    if (!tab || tab.kind !== "conversation") return null
+    return tab.conversationId ?? null
+  })
+  const externalId = conn?.sessionId ?? null
+  const agentExitedMark = useBackgroundPendingStore((s) => {
+    const pending = backgroundPendingFor(s, externalId, conversationId)
+    return pending?.state === "uncertain" && pending.reason === "agent_exited"
+  })
+  const agentExited = agentExitedMark && conn?.status === "connected"
+  const status = agentExited
+    ? "agentExited"
+    : (conn?.status ??
+      (connectPending ? "connecting" : failedConnect ? "error" : null))
   // What went wrong, in one line: the live connection's error, or why the
   // last connect attempt failed.
   const errorText =
@@ -185,7 +216,9 @@ export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
   // A reconnect on a busy OWNER kills the agent CLI and the work running in it;
   // a viewer's only detaches and re-attaches, leaving the owner's agent alone —
   // so only the former is worth warning about.
-  const destructive = conn != null && !conn.isViewer && isConnectionBusy(conn)
+  // 进程已经退出时没有活在跑，留下的后台任务数是它死前说的，不用警告。
+  const destructive =
+    conn != null && !conn.isViewer && !agentExited && isConnectionBusy(conn)
   const canReconnect = reconnectInfo !== null
 
   const handleReconnect = useCallback(() => {
@@ -231,6 +264,12 @@ export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
             {t(detailStatusKey)}
           </span>
         </div>
+
+        {agentExited ? (
+          <p className="rounded-md bg-amber-500/10 px-2 py-1 text-2xs leading-snug text-amber-700 dark:text-amber-300">
+            {t("agentExitedHint")}
+          </p>
+        ) : null}
 
         {errorText ? (
           <p

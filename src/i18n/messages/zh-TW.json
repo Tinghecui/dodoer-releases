@@ -2639,6 +2639,8 @@
         "prompting": "回應中...",
         "error": "連線異常",
         "disconnected": "未連線",
+        "agentExited": "智慧體進程已退出",
+        "agentExitedHint": "智慧體進程已經退出，傳送下一則訊息時會重新啟動。",
         "tooltip": "{agent}：{status}",
         "tooltipError": "{agent}：{error}",
         "title": "智慧體連線",

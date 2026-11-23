@@ -2639,6 +2639,8 @@
         "prompting": "Antworte...",
         "error": "Verbindungsfehler",
         "disconnected": "Getrennt",
+        "agentExited": "Agent-Prozess beendet",
+        "agentExitedHint": "Der Agent-Prozess wurde beendet. Er startet neu, wenn du die nächste Nachricht sendest.",
         "tooltip": "{agent}: {status}",
         "tooltipError": "{agent}: {error}",
         "title": "Agent-Verbindung",

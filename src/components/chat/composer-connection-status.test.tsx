@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { act, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -53,6 +53,15 @@ vi.mock("@/contexts/acp-connections-context", () => ({
   useAcpActions: () => fake.actions,
 }))
 
+// 只读这个标签的 conversationId：用来找侧栏「?」的那条服务器记录。
+vi.mock("@/contexts/tab-context", () => ({
+  useTabStore: (sel: (s: unknown) => unknown) =>
+    sel({
+      tabs: [{ id: "tab-1", kind: "conversation", conversationId: 42 }],
+    }),
+}))
+
+import { useBackgroundPendingStore } from "@/stores/background-pending-store"
 import { ComposerConnectionStatus } from "./composer-connection-status"
 
 const copy = enMessages.Folder.statusBar.connection
@@ -111,6 +120,10 @@ describe("ComposerConnectionStatus", () => {
     }
     fake.state.reconnect = vi.fn(async () => true)
     fake.state.reconnectedKeys = []
+    useBackgroundPendingStore.setState({
+      bySession: new Map(),
+      byConversation: new Map(),
+    })
   })
 
   it("keeps the status readable on the trigger before anything is clicked", () => {
@@ -337,5 +350,108 @@ describe("ComposerConnectionStatus", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: copy.reconnect })).toBeEnabled()
     )
+  })
+
+  describe("智能体进程已退出、连接还在（侧栏的「?」）", () => {
+    function markAgentExited(conversationId = 42) {
+      useBackgroundPendingStore.setState({
+        byConversation: new Map([
+          [
+            conversationId,
+            {
+              count: 0,
+              names: [],
+              state: "uncertain" as const,
+              reason: "agent_exited" as const,
+            },
+          ],
+        ]),
+      })
+    }
+
+    it("和侧栏一致：显示进程已退出，不说已连接", async () => {
+      markAgentExited()
+      renderStatus()
+
+      expect(
+        screen.getByRole("button", {
+          name: `${copy.title}: ${copy.agentExited}`,
+        })
+      ).toBeInTheDocument()
+
+      await openPopover()
+      expect(await screen.findByText(copy.agentExitedHint)).toBeInTheDocument()
+      expect(screen.queryByText(copy.connected)).not.toBeInTheDocument()
+      // 进程没了，没有活在跑：可以重连，也不用警告会中断工作。
+      expect(
+        screen.queryByText(copy.reconnectInterrupts)
+      ).not.toBeInTheDocument()
+      const button = screen.getByRole("button", { name: copy.reconnect })
+      expect(button).toBeEnabled()
+      await userEvent.click(button)
+      expect(fake.state.reconnectedKeys).toEqual(["tab-1"])
+    })
+
+    it("「?」撤掉以后变回已连接", async () => {
+      markAgentExited()
+      renderStatus()
+      expect(
+        screen.getByRole("button", {
+          name: `${copy.title}: ${copy.agentExited}`,
+        })
+      ).toBeInTheDocument()
+
+      act(() => {
+        useBackgroundPendingStore.setState({ byConversation: new Map() })
+      })
+      expect(
+        await screen.findByRole("button", {
+          name: `${copy.title}: ${copy.connected}`,
+        })
+      ).toBeInTheDocument()
+    })
+
+    it("别的会话的「?」、别的原因的「?」不影响这里", () => {
+      markAgentExited(7)
+      renderStatus()
+      expect(
+        screen.getByRole("button", {
+          name: `${copy.title}: ${copy.connected}`,
+        })
+      ).toBeInTheDocument()
+    })
+
+    it("原因不是进程退出的「?」照旧显示已连接", () => {
+      useBackgroundPendingStore.setState({
+        byConversation: new Map([
+          [
+            42,
+            {
+              count: 0,
+              names: [],
+              state: "uncertain" as const,
+              reason: "silent_without_children" as const,
+            },
+          ],
+        ]),
+      })
+      renderStatus()
+      expect(
+        screen.getByRole("button", {
+          name: `${copy.title}: ${copy.connected}`,
+        })
+      ).toBeInTheDocument()
+    })
+
+    it("连接已经断开时照旧显示未连接", () => {
+      markAgentExited()
+      fake.state.conn = undefined
+      renderStatus()
+      expect(
+        screen.getByRole("button", {
+          name: `${copy.title}: ${copy.disconnected}`,
+        })
+      ).toBeInTheDocument()
+    })
   })
 })

@@ -2639,6 +2639,8 @@
         "prompting": "响应中...",
         "error": "连接异常",
         "disconnected": "未连接",
+        "agentExited": "智能体进程已退出",
+        "agentExitedHint": "智能体进程已经退出，发下一条消息时会重新启动。",
         "tooltip": "{agent}：{status}",
         "tooltipError": "{agent}：{error}",
         "title": "智能体连接",

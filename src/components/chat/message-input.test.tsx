@@ -1678,6 +1678,75 @@ describe("MessageInput slash menu while the agent connects", () => {
     expect(within(menu).getByText(LOADING)).toBeInTheDocument()
   })
 
+  // 手机布局下键盘弹起时，菜单按键盘以上的可见高度（--app-vvh）限高，
+  // 不按整屏的 dvh 算；没有变量时退回 100dvh，桌面不变。
+  it("caps its height by the visible area above the keyboard", async () => {
+    await mountAndType({ commandsLoading: true, availableCommands: [] })
+    const menu = await screen.findByTestId("slash-menu")
+    expect(menu.className).toContain(
+      "max-h-[min(16rem,calc(var(--app-vvh,100dvh)*0.4))]"
+    )
+    expect(menu.className).not.toContain("40dvh)]")
+  })
+
+  // 光按可见高度的比例不够：输入框变高、上面剩的地方少时还会伸出顶部，
+  // 所以手机布局下再按量出来的输入框上方可见空间压一道。
+  function stubRoomAbove(mobile: boolean) {
+    const vv = Object.assign(new EventTarget(), {
+      offsetTop: 100,
+      height: 400,
+      width: 390,
+    })
+    vi.stubGlobal("visualViewport", vv)
+    const rect = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ top: 300 } as DOMRect)
+    const desktop = window.matchMedia
+    const media = vi.spyOn(window, "matchMedia").mockImplementation((query) =>
+      query.includes("max-width: 767px")
+        ? ({
+            media: query,
+            matches: mobile,
+            addEventListener: () => {},
+            removeEventListener: () => {},
+          } as unknown as MediaQueryList)
+        : desktop(query)
+    )
+    return () => {
+      media.mockRestore()
+      rect.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  }
+
+  it("caps its height by the measured room above the composer on mobile", async () => {
+    const restore = stubRoomAbove(true)
+    try {
+      await mountAndType({ commandsLoading: true, availableCommands: [] })
+      const menu = await screen.findByTestId("slash-menu")
+      // 300 - 100（可见区域顶）- 6（间距）- 8（留边）= 186
+      await waitFor(() => expect(menu.style.maxHeight).toContain("186px"))
+    } finally {
+      restore()
+    }
+  })
+
+  // 桌面布局完全不变：不量输入框上方的空间，菜单只按原来的 16rem / 40% 限高，
+  // 窗口矮或输入框升到靠近顶部时也不会被压矮。
+  it("leaves the desktop menu height alone however little room is above", async () => {
+    const restore = stubRoomAbove(false)
+    try {
+      await mountAndType({ commandsLoading: true, availableCommands: [] })
+      const menu = await screen.findByTestId("slash-menu")
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 20))
+      })
+      expect(menu.style.maxHeight).toBe("")
+    } finally {
+      restore()
+    }
+  })
+
   it("replaces the loading row with the commands once they land", async () => {
     const { view } = await mountAndType({
       commandsLoading: true,
@@ -2791,6 +2860,21 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
     )
     expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
     expect(screen.getByTitle(MI.cancel)).toBeInTheDocument()
+  })
+
+  // 往上弹的插话菜单：键盘弹起时不超出键盘以上的可见区域。
+  it("caps the steer menu by the visible area above the keyboard", async () => {
+    const user = userEvent.setup()
+    const editor = await mountPrompting({ onSteer: vi.fn() })
+    typeDraft(editor, "go left")
+    await waitFor(() =>
+      expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+    )
+    await user.click(screen.getByLabelText(MI.steerIntoTurn))
+    const menu = await screen.findByRole("menu")
+    expect(menu.className).toContain(
+      "max-h-[min(var(--radix-dropdown-menu-content-available-height),var(--app-vvh,100dvh))]"
+    )
   })
 
   it("steers the draft text and clears the composer on success", async () => {

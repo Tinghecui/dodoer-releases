@@ -140,6 +140,12 @@ import type { TextToken } from "@/lib/text-token-at"
 import { sessionToSuggestion } from "@/components/chat/composer/suggestion/adapters"
 import { editorHasReference } from "@/components/chat/composer/attachment-files"
 import type { ReferenceAttrs } from "@/components/chat/composer/types"
+import {
+  SLASH_MENU_MAX_HEIGHT_CLASS,
+  UPWARD_DROPDOWN_MAX_HEIGHT_CLASS,
+  useRoomAbove,
+} from "@/components/chat/composer/upward-menu"
+import { useIsMobile } from "@/hooks/use-mobile"
 import type { Editor, JSONContent } from "@tiptap/core"
 import { useReferenceSearch } from "@/components/chat/composer/use-reference-search"
 import { useComposerMentionLabels } from "@/components/chat/composer/use-composer-mention-labels"
@@ -2140,6 +2146,15 @@ export function MessageInput({
   // Escape cancels a queue edit. ProseMirror doesn't consume Escape, so it
   // bubbles up to this container handler. Skipped while the slash menu is open
   // (the editor handles that Escape to close the menu first).
+  // `/` 菜单贴在输入框上沿往上弹（mb-1.5 = 6px 间距），开着时量上方还剩多少。
+  // 只在手机布局下量：桌面布局完全不变，矮窗口、输入框变高时菜单也不被压矮。
+  const isMobileLayout = useIsMobile()
+  const slashRoomAbove = useRoomAbove(
+    containerRef,
+    slashMenuVisible && isMobileLayout,
+    6
+  )
+
   const handleContainerKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (isImeCompositionKey(e)) return
@@ -2264,7 +2279,11 @@ export function MessageInput({
                   <ChevronUp className="size-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" side="top">
+              <DropdownMenuContent
+                align="end"
+                side="top"
+                className={UPWARD_DROPDOWN_MAX_HEIGHT_CLASS}
+              >
                 <DropdownMenuItem
                   onSelect={() => void handleSteerClick()}
                   disabled={steering}
@@ -2323,7 +2342,19 @@ export function MessageInput({
       {slashMenuVisible && (
         <div
           data-testid="slash-menu"
-          className="lg lg-pane lg-menu absolute bottom-full left-0 right-0 mb-1.5 z-50 flex max-h-[min(16rem,40dvh)] flex-col overflow-hidden rounded-[0.8125rem]"
+          className={cn(
+            "lg lg-pane lg-menu absolute bottom-full left-0 right-0 mb-1.5 z-50 flex flex-col overflow-hidden rounded-[0.8125rem]",
+            SLASH_MENU_MAX_HEIGHT_CLASS
+          )}
+          // 量出来的输入框上方可见空间再压一道：输入框变高、上面的内容占了地方
+          // 时，光按可见高度的比例算还会伸出可见区域顶部。
+          style={
+            slashRoomAbove === null
+              ? undefined
+              : {
+                  maxHeight: `min(16rem, calc(var(--app-vvh, 100dvh) * 0.4), ${slashRoomAbove}px)`,
+                }
+          }
         >
           {/* No search box: the user types the filter inline after `/` (like the
               `@` panel); navigation is routed from the editor's keydown. */}

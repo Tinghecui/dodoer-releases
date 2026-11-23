@@ -1,6 +1,6 @@
 import { act, render, waitFor } from "@testing-library/react"
 import { createRef } from "react"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { RichComposer, type RichComposerHandle } from "./rich-composer"
 
@@ -794,5 +794,105 @@ describe("RichComposer predicted follow-up prompt (Tab)", () => {
     dispatchKey(ref, { key: "Tab" })
     expect(onExternalMenuKeyDown).toHaveBeenCalledTimes(1)
     expect(ref.current?.isEmpty()).toBe(true)
+  })
+})
+
+/** 让 `(pointer: coarse)` 命中（手机、平板），其余媒体查询不命中。 */
+function stubCoarsePointer() {
+  vi.spyOn(window, "matchMedia").mockImplementation(
+    (query: string) =>
+      ({
+        matches: query === "(pointer: coarse)",
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      }) as unknown as MediaQueryList
+  )
+}
+
+describe("RichComposer on a touch device", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("inserts a line break on Enter and does not send", async () => {
+    stubCoarsePointer()
+    const onSubmit = vi.fn()
+    const { ref } = await mount({ onSubmit })
+    act(() => ref.current?.setText("hello"))
+    act(() => ref.current?.focus())
+    dispatchKey(ref, { key: "Enter" })
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(JSON.stringify(ref.current?.getJSON())).toContain(
+      '"type":"hardBreak"'
+    )
+  })
+
+  it("hints the soft keyboard that Enter starts a new line", async () => {
+    stubCoarsePointer()
+    const { ref } = await mount()
+    const dom = ref.current?.getEditor()?.view.dom as HTMLElement
+    expect(dom.getAttribute("enterkeyhint")).toBe("enter")
+  })
+
+  it("keeps Enter-to-send with a mouse, and no keyboard hint", async () => {
+    const onSubmit = vi.fn()
+    const { ref } = await mount({ onSubmit })
+    dispatchKey(ref, { key: "Enter" })
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    const dom = ref.current?.getEditor()?.view.dom as HTMLElement
+    expect(dom.hasAttribute("enterkeyhint")).toBe(false)
+  })
+})
+
+// 触屏上回车一律换行：菜单（`/` 命令、`@` 提及）开着时也不被菜单截去选条目，
+// 选菜单靠点。
+describe("RichComposer on a touch device with a menu open", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("inserts a line break instead of handing Enter to an open external menu", async () => {
+    stubCoarsePointer()
+    const onSubmit = vi.fn()
+    const onExternalMenuKeyDown = vi.fn(() => true)
+    const { ref } = await mount({
+      onSubmit,
+      isExternalMenuOpen: true,
+      onExternalMenuKeyDown,
+    })
+    act(() => ref.current?.setText("/he"))
+    act(() => ref.current?.focus())
+    dispatchKey(ref, { key: "Enter" })
+    expect(onExternalMenuKeyDown).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(JSON.stringify(ref.current?.getJSON())).toContain(
+      '"type":"hardBreak"'
+    )
+  })
+
+  it("still routes Arrow keys to the open external menu", async () => {
+    stubCoarsePointer()
+    const onExternalMenuKeyDown = vi.fn(() => true)
+    const { ref } = await mount({
+      isExternalMenuOpen: true,
+      onExternalMenuKeyDown,
+    })
+    dispatchKey(ref, { key: "ArrowDown" })
+    expect(onExternalMenuKeyDown).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps Enter for the open external menu with a mouse", async () => {
+    const onExternalMenuKeyDown = vi.fn(() => true)
+    const { ref } = await mount({
+      isExternalMenuOpen: true,
+      onExternalMenuKeyDown,
+    })
+    dispatchKey(ref, { key: "Enter" })
+    expect(onExternalMenuKeyDown).toHaveBeenCalledTimes(1)
   })
 })

@@ -23,6 +23,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
 import { ModelOptionList } from "@/components/chat/model-option-list"
 import { SelectorTooltip } from "@/components/chat/selector-tooltip"
+import { UPWARD_POPOVER_MAX_HEIGHT_CLASS } from "@/components/chat/composer/upward-menu"
 import { useScrollbarSafeDismiss } from "@/hooks/use-scrollbar-safe-dismiss"
 import { flattenModelGroups } from "@/lib/model-config-groups"
 import { useCoworkText } from "@/lib/cowork/i18n"
@@ -203,11 +204,14 @@ export function SessionSettingsPicker({
         }}
         onPointerDownOutside={onPointerDownOutside}
         onFocusOutside={onFocusOutside}
-        // `max-h-(--radix-popover-content-available-height)`: the chip sits at
-        // the bottom of the composer, so the panel opens upward and scrolls
-        // when the room above it is short. `overflow-hidden` keeps the
+        // Max height: the room Radix measured above the chip, capped by the
+        // visible area above the soft keyboard on a phone (see upward-menu.ts),
+        // so the panel opens upward and scrolls when that room is short. `overflow-hidden` keeps the
         // scrollbar inside the rounded corners.
-        className="max-h-(--radix-popover-content-available-height) w-[22rem] max-w-[calc(100vw-1rem)] overflow-hidden p-0"
+        className={cn(
+          UPWARD_POPOVER_MAX_HEIGHT_CLASS,
+          "w-[22rem] max-w-[calc(100vw-1rem)] overflow-hidden p-0"
+        )}
       >
         {/* The app's own scrollbar, here and in every list below, like the
             side panel's: a real element inside the content, so grabbing it is

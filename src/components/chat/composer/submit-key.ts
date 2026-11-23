@@ -60,6 +60,12 @@ export interface ComposerKeyBindings {
   newline: string
 }
 
+/** 和设备有关的选项。 */
+export interface ComposerKeyOptions {
+  /** 主指针是手指（`isPrimaryPointerCoarse()`）：发送键不发送，回车换行。 */
+  touch?: boolean
+}
+
 /** What a keydown should do in the composer, or `null` to keep the editor default. */
 export type ComposerKeyAction = "submit" | "newline" | null
 
@@ -82,7 +88,8 @@ export type ComposerKeyAction = "submit" | "newline" | null
 export function decideComposerKey(
   event: SubmitKeyEvent,
   context: SubmitKeyContext,
-  bindings: ComposerKeyBindings
+  bindings: ComposerKeyBindings,
+  options: ComposerKeyOptions = {}
 ): ComposerKeyAction {
   if (isImeCompositionKey(event) || context.composing) return null
   const bareEnter =
@@ -93,7 +100,12 @@ export function decideComposerKey(
     !event.metaKey
   if (bareEnter && (context.inCodeBlock || context.inList)) return null
 
-  if (matchShortcutEvent(event, bindings.submit)) return "submit"
+  if (matchShortcutEvent(event, bindings.submit)) {
+    // 触屏设备：手机键盘没有 Shift，回车只换行，发送只靠发送按钮（和大多数
+    // 手机聊天应用一样）。绑定在别的键上的发送也不触发。
+    if (options.touch) return event.key === "Enter" ? "newline" : null
+    return "submit"
+  }
   if (matchShortcutEvent(event, bindings.newline)) return "newline"
   return null
 }

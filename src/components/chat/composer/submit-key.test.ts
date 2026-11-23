@@ -174,3 +174,52 @@ describe("decideComposerKey", () => {
     ).toBe("submit")
   })
 })
+
+describe("decideComposerKey on a touch device", () => {
+  const DEFAULT: ComposerKeyBindings = {
+    submit: "enter",
+    newline: "shift+enter",
+  }
+  const TOUCH = { touch: true }
+
+  it("turns a plain Enter into a newline instead of sending", () => {
+    expect(decideComposerKey(plainEnter, topLevel, DEFAULT, TOUCH)).toBe(
+      "newline"
+    )
+  })
+
+  it("keeps Shift+Enter a newline", () => {
+    expect(
+      decideComposerKey(
+        { ...plainEnter, shiftKey: true },
+        topLevel,
+        DEFAULT,
+        TOUCH
+      )
+    ).toBe("newline")
+  })
+
+  it("never sends from a non-Enter submit binding either", () => {
+    const tab = { ...plainEnter, key: "Tab" }
+    expect(
+      decideComposerKey(tab, topLevel, { ...DEFAULT, submit: "tab" }, TOUCH)
+    ).toBeNull()
+  })
+
+  it("still leaves the IME-confirming Enter to the input method", () => {
+    expect(
+      decideComposerKey(
+        { ...plainEnter, isComposing: true },
+        topLevel,
+        DEFAULT,
+        TOUCH
+      )
+    ).toBeNull()
+  })
+
+  it("leaves a mouse device's Enter-to-send unchanged", () => {
+    expect(
+      decideComposerKey(plainEnter, topLevel, DEFAULT, { touch: false })
+    ).toBe("submit")
+  })
+})

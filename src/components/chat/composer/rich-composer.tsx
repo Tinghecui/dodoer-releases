@@ -16,6 +16,7 @@ import { Selection } from "@tiptap/pm/state"
 import { EditorContent, useEditor } from "@tiptap/react"
 import { exitSuggestion } from "@tiptap/suggestion"
 
+import { isPrimaryPointerCoarse } from "@/hooks/use-is-coarse-pointer"
 import type { HistoryDirection } from "@/lib/composer-history"
 import { isImeCompositionKey } from "@/lib/ime-composition"
 import {
@@ -408,6 +409,11 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
           role: "textbox",
           "aria-multiline": "true",
           ...(ariaLabel ? { "aria-label": ariaLabel } : {}),
+          // 触屏上回车是换行（见 decideComposerKey 的 touch），让软键盘的回车键
+          // 显示成换行而不是「发送」。创建编辑器时定一次，指针类型不会中途变。
+          ...(typeof window !== "undefined" && isPrimaryPointerCoarse()
+            ? { enterkeyhint: "enter" }
+            : {}),
           // Cowork: the shown hint, for assistive tech, when it says more than
           // the name (a state like "Connecting...", a predicted follow-up).
           ...(placeholder && placeholder !== ariaLabel
@@ -420,6 +426,23 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
           // Enter that picks a CJK candidate must not select a slash command
           // (`decideComposerKey` repeats this for the submit/newline path).
           if (isImeCompositionKey(event) || view.composing) return false
+          // 触屏设备：回车一律换行（软键盘的回车键提示就是换行），排在菜单前面，
+          // `@` 面板、`/` 菜单开着时也不被拿去选条目，选条目靠点。方向键、
+          // Tab、Esc 照旧交给菜单（平板外接键盘时还能用）。
+          const touch = isPrimaryPointerCoarse()
+          if (
+            touch &&
+            event.key === "Enter" &&
+            !event.shiftKey &&
+            !event.altKey &&
+            !event.ctrlKey &&
+            !event.metaKey
+          ) {
+            const ed = editorInstanceRef.current
+            if (!ed) return false
+            ed.commands.setHardBreak()
+            return true
+          }
           // The internal `@` panel's suggestion plugin owns its navigation keys;
           // never submit/break while it is open.
           if (mentionOpenRef.current) return false
@@ -518,7 +541,8 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
           const action = decideComposerKey(
             keyEvent,
             { composing: view.composing, inCodeBlock: false, inList: false },
-            bindings
+            bindings,
+            { touch }
           )
           if (action === "submit") {
             // Only consume the key once a handler actually runs; otherwise let

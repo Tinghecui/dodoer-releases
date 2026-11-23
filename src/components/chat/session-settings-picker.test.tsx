@@ -402,6 +402,18 @@ describe("SessionSettingsPicker — the popover", () => {
     expect(popover).toHaveFocus()
   })
 
+  // 往上弹的面板：Radix 算的可用高度和键盘以上的可见高度（--app-vvh）取小的。
+  it("caps its height by the visible area above the keyboard", async () => {
+    const user = userEvent.setup()
+    renderPicker({
+      configOptions: [select("model", "Model", "model", "m0", ["m0", "m1"])],
+    })
+    const popover = await openPopover(user)
+    expect(popover.className).toContain(
+      "max-h-[min(var(--radix-popover-content-available-height),var(--app-vvh,100dvh))]"
+    )
+  })
+
   it("applies a segmented pick at once and stays open for the next one", async () => {
     const user = userEvent.setup()
     const { onChange } = renderPicker()

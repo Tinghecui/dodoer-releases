@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor } from "@testing-library/react"
 import type { JSONContent } from "@tiptap/core"
 import { createRef } from "react"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   resetMentionPanelPrefs,
@@ -439,5 +439,47 @@ describe("RichComposer @ mention integration", () => {
       await screen.findByText("美术资源清单.md", {}, { timeout: 5000 })
     ).toBeTruthy()
     expect(queries[queries.length - 1]).toBe("美术")
+  })
+})
+
+// 触屏上回车一律换行（软键盘的回车键提示就是换行）：`@` 面板开着时也不被面板
+// 拿去插入引用，选条目靠点。
+describe("RichComposer @ mention on a touch device", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("inserts a line break on Enter while the panel is open, not the reference", async () => {
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (query: string) =>
+        ({
+          matches: query === "(pointer: coarse)",
+          media: query,
+          onchange: null,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          addListener: () => {},
+          removeListener: () => {},
+          dispatchEvent: () => false,
+        }) as unknown as MediaQueryList
+    )
+    const onSubmit = vi.fn()
+    const { editor } = await mount(onSubmit)
+    act(() => {
+      editor.commands.insertContent("@app")
+    })
+    await screen.findByText("app.ts", {}, { timeout: 5000 })
+    act(() => {
+      ;(editor.view.dom as HTMLElement).dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        })
+      )
+    })
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(findReference(editor.getJSON())).toBeUndefined()
+    expect(JSON.stringify(editor.getJSON())).toContain('"type":"hardBreak"')
   })
 })

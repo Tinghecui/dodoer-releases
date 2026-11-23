@@ -37,13 +37,16 @@ import {
   commandInputHint,
   commandInvocationToken,
 } from "@/components/chat/composer/invocation-reference"
+import { UPWARD_DROPDOWN_MAX_HEIGHT_CLASS } from "@/components/chat/composer/upward-menu"
 import type { ComposerAttachments } from "@/components/chat/composer/use-composer-attachments"
 import type { ComposerShortcuts } from "@/components/chat/composer/use-composer-shortcuts"
 
 /** The submenu geometry every list in this menu shares. */
 const SUBMENU_STYLE = {
   maxWidth: "min(20rem, calc(100vw - 1rem))",
-  maxHeight: "min(32rem, var(--radix-dropdown-menu-content-available-height))",
+  // 手机上键盘弹起时也不超出键盘以上的可见区域（--app-vvh，见 upward-menu.ts）。
+  maxHeight:
+    "min(32rem, var(--radix-dropdown-menu-content-available-height), var(--app-vvh, 100dvh))",
 } as const
 
 export interface ComposerAddMenuProps {
@@ -138,7 +141,11 @@ export function ComposerAddMenu({
           <Plus className="size-4" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="top" align="start" className="min-w-56 w-auto">
+      <DropdownMenuContent
+        side="top"
+        align="start"
+        className={cn("min-w-56 w-auto", UPWARD_DROPDOWN_MAX_HEIGHT_CLASS)}
+      >
         {attachments ? (
           attachments.showNativePaperclip ? (
             <DropdownMenuItem

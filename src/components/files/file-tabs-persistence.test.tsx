@@ -1250,6 +1250,139 @@ describe("FileTabsPersistence", () => {
     useAppWorkspaceStore.setState({ allFolders: [] })
   })
 
+  it("标签跟随项目、记录里比上限多：只开最近的几个，选中的那个一定在里面、仍然选中（#1322）", async () => {
+    useFolderTabsStore.setState({ enabled: true, scope: 7 })
+    writePersistedFileTabs(7, {
+      paths: [
+        "/repo/app.ts",
+        "/repo/package.json",
+        "/repo/version.ts",
+        "/repo/README.md",
+        "/repo/flags.ts",
+      ],
+      active: "/repo/README.md",
+    })
+    const tabs = useScopedTabs(3)
+    mount()
+    await flush()
+    await flush()
+    await flush()
+    expect(tabs.paths(7)).toEqual([
+      "/repo/version.ts",
+      "/repo/README.md",
+      "/repo/flags.ts",
+    ])
+    expect(tabs.active(7)).toBe(fileTab("/repo/README.md").id)
+    // 没开出来的照旧留在记录里
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(readPersistedFileTabs(7).paths).toHaveLength(5)
+  })
+
+  it("关着跟随时开的文件，重新勾上跟随再刷新，标签栏和选中项与刷新前一样（#1322）", async () => {
+    useAppWorkspaceStore.setState({
+      allFolders: [
+        { id: 7, kind: "folder", path: "/docs" },
+        { id: 8, kind: "folder", path: "/demo" },
+      ] as never,
+      activeFolderId: 8,
+    })
+    // 开着跟随时 demo 开过的三个（还记着），关跟随期间又开了 README、flags，
+    // 被上限挤掉的旧的三个由 keepUnseen 留在记录里；docs-site 也一样
+    writePersistedFileTabs(8, {
+      paths: [
+        "/demo/app.ts",
+        "/demo/package.json",
+        "/demo/version.ts",
+        "/demo/README.md",
+        "/demo/flags.ts",
+      ],
+      active: "/demo/README.md",
+    })
+    writePersistedFileTabs(7, {
+      paths: ["/docs/intro.md", "/docs/index.md", "/demo/README.md"],
+      active: "/demo/README.md",
+    })
+    writeSharedFileTabs(
+      {
+        paths: ["/demo/README.md", "/demo/flags.ts", "/docs/index.md"],
+        active: "/demo/README.md",
+      },
+      "local",
+      new Map([
+        ["/demo/README.md", [8, 7]],
+        ["/demo/flags.ts", [8]],
+        ["/docs/index.md", [7]],
+      ])
+    )
+    // 和真实的工作区一样：后台打开时登记进那个项目的组
+    const plainOpen = mocks.openFilePreview.getMockImplementation()!
+    mocks.openFilePreview.mockImplementation(
+      async (path: string, options?: { folderId?: number }) => {
+        useFolderTabsStore
+          .getState()
+          .addFile(fileTab(path).id, openingScope(options?.folderId), false)
+        return plainOpen(path, options)
+      }
+    )
+    mocks.folderId = 8
+    const first = mount()
+    await flush()
+    await flush()
+    await flush()
+    expect(mocks.fileTabs.map((tab) => tab.path)).toEqual([
+      "/demo/README.md",
+      "/demo/flags.ts",
+      "/docs/index.md",
+    ])
+    // 在 demo 里重新勾上跟随
+    await act(async () => {
+      useFolderTabsStore.getState().setEnabled(true)
+      mocks.rerender?.()
+    })
+    await flush()
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(useFolderTabsStore.getState().fileRefs["8"]).toEqual([
+      fileTab("/demo/README.md").id,
+      fileTab("/demo/flags.ts").id,
+    ])
+    first.unmount()
+    mocks.rerender = null
+
+    // 跟随开着刷新：demo 里关跟随期间开的两个都在，选中的还是 README
+    resetFileTabsPersistenceForTests()
+    resetFolderTabsStore()
+    useFolderTabsStore.setState({
+      preferenceHydrated: true,
+      enabled: true,
+      scope: 8,
+    })
+    mocks.openFilePreview.mockReset()
+    mocks.switchFileTab.mockReset()
+    const tabs = useScopedTabs(3)
+    mocks.fileTabs = []
+    mocks.activeFileTabId = null
+    mount()
+    await flush()
+    await flush()
+    await flush()
+    expect(tabs.paths(8)).toEqual(
+      expect.arrayContaining(["/demo/README.md", "/demo/flags.ts"])
+    )
+    expect(tabs.active(8)).toBe(fileTab("/demo/README.md").id)
+    // docs-site 选中的还是 index.md
+    await tabs.switchTo(7)
+    await flush()
+    await flush()
+    await flush()
+    expect(tabs.paths(7)).toContain("/docs/index.md")
+    expect(tabs.active(7)).toBe(fileTab("/docs/index.md").id)
+    useAppWorkspaceStore.setState({ allFolders: [] })
+  })
+
   it("跟随开着时在 docs-site 里打开 demo 的文件，关掉再打开跟随后它归回 demo（#740 定了按目录归属）", async () => {
     useAppWorkspaceStore.setState({
       allFolders: [
@@ -2358,7 +2491,8 @@ describe("FileTabsPersistence", () => {
       paths: ["/repo/d1.ts", "/repo/d2.ts", "/repo/d3.ts", "/repo/mine.ts"],
       active: "/repo/mine.ts",
     })
-    // 恢复出来以后三个都改了没保存，加上选中的那个：上限一个都关不了，合计停在四个
+    // 恢复出来以后三个都改了没保存，加上选中的那个：上限一个都关不了，合计停在四个。
+    // 恢复只开最近的三个（#1322），d1 由用户再打开。
     const dirty = new Set(["/repo/d1.ts", "/repo/d2.ts", "/repo/d3.ts"])
     const tabs = useScopedTabs(3, { dirty })
     mount()
@@ -2368,6 +2502,18 @@ describe("FileTabsPersistence", () => {
       vi.advanceTimersByTime(1000)
     })
     const d = [...dirty].map((path) => fileTab(path))
+    expect(tabs.paths(7)).toEqual([
+      "/repo/d2.ts",
+      "/repo/d3.ts",
+      "/repo/mine.ts",
+    ])
+    await act(async () => {
+      tabs.edit([...d, fileTab("/repo/mine.ts")], fileTab("/repo/mine.ts").id)
+    })
+    await flush()
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
     expect(tabs.paths(7)).toEqual([...dirty, "/repo/mine.ts"])
     expect(tabs.active(7)).toBe(fileTab("/repo/mine.ts").id)
 

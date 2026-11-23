@@ -10,7 +10,7 @@ import {
 import { readFileBase64 } from "@/lib/api"
 import { isNotFoundError } from "@/lib/app-error"
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
-import { buildFileTabId } from "@/lib/file-tab-id"
+import { buildFileTabId, parseFileTabId } from "@/lib/file-tab-id"
 import { takeFileTabEvictedByCap } from "@/lib/files/file-tab-evictions"
 import { subscribeUserPickedFileTab } from "@/lib/files/file-tab-user-pick"
 import {
@@ -176,6 +176,62 @@ function keepUnseen(
       ? previous.active
       : null)
   return { paths, active }
+}
+
+/**
+ * 恢复时要开的那几个：最多 MAX_FILE_TABS 个，一定有记下的选中项，其余从记录末尾
+ * 往前取（越靠后越是最近开的）。读不到的不算。
+ */
+function restoreWindow(
+  entries: PersistedFileTabs,
+  gone: ReadonlySet<string> | undefined
+): Set<string> {
+  const usable = entries.paths.filter((path) => !gone?.has(path))
+  const picked = new Set<string>()
+  if (entries.active != null && usable.includes(entries.active)) {
+    picked.add(entries.active)
+  }
+  for (let i = usable.length - 1; i >= 0; i--) {
+    if (picked.size >= MAX_FILE_TABS) break
+    picked.add(usable[i])
+  }
+  return picked
+}
+
+/**
+ * 打开跟随时，各项目的记录按内存里那组标签摆一下（#1322）：那组标签挪到记录末尾
+ * （它们是最近开的，刷新后只开末尾那几个），选中项改成那组眼下选中的（没有就是组里
+ * 第一个，和工作区一样）。记录里别的（被上限挤掉的旧标签）照旧留在前面。
+ */
+function alignRecordsWithGroups(
+  server: string,
+  folderIds: ReadonlySet<number>
+): { folderId: number; entries: PersistedFileTabs }[] {
+  const { fileRefs, fileSelection } = useFolderTabsStore.getState()
+  const rewritten: { folderId: number; entries: PersistedFileTabs }[] = []
+  for (const [scope, ids] of Object.entries(fileRefs)) {
+    const folderId = Number(scope)
+    if (!Number.isInteger(folderId) || !folderIds.has(folderId)) continue
+    const group: string[] = []
+    let selected: string | null = null
+    for (const id of ids) {
+      const parts = parseFileTabId(id)
+      if (parts?.kind !== "file") continue
+      group.push(parts.path)
+      if (id === fileSelection[scope]) selected = parts.path
+    }
+    if (group.length === 0) continue
+    const recorded = readPersistedFileTabs(folderId, server)
+    const inGroup = new Set(group)
+    const entries: PersistedFileTabs = {
+      paths: [...recorded.paths.filter((path) => !inGroup.has(path)), ...group],
+      active: selected ?? group[0],
+    }
+    if (samePersistedFileTabs(recorded, entries)) continue
+    writePersistedFileTabs(folderId, entries, server)
+    rewritten.push({ folderId, entries })
+  }
+  return rewritten
 }
 
 /** 共用那排里每个文件登记在哪些项目的标签组里（同一个文件可以在几个项目里都开着，
@@ -432,6 +488,17 @@ export function FileTabsPersistence() {
     )) {
       lastWrittenRef.current.set(fileTabsStorageKey(folderId, server), entries)
     }
+    // 用户这次勾上跟随：记录再按内存里各项目那组标签摆一下，刷新后开出来的和眼下
+    // 看到的一样（#1322）。
+    if (turnedOn) {
+      const ids = new Set(folders.map((folder) => folder.id))
+      for (const { folderId, entries } of alignRecordsWithGroups(server, ids)) {
+        lastWrittenRef.current.set(
+          fileTabsStorageKey(folderId, server),
+          entries
+        )
+      }
+    }
     markRegroupedFileTabs(server)
   }, [tabsFollowFolder, preferenceReady, server, folderCount])
 
@@ -511,8 +578,16 @@ export function FileTabsPersistence() {
             )
           : []
       )
+      // 标签跟随项目时，这个项目最多开 MAX_FILE_TABS 个：记录里多出来的（关着跟随
+      // 时被上限挤掉、留在记录里的旧标签）不开，只开选中的那个和最近的几个（#1322）。
+      // 不然按记录顺序一个个开，上限会把后开的（最近的、选中的）关掉，留下最早的
+      // 几个。没开的照旧留在记录里。
+      const windowed = tabsFollowFolder ? restoreWindow(entries, gone) : null
       const missing = entries.paths.filter(
-        (path) => (!open.has(path) || partial.has(path)) && !gone?.has(path)
+        (path) =>
+          (!windowed || windowed.has(path)) &&
+          (!open.has(path) || partial.has(path)) &&
+          !gone?.has(path)
       )
       // 以后切进来只管被挤掉的：什么都没缺就不动，选中项也不去改（标签不跟随项目
       // 时标签栏是大家共用的，选中别的项目的标签是常态）。

@@ -3,21 +3,37 @@ import { NextIntlClientProvider } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
-import type { TeamEntriesPage, TeamEntry } from "@/lib/cowork/team"
+import type {
+  TeamCommentsPage,
+  TeamEntriesPage,
+  TeamEntry,
+} from "@/lib/cowork/team"
 import { useCoworkTeamStore } from "@/stores/cowork-team-store"
 import { SharedSessionHost } from "./shared-session-view"
 
 // 这里不替换 MessageResponse：走真实的 Streamdown（含 rehype 净化），确认只读视图里
 // 四种块的正文真的按 markdown 渲染、别人会话里的危险 HTML 被净化掉。
+// 只读视图还会拉留言（teamComments / teamCommentsSeen），也换成假的，不走真的
+// transport。
 const api = vi.hoisted(() => ({
   teamEntries:
     vi.fn<
       (owner: string, id: string, after: number) => Promise<TeamEntriesPage>
     >(),
+  teamComments:
+    vi.fn<
+      (owner: string, id: string, after: number) => Promise<TeamCommentsPage>
+    >(),
+  teamCommentsSeen: vi.fn<(owner: string, id: string) => Promise<void>>(),
 }))
 vi.mock("@/lib/cowork/team", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/cowork/team")>()
-  return { ...actual, teamEntries: api.teamEntries }
+  return {
+    ...actual,
+    teamEntries: api.teamEntries,
+    teamComments: api.teamComments,
+    teamCommentsSeen: api.teamCommentsSeen,
+  }
 })
 vi.mock("@/contexts/workbench-route-context", () => ({
   useOptionalWorkbenchRoute: () => null,
@@ -49,6 +65,10 @@ beforeEach(() => {
     })
   })
   api.teamEntries.mockReset()
+  api.teamComments.mockReset()
+  api.teamComments.mockResolvedValue({ isOwner: false, ids: [], comments: [] })
+  api.teamCommentsSeen.mockReset()
+  api.teamCommentsSeen.mockResolvedValue(undefined)
 })
 
 afterEach(() => {
@@ -108,5 +128,10 @@ describe("SharedSessionHost markdown (real renderer)", () => {
       expect(block.querySelector("script")).toBeNull()
       expect(block.querySelector("[onerror]")).toBeNull()
     }
+    // 留言走的是上面的假函数，没有落到真的 transport 上。
+    expect(api.teamComments).toHaveBeenCalledWith("member-a", "42", 0)
+    await waitFor(() =>
+      expect(api.teamCommentsSeen).toHaveBeenCalledWith("member-a", "42")
+    )
   })
 })

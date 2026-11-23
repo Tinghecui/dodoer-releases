@@ -8423,7 +8423,7 @@
   "CoworkTeam": {
     "scopeLabel": "Gesprächsbereich",
     "scopeMine": "Meine",
-    "scopeShared": "Mit mir geteilt",
+    "scopeShared": "Geteilt",
     "scopeTeam": "Team",
     "sharedNewCount": "{count, plural, one {# neue Freigabe} other {# neue Freigaben}}",
     "sharedFilterPlaceholder": "Nach Titel filtern",
@@ -8436,6 +8436,21 @@
     "sharedBy": "Geteilt von {owner}",
     "stateRunning": "Läuft",
     "stateWaiting": "Wartet auf Antwort",
-    "stateDone": "Beendet"
+    "stateDone": "Beendet",
+    "sharedViewReadOnly": "Nur lesen",
+    "sharedViewSessionOf": "Unterhaltung von {owner}",
+    "sharedViewViaShared": "Geteilt von {owner}",
+    "sharedViewViaLeader": "Du leitest {group}",
+    "sharedViewHint": "{owner} erlaubt nur das Ansehen; von hier aus kannst du dem Agenten nicht schreiben",
+    "sharedViewUpdated": "Zuletzt aktualisiert: {ago}",
+    "sharedViewCopyLink": "Link kopieren",
+    "sharedViewLinkCopied": "Link kopiert",
+    "sharedViewClose": "Schließen",
+    "sharedViewWaiting": "Der Agent von {owner} wartet auf eine Antwort",
+    "sharedViewGone": "Die Freigabe wurde aufgehoben, oder du bist nicht mehr in dieser Gruppe",
+    "sharedViewLoading": "Wird geladen…",
+    "sharedViewEmpty": "Noch keine Nachrichten",
+    "sharedViewThought": "Denken",
+    "sharedViewTool": "Werkzeug"
   }
 }

@@ -8423,7 +8423,7 @@
   "CoworkTeam": {
     "scopeLabel": "نطاق المحادثات",
     "scopeMine": "محادثاتي",
-    "scopeShared": "تمت مشاركتها معي",
+    "scopeShared": "المشتركة",
     "scopeTeam": "الفريق",
     "sharedNewCount": "{count, plural, zero {لا مشاركات جديدة} one {مشاركة جديدة واحدة} two {مشاركتان جديدتان} few {# مشاركات جديدة} many {# مشاركة جديدة} other {# مشاركة جديدة}}",
     "sharedFilterPlaceholder": "التصفية حسب العنوان",
@@ -8436,6 +8436,21 @@
     "sharedBy": "شاركها {owner}",
     "stateRunning": "قيد التشغيل",
     "stateWaiting": "بانتظار إجابة",
-    "stateDone": "انتهت"
+    "stateDone": "انتهت",
+    "sharedViewReadOnly": "للقراءة فقط",
+    "sharedViewSessionOf": "محادثة {owner}",
+    "sharedViewViaShared": "شاركها {owner}",
+    "sharedViewViaLeader": "أنت قائد {group}",
+    "sharedViewHint": "يسمح {owner} بالعرض فقط؛ لا يمكنك مراسلة وكيله من هنا",
+    "sharedViewUpdated": "آخر تحديث: {ago}",
+    "sharedViewCopyLink": "نسخ الرابط",
+    "sharedViewLinkCopied": "تم نسخ الرابط",
+    "sharedViewClose": "إغلاق",
+    "sharedViewWaiting": "وكيل {owner} ينتظر إجابته",
+    "sharedViewGone": "أُلغيت المشاركة، أو لم تعد في هذه المجموعة",
+    "sharedViewLoading": "جارٍ التحميل…",
+    "sharedViewEmpty": "لا توجد رسائل بعد",
+    "sharedViewThought": "التفكير",
+    "sharedViewTool": "أداة"
   }
 }

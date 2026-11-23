@@ -121,6 +121,10 @@ describe("SharedWithMeList", () => {
     await waitFor(() => expect(rowKeys()).toHaveLength(3))
     expect(row("member-b/11").querySelector("[data-shared-new]")).toBeTruthy()
     expect(row("member-a/10").querySelector("[data-shared-new]")).toBeNull()
+    // 「新」点和会话列表的未读点同一种蓝色（不是主题主色，主色在浅色主题是黑的）。
+    expect(
+      row("member-b/11").querySelector("[data-shared-new]")?.className
+    ).toContain("bg-[var(--st-unread)]")
 
     fireEvent.click(row("member-b/11"))
     expect(api.teamSharedSeen).toHaveBeenCalledWith("member-b", "11")

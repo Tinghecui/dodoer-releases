@@ -20,6 +20,7 @@ import {
 import type { ImperativePanelGroupHandle } from "react-resizable-panels"
 import { FolderTitleBar } from "@/components/layout/folder-title-bar"
 import { Sidebar } from "@/components/layout/sidebar"
+import { SharedSessionHost } from "@/components/cowork/shared-session-view"
 import {
   StatusBar,
   StatusBarLeft,
@@ -462,7 +463,9 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                   onPointerDownCapture={markConversationActive}
                   onFocusCapture={markConversationActive}
                 >
-                  {children}
+                  {/* Cowork（#1235）：只读看同事的会话时盖在会话上，下面的
+                      会话保持挂载；团队功能不可用时原样画 children。 */}
+                  <SharedSessionHost>{children}</SharedSessionHost>
                 </div>
               </section>
             </OverlayHostHiddenProvider>

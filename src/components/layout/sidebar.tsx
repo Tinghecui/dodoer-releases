@@ -112,6 +112,7 @@ import {
 } from "@/components/cowork/team-scope-switch"
 import { SharedWithMeList } from "@/components/cowork/shared-with-me-list"
 import { useCoworkTeamPolling } from "@/lib/cowork/team"
+import { openSharedItem } from "@/stores/cowork-team-store"
 
 // Keyboard-shortcut hint at the trailing edge of the New chat row.
 // Mirrors the folder count badge exactly — same chip (0.9375rem height,
@@ -992,7 +993,8 @@ export function Sidebar({
         />
         <PrStatusPoller />
       </div>
-      {teamScope === "shared" && <SharedWithMeList />}
+      {/* 点一行：主区域盖上只读视图（#1235 第 2 行），不新增标签页。 */}
+      {teamScope === "shared" && <SharedWithMeList onOpen={openSharedItem} />}
       {/* 「团队」档的成员列表由 #1235 第 3 行接上，这里先留位置。 */}
       {teamScope === "team" && (
         <div data-team-members-slot="" className="min-h-0 flex-1" />

@@ -1500,4 +1500,37 @@ describe("Sidebar — CoTeam scope switch", () => {
     expect(spies.listProps).not.toBeNull()
     expect(headerButton("Locate Active Conversation")?.disabled).toBe(false)
   })
+
+  it("opens a shared row as the read-only view in the main area", async () => {
+    makeAvailable([])
+    teamApi.teamShared.mockResolvedValue([
+      {
+        owner: "member-a",
+        ownerLabel: "小王",
+        id: "42",
+        title: "Fix login",
+        state: "running",
+        updatedAt: "2026-11-22T08:00:00Z",
+        note: "",
+        sharedAt: "2026-11-22T08:00:00Z",
+        isNew: false,
+        summary: null,
+        via: [{ type: "user" }],
+      },
+    ])
+    renderSidebar()
+    await act(async () => {})
+    fireEvent.click(document.querySelector('[data-team-scope="shared"]')!)
+    await act(async () => {})
+    fireEvent.click(
+      document.querySelector('[data-shared-session="member-a/42"]')!
+    )
+    expect(useCoworkTeamStore.getState().viewing).toEqual({
+      owner: "member-a",
+      ownerLabel: "小王",
+      id: "42",
+      title: "Fix login",
+      via: { kind: "shared" },
+    })
+  })
 })

@@ -77,7 +77,7 @@ const STATE_LABEL_KEYS = {
 export function SharedWithMeList({
   onOpen,
 }: {
-  /** 点了一行：打开它（只读视图由后面的 PR 接上）。 */
+  /** 点了一行：在主区域打开只读视图。 */
   onOpen?: (item: TeamSharedItem) => void
 }) {
   const t = useTranslations("CoworkTeam")
@@ -265,7 +265,8 @@ export function SharedWithMeList({
                   {item.isNew && (
                     <span
                       data-shared-new=""
-                      className="inline-flex h-[0.4375rem] w-[0.4375rem] shrink-0 rounded-full bg-primary"
+                      // 和会话列表的未读点同一种蓝色。
+                      className="inline-flex h-[0.4375rem] w-[0.4375rem] shrink-0 rounded-full bg-[var(--st-unread)]"
                     >
                       <span className="sr-only">{t("newBadge")}</span>
                     </span>

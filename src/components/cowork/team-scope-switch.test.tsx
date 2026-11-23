@@ -98,7 +98,8 @@ describe("TeamScopeSwitch", () => {
       screen.getByRole("group", { name: "Conversation scope" })
     ).toBeTruthy()
     expect(scopeButton("mine")?.textContent).toBe("Mine")
-    expect(scopeButton("shared")?.textContent).toContain("Shared with me")
+    // 英文档位写短，三档同时出现时窄侧栏里不被截断。
+    expect(scopeButton("shared")?.textContent).toBe("Shared")
     expect(scopeButton("team")).toBeNull()
     expect(scopeButton("mine")?.getAttribute("aria-pressed")).toBe("true")
   })

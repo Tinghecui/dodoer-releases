@@ -8436,6 +8436,21 @@
     "sharedBy": "由{owner}分享",
     "stateRunning": "進行中",
     "stateWaiting": "等人回答",
-    "stateDone": "已結束"
+    "stateDone": "已結束",
+    "sharedViewReadOnly": "唯讀",
+    "sharedViewSessionOf": "{owner}的會話",
+    "sharedViewViaShared": "由{owner}分享",
+    "sharedViewViaLeader": "你是{group}組長",
+    "sharedViewHint": "{owner}只允許檢視，不能從這裡發話",
+    "sharedViewUpdated": "最後更新：{ago}",
+    "sharedViewCopyLink": "複製連結",
+    "sharedViewLinkCopied": "已複製連結",
+    "sharedViewClose": "關閉",
+    "sharedViewWaiting": "{owner}的智慧體在等他回答",
+    "sharedViewGone": "對方已取消分享，或你已不在這個組裡",
+    "sharedViewLoading": "正在載入…",
+    "sharedViewEmpty": "還沒有內容",
+    "sharedViewThought": "思考",
+    "sharedViewTool": "工具"
   }
 }

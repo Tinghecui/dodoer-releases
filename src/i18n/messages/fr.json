@@ -8423,7 +8423,7 @@
   "CoworkTeam": {
     "scopeLabel": "Portée des conversations",
     "scopeMine": "Les miennes",
-    "scopeShared": "Partagées avec moi",
+    "scopeShared": "Partagées",
     "scopeTeam": "Équipe",
     "sharedNewCount": "{count, plural, one {# nouveau partage} other {# nouveaux partages}}",
     "sharedFilterPlaceholder": "Filtrer par titre",
@@ -8436,6 +8436,21 @@
     "sharedBy": "Partagée par {owner}",
     "stateRunning": "En cours",
     "stateWaiting": "En attente de réponse",
-    "stateDone": "Terminée"
+    "stateDone": "Terminée",
+    "sharedViewReadOnly": "Lecture seule",
+    "sharedViewSessionOf": "Conversation de {owner}",
+    "sharedViewViaShared": "Partagée par {owner}",
+    "sharedViewViaLeader": "Vous dirigez {group}",
+    "sharedViewHint": "{owner} autorise seulement la lecture ; impossible d'écrire à son agent d'ici",
+    "sharedViewUpdated": "Dernière mise à jour : {ago}",
+    "sharedViewCopyLink": "Copier le lien",
+    "sharedViewLinkCopied": "Lien copié",
+    "sharedViewClose": "Fermer",
+    "sharedViewWaiting": "L'agent de {owner} attend sa réponse",
+    "sharedViewGone": "Le partage a été retiré, ou vous n'êtes plus dans ce groupe",
+    "sharedViewLoading": "Chargement…",
+    "sharedViewEmpty": "Aucun message pour l'instant",
+    "sharedViewThought": "Réflexion",
+    "sharedViewTool": "Outil"
   }
 }

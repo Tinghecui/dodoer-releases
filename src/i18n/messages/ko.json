@@ -8436,6 +8436,21 @@
     "sharedBy": "{owner}님이 공유",
     "stateRunning": "진행 중",
     "stateWaiting": "답변 대기",
-    "stateDone": "종료됨"
+    "stateDone": "종료됨",
+    "sharedViewReadOnly": "읽기 전용",
+    "sharedViewSessionOf": "{owner}의 대화",
+    "sharedViewViaShared": "{owner} 님이 공유",
+    "sharedViewViaLeader": "{group}의 리더입니다",
+    "sharedViewHint": "{owner} 님은 보기만 허용했습니다. 여기서는 메시지를 보낼 수 없습니다",
+    "sharedViewUpdated": "마지막 업데이트: {ago}",
+    "sharedViewCopyLink": "링크 복사",
+    "sharedViewLinkCopied": "링크를 복사했습니다",
+    "sharedViewClose": "닫기",
+    "sharedViewWaiting": "{owner} 님의 에이전트가 답변을 기다리고 있습니다",
+    "sharedViewGone": "공유가 취소되었거나 더 이상 이 그룹에 속하지 않습니다",
+    "sharedViewLoading": "불러오는 중…",
+    "sharedViewEmpty": "아직 내용이 없습니다",
+    "sharedViewThought": "생각",
+    "sharedViewTool": "도구"
   }
 }

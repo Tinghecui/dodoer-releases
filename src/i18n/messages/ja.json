@@ -8423,7 +8423,7 @@
   "CoworkTeam": {
     "scopeLabel": "会話の範囲",
     "scopeMine": "自分",
-    "scopeShared": "共有された会話",
+    "scopeShared": "共有",
     "scopeTeam": "チーム",
     "sharedNewCount": "新しい共有 {count} 件",
     "sharedFilterPlaceholder": "タイトルで絞り込む",
@@ -8436,6 +8436,21 @@
     "sharedBy": "{owner} が共有",
     "stateRunning": "実行中",
     "stateWaiting": "回答待ち",
-    "stateDone": "終了"
+    "stateDone": "終了",
+    "sharedViewReadOnly": "閲覧のみ",
+    "sharedViewSessionOf": "{owner} の会話",
+    "sharedViewViaShared": "{owner} が共有",
+    "sharedViewViaLeader": "あなたは {group} のリーダーです",
+    "sharedViewHint": "{owner} は閲覧のみ許可しています。ここからは送信できません",
+    "sharedViewUpdated": "最終更新：{ago}",
+    "sharedViewCopyLink": "リンクをコピー",
+    "sharedViewLinkCopied": "リンクをコピーしました",
+    "sharedViewClose": "閉じる",
+    "sharedViewWaiting": "{owner} のエージェントが回答を待っています",
+    "sharedViewGone": "共有が取り消されたか、このグループから外れました",
+    "sharedViewLoading": "読み込み中…",
+    "sharedViewEmpty": "まだ内容がありません",
+    "sharedViewThought": "思考",
+    "sharedViewTool": "ツール"
   }
 }

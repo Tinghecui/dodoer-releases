@@ -1,0 +1,27 @@
+# coteam 的 iOS 壳：一个独立的小 Tauri 2 应用，不属于 src-tauri 那个 crate，也不引用它的任何模块。
+# 壳只带一个本地启动页（launcher/），选好服务器以后同一个网页视图直接打开服务器自己的网页界面。
+# 本地验证：在这个目录下 `cargo test`（主机平台就能编，不需要 iOS 工具链）。
+[package]
+name = "coteam-ios-shell"
+version = "1.0.0"
+description = "coteam iOS shell"
+edition = "2021"
+publish = false
+
+# 独立的 workspace：不让 cargo 往上找别的 workspace。
+[workspace]
+
+[lib]
+# Tauri 移动端要 staticlib（iOS）和 cdylib（Android）；rlib 给 main.rs 和测试用。
+name = "coteam_ios_shell_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+tauri-plugin-opener = "2"
+
+[dev-dependencies]
+serde_json = "1"

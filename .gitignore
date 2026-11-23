@@ -75,7 +75,9 @@ src-tauri/binaries/
 !.env.example
 *.pem
 *.key
-/mobile/
+# mobile/ 下除了 iOS 壳（mobile/ios-shell/，要进仓库）都是本地的。
+/mobile/*
+!/mobile/ios-shell/
 /tasks/
 /local-history/
 /SOURCE-INDEX.md

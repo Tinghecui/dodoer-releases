@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Tauri 生成 Xcode 工程时把这个文件合并进 Info.plist。
+     iOS 的传输安全策略默认拦下明文 HTTP；本地、内网的服务器常常只有 http，
+     所以只给网页视图放开（NSAllowsArbitraryLoadsInWebContent），App 自己发的请求照旧要 https。 -->
+<plist version="1.0">
+<dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>连接局域网里的 coteam 服务器</string>
+</dict>
+</plist>

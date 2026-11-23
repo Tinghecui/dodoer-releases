@@ -1,0 +1,3 @@
+/target/
+# tauri-build 每次编译生成的权限 schema
+/gen/schemas/

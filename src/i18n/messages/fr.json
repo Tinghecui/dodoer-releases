@@ -8419,5 +8419,23 @@
   "SettingsLoadError": {
     "title": "Échec du chargement",
     "retry": "Réessayer"
+  },
+  "CoworkTeam": {
+    "scopeLabel": "Portée des conversations",
+    "scopeMine": "Les miennes",
+    "scopeShared": "Partagées avec moi",
+    "scopeTeam": "Équipe",
+    "sharedNewCount": "{count, plural, one {# nouveau partage} other {# nouveaux partages}}",
+    "sharedFilterPlaceholder": "Filtrer par titre",
+    "sharedEmpty": "Personne n'a encore partagé de conversation avec vous",
+    "sharedNoMatch": "Aucun titre ne correspond",
+    "sharedLoadFailed": "Chargement impossible : {message}",
+    "retry": "Réessayer",
+    "newBadge": "Nouveau",
+    "untitled": "Conversation sans titre",
+    "sharedBy": "Partagée par {owner}",
+    "stateRunning": "En cours",
+    "stateWaiting": "En attente de réponse",
+    "stateDone": "Terminée"
   }
 }

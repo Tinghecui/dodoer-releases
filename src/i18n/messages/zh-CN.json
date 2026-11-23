@@ -8419,5 +8419,23 @@
   "SettingsLoadError": {
     "title": "加载失败",
     "retry": "重试"
+  },
+  "CoworkTeam": {
+    "scopeLabel": "会话范围",
+    "scopeMine": "我的",
+    "scopeShared": "分享给我",
+    "scopeTeam": "团队",
+    "sharedNewCount": "{count} 个新分享",
+    "sharedFilterPlaceholder": "按标题筛选",
+    "sharedEmpty": "还没有人分享会话给你",
+    "sharedNoMatch": "没有标题匹配的会话",
+    "sharedLoadFailed": "读取失败：{message}",
+    "retry": "重试",
+    "newBadge": "新",
+    "untitled": "未命名会话",
+    "sharedBy": "由{owner}分享",
+    "stateRunning": "进行中",
+    "stateWaiting": "等人回答",
+    "stateDone": "已结束"
   }
 }

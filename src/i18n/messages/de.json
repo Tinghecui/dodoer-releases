@@ -8419,5 +8419,23 @@
   "SettingsLoadError": {
     "title": "Laden fehlgeschlagen",
     "retry": "Erneut versuchen"
+  },
+  "CoworkTeam": {
+    "scopeLabel": "Gesprächsbereich",
+    "scopeMine": "Meine",
+    "scopeShared": "Mit mir geteilt",
+    "scopeTeam": "Team",
+    "sharedNewCount": "{count, plural, one {# neue Freigabe} other {# neue Freigaben}}",
+    "sharedFilterPlaceholder": "Nach Titel filtern",
+    "sharedEmpty": "Noch hat niemand ein Gespräch mit dir geteilt",
+    "sharedNoMatch": "Kein Titel passt",
+    "sharedLoadFailed": "Laden fehlgeschlagen: {message}",
+    "retry": "Erneut versuchen",
+    "newBadge": "Neu",
+    "untitled": "Gespräch ohne Titel",
+    "sharedBy": "Geteilt von {owner}",
+    "stateRunning": "Läuft",
+    "stateWaiting": "Wartet auf Antwort",
+    "stateDone": "Beendet"
   }
 }

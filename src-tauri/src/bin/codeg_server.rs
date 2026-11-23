@@ -431,6 +431,25 @@ async fn async_main(
         hub.set_emitter(state.emitter.clone());
     }
 
+    // Cowork 加的：数据目录里的 `live-state.json`（哪些对话在跑、哪些在等人），给 CoTeam
+    // 的团队视图读（`acp::live_state`）。一有连接表就写一次（这时还没有连接），盖掉上次
+    // 留下的，不等后面聊天通道自动连接这些可能很慢的步骤。桌面版自己的 daemon 不写。
+    let live_state = if codeg_lib::acp::live_state::enabled_for(
+        std::env::var(codeg_lib::local_daemon::CHILD_ENV)
+            .ok()
+            .as_deref(),
+    ) {
+        Some(
+            codeg_lib::acp::live_state::LiveStateTask::start(
+                state.connection_manager.clone_ref(),
+                &state.data_dir,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+
     // The daemon, started the same way the desktop app starts it (`boot`,
     // steps in its order); what follows each step here is what only the
     // server has.
@@ -719,7 +738,13 @@ async fn async_main(
             data_dir: state.data_dir.clone(),
         },
     ));
-    if let Err(e) = serve.await {
+    let served = serve.await;
+    // 停机走完了（回合已取消、智能体已断开）：从 `live-state.json` 里撤掉这个进程的会话
+    // （只有它一个服务器时就是写空的）。
+    if let Some(live_state) = live_state {
+        live_state.stop().await;
+    }
+    if let Err(e) = served {
         tracing::error!("[SERVER] Server error: {}", e);
         state.cli_access.stop().await;
         return ExitCode::from(1);

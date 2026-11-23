@@ -105,6 +105,12 @@ import { SidebarBell } from "@/components/conversations/sidebar-bell"
 import { PrStatusPoller } from "@/components/conversations/pr-status-poller"
 import { setPrStatusEnabled, usePrStatusStore } from "@/stores/pr-status-store"
 import { formatBadgeCount } from "@/components/conversations/sidebar-unread-badge"
+import {
+  TeamScopeSwitch,
+  useTeamScope,
+} from "@/components/cowork/team-scope-switch"
+import { SharedWithMeList } from "@/components/cowork/shared-with-me-list"
+import { useCoworkTeamPolling } from "@/lib/cowork/team"
 
 // Keyboard-shortcut hint at the trailing edge of the New chat row.
 // Mirrors the folder count badge exactly — same chip (0.9375rem height,
@@ -357,6 +363,12 @@ export function Sidebar({
   // fold), so a user who never folded them sees no flash.
   const [navFolded, setNavFolded] = useState(false)
   const [sessionActivity, setSessionActivity] = useState(false)
+  // Cowork（#1235）：CoTeam 部署下的团队功能。探测和 summary 轮询从侧栏起；
+  // 不可用时范围切换不画、一律是「我的」，下面的会话列表和原来完全一样。
+  // 手机端不做：不启动探测，不画切换，一律是「我的」。
+  useCoworkTeamPolling(!isMobile)
+  const { scope: storedTeamScope, setScope: setTeamScope } = useTeamScope()
+  const teamScope = isMobile ? "mine" : storedTeamScope
   const newConversationShortcutLabel = formatShortcutLabel(
     shortcuts.new_conversation,
     isMac
@@ -597,6 +609,8 @@ export function Sidebar({
             size="icon"
             className={SIDEBAR_HEAD_BUTTON}
             onClick={() => runListAction((list) => list.scrollToActive())}
+            // Cowork（#1235）：只对「我的」列表有效，别的范围里它藏着，点了看不到。
+            disabled={teamScope !== "mine"}
             title={t("locateActiveConversation")}
             aria-label={t("locateActiveConversation")}
           >
@@ -616,7 +630,7 @@ export function Sidebar({
             size="icon"
             className={SIDEBAR_HEAD_BUTTON}
             onClick={handleToggleExpandAll}
-            disabled={sessionActivity}
+            disabled={sessionActivity || teamScope !== "mine"}
             title={toggleExpandLabel}
             aria-label={toggleExpandLabel}
           >
@@ -935,12 +949,20 @@ export function Sidebar({
         )}
       </div>
 
+      {/* Cowork（#1235）：范围切换「我的 / 分享给我 / 团队」；团队功能不可用
+          时、手机端什么都不画。 */}
+      {!isMobile && (
+        <TeamScopeSwitch scope={teamScope} onChange={setTeamScope} />
+      )}
+
       {/* On mobile, clicking a conversation card auto-closes the Drawer */}
       <div
         // Glass: the list fades out at the bottom instead of a divider.
+        // Cowork：切到别的范围时会话列表只藏起来、不卸载（展开状态、定位都还在）。
         className={cn(
           "flex flex-col flex-1 min-h-0 overflow-hidden pt-1.5",
-          !isMobile && "glass-fade-bottom"
+          !isMobile && "glass-fade-bottom",
+          teamScope !== "mine" && "hidden"
         )}
         onClick={
           isMobile
@@ -966,6 +988,11 @@ export function Sidebar({
         />
         <PrStatusPoller />
       </div>
+      {teamScope === "shared" && <SharedWithMeList />}
+      {/* 「团队」档的成员列表由 #1235 第 3 行接上，这里先留位置。 */}
+      {teamScope === "team" && (
+        <div data-team-members-slot="" className="min-h-0 flex-1" />
+      )}
       {/* Glass: the status bar's left half (quick actions, conversation
           count) sits at the foot of the pane. */}
       {!isMobile && footer && (

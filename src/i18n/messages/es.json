@@ -8419,5 +8419,23 @@
   "SettingsLoadError": {
     "title": "No se pudo cargar",
     "retry": "Reintentar"
+  },
+  "CoworkTeam": {
+    "scopeLabel": "Ámbito de conversaciones",
+    "scopeMine": "Mías",
+    "scopeShared": "Compartidas conmigo",
+    "scopeTeam": "Equipo",
+    "sharedNewCount": "{count, plural, one {# nueva compartida} other {# nuevas compartidas}}",
+    "sharedFilterPlaceholder": "Filtrar por título",
+    "sharedEmpty": "Todavía nadie ha compartido conversaciones contigo",
+    "sharedNoMatch": "Ningún título coincide",
+    "sharedLoadFailed": "No se pudo cargar: {message}",
+    "retry": "Reintentar",
+    "newBadge": "Nueva",
+    "untitled": "Conversación sin título",
+    "sharedBy": "Compartida por {owner}",
+    "stateRunning": "En curso",
+    "stateWaiting": "Esperando respuesta",
+    "stateDone": "Terminada"
   }
 }

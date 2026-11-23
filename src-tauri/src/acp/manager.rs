@@ -3634,6 +3634,50 @@ impl ConnectionManager {
             .await
     }
 
+    /// Cowork 加的：`live-state.json`（`acp::live_state`）的 `awaiting`。判断就是
+    /// [`Self::awaiting_by_conversation`] 那一份，同一次读顺带取给人看的标题；
+    /// 计划审批（包括其实是计划审批的权限请求）没有标题。
+    pub async fn awaiting_titled_by_conversation(
+        &self,
+    ) -> HashMap<i32, (crate::acp::awaiting::ConversationAwaiting, Option<String>)> {
+        use crate::acp::awaiting::AwaitingReason;
+        self.read_newest_per_conversation(|state, _| {
+            let awaiting = crate::acp::awaiting::derive(state)?;
+            let title = match awaiting.reason {
+                AwaitingReason::Plan => None,
+                _ => crate::acp::live_state::prompt_title(state),
+            };
+            Some((awaiting, title))
+        })
+        .await
+    }
+
+    /// Cowork 加的：`live-state.json` 的 `running`，有一轮在跑的对话。和
+    /// [`Self::busy_reason`] 的回合那一条同一个判断：连接没断开、没出错，且
+    /// `turn_in_flight` 或者状态是 `Prompting`。任何一条连接在跑就算。升序、不重复。
+    pub async fn running_conversations(&self) -> Vec<i32> {
+        let connections = self.connections.lock().await;
+        let mut ids = Vec::new();
+        for conn in connections.values() {
+            let state = conn.state.read().await;
+            if matches!(
+                state.status,
+                ConnectionStatus::Disconnected | ConnectionStatus::Error
+            ) {
+                continue;
+            }
+            let Some(conversation_id) = state.conversation_id else {
+                continue;
+            };
+            if state.turn_in_flight || state.status == ConnectionStatus::Prompting {
+                ids.push(conversation_id);
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
     /// Cowork 加的：每个对话看最新那条没断开的连接（编号最大的），`read` 返回 `None`
     /// 的对话不列（较旧的连接在等也不算）。
     async fn read_newest_per_conversation<T>(

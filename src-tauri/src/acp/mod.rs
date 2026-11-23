@@ -35,6 +35,7 @@ pub mod internal_bus;
 pub mod js_text;
 pub mod latest_release;
 pub mod lifecycle;
+pub mod live_state;
 pub mod manager;
 pub mod minimax_code;
 pub mod model_switch;

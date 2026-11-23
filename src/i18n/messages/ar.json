@@ -8419,5 +8419,23 @@
   "SettingsLoadError": {
     "title": "تعذّر التحميل",
     "retry": "إعادة المحاولة"
+  },
+  "CoworkTeam": {
+    "scopeLabel": "نطاق المحادثات",
+    "scopeMine": "محادثاتي",
+    "scopeShared": "تمت مشاركتها معي",
+    "scopeTeam": "الفريق",
+    "sharedNewCount": "{count, plural, zero {لا مشاركات جديدة} one {مشاركة جديدة واحدة} two {مشاركتان جديدتان} few {# مشاركات جديدة} many {# مشاركة جديدة} other {# مشاركة جديدة}}",
+    "sharedFilterPlaceholder": "التصفية حسب العنوان",
+    "sharedEmpty": "لم يشارك أحد أي محادثة معك بعد",
+    "sharedNoMatch": "لا توجد عناوين مطابقة",
+    "sharedLoadFailed": "تعذّر التحميل: {message}",
+    "retry": "إعادة المحاولة",
+    "newBadge": "جديد",
+    "untitled": "محادثة بلا عنوان",
+    "sharedBy": "شاركها {owner}",
+    "stateRunning": "قيد التشغيل",
+    "stateWaiting": "بانتظار إجابة",
+    "stateDone": "انتهت"
   }
 }

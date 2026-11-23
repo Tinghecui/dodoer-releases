@@ -8419,5 +8419,23 @@
   "SettingsLoadError": {
     "title": "載入失敗",
     "retry": "重試"
+  },
+  "CoworkTeam": {
+    "scopeLabel": "會話範圍",
+    "scopeMine": "我的",
+    "scopeShared": "分享給我",
+    "scopeTeam": "團隊",
+    "sharedNewCount": "{count} 個新分享",
+    "sharedFilterPlaceholder": "按標題篩選",
+    "sharedEmpty": "還沒有人分享會話給你",
+    "sharedNoMatch": "沒有標題相符的會話",
+    "sharedLoadFailed": "讀取失敗：{message}",
+    "retry": "重試",
+    "newBadge": "新",
+    "untitled": "未命名會話",
+    "sharedBy": "由{owner}分享",
+    "stateRunning": "進行中",
+    "stateWaiting": "等人回答",
+    "stateDone": "已結束"
   }
 }

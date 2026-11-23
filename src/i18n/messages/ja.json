@@ -8419,5 +8419,23 @@
   "SettingsLoadError": {
     "title": "読み込みに失敗しました",
     "retry": "再試行"
+  },
+  "CoworkTeam": {
+    "scopeLabel": "会話の範囲",
+    "scopeMine": "自分",
+    "scopeShared": "共有された会話",
+    "scopeTeam": "チーム",
+    "sharedNewCount": "新しい共有 {count} 件",
+    "sharedFilterPlaceholder": "タイトルで絞り込む",
+    "sharedEmpty": "まだ共有された会話はありません",
+    "sharedNoMatch": "一致するタイトルはありません",
+    "sharedLoadFailed": "読み込めませんでした：{message}",
+    "retry": "再試行",
+    "newBadge": "新着",
+    "untitled": "無題の会話",
+    "sharedBy": "{owner} が共有",
+    "stateRunning": "実行中",
+    "stateWaiting": "回答待ち",
+    "stateDone": "終了"
   }
 }

@@ -8419,5 +8419,23 @@
   "SettingsLoadError": {
     "title": "Failed to load",
     "retry": "Retry"
+  },
+  "CoworkTeam": {
+    "scopeLabel": "Conversation scope",
+    "scopeMine": "Mine",
+    "scopeShared": "Shared with me",
+    "scopeTeam": "Team",
+    "sharedNewCount": "{count, plural, one {# new share} other {# new shares}}",
+    "sharedFilterPlaceholder": "Filter by title",
+    "sharedEmpty": "Nothing has been shared with you yet",
+    "sharedNoMatch": "No titles match",
+    "sharedLoadFailed": "Couldn't load: {message}",
+    "retry": "Retry",
+    "newBadge": "New",
+    "untitled": "Untitled conversation",
+    "sharedBy": "Shared by {owner}",
+    "stateRunning": "Running",
+    "stateWaiting": "Waiting for an answer",
+    "stateDone": "Finished"
   }
 }

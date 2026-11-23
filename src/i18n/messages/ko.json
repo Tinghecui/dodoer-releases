@@ -8419,5 +8419,23 @@
   "SettingsLoadError": {
     "title": "불러오지 못했습니다",
     "retry": "다시 시도"
+  },
+  "CoworkTeam": {
+    "scopeLabel": "대화 범위",
+    "scopeMine": "내 대화",
+    "scopeShared": "나에게 공유됨",
+    "scopeTeam": "팀",
+    "sharedNewCount": "새 공유 {count}개",
+    "sharedFilterPlaceholder": "제목으로 필터",
+    "sharedEmpty": "아직 공유받은 대화가 없습니다",
+    "sharedNoMatch": "일치하는 제목이 없습니다",
+    "sharedLoadFailed": "불러오지 못했습니다: {message}",
+    "retry": "다시 시도",
+    "newBadge": "새 항목",
+    "untitled": "제목 없는 대화",
+    "sharedBy": "{owner}님이 공유",
+    "stateRunning": "진행 중",
+    "stateWaiting": "답변 대기",
+    "stateDone": "종료됨"
   }
 }

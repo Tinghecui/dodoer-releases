@@ -32,6 +32,7 @@ import {
   type AwaitingUserKind,
 } from "@/stores/awaiting-user-store"
 import { useConversationSeenStore } from "@/stores/conversation-seen-store"
+import { useCoworkTeamStore } from "@/stores/cowork-team-store"
 import type { DbConversationSummary, FolderDetail, WorkTask } from "@/lib/types"
 
 // Stable spies + mutable active-folder, referenced from the hoisted mock
@@ -113,6 +114,20 @@ vi.mock("@/components/conversations/sidebar-conversation-list", async () => {
 vi.mock("@/components/conversations/pr-status-poller", () => ({
   PrStatusPoller: () => null,
 }))
+// CoTeam：轮询换成假的（这里的 `@/lib/platform` 没有 transport），团队功能
+// 可不可用由测试直接写 store；`shared` 也是假的。
+const teamApi = vi.hoisted(() => ({
+  polling: vi.fn(),
+  teamShared: vi.fn(),
+}))
+vi.mock("@/lib/cowork/team", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/cowork/team")>()
+  return {
+    ...actual,
+    useCoworkTeamPolling: teamApi.polling,
+    teamShared: teamApi.teamShared,
+  }
+})
 vi.mock("@/components/conversations/conversation-tags-manager", () => ({
   openConversationTagsManager: spies.openConversationTagsManager,
 }))
@@ -156,7 +171,10 @@ vi.mock("@/hooks/use-shortcut-settings", () => ({
     shortcuts: { toggle_search: "mod+k", new_conversation: "mod+t" },
   }),
 }))
-vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }))
+const mobileState = vi.hoisted(() => ({ isMobile: false }))
+vi.mock("@/hooks/use-mobile", () => ({
+  useIsMobile: () => mobileState.isMobile,
+}))
 vi.mock("@/hooks/use-appearance", () => ({
   useZoomLevel: () => ({ zoomLevel: 100, setZoomLevel: () => {} }),
 }))
@@ -1368,5 +1386,118 @@ describe("Sidebar — quick links fold", () => {
     spies.setRoute.mockClear()
     fireEvent.click(screen.getByRole("button", { name: "To-dos" }))
     expect(spies.setRoute).toHaveBeenCalledWith("tasks")
+  })
+})
+
+describe("Sidebar — CoTeam scope switch", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useCoworkTeamStore.getState().reset()
+    teamApi.polling.mockClear()
+    teamApi.teamShared.mockReset().mockResolvedValue([])
+    spies.listProps = null
+  })
+  afterEach(() => {
+    useCoworkTeamStore.getState().reset()
+  })
+
+  function makeAvailable(leaderOf: { id: string; name: string }[] = []) {
+    act(() => {
+      useCoworkTeamStore.getState().setStatus({
+        applicable: true,
+        enabled: true,
+        me: { name: "member-a", label: "甲" },
+        leaderOf,
+        portalUrl: null,
+      })
+    })
+  }
+
+  const scopeSwitch = () => document.querySelector("[data-team-scope-switch]")
+  const sharedList = () => document.querySelector("[data-shared-with-me-list]")
+
+  it("starts the team probe from the sidebar", () => {
+    renderSidebar()
+    expect(teamApi.polling).toHaveBeenCalled()
+  })
+
+  it("draws no switch and requests nothing while the team feature is unavailable", async () => {
+    // 记着「分享给我」也不行：不可用时一律是原来的会话列表。
+    localStorage.setItem("cowork.team.scope", "shared")
+    renderSidebar()
+    await act(async () => {})
+    expect(scopeSwitch()).toBeNull()
+    expect(screen.queryByRole("group", { name: "Conversation scope" })).toBe(
+      null
+    )
+    expect(sharedList()).toBeNull()
+    expect(teamApi.teamShared).not.toHaveBeenCalled()
+    expect(spies.listProps).not.toBeNull()
+  })
+
+  it("leaves the team switch and shared list out on mobile", async () => {
+    // 手机端不做（#1230 已定的决定第 12 条）：不启动探测，记着「分享给我」也按「我的」。
+    mobileState.isMobile = true
+    try {
+      localStorage.setItem("cowork.team.scope", "shared")
+      makeAvailable([{ id: "g1", name: "后端组" }])
+      renderSidebar()
+      await act(async () => {})
+      expect(teamApi.polling).not.toHaveBeenCalledWith()
+      expect(teamApi.polling).toHaveBeenCalledWith(false)
+      expect(scopeSwitch()).toBeNull()
+      expect(sharedList()).toBeNull()
+      expect(teamApi.teamShared).not.toHaveBeenCalled()
+      expect(spies.listProps).not.toBeNull()
+    } finally {
+      mobileState.isMobile = false
+    }
+  })
+
+  it("puts the switch between the nav block and the list once available", async () => {
+    makeAvailable()
+    renderSidebar()
+    await act(async () => {})
+    const group = screen.getByRole("group", { name: "Conversation scope" })
+    const newChat = screen.getByRole("button", { name: /New chat/ })
+    expect(
+      newChat.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(
+      document
+        .querySelector('[data-team-scope="mine"]')
+        ?.getAttribute("aria-pressed")
+    ).toBe("true")
+    expect(document.querySelector('[data-team-scope="team"]')).toBeNull()
+    // 「我的」：原来的会话列表照旧，不拉「分享给我」。
+    expect(sharedList()).toBeNull()
+    expect(teamApi.teamShared).not.toHaveBeenCalled()
+  })
+
+  it("shows the shared list for 'Shared with me' and keeps the list mounted", async () => {
+    makeAvailable([{ id: "g1", name: "后端组" }])
+    renderSidebar()
+    await act(async () => {})
+    expect(document.querySelector('[data-team-scope="team"]')).toBeTruthy()
+    fireEvent.click(document.querySelector('[data-team-scope="shared"]')!)
+    await act(async () => {})
+    expect(sharedList()).toBeTruthy()
+    expect(teamApi.teamShared).toHaveBeenCalledTimes(1)
+    expect(localStorage.getItem("cowork.team.scope")).toBe("shared")
+    // 定位当前会话、全部展开/收起只对「我的」列表有效：别的范围里不能点。
+    const headerButton = (name: string) =>
+      document
+        .querySelector("[data-sidebar-header-controls]")!
+        .querySelector<HTMLButtonElement>(`button[aria-label="${name}"]`)
+    expect(headerButton("Locate Active Conversation")?.disabled).toBe(true)
+    const expandToggle =
+      headerButton("Expand All Groups") ?? headerButton("Collapse All Groups")
+    expect(expandToggle?.disabled).toBe(true)
+    // 切回「我的」：会话列表一直挂着，「分享给我」收起。
+    spies.listProps = null
+    fireEvent.click(document.querySelector('[data-team-scope="mine"]')!)
+    expect(sharedList()).toBeNull()
+    expect(spies.listProps).not.toBeNull()
+    expect(headerButton("Locate Active Conversation")?.disabled).toBe(false)
   })
 })

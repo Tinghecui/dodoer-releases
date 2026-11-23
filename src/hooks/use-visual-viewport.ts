@@ -14,7 +14,8 @@ import { kbdLiftPx } from "@/lib/terminal/keybar"
  * - 有订阅方时监听 visualViewport 的 resize / scroll 和 window resize，
  *   连着来的事件合并到一帧（requestAnimationFrame）里，避免键盘开合时抖；
  * - 可见高度和偏移写进根元素的 CSS 变量 `--app-vvh` / `--app-vv-top`，
- *   工作区根容器用 `var(--app-vvh, 100dvh)` 排版；
+ *   工作区根容器用 `var(--app-vvh, 100dvh)` 排版；键盘遮住的像素数写进
+ *   `--app-kbd-lift`，给 portal 到 body 的侧边抽屉用；
  * - 最后一个订阅方退订时停止监听并删掉变量，桌面布局完全不受影响。
  */
 
@@ -22,6 +23,11 @@ import { kbdLiftPx } from "@/lib/terminal/keybar"
 export const VV_HEIGHT_VAR = "--app-vvh"
 /** 可见区域相对布局视口顶部的偏移，比如 `120px`。 */
 export const VV_OFFSET_TOP_VAR = "--app-vv-top"
+/**
+ * 布局视口底部被键盘遮住的像素数（即 keyboardLift），比如 `300px`。
+ * 挂在根容器外面（portal 到 body）的侧边抽屉用它把底边抬到键盘以上。
+ */
+export const VV_KEYBOARD_LIFT_VAR = "--app-kbd-lift"
 
 /** 可见高度比窗口高度少这么多，才算键盘弹起（和 kbdLiftPx 的阈值一致）。 */
 export const KEYBOARD_OPEN_MIN_PX = 80
@@ -73,10 +79,12 @@ function writeCssVars(state: VisualViewportState) {
   if (state.height === null) {
     style.removeProperty(VV_HEIGHT_VAR)
     style.removeProperty(VV_OFFSET_TOP_VAR)
+    style.removeProperty(VV_KEYBOARD_LIFT_VAR)
     return
   }
   style.setProperty(VV_HEIGHT_VAR, `${state.height}px`)
   style.setProperty(VV_OFFSET_TOP_VAR, `${state.offsetTop}px`)
+  style.setProperty(VV_KEYBOARD_LIFT_VAR, `${state.keyboardLift}px`)
 }
 
 function commit(next: VisualViewportState) {

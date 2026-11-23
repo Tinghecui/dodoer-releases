@@ -95,6 +95,7 @@ export function TerminalPanel() {
             onProcessRestored={markTerminalRunning}
             isActive={tab.id === activeTabId && visibleIds.has(tab.id)}
             isVisible={isOpen}
+            mobile={isMobile}
             keybarVisible={keybarVisible}
             onProcessExited={markTerminalExited}
           />

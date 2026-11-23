@@ -85,6 +85,11 @@ interface TerminalViewProps {
   isActive: boolean
   isVisible: boolean
   /**
+   * 手机布局（`useIsMobile()`）。手机上终端走 Drawer、按整屏高度排版，要自己
+   * 跟踪软键盘、让出被遮住的高度；和快捷键栏收没收起无关。桌面端为 false。
+   */
+  mobile?: boolean
+  /**
    * 移动端虚拟键栏可见性。父级基于 `useIsMobile()` + 折叠开关判定；桌面端
    * 永远为 false。
    */
@@ -135,6 +140,7 @@ export function TerminalView({
   initialCommand,
   isActive,
   isVisible,
+  mobile = false,
   keybarVisible = false,
   attach = false,
   spawnOnMissing: spawnOnMissingProp = true,
@@ -238,7 +244,9 @@ export function TerminalView({
   // flex 子项自然抬到键盘上方；xterm 随容器变小，原有 ResizeObserver 自动
   // refit + 发 terminal_resize。遮挡像素数和工作区根容器共用同一份全局
   // 可见区域跟踪（算法仍是 kbdLiftPx），不再自己监听。
-  const kbdLift = useVisualViewport(keybarVisible).keyboardLift
+  // 快捷键栏收起时 xterm 一样会被键盘挡住，所以按手机布局跟踪，不看键栏。
+  const kbdLift = useVisualViewport(mobile).keyboardLift
+  const fitAboveKeyboard = mobile && isActive && isVisible
 
   useEffect(() => {
     isActiveRef.current = isActive
@@ -861,7 +869,8 @@ export function TerminalView({
       }}
       aria-hidden={!isActive}
     >
-      {/* xterm + 键栏所在的 flex 列：kbdLift 收缩外层高度，让键栏抬到软键盘上方。
+      {/* xterm + 键栏所在的 flex 列：kbdLift 收缩外层高度，让键栏（收起时就是
+          xterm 的最后一行）抬到软键盘上方。
           键盘收起时改让底部安全区（刘海屏 home indicator）——移动端终端走的是
           Drawer，portal 到 body，拿不到外壳那层 pb-[env(safe-area-inset-bottom)]，
           不减这一块最后一行按钮就压在 home indicator 上。键盘弹起时 home
@@ -869,7 +878,7 @@ export function TerminalView({
       <div
         className="flex h-full w-full min-h-0 flex-col gap-1"
         style={
-          showKeybar
+          fitAboveKeyboard
             ? {
                 maxHeight:
                   kbdLift > 0

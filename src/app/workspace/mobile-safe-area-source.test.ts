@@ -5,6 +5,10 @@ import { describe, expect, it } from "vitest"
 
 // jsdom 没有布局，这几条锁住手机上整屏高度和抽屉留白用的类名。
 const root = resolve(process.cwd(), "src")
+const sideDrawer = readFileSync(
+  join(root, "components/ui/drawer-safe-area.ts"),
+  "utf8"
+)
 const layout = readFileSync(join(root, "app/workspace/layout.tsx"), "utf8")
 
 function tsxFiles(dir: string): string[] {
@@ -34,5 +38,16 @@ describe("手机上整屏页面不超出屏幕", () => {
 
   it("会话列表和右侧面板两个抽屉都带上安全区边距", () => {
     expect(layout.match(/SIDE_DRAWER_SAFE_AREA_CLASS\s*\)/g)).toHaveLength(2)
+  })
+
+  it("会话列表和右侧面板两个抽屉收在键盘以上", () => {
+    // 抽屉 portal 到 body，不跟工作区根容器走；顶边跟可见区域，底边让出键盘。
+    // 要带上和抽屉自带 inset-y-0 一样的 data 变体，否则优先级比不过它。
+    expect(sideDrawer).toContain(
+      "data-[swipe-axis=x]:top-[var(--app-vv-top,0px)]"
+    )
+    expect(sideDrawer).toContain(
+      "data-[swipe-axis=x]:bottom-[var(--app-kbd-lift,0px)]"
+    )
   })
 })

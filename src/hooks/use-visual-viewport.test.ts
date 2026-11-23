@@ -6,6 +6,7 @@ import { kbdLiftPx } from "@/lib/terminal/keybar"
 import {
   useVisualViewport,
   VV_HEIGHT_VAR,
+  VV_KEYBOARD_LIFT_VAR,
   VV_OFFSET_TOP_VAR,
 } from "./use-visual-viewport"
 
@@ -62,6 +63,7 @@ afterEach(() => {
   })
   document.documentElement.style.removeProperty(VV_HEIGHT_VAR)
   document.documentElement.style.removeProperty(VV_OFFSET_TOP_VAR)
+  document.documentElement.style.removeProperty(VV_KEYBOARD_LIFT_VAR)
 })
 
 describe("useVisualViewport", () => {
@@ -111,6 +113,16 @@ describe("useVisualViewport", () => {
       flushFrames()
       expect(result.current.keyboardLift).toBe(kbdLiftPx(844, h, top))
     }
+  })
+
+  it("键盘遮住底部的像素数也写进 CSS 变量，给挂在根容器外面的抽屉用", () => {
+    const a = renderHook(() => useVisualViewport(true))
+    expect(cssVar(VV_KEYBOARD_LIFT_VAR)).toBe("0px")
+    vv.set(544)
+    flushFrames()
+    expect(cssVar(VV_KEYBOARD_LIFT_VAR)).toBe("300px")
+    a.unmount()
+    expect(cssVar(VV_KEYBOARD_LIFT_VAR)).toBe("")
   })
 
   it("小于阈值的抖动（地址栏收起）不算键盘弹起", () => {

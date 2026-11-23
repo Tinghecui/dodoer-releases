@@ -88,10 +88,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable"
+  ListDetailSplit,
+  SplitPane,
+} from "@/components/layout/list-detail-split"
 import {
   automationCancelRun,
   automationCreate,
@@ -256,6 +255,11 @@ export function AutomationsPage() {
         ? "gallery"
         : "detail"
   )
+  // 手机布局下正在看右边那栏（详情、模板列表或编辑器），不是列表（#1335）；
+  // 宽屏不看它。从侧面板带着某个自动化或「新建」「编辑」打开时直接进详情。
+  const [detailOpen, setDetailOpen] = useState(
+    () => mode !== "detail" || focus?.automationId != null
+  )
 
   // Clear the unseen-failure badges while the page is open — on entry and again
   // whenever a new failure arrives live (the failed run is already on screen, so
@@ -369,6 +373,7 @@ export function AutomationsPage() {
   const openGallery = () => {
     setEditing(null)
     setMode("gallery")
+    setDetailOpen(true)
   }
   const backToGallery = () => {
     setEditing(null)
@@ -397,12 +402,21 @@ export function AutomationsPage() {
   const startEdit = (a: Automation) => {
     setEditing({ kind: "edit", automation: a })
     setMode("editor")
+    setDetailOpen(true)
   }
   const selectAutomation = (a: Automation) => {
     setSelectedId(a.id)
     setEditing(null)
     setMode("detail")
+    setDetailOpen(true)
   }
+  // 手机布局下详情顶部返回按钮旁边的标题；模板列表自己有标题，不再重复。
+  const detailTitle =
+    mode === "editor" && editing?.kind === "edit"
+      ? editing.automation.name
+      : mode === "detail"
+        ? current?.name
+        : undefined
 
   // Shared mutation runner for the per-row quick actions (run now / toggle /
   // delete) hoisted out of the detail pane so the list's ⋯ menu can drive them.
@@ -519,16 +533,13 @@ export function AutomationsPage() {
               from px-4 pb-4, top from pt-2 plus the toolbar's own pb-2. */}
           <div className="min-h-0 flex-1 px-4 pb-4 pt-2">
             <div className={SHELL_CLASS}>
-              <ResizablePanelGroup
-                direction="horizontal"
+              <ListDetailSplit
                 className="min-h-0 flex-1"
+                showDetail={detailOpen}
+                onBack={() => setDetailOpen(false)}
+                detailTitle={detailTitle}
               >
-                <ResizablePanel
-                  id="automations-list"
-                  order={1}
-                  defaultSize={32}
-                  minSize={22}
-                >
+                <SplitPane defaultSize={32} minSize={22}>
                   <div className={LIST_SURFACE_CLASS}>
                     <ScrollArea className="h-full">
                       {visibleAutomations.length === 0 ? (
@@ -564,20 +575,16 @@ export function AutomationsPage() {
                       )}
                     </ScrollArea>
                   </div>
-                </ResizablePanel>
-                {/* The handle's own 1px rule IS the column divider now, and
+                </SplitPane>
+                {/* The split's handle (drawn by ListDetailSplit between the
+                    two panes) — its own 1px rule IS the column divider now, and
                     inside a single shell that's the honest reading of it: one
                     container split in two, not two boards with a line wedged
                     between them. Tone alone can't carry the split — in the
                     light theme `--muted` and `--card` are one step apart, which
                     measures ~2% on screen; the fixes for that (frosting or an
                     opaque fill) would block the workspace background image. */}
-                <ResizableHandle />
-                <ResizablePanel
-                  id="automations-detail"
-                  order={2}
-                  defaultSize={68}
-                >
+                <SplitPane defaultSize={68}>
                   <div className={DETAIL_SURFACE_CLASS}>
                     {mode === "editor" && editing ? (
                       editorPane
@@ -597,8 +604,8 @@ export function AutomationsPage() {
                       </div>
                     )}
                   </div>
-                </ResizablePanel>
-              </ResizablePanelGroup>
+                </SplitPane>
+              </ListDetailSplit>
             </div>
           </div>
         </>

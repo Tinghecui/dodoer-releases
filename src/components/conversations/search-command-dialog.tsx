@@ -18,7 +18,7 @@ import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
-import { useWorkspaceActions } from "@/contexts/workspace-context"
+import { useOpenFilePreviewTarget } from "@/hooks/use-open-file-preview-target"
 import { listAllConversations, searchConversationMessages } from "@/lib/api"
 import type {
   AgentType,
@@ -115,7 +115,8 @@ export function SearchCommandDialog({
   )
   const { openTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
-  const { openFilePreview } = useWorkspaceActions()
+  // 手机布局下进文件抽屉（#1335），电脑上照旧开文件标签。
+  const openFilePreview = useOpenFilePreviewTarget()
   const { revealInFileTree } = useAuxPanelContext()
 
   const [activeTab, setActiveTab] = useState<SearchTab>("conversations")
@@ -288,7 +289,7 @@ export function SearchCommandDialog({
         if (lastSlash > 0) {
           revealInFileTree(entry.relativePath.slice(0, lastSlash))
         }
-        openFilePreview(entry.relativePath)
+        void openFilePreview(entry.relativePath)
       }
       onOpenChange(false)
     },

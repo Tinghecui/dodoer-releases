@@ -88,6 +88,7 @@ import { ChromeReserve } from "@/components/layout/chrome-reserve"
 import { LeftEdgeChrome } from "@/components/layout/left-edge-chrome"
 import { RightEdgeChrome } from "@/components/layout/right-edge-chrome"
 import { WorkspaceChromeController } from "@/components/layout/workspace-chrome-controller"
+import { MobileFileViewerHost } from "@/components/files/mobile-file-viewer-host"
 import { MobileWorkspacePanes } from "@/components/layout/mobile-workspace-panes"
 import { WindowControls } from "@/components/layout/window-controls"
 import { FileWorkspaceTabBar } from "@/components/files/file-workspace-tab-bar"
@@ -1634,9 +1635,13 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                                           listener calls openConversations() to
                                           surface a launcher-opened folder. */}
                                     <WorkspaceOpenFolderListener />
-                                    <FolderLayoutShell>
-                                      {children}
-                                    </FolderLayoutShell>
+                                    {/* 手机布局下会话以外的文件入口（文件树、
+                                          搜索、Git 列表）用的文件抽屉（#1335）。 */}
+                                    <MobileFileViewerHost>
+                                      <FolderLayoutShell>
+                                        {children}
+                                      </FolderLayoutShell>
+                                    </MobileFileViewerHost>
                                   </WorkbenchRouteProvider>
                                 </TasksViewProvider>
                               </AutomationsViewProvider>

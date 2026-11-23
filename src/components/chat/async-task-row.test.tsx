@@ -10,8 +10,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/contexts/workspace-context", () => ({
   useWorkspaceActions: () => ({ openFilePreview: mocks.openFilePreview }),
 }))
+const layout = vi.hoisted(() => ({ mobile: false }))
+vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => layout.mobile }))
 
 import { AsyncTaskRow } from "./async-task-row"
+import { MobileFileViewerHostContext } from "@/components/files/mobile-file-viewer-host-context"
 import enMessages from "@/i18n/messages/en.json"
 import type { AsyncTaskRecord } from "@/lib/types"
 
@@ -67,6 +70,7 @@ function Rows({
 
 beforeEach(() => {
   mocks.openFilePreview.mockReset()
+  layout.mobile = false
 })
 
 describe("AsyncTaskRow", () => {
@@ -108,6 +112,23 @@ describe("AsyncTaskRow", () => {
     expect(mocks.openFilePreview).toHaveBeenCalledWith(
       "/private/tmp/claude-501/x.output"
     )
+  })
+
+  it("手机布局下输出文件进文件抽屉，不开多标签编辑区（#1335）", async () => {
+    layout.mobile = true
+    const opened: unknown[] = []
+    renderRows(
+      <MobileFileViewerHostContext.Provider
+        value={{ open: (request) => opened.push(request) }}
+      >
+        <Rows tasks={[task({ output_file_path: "/tmp/task/x.output" })]} />
+      </MobileFileViewerHostContext.Provider>
+    )
+    await userEvent.click(screen.getByRole("button", { name: t.openOutput }))
+    expect(mocks.openFilePreview).not.toHaveBeenCalled()
+    expect(opened).toEqual([
+      { path: "/tmp/task/x.output", line: null, folderId: undefined },
+    ])
   })
 
   it("offers no output button for a task that reported no path", () => {

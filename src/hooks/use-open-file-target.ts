@@ -2,9 +2,12 @@
 
 import { useCallback } from "react"
 
+import { useMobileFileViewerHost } from "@/components/files/mobile-file-viewer-host-context"
 import { useSessionViewerHost } from "@/components/message/session-viewer-host-context"
 import { useOptionalWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
+import { useIsMobile } from "@/hooks/use-mobile"
+import { isDesktop } from "@/lib/transport"
 
 interface OpenFileTargetOptions {
   line?: number | null
@@ -41,18 +44,34 @@ interface OpenFileTargetOptions {
  * ONE entry point for both a file and a diff on purpose: they sit side by side
  * in the same action row (`reply-artifacts.tsx`), and routing only one of them
  * is how the diff action was left silently failing on those very routes.
+ *
+ * 手机布局（不是桌面版）下会话页也走抽屉（#1335）：手机上不开桌面那个多标签
+ * 编辑区。桌面版窗口再窄也照旧开在文件栏。会话没有自己的查看器（grok 子会话）时，
+ * 手机上交给工作区的文件抽屉（`mobile-file-viewer-host.tsx`）。
  */
 export function useOpenFileTarget() {
   const { openFilePreview, openSessionFileDiff } = useWorkspaceActions()
   const route = useOptionalWorkbenchRoute()
-  const viewerHost = useSessionViewerHost()
-  const fileColumnVisible = route ? route.isConversations : true
+  const transcriptHost = useSessionViewerHost()
+  const workspaceHost = useMobileFileViewerHost()
+  const isMobile = useIsMobile()
+  const mobileWeb = isMobile && !isDesktop()
+  const fileColumnVisible = !mobileWeb && (route ? route.isConversations : true)
 
   return useCallback(
     async (path: string, options?: OpenFileTargetOptions): Promise<void> => {
-      if (!fileColumnVisible && viewerHost) {
-        viewerHost.open({
+      if (!fileColumnVisible && transcriptHost) {
+        transcriptHost.open({
           kind: "file",
+          path,
+          line: options?.line ?? null,
+          folderId: options?.folderId,
+          diff: options?.diff,
+        })
+        return
+      }
+      if (mobileWeb && workspaceHost) {
+        workspaceHost.open({
           path,
           line: options?.line ?? null,
           folderId: options?.folderId,
@@ -74,6 +93,13 @@ export function useOpenFileTarget() {
         folderId: options?.folderId,
       })
     },
-    [fileColumnVisible, openFilePreview, openSessionFileDiff, viewerHost]
+    [
+      fileColumnVisible,
+      mobileWeb,
+      openFilePreview,
+      openSessionFileDiff,
+      transcriptHost,
+      workspaceHost,
+    ]
   )
 }

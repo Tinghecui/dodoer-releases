@@ -24,6 +24,8 @@ import {
   type FileWorkspaceTab,
 } from "@/contexts/workspace-context"
 import { useHistoryBackDismiss } from "@/hooks/use-history-back-dismiss"
+import { useIsMobile } from "@/hooks/use-mobile"
+import { isDesktop } from "@/lib/transport"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { buildFileTabId } from "@/lib/file-tab-id"
 import {
@@ -137,6 +139,10 @@ function FileViewerBody({ request }: { request: FileViewerRequest }) {
   // hand the tab over to — the action hides itself rather than throwing.
   const route = useOptionalWorkbenchRoute()
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
+  // 手机布局（不是桌面版）下在后台开标签（#1335）：不然底下会切到多标签编辑区，
+  // 关了抽屉人就落在那里。
+  const isMobile = useIsMobile()
+  const openInBackground = isMobile && !isDesktop()
 
   // Following a link inside a rendered markdown document navigates HERE rather
   // than into the (covered) file column, so the drawer keeps its own history.
@@ -218,6 +224,7 @@ function FileViewerBody({ request }: { request: FileViewerRequest }) {
     void openFilePreview(entryPath, {
       line: entryLine ?? undefined,
       folderId: entryFolderId,
+      ...(openInBackground ? { background: true } : {}),
     }).then(settle, () => settle(null))
     return () => {
       cancelled = true
@@ -231,6 +238,7 @@ function FileViewerBody({ request }: { request: FileViewerRequest }) {
     entryPath,
     hasTab,
     openFilePreview,
+    openInBackground,
   ])
 
   const io = useMemo(

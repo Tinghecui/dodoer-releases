@@ -42,6 +42,10 @@ const {
 }))
 
 vi.mock("next-intl", () => ({ useTranslations: () => stableT }))
+// #1335：手机布局（不是桌面版）下抽屉在后台开标签，不把底下切到多标签编辑区。
+const layout = vi.hoisted(() => ({ mobile: false, desktop: false }))
+vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => layout.mobile }))
+vi.mock("@/lib/transport", () => ({ isDesktop: () => layout.desktop }))
 vi.mock("@/contexts/workspace-context", () => ({
   useWorkspaceActions: () => ({
     openFilePreview: mockOpenFilePreview,
@@ -184,6 +188,22 @@ describe("FileViewerDrawer", () => {
     state.fileTabs = []
     state.previewFileTabIds = new Set()
     mockOpenFilePreview.mockResolvedValue(ABS_PATH)
+    layout.mobile = false
+    layout.desktop = false
+  })
+
+  it("手机布局下在后台开标签，底下不切到多标签编辑区（#1335）", async () => {
+    layout.mobile = true
+    state.fileTabs = [tab({})]
+
+    await open({ path: "docs/plan.md", line: 12, folderId: 1 })
+
+    expect(mockOpenFilePreview).toHaveBeenCalledWith("docs/plan.md", {
+      line: 12,
+      folderId: 1,
+      background: true,
+    })
+    expect(screen.getByTestId("source")).toBeInTheDocument()
   })
 
   it("opens through the shared file tab and renders the one it created", async () => {

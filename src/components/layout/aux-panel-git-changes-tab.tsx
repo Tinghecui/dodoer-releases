@@ -67,6 +67,7 @@ import { useWorkspaceActions } from "@/contexts/workspace-context"
 import { useWorkspaceStateStore } from "@/hooks/use-workspace-state-store"
 import { useGitQuickActions } from "@/hooks/use-git-quick-actions"
 import { useImeGuard } from "@/hooks/use-ime-guard"
+import { useOpenFilePreviewTarget } from "@/hooks/use-open-file-preview-target"
 import {
   sameFiles,
   useCommitMessageGeneration,
@@ -486,7 +487,9 @@ export function GitChangesTab() {
   const folderStale = activeFolder?.id !== folder?.id
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
-  const { openFilePreview, openWorkingTreeDiff } = useWorkspaceActions()
+  const { openWorkingTreeDiff } = useWorkspaceActions()
+  // 手机布局下进文件抽屉（#1335），电脑上照旧开文件标签。
+  const openFilePreview = useOpenFilePreviewTarget()
   const workspaceState = useWorkspaceStateStore(folder?.path ?? null)
 
   const [expandedTrackedPaths, setExpandedTrackedPaths] = useState<Set<string>>(

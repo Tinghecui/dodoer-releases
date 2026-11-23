@@ -13,6 +13,7 @@ import { act, render, screen } from "@testing-library/react"
 import type { ReactNode } from "react"
 import { describe, expect, it, vi, beforeEach } from "vitest"
 
+import { MobileFileViewerHostContext } from "@/components/files/mobile-file-viewer-host-context"
 import {
   SessionViewerHostContext,
   type SessionViewerRequest,
@@ -22,6 +23,11 @@ import {
   useWorkbenchRoute,
 } from "@/contexts/workbench-route-context"
 import { useOpenFileTarget } from "@/hooks/use-open-file-target"
+
+// #1335：手机布局（不是桌面版）下没有多标签编辑区可看，文件一律进抽屉。
+const layout = vi.hoisted(() => ({ mobile: false, desktop: false }))
+vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => layout.mobile }))
+vi.mock("@/lib/transport", () => ({ isDesktop: () => layout.desktop }))
 
 const { mockOpenFilePreview, mockOpenSessionFileDiff } = vi.hoisted(() => ({
   mockOpenFilePreview: vi.fn(async () => "/repo/docs/plan.md"),
@@ -98,6 +104,74 @@ describe("useOpenFileTarget", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     opened.length = 0
+    layout.mobile = false
+    layout.desktop = false
+  })
+
+  it("手机布局下在会话页也进抽屉，不开多标签编辑区（#1335）", () => {
+    layout.mobile = true
+    render(
+      <WorkbenchRouteProvider>
+        <Host>
+          <Opener />
+          <DiffOpener />
+        </Host>
+      </WorkbenchRouteProvider>
+    )
+
+    click("open file")
+    click("view diff")
+
+    expect(mockOpenFilePreview).not.toHaveBeenCalled()
+    expect(mockOpenSessionFileDiff).not.toHaveBeenCalled()
+    expect(opened).toEqual([
+      { kind: "file", path: "docs/plan.md", line: 12, folderId: undefined },
+      {
+        kind: "file",
+        path: "src/a.ts",
+        line: null,
+        folderId: undefined,
+        diff: { content: "@@ -1 +1 @@", groupLabel: "turn-1" },
+      },
+    ])
+  })
+
+  it("手机布局下会话没有自己的查看器时，交给工作区的文件抽屉（#1335）", () => {
+    layout.mobile = true
+    const workspaceOpened: unknown[] = []
+    render(
+      <WorkbenchRouteProvider>
+        <MobileFileViewerHostContext.Provider
+          value={{ open: (request) => workspaceOpened.push(request) }}
+        >
+          <Opener />
+        </MobileFileViewerHostContext.Provider>
+      </WorkbenchRouteProvider>
+    )
+
+    click("open file")
+
+    expect(mockOpenFilePreview).not.toHaveBeenCalled()
+    expect(workspaceOpened).toEqual([
+      { path: "docs/plan.md", line: 12, folderId: undefined },
+    ])
+  })
+
+  it("桌面版窗口再窄也照旧开在文件栏（#1335）", () => {
+    layout.mobile = true
+    layout.desktop = true
+    render(
+      <WorkbenchRouteProvider>
+        <Host>
+          <Opener />
+        </Host>
+      </WorkbenchRouteProvider>
+    )
+
+    click("open file")
+
+    expect(opened).toEqual([])
+    expect(mockOpenFilePreview).toHaveBeenCalledTimes(1)
   })
 
   it("opens in the file column on the conversations route", () => {

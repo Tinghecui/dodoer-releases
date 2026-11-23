@@ -43,7 +43,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Shimmer } from "@/components/ai-elements/shimmer"
 import { cn } from "@/lib/utils"
-import { useWorkspaceActions } from "@/contexts/workspace-context"
+import { useOpenFilePreviewTarget } from "@/hooks/use-open-file-preview-target"
 import { formatTokensCompact } from "@/lib/token-format"
 import {
   AUTONOMOUS_TURN_TASK_TYPE,
@@ -78,7 +78,8 @@ export function AsyncTaskRow({
 }) {
   const t = useTranslations("Folder.chat.asyncTasks")
   const locale = useLocale()
-  const { openFilePreview } = useWorkspaceActions()
+  // 手机布局下进文件抽屉（#1335），电脑上照旧开文件标签。
+  const openFilePreview = useOpenFilePreviewTarget()
   const paused = task.state === "paused"
   const Icon = TASK_ICONS[task.task_type] ?? Activity
   // A turn the agent runs with no prompt open (see AUTONOMOUS_TURN_TASK_TYPE):

@@ -105,6 +105,7 @@ import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
 import { useWorkspaceStateStore } from "@/hooks/use-workspace-state-store"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { useOpenFilePreviewTarget } from "@/hooks/use-open-file-preview-target"
 import { useImeGuard } from "@/hooks/use-ime-guard"
 import {
   useGitQuickActions,
@@ -1323,7 +1324,9 @@ export function GitLogTab() {
   // folder (openers default to it when folderId is omitted — see
   // resolveTargetFolder). Clears the instant the deferred render catches up.
   const folderStale = activeFolder?.id !== folder?.id
-  const { openCommitDiff, openFilePreview } = useWorkspaceActions()
+  const { openCommitDiff } = useWorkspaceActions()
+  // 手机布局下进文件抽屉（#1335），电脑上照旧开文件标签。
+  const openFilePreview = useOpenFilePreviewTarget()
   const workspaceState = useWorkspaceStateStore(folder?.path ?? null)
   const isGitRepo = workspaceState.isGitRepo
   const [entries, setEntries] = useState<GitLogEntry[]>([])

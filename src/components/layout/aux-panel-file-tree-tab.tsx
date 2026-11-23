@@ -23,6 +23,7 @@ import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useTabStore } from "@/contexts/tab-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { useOpenFilePreviewTarget } from "@/hooks/use-open-file-preview-target"
 import {
   useWorkspaceActions,
   useWorkspaceFileTabs,
@@ -1133,8 +1134,9 @@ export function FileTreeTab() {
   const activeTabId = useTabStore((s) => s.activeTabId)
   const { createTerminalInDirectory } = useTerminalContext()
   const { activeFilePath } = useWorkspaceFileTabs()
-  const { openBranchDiff, openFilePreview, openWorkingTreeDiff } =
-    useWorkspaceActions()
+  const { openBranchDiff, openWorkingTreeDiff } = useWorkspaceActions()
+  // 手机布局下进文件抽屉（#1335），电脑上照旧开文件标签。
+  const openFilePreview = useOpenFilePreviewTarget()
   // File tab paths are absolute; the tree's node paths are relative to
   // THIS panel's folder — derive the relative form (undefined when the
   // active file lives outside this folder, which correctly unselects).

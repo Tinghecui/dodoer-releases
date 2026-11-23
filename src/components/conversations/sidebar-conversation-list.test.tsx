@@ -3125,3 +3125,76 @@ describe("SidebarConversationList — import local sessions on mobile", () => {
     )
   })
 })
+
+// #1379：触屏长按「文件夹」标题打开的是列表的空白处菜单，松手后浏览器补发的
+// click 不能再落到标题上把分组收起来；普通点按照旧能收起。
+describe("SidebarConversationList — 触屏长按分组标题", () => {
+  function touchPointer(
+    type: "pointerdown" | "pointerup",
+    target: Element,
+    pointerType: "touch" | "mouse" = "touch"
+  ) {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true })
+    Object.defineProperty(event, "pointerType", { value: pointerType })
+    act(() => {
+      target.dispatchEvent(event)
+    })
+  }
+
+  function seed() {
+    const folders = [folder(1, "demo"), folder(2, "docs-site")]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: [conv(11, 1)],
+    })
+  }
+
+  function header(getByRole: ReturnType<typeof render>["getByRole"]) {
+    return getByRole("button", {
+      name: enMessages.Folder.sidebar.sectionFolders,
+    })
+  }
+
+  beforeEach(() => {
+    // 分组折叠状态存在 localStorage，别让上一条用例收起的分组带过来。
+    window.localStorage.clear()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("长按弹出菜单后松手，分组不被收起", () => {
+    vi.useFakeTimers()
+    seed()
+    const { getByRole, queryByText } = render(tree())
+    const btn = header(getByRole)
+    expect(btn.getAttribute("aria-expanded")).toBe("true")
+    touchPointer("pointerdown", btn)
+    act(() => {
+      vi.advanceTimersByTime(800)
+    })
+    expect(document.querySelector('[role="menu"]')).not.toBeNull()
+    touchPointer("pointerup", btn)
+    act(() => {
+      fireEvent.click(btn)
+    })
+    expect(btn.getAttribute("aria-expanded")).toBe("true")
+    expect(queryByText("demo")).not.toBeNull()
+    expect(queryByText("docs-site")).not.toBeNull()
+  })
+
+  it("普通点按照旧收起分组", () => {
+    seed()
+    const { getByRole, queryByText } = render(tree())
+    const btn = header(getByRole)
+    touchPointer("pointerdown", btn)
+    touchPointer("pointerup", btn)
+    act(() => {
+      fireEvent.click(btn)
+    })
+    expect(btn.getAttribute("aria-expanded")).toBe("false")
+    expect(queryByText("docs-site")).toBeNull()
+  })
+})

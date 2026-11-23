@@ -1267,6 +1267,47 @@ export function SidebarConversationList({
   const [dragLayout, setDragLayout] = useState<SidebarLayout | null>(null)
   const pendingLayoutRef = useRef<SidebarLayout | null>(null)
 
+  // #1379：列表空白处菜单在触屏上靠 Radix 的长按打开，但 Radix 不拦松手后
+  // 浏览器补发的 click——它会落到手指下的分组标题、文件夹行上，被当成一次点按
+  // （「文件夹」标题就被收起）。这里记住「这次按下期间菜单打开了」，松手后短时间
+  // 内的那次 click 在捕获阶段吞掉。下一次按下就清掉，不影响后面的普通点按。
+  const blankMenuPressRef = useRef<{ active: boolean; opened: boolean }>({
+    active: false,
+    opened: false,
+  })
+  const suppressClickUntilRef = useRef(0)
+  const handleBlankMenuPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      suppressClickUntilRef.current = 0
+      blankMenuPressRef.current = {
+        active: event.pointerType !== "mouse",
+        opened: false,
+      }
+    },
+    []
+  )
+  const handleBlankMenuPointerEnd = useCallback(() => {
+    const press = blankMenuPressRef.current
+    if (press.active && press.opened) {
+      suppressClickUntilRef.current = Date.now() + 800
+    }
+    blankMenuPressRef.current = { active: false, opened: false }
+  }, [])
+  const handleBlankMenuOpenChange = useCallback((open: boolean) => {
+    if (open && blankMenuPressRef.current.active) {
+      blankMenuPressRef.current.opened = true
+    }
+  }, [])
+  const handleBlankMenuClickCapture = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (Date.now() >= suppressClickUntilRef.current) return
+      suppressClickUntilRef.current = 0
+      event.preventDefault()
+      event.stopPropagation()
+    },
+    []
+  )
+
   // Floating sticky folder header. `stickyFolderId` is the ONLY new render
   // state and changes solely when the scroll crosses into a different folder —
   // never on a status event or the per-minute `now` tick — so the card/header
@@ -3929,9 +3970,15 @@ export function SidebarConversationList({
           )}
         </div>
       ) : (
-        <ContextMenu>
+        <ContextMenu onOpenChange={handleBlankMenuOpenChange}>
           <ContextMenuTrigger asChild>
-            <div className="flex-1 min-h-0 relative">
+            <div
+              className="flex-1 min-h-0 relative"
+              onPointerDownCapture={handleBlankMenuPointerDown}
+              onPointerUpCapture={handleBlankMenuPointerEnd}
+              onPointerCancelCapture={handleBlankMenuPointerEnd}
+              onClickCapture={handleBlankMenuClickCapture}
+            >
               <ScrollArea
                 onViewportRef={handleViewportRef}
                 className={cn(

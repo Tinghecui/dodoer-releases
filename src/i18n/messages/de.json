@@ -2755,7 +2755,8 @@
       "restoreWindow": "Fenster wiederherstellen",
       "restore": "Wiederherstellen",
       "closeWindow": "Fenster schließen",
-      "close": "Schließen"
+      "close": "Schließen",
+      "back": "Zurück"
     },
     "tabs": {
       "closeConversationTab": "Konversationstab schließen",

@@ -2755,7 +2755,8 @@
       "restoreWindow": "Restaurar janela",
       "restore": "Restaurar",
       "closeWindow": "Fechar janela",
-      "close": "Fechar"
+      "close": "Fechar",
+      "back": "Voltar"
     },
     "tabs": {
       "closeConversationTab": "Fechar aba de conversa",

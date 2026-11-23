@@ -4,10 +4,12 @@ import { Suspense, useCallback, useEffect } from "react"
 import { useSearchParams } from "next/navigation"
 import { useTranslations } from "next-intl"
 import { AppTitleBar } from "@/components/layout/app-title-bar"
+import { MobileBackButton } from "@/components/layout/mobile-back-button"
 import { AppToaster } from "@/components/ui/app-toaster"
 import { ImportSessionsWindow } from "@/components/import-sessions/import-sessions-window"
 import { RemoteConnectionGate } from "@/contexts/remote-connection-context"
 import { isDesktop } from "@/lib/platform"
+import { leaveIfOpenedInPage } from "@/lib/in-page-navigation"
 import { brandTitle } from "@/lib/cowork/brand"
 
 const TOAST_DURATION_MS = 6000
@@ -27,6 +29,8 @@ function ImportSessionsPageInner() {
         console.error("[ImportSessionsPage] failed to close window:", err)
       }
     }
+    // 手机布局下这一页是在当前页里打开的（#1332）：返回上一页
+    if (leaveIfOpenedInPage()) return
     window.close()
   }, [])
 
@@ -37,6 +41,7 @@ function ImportSessionsPageInner() {
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       <AppTitleBar
+        left={<MobileBackButton />}
         center={
           <div className="text-sm font-semibold tracking-tight">
             {t("title")}

@@ -2755,7 +2755,8 @@
       "restoreWindow": "ウィンドウを元に戻す",
       "restore": "元に戻す",
       "closeWindow": "ウィンドウを閉じる",
-      "close": "閉じる"
+      "close": "閉じる",
+      "back": "戻る"
     },
     "tabs": {
       "closeConversationTab": "会話タブを閉じる",

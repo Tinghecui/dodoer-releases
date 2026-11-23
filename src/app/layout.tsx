@@ -19,6 +19,7 @@ import { LiquidGlassInit } from "@/components/liquid-glass-init"
 import { OverlayScrollbarsInit } from "@/components/overlay-scrollbars-init"
 import { ClipboardFallbackInit } from "@/components/clipboard-fallback-init"
 import { ServiceWorkerInit } from "@/components/service-worker-init"
+import { InPageRouterInit } from "@/components/in-page-router-init"
 import { TelemetryInit } from "@/components/telemetry-init"
 import { E2eWdioInit } from "@/components/e2e-wdio-init"
 import { WebConnectionGuard } from "@/components/connection/web-connection-guard"
@@ -111,6 +112,7 @@ export default async function RootLayout({
                 <LiquidGlassInit />
                 <ClipboardFallbackInit />
                 <ServiceWorkerInit />
+                <InPageRouterInit />
                 <TelemetryInit />
                 <E2eWdioInit />
                 <WebConnectionGuard />

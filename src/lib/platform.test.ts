@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 /**
  * `openUrl` is the app's only sanctioned way to leave for the outside world
@@ -44,6 +44,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ close: mocks.tauriWindowClose }),
 }))
 
+import { navigateInPage, setInPageRouter } from "@/lib/in-page-navigation"
 import {
   closeAppWindow,
   openFileDialog,
@@ -239,5 +240,103 @@ describe("closeAppWindow", () => {
       close.mockRestore()
       error.mockRestore()
     }
+  })
+})
+
+// #1332：手机布局下设置、提交这些页面是在当前页里打开的，「关掉」就是返回
+describe("closeAppWindow 在手机布局下", () => {
+  function stubMobile(matches: boolean) {
+    return vi.spyOn(window, "matchMedia").mockImplementation(
+      (query: string) =>
+        ({
+          matches,
+          media: query,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList
+    )
+  }
+
+  it("在当前页打开的页面返回上一页，不关窗口", async () => {
+    const media = stubMobile(true)
+    window.history.pushState({}, "", "/commit?folderId=1")
+    const close = vi.spyOn(window, "close").mockImplementation(() => {})
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {})
+    try {
+      await expect(closeAppWindow()).resolves.toBe(true)
+      expect(back).toHaveBeenCalledTimes(1)
+      expect(close).not.toHaveBeenCalled()
+    } finally {
+      media.mockRestore()
+      close.mockRestore()
+      back.mockRestore()
+    }
+  })
+
+  it("脚本另开的窗口（有 opener）照旧关掉", async () => {
+    const media = stubMobile(true)
+    // jsdom 的 opener 是普通属性，没法 spy：直接换成一个对象，用完删掉
+    Object.defineProperty(window, "opener", {
+      configurable: true,
+      value: {},
+    })
+    const close = vi.spyOn(window, "close").mockImplementation(() => {})
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {})
+    try {
+      await closeAppWindow()
+      expect(close).toHaveBeenCalledTimes(1)
+      expect(back).not.toHaveBeenCalled()
+    } finally {
+      media.mockRestore()
+      Reflect.deleteProperty(window, "opener")
+      close.mockRestore()
+      back.mockRestore()
+    }
+  })
+})
+
+// 返工（#1332）：在当前页打开的，看的是「打开时的记录」，不看现在的宽度和 opener
+describe("closeAppWindow 在当前页打开以后", () => {
+  const router = { push: vi.fn(), back: vi.fn() }
+  let unregister: () => void = () => {}
+
+  beforeEach(() => {
+    router.push.mockReset()
+    router.back.mockReset()
+    unregister = setInPageRouter(router)
+    navigateInPage("/commit?folderId=1&paths=a")
+    window.history.pushState({}, "", "/commit?folderId=1&paths=a")
+  })
+
+  afterEach(() => {
+    navigateInPage("/workspace")
+    unregister()
+    window.history.replaceState({}, "", "/")
+    Reflect.deleteProperty(window, "opener")
+    vi.restoreAllMocks()
+  })
+
+  it("工作区标签页本身带 opener，也返回而不是关掉整个标签页", async () => {
+    Object.defineProperty(window, "opener", { configurable: true, value: {} })
+    const close = vi.spyOn(window, "close").mockImplementation(() => {})
+    await expect(closeAppWindow()).resolves.toBe(true)
+    expect(router.back).toHaveBeenCalledTimes(1)
+    expect(close).not.toHaveBeenCalled()
+  })
+
+  it("打开以后把浏览器拉宽，也返回而不是关掉整个标签页", async () => {
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (query: string) =>
+        ({
+          matches: false,
+          media: query,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList
+    )
+    const close = vi.spyOn(window, "close").mockImplementation(() => {})
+    await expect(closeAppWindow()).resolves.toBe(true)
+    expect(router.back).toHaveBeenCalledTimes(1)
+    expect(close).not.toHaveBeenCalled()
   })
 })

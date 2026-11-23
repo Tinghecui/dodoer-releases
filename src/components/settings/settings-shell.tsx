@@ -39,6 +39,7 @@ import {
   type TransportEnvironment,
 } from "@/lib/transport/detect"
 import { AppTitleBar } from "@/components/layout/app-title-bar"
+import { MobileBackButton } from "@/components/layout/mobile-back-button"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 import { SettingsPageUnavailable } from "@/components/cowork/settings-page-unavailable"
@@ -389,15 +390,21 @@ export function SettingsShell({ children }: SettingsShellProps) {
         className="lg lg-pane lg-bar z-10 border-b-0 bg-[var(--g-fill)]"
         left={
           isMobile ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => setNavOpen(true)}
-            >
-              <Menu className="h-4 w-4" />
-            </Button>
-          ) : undefined
+            <div className="flex items-center gap-1">
+              <MobileBackButton />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setNavOpen(true)}
+              >
+                <Menu className="h-4 w-4" />
+              </Button>
+            </div>
+          ) : (
+            // iOS 壳里宽屏也要能回去；其它宽屏情况它自己不显示
+            <MobileBackButton />
+          )
         }
         center={
           <div className="flex min-w-0 items-center gap-2">

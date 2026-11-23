@@ -2755,7 +2755,8 @@
       "restoreWindow": "还原窗口",
       "restore": "还原",
       "closeWindow": "关闭窗口",
-      "close": "关闭"
+      "close": "关闭",
+      "back": "返回"
     },
     "tabs": {
       "closeConversationTab": "关闭会话标签",

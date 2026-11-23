@@ -2755,7 +2755,8 @@
       "restoreWindow": "還原視窗",
       "restore": "還原",
       "closeWindow": "關閉視窗",
-      "close": "關閉"
+      "close": "關閉",
+      "back": "返回"
     },
     "tabs": {
       "closeConversationTab": "關閉會話分頁",

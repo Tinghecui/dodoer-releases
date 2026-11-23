@@ -2755,7 +2755,8 @@
       "restoreWindow": "استعادة النافذة",
       "restore": "استعادة",
       "closeWindow": "إغلاق النافذة",
-      "close": "إغلاق"
+      "close": "إغلاق",
+      "back": "رجوع"
     },
     "tabs": {
       "closeConversationTab": "إغلاق تبويب المحادثة",

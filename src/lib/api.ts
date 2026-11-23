@@ -16,6 +16,13 @@ import { isRemoteTokenRejected } from "./app-error"
 import { randomUUID } from "./utils"
 import { getCurrentEffectiveAppLocale } from "./i18n"
 import {
+  isMobileLayout,
+  navigateInPage,
+  setPendingWorkspaceFolder,
+  wasOpenedInPage,
+  withoutInPageRecord,
+} from "./in-page-navigation"
+import {
   DEFAULT_FORGE_COMMENT_PAGE_SIZE,
   DEFAULT_FORGE_FILES_PAGE_SIZE,
   DEFAULT_FORGE_PAGE_SIZE,
@@ -3139,7 +3146,8 @@ async function openAppWindow(
   name: string,
   resolvePath: () => Promise<{ path: string }>
 ): Promise<void> {
-  const win = window.open("", name)
+  // 新窗口复制 sessionStorage 时不带上「在当前页打开」的记录（#1332）
+  const win = withoutInPageRecord(() => window.open("", name))
   if (!win) {
     throw new Error(
       "Popup blocked by the browser. Allow popups for this site and try again."
@@ -3163,6 +3171,23 @@ async function openAppWindow(
   releaseAppWindow(name)
 }
 
+/**
+ * 网页版打开设置、提交这类页面。手机布局（窄屏或 iOS 壳）下在当前页里打开：
+ * 手机浏览器另开标签页不好回来，App 的内嵌网页里 `window.open` 直接失败
+ * （#1332）。路径还是后端给的那个，参数不变。宽屏照旧另开窗口。
+ */
+async function openAppPage(
+  name: string,
+  resolvePath: () => Promise<{ path: string }>
+): Promise<void> {
+  if (isMobileLayout()) {
+    const { path } = await resolvePath()
+    navigateInPage(path)
+    return
+  }
+  return openAppWindow(name, resolvePath)
+}
+
 export async function openMergeWindow(
   folderId: number,
   operation: string,
@@ -3178,7 +3203,7 @@ export async function openMergeWindow(
       remoteConnectionId: getActiveRemoteConnectionId(),
     })
   }
-  return openAppWindow(`merge-${folderId}`, () =>
+  return openAppPage(`merge-${folderId}`, () =>
     getTransport().call<{ path: string }>("open_merge_window", {
       folderId,
       operation,
@@ -3197,7 +3222,7 @@ export async function openStashWindow(folderId: number): Promise<void> {
       remoteConnectionId: getActiveRemoteConnectionId(),
     })
   }
-  return openAppWindow(`stash-${folderId}`, () =>
+  return openAppPage(`stash-${folderId}`, () =>
     getTransport().call<{ path: string }>("open_stash_window", {
       folderId,
       locale,
@@ -3222,7 +3247,7 @@ export async function openPushWindow(
   // Reusing the window NAME navigates an already-open push window to the new
   // URL, so the preselected branch applies there too (the desktop path gets the
   // same effect from the `push://retarget-branch` event).
-  return openAppWindow(`push-${folderId}`, () =>
+  return openAppPage(`push-${folderId}`, () =>
     getTransport().call<{ path: string }>("open_push_window", {
       folderId,
       locale,
@@ -3900,7 +3925,7 @@ export async function openCommitWindow(
   if (tooLong) options.onPathsDropped?.()
   // 路径只在前端拼到地址后面，不改后端接口。同名窗口已经开着时，
   // openAppWindow 也会把它导航到新地址，勾选跟着这次右键走。
-  return openAppWindow(`commit-${folderId}`, async () => {
+  return openAppPage(`commit-${folderId}`, async () => {
     const { path } = await getTransport().call<{ path: string }>(
       "open_commit_window",
       { folderId, locale }
@@ -3953,7 +3978,7 @@ export async function openSettingsWindow(
     })
   }
   // Web mode: open in new window
-  return openAppWindow(`settings-${section ?? "general"}`, () =>
+  return openAppPage(`settings-${section ?? "general"}`, () =>
     getTransport().call<{ path: string }>("open_settings_window", {
       section: section ?? null,
       agentType: options?.agentType ?? null,
@@ -3980,7 +4005,7 @@ export async function openImportSessionsWindow(
       remoteConnectionId: getActiveRemoteConnectionId(),
     })
   }
-  return openAppWindow("import-sessions", () =>
+  return openAppPage("import-sessions", () =>
     getTransport().call<{ path: string }>("open_import_sessions_window", {
       focusPath,
     })
@@ -3996,7 +4021,11 @@ export async function openProjectBootWindow(source?: string): Promise<void> {
     })
   }
   if (typeof window !== "undefined") {
-    window.open("/project-boot", "project-boot")
+    if (isMobileLayout()) {
+      navigateInPage("/project-boot")
+      return
+    }
+    withoutInPageRecord(() => window.open("/project-boot", "project-boot"))
   }
 }
 
@@ -4013,7 +4042,14 @@ export const FOLDER_OPEN_IN_WORKSPACE_EVENT = "folder://open-in-workspace"
 export async function openFolderInWorkspace(
   path: string
 ): Promise<FolderDetail> {
-  return getTransport().call("open_folder_in_workspace", { path })
+  const detail = await getTransport().call<FolderDetail>(
+    "open_folder_in_workspace",
+    { path }
+  )
+  // 新建项目页是在当前页里打开的（#1332）：工作区这会儿没挂着，收不到上面
+  // 的广播。记下来，回到工作区时由 WorkspaceOpenFolderListener 接着打开。
+  if (wasOpenedInPage()) setPendingWorkspaceFolder(detail)
+  return detail
 }
 
 export async function detectPackageManager(

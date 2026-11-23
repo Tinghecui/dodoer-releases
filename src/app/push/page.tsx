@@ -7,6 +7,7 @@ import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 import { PushWorkspace } from "@/components/layout/push-workspace"
 import { AppTitleBar } from "@/components/layout/app-title-bar"
+import { MobileBackButton } from "@/components/layout/mobile-back-button"
 import { AppToaster } from "@/components/ui/app-toaster"
 import { getFolder } from "@/lib/api"
 import type { FolderDetail } from "@/lib/types"
@@ -89,6 +90,7 @@ function PushPageInner() {
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       <AppTitleBar
+        left={<MobileBackButton />}
         center={
           <div className="text-sm font-semibold tracking-tight">
             {t("title")}

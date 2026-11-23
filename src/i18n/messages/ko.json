@@ -2755,7 +2755,8 @@
       "restoreWindow": "창 복원",
       "restore": "복원",
       "closeWindow": "창 닫기",
-      "close": "닫기"
+      "close": "닫기",
+      "back": "뒤로"
     },
     "tabs": {
       "closeConversationTab": "대화 탭 닫기",

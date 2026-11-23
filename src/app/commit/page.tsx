@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl"
 import { Loader2 } from "lucide-react"
 import { CommitWorkspace } from "@/components/layout/commit-dialog"
 import { AppTitleBar } from "@/components/layout/app-title-bar"
+import { MobileBackButton } from "@/components/layout/mobile-back-button"
 import { AppToaster } from "@/components/ui/app-toaster"
 import { getFolder } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
@@ -101,6 +102,7 @@ function CommitPageInner() {
     <GitCredentialProvider>
       <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
         <AppTitleBar
+          left={<MobileBackButton />}
           center={
             <div className="text-sm font-semibold tracking-tight">
               {t("title")}

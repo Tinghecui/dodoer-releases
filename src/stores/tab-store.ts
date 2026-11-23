@@ -202,6 +202,11 @@ export interface TabStoreState {
   draftRetargetRequests: DraftRetargetRequest[]
   tabsHydrated: boolean
   /**
+   * 正在从服务器读标签、恢复列表（每次 hydrate 都算，工作区重新挂上时
+   * tabsHydrated 已经是 true 了）。这时开的新标签会被恢复结果盖掉（#1332）。
+   */
+  tabsRestoring: boolean
+  /**
    * IDEA-style split groups (device-local, like tile mode). `groupLayout` is
    * the splitter tree (leaves = groups); `groupOf` maps tab id → group id
    * (missing = first leaf); `groupSelection` is each group's selected tab
@@ -2201,6 +2206,7 @@ function initialTabState() {
     previewReplacedTabIds: [] as string[],
     draftRetargetRequests: [] as DraftRetargetRequest[],
     tabsHydrated: false,
+    tabsRestoring: false,
     ...readPersistedGroupState(),
     tabDrag: null as TabStoreState["tabDrag"],
     childSummaries: new Map<number, DbConversationSummary>(),
@@ -3401,6 +3407,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       set(readPersistedGroupState())
     }
     let cancelled = false
+    set({ tabsRestoring: true })
     void (async () => {
       let snapshotLoaded = false
       try {
@@ -3542,7 +3549,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         }
       } finally {
         if (!cancelled) {
-          set({ tabsHydrated: true })
+          set({ tabsHydrated: true, tabsRestoring: false })
           // First full invariant pass: with hydration done, blob-seeded group
           // entries that matched nothing (tabs closed on another client) prune
           // and ghost empty groups collapse.
@@ -3576,6 +3583,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     })()
     return () => {
       cancelled = true
+      set({ tabsRestoring: false })
     }
   },
 

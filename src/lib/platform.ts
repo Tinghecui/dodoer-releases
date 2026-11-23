@@ -4,6 +4,7 @@ import {
   getTransport,
 } from "./transport"
 import type { EventStream, UnsubscribeFn } from "./transport/types"
+import { leaveIfOpenedInPage } from "./in-page-navigation"
 
 /**
  * Platform-aware API wrappers for features that differ between
@@ -266,6 +267,8 @@ export async function closeAppWindow(): Promise<boolean> {
       return false
     }
   }
+  // 手机布局下这些页面是在当前页里打开的（#1332）：「关掉」就是返回上一页
+  if (leaveIfOpenedInPage()) return true
   try {
     window.close()
   } catch {

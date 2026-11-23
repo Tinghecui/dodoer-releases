@@ -3,6 +3,7 @@
 import { Suspense, useEffect } from "react"
 import { useTranslations } from "next-intl"
 import { AppTitleBar } from "@/components/layout/app-title-bar"
+import { MobileBackButton } from "@/components/layout/mobile-back-button"
 import { AppToaster } from "@/components/ui/app-toaster"
 import { ProjectBootWorkspace } from "@/components/project-boot/project-boot-workspace"
 import { brandTitle } from "@/lib/cowork/brand"
@@ -17,6 +18,7 @@ function ProjectBootPageInner() {
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       <AppTitleBar
+        left={<MobileBackButton />}
         center={
           <div className="text-sm font-semibold tracking-tight">
             {t("title")}

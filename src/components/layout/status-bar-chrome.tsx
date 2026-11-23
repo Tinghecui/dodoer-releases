@@ -571,9 +571,11 @@ function ChromeItem({ className }: { className?: string }) {
         </div>
 
         {/* 负外边距配同样的内边距：按钮的焦点框不被滚动区裁掉 */}
+        {/* 子项一律不压缩（*:shrink-0）：标签页卡片带 overflow-hidden，最小高度按 0 算，
+            不加的话放不下时它被挤扁、滚动区却不溢出，标签页行就看不到也滚不到（#1295） */}
         <div
           data-chrome-panel-body=""
-          className="-mx-2.5 -mb-2.5 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2.5 pb-2.5"
+          className="-mx-2.5 -mb-2.5 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2.5 pb-2.5 *:shrink-0"
         >
           {problem ? (
             <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-2xs text-amber-600 dark:text-amber-400">

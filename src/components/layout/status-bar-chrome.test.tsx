@@ -1073,4 +1073,20 @@ describe("StatusBarChrome on a short screen", () => {
       )
     ).toBe(true)
   })
+
+  it("keeps every card in the scroll area at full height so the tab list scrolls into view instead of being squashed (#1295)", async () => {
+    mocks.chromeStatus.mockResolvedValue(CONNECTED)
+    await mount()
+    await openPanel()
+    const body = document.querySelector("[data-chrome-panel-body]")
+    expect(body).not.toBeNull()
+    // jsdom 不算布局，只能看类名：滚动区的直接子项都不许被压缩，
+    // 放不下时由滚动区自己滚，而不是把带 overflow-hidden 的标签页卡片挤扁
+    expect(body!.className.split(/\s+/)).toContain("*:shrink-0")
+    const tabsCard = screen
+      .getByText(/^Open in Chrome:/)
+      .closest("[data-chrome-panel-body] > *")
+    expect(tabsCard).not.toBeNull()
+    expect(tabsCard!.parentElement).toBe(body)
+  })
 })

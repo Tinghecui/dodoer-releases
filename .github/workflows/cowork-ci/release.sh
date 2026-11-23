@@ -28,7 +28,9 @@ REPO=Tinghecui/cowork
 TAG="v$VERSION"
 [[ "${PUBLISH:-}" == draft ]] && TAG="ci-dryrun-${GITHUB_RUN_ID:-0}"
 
-published() { gh api "repos/$REPO/releases/tags/$1" -q .id 2> /dev/null; }   # 只返回已发布的（草稿没有 tag）
+# 只返回已发布的（草稿没有 tag）。gh api 遇到 404 也把错误的 JSON 打到 stdout、不经 -q，所以失败时什么都不输出
+# （以前直接输出，没发过的版本也算「已经发过」，0.15.0 第一次发版就这样只测不发，2026-11-23）
+published() { local id; id=$(gh api "repos/$REPO/releases/tags/$1" -q .id 2> /dev/null) || return 0; echo "$id"; }
 drafts() { gh api --paginate "repos/$REPO/releases?per_page=100" -q ".[] | select(.draft and .tag_name == \"$1\") | .id"; }
 
 draft() {

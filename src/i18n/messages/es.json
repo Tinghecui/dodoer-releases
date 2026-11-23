@@ -8476,6 +8476,25 @@
     "shareRemoveAll": "Quitar todo",
     "shareConfirm": "Compartir",
     "shareCancel": "Cancelar",
-    "shareJustCreated": "Esta conversación se acaba de crear. Vuelve a intentarlo en unos segundos."
+    "shareJustCreated": "Esta conversación se acaba de crear. Vuelve a intentarlo en unos segundos.",
+    "commentsTitle": "Comentarios",
+    "commentsButton": "Comentarios",
+    "commentsButtonNew": "Comentarios ({count} nuevos)",
+    "commentsClose": "Cerrar comentarios",
+    "commentsEmpty": "Aún no hay comentarios",
+    "commentPlaceholder": "Deja un comentario para {owner}; no se enviará a su agente",
+    "commentPlaceholderOwn": "Escribe un comentario; no se enviará al agente",
+    "commentSend": "Enviar",
+    "commentReply": "Responder",
+    "commentDelete": "Eliminar",
+    "commentReplyingTo": "Respondiendo a {name}",
+    "commentOnEntry": "Comentando: {text}",
+    "commentOnThisEntry": "Comentar esta entrada",
+    "commentCancelTarget": "Cancelar",
+    "commentAnchor": "Sobre: {text}",
+    "commentFormer": "(antiguo miembro)",
+    "commentAddFailed": "No se pudo enviar: {message}",
+    "commentForward": "Pasar a mi agente",
+    "commentForwarded": "Pasado al agente"
   }
 }

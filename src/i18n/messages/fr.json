@@ -8476,6 +8476,25 @@
     "shareRemoveAll": "Tout arrêter",
     "shareConfirm": "Partager",
     "shareCancel": "Annuler",
-    "shareJustCreated": "Cette conversation vient d'être créée. Réessayez dans quelques secondes."
+    "shareJustCreated": "Cette conversation vient d'être créée. Réessayez dans quelques secondes.",
+    "commentsTitle": "Commentaires",
+    "commentsButton": "Commentaires",
+    "commentsButtonNew": "Commentaires ({count} nouveaux)",
+    "commentsClose": "Fermer les commentaires",
+    "commentsEmpty": "Aucun commentaire pour l'instant",
+    "commentPlaceholder": "Laisser un commentaire à {owner} — il ne sera pas envoyé à son agent",
+    "commentPlaceholderOwn": "Écrire un commentaire — il ne sera pas envoyé à l'agent",
+    "commentSend": "Envoyer",
+    "commentReply": "Répondre",
+    "commentDelete": "Supprimer",
+    "commentReplyingTo": "Réponse à {name}",
+    "commentOnEntry": "Commentaire sur : {text}",
+    "commentOnThisEntry": "Commenter cette entrée",
+    "commentCancelTarget": "Annuler",
+    "commentAnchor": "Sur : {text}",
+    "commentFormer": "(ancien membre)",
+    "commentAddFailed": "Envoi impossible : {message}",
+    "commentForward": "Confier à mon agent",
+    "commentForwarded": "Confié à l'agent"
   }
 }

@@ -8476,6 +8476,25 @@
     "shareRemoveAll": "すべて解除",
     "shareConfirm": "共有",
     "shareCancel": "キャンセル",
-    "shareJustCreated": "この会話は作成されたばかりです。数秒後にもう一度お試しください。"
+    "shareJustCreated": "この会話は作成されたばかりです。数秒後にもう一度お試しください。",
+    "commentsTitle": "コメント",
+    "commentsButton": "コメント",
+    "commentsButtonNew": "コメント（新着 {count} 件）",
+    "commentsClose": "コメントを閉じる",
+    "commentsEmpty": "まだコメントはありません",
+    "commentPlaceholder": "{owner} へのコメント（相手のエージェントには送られません）",
+    "commentPlaceholderOwn": "コメントを書く（エージェントには送られません）",
+    "commentSend": "送信",
+    "commentReply": "返信",
+    "commentDelete": "削除",
+    "commentReplyingTo": "{name} に返信",
+    "commentOnEntry": "この記録へのコメント：{text}",
+    "commentOnThisEntry": "この記録にコメント",
+    "commentCancelTarget": "キャンセル",
+    "commentAnchor": "対象：{text}",
+    "commentFormer": "（退出済み）",
+    "commentAddFailed": "送信できませんでした：{message}",
+    "commentForward": "自分のエージェントに渡す",
+    "commentForwarded": "エージェントに渡しました"
   }
 }

@@ -11,6 +11,8 @@
 // 取消了分享、或者我已经不在这个组里）清空内容、不再拉。
 //
 // 这里没有任何能给对方智能体发话、停止、批准的控件。谁能看由服务端判断。
+// 输入框的位置是留言输入（第 5 行），右侧一栏是这个会话的留言线程；每条记录
+// 旁边能「对这条留言」。留言不会发给对方的智能体。
 // 正文：提问、回复、思考、工具记录四种块都走现成的 markdown 渲染（带净化），
 // 别人会话里的 HTML 不会原样插进页面。
 
@@ -37,6 +39,13 @@ import {
 } from "@/lib/cowork/team"
 import { formatTimeAgo } from "@/lib/relative-time"
 import { cn, copyTextToClipboard } from "@/lib/utils"
+import {
+  CommentComposer,
+  CommentOnEntryButton,
+  CommentsSidebar,
+  entryPreview,
+  useSessionComments,
+} from "@/components/cowork/session-comments"
 import {
   useCoworkTeamStore,
   type SharedSessionTarget,
@@ -162,6 +171,8 @@ function SharedSessionView({
   const stickToBottom = useRef(true)
 
   const { owner, id } = target
+  const comments = useSessionComments(owner, id, false)
+  const setCommentTarget = comments.setTarget
 
   useEffect(() => {
     let alive = true
@@ -321,39 +332,67 @@ function SharedSessionView({
           </p>
         )}
       </header>
-      <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        className="min-h-0 flex-1 overflow-y-auto"
-      >
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-4">
-          {gone && (
-            <p
-              data-shared-session-gone=""
-              className="py-8 text-center text-[0.8125rem] text-muted-foreground"
-            >
-              {t("sharedViewGone")}
-            </p>
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div
+            ref={scrollRef}
+            onScroll={handleScroll}
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
+            <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-4">
+              {gone && (
+                <p
+                  data-shared-session-gone=""
+                  className="py-8 text-center text-[0.8125rem] text-muted-foreground"
+                >
+                  {t("sharedViewGone")}
+                </p>
+              )}
+              {!gone && error !== null && (
+                <p className="break-words text-[0.75rem] text-destructive">
+                  {t("sharedLoadFailed", { message: error })}
+                </p>
+              )}
+              {!gone && !loaded && error === null && (
+                <p className="py-8 text-center text-[0.8125rem] text-muted-foreground">
+                  {t("sharedViewLoading")}
+                </p>
+              )}
+              {!gone && loaded && entries.length === 0 && (
+                <p className="py-8 text-center text-[0.8125rem] text-muted-foreground">
+                  {t("sharedViewEmpty")}
+                </p>
+              )}
+              {entries.map((entry) => (
+                <div key={entry.seq} className="group/entry relative">
+                  <SharedEntry entry={entry} />
+                  <div className="absolute -top-1 end-0 opacity-0 group-hover/entry:opacity-100 focus-within:opacity-100">
+                    <CommentOnEntryButton
+                      onClick={() =>
+                        setCommentTarget({
+                          kind: "entry",
+                          seq: entry.seq,
+                          preview: entryPreview(entry.text),
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          {!gone && (
+            <div className="shrink-0 border-t border-border">
+              <div className="mx-auto w-full max-w-3xl px-4 py-3">
+                <CommentComposer
+                  api={comments}
+                  placeholder={t("commentPlaceholder", { owner: ownerLabel })}
+                />
+              </div>
+            </div>
           )}
-          {!gone && error !== null && (
-            <p className="break-words text-[0.75rem] text-destructive">
-              {t("sharedLoadFailed", { message: error })}
-            </p>
-          )}
-          {!gone && !loaded && error === null && (
-            <p className="py-8 text-center text-[0.8125rem] text-muted-foreground">
-              {t("sharedViewLoading")}
-            </p>
-          )}
-          {!gone && loaded && entries.length === 0 && (
-            <p className="py-8 text-center text-[0.8125rem] text-muted-foreground">
-              {t("sharedViewEmpty")}
-            </p>
-          )}
-          {entries.map((entry) => (
-            <SharedEntry key={entry.seq} entry={entry} />
-          ))}
         </div>
+        {!gone && <CommentsSidebar api={comments} />}
       </div>
     </div>
   )

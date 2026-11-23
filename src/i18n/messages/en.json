@@ -8476,6 +8476,25 @@
     "shareRemoveAll": "Stop all",
     "shareConfirm": "Share",
     "shareCancel": "Cancel",
-    "shareJustCreated": "This conversation was just created. Try again in a few seconds."
+    "shareJustCreated": "This conversation was just created. Try again in a few seconds.",
+    "commentsTitle": "Comments",
+    "commentsButton": "Comments",
+    "commentsButtonNew": "Comments ({count} new)",
+    "commentsClose": "Close comments",
+    "commentsEmpty": "No comments yet",
+    "commentPlaceholder": "Leave a comment for {owner} — it won't be sent to their agent",
+    "commentPlaceholderOwn": "Write a comment — it won't be sent to the agent",
+    "commentSend": "Send",
+    "commentReply": "Reply",
+    "commentDelete": "Delete",
+    "commentReplyingTo": "Replying to {name}",
+    "commentOnEntry": "Commenting on: {text}",
+    "commentOnThisEntry": "Comment on this entry",
+    "commentCancelTarget": "Cancel",
+    "commentAnchor": "On: {text}",
+    "commentFormer": "(former member)",
+    "commentAddFailed": "Couldn't send: {message}",
+    "commentForward": "Give to my agent",
+    "commentForwarded": "Given to agent"
   }
 }

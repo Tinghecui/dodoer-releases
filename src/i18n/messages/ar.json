@@ -8476,6 +8476,25 @@
     "shareRemoveAll": "إيقاف الكل",
     "shareConfirm": "مشاركة",
     "shareCancel": "إلغاء",
-    "shareJustCreated": "أُنشئت هذه المحادثة للتو. حاول مرة أخرى بعد بضع ثوانٍ."
+    "shareJustCreated": "أُنشئت هذه المحادثة للتو. حاول مرة أخرى بعد بضع ثوانٍ.",
+    "commentsTitle": "التعليقات",
+    "commentsButton": "التعليقات",
+    "commentsButtonNew": "التعليقات ({count} جديدة)",
+    "commentsClose": "إغلاق التعليقات",
+    "commentsEmpty": "لا توجد تعليقات بعد",
+    "commentPlaceholder": "اترك تعليقًا لـ {owner} — لن يُرسل إلى وكيله",
+    "commentPlaceholderOwn": "اكتب تعليقًا — لن يُرسل إلى الوكيل",
+    "commentSend": "إرسال",
+    "commentReply": "رد",
+    "commentDelete": "حذف",
+    "commentReplyingTo": "رد على {name}",
+    "commentOnEntry": "تعليق على: {text}",
+    "commentOnThisEntry": "التعليق على هذا السجل",
+    "commentCancelTarget": "إلغاء",
+    "commentAnchor": "على: {text}",
+    "commentFormer": "(عضو سابق)",
+    "commentAddFailed": "تعذر الإرسال: {message}",
+    "commentForward": "أعطه لوكيلي",
+    "commentForwarded": "أُعطي للوكيل"
   }
 }

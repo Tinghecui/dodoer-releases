@@ -8476,6 +8476,25 @@
     "shareRemoveAll": "모두 해제",
     "shareConfirm": "공유",
     "shareCancel": "취소",
-    "shareJustCreated": "방금 만든 대화입니다. 몇 초 후에 다시 시도하세요."
+    "shareJustCreated": "방금 만든 대화입니다. 몇 초 후에 다시 시도하세요.",
+    "commentsTitle": "댓글",
+    "commentsButton": "댓글",
+    "commentsButtonNew": "댓글 (새 댓글 {count}개)",
+    "commentsClose": "댓글 닫기",
+    "commentsEmpty": "아직 댓글이 없습니다",
+    "commentPlaceholder": "{owner}님에게 댓글 남기기 — 상대의 에이전트에게는 전달되지 않습니다",
+    "commentPlaceholderOwn": "댓글 작성 — 에이전트에게는 전달되지 않습니다",
+    "commentSend": "보내기",
+    "commentReply": "답글",
+    "commentDelete": "삭제",
+    "commentReplyingTo": "{name}님에게 답글",
+    "commentOnEntry": "이 기록에 댓글: {text}",
+    "commentOnThisEntry": "이 기록에 댓글 달기",
+    "commentCancelTarget": "취소",
+    "commentAnchor": "대상: {text}",
+    "commentFormer": "(나간 멤버)",
+    "commentAddFailed": "보내지 못했습니다: {message}",
+    "commentForward": "내 에이전트에게 넘기기",
+    "commentForwarded": "에이전트에게 넘김"
   }
 }

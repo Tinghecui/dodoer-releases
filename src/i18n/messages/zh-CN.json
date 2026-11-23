@@ -8476,6 +8476,25 @@
     "shareRemoveAll": "全部取消",
     "shareConfirm": "分享",
     "shareCancel": "取消",
-    "shareJustCreated": "这个会话刚建好，过几秒再试"
+    "shareJustCreated": "这个会话刚建好，过几秒再试",
+    "commentsTitle": "留言",
+    "commentsButton": "留言",
+    "commentsButtonNew": "留言（{count} 条新）",
+    "commentsClose": "关闭留言",
+    "commentsEmpty": "还没有留言",
+    "commentPlaceholder": "留言给{owner}，不会发给他的智能体",
+    "commentPlaceholderOwn": "写一条留言，不会发给智能体",
+    "commentSend": "发送",
+    "commentReply": "回复",
+    "commentDelete": "删除",
+    "commentReplyingTo": "回复 {name}",
+    "commentOnEntry": "对这条记录留言：{text}",
+    "commentOnThisEntry": "对这条记录留言",
+    "commentCancelTarget": "取消",
+    "commentAnchor": "对着：{text}",
+    "commentFormer": "（已离开）",
+    "commentAddFailed": "没发出去：{message}",
+    "commentForward": "交给我的智能体",
+    "commentForwarded": "已交给智能体"
   }
 }

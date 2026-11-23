@@ -25,6 +25,8 @@ const api = vi.hoisted(() => ({
       (owner: string, id: string, after: number) => Promise<TeamEntriesPage>
     >(),
   copy: vi.fn<(text: string) => Promise<boolean>>(),
+  teamComments: vi.fn(),
+  teamCommentsSeen: vi.fn(),
   openConversations: vi.fn(),
   activateConversationPane: vi.fn(),
 }))
@@ -44,7 +46,12 @@ vi.mock("@/contexts/workspace-context", () => ({
 }))
 vi.mock("@/lib/cowork/team", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/cowork/team")>()
-  return { ...actual, teamEntries: api.teamEntries }
+  return {
+    ...actual,
+    teamEntries: api.teamEntries,
+    teamComments: api.teamComments,
+    teamCommentsSeen: api.teamCommentsSeen,
+  }
 })
 vi.mock("@/lib/utils", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/utils")>()
@@ -147,6 +154,10 @@ beforeEach(() => {
   api.teamEntries.mockReset()
   api.copy.mockReset()
   api.copy.mockResolvedValue(true)
+  api.teamComments.mockReset()
+  api.teamComments.mockResolvedValue({ isOwner: false, ids: [], comments: [] })
+  api.teamCommentsSeen.mockReset()
+  api.teamCommentsSeen.mockResolvedValue({ owner: "", id: "", seenId: null })
   api.openConversations.mockReset()
   api.activateConversationPane.mockReset()
 })
@@ -363,12 +374,21 @@ describe("SharedSessionHost", () => {
     renderHost()
     await open()
     const root = view()!
-    expect(
+    // 第 5 行：唯一的输入框是留言输入，写明不会发给对方的智能体。
+    const inputs = Array.from(
       root.querySelectorAll("textarea, input, [contenteditable]")
-    ).toHaveLength(0)
-    const buttons = Array.from(root.querySelectorAll("button")).map(
-      (b) => b.getAttribute("aria-label") || b.textContent
     )
+    expect(inputs).toHaveLength(1)
+    expect(inputs[0].closest("[data-comment-composer]")).not.toBeNull()
+    expect(inputs[0].getAttribute("placeholder")).toBe(
+      "Leave a comment for Wang — it won't be sent to their agent"
+    )
+    // 留言以外的按钮只有收起和复制链接。
+    const COMMENT_UI =
+      "[data-comment-composer], [data-comments-sidebar], [data-comment-on-entry]"
+    const buttons = Array.from(root.querySelectorAll("button"))
+      .filter((b) => !b.closest(COMMENT_UI))
+      .map((b) => b.getAttribute("aria-label") || b.textContent)
     expect(buttons.sort()).toEqual(["Close", "Copy link"])
   })
 

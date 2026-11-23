@@ -8476,6 +8476,25 @@
     "shareRemoveAll": "全部取消",
     "shareConfirm": "分享",
     "shareCancel": "取消",
-    "shareJustCreated": "這個對話剛建好，過幾秒再試"
+    "shareJustCreated": "這個對話剛建好，過幾秒再試",
+    "commentsTitle": "留言",
+    "commentsButton": "留言",
+    "commentsButtonNew": "留言（{count} 則新）",
+    "commentsClose": "關閉留言",
+    "commentsEmpty": "還沒有留言",
+    "commentPlaceholder": "留言給{owner}，不會傳給他的智慧體",
+    "commentPlaceholderOwn": "寫一則留言，不會傳給智慧體",
+    "commentSend": "傳送",
+    "commentReply": "回覆",
+    "commentDelete": "刪除",
+    "commentReplyingTo": "回覆 {name}",
+    "commentOnEntry": "對這則記錄留言：{text}",
+    "commentOnThisEntry": "對這則記錄留言",
+    "commentCancelTarget": "取消",
+    "commentAnchor": "針對：{text}",
+    "commentFormer": "（已離開）",
+    "commentAddFailed": "沒有送出：{message}",
+    "commentForward": "交給我的智慧體",
+    "commentForwarded": "已交給智慧體"
   }
 }

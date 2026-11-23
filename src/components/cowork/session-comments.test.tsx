@@ -1,0 +1,562 @@
+import { act, fireEvent, render, screen } from "@testing-library/react"
+import { NextIntlClientProvider } from "next-intl"
+import { useCallback } from "react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+import enMessages from "@/i18n/messages/en.json"
+import {
+  type CoworkTeamSummary,
+  type TeamComment,
+  type TeamCommentsPage,
+  type TeamEntriesPage,
+} from "@/lib/cowork/team"
+import { useMessageQueue } from "@/hooks/use-message-queue"
+import {
+  useCoworkTeamStore,
+  type SharedSessionTarget,
+} from "@/stores/cowork-team-store"
+import { SharedSessionHost } from "./shared-session-view"
+import {
+  OwnSessionComments,
+  SessionCommentsButton,
+  forwardedCommentText,
+  useOwnCommentsStore,
+} from "./session-comments"
+
+const api = vi.hoisted(() => ({
+  teamEntries:
+    vi.fn<
+      (owner: string, id: string, after: number) => Promise<TeamEntriesPage>
+    >(),
+  teamComments:
+    vi.fn<
+      (owner: string, id: string, after: number) => Promise<TeamCommentsPage>
+    >(),
+  teamCommentAdd:
+    vi.fn<
+      (
+        owner: string,
+        id: string,
+        body: string,
+        options?: { seq?: number; replyTo?: string }
+      ) => Promise<TeamComment>
+    >(),
+  teamCommentDelete:
+    vi.fn<
+      (
+        owner: string,
+        id: string,
+        commentId: string
+      ) => Promise<{ id: string; replies: number }>
+    >(),
+  teamCommentsSeen: vi.fn(),
+  teamCommentForwarded:
+    vi.fn<(id: string, commentId: string) => Promise<void>>(),
+}))
+vi.mock("@/contexts/workbench-route-context", () => ({
+  useOptionalWorkbenchRoute: () => null,
+}))
+vi.mock("@/contexts/workspace-context", () => ({
+  useOptionalWorkspaceActions: () => null,
+}))
+vi.mock("@/lib/cowork/team", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/cowork/team")>()
+  return {
+    ...actual,
+    teamEntries: api.teamEntries,
+    teamComments: api.teamComments,
+    teamCommentAdd: api.teamCommentAdd,
+    teamCommentDelete: api.teamCommentDelete,
+    teamCommentsSeen: api.teamCommentsSeen,
+    teamCommentForwarded: api.teamCommentForwarded,
+  }
+})
+vi.mock("@/components/ai-elements/message", () => ({
+  MessageResponse: ({ children }: { children: string }) => (
+    <div data-md="">{children}</div>
+  ),
+}))
+vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }))
+
+const TARGET: SharedSessionTarget = {
+  owner: "member-a",
+  ownerLabel: "Wang",
+  id: "42",
+  title: "Fix login",
+  via: { kind: "shared" },
+}
+
+function comment(over: Partial<TeamComment>): TeamComment {
+  return {
+    id: "c1",
+    seq: null,
+    parentId: null,
+    author: "member-b",
+    authorLabel: "Li",
+    former: false,
+    body: "hello",
+    createdAt: "2026-11-23T09:00:00Z",
+    mine: false,
+    canDelete: false,
+    anchor: null,
+    ...over,
+  }
+}
+
+function commentsPage(
+  comments: TeamComment[],
+  isOwner = false
+): TeamCommentsPage {
+  return { isOwner, ids: comments.map((c) => c.id), comments }
+}
+
+function entriesPage(): TeamEntriesPage {
+  return {
+    agent: {
+      owner: "member-a",
+      ownerLabel: "Wang",
+      id: "42",
+      title: "Fix login",
+      state: "running",
+      updatedAt: "2026-11-23T09:57:00Z",
+    },
+    entries: [
+      { seq: 3, kind: "assistant", text: "changed the cookie", ts: "" },
+    ],
+    total: 1,
+    reason: null,
+  }
+}
+
+function makeAvailable() {
+  act(() => {
+    useCoworkTeamStore.getState().setStatus({
+      applicable: true,
+      enabled: true,
+      me: { name: "member-c", label: "Chen" },
+      leaderOf: [],
+      portalUrl: "https://portal.example.com",
+    })
+  })
+}
+
+function setSummary(unread: { id: string; count: number; mine: boolean }[]) {
+  const summary: CoworkTeamSummary = {
+    sharedNew: 0,
+    commentUnread: {
+      total: unread.reduce((n, u) => n + u.count, 0),
+      sessions: unread.map((u) => ({
+        owner: u.mine ? "member-c" : "member-a",
+        ownerLabel: u.mine ? "Chen" : "Wang",
+        id: u.id,
+        title: "t",
+        mine: u.mine,
+        count: u.count,
+      })),
+    },
+    groupNotices: [],
+  }
+  act(() => {
+    useCoworkTeamStore.getState().setSummary(summary)
+  })
+}
+
+function wrap(ui: React.ReactNode) {
+  return render(
+    <NextIntlClientProvider locale="en" messages={enMessages}>
+      {ui}
+    </NextIntlClientProvider>
+  )
+}
+
+async function flush() {
+  for (let i = 0; i < 4; i++) {
+    await act(async () => {
+      await Promise.resolve()
+    })
+  }
+}
+
+beforeEach(() => {
+  useCoworkTeamStore.getState().reset()
+  useOwnCommentsStore.getState().reset()
+  for (const fn of Object.values(api)) fn.mockReset()
+  api.teamEntries.mockResolvedValue(entriesPage())
+  api.teamComments.mockResolvedValue(commentsPage([]))
+  api.teamCommentsSeen.mockResolvedValue({
+    owner: "",
+    id: "",
+    seenId: null,
+  })
+  api.teamCommentForwarded.mockResolvedValue(undefined)
+  window.localStorage.clear()
+})
+
+afterEach(() => {
+  useCoworkTeamStore.getState().reset()
+  useOwnCommentsStore.getState().reset()
+})
+
+// ─── 完成标准 6：只读视图的留言 ─────────────────────────────────────────────
+
+describe("comments in the read-only view", () => {
+  async function openView() {
+    makeAvailable()
+    wrap(
+      <SharedSessionHost>
+        <div>own conversation</div>
+      </SharedSessionHost>
+    )
+    act(() => {
+      useCoworkTeamStore.getState().openSharedSession(TARGET)
+    })
+    await flush()
+  }
+
+  function composer(): HTMLTextAreaElement {
+    return screen.getByPlaceholderText(
+      "Leave a comment for Wang — it won't be sent to their agent"
+    )
+  }
+
+  it("the composer in place of the input sends comment_add, then reloads the thread", async () => {
+    api.teamCommentAdd.mockResolvedValue(comment({ id: "c9", body: "nice" }))
+    await openView()
+    expect(api.teamComments).toHaveBeenCalledWith("member-a", "42", 0)
+    expect(api.teamCommentsSeen).toHaveBeenCalledWith("member-a", "42")
+
+    fireEvent.change(composer(), { target: { value: "  nice  " } })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    await flush()
+
+    expect(api.teamCommentAdd).toHaveBeenCalledWith(
+      "member-a",
+      "42",
+      "nice",
+      {}
+    )
+    expect(api.teamComments).toHaveBeenCalledTimes(2)
+    expect(composer().value).toBe("")
+  })
+
+  it("draws the thread in the right column as plain text, replies under their parent", async () => {
+    api.teamComments.mockResolvedValue(
+      commentsPage([
+        comment({
+          id: "c1",
+          body: "<b>*hi*</b> <img src=x>",
+          anchor: "changed the <i>cookie</i>",
+          seq: 3,
+        }),
+        comment({
+          id: "c2",
+          parentId: "c1",
+          authorLabel: "<Wang>",
+          body: "**ok**",
+        }),
+      ])
+    )
+    await openView()
+    const sidebar = document.querySelector("[data-comments-sidebar]")!
+    expect(sidebar).not.toBeNull()
+    const bodies = Array.from(
+      sidebar.querySelectorAll("[data-comment-body]")
+    ).map((el) => el.textContent)
+    expect(bodies).toEqual(["<b>*hi*</b> <img src=x>", "**ok**"])
+    expect(sidebar.querySelector("b, img, i, strong")).toBeNull()
+    expect(sidebar.querySelector("[data-comment-anchor]")?.textContent).toBe(
+      "On: changed the <i>cookie</i>"
+    )
+    expect(sidebar.textContent).toContain("<Wang>")
+    // 回复挂在顶层留言下面，没有自己的「回复」。
+    const reply = sidebar.querySelector('[data-comment-id="c2"]')!
+    expect(reply.className).toContain("ms-4")
+    expect(
+      Array.from(reply.querySelectorAll("button")).map((b) => b.textContent)
+    ).not.toContain("Reply")
+  })
+
+  it("comments on one entry with its seq", async () => {
+    api.teamCommentAdd.mockResolvedValue(comment({ id: "c9" }))
+    await openView()
+    fireEvent.click(
+      screen.getByRole("button", { name: "Comment on this entry" })
+    )
+    expect(document.querySelector("[data-comment-target]")?.textContent).toBe(
+      "Commenting on: changed the cookie"
+    )
+    fireEvent.change(composer(), { target: { value: "why?" } })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    await flush()
+    expect(api.teamCommentAdd).toHaveBeenCalledWith("member-a", "42", "why?", {
+      seq: 3,
+    })
+    expect(document.querySelector("[data-comment-target]")).toBeNull()
+  })
+
+  it("replies to a top-level comment", async () => {
+    api.teamComments.mockResolvedValue(commentsPage([comment({ id: "c1" })]))
+    api.teamCommentAdd.mockResolvedValue(comment({ id: "c9" }))
+    await openView()
+    fireEvent.click(screen.getByRole("button", { name: "Reply" }))
+    expect(document.querySelector("[data-comment-target]")?.textContent).toBe(
+      "Replying to Li"
+    )
+    fireEvent.change(composer(), { target: { value: "thanks" } })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    await flush()
+    expect(api.teamCommentAdd).toHaveBeenCalledWith(
+      "member-a",
+      "42",
+      "thanks",
+      { replyTo: "c1" }
+    )
+  })
+
+  it("only comments with canDelete have Delete, and it sends comment_delete", async () => {
+    api.teamComments.mockResolvedValue(
+      commentsPage([
+        comment({ id: "c1", canDelete: true, mine: true }),
+        comment({ id: "c2", canDelete: false }),
+      ])
+    )
+    api.teamCommentDelete.mockResolvedValue({ id: "c1", replies: 0 })
+    await openView()
+    const deletes = screen.getAllByRole("button", { name: "Delete" })
+    expect(deletes).toHaveLength(1)
+    expect(
+      deletes[0].closest("[data-comment-id]")?.getAttribute("data-comment-id")
+    ).toBe("c1")
+    fireEvent.click(deletes[0])
+    await flush()
+    expect(api.teamCommentDelete).toHaveBeenCalledWith("member-a", "42", "c1")
+    expect(api.teamComments).toHaveBeenCalledTimes(2)
+  })
+
+  it("keeps the text and shows the server's message when sending fails", async () => {
+    const { CoworkTeamError } = await import("@/lib/cowork/team")
+    api.teamCommentAdd.mockRejectedValue(
+      new CoworkTeamError("rate_limited", "Slow down")
+    )
+    await openView()
+    fireEvent.change(composer(), { target: { value: "hey" } })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    await flush()
+    expect(composer().value).toBe("hey")
+    expect(screen.getByText("Couldn't send: Slow down")).toBeTruthy()
+  })
+
+  it("keeps what was typed while the comment was being sent", async () => {
+    let resolveAdd: (c: TeamComment) => void = () => {}
+    api.teamCommentAdd.mockImplementation(
+      () =>
+        new Promise<TeamComment>((resolve) => {
+          resolveAdd = resolve
+        })
+    )
+    await openView()
+    fireEvent.change(composer(), { target: { value: "first" } })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    // 请求还没回来时接着写：先在原文后面接着打，再整段换成下一条。
+    fireEvent.change(composer(), { target: { value: "first and more" } })
+    await act(async () => {
+      resolveAdd(comment({ id: "c9", body: "first" }))
+    })
+    await flush()
+    expect(composer().value).toBe("and more")
+
+    api.teamCommentAdd.mockImplementation(
+      () =>
+        new Promise<TeamComment>((resolve) => {
+          resolveAdd = resolve
+        })
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    fireEvent.change(composer(), { target: { value: "next one" } })
+    await act(async () => {
+      resolveAdd(comment({ id: "c10", body: "and more" }))
+    })
+    await flush()
+    expect(composer().value).toBe("next one")
+  })
+
+  it("keeps a target picked while the previous comment was being sent", async () => {
+    api.teamComments.mockResolvedValue(commentsPage([comment({ id: "c1" })]))
+    let resolveAdd: (c: TeamComment) => void = () => {}
+    api.teamCommentAdd.mockImplementation(
+      () =>
+        new Promise<TeamComment>((resolve) => {
+          resolveAdd = resolve
+        })
+    )
+    await openView()
+    fireEvent.change(composer(), { target: { value: "first" } })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    // 请求还没回来时，选了下一条要回复的留言。
+    fireEvent.click(screen.getByRole("button", { name: "Reply" }))
+    await act(async () => {
+      resolveAdd(comment({ id: "c9", body: "first" }))
+    })
+    await flush()
+    expect(document.querySelector("[data-comment-target]")?.textContent).toBe(
+      "Replying to Li"
+    )
+
+    api.teamCommentAdd.mockResolvedValue(comment({ id: "c10" }))
+    fireEvent.change(composer(), { target: { value: "second" } })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    await flush()
+    expect(api.teamCommentAdd).toHaveBeenLastCalledWith(
+      "member-a",
+      "42",
+      "second",
+      { replyTo: "c1" }
+    )
+  })
+
+  it("reloads when a later summary still has unread comments, even with the same count", async () => {
+    makeAvailable()
+    setSummary([{ id: "42", count: 1, mine: false }])
+    await openView()
+    expect(api.teamComments).toHaveBeenCalledTimes(1)
+
+    // 拉过、标过已读以后，下一次轮询又说有一条未读：是新来的，条数虽然一样。
+    api.teamComments.mockResolvedValue(
+      commentsPage([comment({ id: "c7", body: "new one" })])
+    )
+    setSummary([{ id: "42", count: 1, mine: false }])
+    await flush()
+    expect(api.teamComments).toHaveBeenCalledTimes(2)
+    expect(screen.getByText("new one")).toBeTruthy()
+  })
+})
+
+// ─── 完成标准 10：自己会话的留言栏和「交给我的智能体」 ──────────────────────
+
+/** 一个会话面板的替身：真的排队区，`onForward` 和面板里一样只入队。 */
+function OwnConversation({ conversationId }: { conversationId: number }) {
+  const { queue, enqueue } = useMessageQueue(null)
+  const onForward = useCallback(
+    (text: string) =>
+      enqueue({ blocks: [{ type: "text", text }], displayText: text }, null),
+    [enqueue]
+  )
+  return (
+    <div>
+      <SessionCommentsButton conversationId={conversationId} />
+      <OwnSessionComments
+        conversationId={conversationId}
+        isActive
+        onForward={onForward}
+      />
+      <ul data-testid="queue">
+        {queue.map((item) => (
+          <li key={item.id}>{item.draft.displayText}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function queueItems(): string[] {
+  return Array.from(screen.getByTestId("queue").querySelectorAll("li")).map(
+    (li) => li.textContent ?? ""
+  )
+}
+
+describe("own conversation comments", () => {
+  it("unavailable: no Comments entry, no panel, no request", async () => {
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => {
+      useOwnCommentsStore.getState().open("7")
+    })
+    await flush()
+    expect(document.querySelector("[data-session-comments-button]")).toBeNull()
+    expect(document.querySelector("[data-comments-sidebar]")).toBeNull()
+    expect(api.teamComments).not.toHaveBeenCalled()
+  })
+
+  it("the header entry reads Comments (N new) from summary and opens the panel", async () => {
+    makeAvailable()
+    setSummary([{ id: "7", count: 2, mine: true }])
+    wrap(<OwnConversation conversationId={7} />)
+    const button = document.querySelector<HTMLButtonElement>(
+      "[data-session-comments-button]"
+    )!
+    expect(button.textContent).toBe("Comments (2 new)")
+    expect(api.teamComments).not.toHaveBeenCalled()
+    fireEvent.click(button)
+    await flush()
+    expect(document.querySelector("[data-comments-sidebar]")).not.toBeNull()
+    expect(api.teamComments).toHaveBeenCalledWith("member-c", "7", 0)
+    expect(api.teamCommentsSeen).toHaveBeenCalledWith("member-c", "7")
+  })
+
+  it("no Give-to-my-agent when isOwner is false", async () => {
+    makeAvailable()
+    api.teamComments.mockResolvedValue(commentsPage([comment({})], false))
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    expect(document.querySelector("[data-comment-id]")).not.toBeNull()
+    expect(document.querySelector("[data-comment-forward]")).toBeNull()
+  })
+
+  it("Give to my agent queues the comment once with the source line, then comment_forwarded", async () => {
+    makeAvailable()
+    api.teamComments.mockResolvedValue(
+      commentsPage(
+        [comment({ id: "c5", authorLabel: "Li", body: "try <b>*x*</b>" })],
+        true
+      )
+    )
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    expect(queueItems()).toEqual([])
+
+    const button = screen.getByRole("button", { name: "Give to my agent" })
+    fireEvent.click(button)
+    fireEvent.click(button)
+    await flush()
+
+    const expected =
+      "以下是同事 Li 在这个会话上的留言，由我转给你：\n\ntry <b>*x*</b>"
+    expect(forwardedCommentText("Li", "try <b>*x*</b>")).toBe(expected)
+    expect(queueItems()).toEqual([expected])
+    expect(api.teamCommentForwarded).toHaveBeenCalledTimes(1)
+    expect(api.teamCommentForwarded).toHaveBeenCalledWith("7", "c5")
+    const done = screen.getByRole("button", { name: "Given to agent" })
+    expect((done as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(done)
+    expect(queueItems()).toHaveLength(1)
+  })
+
+  it("a polled new comment only updates the hint and thread; the queue stays as it was", async () => {
+    makeAvailable()
+    api.teamComments.mockResolvedValue(
+      commentsPage([comment({ id: "c5" })], true)
+    )
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    fireEvent.click(screen.getByRole("button", { name: "Give to my agent" }))
+    await flush()
+    expect(queueItems()).toHaveLength(1)
+
+    api.teamComments.mockResolvedValue(
+      commentsPage([comment({ id: "c5" }), comment({ id: "c6" })], true)
+    )
+    setSummary([{ id: "7", count: 1, mine: true }])
+    await flush()
+
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        "[data-session-comments-button]"
+      )!.textContent
+    ).toBe("Comments (1 new)")
+    expect(document.querySelectorAll("[data-comment-id]")).toHaveLength(2)
+    expect(queueItems()).toHaveLength(1)
+    expect(api.teamCommentForwarded).toHaveBeenCalledTimes(1)
+  })
+})

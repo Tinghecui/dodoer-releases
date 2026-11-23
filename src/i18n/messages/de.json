@@ -8476,6 +8476,25 @@
     "shareRemoveAll": "Alle beenden",
     "shareConfirm": "Teilen",
     "shareCancel": "Abbrechen",
-    "shareJustCreated": "Diese Unterhaltung wurde gerade erst angelegt. Versuche es in ein paar Sekunden erneut."
+    "shareJustCreated": "Diese Unterhaltung wurde gerade erst angelegt. Versuche es in ein paar Sekunden erneut.",
+    "commentsTitle": "Kommentare",
+    "commentsButton": "Kommentare",
+    "commentsButtonNew": "Kommentare ({count} neu)",
+    "commentsClose": "Kommentare schließen",
+    "commentsEmpty": "Noch keine Kommentare",
+    "commentPlaceholder": "Kommentar an {owner} – wird nicht an dessen Agenten gesendet",
+    "commentPlaceholderOwn": "Kommentar schreiben – wird nicht an den Agenten gesendet",
+    "commentSend": "Senden",
+    "commentReply": "Antworten",
+    "commentDelete": "Löschen",
+    "commentReplyingTo": "Antwort an {name}",
+    "commentOnEntry": "Kommentar zu: {text}",
+    "commentOnThisEntry": "Diesen Eintrag kommentieren",
+    "commentCancelTarget": "Abbrechen",
+    "commentAnchor": "Zu: {text}",
+    "commentFormer": "(ehemaliges Mitglied)",
+    "commentAddFailed": "Senden fehlgeschlagen: {message}",
+    "commentForward": "An meinen Agenten geben",
+    "commentForwarded": "An Agenten gegeben"
   }
 }

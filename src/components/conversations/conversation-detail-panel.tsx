@@ -93,6 +93,10 @@ import {
 } from "@/components/message/goal-control-context"
 import { useAdvertisedGoalActions } from "@/hooks/use-goal-actions"
 import { ConversationShell } from "@/components/chat/conversation-shell"
+import {
+  OwnSessionComments,
+  SessionCommentsButton,
+} from "@/components/cowork/session-comments"
 import { LoopConversationView } from "@/components/loop/loop-conversation-view"
 import { SessionConfigStaleBanner } from "@/components/chat/session-config-stale-banner"
 import {
@@ -3956,6 +3960,13 @@ const ConversationTabView = memo(function ConversationTabView({
         onOpenChange={setComposerDiagnosticsOpen}
         agentType={selectedAgent}
       />
+      {/* Cowork (#1235): the comments panel on my own conversation; "give to
+          my agent" uses the same queue entry as the live-feedback resend. */}
+      <OwnSessionComments
+        conversationId={dbConversationId}
+        isActive={isActive}
+        onForward={resendFeedbackAsPrompt}
+      />
     </ConversationShell>
   )
   return (
@@ -4620,7 +4631,14 @@ export function ConversationDetailPanel() {
             <ConversationDetailHeader
               leadingReserve={<ConversationCornerReserve side="left" />}
               trailingReserve={<ConversationCornerReserve side="right" />}
-              actions={<ConversationMaximizeButton />}
+              actions={
+                <>
+                  <SessionCommentsButton
+                    conversationId={activeTab.conversationId}
+                  />
+                  <ConversationMaximizeButton />
+                </>
+              }
               actionsInCorner={actionsInCorner}
               tabId={activeTab.id}
               conversationId={activeTab.conversationId}

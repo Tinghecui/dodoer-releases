@@ -15,10 +15,9 @@ import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable"
+  ListDetailSplit,
+  SplitPane,
+} from "@/components/layout/list-detail-split"
 import {
   FileTree,
   FileTreeFile,
@@ -323,6 +322,8 @@ export function PushWorkspace({
 
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null)
+  // 手机布局下点了文件、正在看详情（#1335）；宽屏不看它。
+  const [detailOpen, setDetailOpen] = useState(false)
   const [originalContent, setOriginalContent] = useState("")
   const [modifiedContent, setModifiedContent] = useState("")
   // Keyed by the (commit, file) it was loaded for: two quick selections can
@@ -511,6 +512,7 @@ export function PushWorkspace({
     // settle in either order, and an older one landing last would overwrite
     // the current file's content and clear its spinner.
     const requestId = ++diffRequestRef.current
+    setDetailOpen(true)
     setSelectedFile(file)
     setSelectedCommit(commitHash)
     setDiffLoading(true)
@@ -610,9 +612,14 @@ export function PushWorkspace({
         </div>
       )}
 
-      <ResizablePanelGroup direction="horizontal" className="min-h-0 flex-1">
+      <ListDetailSplit
+        className="min-h-0 flex-1"
+        showDetail={detailOpen && selectedFile !== null}
+        onBack={() => setDetailOpen(false)}
+        detailTitle={selectedFile}
+      >
         {/* Left panel: commit list */}
-        <ResizablePanel defaultSize={35} minSize={25}>
+        <SplitPane defaultSize={35} minSize={25}>
           <div className="flex h-full flex-col">
             <ScrollArea className="min-h-0 flex-1">
               {listLoading ? (
@@ -725,12 +732,10 @@ export function PushWorkspace({
               </Button>
             </div>
           </div>
-        </ResizablePanel>
-
-        <ResizableHandle />
+        </SplitPane>
 
         {/* Right panel: diff viewer */}
-        <ResizablePanel defaultSize={65} minSize={40}>
+        <SplitPane defaultSize={65} minSize={40}>
           {diffLoading ? (
             <div className="flex h-full items-center justify-center">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -761,8 +766,8 @@ export function PushWorkspace({
               {t("selectFileToViewDiff")}
             </div>
           )}
-        </ResizablePanel>
-      </ResizablePanelGroup>
+        </SplitPane>
+      </ListDetailSplit>
     </div>
   )
 }

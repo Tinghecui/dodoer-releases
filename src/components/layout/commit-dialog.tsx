@@ -14,10 +14,9 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable"
+  ListDetailSplit,
+  SplitPane,
+} from "@/components/layout/list-detail-split"
 import {
   ContextMenu,
   ContextMenuContent,
@@ -296,6 +295,9 @@ export function CommitWorkspace({
   const [diffModified, setDiffModified] = useState("")
   const [diffLanguage, setDiffLanguage] = useState("plaintext")
   const [diffFile, setDiffFile] = useState<string | null>(null)
+  // 手机布局下点了文件、正在看详情（#1335）。打开时自动载入的第一个文件的
+  // 差异不算：手机上先看列表。宽屏不看它。
+  const [detailOpen, setDetailOpen] = useState(false)
   // Carries the file it was loaded for: the several places that drop the diff
   // only reset `diffFile`, and matching on it keeps a previous file's pixels
   // from outliving the selection that produced them.
@@ -535,6 +537,8 @@ export function CommitWorkspace({
 
   const handleViewDiff = useCallback(
     (file: string) => {
+      // 手机布局下点了文件就进详情，点的是已经载入差异的那个也一样（#1335）
+      setDetailOpen(true)
       if (!folderPath || diffFileRef.current === file) return
       void loadDiff(file)
     },
@@ -1189,11 +1193,13 @@ export function CommitWorkspace({
       ref={containerRef}
       className="flex h-full min-h-0 overflow-hidden rounded-lg border bg-card"
     >
-      <ResizablePanelGroup
-        direction="horizontal"
+      <ListDetailSplit
         className="h-full min-h-0 min-w-0"
+        showDetail={detailOpen && diffFile !== null}
+        onBack={() => setDetailOpen(false)}
+        detailTitle={diffFile}
       >
-        <ResizablePanel
+        <SplitPane
           defaultSize={leftDefaultSize}
           minSize={leftMinSize}
           maxSize={leftMaxSize}
@@ -1511,14 +1517,9 @@ export function CommitWorkspace({
               </div>
             </div>
           </div>
-        </ResizablePanel>
+        </SplitPane>
 
-        <ResizableHandle />
-
-        <ResizablePanel
-          defaultSize={100 - leftDefaultSize}
-          minSize={rightMinSize}
-        >
+        <SplitPane defaultSize={100 - leftDefaultSize} minSize={rightMinSize}>
           <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
             {!diffFile ? (
               <>
@@ -1564,8 +1565,8 @@ export function CommitWorkspace({
               />
             )}
           </div>
-        </ResizablePanel>
-      </ResizablePanelGroup>
+        </SplitPane>
+      </ListDetailSplit>
 
       <AlertDialog
         open={confirm.open}

@@ -33,10 +33,9 @@ import {
 } from "@/components/ui/context-menu"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable"
+  ListDetailSplit,
+  SplitPane,
+} from "@/components/layout/list-detail-split"
 import {
   FileTree,
   FileTreeFile,
@@ -193,6 +192,8 @@ export function StashWorkspace({ folderPath }: StashWorkspaceProps) {
 
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [selectedStashRef, setSelectedStashRef] = useState<string | null>(null)
+  // 手机布局下点了文件、正在看详情（#1335）；宽屏不看它。
+  const [detailOpen, setDetailOpen] = useState(false)
   const [originalContent, setOriginalContent] = useState("")
   const [modifiedContent, setModifiedContent] = useState("")
   // Keyed by the (stash, file) it was loaded for: two quick selections can
@@ -250,6 +251,7 @@ export function StashWorkspace({ folderPath }: StashWorkspaceProps) {
     // settle in either order, and an older one landing last would overwrite
     // the current file's content and clear its spinner.
     const requestId = ++diffRequestRef.current
+    setDetailOpen(true)
     setSelectedFile(file)
     setSelectedStashRef(stashRef)
     setDiffLoading(true)
@@ -366,9 +368,14 @@ export function StashWorkspace({ folderPath }: StashWorkspaceProps) {
   }
 
   return (
-    <ResizablePanelGroup direction="horizontal" className="h-full">
+    <ListDetailSplit
+      className="h-full"
+      showDetail={detailOpen && selectedFile !== null}
+      onBack={() => setDetailOpen(false)}
+      detailTitle={selectedFile}
+    >
       {/* Left panel: stash cards */}
-      <ResizablePanel defaultSize={35} minSize={25}>
+      <SplitPane defaultSize={35} minSize={25}>
         <ScrollArea className="h-full">
           {listLoading ? (
             <div className="flex items-center justify-center py-12">
@@ -403,12 +410,10 @@ export function StashWorkspace({ folderPath }: StashWorkspaceProps) {
             </div>
           )}
         </ScrollArea>
-      </ResizablePanel>
-
-      <ResizableHandle />
+      </SplitPane>
 
       {/* Right panel: diff viewer */}
-      <ResizablePanel defaultSize={65} minSize={40}>
+      <SplitPane defaultSize={65} minSize={40}>
         {diffLoading ? (
           <div className="flex h-full items-center justify-center">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -439,8 +444,8 @@ export function StashWorkspace({ folderPath }: StashWorkspaceProps) {
             {t("selectFile")}
           </div>
         )}
-      </ResizablePanel>
-    </ResizablePanelGroup>
+      </SplitPane>
+    </ListDetailSplit>
   )
 }
 

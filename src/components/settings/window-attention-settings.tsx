@@ -79,7 +79,8 @@ export function WindowAttentionSettingsSection() {
   // one long form.
   const [expanded, setExpanded] = useState(false)
 
-  if (platform === "unknown" || !isDesktop()) return null
+  // ios 不是桌面平台（#1332），这一节只给桌面版
+  if (platform === "unknown" || platform === "ios" || !isDesktop()) return null
 
   return (
     <SettingsSection

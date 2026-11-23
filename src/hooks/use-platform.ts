@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 
-export type PlatformType = "macos" | "windows" | "linux" | "unknown"
+export type PlatformType = "macos" | "ios" | "windows" | "linux" | "unknown"
 
 export function detectPlatform(): PlatformType {
   if (typeof navigator === "undefined") return "unknown"
@@ -10,7 +10,17 @@ export function detectPlatform(): PlatformType {
   const platform = navigator.platform.toLowerCase()
   const userAgent = navigator.userAgent.toLowerCase()
 
-  if (platform.includes("mac") || userAgent.includes("mac os")) {
+  // iPhone、iPad 的 UA 里有 "like Mac OS X"，要先认出来，不能当成 Mac。
+  // iPadOS 的桌面模式报的是 "Macintosh"，靠多点触控和真 Mac 区分。
+  if (/iphone|ipad|ipod/.test(platform) || /iphone|ipad|ipod/.test(userAgent)) {
+    return "ios"
+  }
+  const isMacLike = platform.includes("mac") || userAgent.includes("mac os")
+  if (isMacLike && (navigator.maxTouchPoints ?? 0) > 1) {
+    return "ios"
+  }
+
+  if (isMacLike) {
     return "macos"
   }
 
@@ -45,6 +55,7 @@ export function usePlatform() {
   return {
     platform,
     isMac: platform === "macos",
+    isIos: platform === "ios",
     isWindows: platform === "windows",
     isLinux: platform === "linux",
   }

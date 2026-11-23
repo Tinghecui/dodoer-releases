@@ -1,4 +1,4 @@
-import { detectEnvironment } from "./detect"
+import { detectEnvironment, isIosShell } from "./detect"
 import { localDaemonInfo } from "./local-daemon"
 import type { RemoteTransportConfig, Transport } from "./types"
 
@@ -119,6 +119,8 @@ export function getTransport(): Transport {
 export function isDesktop(): boolean {
   return detectEnvironment() === "tauri"
 }
+
+export { isIosShell }
 
 /// True when the current window is a Tauri client bound to a remote
 /// codeg-server (a remote-desktop window). Distinct from `isDesktop()`,

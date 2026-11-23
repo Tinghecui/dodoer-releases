@@ -3,6 +3,7 @@
 import type { ReactNode } from "react"
 import { usePlatform } from "@/hooks/use-platform"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { isDesktop } from "@/lib/platform"
 import { cn } from "@/lib/utils"
 import { WindowControls } from "./window-controls"
 
@@ -25,8 +26,8 @@ export function AppTitleBar({
 }: AppTitleBarProps) {
   const { isMac, isWindows, isLinux } = usePlatform()
   const isMobile = useIsMobile()
-  const isDesktopRuntime =
-    typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
+  // 用 isDesktop() 而不是直接看 Tauri 注入：iOS 壳里也有注入，但按网页版运行
+  const isDesktopRuntime = isDesktop()
   const hasDesktopWindowChrome = showWindowControls && isDesktopRuntime
   // Windows and Linux both render custom controls on the right (macOS keeps
   // native traffic lights on the left via the overlay title bar).

@@ -48,6 +48,8 @@ jobs:
   test:
     if: inputs.run_tests
     uses: ./.github/workflows/cowork-test.yml
+    # 被调的工作流里 Environment「cowork-ci」的 BOT_APP_KEY 不带 inherit 是空的（0.15.0 第一次发版 test 就这样挂了，2026-11-23）
+    secrets: inherit
     with:
       sha: ${{ inputs.sha }}
       head: ${{ inputs.head || inputs.sha }}

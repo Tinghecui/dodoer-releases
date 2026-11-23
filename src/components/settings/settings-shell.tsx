@@ -40,7 +40,9 @@ import {
 } from "@/lib/transport/detect"
 import { AppTitleBar } from "@/components/layout/app-title-bar"
 import { MobileBackButton } from "@/components/layout/mobile-back-button"
+import { DesktopOnlyNotice } from "@/components/layout/desktop-only-notice"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { useHideDesktopOnly } from "@/hooks/use-hide-desktop-only"
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 import { SettingsPageUnavailable } from "@/components/cowork/settings-page-unavailable"
 import { brandTitle } from "@/lib/cowork/brand"
@@ -189,6 +191,12 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   },
 ]
 
+// 只在电脑上有用的设置页（#1335）：手机布局下导航不列，直接打开地址时显示
+// 「请在电脑上使用」。
+const DESKTOP_ONLY_SETTINGS: ReadonlySet<SettingsNavItem["labelKey"]> = new Set(
+  ["shortcuts", "computer_use", "web_service", "browser"]
+)
+
 interface SettingsShellProps {
   children: ReactNode
 }
@@ -202,14 +210,19 @@ interface SettingsShellProps {
  * a desktop browser engine, but site rules, what a server starting in a
  * terminal does and the terminal's link menu all still decide something in a
  * browser session, and that page is the only place they can be set.
+ *
+ * `mobile`：手机布局（不含桌面版的窄窗口，见 `useHideDesktopOnly`），再去掉
+ * 只在电脑上有用的几页（{@link DESKTOP_ONLY_SETTINGS}，#1335）。
  */
 export function settingsNavItemsFor(
   env: TransportEnvironment,
-  target: SettingsTarget = settingsTargetFor(env, null, null)
+  target: SettingsTarget = settingsTargetFor(env, null, null),
+  mobile = false
 ): SettingsNavItem[] {
   return SETTINGS_NAV_ITEMS.filter(
     (item) =>
       !(item.labelKey === "web_service" && env === "web") &&
+      !(mobile && DESKTOP_ONLY_SETTINGS.has(item.labelKey)) &&
       // An app running without a local daemon (`CODEG_DESKTOP_DAEMON=
       // client`): only the app's own pages are anyone's settings there.
       (item.scope === "app" || hasServerSettings(target))
@@ -231,14 +244,15 @@ function normalizePath(path: string): string {
 export function isSettingsPageHidden(
   pathname: string,
   env: TransportEnvironment,
-  target: SettingsTarget = settingsTargetFor(env, null, null)
+  target: SettingsTarget = settingsTargetFor(env, null, null),
+  mobile = false
 ): boolean {
   const path = normalizePath(pathname)
   const isPage = (item: SettingsNavItem) =>
     path === item.href || path.startsWith(`${item.href}/`)
   return (
     SETTINGS_NAV_ITEMS.some(isPage) &&
-    !settingsNavItemsFor(env, target).some(isPage)
+    !settingsNavItemsFor(env, target, mobile).some(isPage)
   )
 }
 
@@ -269,6 +283,7 @@ export function SettingsShell({ children }: SettingsShellProps) {
   const router = useRouter()
   const normalizedPathname = normalizePath(pathname)
   const isMobile = useIsMobile()
+  const hideDesktopOnly = useHideDesktopOnly()
   const [navOpen, setNavOpen] = useState(false)
 
   const target = useSettingsTarget()
@@ -317,8 +332,16 @@ export function SettingsShell({ children }: SettingsShellProps) {
   )
 
   const env = detectEnvironment()
-  const filteredNavItems = settingsNavItemsFor(env, target)
-  const pageHidden = isSettingsPageHidden(pathname, env, target)
+  const filteredNavItems = settingsNavItemsFor(env, target, hideDesktopOnly)
+  const pageHidden = isSettingsPageHidden(
+    pathname,
+    env,
+    target,
+    hideDesktopOnly
+  )
+  // 只因为是手机才藏的页：说「请在电脑上使用」，不说「这里不可用」
+  const pageDesktopOnly =
+    pageHidden && !isSettingsPageHidden(pathname, env, target)
   const navGroups: { scope: SettingsScope; label: string }[] = [
     { scope: "app", label: appLabel },
     { scope: "server", label: serverLabel },
@@ -454,7 +477,9 @@ export function SettingsShell({ children }: SettingsShellProps) {
         )}
 
         <section className="flex-1 min-w-0 min-h-0 overflow-hidden">
-          {pageHidden ? (
+          {pageDesktopOnly ? (
+            <DesktopOnlyNotice />
+          ) : pageHidden ? (
             <SettingsPageUnavailable managed={env === "web"} />
           ) : (
             children

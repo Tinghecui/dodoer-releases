@@ -8497,5 +8497,9 @@
     "commentAddFailed": "Couldn't send: {message}",
     "commentForward": "Give to my agent",
     "commentForwarded": "Given to agent"
+  },
+  "DesktopOnly": {
+    "message": "This feature is available on a computer",
+    "back": "Back"
   }
 }

@@ -8497,5 +8497,9 @@
     "commentAddFailed": "تعذر الإرسال: {message}",
     "commentForward": "أعطه لوكيلي",
     "commentForwarded": "أُعطي للوكيل"
+  },
+  "DesktopOnly": {
+    "message": "استخدم هذه الميزة على جهاز كمبيوتر",
+    "back": "رجوع"
   }
 }

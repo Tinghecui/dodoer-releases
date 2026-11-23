@@ -78,6 +78,7 @@ import {
   useCoworkInfoLoaded,
 } from "@/lib/cowork/info"
 import { toErrorMessage } from "@/lib/app-error"
+import { useHideDesktopOnly } from "@/hooks/use-hide-desktop-only"
 import type { AppCommandError } from "@/lib/types"
 
 function GithubMarkIcon({ className }: { className?: string }) {
@@ -150,7 +151,10 @@ export function SystemNetworkSettings() {
   // Launch at login registers *this* machine's executable with the OS, so it
   // only means something for a local Tauri shell — a remote workspace window
   // routes every call to a server that has no login items to speak of.
-  const autostartVisible = isLocalDesktop()
+  // 手机布局（#1335）：开机自启、软件更新（含更新通道）、代理这几块只在电脑上
+  // 有用，不显示；语言等其余部分照旧。
+  const hideDesktopOnly = useHideDesktopOnly()
+  const autostartVisible = isLocalDesktop() && !hideDesktopOnly
   const [autostartEnabled, setAutostartEnabled] = useState(false)
   const [savingAutostart, setSavingAutostart] = useState(false)
   // Non-null when the OS refused to report the registration (no home dir, a
@@ -532,7 +536,7 @@ export function SystemNetworkSettings() {
         </section>
 
         <SoftwareUpdateSection
-          managed={updatesManaged}
+          managed={updatesManaged || hideDesktopOnly}
           className="rounded-xl border bg-card p-4 space-y-4"
         >
           <div className="flex items-center gap-2">
@@ -833,119 +837,121 @@ export function SystemNetworkSettings() {
 
         <CliAccessSettings />
 
-        <section className="rounded-xl border bg-card p-4 space-y-4">
-          <div className="flex items-center gap-2">
-            <Wifi className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">{t("proxyTitle")}</h2>
-            <SettingScopeBadge scope="both" />
-          </div>
-
-          <p className="text-xs text-muted-foreground leading-5">
-            {t("proxyDescription")}
-          </p>
-
-          {loadError && (
-            <div
-              role="alert"
-              className="flex items-center justify-between gap-3 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400"
-            >
-              <span className="min-w-0 break-words">
-                {t("loadFailed", { message: loadError })}
-              </span>
-              <Button
-                size="sm"
-                variant="outline"
-                className="shrink-0"
-                onClick={() => {
-                  loadSettings().catch((err) => {
-                    console.error(
-                      "[Settings] retry system settings failed:",
-                      err
-                    )
-                  })
-                }}
-              >
-                <RotateCw className="h-3.5 w-3.5" />
-                {t("retry")}
-              </Button>
+        {!hideDesktopOnly && (
+          <section className="rounded-xl border bg-card p-4 space-y-4">
+            <div className="flex items-center gap-2">
+              <Wifi className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold">{t("proxyTitle")}</h2>
+              <SettingScopeBadge scope="both" />
             </div>
-          )}
 
-          <label className="inline-flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={enabled}
-              disabled={proxyLocked}
-              onChange={(event) => {
-                const next = event.target.checked
-                if (next && !proxyUrl.trim()) {
-                  setProxyUrlError(t("proxyRequired"))
-                  return
-                }
-                setProxyUrlError(null)
-                setEnabled(next)
-                saveProxySettings(next, proxyUrl, noProxy)
-              }}
-            />
-            {t("enableProxy")}
-          </label>
+            <p className="text-xs text-muted-foreground leading-5">
+              {t("proxyDescription")}
+            </p>
 
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground">
-              {t("proxyAddress")}
-            </label>
-            <Input
-              value={proxyUrl}
-              onChange={(event) => {
-                setProxyUrl(event.target.value)
-                if (event.target.value.trim()) setProxyUrlError(null)
-              }}
-              onBlur={() => {
-                if (enabled && !proxyUrl.trim()) {
-                  setProxyUrlError(t("proxyRequired"))
-                  return
-                }
-                setProxyUrlError(null)
-                saveProxySettings(enabled, proxyUrl, noProxy)
-              }}
-              placeholder={PROXY_EXAMPLE}
-              disabled={proxyLocked}
-              aria-invalid={proxyUrlError ? true : undefined}
-            />
-            {proxyUrlError && (
-              <p className="text-2xs text-destructive">{proxyUrlError}</p>
+            {loadError && (
+              <div
+                role="alert"
+                className="flex items-center justify-between gap-3 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400"
+              >
+                <span className="min-w-0 break-words">
+                  {t("loadFailed", { message: loadError })}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => {
+                    loadSettings().catch((err) => {
+                      console.error(
+                        "[Settings] retry system settings failed:",
+                        err
+                      )
+                    })
+                  }}
+                >
+                  <RotateCw className="h-3.5 w-3.5" />
+                  {t("retry")}
+                </Button>
+              </div>
             )}
-            <p className="text-2xs text-muted-foreground">
-              {t("proxyHint", { example: PROXY_EXAMPLE })}
-            </p>
-          </div>
 
-          <div className="space-y-2">
-            <label
-              htmlFor="system-proxy-bypass"
-              className="text-xs font-medium text-muted-foreground"
-            >
-              {t("proxyBypass")}
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={enabled}
+                disabled={proxyLocked}
+                onChange={(event) => {
+                  const next = event.target.checked
+                  if (next && !proxyUrl.trim()) {
+                    setProxyUrlError(t("proxyRequired"))
+                    return
+                  }
+                  setProxyUrlError(null)
+                  setEnabled(next)
+                  saveProxySettings(next, proxyUrl, noProxy)
+                }}
+              />
+              {t("enableProxy")}
             </label>
-            <Input
-              id="system-proxy-bypass"
-              // Hosts read left to right in every locale; in Arabic an entry
-              // typed first as `.example.com` would show its dot at the end.
-              dir="ltr"
-              value={noProxy}
-              onChange={(event) => setNoProxy(event.target.value)}
-              onBlur={() => saveProxySettings(enabled, proxyUrl, noProxy)}
-              placeholder={PROXY_BYPASS_EXAMPLE}
-              disabled={proxyLocked}
-            />
-            <p className="text-2xs text-muted-foreground">
-              {t.rich("proxyBypassHint", {
-                example: PROXY_BYPASS_EXAMPLE,
-                code: hintLiteral,
-              })}
-            </p>
-          </div>
-        </section>
+
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground">
+                {t("proxyAddress")}
+              </label>
+              <Input
+                value={proxyUrl}
+                onChange={(event) => {
+                  setProxyUrl(event.target.value)
+                  if (event.target.value.trim()) setProxyUrlError(null)
+                }}
+                onBlur={() => {
+                  if (enabled && !proxyUrl.trim()) {
+                    setProxyUrlError(t("proxyRequired"))
+                    return
+                  }
+                  setProxyUrlError(null)
+                  saveProxySettings(enabled, proxyUrl, noProxy)
+                }}
+                placeholder={PROXY_EXAMPLE}
+                disabled={proxyLocked}
+                aria-invalid={proxyUrlError ? true : undefined}
+              />
+              {proxyUrlError && (
+                <p className="text-2xs text-destructive">{proxyUrlError}</p>
+              )}
+              <p className="text-2xs text-muted-foreground">
+                {t("proxyHint", { example: PROXY_EXAMPLE })}
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label
+                htmlFor="system-proxy-bypass"
+                className="text-xs font-medium text-muted-foreground"
+              >
+                {t("proxyBypass")}
+              </label>
+              <Input
+                id="system-proxy-bypass"
+                // Hosts read left to right in every locale; in Arabic an entry
+                // typed first as `.example.com` would show its dot at the end.
+                dir="ltr"
+                value={noProxy}
+                onChange={(event) => setNoProxy(event.target.value)}
+                onBlur={() => saveProxySettings(enabled, proxyUrl, noProxy)}
+                placeholder={PROXY_BYPASS_EXAMPLE}
+                disabled={proxyLocked}
+              />
+              <p className="text-2xs text-muted-foreground">
+                {t.rich("proxyBypassHint", {
+                  example: PROXY_BYPASS_EXAMPLE,
+                  code: hintLiteral,
+                })}
+              </p>
+            </div>
+          </section>
+        )}
 
         <section className="rounded-xl border bg-card p-4 space-y-4">
           <div className="flex items-center gap-2">

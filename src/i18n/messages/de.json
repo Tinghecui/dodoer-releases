@@ -8497,5 +8497,9 @@
     "commentAddFailed": "Senden fehlgeschlagen: {message}",
     "commentForward": "An meinen Agenten geben",
     "commentForwarded": "An Agenten gegeben"
+  },
+  "DesktopOnly": {
+    "message": "Diese Funktion bitte am Computer verwenden",
+    "back": "Zurück"
   }
 }

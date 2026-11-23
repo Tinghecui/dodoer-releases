@@ -24,6 +24,7 @@ import {
   openMergeWindow,
 } from "@/lib/api"
 import type { GitConflictInfo } from "@/lib/types"
+import { useHideDesktopOnly } from "@/hooks/use-hide-desktop-only"
 
 interface ConflictDialogProps {
   conflictInfo: GitConflictInfo | null
@@ -41,6 +42,8 @@ export function ConflictDialog({
   onResolved,
 }: ConflictDialogProps) {
   const t = useTranslations("Folder.branchDropdown.conflict")
+  // 三栏合并编辑器不做手机版（#1335）：手机布局下不给「打开合并工具」
+  const hideDesktopOnly = useHideDesktopOnly()
   const [conflictedFiles, setConflictedFiles] = useState<string[]>([])
   const [resolvedFiles, setResolvedFiles] = useState<Set<string>>(new Set())
   const [aborting, setAborting] = useState(false)
@@ -255,14 +258,16 @@ export function ConflictDialog({
             {t("abort")}
           </Button>
           <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleOpenMergeTool}
-              disabled={aborting || completing}
-            >
-              {t("openMergeTool")}
-            </Button>
+            {!hideDesktopOnly && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleOpenMergeTool}
+                disabled={aborting || completing}
+              >
+                {t("openMergeTool")}
+              </Button>
+            )}
             {allResolved && (
               <Button
                 size="sm"

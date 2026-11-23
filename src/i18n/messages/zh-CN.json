@@ -8497,5 +8497,9 @@
     "commentAddFailed": "没发出去：{message}",
     "commentForward": "交给我的智能体",
     "commentForwarded": "已交给智能体"
+  },
+  "DesktopOnly": {
+    "message": "这个功能请在电脑上使用",
+    "back": "返回"
   }
 }

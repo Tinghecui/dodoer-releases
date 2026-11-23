@@ -5,6 +5,8 @@ import { useSearchParams } from "next/navigation"
 import { useTranslations } from "next-intl"
 import { AppTitleBar } from "@/components/layout/app-title-bar"
 import { MobileBackButton } from "@/components/layout/mobile-back-button"
+import { DesktopOnlyPage } from "@/components/layout/desktop-only-notice"
+import { useHideDesktopOnly } from "@/hooks/use-hide-desktop-only"
 import { AppToaster } from "@/components/ui/app-toaster"
 import { ImportSessionsWindow } from "@/components/import-sessions/import-sessions-window"
 import { RemoteConnectionGate } from "@/contexts/remote-connection-context"
@@ -63,11 +65,20 @@ function ImportSessionsPageInner() {
   )
 }
 
+// 导入会话（扫本机的会话文件）手机上不做（#1335）：手机布局下整页换成
+// 「请在电脑上使用」，不挂载导入窗口。
+function ImportSessionsPageSwitch() {
+  const t = useTranslations("ImportSessions")
+  const hideDesktopOnly = useHideDesktopOnly()
+  if (hideDesktopOnly) return <DesktopOnlyPage title={t("title")} />
+  return <ImportSessionsPageInner />
+}
+
 export default function ImportSessionsPage() {
   return (
     <Suspense>
       <RemoteConnectionGate>
-        <ImportSessionsPageInner />
+        <ImportSessionsPageSwitch />
       </RemoteConnectionGate>
     </Suspense>
   )

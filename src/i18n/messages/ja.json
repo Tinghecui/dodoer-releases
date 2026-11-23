@@ -8497,5 +8497,9 @@
     "commentAddFailed": "送信できませんでした：{message}",
     "commentForward": "自分のエージェントに渡す",
     "commentForwarded": "エージェントに渡しました"
+  },
+  "DesktopOnly": {
+    "message": "この機能はパソコンでご利用ください",
+    "back": "戻る"
   }
 }

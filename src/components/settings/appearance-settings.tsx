@@ -47,6 +47,7 @@ import {
   type ZoomLevel,
 } from "@/lib/theme-presets"
 import { PetManagerSection } from "./pet-manager-section"
+import { useHideDesktopOnly } from "@/hooks/use-hide-desktop-only"
 import { FontSettingsSection } from "./font-settings-section"
 import { WorkspaceBackgroundSection } from "./workspace-background-section"
 import { CustomStyleSection } from "./custom-style-section"
@@ -67,6 +68,7 @@ const GLASS_STYLES: GlassStyle[] = ["regular", "tinted"]
 
 export function AppearanceSettings() {
   const t = useTranslations("AppearanceSettings")
+  const hideDesktopOnly = useHideDesktopOnly()
   const { theme, resolvedTheme, setTheme } = useTheme()
   const { themeColor, setThemeColor } = useThemeColor()
   const { zoomLevel, setZoomLevel } = useZoomLevel()
@@ -413,8 +415,8 @@ export function AppearanceSettings() {
           </div>
         </section>
 
-        {/* ===== Desktop Pet ===== */}
-        <PetManagerSection />
+        {/* ===== Desktop Pet =====（桌面上的浮动小窗，手机上不列，#1335） */}
+        {!hideDesktopOnly && <PetManagerSection />}
       </div>
     </ScrollArea>
   )

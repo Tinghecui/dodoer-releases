@@ -8497,5 +8497,9 @@
     "commentAddFailed": "Não foi possível enviar: {message}",
     "commentForward": "Passar ao meu agente",
     "commentForwarded": "Passado ao agente"
+  },
+  "DesktopOnly": {
+    "message": "Use este recurso em um computador",
+    "back": "Voltar"
   }
 }

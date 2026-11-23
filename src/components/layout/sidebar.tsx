@@ -53,6 +53,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { useHideDesktopOnly } from "@/hooks/use-hide-desktop-only"
 import { useIsMac } from "@/hooks/use-is-mac"
 import { usePlatform } from "@/hooks/use-platform"
 import { useZoomLevel } from "@/hooks/use-appearance"
@@ -318,6 +319,8 @@ export function Sidebar({
   const { zoomLevel } = useZoomLevel()
   const { shortcuts } = useShortcutSettings()
   const isMobile = useIsMobile()
+  // 画布手机上不做（#1335），导航不列
+  const hideDesktopOnly = useHideDesktopOnly()
   const listRef = useRef<SidebarConversationListHandle>(null)
   // On desktop the header's top-left is owned by the fixed window-chrome overlay
   // (sidebar toggle + search); reserve exactly up to the end of its buttons so
@@ -928,23 +931,25 @@ export function Sidebar({
             }}
           />
         )}
-        {!navFolded && isNavItemVisible(navItems, "canvas") && (
-          <SidebarNavButton
-            icon={MapIcon}
-            label={t("canvas")}
-            active={routeId === "canvas"}
-            onClick={() => {
-              if (isMobile) toggle()
-              // Coming from elsewhere returns to the canvas that was open;
-              // clicking it again from inside one goes up to the list — the
-              // route's own home, like re-tapping an active tab.
-              if (routeId === "canvas") {
-                useCanvasBoardsStore.getState().closeBoard()
-              }
-              setRoute("canvas")
-            }}
-          />
-        )}
+        {!navFolded &&
+          !hideDesktopOnly &&
+          isNavItemVisible(navItems, "canvas") && (
+            <SidebarNavButton
+              icon={MapIcon}
+              label={t("canvas")}
+              active={routeId === "canvas"}
+              onClick={() => {
+                if (isMobile) toggle()
+                // Coming from elsewhere returns to the canvas that was open;
+                // clicking it again from inside one goes up to the list — the
+                // route's own home, like re-tapping an active tab.
+                if (routeId === "canvas") {
+                  useCanvasBoardsStore.getState().closeBoard()
+                }
+                setRoute("canvas")
+              }}
+            />
+          )}
         {!navFolded && isNavItemVisible(navItems, "apps") && (
           <SidebarNavButton
             icon={AppWindow}

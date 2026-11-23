@@ -47,6 +47,7 @@ import { BackToStartMenuItem } from "@/components/cowork/start-home"
 import { CloneDialog } from "./clone-dialog"
 import { RemoteWorkspaceManageDialog } from "./remote-workspace-manage-dialog"
 import { WorkspaceFolderDialog } from "./workspace-folder-dialog"
+import { useHideDesktopOnly } from "@/hooks/use-hide-desktop-only"
 
 /**
  * The quick-actions launcher pinned to the status bar's leading edge — the
@@ -83,6 +84,8 @@ export function QuickActionsDropdown() {
   const { unseenFailures } = useAutomationsView()
   const { attentionCount } = useTasksView()
   const { setRoute, openConversations } = useWorkbenchRoute()
+  // 画布手机上不做（#1335），这里也不列
+  const hideDesktopOnly = useHideDesktopOnly()
   // The file tab strip carries the other "+" for this; the launcher covers the
   // case that strip cannot — with no file tab open there is no strip at all.
   const openBrowserTab = useOptionalWorkspaceActions()?.openBrowserTab ?? null
@@ -273,10 +276,12 @@ export function QuickActionsDropdown() {
             <LayoutTemplate />
             {tSidebar("forge")}
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setRoute("canvas")}>
-            <MapIcon />
-            {tSidebar("canvas")}
-          </DropdownMenuItem>
+          {!hideDesktopOnly && (
+            <DropdownMenuItem onSelect={() => setRoute("canvas")}>
+              <MapIcon />
+              {tSidebar("canvas")}
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onSelect={() => setRoute("apps")}>
             <AppWindow />
             {tSidebar("apps")}

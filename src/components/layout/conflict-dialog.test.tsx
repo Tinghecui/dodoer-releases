@@ -37,6 +37,10 @@ vi.mock("@/lib/platform", () => ({
   subscribe: vi.fn(async () => () => {}),
 }))
 
+// #1335：手机布局下不给「打开合并工具」（三栏合并编辑器不做手机版）
+const phone = vi.hoisted(() => ({ mobile: false }))
+vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => phone.mobile }))
+
 vi.mock("next-intl", () => ({
   useTranslations: () => (key: string) => key,
 }))
@@ -54,6 +58,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  phone.mobile = false
   cleanup()
   vi.useRealTimers()
 })
@@ -127,5 +132,32 @@ describe("ConflictDialog", () => {
     const shown = String(toastError.mock.calls[0][0])
     expect(shown).not.toContain("[object Object]")
     expect(shown).toContain("There is no merge to conclude")
+  })
+})
+
+describe("ConflictDialog 在手机布局下", () => {
+  const renderDialog = () =>
+    render(
+      <ConflictDialog
+        conflictInfo={conflictInfo}
+        folderId={7}
+        folderPath="/tmp/demo"
+        onClose={vi.fn()}
+        onResolved={vi.fn()}
+      />
+    )
+
+  it("不显示打开合并工具，中止合并还在", () => {
+    phone.mobile = true
+    renderDialog()
+    expect(screen.queryByRole("button", { name: "openMergeTool" })).toBeNull()
+    expect(screen.getByRole("button", { name: "abort" })).toBeInTheDocument()
+  })
+
+  it("宽屏照常显示", () => {
+    renderDialog()
+    expect(
+      screen.getByRole("button", { name: "openMergeTool" })
+    ).toBeInTheDocument()
   })
 })

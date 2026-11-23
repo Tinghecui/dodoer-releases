@@ -8497,5 +8497,9 @@
     "commentAddFailed": "보내지 못했습니다: {message}",
     "commentForward": "내 에이전트에게 넘기기",
     "commentForwarded": "에이전트에게 넘김"
+  },
+  "DesktopOnly": {
+    "message": "이 기능은 컴퓨터에서 사용하세요",
+    "back": "뒤로"
   }
 }

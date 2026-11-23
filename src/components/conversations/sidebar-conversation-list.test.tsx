@@ -146,6 +146,11 @@ vi.mock("@/lib/cowork/brand", async (importOriginal) => {
   }
 })
 
+// #1335：手机布局（不是桌面版）时藏起导入本机会话；默认按宽屏跑
+const hideDesktop = vi.hoisted(() => ({ value: false }))
+vi.mock("@/hooks/use-hide-desktop-only", () => ({
+  useHideDesktopOnly: () => hideDesktop.value,
+}))
 vi.mock("@/components/agent-icon", () => ({
   AgentIcon: () => {
     probes.card++
@@ -3033,5 +3038,90 @@ describe("SidebarConversationList — completed but waiting on the user", () => 
     expect(rowsOf(22)).toHaveLength(0)
     expect(rowsOf(25)).toHaveLength(0)
     expect(rowsOf(24)).toHaveLength(2)
+  })
+})
+
+// #1335：导入本机会话手机上不做，侧栏里所有入口都不列
+describe("SidebarConversationList — import local sessions on mobile", () => {
+  afterEach(() => {
+    hideDesktop.value = false
+  })
+
+  function menuTexts() {
+    return Array.from(document.querySelectorAll('[role="menuitem"]')).map(
+      (el) => el.textContent ?? ""
+    )
+  }
+
+  it("空工作区：宽屏有导入按钮，手机上没有", () => {
+    useAppWorkspaceStore.setState({ folders: [], conversations: [] })
+    const wide = render(tree())
+    expect(
+      wide.queryByRole("button", { name: "Import local sessions" })
+    ).not.toBeNull()
+    wide.unmount()
+
+    hideDesktop.value = true
+    const { queryByRole } = render(tree())
+    expect(queryByRole("button", { name: "Import local sessions" })).toBeNull()
+    expect(queryByRole("button", { name: "Open Folder" })).not.toBeNull()
+  })
+
+  it("列表区域的右键菜单：手机上不列导入本机会话", () => {
+    const folders = [folder(1, "Folder 1")]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: [conv(11, 1)],
+    })
+    hideDesktop.value = true
+    render(tree())
+    // 文件夹标题自己的菜单先试，再试列表区域的菜单
+    act(() => {
+      fireEvent.contextMenu(document.querySelector('[data-folder-id="1"]')!)
+    })
+    expect(menuTexts().some((t) => t.includes("Manage conversations"))).toBe(
+      true
+    )
+    expect(menuTexts().some((t) => t.includes("Import local sessions"))).toBe(
+      false
+    )
+    act(() => {
+      fireEvent.keyDown(document.activeElement ?? document.body, {
+        key: "Escape",
+      })
+    })
+    const scroll = document.querySelector(
+      'div.flex-1.min-h-0.relative[data-slot="context-menu-trigger"]'
+    )
+    expect(scroll).toBeTruthy()
+    act(() => {
+      fireEvent.contextMenu(scroll as HTMLElement)
+    })
+    expect(menuTexts().some((t) => t.includes("Clone Repository"))).toBe(true)
+    expect(menuTexts().some((t) => t.includes("Import local sessions"))).toBe(
+      false
+    )
+  })
+
+  it("列表区域的右键菜单：宽屏照旧列导入本机会话", () => {
+    const folders = [folder(1, "Folder 1")]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: [conv(11, 1)],
+    })
+    render(tree())
+    const scroll = document.querySelector(
+      'div.flex-1.min-h-0.relative[data-slot="context-menu-trigger"]'
+    )
+    expect(scroll).toBeTruthy()
+    act(() => {
+      fireEvent.contextMenu(scroll as HTMLElement)
+    })
+    expect(menuTexts().some((t) => t.includes("Clone Repository"))).toBe(true)
+    expect(menuTexts().some((t) => t.includes("Import local sessions"))).toBe(
+      true
+    )
   })
 })

@@ -7,6 +7,8 @@ import { Loader2 } from "lucide-react"
 import { MergeWorkspace } from "@/components/merge/merge-workspace"
 import { AppTitleBar } from "@/components/layout/app-title-bar"
 import { MobileBackButton } from "@/components/layout/mobile-back-button"
+import { DesktopOnlyPage } from "@/components/layout/desktop-only-notice"
+import { useHideDesktopOnly } from "@/hooks/use-hide-desktop-only"
 import { AppToaster } from "@/components/ui/app-toaster"
 import { getFolder } from "@/lib/api"
 import type { FolderDetail } from "@/lib/types"
@@ -127,11 +129,20 @@ function MergePageInner() {
   )
 }
 
+// 三栏合并编辑器不做手机版（#1335）：手机布局下整页换成「请在电脑上使用」，
+// 不读仓库、不挂载编辑器。
+function MergePageSwitch() {
+  const t = useTranslations("MergePage")
+  const hideDesktopOnly = useHideDesktopOnly()
+  if (hideDesktopOnly) return <DesktopOnlyPage title={t("title")} />
+  return <MergePageInner />
+}
+
 export default function MergePage() {
   return (
     <Suspense>
       <RemoteConnectionGate>
-        <MergePageInner />
+        <MergePageSwitch />
       </RemoteConnectionGate>
     </Suspense>
   )

@@ -5,6 +5,7 @@ import { ChevronRight } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { categoryPath } from "@/components/canvas/mindmap/mindmap-model"
 import { useOptionalWorkbenchRoute } from "@/contexts/workbench-route-context"
+import { useHideDesktopOnly } from "@/hooks/use-hide-desktop-only"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
   useConversationTaxonomyStore,
@@ -28,6 +29,8 @@ export function ConversationMindMapTrail({
   // Outside the workbench (a detached view) there is no map to go to.
   const setRoute = useOptionalWorkbenchRoute()?.setRoute
   const focusCategory = useMindMapViewStore((s) => s.focusCategory)
+  // 画布手机上不做（#1335）：路径照旧显示，但只是文字，不再点进画布
+  const hideDesktopOnly = useHideDesktopOnly()
   // The map belongs to the project: a worktree's conversations are its root's.
   const projectId = useAppWorkspaceStore((s) => {
     const folder = s.allFolders.find((f) => f.id === folderId)
@@ -48,23 +51,32 @@ export function ConversationMindMapTrail({
     <>
       {path.map((step, i) => (
         <Fragment key={step.id}>
-          <button
-            type="button"
-            data-mindmap-trail={step.id}
-            // Steps give way to the title: each one truncates first.
-            className="min-w-0 max-w-40 shrink truncate rounded-md px-1 py-0.5 text-[0.8125rem] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-            title={t("showInMindMap", { name: step.name })}
-            aria-label={t("showInMindMap", { name: step.name })}
-            onClick={() => {
-              focusCategory(
-                projectId,
-                path.slice(0, i + 1).map((s) => s.id)
-              )
-              setRoute("canvas")
-            }}
-          >
-            {step.name}
-          </button>
+          {hideDesktopOnly ? (
+            <span
+              data-mindmap-trail={step.id}
+              className="min-w-0 max-w-40 shrink truncate px-1 py-0.5 text-[0.8125rem] text-muted-foreground"
+            >
+              {step.name}
+            </span>
+          ) : (
+            <button
+              type="button"
+              data-mindmap-trail={step.id}
+              // Steps give way to the title: each one truncates first.
+              className="min-w-0 max-w-40 shrink truncate rounded-md px-1 py-0.5 text-[0.8125rem] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+              title={t("showInMindMap", { name: step.name })}
+              aria-label={t("showInMindMap", { name: step.name })}
+              onClick={() => {
+                focusCategory(
+                  projectId,
+                  path.slice(0, i + 1).map((s) => s.id)
+                )
+                setRoute("canvas")
+              }}
+            >
+              {step.name}
+            </button>
+          )}
           <ChevronRight
             className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50"
             aria-hidden

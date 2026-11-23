@@ -54,6 +54,7 @@ import {
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { COWORK_BUILD } from "@/lib/cowork/brand"
 import { useCoworkText } from "@/lib/cowork/i18n"
+import { useHideDesktopOnly } from "@/hooks/use-hide-desktop-only"
 import { armComposerTypeahead } from "@/lib/composer-typeahead"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
@@ -328,7 +329,8 @@ const FolderHeader = memo(function FolderHeader({
   onToggle: (folderId: number) => void
   onRemoveFromWorkspace: (folderId: number) => void
   onNewConversation: (folderId: number) => void
-  onImport: (folderId: number) => void
+  /** 不给就不列「导入本机会话」（手机布局，#1335） */
+  onImport?: (folderId: number) => void
   onManageConversations: (folderId: number) => void
   onManageLinks: (folderId: number) => void
   /** Open the tag manager on this folder's own tags (its repo's, for a
@@ -703,10 +705,12 @@ const FolderHeader = memo(function FolderHeader({
             <SquarePen className="h-4 w-4" />
             {t("newConversation")}
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => onImport(folderId)}>
-            <Download className="h-4 w-4" />
-            {t("importLocalSessions")}
-          </ContextMenuItem>
+          {onImport && (
+            <ContextMenuItem onSelect={() => onImport(folderId)}>
+              <Download className="h-4 w-4" />
+              {t("importLocalSessions")}
+            </ContextMenuItem>
+          )}
           <ContextMenuSub>
             <ContextMenuSubTrigger>
               <ExternalLink className="h-4 w-4" />
@@ -998,6 +1002,9 @@ export function SidebarConversationList({
   const tFileTree = useTranslations("Folder.fileTreeTab")
   const tRemote = useTranslations("RemoteWorkspace")
   const tCowork = useCoworkText()
+  // 导入本机会话手机上不做（#1335）：文件夹右键菜单、「文件夹」标题、列表区域的
+  // 右键菜单和空工作区按钮上的入口都不列
+  const hideDesktopOnly = useHideDesktopOnly()
   const { themeColor: appThemeColor } = useThemeColor()
   const { createTerminalInDirectory, closeTerminalsByFolder } =
     useTerminalContext()
@@ -3323,7 +3330,7 @@ export function SidebarConversationList({
         }
         onRemoveFromWorkspace={handleRemoveFolder}
         onNewConversation={handleNewConversationForFolder}
-        onImport={handleImportForFolder}
+        onImport={hideDesktopOnly ? undefined : handleImportForFolder}
         onManageConversations={handleManageConversations}
         onManageLinks={handleManageFolderLinks}
         onManageTags={handleManageFolderTags}
@@ -3412,7 +3419,9 @@ export function SidebarConversationList({
           // the same picker window as the folder context-menu item. Stable
           // callback, so the memo holds.
           onImportSessions={
-            row.section === "folders" ? handleOpenImportWindow : undefined
+            row.section === "folders" && !hideDesktopOnly
+              ? handleOpenImportWindow
+              : undefined
           }
           // "New group" — the one action in this cluster that organises the
           // list rather than adding to it. Stable callback, so the memo holds.
@@ -3907,15 +3916,17 @@ export function SidebarConversationList({
             <Rocket className="h-3.5 w-3.5 mr-1.5" />
             {tFolderDropdown("projectBoot")}
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full max-w-[14rem] justify-start"
-            onClick={handleOpenImportWindow}
-          >
-            <Download className="h-3.5 w-3.5 mr-1.5" />
-            {t("importLocalSessions")}
-          </Button>
+          {!hideDesktopOnly && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full max-w-[14rem] justify-start"
+              onClick={handleOpenImportWindow}
+            >
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+              {t("importLocalSessions")}
+            </Button>
+          )}
         </div>
       ) : (
         <ContextMenu>
@@ -4103,10 +4114,12 @@ export function SidebarConversationList({
               <LayersPlus className="h-4 w-4" />
               {t("folderGroup.newGroup")}
             </ContextMenuItem>
-            <ContextMenuItem onSelect={handleOpenImportWindow}>
-              <Download className="h-4 w-4" />
-              {t("importLocalSessions")}
-            </ContextMenuItem>
+            {!hideDesktopOnly && (
+              <ContextMenuItem onSelect={handleOpenImportWindow}>
+                <Download className="h-4 w-4" />
+                {t("importLocalSessions")}
+              </ContextMenuItem>
+            )}
             {/* Trailing entry, desktop-only: opening a remote workspace spawns
                 another window bound to a different server, which a web client
                 can't do. This is where the picker moved to when the fixed

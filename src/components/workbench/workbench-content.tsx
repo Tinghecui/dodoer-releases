@@ -19,6 +19,8 @@ import {
   TokenUsagePage,
   TokenUsagePageTitle,
 } from "@/components/token-usage/token-usage-page"
+import { DesktopOnlyNotice } from "@/components/layout/desktop-only-notice"
+import { useHideDesktopOnly } from "@/hooks/use-hide-desktop-only"
 
 /**
  * Registry of full-page routes that take over the main content region. The
@@ -77,7 +79,13 @@ const WORKBENCH_ROUTE_CHROME_ACTIONS: Partial<
  * (kept-mounted, hidden) conversation surface so live sessions survive the swap.
  */
 export function WorkbenchRoutePage() {
-  const { routeId } = useWorkbenchRoute()
+  const { routeId, openConversations } = useWorkbenchRoute()
+  const hideDesktopOnly = useHideDesktopOnly()
+  // 画布只认右键、中键拖动，手机上不做（#1335）：入口不列，万一进来了
+  // （思维导图的路径条这类）显示「请在电脑上使用」，返回回到会话
+  if (routeId === "canvas" && hideDesktopOnly) {
+    return <DesktopOnlyNotice onBack={openConversations} />
+  }
   const Page = WORKBENCH_ROUTES[routeId]
   return Page ? <Page /> : null
 }

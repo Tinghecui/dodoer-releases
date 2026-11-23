@@ -97,6 +97,10 @@ vi.mock("@/lib/platform", () => ({
   isLocalDesktop: () => desktopShell && !remoteWorkspace,
 }))
 
+// #1335：手机布局（只看宽度，桌面版窗口不算）
+const phone = vi.hoisted(() => ({ mobile: false }))
+vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => phone.mobile }))
+
 vi.mock("@/components/i18n-provider", () => ({
   useAppI18n: () => ({
     languageSettings: { mode: "system", language: "en" },
@@ -169,6 +173,7 @@ beforeEach(() => {
   mockSetAutostart.mockReset()
   desktopShell = false
   remoteWorkspace = false
+  phone.mobile = false
   liveHandler = null
   // The provider caches the last availability check in localStorage, which
   // jsdom keeps across tests in a file — clear it so each case starts from a
@@ -782,6 +787,40 @@ describe("SystemNetworkSettings — a release that did not start here", () => {
       await screen.findByRole("button", { name: "Upgrade to v0.17.0" })
     ).toBeVisible()
     expect(screen.queryByText(HINT)).toBeNull()
+  })
+})
+
+describe("SystemNetworkSettings — 手机布局（#1335）", () => {
+  beforeEach(() => {
+    mockGetProxy.mockResolvedValue({ enabled: false, proxy_url: null })
+    call.mockImplementation(liveServerCalls({ seq: 1, status: "idle" }))
+  })
+
+  it("手机上不显示软件更新和代理，语言照旧", async () => {
+    phone.mobile = true
+    renderWithIntl()
+
+    expect(
+      await screen.findByRole("heading", { name: "Language" })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("heading", { name: "Network Proxy" })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("heading", { name: "Software Update" })
+    ).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Launch at login")).not.toBeInTheDocument()
+  })
+
+  it("宽屏照旧显示", async () => {
+    renderWithIntl()
+
+    expect(
+      await screen.findByRole("heading", { name: "Network Proxy" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("heading", { name: "Software Update" })
+    ).toBeInTheDocument()
   })
 })
 

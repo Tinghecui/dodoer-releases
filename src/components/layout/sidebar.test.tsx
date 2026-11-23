@@ -1000,6 +1000,18 @@ describe("Sidebar — Navigation item visibility", () => {
     ).toEqual({ automations: false })
   })
 
+  it("leaves the canvas row out on mobile (#1335)", () => {
+    // 画布只认右键、中键拖动，手机上不做，入口不列
+    mobileState.isMobile = true
+    try {
+      renderSidebar()
+      expect(navRow("Infinite Canvas")).toBeNull()
+      expect(navRow("Automations")).toBeTruthy()
+    } finally {
+      mobileState.isMobile = false
+    }
+  })
+
   it("respects an explicitly-stored hidden row from localStorage", () => {
     localStorage.setItem(
       "workspace:sidebar-nav-items",

@@ -8497,5 +8497,9 @@
     "commentAddFailed": "Envoi impossible : {message}",
     "commentForward": "Confier à mon agent",
     "commentForwarded": "Confié à l'agent"
+  },
+  "DesktopOnly": {
+    "message": "Utilisez cette fonction sur un ordinateur",
+    "back": "Retour"
   }
 }

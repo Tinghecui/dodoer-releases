@@ -8497,5 +8497,9 @@
     "commentAddFailed": "沒有送出：{message}",
     "commentForward": "交給我的智慧體",
     "commentForwarded": "已交給智慧體"
+  },
+  "DesktopOnly": {
+    "message": "這個功能請在電腦上使用",
+    "back": "返回"
   }
 }

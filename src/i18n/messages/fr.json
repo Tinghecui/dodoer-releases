@@ -8451,6 +8451,16 @@
     "sharedViewLoading": "Chargement…",
     "sharedViewEmpty": "Aucun message pour l'instant",
     "sharedViewThought": "Réflexion",
-    "sharedViewTool": "Outil"
+    "sharedViewTool": "Outil",
+    "teamGroupLabel": "Groupe",
+    "teamStateFilterLabel": "Statut",
+    "teamFilterAll": "Toutes",
+    "teamRangeLabel": "Date",
+    "teamRangeToday": "Aujourd’hui",
+    "teamRangeWeek": "7 derniers jours",
+    "teamMemberCounts": "{running} en cours · {waiting} en attente",
+    "teamNoLongerLeader": "Vous n’êtes plus responsable de ce groupe",
+    "teamEmpty": "Ce groupe n’a encore aucun membre",
+    "teamMemberEmpty": "Aucune session correspondante"
   }
 }

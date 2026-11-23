@@ -8451,6 +8451,16 @@
     "sharedViewLoading": "جارٍ التحميل…",
     "sharedViewEmpty": "لا توجد رسائل بعد",
     "sharedViewThought": "التفكير",
-    "sharedViewTool": "أداة"
+    "sharedViewTool": "أداة",
+    "teamGroupLabel": "المجموعة",
+    "teamStateFilterLabel": "الحالة",
+    "teamFilterAll": "الكل",
+    "teamRangeLabel": "التاريخ",
+    "teamRangeToday": "اليوم",
+    "teamRangeWeek": "آخر 7 أيام",
+    "teamMemberCounts": "{running} قيد التشغيل · {waiting} بانتظار الرد",
+    "teamNoLongerLeader": "لم تعد قائدًا لهذه المجموعة",
+    "teamEmpty": "لا يوجد أعضاء في هذه المجموعة بعد",
+    "teamMemberEmpty": "لا توجد جلسات مطابقة"
   }
 }

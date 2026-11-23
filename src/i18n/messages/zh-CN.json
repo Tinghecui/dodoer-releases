@@ -8451,6 +8451,16 @@
     "sharedViewLoading": "正在加载…",
     "sharedViewEmpty": "还没有内容",
     "sharedViewThought": "思考",
-    "sharedViewTool": "工具"
+    "sharedViewTool": "工具",
+    "teamGroupLabel": "组",
+    "teamStateFilterLabel": "状态",
+    "teamFilterAll": "全部",
+    "teamRangeLabel": "日期",
+    "teamRangeToday": "今天",
+    "teamRangeWeek": "最近 7 天",
+    "teamMemberCounts": "进行中 {running} · 等人回答 {waiting}",
+    "teamNoLongerLeader": "你已不是这个组的组长",
+    "teamEmpty": "组里还没有成员",
+    "teamMemberEmpty": "没有符合条件的会话"
   }
 }

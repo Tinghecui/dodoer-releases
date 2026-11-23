@@ -8451,6 +8451,16 @@
     "sharedViewLoading": "正在載入…",
     "sharedViewEmpty": "還沒有內容",
     "sharedViewThought": "思考",
-    "sharedViewTool": "工具"
+    "sharedViewTool": "工具",
+    "teamGroupLabel": "組",
+    "teamStateFilterLabel": "狀態",
+    "teamFilterAll": "全部",
+    "teamRangeLabel": "日期",
+    "teamRangeToday": "今天",
+    "teamRangeWeek": "最近 7 天",
+    "teamMemberCounts": "進行中 {running} · 等人回答 {waiting}",
+    "teamNoLongerLeader": "你已不是這個組的組長",
+    "teamEmpty": "組裡還沒有成員",
+    "teamMemberEmpty": "沒有符合條件的會話"
   }
 }

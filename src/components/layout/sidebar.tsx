@@ -111,6 +111,10 @@ import {
   useTeamScope,
 } from "@/components/cowork/team-scope-switch"
 import { SharedWithMeList } from "@/components/cowork/shared-with-me-list"
+import {
+  TeamMembersList,
+  openTeamSession,
+} from "@/components/cowork/team-members-list"
 import { useCoworkTeamPolling } from "@/lib/cowork/team"
 import { openSharedItem } from "@/stores/cowork-team-store"
 
@@ -995,10 +999,8 @@ export function Sidebar({
       </div>
       {/* 点一行：主区域盖上只读视图（#1235 第 2 行），不新增标签页。 */}
       {teamScope === "shared" && <SharedWithMeList onOpen={openSharedItem} />}
-      {/* 「团队」档的成员列表由 #1235 第 3 行接上，这里先留位置。 */}
-      {teamScope === "team" && (
-        <div data-team-members-slot="" className="min-h-0 flex-1" />
-      )}
+      {/* 「团队」档（组长才有）：按成员分层折叠，点一行同样盖上只读视图。 */}
+      {teamScope === "team" && <TeamMembersList onOpen={openTeamSession} />}
       {/* Glass: the status bar's left half (quick actions, conversation
           count) sits at the foot of the pane. */}
       {!isMobile && footer && (

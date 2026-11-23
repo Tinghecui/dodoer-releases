@@ -8451,6 +8451,16 @@
     "sharedViewLoading": "読み込み中…",
     "sharedViewEmpty": "まだ内容がありません",
     "sharedViewThought": "思考",
-    "sharedViewTool": "ツール"
+    "sharedViewTool": "ツール",
+    "teamGroupLabel": "グループ",
+    "teamStateFilterLabel": "状態",
+    "teamFilterAll": "すべて",
+    "teamRangeLabel": "日付",
+    "teamRangeToday": "今日",
+    "teamRangeWeek": "過去 7 日",
+    "teamMemberCounts": "実行中 {running} · 回答待ち {waiting}",
+    "teamNoLongerLeader": "このグループのリーダーではなくなりました",
+    "teamEmpty": "このグループにはまだメンバーがいません",
+    "teamMemberEmpty": "該当するセッションはありません"
   }
 }

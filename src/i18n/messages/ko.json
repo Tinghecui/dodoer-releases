@@ -8451,6 +8451,16 @@
     "sharedViewLoading": "불러오는 중…",
     "sharedViewEmpty": "아직 내용이 없습니다",
     "sharedViewThought": "생각",
-    "sharedViewTool": "도구"
+    "sharedViewTool": "도구",
+    "teamGroupLabel": "그룹",
+    "teamStateFilterLabel": "상태",
+    "teamFilterAll": "전체",
+    "teamRangeLabel": "날짜",
+    "teamRangeToday": "오늘",
+    "teamRangeWeek": "최근 7일",
+    "teamMemberCounts": "진행 중 {running} · 응답 대기 {waiting}",
+    "teamNoLongerLeader": "더 이상 이 그룹의 리더가 아닙니다",
+    "teamEmpty": "이 그룹에 아직 멤버가 없습니다",
+    "teamMemberEmpty": "조건에 맞는 세션이 없습니다"
   }
 }

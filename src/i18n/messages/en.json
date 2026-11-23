@@ -8451,6 +8451,16 @@
     "sharedViewLoading": "Loading…",
     "sharedViewEmpty": "No messages yet",
     "sharedViewThought": "Thinking",
-    "sharedViewTool": "Tool"
+    "sharedViewTool": "Tool",
+    "teamGroupLabel": "Group",
+    "teamStateFilterLabel": "Status",
+    "teamFilterAll": "All",
+    "teamRangeLabel": "Date",
+    "teamRangeToday": "Today",
+    "teamRangeWeek": "Last 7 days",
+    "teamMemberCounts": "{running} running · {waiting} waiting",
+    "teamNoLongerLeader": "You are no longer a leader of this group",
+    "teamEmpty": "No members in this group yet",
+    "teamMemberEmpty": "No matching sessions"
   }
 }

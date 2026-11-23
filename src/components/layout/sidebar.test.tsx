@@ -119,6 +119,7 @@ vi.mock("@/components/conversations/pr-status-poller", () => ({
 const teamApi = vi.hoisted(() => ({
   polling: vi.fn(),
   teamShared: vi.fn(),
+  teamView: vi.fn(),
 }))
 vi.mock("@/lib/cowork/team", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/cowork/team")>()
@@ -126,6 +127,7 @@ vi.mock("@/lib/cowork/team", async (importOriginal) => {
     ...actual,
     useCoworkTeamPolling: teamApi.polling,
     teamShared: teamApi.teamShared,
+    teamView: teamApi.teamView,
   }
 })
 vi.mock("@/components/conversations/conversation-tags-manager", () => ({
@@ -1395,6 +1397,9 @@ describe("Sidebar — CoTeam scope switch", () => {
     useCoworkTeamStore.getState().reset()
     teamApi.polling.mockClear()
     teamApi.teamShared.mockReset().mockResolvedValue([])
+    teamApi.teamView
+      .mockReset()
+      .mockResolvedValue({ id: "g1", name: "后端组", since: "", members: [] })
     spies.listProps = null
   })
   afterEach(() => {
@@ -1532,5 +1537,59 @@ describe("Sidebar — CoTeam scope switch", () => {
       title: "Fix login",
       via: { kind: "shared" },
     })
+  })
+
+  it("shows the team members for 'Team' and opens a row as the leader's view", async () => {
+    makeAvailable([{ id: "g1", name: "后端组" }])
+    teamApi.teamView.mockResolvedValue({
+      id: "g1",
+      name: "后端组",
+      since: "",
+      members: [
+        {
+          name: "member-a",
+          label: "小王",
+          running: 1,
+          waiting: 0,
+          sessions: [
+            {
+              owner: "member-a",
+              id: "42",
+              title: "Fix login",
+              state: "running",
+              updatedAt: "2026-11-22T08:00:00Z",
+              summary: null,
+            },
+          ],
+        },
+      ],
+    })
+    renderSidebar()
+    await act(async () => {})
+    expect(document.querySelector("[data-team-members-list]")).toBeNull()
+    expect(teamApi.teamView).not.toHaveBeenCalled()
+    fireEvent.click(document.querySelector('[data-team-scope="team"]')!)
+    await act(async () => {})
+    expect(document.querySelector("[data-team-members-list]")).toBeTruthy()
+    expect(teamApi.teamView).toHaveBeenCalledWith("g1", undefined)
+    fireEvent.click(
+      document.querySelector(
+        '[data-team-member="member-a"] [data-team-member-row]'
+      )!
+    )
+    fireEvent.click(
+      document.querySelector('[data-team-session="member-a/42"]')!
+    )
+    expect(useCoworkTeamStore.getState().viewing).toEqual({
+      owner: "member-a",
+      ownerLabel: "小王",
+      id: "42",
+      title: "Fix login",
+      via: { kind: "leader", groupName: "后端组" },
+    })
+    // 切回「我的」：成员列表收起，会话列表一直挂着。
+    fireEvent.click(document.querySelector('[data-team-scope="mine"]')!)
+    expect(document.querySelector("[data-team-members-list]")).toBeNull()
+    expect(spies.listProps).not.toBeNull()
   })
 })

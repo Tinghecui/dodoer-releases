@@ -3904,6 +3904,7 @@ impl ConnectionManager {
                 external_id: state.external_id.clone(),
                 resumed_from: state.resumed_from_external_id.clone(),
                 generation: state.generation,
+                completed_turn: state.turns_completed > 0,
             });
         }
         out
@@ -9166,6 +9167,7 @@ mod tests {
 
     /// #441：对话留下了「?」，又有一条没断开的活连接绑着它（`count` 是 0、空闲），或者
     /// resume 着断开前的那个会话 id（还没绑对话）：列表里不再有这个「?」，表里的也删掉。
+    /// #1246：活连接要自己跑完过一轮才算，只是连上了的（打开或刷新时自动起的）不算。
     #[tokio::test]
     async fn an_idle_live_connection_drops_the_leftover_uncertain_mark() {
         let mgr = ConnectionManager::new();
@@ -9213,10 +9215,22 @@ mod tests {
         if let Ok(mut state) = resumed.state.try_write() {
             state.external_id = Some("sid-43".into());
         }
+        let live_states = [bound.state.clone(), resumed.state.clone()];
         {
             let mut map = mgr.connections.lock().await;
             map.insert("c3".to_string(), bound);
             map.insert("c4".to_string(), resumed);
+        }
+        assert_eq!(
+            mgr.list_background_pending_with_uncertain(&broadcaster)
+                .await
+                .iter()
+                .map(|e| e.conversation_id)
+                .collect::<Vec<_>>(),
+            vec![42, 43]
+        );
+        for state in &live_states {
+            state.write().await.turns_completed = 1;
         }
         assert!(mgr
             .list_background_pending_with_uncertain(&broadcaster)
@@ -9275,6 +9289,8 @@ mod tests {
         if let Ok(mut state) = fell_back.state.try_write() {
             state.external_id = Some("sid-fresh".into());
             state.resumed_from_external_id = Some("sid-44".into());
+            // #1246：跑完过一轮才认领。
+            state.turns_completed = 1;
         }
         mgr.connections
             .lock()

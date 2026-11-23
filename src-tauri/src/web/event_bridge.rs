@@ -81,14 +81,17 @@ pub struct LiveBinding {
     pub resumed_from: Option<String>,
     /// 这条连接的 [`crate::acp::SessionState`] 编号。
     pub generation: u64,
+    /// #1246：这条连接自己跑完过一轮（[`crate::acp::SessionState::turns_completed`] 不是 0）。
+    /// 打开或刷新会话时自动起的连接只是连上了，不知道旧进程里的后台任务，没跑完过一轮的不认领「?」。
+    pub completed_turn: bool,
 }
 
 impl LiveBinding {
-    /// 这条连接认领表里这一格的「?」：绑着同一个对话，或者 resume 着同一个会话 id
-    /// （resume 成功是现在的会话 id，回退成新会话是启动时要 resume 的那个），而且不比
-    /// 留下「?」的连接旧。
+    /// 这条连接认领表里这一格的「?」：自己跑完过一轮（#1246），绑着同一个对话，或者
+    /// resume 着同一个会话 id（resume 成功是现在的会话 id，回退成新会话是启动时要 resume
+    /// 的那个），而且不比留下「?」的连接旧。
     fn claims(&self, conversation_id: i32, slot: &BackgroundSlot) -> bool {
-        if self.generation < slot.generation {
+        if !self.completed_turn || self.generation < slot.generation {
             return false;
         }
         if self.conversation_id == Some(conversation_id) {
@@ -838,7 +841,7 @@ pub fn emit_event(emitter: &EventEmitter, event: &str, payload: impl Serialize) 
 /// Cowork 加的：[`settled_conversation_id`] 说的对话是怎么结束的。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettledAs {
-    /// 完成或删掉，或者新的一轮真的开始了（#1117，智能体在这一轮回了东西）：留下来的什么都删。
+    /// 完成或删掉：留下来的什么都删。（新的一轮里智能体回了东西只删没跑完的后台任务，见 [`clear_abandoned_background`]。）
     Closed,
     /// 取消（红叉）：只删「?」，没跑完的后台任务（#817）留着给红叉写任务名。
     Cancelled,
@@ -872,6 +875,27 @@ fn settled_conversation_id(value: &serde_json::Value) -> Option<(i32, SettledAs)
 /// 再把「?」写回来。取消时没跑完的后台任务（`abandoned`，#817）不删：那正是红叉要写的。
 fn clear_uncertain_background(emitter: &EventEmitter, conversation_id: i32, how: SettledAs) {
     retire_uncertain_background(emitter, conversation_id, how, None);
+}
+
+/// #1117 / #1246：新的一轮里智能体回了东西：只删这个对话留下的没跑完的后台任务（`abandoned`），
+/// 删了就广播一条 `idle`。「?」留着，等这一轮跑完才删。
+fn clear_abandoned_background(emitter: &EventEmitter, conversation_id: i32) {
+    let Some(broadcaster) = emitter.web_broadcaster() else {
+        return;
+    };
+    let mut slots = broadcaster.lock_background_slots();
+    let removed = slots
+        .get_mut(&conversation_id)
+        .filter(|slot| holds_abandoned(slot))
+        .and_then(|slot| slot.uncertain.take())
+        .is_some();
+    if removed {
+        emit_event(
+            emitter,
+            BACKGROUND_PENDING_EVENT,
+            BackgroundPendingEntry::idle(conversation_id),
+        );
+    }
 }
 
 /// Cowork 加的（#834）：[`clear_uncertain_background`]，再把 `fence`（编号）及更旧的连接
@@ -1018,10 +1042,12 @@ where
         // #1117：这一轮里智能体真的回了东西（`Prompting` 里来了它的输出），新的一轮开始了，
         // 上一轮没跑完的后台任务不用再写。对话的 `in_progress` 和连接进入 `Prompting` 都不算：
         // 两个都在消息交给智能体之前就发了，交不出去（被拒、连接早断了）这一轮其实没开始。
+        // #1246：这里只删没跑完的后台任务（`abandoned`）；「?」要等这一轮跑完（`TurnComplete`，
+        // 见 [`background_pending_broadcasts`]），智能体刚回第一条时还不算。
         let turn_answered = s.status == ConnectionStatus::Prompting && is_agent_answer(&payload);
         s.apply_event(&payload);
         if let Some(conversation_id) = s.conversation_id.filter(|_| turn_answered) {
-            clear_uncertain_background(emitter, conversation_id, SettledAs::Closed);
+            clear_abandoned_background(emitter, conversation_id);
         }
         if let Some((before_id, before, before_tasks)) = background_before {
             // The CLI and the background work in it end with the
@@ -1051,6 +1077,7 @@ where
                     turn_failed,
                     external_id: s.external_id.clone(),
                     resumed_from: s.resumed_from_external_id.clone(),
+                    completed_turn: s.turns_completed > 0,
                 },
             );
         }
@@ -1156,6 +1183,8 @@ fn moves_background_pending(payload: &AcpEvent) -> bool {
             | AcpEvent::AsyncTask { .. }
             | AcpEvent::SessionStarted { .. }
             | AcpEvent::ConversationLinked { .. }
+            // #1246：新连接跑完一轮才接手留下来的「?」。
+            | AcpEvent::TurnComplete { .. }
             | AcpEvent::StatusChanged {
                 status: ConnectionStatus::Disconnected
             }
@@ -1232,6 +1261,8 @@ struct BackgroundPendingUpdate {
     external_id: Option<String>,
     /// 这条连接启动时要 resume 的会话 id（[`SessionState::resumed_from_external_id`]）。
     resumed_from: Option<String>,
+    /// #1246：事件后这条连接跑完过一轮（[`SessionState::turns_completed`] 不是 0）。
+    completed_turn: bool,
 }
 
 /// Cowork 加的：把读数交给表，并把该发的广播发出去。拿着表锁发，和别的连接、和
@@ -1281,6 +1312,7 @@ pub(crate) fn publish_process_observation(
             turn_failed: false,
             external_id: s.external_id.clone(),
             resumed_from: s.resumed_from_external_id.clone(),
+            completed_turn: s.turns_completed > 0,
         },
     );
 }
@@ -1333,6 +1365,7 @@ fn background_pending_broadcasts(
         turn_failed,
         external_id,
         resumed_from,
+        completed_turn,
     } = update;
     let (before_id, (before_count, _)) = &before;
     let after_id = after.0;
@@ -1394,13 +1427,15 @@ fn background_pending_broadcasts(
     }
 
     // #441：活着的连接 resume 着留下「?」的那个会话（还没绑对话；resume 失败回退成新会话的
-    // 也算，看启动时要 resume 的 id）：智能体已经起来了，这个「?」作废、发 `idle`。
+    // 也算，看启动时要 resume 的 id）：这个「?」作废、发 `idle`。#1246：只是连上了不算，
+    // 要这条连接自己跑完过一轮（[`LiveBinding::claims`]）。
     if external_id.is_some() {
         let binding = LiveBinding {
             conversation_id: None,
             external_id: external_id.clone(),
             resumed_from,
             generation,
+            completed_turn,
         };
         let mut claimed: Vec<i32> = slots
             .iter()
@@ -1426,10 +1461,10 @@ fn background_pending_broadcasts(
     // #530：这条连接从另一条（更旧的）连接手里接过新对话那一行。表里那一行显示的是旧连接
     // 最后的样子，接手后要把自己的状态推一次（没有后台任务就推 `idle`）。
     // #1117：这一行留着没跑完的后台任务（`abandoned`）的不推 `idle`：接手只是重连，红叉
-    // 的悬停还要写任务名。
+    // 的悬停还要写任务名。#1246：留着「?」的也不推，「?」要等下面认领了才删。
     let took_over = relinked
         && after_id.and_then(|id| slots.get(&id)).is_some_and(|slot| {
-            slot.generation != 0 && slot.generation < generation && !holds_abandoned(slot)
+            slot.generation != 0 && slot.generation < generation && slot.uncertain.is_none()
         });
     let old_row_admitted = !relinked
         || before_id
@@ -1438,9 +1473,12 @@ fn background_pending_broadcasts(
     let new_row_admitted =
         after_id.is_some_and(|id| admit_background_reading(slots, id, generation));
 
-    // 活着的连接报了这个对话的读数（包括刚绑上、`count` 是 0）：留下来的「?」作废。
+    // 活着的连接报了这个对话的读数：留下来的「?」作废。#1246：只是刚绑上、报 `count` 0
+    // 不算（打开或刷新会话时自动起的连接不知道旧进程里的后台任务），要报出自己的后台任务
+    // （`count > 0`），或者这条连接跑完过一轮。
     // 没跑完的后台任务（`abandoned`，#1117）不删：要等新的一轮开始、完成或删掉对话。
-    if let Some(conversation_id) = after_id.filter(|_| new_row_admitted) {
+    let claims_row = completed_turn || after_count > 0;
+    if let Some(conversation_id) = after_id.filter(|_| new_row_admitted && claims_row) {
         let removed = slots
             .get_mut(&conversation_id)
             .filter(|slot| !holds_abandoned(slot))
@@ -1876,6 +1914,7 @@ mod tests {
             external_id: Some("sid-old".into()),
             resumed_from: Some("sid-old".into()),
             generation: next.read().await.generation,
+            completed_turn: false,
         }];
         assert!(abandoned_listed(&broadcaster, &bound));
 
@@ -2067,8 +2106,8 @@ mod tests {
     }
 
     /// #441：刷新后打开会话自动连上的新连接只 resume 智能体会话（`SessionStarted` 报同一个
-    /// 会话 id），要到第一次发消息才绑对话。它连上了就删掉这个对话留下的「?」并广播 `idle`，
-    /// 不然侧栏写「已退出」、连接点写「已连接」。
+    /// 会话 id），要到第一次发消息才绑对话。#1246：只是连上了不删「?」，它跑完一轮才删掉
+    /// 这个对话留下的「?」并广播 `idle`。
     #[tokio::test]
     async fn a_new_connection_resuming_the_session_clears_the_mark() {
         let (broadcaster, emitter, mut rx) = web_emitter();
@@ -2109,13 +2148,16 @@ mod tests {
             },
         )
         .await;
+        assert!(background_events(&mut rx).is_empty());
+        assert_eq!(broadcaster.merge_background_pending(Vec::new()).len(), 1);
+        emit_with_state(&next, &emitter, turn_complete()).await;
         assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
         assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
     }
 
     /// #441（返工）：resume 旧会话失败、或者智能体不支持 resume，回退成新会话：新连接的
     /// `SessionStarted` 报的是新的会话 id、也还没绑对话，但它启动时要 resume 的就是留下「?」
-    /// 的那个会话，照样删掉「?」并广播 `idle`。
+    /// 的那个会话，跑完一轮（#1246）照样删掉「?」并广播 `idle`。
     #[tokio::test]
     async fn a_new_connection_falling_back_from_the_session_clears_the_mark() {
         let (broadcaster, emitter, mut rx) = web_emitter();
@@ -2158,6 +2200,8 @@ mod tests {
             },
         )
         .await;
+        assert!(background_events(&mut rx).is_empty());
+        emit_with_state(&next, &emitter, turn_complete()).await;
         assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
         assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
     }
@@ -2177,6 +2221,7 @@ mod tests {
             external_id: None,
             resumed_from: None,
             generation,
+            completed_turn: true,
         };
         assert_eq!(
             broadcaster
@@ -2187,6 +2232,146 @@ mod tests {
         assert!(broadcaster
             .merge_background_pending_with(Vec::new(), &[binding(newer_generation)])
             .is_empty());
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    fn turn_complete() -> AcpEvent {
+        AcpEvent::TurnComplete {
+            session_id: "sid-old".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+        }
+    }
+
+    /// #1246：打开或刷新「?」会话时自动起的新连接，只是 resume 会话、绑上对话、报 `count`
+    /// 0 的读数，都不算接手：它不知道旧进程里的后台任务，「?」留着、不发 `idle`，列表里也还在。
+    /// 等它自己跑完一轮（`TurnComplete`）才删「?」、发 `idle`。
+    #[tokio::test]
+    async fn a_reconnect_keeps_the_mark_until_it_completes_a_turn() {
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        let old = fresh_state();
+        emit_with_state(
+            &old,
+            &emitter,
+            AcpEvent::SessionStarted {
+                session_id: "sid-old".into(),
+            },
+        )
+        .await;
+        emit_with_state(&old, &emitter, linked(7)).await;
+        emit_with_state(&old, &emitter, watcher_activity(&[("b1", "Sleep")], 1)).await;
+        emit_with_state(&old, &emitter, disconnected()).await;
+        let _ = background_events(&mut rx);
+
+        let next = fresh_state();
+        next.write().await.resumed_from_external_id = Some("sid-old".into());
+        emit_with_state(
+            &next,
+            &emitter,
+            AcpEvent::SessionStarted {
+                session_id: "sid-old".into(),
+            },
+        )
+        .await;
+        emit_with_state(&next, &emitter, linked(7)).await;
+        emit_with_state(&next, &emitter, watcher_activity(&[], 2)).await;
+        assert!(background_events(&mut rx).is_empty());
+        let binding = |completed_turn| LiveBinding {
+            conversation_id: Some(7),
+            external_id: Some("sid-old".into()),
+            resumed_from: Some("sid-old".into()),
+            generation: u64::MAX,
+            completed_turn,
+        };
+        let listed = broadcaster.merge_background_pending_with(Vec::new(), &[binding(false)]);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].state,
+            crate::acp::types::BackgroundPendingState::Uncertain
+        );
+
+        emit_with_state(&next, &emitter, turn_complete()).await;
+        assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// #1246（返工）：「?」会话里发了消息，智能体在这一轮里先回了东西（内容、工具调用），
+    /// 这一轮还没跑完：「?」留着、不发 `idle`，列表里也还在；`TurnComplete` 才删。
+    #[tokio::test]
+    async fn the_first_answer_of_a_turn_keeps_the_mark_until_the_turn_completes() {
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        leave_uncertain_mark(&emitter).await;
+        let _ = background_events(&mut rx);
+
+        let next = fresh_state();
+        emit_with_state(&next, &emitter, linked(7)).await;
+        emit_with_state(
+            &next,
+            &emitter,
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Prompting,
+            },
+        )
+        .await;
+        emit_with_state(
+            &next,
+            &emitter,
+            AcpEvent::ContentDelta {
+                text: "working".into(),
+                parent_tool_use_id: None,
+            },
+        )
+        .await;
+        assert!(background_events(&mut rx).is_empty());
+        let listed = broadcaster.merge_background_pending(Vec::new());
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].state,
+            crate::acp::types::BackgroundPendingState::Uncertain
+        );
+
+        emit_with_state(&next, &emitter, turn_complete()).await;
+        assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
+        assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
+    }
+
+    /// #1246：列表时，没跑完过一轮的活连接不认领「?」；跑完过的认领。
+    #[tokio::test]
+    async fn merge_needs_a_completed_turn_to_claim_the_mark() {
+        let (broadcaster, emitter, _rx) = web_emitter();
+        leave_uncertain_mark(&emitter).await;
+        let binding = |completed_turn| LiveBinding {
+            conversation_id: Some(7),
+            external_id: None,
+            resumed_from: None,
+            generation: u64::MAX,
+            completed_turn,
+        };
+        assert_eq!(
+            broadcaster
+                .merge_background_pending_with(Vec::new(), &[binding(false)])
+                .len(),
+            1
+        );
+        assert!(broadcaster
+            .merge_background_pending_with(Vec::new(), &[binding(true)])
+            .is_empty());
+    }
+
+    /// #1246：新连接报出自己的后台任务（`count > 0`），以新读数为准，「?」删掉。
+    #[tokio::test]
+    async fn a_reconnect_reporting_its_own_background_work_replaces_the_mark() {
+        let (broadcaster, emitter, mut rx) = web_emitter();
+        leave_uncertain_mark(&emitter).await;
+        let _ = background_events(&mut rx);
+
+        let next = fresh_state();
+        emit_with_state(&next, &emitter, linked(7)).await;
+        assert!(background_events(&mut rx).is_empty());
+        emit_with_state(&next, &emitter, watcher_activity(&[("b2", "Build")], 1)).await;
+        let events = background_events(&mut rx);
+        assert_eq!(events.last().unwrap()["state"], "waiting");
+        assert_eq!(events.last().unwrap()["count"], 1);
         assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
     }
 
@@ -2253,7 +2438,8 @@ mod tests {
         );
     }
 
-    /// 完成标准 4：新连接绑到这个对话上，即使 `count` 是 0，也删掉「?」并广播 `idle`。
+    /// 新连接绑到这个对话上：#1246 起 `count` 是 0 时不删，这条连接跑完一轮才删掉「?」
+    /// 并广播 `idle`。
     #[tokio::test]
     async fn a_new_connection_linking_the_conversation_clears_the_mark() {
         let (broadcaster, emitter, mut rx) = web_emitter();
@@ -2262,11 +2448,14 @@ mod tests {
 
         let next = fresh_state();
         emit_with_state(&next, &emitter, linked(7)).await;
+        assert!(background_events(&mut rx).is_empty());
+        emit_with_state(&next, &emitter, turn_complete()).await;
         assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
         assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
     }
 
-    /// 完成标准 4：一条连接的对话 id 换成这个对话（不经 `ConversationLinked`）也算绑上。
+    /// 一条连接的对话 id 换成这个对话（不经 `ConversationLinked`）也算绑上，同样要跑完一轮
+    /// （#1246）。
     #[tokio::test]
     async fn a_connection_relinked_onto_the_conversation_clears_the_mark() {
         let (broadcaster, emitter, mut rx) = web_emitter();
@@ -2277,6 +2466,8 @@ mod tests {
         emit_with_state(&next, &emitter, linked(8)).await;
         next.write().await.conversation_id = Some(7);
         emit_with_state(&next, &emitter, watcher_activity(&[], 1)).await;
+        assert!(background_events(&mut rx).is_empty());
+        emit_with_state(&next, &emitter, turn_complete()).await;
         assert_eq!(background_events(&mut rx), vec![idle_entry(7)]);
         assert!(broadcaster.merge_background_pending(Vec::new()).is_empty());
     }

@@ -1117,11 +1117,28 @@ mod tauri_app {
                 );
 
                 let app_version = env!("CARGO_PKG_VERSION");
-                let database = tauri::async_runtime::block_on(db::init_database(
+                let database = match tauri::async_runtime::block_on(db::init_database(
                     &effective_data_dir,
                     app_version,
-                ))
-                .map_err(|e| e.to_string())?;
+                )) {
+                    Ok(database) => database,
+                    // 打不开库（比如更新的版本升级过、又换不回升级前的副本）：不交给
+                    // Tauri 当场崩溃，弹框说清原因，点「退出」就退出，不动数据（#1258）。
+                    Err(e) => {
+                        tracing::error!("[startup] failed to open the database: {e}");
+                        use tauri_plugin_dialog::{
+                            DialogExt, MessageDialogButtons, MessageDialogKind,
+                        };
+                        let handle = app.handle().clone();
+                        app.dialog()
+                            .message(db::open_failure_message(&e, &effective_data_dir))
+                            .title(format!("{} 打不开数据", crate::brand::DISPLAY_NAME))
+                            .kind(MessageDialogKind::Error)
+                            .buttons(MessageDialogButtons::OkCustom("退出 / Quit".to_string()))
+                            .show(move |_| handle.exit(1));
+                        return Ok(());
+                    }
+                };
                 app.manage(database);
                 // 起子进程或内置 daemon 之前：上次没跑完（崩溃、被杀、断电）留下的回合标成被打断。
                 if scan_stranded_turns {

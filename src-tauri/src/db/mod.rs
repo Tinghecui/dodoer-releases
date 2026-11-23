@@ -153,6 +153,34 @@ pub async fn init_database(
     Ok(AppDatabase { conn })
 }
 
+/// 桌面版启动时 [`init_database`] 失败，弹框里给人看的正文：中英各一句说怎么回事、
+/// 该怎么办，原来的库在哪，最后附上原文。库是更新的版本升级过的（换不回升级前的
+/// 副本，见 `downgrade`）单独说，不动用户的数据（#1258）。
+#[cfg(any(feature = "tauri-runtime", test))]
+#[cfg_attr(not(feature = "tauri-runtime"), allow(dead_code))]
+pub fn open_failure_message(err: &DbError, app_data_dir: &Path) -> String {
+    let detail = err.to_string();
+    let db_path = app_data_dir.join(database_file_name());
+    let upgraded_by_newer = matches!(err, DbError::Migration(m)
+        if m.contains("upgraded by another version") || m.contains("Migration file of version"));
+    let (zh, en) = if upgraded_by_newer {
+        (
+            "这份数据是更新的版本升级过的，这个版本打不开。请装回新版本或恢复备份。数据没有被改动。",
+            "This data was upgraded by a newer version, which this version cannot open. \
+             Install the newer version again or restore a backup. Nothing was changed.",
+        )
+    } else {
+        (
+            "打不开数据库，这次启动不了。",
+            "The database could not be opened, so the app cannot start.",
+        )
+    };
+    format!(
+        "{zh}\n{en}\n\n数据库 / Database: {}\n\n{detail}",
+        db_path.display()
+    )
+}
+
 /// Where [`snapshot_before_migrations`] keeps its copies, under the data dir.
 pub(crate) const PRE_MIGRATE_DIR: &str = "backups/pre-migrate";
 

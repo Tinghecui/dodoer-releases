@@ -618,6 +618,40 @@ mod tests {
         assert!(!dir.path().join(REPLACED_DIR).exists());
     }
 
+    /// #1258：换不回副本、拒绝启动时，桌面版弹框的正文说清是更新的版本升级过、
+    /// 该怎么办、原来的库在哪，并带上原文。
+    #[tokio::test]
+    async fn the_startup_dialog_says_a_newer_version_upgraded_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = upgraded_by_newer_build(dir.path(), false).await;
+        std::fs::remove_dir_all(pre_migrate_dir(dir.path())).unwrap();
+
+        let err = match init_database(dir.path(), "older").await {
+            Ok(_) => panic!("must refuse without a copy"),
+            Err(e) => e,
+        };
+        let text = super::super::open_failure_message(&err, dir.path());
+        assert!(text.contains("更新的版本"), "{text}");
+        assert!(text.contains("请装回新版本或恢复备份"), "{text}");
+        assert!(text.contains("newer version"), "{text}");
+        assert!(text.contains(&*path.to_string_lossy()), "{text}");
+        assert!(text.contains(&err.to_string()), "{text}");
+    }
+
+    /// 别的原因打不开（不是新版本升级过）不说成「更新的版本」，原文照样带上。
+    #[test]
+    fn the_startup_dialog_for_other_failures_keeps_the_original_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = DbError::Io(std::io::Error::other("disk is on fire"));
+        let text = super::super::open_failure_message(&err, dir.path());
+        assert!(!text.contains("更新的版本"), "{text}");
+        assert!(text.contains("disk is on fire"), "{text}");
+        assert!(
+            text.contains(&*db_path(dir.path()).to_string_lossy()),
+            "{text}"
+        );
+    }
+
     #[tokio::test]
     async fn a_copy_this_version_cannot_read_is_skipped() {
         let dir = tempfile::tempdir().unwrap();

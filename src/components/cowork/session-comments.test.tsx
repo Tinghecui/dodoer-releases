@@ -77,6 +77,10 @@ vi.mock("@/components/ai-elements/message", () => ({
   ),
 }))
 vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }))
+// 顶栏给窗口角上的浮层留位置要读侧栏、辅助面板这些布局状态，这里不测它。
+vi.mock("@/components/layout/conversation-corner-reserve", () => ({
+  ConversationCornerReserve: () => null,
+}))
 
 const TARGET: SharedSessionTarget = {
   owner: "member-a",

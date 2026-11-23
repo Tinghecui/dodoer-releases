@@ -26,6 +26,10 @@ const api = vi.hoisted(() => ({
     >(),
   teamCommentsSeen: vi.fn<(owner: string, id: string) => Promise<void>>(),
 }))
+// 顶栏给窗口角上的浮层留位置要读侧栏、辅助面板这些布局状态，这里不测它。
+vi.mock("@/components/layout/conversation-corner-reserve", () => ({
+  ConversationCornerReserve: () => null,
+}))
 vi.mock("@/lib/cowork/team", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/cowork/team")>()
   return {

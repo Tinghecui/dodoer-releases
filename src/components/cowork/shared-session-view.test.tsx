@@ -14,6 +14,7 @@ import {
 } from "@/stores/cowork-team-store"
 import { useTabStore } from "@/stores/tab-store"
 import { useOverlayHostHidden } from "@/components/ui/overlay-host-hidden"
+import { leftChromeReserve, rightChromeReserve } from "@/lib/window-chrome"
 import {
   SharedSessionHost,
   sharedSessionPortalLink,
@@ -30,6 +31,22 @@ const api = vi.hoisted(() => ({
   openConversations: vi.fn(),
   activateConversationPane: vi.fn(),
 }))
+// 窗口四角浮层要让出的位置跟着侧栏、辅助面板和工作区模式走：换成能改的替身。
+const chrome = vi.hoisted(() => ({
+  sidebarOpen: true,
+  auxOpen: false,
+  mode: "conversation" as "conversation" | "files" | "fusion",
+}))
+vi.mock("@/contexts/sidebar-context", () => ({
+  useSidebarContext: () => ({ isOpen: chrome.sidebarOpen }),
+}))
+vi.mock("@/contexts/aux-panel-context", () => ({
+  useAuxPanelContext: () => ({ isOpen: chrome.auxOpen }),
+}))
+vi.mock("@/hooks/use-appearance", () => ({
+  useZoomLevel: () => ({ zoomLevel: 100, setZoomLevel: vi.fn() }),
+}))
+vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }))
 // 打开只读视图时要切回会话工作区、放下铺满的文件区：换成能看到调用的替身。
 vi.mock("@/contexts/workbench-route-context", () => ({
   useOptionalWorkbenchRoute: () => ({
@@ -42,6 +59,10 @@ vi.mock("@/contexts/workbench-route-context", () => ({
 vi.mock("@/contexts/workspace-context", () => ({
   useOptionalWorkspaceActions: () => ({
     activateConversationPane: api.activateConversationPane,
+  }),
+  useWorkspaceView: () => ({
+    mode: chrome.mode,
+    conversationMaximized: false,
   }),
 }))
 vi.mock("@/lib/cowork/team", async (importOriginal) => {
@@ -160,6 +181,9 @@ beforeEach(() => {
   api.teamCommentsSeen.mockResolvedValue({ owner: "", id: "", seenId: null })
   api.openConversations.mockReset()
   api.activateConversationPane.mockReset()
+  chrome.sidebarOpen = true
+  chrome.auxOpen = false
+  chrome.mode = "conversation"
 })
 
 afterEach(() => {
@@ -495,5 +519,36 @@ describe("SharedSessionHost", () => {
       useCoworkTeamStore.getState().markUnavailable()
     })
     expect(view()).toBeNull()
+  })
+
+  // #1401：右上角的浮动工具栏（留言、分享、终端、设置）固定在窗口角上，
+  // 只读视图的顶栏要像会话顶栏一样给它留位置，不然复制链接和关闭叉号被盖住。
+  it("keeps the top row's buttons clear of the window's corner overlays", async () => {
+    makeAvailable()
+    api.teamEntries.mockResolvedValue(page([]))
+    renderHost()
+    await open()
+    const row = screen.getByRole("button", { name: "Close" }).parentElement!
+    const last = row.lastElementChild as HTMLElement
+    expect(last.classList.contains("chrome-reserve")).toBe(true)
+    expect(last.style.width).toBe(`${rightChromeReserve(false, 100)}px`)
+    // 侧栏开着时左上角没有浮层压在这一行上。
+    const first = row.firstElementChild as HTMLElement
+    expect(first.classList.contains("chrome-reserve")).toBe(true)
+    expect(first.style.width).toBe("0px")
+  })
+
+  it("reserves the left corner while the sidebar is collapsed and none on the right while the aux panel is open", async () => {
+    chrome.sidebarOpen = false
+    chrome.auxOpen = true
+    makeAvailable()
+    api.teamEntries.mockResolvedValue(page([]))
+    renderHost()
+    await open()
+    const row = screen.getByRole("button", { name: "Close" }).parentElement!
+    const first = row.firstElementChild as HTMLElement
+    expect(first.style.width).toBe(`${leftChromeReserve(false, 100)}px`)
+    const last = row.lastElementChild as HTMLElement
+    expect(last.style.width).toBe("0px")
   })
 })

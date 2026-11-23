@@ -13,6 +13,9 @@ const flatCss = read("src/app/globals.css")
   .replace(/\s+/g, " ")
 const layout = read("src/app/workspace/layout.tsx")
 const panel = read("src/components/conversations/conversation-detail-panel.tsx")
+const cornerReserve = read(
+  "src/components/layout/conversation-corner-reserve.tsx"
+)
 
 const RESERVE_SELECTOR =
   '.panel-slide-animating[data-panel-group-direction="horizontal"] .chrome-reserve'
@@ -107,15 +110,18 @@ describe("corner reserve slide", () => {
   })
 
   it("mounts the header's right reserve only while the column holds the right edge", () => {
-    const start = panel.indexOf("function ConversationCornerReserve(")
+    const start = cornerReserve.indexOf("function ConversationCornerReserve(")
     expect(start).toBeGreaterThan(-1)
-    const body = panel.slice(start, panel.indexOf("\n}\n", start))
+    const body = cornerReserve.slice(
+      start,
+      cornerReserve.indexOf("\n}\n", start)
+    )
     expect(body).toContain(
       'const holdsRight = mode === "conversation" || conversationMaximized'
     )
     expect(body).toContain('if (side === "right" && !holdsRight) return null')
     expect(body).not.toContain("width <= 0")
     expect(body).toMatch(/:\s*auxOpen\s*\?\s*0\s*:\s*rightChromeReserve\(/)
-    expect(body).toContain("return <ChromeReserve width={width} />")
+    expect(body).toContain("return <ChromeReserve width={width} line={line} />")
   })
 })

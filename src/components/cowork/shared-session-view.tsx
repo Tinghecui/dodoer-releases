@@ -27,6 +27,7 @@ import {
 import { Check, Eye, Link2, X } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 import { MessageResponse } from "@/components/ai-elements/message"
+import { ConversationCornerReserve } from "@/components/layout/conversation-corner-reserve"
 import { OverlayHostHiddenProvider } from "@/components/ui/overlay-host-hidden"
 import { useOptionalWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useOptionalWorkspaceActions } from "@/contexts/workspace-context"
@@ -276,7 +277,10 @@ function SharedSessionView({
         data-shared-session-bar=""
         className="flex shrink-0 flex-col gap-1 border-b border-border px-4 py-2"
       >
+        {/* #1401：这一行落在窗口左上、右上角的浮动工具栏下面，像会话顶栏一样
+            给它们留出位置，复制链接和关闭叉号才点得到。 */}
         <div className="flex min-w-0 items-center gap-2">
+          <ConversationCornerReserve side="left" line={false} />
           <Eye
             aria-hidden="true"
             className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
@@ -314,6 +318,7 @@ function SharedSessionView({
           >
             <X aria-hidden="true" className="h-3.5 w-3.5" />
           </button>
+          <ConversationCornerReserve side="right" line={false} />
         </div>
         <div className="flex min-w-0 items-baseline gap-2">
           <h2 className="min-w-0 truncate text-[0.875rem] font-medium">

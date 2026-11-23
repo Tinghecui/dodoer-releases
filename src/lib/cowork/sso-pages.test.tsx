@@ -13,6 +13,8 @@ const sso = vi.hoisted(() => ({
   ssoFallback: vi.fn(),
   lastPortalBounce: vi.fn(() => null),
   sendToPortalLogin: vi.fn(),
+  clearStoredToken: vi.fn(() => localStorage.removeItem("codeg_token")),
+  COWORK_SSO_TOKEN: "cowork-sso",
 }))
 vi.mock("@/lib/cowork/sso", () => sso)
 // These pages run the portal flow only in a Cowork build; the suite itself is
@@ -204,6 +206,75 @@ describe("login page", () => {
     } finally {
       vi.unstubAllGlobals()
       window.history.replaceState(null, "", "/")
+    }
+  })
+
+  // #1418：没有门户的服务器上，已经用令牌登录过，两分钟内第二次打开 /login
+  // 时防循环标记还在：要先拿本地存着的令牌试一次，不能停在空表单上。
+  it("enters the workspace with a stored token even right after a portal bounce", async () => {
+    sso.probeCoworkSso.mockResolvedValue("denied")
+    sso.ssoFallback.mockReturnValue("form")
+    sessionStorage.setItem("cowork_sso_bounce", String(Date.now()))
+    localStorage.setItem("codeg_token", "stored-good")
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    try {
+      const { container } = renderLogin()
+      await waitFor(() =>
+        expect(router.replace).toHaveBeenCalledWith("/workspace")
+      )
+      expect(fetchMock.mock.calls[0][1].headers).toMatchObject({
+        Authorization: "Bearer stored-good",
+      })
+      expect(localStorage.getItem("codeg_token")).toBe("stored-good")
+      expect(sso.sendToPortalLogin).not.toHaveBeenCalled()
+      expect(container).toBeEmptyDOMElement()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("forgets a rejected stored token and falls back as before", async () => {
+    sso.probeCoworkSso.mockResolvedValue("denied")
+    sso.ssoFallback.mockReturnValue("form")
+    localStorage.setItem("codeg_token", "stored-bad")
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        headers: new Headers({ "WWW-Authenticate": 'Bearer realm="codeg"' }),
+      })
+    )
+    try {
+      renderLogin()
+      expect(await screen.findByRole("button")).toBeInTheDocument()
+      expect(localStorage.getItem("codeg_token")).toBeNull()
+      expect(sso.ssoFallback).toHaveBeenCalledWith("denied", expect.anything())
+      expect(router.replace).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("does not try the portal placeholder as a token", async () => {
+    sso.probeCoworkSso.mockResolvedValue("denied")
+    sso.ssoFallback.mockReturnValue("portal")
+    localStorage.setItem("codeg_token", "cowork-sso")
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+    try {
+      renderLogin()
+      await waitFor(() =>
+        expect(sso.sendToPortalLogin).toHaveBeenCalledWith("/_cowork/account")
+      )
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
     }
   })
 })

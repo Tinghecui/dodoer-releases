@@ -10,6 +10,8 @@ import {
   unauthorizedSource,
 } from "@/lib/transport/web-auth"
 import {
+  clearStoredToken,
+  COWORK_SSO_TOKEN,
   lastPortalBounce,
   probeCoworkSso,
   sendToPortalLogin,
@@ -142,11 +144,30 @@ export default function LoginPage() {
         cancelled = true
       }
     }
-    void probeCoworkSso().then((probe) => {
+    void (async () => {
+      const probe = await probeCoworkSso()
       if (cancelled) return
       if (probe === "ok") {
         router.replace("/workspace")
         return
+      }
+      // #1418：没有门户的服务器上，探测总是被拒；已经用令牌登录过的，先拿
+      // 本地存着的令牌试一次，通过就直接进工作区（不跳门户、不写防循环
+      // 标记）。被明确拒绝的令牌清掉，照旧往下走；门户的占位符不拿来试。
+      let stored: string | null = null
+      try {
+        stored = localStorage.getItem("codeg_token")
+      } catch {
+        stored = null
+      }
+      if (stored && stored !== COWORK_SSO_TOKEN) {
+        const result = await checkToken(stored)
+        if (cancelled) return
+        if (result.kind === "ok") {
+          router.replace("/workspace")
+          return
+        }
+        if (result.kind === "invalid") clearStoredToken()
       }
       // Cowork users have no access token to type: an expired / missing
       // portal session goes back to the portal (keeps the form hidden).
@@ -158,7 +179,7 @@ export default function LoginPage() {
       })
       if (next === "portal") sendToPortalLogin(COWORK_ACCOUNT_URL)
       else setSsoChecking(false)
-    })
+    })()
     return () => {
       cancelled = true
     }

@@ -1327,23 +1327,40 @@ pub struct AcpPrepareNpxAgentParams {
     pub task_id: String,
 }
 
+/// Run an agent install/uninstall to completion even if the request goes away.
+///
+/// axum drops a handler's future when the client disconnects (a proxy timeout,
+/// a flaky network), which would stop npm midway — after a renamed package's
+/// old copy was already removed and before the new one is in, leaving the
+/// agent not installed at all. A spawned task is not cancelled with the
+/// request, and progress still reaches the UI through the task's events.
+async fn run_detached<T: Send + 'static>(
+    work: impl std::future::Future<Output = Result<T, AppCommandError>> + Send + 'static,
+) -> Result<T, AppCommandError> {
+    tokio::spawn(work)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?
+}
+
 pub async fn acp_prepare_npx_agent(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpPrepareNpxAgentParams>,
 ) -> Result<Json<String>, AppCommandError> {
-    let db = &state.db;
-    let emitter = state.emitter.clone();
-    let result = acp_commands::acp_prepare_npx_agent_core(
-        params.agent_type,
-        params.registry_version,
-        params.version,
-        params.clean_first,
-        params.task_id,
-        db,
-        &emitter,
-    )
-    .await
-    .map_err(AppCommandError::from)?;
+    let result = run_detached(async move {
+        let emitter = state.emitter.clone();
+        acp_commands::acp_prepare_npx_agent_core(
+            params.agent_type,
+            params.registry_version,
+            params.version,
+            params.clean_first,
+            params.task_id,
+            &state.db,
+            &emitter,
+        )
+        .await
+        .map_err(AppCommandError::from)
+    })
+    .await?;
     Ok(Json(result))
 }
 
@@ -1358,11 +1375,18 @@ pub async fn acp_uninstall_agent(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpUninstallAgentParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    let db = &state.db;
-    let emitter = state.emitter.clone();
-    acp_commands::acp_uninstall_agent_core(params.agent_type, params.task_id, db, &emitter)
+    run_detached(async move {
+        let emitter = state.emitter.clone();
+        acp_commands::acp_uninstall_agent_core(
+            params.agent_type,
+            params.task_id,
+            &state.db,
+            &emitter,
+        )
         .await
-        .map_err(AppCommandError::from)?;
+        .map_err(AppCommandError::from)
+    })
+    .await?;
     Ok(Json(()))
 }
 

@@ -737,7 +737,11 @@
       "stdioCommandRequired": "stdio タイプの MCP には空でない command フィールドが必要です。",
       "remoteUrlRequired": "リモート MCP には空でない url フィールドが必要です。",
       "appsRequired": "対象アプリを少なくとも 1 つ選択してください。",
-      "opencodeSseUnsupported": "OpenCode 2 には SSE クライアントがないため、SSE の MCP サーバーを実行できません。サーバーが対応していれば streamable HTTP（type を \"http\"）に切り替えるか、OpenCode を選択しないでください。"
+      "opencodeSseUnsupported": "OpenCode 2 には SSE クライアントがないため、SSE の MCP サーバーを実行できません。サーバーが対応していれば streamable HTTP（type を \"http\"）に切り替えるか、OpenCode を選択しないでください。",
+      "invalidServerId": "Server ID が不正です：英数字と _ . - のみ使用できます（1～64 文字）。",
+      "argsMustBeStringArray": "args は文字列の配列である必要があります。",
+      "envMustBeStringMap": "env は値が文字列のオブジェクトである必要があります。",
+      "headersMustBeStringMap": "headers は値が文字列のオブジェクトである必要があります。"
     },
     "jsonNames": {
       "localConfig": "MCP設定",
@@ -801,7 +805,8 @@
       "serverIdLabel": "Server ID",
       "serverIdPlaceholder": "Server ID（例：my-mcp）",
       "typeHint": "対応タイプ：stdio、http（エイリアス streamable-http、streamableHttp）、sse。env は stdio 専用です。リモート MCP の認証トークンは headers で渡してください。",
-      "envOnRemoteWarning": "リモート MCP の設定に env が含まれています。env は stdio のみで使用され、リモート MCP の認証トークンは headers に格納します。env は保存時に無視されます。"
+      "envOnRemoteWarning": "リモート MCP の設定に env が含まれています。env は stdio のみで使用され、リモート MCP の認証トークンは headers に格納します。env は保存時に無視されます。",
+      "serverIdInvalid": "英数字と _ . - のみ使用できます（1～64 文字）。"
     },
     "market": {
       "selectMarketplace": "マーケットプレイスを選択",
@@ -826,7 +831,14 @@
       "deployed": "デプロイ済み",
       "notDeployed": "未デプロイ"
     },
-    "selectLeftMcp": "左側でMCPを選択してください。"
+    "selectLeftMcp": "左側でMCPを選択してください。",
+    "uninstallDialog": {
+      "title": "MCP「{id}」をアンインストールしますか？",
+      "description": "次のエージェントの MCP 設定から削除されます：{apps}。元に戻せません。",
+      "descriptionNoApps": "すべてのエージェントの MCP 設定から削除されます。元に戻せません。",
+      "coworkPresetWarning": "これは Cowork のプリセットサーバーです。再度追加するまでエージェントは Cowork のツールを使えなくなります。",
+      "confirm": "アンインストール"
+    }
   },
   "AcpAgentSettings": {
     "title": "Agent SDK 管理",

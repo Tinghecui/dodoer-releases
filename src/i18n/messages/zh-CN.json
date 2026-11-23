@@ -737,7 +737,11 @@
       "stdioCommandRequired": "stdio 类型的 MCP 必须填写非空的 command 字段。",
       "remoteUrlRequired": "远端 MCP 必须填写非空的 url 字段。",
       "appsRequired": "请至少选择一个目标 App。",
-      "opencodeSseUnsupported": "OpenCode 2 没有 SSE 客户端，无法运行 SSE 类型的 MCP 服务器。如果该服务器支持，请将其改为 streamable HTTP（type 为 \"http\"），或不要选择 OpenCode。"
+      "opencodeSseUnsupported": "OpenCode 2 没有 SSE 客户端，无法运行 SSE 类型的 MCP 服务器。如果该服务器支持，请将其改为 streamable HTTP（type 为 \"http\"），或不要选择 OpenCode。",
+      "invalidServerId": "Server ID 不合法：只能用字母、数字和 _ . -，长度 1–64。",
+      "argsMustBeStringArray": "args 必须是字符串数组。",
+      "envMustBeStringMap": "env 必须是值为字符串的对象。",
+      "headersMustBeStringMap": "headers 必须是值为字符串的对象。"
     },
     "jsonNames": {
       "localConfig": "MCP 配置",
@@ -801,7 +805,8 @@
       "serverIdLabel": "Server ID",
       "serverIdPlaceholder": "Server ID（例如：my-mcp）",
       "typeHint": "支持类型：stdio、http（别名 streamable-http、streamableHttp）、sse。env 仅适用于 stdio；远端 MCP 请通过 headers 字段传递鉴权 token。",
-      "envOnRemoteWarning": "检测到远端 MCP 配置中包含 env 字段。env 仅 stdio 类型使用，远端 MCP 应通过 headers 携带鉴权信息，env 字段保存时会被忽略。"
+      "envOnRemoteWarning": "检测到远端 MCP 配置中包含 env 字段。env 仅 stdio 类型使用，远端 MCP 应通过 headers 携带鉴权信息，env 字段保存时会被忽略。",
+      "serverIdInvalid": "只能用字母、数字和 _ . -，长度 1–64。"
     },
     "market": {
       "selectMarketplace": "选择市场",
@@ -826,7 +831,14 @@
       "deployed": "已部署",
       "notDeployed": "未部署"
     },
-    "selectLeftMcp": "请选择左侧 MCP。"
+    "selectLeftMcp": "请选择左侧 MCP。",
+    "uninstallDialog": {
+      "title": "卸载 MCP「{id}」？",
+      "description": "会从这些智能体的 MCP 配置里删掉它：{apps}。删掉后不能撤销。",
+      "descriptionNoApps": "会从所有智能体的 MCP 配置里删掉它。删掉后不能撤销。",
+      "coworkPresetWarning": "这是 Cowork 预置的服务器：卸载后智能体就用不了 Cowork 的工具，直到重新加回来。",
+      "confirm": "卸载"
+    }
   },
   "AcpAgentSettings": {
     "title": "Agent SDK管理",

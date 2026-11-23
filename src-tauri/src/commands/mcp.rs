@@ -37,6 +37,63 @@ fn mcp_network(message: impl Into<String>) -> AppCommandError {
     AppCommandError::network(message)
 }
 
+/// 新建 MCP 时 Server ID 只收字母、数字和 `_ . -`，长度 1–64（#1248）：
+/// ID 会原样写成每个智能体配置里的键，带空格、斜杠、中文的会在一些智能体里
+/// 不合法或被改写。前端 `isValidMcpServerId` 是同一条规则。
+fn validate_server_id(server_id: &str) -> Result<(), AppCommandError> {
+    let valid = (1..=64).contains(&server_id.len())
+        && server_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(mcp_invalid_input(format!(
+            "invalid MCP server id '{server_id}': use only letters, digits, '_', '.', '-' (1-64 characters)"
+        ))
+        .with_i18n("errors.invalidServerId", BTreeMap::new()))
+    }
+}
+
+/// 用户手写的配置里 `args`、`env`、`headers` 的形状要对（#1248）。
+/// `canonicalize_spec` 读智能体已有的配置时对这些字段是宽松的（不认识的项丢掉，
+/// 好让别的条目照常显示），但用户保存时悄悄丢掉就成了「提示已创建、重开参数没了」，
+/// 所以保存前单独查一遍，不合格就报错。
+fn validate_spec_field_shapes(spec: &Value) -> Result<(), AppCommandError> {
+    let Some(obj) = spec.as_object() else {
+        // 不是对象的由 canonicalize_spec 报 specMustBeObject
+        return Ok(());
+    };
+    if let Some(args) = obj.get("args").filter(|value| !value.is_null()) {
+        let ok = args
+            .as_array()
+            .is_some_and(|items| items.iter().all(Value::is_string));
+        if !ok {
+            return Err(
+                mcp_invalid_input("MCP spec 'args' must be an array of strings")
+                    .with_i18n("errors.argsMustBeStringArray", BTreeMap::new()),
+            );
+        }
+    }
+    for (key, i18n_key) in [
+        ("env", "errors.envMustBeStringMap"),
+        ("headers", "errors.headersMustBeStringMap"),
+    ] {
+        if let Some(value) = obj.get(key).filter(|value| !value.is_null()) {
+            let ok = value
+                .as_object()
+                .is_some_and(|map| map.values().all(Value::is_string));
+            if !ok {
+                return Err(mcp_invalid_input(format!(
+                    "MCP spec '{key}' must be an object with string values"
+                ))
+                .with_i18n(i18n_key, BTreeMap::new()));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Build the parameter map for an i18n-tagged MCP error.
 fn mcp_i18n_params<const N: usize>(pairs: [(&str, &str); N]) -> BTreeMap<String, String> {
     pairs
@@ -405,6 +462,7 @@ pub async fn mcp_install_from_marketplace(
     let selection = InstallSelection::new(option_id, protocol, parameter_values)?;
 
     let canonical_spec = if let Some(raw_spec) = spec_override.as_ref() {
+        validate_spec_field_shapes(raw_spec)?;
         canonicalize_spec(raw_spec, "marketplace install override")?
     } else {
         match provider_id.as_str() {
@@ -470,6 +528,7 @@ pub async fn mcp_upsert_local_server(
     apps: Vec<McpAppType>,
     shown_spec: Option<Value>,
 ) -> Result<LocalMcpServer, AppCommandError> {
+    validate_spec_field_shapes(&spec)?;
     let canonical_spec = canonicalize_spec(&spec, "local MCP save")?;
     let target_apps = normalize_apps(apps);
     if target_apps.is_empty() {
@@ -497,6 +556,11 @@ pub async fn mcp_upsert_local_server(
     // caught before the first write rather than halfway through.
     let scan = scan_local_servers();
     require_complete_scan(&scan)?;
+    // 只拦新建：已经在某个智能体配置里的 ID（比如市场装的 `io.github.x/y`）
+    // 照旧能编辑保存。
+    if !scan.servers.iter().any(|server| server.id == server_id) {
+        validate_server_id(&server_id)?;
+    }
     // Canonicalized like the saved spec, so a field left alone compares equal.
     let shown = match shown_spec {
         Some(shown) => canonicalize_spec(&shown, "local MCP save").ok(),
@@ -7491,6 +7555,59 @@ fn resolve_smithery_install_spec_with_selection(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn validate_server_id_rejects_bad_ids_issue_1248() {
+        for id in ["qa-mcp", "a.b_c-1", "Cowork2"] {
+            assert!(validate_server_id(id).is_ok(), "{id} should be valid");
+        }
+        assert!(validate_server_id(&"x".repeat(64)).is_ok());
+        for id in ["", "bad id!", "bad id!/中文", "a/b", "中文", " x"] {
+            let err = validate_server_id(id).expect_err(id);
+            assert_eq!(err.i18n_key.as_deref(), Some("errors.invalidServerId"));
+        }
+        assert!(validate_server_id(&"x".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn validate_spec_field_shapes_rejects_bad_args_env_headers_issue_1248() {
+        let ok = serde_json::json!({
+            "type": "stdio", "command": "echo", "args": ["--hello"],
+            "env": {"QA_SECRET": "x"}
+        });
+        assert!(validate_spec_field_shapes(&ok).is_ok());
+        assert!(validate_spec_field_shapes(
+            &serde_json::json!({"type": "stdio", "command": "echo", "args": []})
+        )
+        .is_ok());
+
+        let cases = [
+            (
+                serde_json::json!({"type": "stdio", "command": "echo", "args": "--hello"}),
+                "errors.argsMustBeStringArray",
+            ),
+            (
+                serde_json::json!({"type": "stdio", "command": "echo", "args": ["a", 1]}),
+                "errors.argsMustBeStringArray",
+            ),
+            (
+                serde_json::json!({"type": "stdio", "command": "echo", "env": "A=1"}),
+                "errors.envMustBeStringMap",
+            ),
+            (
+                serde_json::json!({"type": "stdio", "command": "echo", "env": {"A": 1}}),
+                "errors.envMustBeStringMap",
+            ),
+            (
+                serde_json::json!({"type": "http", "url": "http://localhost", "headers": ["x"]}),
+                "errors.headersMustBeStringMap",
+            ),
+        ];
+        for (spec, key) in cases {
+            let err = validate_spec_field_shapes(&spec).expect_err(&spec.to_string());
+            assert_eq!(err.i18n_key.as_deref(), Some(key), "{spec}");
+        }
+    }
+
     use super::*;
 
     fn test_claude_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {

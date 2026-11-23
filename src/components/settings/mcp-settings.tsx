@@ -13,6 +13,16 @@ import {
 import { useTranslations } from "next-intl"
 import { useImeGuard } from "@/hooks/use-ime-guard"
 import { toast } from "sonner"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { BrowserLink } from "@/components/ui/browser-link"
 import { Button } from "@/components/ui/button"
@@ -156,6 +166,18 @@ function appLabel(app: McpAppType): string {
     app
   )
 }
+
+// 新建时的 Server ID 只收这些字符：ID 会原样写成每个智能体配置里的键，空格、
+// 斜杠、中文在一些智能体的配置格式里不合法或会被改写（#1248）。和后端
+// validate_server_id 是同一条规则。
+const MCP_SERVER_ID_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/
+
+export function isValidMcpServerId(id: string): boolean {
+  return MCP_SERVER_ID_PATTERN.test(id)
+}
+
+// Cowork 预置的那一项，卸载前多说一句后果。
+const COWORK_PRESET_SERVER_ID = "cowork"
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
@@ -458,6 +480,9 @@ export function McpSettings() {
   >(appsToDraft(APP_OPTIONS.map((x) => x.value)))
 
   const [draftServerId, setDraftServerId] = useState("")
+  // 等用户确认卸载的那一项；null 表示确认框没开
+  const [pendingUninstall, setPendingUninstall] =
+    useState<LocalMcpServer | null>(null)
   const [draftSpecText, setDraftSpecText] = useState(DEFAULT_DRAFT_SPEC)
   const [draftAppsDraft, setDraftAppsDraft] = useState<
     Record<McpAppType, boolean>
@@ -486,6 +511,9 @@ export function McpSettings() {
     )
   }, [marketDetail, selectedInstallOptionId])
 
+  // 空着不算格式错（点创建时另有「不能为空」的提示），填了不合法的就地标红
+  const draftServerIdInvalid =
+    draftServerId.trim() !== "" && !isValidMcpServerId(draftServerId.trim())
   const draftEnvOnRemote = useMemo(
     () => detectEnvOnRemote(draftSpecText),
     [draftSpecText]
@@ -793,6 +821,11 @@ export function McpSettings() {
       return
     }
 
+    if (!isValidMcpServerId(trimmedId)) {
+      toast.error(t("local.serverIdInvalid"))
+      return
+    }
+
     if (installedServers.some((server) => server.id === trimmedId)) {
       toast.error(t("toasts.serverIdExists", { id: trimmedId }))
       return
@@ -975,6 +1008,50 @@ export function McpSettings() {
 
   return (
     <>
+      <AlertDialog
+        open={pendingUninstall !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingUninstall(null)
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("uninstallDialog.title", { id: pendingUninstall?.id ?? "" })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingUninstall && pendingUninstall.apps.length > 0
+                ? t("uninstallDialog.description", {
+                    apps: pendingUninstall.apps.map(appLabel).join(", "),
+                  })
+                : t("uninstallDialog.descriptionNoApps")}
+              {pendingUninstall?.id === COWORK_PRESET_SERVER_ID ? (
+                <>
+                  <br />
+                  {t("uninstallDialog.coworkPresetWarning")}
+                </>
+              ) : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("actions.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const target = pendingUninstall
+                setPendingUninstall(null)
+                if (!target) return
+                uninstallServer(target.id).catch((err) => {
+                  console.error("[Settings] uninstall MCP failed:", err)
+                })
+              }}
+            >
+              {t("uninstallDialog.confirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <Dialog open={installDialogOpen} onOpenChange={setInstallDialogOpen}>
         <DialogContent>
           <DialogHeader>
@@ -1259,14 +1336,7 @@ export function McpSettings() {
                         <ContextMenuContent>
                           <ContextMenuItem
                             variant="destructive"
-                            onClick={() => {
-                              uninstallServer(server.id).catch((err) => {
-                                console.error(
-                                  "[Settings] uninstall MCP failed:",
-                                  err
-                                )
-                              })
-                            }}
+                            onClick={() => setPendingUninstall(server)}
                           >
                             {t("actions.uninstall")}
                           </ContextMenuItem>
@@ -1536,7 +1606,13 @@ export function McpSettings() {
                   value={draftServerId}
                   onChange={(event) => setDraftServerId(event.target.value)}
                   placeholder={t("local.serverIdPlaceholder")}
+                  aria-invalid={draftServerIdInvalid || undefined}
                 />
+                {draftServerIdInvalid ? (
+                  <p className="text-xs text-destructive">
+                    {t("local.serverIdInvalid")}
+                  </p>
+                ) : null}
               </div>
 
               <div className="space-y-2">
@@ -1616,6 +1692,7 @@ export function McpSettings() {
                   }}
                   disabled={
                     scanDegraded ||
+                    draftServerIdInvalid ||
                     Boolean(runningAction?.startsWith("create:"))
                   }
                 >
@@ -1645,11 +1722,7 @@ export function McpSettings() {
                 </div>
                 <Button
                   variant="destructive"
-                  onClick={() => {
-                    uninstallServer(selectedLocal.id).catch((err) => {
-                      console.error("[Settings] uninstall MCP failed:", err)
-                    })
-                  }}
+                  onClick={() => setPendingUninstall(selectedLocal)}
                   disabled={runningAction === `uninstall:${selectedLocal.id}`}
                 >
                   {runningAction === `uninstall:${selectedLocal.id}` ? (

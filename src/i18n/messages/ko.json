@@ -737,7 +737,11 @@
       "stdioCommandRequired": "stdio 타입의 MCP에는 비어 있지 않은 command 필드가 필요합니다.",
       "remoteUrlRequired": "원격 MCP에는 비어 있지 않은 url 필드가 필요합니다.",
       "appsRequired": "대상 앱을 하나 이상 선택하세요.",
-      "opencodeSseUnsupported": "OpenCode 2에는 SSE 클라이언트가 없어 SSE MCP 서버를 실행할 수 없습니다. 서버가 지원한다면 streamable HTTP(type \"http\")로 바꾸거나 OpenCode를 선택하지 마세요."
+      "opencodeSseUnsupported": "OpenCode 2에는 SSE 클라이언트가 없어 SSE MCP 서버를 실행할 수 없습니다. 서버가 지원한다면 streamable HTTP(type \"http\")로 바꾸거나 OpenCode를 선택하지 마세요.",
+      "invalidServerId": "잘못된 Server ID: 영문자, 숫자, _ . - 만 사용할 수 있습니다(1~64자).",
+      "argsMustBeStringArray": "args는 문자열 배열이어야 합니다.",
+      "envMustBeStringMap": "env는 값이 문자열인 객체여야 합니다.",
+      "headersMustBeStringMap": "headers는 값이 문자열인 객체여야 합니다."
     },
     "jsonNames": {
       "localConfig": "MCP 구성",
@@ -801,7 +805,8 @@
       "serverIdLabel": "Server ID",
       "serverIdPlaceholder": "Server ID (예: my-mcp)",
       "typeHint": "지원 타입: stdio, http (별칭: streamable-http, streamableHttp), sse. env는 stdio 전용이며, 원격 MCP는 인증 토큰을 headers로 전달해야 합니다.",
-      "envOnRemoteWarning": "원격 MCP 설정에 env가 포함되어 있습니다. env는 stdio에서만 사용되며 원격 MCP는 headers로 인증 토큰을 전달합니다. 저장 시 env는 무시됩니다."
+      "envOnRemoteWarning": "원격 MCP 설정에 env가 포함되어 있습니다. env는 stdio에서만 사용되며 원격 MCP는 headers로 인증 토큰을 전달합니다. 저장 시 env는 무시됩니다.",
+      "serverIdInvalid": "영문자, 숫자, _ . - 만 사용할 수 있습니다(1~64자)."
     },
     "market": {
       "selectMarketplace": "마켓플레이스 선택",
@@ -826,7 +831,14 @@
       "deployed": "배포됨",
       "notDeployed": "미배포"
     },
-    "selectLeftMcp": "왼쪽에서 MCP를 선택하세요."
+    "selectLeftMcp": "왼쪽에서 MCP를 선택하세요.",
+    "uninstallDialog": {
+      "title": "MCP \"{id}\"을(를) 제거할까요?",
+      "description": "다음 에이전트의 MCP 설정에서 삭제됩니다: {apps}. 되돌릴 수 없습니다.",
+      "descriptionNoApps": "모든 에이전트의 MCP 설정에서 삭제됩니다. 되돌릴 수 없습니다.",
+      "coworkPresetWarning": "Cowork 기본 서버입니다. 다시 추가할 때까지 에이전트가 Cowork 도구를 사용할 수 없습니다.",
+      "confirm": "제거"
+    }
   },
   "AcpAgentSettings": {
     "title": "Agent SDK 관리",

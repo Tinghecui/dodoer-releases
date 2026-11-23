@@ -737,7 +737,11 @@
       "stdioCommandRequired": "Los MCP stdio requieren un campo command no vacío.",
       "remoteUrlRequired": "Los MCP remotos requieren un campo url no vacío.",
       "appsRequired": "Selecciona al menos una aplicación de destino.",
-      "opencodeSseUnsupported": "OpenCode 2 no tiene cliente SSE, así que no puede ejecutar servidores MCP SSE. Cambia este servidor a streamable HTTP (type \"http\") si lo admite, o no selecciones OpenCode."
+      "opencodeSseUnsupported": "OpenCode 2 no tiene cliente SSE, así que no puede ejecutar servidores MCP SSE. Cambia este servidor a streamable HTTP (type \"http\") si lo admite, o no selecciones OpenCode.",
+      "invalidServerId": "Server ID no válido: usa solo letras, dígitos y _ . - (de 1 a 64 caracteres).",
+      "argsMustBeStringArray": "\"args\" debe ser un array de cadenas.",
+      "envMustBeStringMap": "\"env\" debe ser un objeto cuyos valores sean cadenas.",
+      "headersMustBeStringMap": "\"headers\" debe ser un objeto cuyos valores sean cadenas."
     },
     "jsonNames": {
       "localConfig": "Configuración MCP",
@@ -801,7 +805,8 @@
       "serverIdLabel": "Server ID",
       "serverIdPlaceholder": "Server ID (p. ej. my-mcp)",
       "typeHint": "Tipos admitidos: stdio, http (alias: streamable-http, streamableHttp), sse. env solo se usa con stdio; para MCP remotos usa headers para llevar tokens de autenticación.",
-      "envOnRemoteWarning": "Se detectó env en un MCP remoto. Solo stdio usa env; los MCP remotos llevan los tokens de autenticación en headers, así que env se ignorará al guardar."
+      "envOnRemoteWarning": "Se detectó env en un MCP remoto. Solo stdio usa env; los MCP remotos llevan los tokens de autenticación en headers, así que env se ignorará al guardar.",
+      "serverIdInvalid": "Usa solo letras, dígitos y _ . - (de 1 a 64 caracteres)."
     },
     "market": {
       "selectMarketplace": "Seleccionar marketplace",
@@ -826,7 +831,14 @@
       "deployed": "Desplegado",
       "notDeployed": "No desplegado"
     },
-    "selectLeftMcp": "Selecciona un MCP a la izquierda."
+    "selectLeftMcp": "Selecciona un MCP a la izquierda.",
+    "uninstallDialog": {
+      "title": "¿Desinstalar el MCP \"{id}\"?",
+      "description": "Se eliminará de la configuración MCP de: {apps}. No se puede deshacer.",
+      "descriptionNoApps": "Se eliminará de la configuración MCP de todos los agentes. No se puede deshacer.",
+      "coworkPresetWarning": "Es el servidor predefinido de Cowork: los agentes perderán las herramientas de Cowork hasta que se vuelva a añadir.",
+      "confirm": "Desinstalar"
+    }
   },
   "AcpAgentSettings": {
     "title": "Gestión del SDK de agentes",

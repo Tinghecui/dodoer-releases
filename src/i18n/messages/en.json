@@ -737,7 +737,11 @@
       "stdioCommandRequired": "stdio MCP requires a non-empty command field.",
       "remoteUrlRequired": "Remote MCP requires a non-empty url field.",
       "appsRequired": "Select at least one target app.",
-      "opencodeSseUnsupported": "OpenCode 2 has no SSE client, so it cannot run SSE MCP servers. Switch this server to streamable HTTP (type \"http\") if it supports it, or leave OpenCode unselected."
+      "opencodeSseUnsupported": "OpenCode 2 has no SSE client, so it cannot run SSE MCP servers. Switch this server to streamable HTTP (type \"http\") if it supports it, or leave OpenCode unselected.",
+      "invalidServerId": "Invalid Server ID: use only letters, digits, _ . - (1–64 characters).",
+      "argsMustBeStringArray": "\"args\" must be an array of strings.",
+      "envMustBeStringMap": "\"env\" must be an object whose values are strings.",
+      "headersMustBeStringMap": "\"headers\" must be an object whose values are strings."
     },
     "jsonNames": {
       "localConfig": "MCP Config",
@@ -801,7 +805,8 @@
       "serverIdLabel": "Server ID",
       "serverIdPlaceholder": "Server ID (e.g. my-mcp)",
       "typeHint": "Supported types: stdio, http (aliases: streamable-http, streamableHttp), sse. env is only used by stdio; for remote MCPs use headers to carry auth tokens.",
-      "envOnRemoteWarning": "env detected on a remote MCP. Only stdio uses env; remote MCPs carry auth tokens via headers, so env will be ignored on save."
+      "envOnRemoteWarning": "env detected on a remote MCP. Only stdio uses env; remote MCPs carry auth tokens via headers, so env will be ignored on save.",
+      "serverIdInvalid": "Use only letters, digits, _ . - (1–64 characters)."
     },
     "market": {
       "selectMarketplace": "Select marketplace",
@@ -826,7 +831,14 @@
       "deployed": "Deployed",
       "notDeployed": "Not Deployed"
     },
-    "selectLeftMcp": "Select an MCP on the left."
+    "selectLeftMcp": "Select an MCP on the left.",
+    "uninstallDialog": {
+      "title": "Uninstall MCP \"{id}\"?",
+      "description": "This removes it from the MCP config of: {apps}. This cannot be undone.",
+      "descriptionNoApps": "This removes it from every agent's MCP config. This cannot be undone.",
+      "coworkPresetWarning": "This is the preset Cowork server: agents will lose the Cowork tools until it is added back.",
+      "confirm": "Uninstall"
+    }
   },
   "AcpAgentSettings": {
     "title": "Agent SDK Management",

@@ -737,7 +737,11 @@
       "stdioCommandRequired": "يتطلب MCP من نوع stdio حقل command غير فارغ.",
       "remoteUrlRequired": "تتطلب MCP البعيدة حقل url غير فارغ.",
       "appsRequired": "حدد تطبيقاً مستهدفاً واحداً على الأقل.",
-      "opencodeSseUnsupported": "لا يحتوي OpenCode 2 على عميل SSE، لذا لا يمكنه تشغيل خوادم MCP من نوع SSE. حوّل هذا الخادم إلى streamable HTTP (type \"http\") إن كان يدعمه، أو لا تحدد OpenCode."
+      "opencodeSseUnsupported": "لا يحتوي OpenCode 2 على عميل SSE، لذا لا يمكنه تشغيل خوادم MCP من نوع SSE. حوّل هذا الخادم إلى streamable HTTP (type \"http\") إن كان يدعمه، أو لا تحدد OpenCode.",
+      "invalidServerId": "Server ID غير صالح: استخدم الأحرف والأرقام و _ . - فقط (من 1 إلى 64 حرفًا).",
+      "argsMustBeStringArray": "يجب أن يكون \"args\" مصفوفة من السلاسل النصية.",
+      "envMustBeStringMap": "يجب أن يكون \"env\" كائنًا قيمه سلاسل نصية.",
+      "headersMustBeStringMap": "يجب أن يكون \"headers\" كائنًا قيمه سلاسل نصية."
     },
     "jsonNames": {
       "localConfig": "إعداد MCP",
@@ -801,7 +805,8 @@
       "serverIdLabel": "معرّف الخادم",
       "serverIdPlaceholder": "معرّف الخادم (مثل: my-mcp)",
       "typeHint": "الأنواع المدعومة: stdio و http (الأسماء البديلة: streamable-http و streamableHttp) و sse. يُستخدم env مع stdio فقط؛ خوادم MCP البعيدة تحمل رموز المصادقة عبر headers.",
-      "envOnRemoteWarning": "تم اكتشاف env على MCP بعيد. يُستخدم env مع stdio فقط؛ خوادم MCP البعيدة تحمل رموز المصادقة عبر headers، لذا سيتم تجاهل env عند الحفظ."
+      "envOnRemoteWarning": "تم اكتشاف env على MCP بعيد. يُستخدم env مع stdio فقط؛ خوادم MCP البعيدة تحمل رموز المصادقة عبر headers، لذا سيتم تجاهل env عند الحفظ.",
+      "serverIdInvalid": "استخدم الأحرف والأرقام و _ . - فقط (من 1 إلى 64 حرفًا)."
     },
     "market": {
       "selectMarketplace": "اختر السوق",
@@ -826,7 +831,14 @@
       "deployed": "منشور",
       "notDeployed": "غير منشور"
     },
-    "selectLeftMcp": "اختر MCP من الجهة اليسرى."
+    "selectLeftMcp": "اختر MCP من الجهة اليسرى.",
+    "uninstallDialog": {
+      "title": "إلغاء تثبيت MCP \"{id}\"؟",
+      "description": "ستتم إزالته من إعدادات MCP لدى: {apps}. لا يمكن التراجع عن ذلك.",
+      "descriptionNoApps": "ستتم إزالته من إعدادات MCP لدى جميع الوكلاء. لا يمكن التراجع عن ذلك.",
+      "coworkPresetWarning": "هذا هو خادم Cowork المُعدّ مسبقًا: سيفقد الوكلاء أدوات Cowork حتى تتم إضافته من جديد.",
+      "confirm": "إلغاء التثبيت"
+    }
   },
   "AcpAgentSettings": {
     "title": "إدارة Agent SDK",

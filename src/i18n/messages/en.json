@@ -8461,6 +8461,21 @@
     "teamMemberCounts": "{running} running · {waiting} waiting",
     "teamNoLongerLeader": "You are no longer a leader of this group",
     "teamEmpty": "No members in this group yet",
-    "teamMemberEmpty": "No matching sessions"
+    "teamMemberEmpty": "No matching sessions",
+    "shareButton": "Share",
+    "shareMenuItem": "Share…",
+    "shareDialogTitle": "Share conversation",
+    "shareDialogPrivacy": "People you share with can see everything in this conversation: prompts, replies, thinking and tool calls. Secrets in common formats are masked.",
+    "shareSearchPlaceholder": "Search people or groups",
+    "shareNoCandidates": "No people or groups to pick",
+    "shareNotePlaceholder": "Add a note (optional)",
+    "shareCurrent": "Currently shared with",
+    "shareNone": "Not shared with anyone yet",
+    "shareGroupTag": "Group",
+    "shareRemove": "Stop sharing with {name}",
+    "shareRemoveAll": "Stop all",
+    "shareConfirm": "Share",
+    "shareCancel": "Cancel",
+    "shareJustCreated": "This conversation was just created. Try again in a few seconds."
   }
 }

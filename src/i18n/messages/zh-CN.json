@@ -8461,6 +8461,21 @@
     "teamMemberCounts": "进行中 {running} · 等人回答 {waiting}",
     "teamNoLongerLeader": "你已不是这个组的组长",
     "teamEmpty": "组里还没有成员",
-    "teamMemberEmpty": "没有符合条件的会话"
+    "teamMemberEmpty": "没有符合条件的会话",
+    "shareButton": "分享",
+    "shareMenuItem": "分享…",
+    "shareDialogTitle": "分享会话",
+    "shareDialogPrivacy": "对方能看到这个会话的全部内容：提问、回复、思考和工具调用。常见格式的密钥会自动打码。",
+    "shareSearchPlaceholder": "搜人或组",
+    "shareNoCandidates": "没有可选的人或组",
+    "shareNotePlaceholder": "写一句说明（可选）",
+    "shareCurrent": "现在分享给了",
+    "shareNone": "还没有分享给任何人",
+    "shareGroupTag": "组",
+    "shareRemove": "取消分享给{name}",
+    "shareRemoveAll": "全部取消",
+    "shareConfirm": "分享",
+    "shareCancel": "取消",
+    "shareJustCreated": "这个会话刚建好，过几秒再试"
   }
 }

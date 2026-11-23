@@ -65,6 +65,7 @@ vi.mock("@/components/chat/conversation-context-bar", () => ({
 }))
 
 import { ConversationDetailHeader } from "./conversation-detail-header"
+import { useCoworkTeamStore } from "@/stores/cowork-team-store"
 
 type Props = ComponentProps<typeof ConversationDetailHeader>
 
@@ -172,5 +173,77 @@ describe("ConversationDetailHeader dialog target snapshot", () => {
       expect(h.updateConversationTitle).toHaveBeenCalledWith(1, "renamed")
     })
     expect(h.updateConversationTitle).not.toHaveBeenCalledWith(2, "renamed")
+  })
+})
+
+describe("ConversationDetailHeader share button (#1235)", () => {
+  beforeEach(() => {
+    useCoworkTeamStore.getState().reset()
+  })
+
+  function makeTeamAvailable() {
+    useCoworkTeamStore.getState().setStatus({
+      applicable: true,
+      enabled: true,
+      me: { name: "member-c", label: "C" },
+      leaderOf: [],
+      portalUrl: null,
+    })
+  }
+
+  it("has no share button while the team feature is unavailable", () => {
+    const { queryByRole } = render(
+      withIntl(<ConversationDetailHeader {...A} />)
+    )
+    expect(queryByRole("button", { name: "Share" })).toBeNull()
+  })
+
+  it("shows the share button left of More actions on a saved conversation", () => {
+    makeTeamAvailable()
+    const { container, getByRole } = render(
+      withIntl(<ConversationDetailHeader {...A} />)
+    )
+    const share = getByRole("button", { name: "Share" })
+    const more = getByRole("button", { name: "More actions" })
+    expect(
+      share.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(
+      container.querySelectorAll("[data-share-session-button]")
+    ).toHaveLength(1)
+  })
+
+  it("has no share button on mobile (mobile is out of scope)", () => {
+    makeTeamAvailable()
+    const real = window.matchMedia
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes("max-width"),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia
+    try {
+      const { container, queryByRole } = render(
+        withIntl(<ConversationDetailHeader {...A} />)
+      )
+      expect(queryByRole("button", { name: "Share" })).toBeNull()
+      expect(
+        container.querySelectorAll("[data-share-session-button]")
+      ).toHaveLength(0)
+    } finally {
+      window.matchMedia = real
+    }
+  })
+
+  it("has no share button on an unsaved draft", () => {
+    makeTeamAvailable()
+    const { queryByRole } = render(
+      withIntl(<ConversationDetailHeader {...A} conversationId={null} />)
+    )
+    expect(queryByRole("button", { name: "Share" })).toBeNull()
   })
 })

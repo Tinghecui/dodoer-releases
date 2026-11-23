@@ -24,6 +24,7 @@ import {
   CheckCheck,
   Repeat2,
   ListChecks,
+  Share2,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useImeGuard } from "@/hooks/use-ime-guard"
@@ -97,6 +98,9 @@ import { SessionDetailsDialog } from "./session-details-dialog"
 import { SidebarConversationHoverDetails } from "./sidebar-conversation-hover-details"
 import { SidebarPrIndicator } from "./sidebar-pr-status"
 import { SessionUsageMark } from "@/components/cowork/session-usage-mark"
+import { ShareSessionDialog } from "@/components/cowork/share-session-dialog"
+import { teamSessionId } from "@/lib/cowork/team"
+import { useCoworkTeamStore } from "@/stores/cowork-team-store"
 import { ConversationTagChips } from "./conversation-tag-chip"
 import {
   ConversationTagContextSubmenu,
@@ -272,6 +276,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   const tSidebar = useTranslations("Folder.sidebar")
   const tStatus = useTranslations("Folder.statusLabels")
   const tDetails = useTranslations("Folder.sessionDetails")
+  const tTeam = useTranslations("CoworkTeam")
   const [renameOpen, setRenameOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -282,6 +287,12 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   const [unreadShortcut, setUnreadShortcut] = useState("")
   const [hoverOpen, setHoverOpen] = useState(false)
   const [newTagOpen, setNewTagOpen] = useState(false)
+  // Cowork fork (#1235): "Share…" is offered while the team feature is
+  // available. Snapshotted on menu open like `attachTabId`, so no row holds a
+  // store subscription for it.
+  const [shareable, setShareable] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
+  const shareId = teamSessionId(conversation.id)
   // Subscribes to tag DEFINITIONS only (rare), and re-resolves only when this
   // row's own `tag_ids` array changes — a status event elsewhere never lands.
   const tags = useResolvedTags(conversation.tag_ids)
@@ -326,6 +337,13 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   const handleMenuOpenChange = useCallback((open: boolean) => {
     setMenuOpen(open)
     if (!open) return
+    // Mobile is out of scope for sharing (#1235): same breakpoint as
+    // `useIsMobile` (hooks/use-mobile.ts), read once here rather than
+    // subscribed per row.
+    setShareable(
+      useCoworkTeamStore.getState().available &&
+        !window.matchMedia("(max-width: 767px)").matches
+    )
     // The context menu takes the row over; drop the details bubble so the two
     // don't stack on the same spot.
     setHoverOpen(false)
@@ -881,6 +899,12 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
               <Info className="h-4 w-4" />
               {tDetails("menuLabel")}
             </ContextMenuItem>
+            {shareable && shareId !== null && (
+              <ContextMenuItem onSelect={() => setShareOpen(true)}>
+                <Share2 className="h-4 w-4" />
+                {tTeam("shareMenuItem")}
+              </ContextMenuItem>
+            )}
             {/* Mirrors the file tree's "add to session": inserts an `@`-style
               mention of THIS conversation into the active session's composer.
               Disabled only when no conversation tab is open — there is no
@@ -1031,6 +1055,18 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
           open
           onOpenChange={setDetailsOpen}
           summary={conversation}
+        />
+      )}
+
+      {shareOpen && shareId !== null && (
+        <ShareSessionDialog
+          open
+          onOpenChange={setShareOpen}
+          sessionId={shareId}
+          title={
+            formatConversationTitle(conversation.title) ||
+            t("untitledConversation")
+          }
         />
       )}
 

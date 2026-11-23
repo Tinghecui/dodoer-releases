@@ -8461,6 +8461,21 @@
     "teamMemberCounts": "実行中 {running} · 回答待ち {waiting}",
     "teamNoLongerLeader": "このグループのリーダーではなくなりました",
     "teamEmpty": "このグループにはまだメンバーがいません",
-    "teamMemberEmpty": "該当するセッションはありません"
+    "teamMemberEmpty": "該当するセッションはありません",
+    "shareButton": "共有",
+    "shareMenuItem": "共有…",
+    "shareDialogTitle": "会話を共有",
+    "shareDialogPrivacy": "共有相手はこの会話のすべて（質問、返信、思考、ツール呼び出し）を見られます。一般的な形式のシークレットは自動でマスクされます。",
+    "shareSearchPlaceholder": "人またはグループを検索",
+    "shareNoCandidates": "選べる人やグループがありません",
+    "shareNotePlaceholder": "ひとことメモ（任意）",
+    "shareCurrent": "現在の共有先",
+    "shareNone": "まだ誰とも共有していません",
+    "shareGroupTag": "グループ",
+    "shareRemove": "{name}との共有を解除",
+    "shareRemoveAll": "すべて解除",
+    "shareConfirm": "共有",
+    "shareCancel": "キャンセル",
+    "shareJustCreated": "この会話は作成されたばかりです。数秒後にもう一度お試しください。"
   }
 }

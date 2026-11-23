@@ -8461,6 +8461,21 @@
     "teamMemberCounts": "進行中 {running} · 等人回答 {waiting}",
     "teamNoLongerLeader": "你已不是這個組的組長",
     "teamEmpty": "組裡還沒有成員",
-    "teamMemberEmpty": "沒有符合條件的會話"
+    "teamMemberEmpty": "沒有符合條件的會話",
+    "shareButton": "分享",
+    "shareMenuItem": "分享…",
+    "shareDialogTitle": "分享對話",
+    "shareDialogPrivacy": "對方能看到這個對話的全部內容：提問、回覆、思考和工具呼叫。常見格式的金鑰會自動遮蔽。",
+    "shareSearchPlaceholder": "搜尋人或群組",
+    "shareNoCandidates": "沒有可選的人或群組",
+    "shareNotePlaceholder": "寫一句說明（選填）",
+    "shareCurrent": "目前分享給了",
+    "shareNone": "還沒有分享給任何人",
+    "shareGroupTag": "群組",
+    "shareRemove": "取消分享給{name}",
+    "shareRemoveAll": "全部取消",
+    "shareConfirm": "分享",
+    "shareCancel": "取消",
+    "shareJustCreated": "這個對話剛建好，過幾秒再試"
   }
 }

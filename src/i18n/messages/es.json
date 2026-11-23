@@ -8461,6 +8461,21 @@
     "teamMemberCounts": "{running} en curso · {waiting} en espera",
     "teamNoLongerLeader": "Ya no eres líder de este grupo",
     "teamEmpty": "Este grupo aún no tiene miembros",
-    "teamMemberEmpty": "No hay sesiones que coincidan"
+    "teamMemberEmpty": "No hay sesiones que coincidan",
+    "shareButton": "Compartir",
+    "shareMenuItem": "Compartir…",
+    "shareDialogTitle": "Compartir conversación",
+    "shareDialogPrivacy": "Quien la reciba podrá ver todo el contenido: preguntas, respuestas, razonamiento y herramientas. Los secretos en formatos comunes se ocultan.",
+    "shareSearchPlaceholder": "Buscar personas o grupos",
+    "shareNoCandidates": "No hay personas ni grupos para elegir",
+    "shareNotePlaceholder": "Añade una nota (opcional)",
+    "shareCurrent": "Compartida ahora con",
+    "shareNone": "Aún no la has compartido con nadie",
+    "shareGroupTag": "Grupo",
+    "shareRemove": "Dejar de compartir con {name}",
+    "shareRemoveAll": "Quitar todo",
+    "shareConfirm": "Compartir",
+    "shareCancel": "Cancelar",
+    "shareJustCreated": "Esta conversación se acaba de crear. Vuelve a intentarlo en unos segundos."
   }
 }

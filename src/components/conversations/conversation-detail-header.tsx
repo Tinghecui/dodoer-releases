@@ -33,6 +33,9 @@ import type { ConversationStatus } from "@/lib/types"
 import { MANUAL_STATUS_ORDER } from "@/lib/types"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
 import { SessionUsageMark } from "@/components/cowork/session-usage-mark"
+import { ShareSessionButton } from "@/components/cowork/share-session-dialog"
+import { teamSessionId } from "@/lib/cowork/team"
+import { useCoworkTeamAvailable } from "@/stores/cowork-team-store"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -175,6 +178,13 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
         null)
   )
   const isMobile = useIsMobile()
+  // Cowork fork (#1235): the share button sits left of More actions, only for
+  // a saved conversation while the team feature is available. Not on mobile
+  // (out of scope there).
+  const shareable =
+    useCoworkTeamAvailable() &&
+    teamSessionId(conversationId) !== null &&
+    !isMobile
 
   const [details, setDetails] = useState<ActiveSessionDetails | null>(null)
   // Snapshot the action target when a dialog OPENS. The header is a SINGLE
@@ -298,6 +308,7 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
   const buttons = (
     <>
       {actions}
+      <ShareSessionButton conversationId={conversationId} title={title} />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button
@@ -439,7 +450,7 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
               data-top-bar-actions=""
               className={cn(
                 "flex h-8 shrink-0 items-center justify-center rounded-full",
-                actions ? "gap-0.5 px-0.5" : "w-8"
+                actions || shareable ? "gap-0.5 px-0.5" : "w-8"
               )}
             >
               {buttons}

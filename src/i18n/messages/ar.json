@@ -8461,6 +8461,21 @@
     "teamMemberCounts": "{running} قيد التشغيل · {waiting} بانتظار الرد",
     "teamNoLongerLeader": "لم تعد قائدًا لهذه المجموعة",
     "teamEmpty": "لا يوجد أعضاء في هذه المجموعة بعد",
-    "teamMemberEmpty": "لا توجد جلسات مطابقة"
+    "teamMemberEmpty": "لا توجد جلسات مطابقة",
+    "shareButton": "مشاركة",
+    "shareMenuItem": "مشاركة…",
+    "shareDialogTitle": "مشاركة المحادثة",
+    "shareDialogPrivacy": "يرى من تشاركه كل محتوى هذه المحادثة: الأسئلة والردود والتفكير واستدعاءات الأدوات. تُخفى الأسرار ذات الصيغ الشائعة تلقائيًا.",
+    "shareSearchPlaceholder": "ابحث عن أشخاص أو مجموعات",
+    "shareNoCandidates": "لا يوجد أشخاص أو مجموعات للاختيار",
+    "shareNotePlaceholder": "أضف ملاحظة (اختياري)",
+    "shareCurrent": "مشاركة حاليًا مع",
+    "shareNone": "لم تتم المشاركة مع أحد بعد",
+    "shareGroupTag": "مجموعة",
+    "shareRemove": "إيقاف المشاركة مع {name}",
+    "shareRemoveAll": "إيقاف الكل",
+    "shareConfirm": "مشاركة",
+    "shareCancel": "إلغاء",
+    "shareJustCreated": "أُنشئت هذه المحادثة للتو. حاول مرة أخرى بعد بضع ثوانٍ."
   }
 }

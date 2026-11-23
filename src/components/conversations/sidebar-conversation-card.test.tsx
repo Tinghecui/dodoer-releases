@@ -57,6 +57,8 @@ import {
   resetConversationRuntimeStore,
   useConversationRuntimeStore,
 } from "@/stores/conversation-runtime-store"
+import { useCoworkTeamStore } from "@/stores/cowork-team-store"
+import * as transport from "@/lib/transport"
 import { resetConversationGoalSnapshotStore } from "@/stores/conversation-goal-snapshot-store"
 import {
   useSessionUsageStore,
@@ -260,6 +262,86 @@ describe("SidebarConversationCard pin action", () => {
     fireEvent.contextMenu(getByText("conv-2"))
     fireEvent.click(getByText("Unpin"))
     expect(onTogglePin).toHaveBeenCalledWith(2, false)
+  })
+})
+
+describe("SidebarConversationCard share item (#1235)", () => {
+  beforeEach(() => {
+    useCoworkTeamStore.getState().reset()
+  })
+  afterEach(() => {
+    useCoworkTeamStore.getState().reset()
+  })
+
+  function renderCard(c: DbConversationSummary) {
+    return renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={false}
+        timeLabel=""
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+      />
+    )
+  }
+
+  it("offers no Share item while the team feature is unavailable", () => {
+    const { getByText, queryByText } = renderCard(conv(1))
+    fireEvent.contextMenu(getByText("conv-1"))
+    expect(getByText("Rename")).toBeInTheDocument()
+    expect(queryByText("Share…")).toBeNull()
+  })
+
+  it("offers no Share item on mobile even while available", () => {
+    useCoworkTeamStore.getState().setStatus({
+      applicable: true,
+      enabled: true,
+      me: { name: "member-c", label: "C" },
+      leaderOf: [],
+      portalUrl: null,
+    })
+    const real = window.matchMedia
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes("max-width"),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia
+    try {
+      const { getByText, queryByText } = renderCard(conv(7))
+      fireEvent.contextMenu(getByText("conv-7"))
+      expect(getByText("Rename")).toBeInTheDocument()
+      expect(queryByText("Share…")).toBeNull()
+    } finally {
+      window.matchMedia = real
+    }
+  })
+
+  it("offers Share… while available and opens the share dialog", async () => {
+    useCoworkTeamStore.getState().setStatus({
+      applicable: true,
+      enabled: true,
+      me: { name: "member-c", label: "C" },
+      leaderOf: [],
+      portalUrl: null,
+    })
+    const call = vi.spyOn(transport, "getTransport").mockReturnValue({
+      call: vi.fn(async (_cmd: string, args?: Record<string, unknown>) =>
+        args?.op === "targets" ? { users: [], groups: [] } : { id: "7" }
+      ),
+    } as unknown as ReturnType<typeof transport.getTransport>)
+    const { getByText } = renderCard(conv(7))
+    fireEvent.contextMenu(getByText("conv-7"))
+    fireEvent.click(getByText("Share…"))
+    expect(await screen.findByText("Share conversation")).toBeInTheDocument()
+    call.mockRestore()
   })
 })
 

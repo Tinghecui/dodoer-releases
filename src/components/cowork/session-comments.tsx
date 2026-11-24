@@ -48,6 +48,10 @@ import {
   type CoworkTeamSummary,
 } from "@/lib/cowork/team"
 import { noteTeamError, teamErrorText } from "@/lib/cowork/team-errors"
+import {
+  loadMessageInputDraft,
+  saveMessageInputDraft,
+} from "@/lib/message-input-draft"
 import { cn } from "@/lib/utils"
 import {
   useCoworkTeamAvailable,
@@ -146,6 +150,8 @@ interface CommentActionError {
 }
 
 interface SessionCommentsApi {
+  /** 这个会话留言框的草稿存哪（带上当前团队账号，见 commentDraftKey），切走再回来、刷新后还在。 */
+  draftKey: string
   page: TeamCommentsPage | null
   /** 拉留言失败的错误码；没出错是 null。 */
   error: string | null
@@ -155,6 +161,27 @@ interface SessionCommentsApi {
   addError: CommentActionError | null
   sending: boolean
   remove: (commentId: string) => void
+}
+
+/** 留言草稿属于哪个团队账号：门户地址 + 我的账号名。 */
+export interface CommentDraftViewer {
+  name: string
+  portalUrl: string | null
+}
+
+/**
+ * 留言草稿的键。前缀不用 `draft:`：那是新会话草稿的前缀，清理孤儿草稿时
+ * 只扫它，留言草稿不能被顺手删掉。键里带上当前团队账号（门户地址和我的
+ * 账号名）：同一台机器换了账号，就算会话的 owner/id 一样，也看不到上一个
+ * 账号没发的留言，不会被误发到别的账号的会话里。
+ */
+export function commentDraftKey(
+  viewer: CommentDraftViewer,
+  owner: string,
+  id: string
+): string {
+  const account = `${encodeURIComponent(viewer.portalUrl ?? "")}|${encodeURIComponent(viewer.name)}`
+  return `comment:${account}:${owner}/${id}`
 }
 
 /**
@@ -269,7 +296,24 @@ export function useSessionComments(
     [owner, id]
   )
 
-  return { page, error, target, setTarget, add, addError, sending, remove }
+  const viewerName = useCoworkTeamStore((s) => s.status?.me.name ?? "")
+  const viewerPortal = useCoworkTeamStore((s) => s.status?.portalUrl ?? null)
+  const draftKey = commentDraftKey(
+    { name: viewerName, portalUrl: viewerPortal },
+    owner,
+    id
+  )
+  return {
+    draftKey,
+    page,
+    error,
+    target,
+    setTarget,
+    add,
+    addError,
+    sending,
+    remove,
+  }
 }
 
 // ─── 留言列表 ───────────────────────────────────────────────────────────────
@@ -432,6 +476,27 @@ export function CommentThreadList({
 }
 
 /**
+ * 正挂着的留言框按草稿键登记：发送完成时，同一会话所有挂着的留言框（包括
+ * 发送中切走、又重新打开的那个新留言框）都要去掉已发出的那段。
+ */
+const commentDraftListeners = new Map<
+  string,
+  Set<(shrink: (cur: string) => string) => void>
+>()
+
+/**
+ * 正在发的留言按草稿键记数：发送中切走又打开同一会话时，新留言框自己的
+ * 「发送中」是空闲的，要靠这里知道上一个还没发完，不能让同一段字再发一次。
+ */
+const commentSendsInFlight = new Map<string, number>()
+
+function notifyCommentDraft(key: string, shrink: (cur: string) => string) {
+  for (const listener of commentDraftListeners.get(key) ?? []) {
+    listener(shrink)
+  }
+}
+
+/**
  * 留言输入：Enter 换行，Ctrl/⌘+Enter 或按钮发送。发失败时文字留着，按错误码
  * 说人话（发送失败「没发出去：」，删除失败「没删掉：」）。
  */
@@ -443,20 +508,71 @@ export function CommentComposer({
   placeholder: string
 }) {
   const t = useTranslations("CoworkTeam")
-  const [text, setText] = useState("")
+  const draftKey = api.draftKey
+  // 没发出去的字按会话存成草稿：只读视图切走会整个卸载，回来要还在。
+  const [draft, setDraft] = useState(() => ({
+    key: draftKey,
+    text: loadMessageInputDraft(draftKey) ?? "",
+  }))
+  // 同一个输入框换了会话：换成那个会话自己的草稿。
+  const current =
+    draft.key === draftKey
+      ? draft
+      : { key: draftKey, text: loadMessageInputDraft(draftKey) ?? "" }
+  if (current !== draft) setDraft(current)
+  const text = current.text
+  const setText = useCallback((key: string, next: (cur: string) => string) => {
+    setDraft((prev) => {
+      if (prev.key !== key) return prev
+      const value = next(prev.text)
+      saveMessageInputDraft(key, value)
+      return { key, text: value }
+    })
+  }, [])
+  useEffect(() => {
+    const listener = (shrink: (cur: string) => string) =>
+      setText(draftKey, shrink)
+    let set = commentDraftListeners.get(draftKey)
+    if (!set) {
+      set = new Set()
+      commentDraftListeners.set(draftKey, set)
+    }
+    set.add(listener)
+    return () => {
+      set.delete(listener)
+      if (set.size === 0) commentDraftListeners.delete(draftKey)
+    }
+  }, [draftKey, setText])
+  const sending = api.sending || commentSendsInFlight.has(draftKey)
   const send = useCallback(() => {
-    if (api.sending || !text.trim()) return
+    if (api.sending || commentSendsInFlight.has(draftKey) || !text.trim())
+      return
     const sent = text
+    const key = draftKey
+    commentSendsInFlight.set(key, (commentSendsInFlight.get(key) ?? 0) + 1)
+    // 让同一会话别的留言框也重画一次，按钮跟着变成不能点。
+    notifyCommentDraft(key, (cur) => cur)
     void api.add(sent).then((ok) => {
-      if (!ok) return
+      const left = (commentSendsInFlight.get(key) ?? 1) - 1
+      if (left > 0) commentSendsInFlight.set(key, left)
+      else commentSendsInFlight.delete(key)
+      if (!ok) {
+        // 没发出去：字留着，按钮恢复能点。
+        notifyCommentDraft(key, (cur) => cur)
+        return
+      }
       // 发送期间输入框还能写：只去掉已经发出去的那段，后来写的留着。
-      setText((cur) => {
+      // 已经卸载（切走了）时组件状态不会再更新，直接改存着的草稿；发送中
+      // 切走又打开的新留言框已经读进了旧草稿，也要通知它去掉。
+      const shrink = (cur: string) => {
         if (cur === sent) return ""
         if (cur.startsWith(sent)) return cur.slice(sent.length).trimStart()
         return cur
-      })
+      }
+      saveMessageInputDraft(key, shrink(loadMessageInputDraft(key) ?? ""))
+      notifyCommentDraft(key, shrink)
     })
-  }, [api, text])
+  }, [api, text, draftKey])
   const target = api.target
   return (
     <div data-comment-composer="" className="flex flex-col gap-1.5">
@@ -481,7 +597,10 @@ export function CommentComposer({
       <div className="flex items-end gap-2">
         <Textarea
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            const value = e.target.value
+            setText(draftKey, () => value)
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault()
@@ -497,7 +616,7 @@ export function CommentComposer({
           type="button"
           size="sm"
           onClick={send}
-          disabled={api.sending || !text.trim()}
+          disabled={sending || !text.trim()}
         >
           {t("commentSend")}
         </Button>

@@ -12,6 +12,7 @@ import {
   type TeamEntriesPage,
 } from "@/lib/cowork/team"
 import { useMessageQueue } from "@/hooks/use-message-queue"
+import { clearMessageInputDraft } from "@/lib/message-input-draft"
 import {
   useCoworkTeamStore,
   type SharedSessionTarget,
@@ -21,6 +22,7 @@ import {
   OwnSessionComments,
   SessionCommentsButton,
   forwardedCommentText,
+  commentDraftKey,
   useOwnCommentsStore,
 } from "./session-comments"
 
@@ -195,6 +197,18 @@ beforeEach(() => {
   })
   api.teamCommentForwarded.mockResolvedValue(undefined)
   window.localStorage.clear()
+  // 留言草稿还有一层内存缓存，localStorage.clear() 清不到。
+  for (const viewer of ["member-c", "member-d"]) {
+    for (const id of ["42", "43"]) {
+      clearMessageInputDraft(
+        commentDraftKey(
+          { name: viewer, portalUrl: "https://portal.example.com" },
+          "member-a",
+          id
+        )
+      )
+    }
+  }
 })
 
 afterEach(() => {
@@ -453,6 +467,176 @@ describe("comments in the read-only view", () => {
     })
     await flush()
     expect(composer().value).toBe("next one")
+  })
+
+  it("keeps an unsent comment draft after switching away and back", async () => {
+    await openView()
+    fireEvent.change(composer(), { target: { value: "QA draft" } })
+    // 切到自己的会话：只读视图卸载；再从「分享给我」点开同一条。
+    act(() => {
+      useCoworkTeamStore.getState().closeSharedSession()
+    })
+    await flush()
+    expect(
+      screen.queryByPlaceholderText(
+        "Leave a comment for Wang — it won't be sent to their agent"
+      )
+    ).toBeNull()
+    act(() => {
+      useCoworkTeamStore.getState().openSharedSession(TARGET)
+    })
+    await flush()
+    expect(composer().value).toBe("QA draft")
+
+    // 换一条分享：是它自己的（空的）草稿，不串。
+    act(() => {
+      useCoworkTeamStore.getState().openSharedSession({ ...TARGET, id: "43" })
+    })
+    await flush()
+    expect(composer().value).toBe("")
+    act(() => {
+      useCoworkTeamStore.getState().openSharedSession(TARGET)
+    })
+    await flush()
+    expect(composer().value).toBe("QA draft")
+  })
+
+  it("does not show another team account's comment draft", async () => {
+    await openView()
+    fireEvent.change(composer(), { target: { value: "old account" } })
+    act(() => {
+      useCoworkTeamStore.getState().closeSharedSession()
+    })
+    await flush()
+    // 换了团队账号：同一个 owner/id 的会话，看到的不能是上一个账号的草稿。
+    act(() => {
+      useCoworkTeamStore.getState().setStatus({
+        applicable: true,
+        enabled: true,
+        me: { name: "member-d", label: "Du" },
+        leaderOf: [],
+        portalUrl: "https://portal.example.com",
+      })
+    })
+    await flush()
+    act(() => {
+      useCoworkTeamStore.getState().openSharedSession(TARGET)
+    })
+    await flush()
+    expect(composer().value).toBe("")
+    fireEvent.change(composer(), { target: { value: "new account" } })
+
+    // 换回原来的账号：它自己的草稿还在。
+    makeAvailable()
+    await flush()
+    expect(composer().value).toBe("old account")
+  })
+
+  it("drops the draft once it is sent, keeping only what was typed after", async () => {
+    let resolveAdd: (c: TeamComment) => void = () => {}
+    api.teamCommentAdd.mockImplementation(
+      () =>
+        new Promise<TeamComment>((resolve) => {
+          resolveAdd = resolve
+        })
+    )
+    await openView()
+    fireEvent.change(composer(), { target: { value: "first" } })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    fireEvent.change(composer(), { target: { value: "first and more" } })
+    await act(async () => {
+      resolveAdd(comment({ id: "c9", body: "first" }))
+    })
+    await flush()
+    act(() => {
+      useCoworkTeamStore.getState().closeSharedSession()
+    })
+    await flush()
+    act(() => {
+      useCoworkTeamStore.getState().openSharedSession(TARGET)
+    })
+    await flush()
+    expect(composer().value).toBe("and more")
+
+    api.teamCommentAdd.mockResolvedValue(comment({ id: "c10" }))
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    await flush()
+    act(() => {
+      useCoworkTeamStore.getState().closeSharedSession()
+    })
+    await flush()
+    act(() => {
+      useCoworkTeamStore.getState().openSharedSession(TARGET)
+    })
+    await flush()
+    expect(composer().value).toBe("")
+  })
+
+  it("clears the sent text from a reopened view when the send finishes", async () => {
+    let resolveAdd: (c: TeamComment) => void = () => {}
+    api.teamCommentAdd.mockImplementation(
+      () =>
+        new Promise<TeamComment>((resolve) => {
+          resolveAdd = resolve
+        })
+    )
+    await openView()
+    fireEvent.change(composer(), { target: { value: "first" } })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    // 还没发完就切走、再打开同一条：新留言框先读到的是旧草稿。
+    act(() => {
+      useCoworkTeamStore.getState().closeSharedSession()
+    })
+    await flush()
+    act(() => {
+      useCoworkTeamStore.getState().openSharedSession(TARGET)
+    })
+    await flush()
+    expect(composer().value).toBe("first")
+    // 上一次还没发完：新留言框不能再把同一段发一次。
+    const sendButton = screen.getByRole("button", { name: "Send" })
+    expect((sendButton as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(sendButton)
+    fireEvent.keyDown(composer(), { key: "Enter", ctrlKey: true })
+    await flush()
+    expect(api.teamCommentAdd).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      resolveAdd(comment({ id: "c9", body: "first" }))
+    })
+    await flush()
+    // 发出去的字不能还留在新留言框里，不然再点发送就重复了。
+    expect(composer().value).toBe("")
+  })
+
+  it("lets a reopened view resend once the earlier send failed", async () => {
+    let rejectAdd: (e: unknown) => void = () => {}
+    api.teamCommentAdd.mockImplementation(
+      () =>
+        new Promise<TeamComment>((_resolve, reject) => {
+          rejectAdd = reject
+        })
+    )
+    await openView()
+    fireEvent.change(composer(), { target: { value: "first" } })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    act(() => {
+      useCoworkTeamStore.getState().closeSharedSession()
+    })
+    await flush()
+    act(() => {
+      useCoworkTeamStore.getState().openSharedSession(TARGET)
+    })
+    await flush()
+    const button = () =>
+      screen.getByRole("button", { name: "Send" }) as HTMLButtonElement
+    expect(button().disabled).toBe(true)
+    await act(async () => {
+      rejectAdd(new Error("offline"))
+    })
+    await flush()
+    // 没发出去：字留着，按钮恢复能点。
+    expect(composer().value).toBe("first")
+    expect(button().disabled).toBe(false)
   })
 
   it("keeps a target picked while the previous comment was being sent", async () => {

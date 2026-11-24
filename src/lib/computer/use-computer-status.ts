@@ -19,10 +19,15 @@
 // a dialog of its own for it, with a button to that pane, until the person
 // has once turned the switch off there; after that it says nothing, and
 // `request` opens the pane itself. Never both at once.
+//
+// 刚打开开关时驱动往往还没装、helper 起不来，那一次拿不到权限报告；之后在
+// 同一页装好驱动（`computer://driver` 报安装结束）或后端变成 ready，都再查
+// 一次，不用人去点刷新。
 
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import { toErrorMessage } from "@/lib/app-error"
+import { subscribe } from "@/lib/platform"
 
 import {
   computerOpenPermissionSettings,
@@ -34,8 +39,14 @@ import {
   computerStoreMark,
   setComputerBackendSince,
   setComputerSharedSince,
+  useComputerStore,
 } from "./computer-store"
-import type { ComputerStatus, OsPermission } from "./types"
+import {
+  COMPUTER_DRIVER_EVENT,
+  type ComputerStatus,
+  type DriverInfo,
+  type OsPermission,
+} from "./types"
 
 export function useComputerStatus(live: boolean) {
   const [status, setStatus] = useState<ComputerStatus | null>(null)
@@ -93,6 +104,42 @@ export function useComputerStatus(live: boolean) {
       document.removeEventListener("visibilitychange", onVisible)
     }
   }, [live, refresh])
+
+  // 驱动装完或删完（不再带进行中的任务）时再查：装好之前 helper 起不来。
+  useEffect(() => {
+    if (!live) return
+    let disposed = false
+    let unsubscribe: (() => void) | undefined
+    subscribe<DriverInfo>(COMPUTER_DRIVER_EVENT, (info) => {
+      if (!disposed && info.task === undefined) void refresh()
+    })
+      .then((fn) => {
+        if (disposed) fn()
+        else unsubscribe = fn
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+      unsubscribe?.()
+    }
+  }, [live, refresh])
+
+  // 后端从别的状态变成 ready 时再查；重取带回来的仍是 ready，不会再触发。
+  // 之前一无所知（第一次查本身带回 ready）不算，那一次已经带着权限了。
+  const backendState = useComputerStore().backend?.state
+  const lastBackendStateRef = useRef(backendState)
+  useEffect(() => {
+    const previous = lastBackendStateRef.current
+    lastBackendStateRef.current = backendState
+    if (
+      live &&
+      backendState === "ready" &&
+      previous !== undefined &&
+      previous !== "ready"
+    ) {
+      void refresh()
+    }
+  }, [live, backendState, refresh])
 
   const request = useCallback(
     async (permission: OsPermission) => {

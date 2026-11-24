@@ -764,10 +764,17 @@ fn is_credential_error(message: &str) -> bool {
 fn describe_lost_turn_error(message: &str, credential: bool) -> String {
     let message = message.trim();
     if credential || is_credential_error(message) {
-        format!("智能体没有登录凭据，去 Agents 设置里配置好再重试。原始报错：{message}")
+        describe_credential_error(message)
     } else {
         format!("智能体的连接断开了，这一轮没有跑完。原始报错：{message}")
     }
+}
+
+/// 缺登录凭据的失败说明：中文原因在前，后面附智能体的原话。任务详情认「没有登录凭据」
+/// 给去配置的入口。断连那条路和正常结束这一轮的那条路（#1422）共用。
+fn describe_credential_error(message: &str) -> String {
+    let message = message.trim();
+    format!("智能体没有登录凭据，去 Agents 设置里配置好再重试。原始报错：{message}")
 }
 
 fn first_nonempty<'a>(parts: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
@@ -2884,7 +2891,8 @@ impl TaskEngine {
         if let Some(message) = reported_agent_error(&env.payload) {
             let credential = matches!(
                 &env.payload,
-                AcpEvent::Error { code: Some(code), .. } if code == "agent_auth_required"
+                AcpEvent::Error { code: Some(code), .. }
+                    if code == "agent_auth_required" || code == "turn_failed_auth_required"
             );
             self.note_turn_agent_error(&env.connection_id, env.seq, message, credential)
                 .await;
@@ -3328,7 +3336,17 @@ impl TaskEngine {
                         && turn_added_no_diff(signal.as_ref(), stats)
                         && signal.as_ref().is_some_and(|s| s.error.is_some());
                     if empty_error {
-                        let error = signal.and_then(|s| s.error);
+                        // #1422：缺凭据的报错也套上中文原因。
+                        let error = signal.and_then(|s| {
+                            let credential = s.credential;
+                            s.error.map(|e| {
+                                if credential || is_credential_error(&e) {
+                                    describe_credential_error(&e)
+                                } else {
+                                    e
+                                }
+                            })
+                        });
                         work_task_service::fail(
                             &self.db.conn,
                             task_id,
@@ -3367,20 +3385,31 @@ impl TaskEngine {
             // What the agent reported for this turn (a rejected prompt's own
             // message, codeg's reading of an empty turn) says more than the
             // bare stop reason, which is all a turn that reported nothing has.
-            other => work_task_service::fail(
-                &self.db.conn,
-                task_id,
-                &[WorkTaskStatus::Running, WorkTaskStatus::AwaitingInput],
-                Some(run_seq),
-                "agent_error",
-                Some(
-                    signal
-                        .and_then(|s| s.error)
-                        .unwrap_or_else(|| format!("agent stopped: {other}")),
-                ),
-            )
-            .await
-            .unwrap_or(false),
+            // #1422：缺登录凭据（Claude Code 以 `auth_required` 结束这一轮、报错带
+            // `turn_failed_auth_required` 代码，或原话就是在要登录）和断连那条路一样，
+            // 中文原因在前，后面附原话；什么都没报的原话就是 stop reason。
+            other => {
+                let credential = other == "auth_required"
+                    || signal.as_ref().is_some_and(|s| {
+                        s.credential || s.error.as_deref().is_some_and(is_credential_error)
+                    });
+                let error = signal.and_then(|s| s.error);
+                let error = if credential {
+                    describe_credential_error(error.as_deref().unwrap_or(other))
+                } else {
+                    error.unwrap_or_else(|| format!("agent stopped: {other}"))
+                };
+                work_task_service::fail(
+                    &self.db.conn,
+                    task_id,
+                    &[WorkTaskStatus::Running, WorkTaskStatus::AwaitingInput],
+                    Some(run_seq),
+                    "agent_error",
+                    Some(error),
+                )
+                .await
+                .unwrap_or(false)
+            }
         };
         if changed {
             self.emit_upsert(task_id);
@@ -12125,6 +12154,86 @@ mod tests {
                 .expect("task row");
             assert_eq!(task.status, WorkTaskStatus::Failed);
             assert_eq!(task.last_error.as_deref(), Some("agent stopped: rejected"));
+        }
+    }
+
+    /// #1422：Claude Code 缺凭据时不断连，而是报一条 `turn_failed_auth_required` 的
+    /// 英文 Error 再以 `auth_required` 结束这一轮。失败说明要和断连那条路一样，
+    /// 以中文的缺凭据原因开头，后面附原话；什么都没报的也要说是缺凭据。
+    #[tokio::test]
+    async fn an_auth_required_turn_fails_with_the_credential_reason() {
+        const ORIGINAL: &str =
+            "Claude Code needs you to sign in again before it can run this turn.";
+        {
+            let (engine, task_id) = running_task().await;
+            engine
+                .on_event(&envelope_at(PARENT_CONN, 1, prompting()))
+                .await;
+            engine
+                .on_event(&envelope_at(
+                    PARENT_CONN,
+                    2,
+                    AcpEvent::Error {
+                        message: ORIGINAL.into(),
+                        agent_type: "claude_code".into(),
+                        code: Some("turn_failed_auth_required".into()),
+                        details: None,
+                        terminal: false,
+                    },
+                ))
+                .await;
+            engine
+                .on_event(&turn_complete_envelope(PARENT_CONN, 3, "auth_required"))
+                .await;
+            let task = work_task_service::get_model(&engine.db.conn, task_id)
+                .await
+                .expect("task row");
+            assert_eq!(task.status, WorkTaskStatus::Failed);
+            assert_eq!(task.failure_reason.as_deref(), Some("agent_error"));
+            let error = task.last_error.expect("last_error");
+            assert!(error.starts_with("智能体没有登录凭据"), "{error}");
+            assert!(error.contains(&format!("原始报错：{ORIGINAL}")), "{error}");
+        }
+        {
+            // 报错代码就够了，原话里认不出缺凭据也算。
+            let (engine, task_id) = running_task().await;
+            engine
+                .on_event(&envelope_at(PARENT_CONN, 1, prompting()))
+                .await;
+            engine
+                .on_event(&envelope_at(
+                    PARENT_CONN,
+                    2,
+                    AcpEvent::Error {
+                        message: "relay token expired".into(),
+                        agent_type: "claude_code".into(),
+                        code: Some("turn_failed_auth_required".into()),
+                        details: None,
+                        terminal: false,
+                    },
+                ))
+                .await;
+            engine
+                .on_event(&turn_complete_envelope(PARENT_CONN, 3, "rejected"))
+                .await;
+            let task = work_task_service::get_model(&engine.db.conn, task_id)
+                .await
+                .expect("task row");
+            let error = task.last_error.expect("last_error");
+            assert!(error.starts_with("智能体没有登录凭据"), "{error}");
+            assert!(error.contains("relay token expired"), "{error}");
+        }
+        {
+            let (engine, task_id) = running_task().await;
+            engine
+                .on_event(&turn_complete_envelope(PARENT_CONN, 3, "auth_required"))
+                .await;
+            let task = work_task_service::get_model(&engine.db.conn, task_id)
+                .await
+                .expect("task row");
+            let error = task.last_error.expect("last_error");
+            assert!(error.starts_with("智能体没有登录凭据"), "{error}");
+            assert!(error.contains("原始报错：auth_required"), "{error}");
         }
     }
 

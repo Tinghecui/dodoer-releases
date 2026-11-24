@@ -152,16 +152,33 @@ describe("ComposerConnectionStatus", () => {
     fake.state.conn = connected({ status: "prompting" })
     renderStatus()
 
-    // The trigger still collapses `prompting` into `connected` — the icon is a
-    // connection signal, not a turn signal.
-    expect(
-      screen.getByRole("button", {
-        name: `${copy.title}: ${copy.connected}`,
-      })
-    ).toBeInTheDocument()
-
     await openPopover()
     expect(await screen.findByText(copy.prompting)).toBeInTheDocument()
+  })
+
+  // #1394：回复进行中，悬停说明和读屏文字写「响应中」，图标还是常态的心形；
+  // 回复结束后变回「已连接」。
+  it("悬停说明和读屏文字在回复中写响应中，图标不变，结束后变回已连接", () => {
+    fake.state.conn = connected({ status: "prompting" })
+    const view = renderStatus()
+
+    const trigger = screen.getByRole("button", {
+      name: `${copy.title}: ${copy.prompting}`,
+    })
+    expect(trigger).toHaveAttribute("title", `Claude Code - ${copy.prompting}`)
+    expect(trigger.querySelector(".lucide-heart-handshake")).not.toBeNull()
+
+    fake.state.conn = connected({ status: "connected" })
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ComposerConnectionStatus tabId="tab-1" />
+      </NextIntlClientProvider>
+    )
+    const after = screen.getByRole("button", {
+      name: `${copy.title}: ${copy.connected}`,
+    })
+    expect(after).toHaveAttribute("title", `Claude Code - ${copy.connected}`)
+    expect(after.querySelector(".lucide-heart-handshake")).not.toBeNull()
   })
 
   it("reconnects the live connection when the button is clicked", async () => {

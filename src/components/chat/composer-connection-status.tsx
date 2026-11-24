@@ -30,9 +30,10 @@ import {
 import { isConnectionBusy } from "@/lib/connection-teardown"
 import { cn } from "@/lib/utils"
 
-// Connection-only states. The session "prompting" state is intentionally
-// collapsed into "connected" (the connection stays up while the agent responds),
-// and anything unknown falls back to "disconnected".
+// Connection-only states for the ICON. The session "prompting" state is
+// collapsed into "connected" here (the connection stays up while the agent
+// responds), and anything unknown falls back to "disconnected".
+// 悬停说明和读屏文字（#1394）不并：回复中写「响应中...」，见 toDetailStatus。
 // `agentExited`（#441）：连接还在，但服务器判出里面的智能体进程已经退出（侧栏的
 // 「?」，原因 agent_exited）——转接进程活着、干活的子进程没了。不能再说「已连接」，
 // 和侧栏一致地说进程没了；下一条消息会让转接进程重新拉起它。
@@ -77,8 +78,9 @@ function toConnStatus(status: string | null): ConnStatusKey {
 }
 
 /**
- * The popover states the REAL status, so "Responding..." is worth telling apart
- * from a resting "Connected" — the icon keeps collapsing the two.
+ * The hover title, aria-label and popover state the REAL status, so
+ * "Responding..." is told apart from a resting "Connected" — only the icon
+ * keeps collapsing the two (#1394：图标不跟着每轮回复变).
  */
 function toDetailStatus(status: string | null): ConnStatusKey | "prompting" {
   return status === "prompting" ? "prompting" : toConnStatus(status)
@@ -182,7 +184,9 @@ export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
       : null)
 
   const statusKey = toConnStatus(status)
-  const statusLabel = t(statusKey)
+  // 文字用真实状态：回复中写「响应中...」（#1394）；图标仍按 statusKey。
+  const detailStatusKey = toDetailStatus(status)
+  const statusLabel = t(detailStatusKey)
   const agentType =
     conn?.agentType ??
     connectPending?.agentType ??
@@ -206,7 +210,6 @@ export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
   const detailAgentLabel = detailAgentType
     ? getAgentLabel(detailAgentType)
     : null
-  const detailStatusKey = toDetailStatus(status)
   const workingDir =
     conn?.workingDir ??
     connectPending?.workingDir ??

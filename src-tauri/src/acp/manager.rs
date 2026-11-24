@@ -3796,7 +3796,10 @@ impl ConnectionManager {
                     now,
                     silence,
                 };
-                let watched = (running || waiting) && (pid != 0 || s.process_watch.seen_pid != 0);
+                // #1452：上一次还在等后台、这次计数归零了，再看一次（见 `process_watch::judge`）。
+                let settling = !running && !waiting && s.process_watch.was_waiting;
+                let watched =
+                    (running || waiting || settling) && (pid != 0 || s.process_watch.seen_pid != 0);
                 let target = if watched {
                     Some(WatchTarget {
                         pid,
@@ -3867,7 +3870,15 @@ impl ConnectionManager {
                         &sample,
                     );
                 }
-                _ => s.process_watch.uncertain = None,
+                // 已经不在跑也不在等后台：旧结论清掉。#1452：「智能体进程已经退出」不会因为
+                // 计数归零就不成立，留着，等有进展的事件或断开再清。
+                _ => {
+                    if s.process_watch.uncertain
+                        != Some(crate::acp::types::BackgroundUncertainReason::AgentExited)
+                    {
+                        s.process_watch.uncertain = None;
+                    }
+                }
             }
             if s.process_watch.uncertain != before {
                 crate::web::event_bridge::publish_process_observation(&plan.emitter, &s, before);
@@ -9679,6 +9690,92 @@ mod tests {
         assert_eq!(sent[0]["conversation_id"], 42);
         assert_eq!(sent[0]["state"], "uncertain");
         assert_eq!(sent[0]["reason"], "agent_exited");
+    }
+
+    /// #1452：在等后台的 Claude 连接，Claude 进程被杀以后适配器把后台任务报成结束，
+    /// 计数先归零、连接还活着。下一次轮询照样按记下的 Claude 进程判「?」（智能体进程已经
+    /// 退出），之后再轮询也不因为计数是 0 把「?」清掉。
+    #[tokio::test]
+    async fn process_watch_reports_a_vanished_claude_child_after_the_count_dropped() {
+        use crate::acp::process_watch::ProcessProbe;
+        use crate::models::agent::AgentType;
+        let mgr = ConnectionManager::new();
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let conn = waiting_connection("claude", 42, AgentType::ClaudeCode, 4242, &broadcaster);
+        let state = Arc::clone(&conn.state);
+        mgr.connections.lock().await.insert("claude".into(), conn);
+
+        // 在等后台：记下 Claude 进程 5000。
+        let first = CountingReader::with_children(
+            &[
+                (4242, ProcessProbe::Alive { start: 1 }),
+                (5000, ProcessProbe::Alive { start: 50 }),
+            ],
+            &[5000],
+            || {},
+        );
+        mgr.refresh_process_watch_with(first, chrono::Utc::now(), silence())
+            .await;
+        assert!(background_broadcasts(&mut rx).is_empty());
+
+        // Claude 进程被杀，后台任务跟着被报成结束：计数归零，转接进程还活着。
+        state.write().await.background_outstanding = 0;
+        let gone =
+            CountingReader::with_children(&[(4242, ProcessProbe::Alive { start: 1 })], &[], || {});
+        mgr.refresh_process_watch_with(gone.clone(), chrono::Utc::now(), silence())
+            .await;
+        let sent = background_broadcasts(&mut rx);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["conversation_id"], 42);
+        assert_eq!(sent[0]["state"], "uncertain");
+        assert_eq!(sent[0]["reason"], "agent_exited");
+
+        // 再轮询：「?」留着，不重发。
+        mgr.refresh_process_watch_with(gone, chrono::Utc::now(), silence())
+            .await;
+        assert!(background_broadcasts(&mut rx).is_empty());
+        let listed = mgr
+            .list_background_pending_with_uncertain(&broadcaster)
+            .await;
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(
+            listed[0].reason,
+            Some(crate::acp::types::BackgroundUncertainReason::AgentExited)
+        );
+    }
+
+    /// #1452：一轮正常跑完、没有后台任务的 Claude 连接，空闲以后 Claude 进程不在了不标「?」
+    /// （只有刚从等后台变成不等的那一次才看）。
+    #[tokio::test]
+    async fn process_watch_ignores_a_claude_child_after_a_plain_turn() {
+        use crate::acp::process_watch::ProcessProbe;
+        use crate::models::agent::AgentType;
+        let mgr = ConnectionManager::new();
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let mut conn = watched_connection("claude", 4242, &broadcaster);
+        conn.agent_type = AgentType::ClaudeCode;
+        let state = Arc::clone(&conn.state);
+        mgr.connections.lock().await.insert("claude".into(), conn);
+
+        let first = CountingReader::with_children(
+            &[
+                (4242, ProcessProbe::Alive { start: 1 }),
+                (5000, ProcessProbe::Alive { start: 50 }),
+            ],
+            &[5000],
+            || {},
+        );
+        mgr.refresh_process_watch_with(first, chrono::Utc::now(), silence())
+            .await;
+        state.write().await.status = ConnectionStatus::Connected;
+        let gone =
+            CountingReader::with_children(&[(4242, ProcessProbe::Alive { start: 1 })], &[], || {});
+        mgr.refresh_process_watch_with(gone, chrono::Utc::now(), silence())
+            .await;
+        assert!(background_broadcasts(&mut rx).is_empty());
+        assert_eq!(state.read().await.process_watch.uncertain, None);
     }
 
     /// 完成标准 13：采样期间 `event_seq` 加 1 或 pid 变了，这次观察整个丢掉。

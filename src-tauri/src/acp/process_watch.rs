@@ -301,6 +301,9 @@ pub(crate) struct ProcessWatch {
     /// 直接子进程，也就是真正的 Claude 进程。之后只认这一个，不猜新冒出来的子进程。
     /// 不在跑也不在等后台、pid 格子换了时丢掉。
     pub claude_child: Option<ProcessIdentity>,
+    /// 上一次观察时在等后台（`count > 0`）。#1452：Claude 进程被杀以后适配器会把后台任务
+    /// 报成结束，计数先归零，所以刚从等后台变成不等的那一次观察还要按记下的 Claude 进程判一次。
+    pub was_waiting: bool,
     /// 上一次观察的结论：`Some` 是「?」。有进展时清掉。
     pub uncertain: Option<BackgroundUncertainReason>,
 }
@@ -465,7 +468,10 @@ pub(crate) fn judge(
     input: &WatchInput,
     sample: &WatchSample,
 ) -> Option<BackgroundUncertainReason> {
-    if !(input.running || input.waiting) {
+    // #1452：上一次还在等后台、这一次不在跑也不等了（计数归零）：只看智能体和 Claude 进程
+    // 还在不在，后台任务那两条不看。
+    let settling = !input.running && !input.waiting && watch.was_waiting;
+    if !(input.running || input.waiting || settling) {
         return None;
     }
     // 智能体：pid 格子先前非 0、现在 0（`on_exit` 只在真回收时清零）是退出；
@@ -488,13 +494,16 @@ pub(crate) fn judge(
             ProcessProbe::Unknown => None,
         }
     };
-    // Claude 进程：在等后台、转接进程活着、先前记下过的那个 Claude 进程确定不在了。
-    if input.waiting
+    // Claude 进程：在等后台（或刚等完）、转接进程活着、先前记下过的那个 Claude 进程确定不在了。
+    if (input.waiting || settling)
         && agent_alive == Some(true)
         && watch.claude_child.is_some()
         && sample.claude_child_alive == Some(false)
     {
         return Some(BackgroundUncertainReason::AgentExited);
+    }
+    if settling {
+        return None;
     }
     if sample
         .writers_alive
@@ -532,6 +541,7 @@ pub(crate) fn observe(
             });
         }
     }
+    watch.was_waiting = input.waiting;
     if !(input.running || input.waiting) {
         watch.claude_child = None;
     } else if watch.claude_child.is_none() && input.pid != 0 {
@@ -1377,6 +1387,53 @@ mod tests {
             observe(&mut watch, &waiting(), &[], &after),
             Some(BackgroundUncertainReason::AgentExited)
         );
+    }
+
+    /// #1452：Claude 进程被杀、后台任务跟着被报成结束，计数先归零。上一次还在等后台的话，
+    /// 这一次（不在跑也不在等）照样按记下的 Claude 进程判「?」；后台任务那两条不看；
+    /// 看完一次就不再看。
+    #[test]
+    fn a_vanished_claude_child_is_agent_exited_right_after_waiting_ends() {
+        let idle = WatchInput {
+            running: false,
+            waiting: false,
+            ..input()
+        };
+        let gone = WatchSample {
+            claude_child_alive: Some(false),
+            ..healthy()
+        };
+        let mut watch = watched_with_claude();
+        assert_eq!(observe(&mut watch, &waiting(), &[], &healthy()), None);
+        assert!(watch.was_waiting);
+        assert_eq!(
+            observe(&mut watch, &idle, &[], &gone),
+            Some(BackgroundUncertainReason::AgentExited)
+        );
+        assert!(!watch.was_waiting);
+        assert_eq!(watch.claude_child, None);
+        assert_eq!(judge(&watch, &idle, &gone), None);
+
+        // Claude 进程还活着：后台任务正常做完，不标；写进程不在了、安静太久也不看。
+        let mut watch = ProcessWatch {
+            was_waiting: true,
+            ..watched_with_claude()
+        };
+        let finished = WatchSample {
+            claude_child_alive: Some(true),
+            has_children: Some(false),
+            writers_alive: vec![("bg".into(), Some(false))],
+            ..healthy()
+        };
+        let quiet = WatchInput {
+            now: t0() + chrono::Duration::hours(2),
+            ..idle
+        };
+        assert_eq!(observe(&mut watch, &quiet, &[], &finished), None);
+
+        // 上一次就不在等后台（一轮正常跑完）：不看。
+        let plain = watched_with_claude();
+        assert_eq!(judge(&plain, &idle, &gone), None);
     }
 
     #[test]

@@ -20,6 +20,7 @@ import {
   captureMessage,
   createTransport,
   dedupeIntegration,
+  flush,
   eventFiltersIntegration,
   functionToStringIntegration,
   getTraceData,
@@ -55,7 +56,7 @@ import {
   type WsNote,
 } from "./index"
 import { scrubRecord, scrubText } from "./scrub"
-import { sendEnvelope } from "./transport"
+import { notePageLeaving, sendEnvelope } from "./transport"
 
 /** A span's own sample rate, read by `tracesSampler`. */
 const SAMPLE_RATE = "codeg.sample_rate"
@@ -477,8 +478,22 @@ function onVisibilityChange(): void {
     hiddenSince = Date.now()
     flushHeldInView()
   } else {
+    notePageLeaving(false)
     flushHeldHidden()
   }
+}
+
+/** 页面要卸载了：SDK 只在 hidden 时发攒着的日志，有的浏览器离开页面时
+ *  不先变 hidden，这里再发一次（缓冲空了就什么也不发）。传输层这时带
+ *  keepalive，页面没了请求也会送完（#1331）。 */
+function onPageHide(): void {
+  notePageLeaving(true)
+  void flush()
+}
+
+/** 从往返缓存里回来的页面：不再算正在离开。 */
+function onPageShow(): void {
+  notePageLeaving(false)
 }
 
 function watchVisibility(): void {
@@ -486,6 +501,8 @@ function watchVisibility(): void {
   watchingVisibility = true
   if (pageHidden()) hiddenSince = Date.now()
   document.addEventListener("visibilitychange", onVisibilityChange)
+  window.addEventListener("pagehide", onPageHide)
+  window.addEventListener("pageshow", onPageShow)
 }
 
 // ─── The event socket ─────────────────────────────────────────────────────
@@ -730,6 +747,9 @@ export function resetForTests(): void {
   heldHidden.clear()
   if (watchingVisibility) {
     document.removeEventListener("visibilitychange", onVisibilityChange)
+    window.removeEventListener("pagehide", onPageHide)
+    window.removeEventListener("pageshow", onPageShow)
     watchingVisibility = false
+    notePageLeaving(false)
   }
 }

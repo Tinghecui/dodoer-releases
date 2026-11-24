@@ -3,6 +3,7 @@ import type { ErrorEvent as SentryErrorEvent } from "@sentry/browser"
 
 const sdk = vi.hoisted(() => ({
   init: vi.fn(),
+  flush: vi.fn(() => Promise.resolve(true)),
   logger: { info: vi.fn(), warn: vi.fn() },
   captureFeedback: vi.fn(),
   captureMessage: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("@sentry/browser", () => {
     createTransport: vi.fn(),
     makeBrowserOfflineTransport: vi.fn(() => () => ({})),
     init: sdk.init,
+    flush: sdk.flush,
     logger: sdk.logger,
     setTags: vi.fn(),
     setUser: vi.fn(),
@@ -72,6 +74,7 @@ vi.mock("@sentry/browser", () => {
   }
 })
 
+import { sendEnvelope } from "./transport"
 import {
   MAX_ERRORS,
   NETWORK_FAILURES_PER_MINUTE,
@@ -124,6 +127,43 @@ describe("start", () => {
         attributes: { "codeg.sample_rate": 0.01 },
       })
     ).toBe(0.01)
+  })
+})
+
+describe("leaving the page", () => {
+  it("sends what the SDK holds on pagehide, before the page goes", () => {
+    start(CONFIG, "web")
+    window.dispatchEvent(new Event("pagehide"))
+    expect(sdk.flush).toHaveBeenCalled()
+  })
+
+  it("sends that flush with keepalive even while the page still reads visible", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: () => Promise.resolve("null"),
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    try {
+      start(CONFIG, "web")
+      expect(document.visibilityState).toBe("visible")
+      window.dispatchEvent(new Event("pagehide"))
+      // SDK 在 flush 里交给传输层的就是这个函数
+      await sendEnvelope({ body: "env-text" })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(fetchMock.mock.calls[0][1].keepalive).toBe(true)
+      resetForTests()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("stops listening once reset", () => {
+    start(CONFIG, "web")
+    resetForTests()
+    sdk.flush.mockClear()
+    window.dispatchEvent(new Event("pagehide"))
+    expect(sdk.flush).not.toHaveBeenCalled()
   })
 })
 

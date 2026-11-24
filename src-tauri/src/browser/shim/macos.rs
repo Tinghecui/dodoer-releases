@@ -472,6 +472,43 @@ pub fn prefer_detached_inspector() {
     });
 }
 
+/// 整个应用里 WebKit 输入框默认关掉的自动替换：智能引号、智能破折号。
+///
+/// 这个应用里打的大多是命令、代码和路径，`--directory` 变成 `—directory`、
+/// `'a'` 变成 `‘a’` 只会把发给智能体的命令改坏。拼写检查和用户自己在系统里
+/// 设的「文本替换」（`WebAutomaticTextReplacementEnabled`）留着，不在这里。
+pub(crate) const SMART_SUBSTITUTION_DEFAULTS: [&str; 2] = [
+    "WebAutomaticQuoteSubstitutionEnabled",
+    "WebAutomaticDashSubstitutionEnabled",
+];
+
+/// 在建任何 webview 之前，把智能引号、智能破折号的默认值注册成关。
+///
+/// WebKit 第一次用到输入检查时读这几个键：应用自己存过值就用存的值，没存过
+/// 才看注册域，再没有才跟系统设置走。所以这里和
+/// [`prefer_detached_inspector`] 一样是注册、不是写入：用户在菜单
+/// 「编辑 → 替换」里手动打开的，WebKit 会存下来，以后照样算数。
+pub fn disable_smart_substitutions() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: plain Foundation objects; `NSUserDefaults` is thread-safe
+        // and an unknown key here is inert rather than undefined.
+        unsafe {
+            let registration: *mut AnyObject =
+                objc2::msg_send![objc2::class!(NSMutableDictionary), dictionary];
+            for key in SMART_SUBSTITUTION_DEFAULTS {
+                let no: *mut AnyObject =
+                    objc2::msg_send![objc2::class!(NSNumber), numberWithBool: false];
+                let key = NSString::from_str(key);
+                let _: () = objc2::msg_send![registration, setObject: no, forKey: &*key];
+            }
+            let defaults: *mut AnyObject =
+                objc2::msg_send![objc2::class!(NSUserDefaults), standardUserDefaults];
+            let _: () = objc2::msg_send![defaults, registerDefaults: registration];
+        }
+    });
+}
+
 /// Show the Web Inspector for this page — in its own window, see
 /// [`prefer_detached_inspector`]. `true` when there was an inspector and it
 /// was asked to show, which is also what makes its closing worth watching for.
@@ -1553,5 +1590,28 @@ mod tests {
         assert!(!is_app_origin("example.com"));
         assert!(!is_app_origin("127.0.0.1"));
         assert!(!is_app_origin("localhost.example.com"));
+    }
+
+    /// 注册以后，没存过值的应用读这两个键都是关；文本替换不在名单里，
+    /// 跟着系统设置走。
+    #[test]
+    fn smart_quotes_and_dashes_default_off() {
+        use super::{disable_smart_substitutions, SMART_SUBSTITUTION_DEFAULTS};
+        use objc2::runtime::AnyObject;
+        use objc2_foundation::NSString;
+
+        assert!(!SMART_SUBSTITUTION_DEFAULTS.contains(&"WebAutomaticTextReplacementEnabled"));
+        disable_smart_substitutions();
+        unsafe {
+            let defaults: *mut AnyObject =
+                objc2::msg_send![objc2::class!(NSUserDefaults), standardUserDefaults];
+            for name in SMART_SUBSTITUTION_DEFAULTS {
+                let key = NSString::from_str(name);
+                let value: *mut AnyObject = objc2::msg_send![defaults, objectForKey: &*key];
+                assert!(!value.is_null(), "{name} 没注册上");
+                let on: bool = objc2::msg_send![defaults, boolForKey: &*key];
+                assert!(!on, "{name} 应该默认关");
+            }
+        }
     }
 }

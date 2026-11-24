@@ -1541,6 +1541,11 @@ mod tauri_app {
                 #[cfg(target_os = "macos")]
                 crate::browser::shim::macos::prefer_detached_inspector();
 
+                // 同样要在建任何 webview 之前：关掉 macOS 输入框的智能引号、
+                // 智能破折号，免得 `--`、`'` 在发给智能体的命令里被改掉。
+                #[cfg(target_os = "macos")]
+                crate::browser::shim::macos::disable_smart_substitutions();
+
                 // The workspace windows open at the last quit come back: the
                 // local one (`main`) and every remote workspace window (see
                 // `workspace_windows`). A `codeg://` link on the command line

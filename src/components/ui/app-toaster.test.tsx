@@ -159,3 +159,36 @@ describe("AppToaster on the mobile layout", () => {
     )
   })
 })
+
+/**
+ * Cowork（#1393）：标题限行数要管到每一个弹窗，不只是经过 notify() 的。
+ * 直接调 sonner 的地方（比如把 err.message 原样交给 toast.error）也可能是
+ * 几十行的报错，不限的话弹窗比屏幕还高、关闭按钮跑到屏幕外。
+ */
+describe("AppToaster title clamp", () => {
+  afterEach(settleToasts)
+
+  it("clamps the title of a toast raised straight through sonner (#1393)", async () => {
+    render(<AppToaster position="bottom-right" />)
+    const long = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n")
+    toast.error(long)
+    const title = await screen.findByText((_, el) =>
+      Boolean(el?.matches("[data-title]") && el.textContent === long)
+    )
+    expect(title.className).toContain("line-clamp-3")
+    expect(title.className).toContain("break-words")
+  })
+
+  it("keeps the caller's own toast class names alongside the clamp (#1393)", async () => {
+    render(
+      <AppToaster
+        position="bottom-right"
+        toastOptions={{ classNames: { title: "custom-title" } }}
+      />
+    )
+    toast.error("short")
+    const title = await screen.findByText("short")
+    expect(title.className).toContain("custom-title")
+    expect(title.className).toContain("line-clamp-3")
+  })
+})

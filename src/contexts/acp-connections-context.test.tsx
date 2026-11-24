@@ -1721,6 +1721,48 @@ describe("AcpConnectionsProvider failed-turn line", () => {
     ])
   })
 
+  it("closes a turn whose agent process was killed as a lost connection (#1393)", async () => {
+    const handlers = await promptingOwner()
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "error",
+      message:
+        'ACP protocol error: Internal error: "Process exited with signal: 9 (SIGKILL): [debug] a\n[debug] b',
+      agent_type: "claude_code",
+      code: null,
+    })
+    // 对话里那一行换成「连接断了」，带「重试」（重连再重发，#1120）。
+    expect(lineOf()).toEqual([
+      {
+        type: "turn_error",
+        message: "The connection to Claude Code was lost.",
+        fromAgent: true,
+        kind: "connection_lost",
+      },
+    ])
+    // 回合进行中：弹窗不放只重连的「重试」，重发这一轮在对话那一行上。
+    const options = h.toastError.mock.lastCall![1] as {
+      action?: unknown
+    }
+    expect(options.action).toBeUndefined()
+  })
+
+  it("keeps only the first line of a long rejection in the transcript (#1393)", async () => {
+    const handlers = await promptingOwner()
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "error",
+      message: "ACP protocol error: Internal error: boom\nat a\nat b",
+      agent_type: "cline",
+      code: null,
+    })
+    expect(lineOf()).toEqual([
+      { type: "turn_error", message: "Internal error: boom", fromAgent: true },
+    ])
+  })
+
   it("adds nothing for a turn that ended early with output", async () => {
     const handlers = await promptingOwner()
     for (const [seq, code] of [
@@ -5237,6 +5279,7 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
     // The useTranslations mock echoes the key, so the message itself is the key.
     expect(h.toastWarning).toHaveBeenCalledWith("configOptionAdjusted", {
       id: "acp-config-adjusted:spawned-conn:effort",
+      classNames: { title: expect.any(String) },
     })
     expect(h.recordAlert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -5378,6 +5421,7 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
     })
     expect(h.toastWarning).toHaveBeenCalledWith("noticeTitle", {
       id: "acp-notice:spawned-conn:warning:Fast mode turned off",
+      classNames: { title: expect.any(String) },
     })
 
     emitAcpEvent(handlers, {
@@ -5388,6 +5432,7 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
     })
     expect(h.toastError).toHaveBeenCalledWith("noticeTitle", {
       id: "acp-notice:spawned-conn:error:Provider degraded",
+      classNames: { title: expect.any(String) },
     })
     expect(h.recordAlert.mock.calls.map(([alert]) => alert)).toEqual([
       {
@@ -5791,7 +5836,10 @@ describe("empty-turn error diagnostics", () => {
     // there — and in the alert list with the evidence behind its disclosure.
     expect(h.toastError).toHaveBeenCalledWith(
       "backendErrors.turnFailedEmptyProtocol",
-      { id: expect.stringMatching(/^acp-turn-failure:spawned-conn:/) }
+      {
+        id: expect.stringMatching(/^acp-turn-failure:spawned-conn:/),
+        classNames: { title: expect.any(String) },
+      }
     )
     expect(h.recordAlert).toHaveBeenCalledWith({
       key: expect.stringMatching(/^acp-turn-failure:spawned-conn:/),
@@ -5836,6 +5884,63 @@ describe("empty-turn error diagnostics", () => {
     expect(JSON.stringify(h.notifyDesktop.mock.calls)).not.toContain(
       "Missing optional dependency"
     )
+  })
+
+  // #1393：底下的 CLI 被杀，后端没给 code，消息是英文原文加几十行日志。
+  // 定了：弹窗只一句中文、带重试，原文收进警报的折叠区。
+  const killedLog = [
+    'ACP protocol error: Internal error: "Process exited with signal: 9 (SIGKILL): [session/create] sessionId=abc phase=validate-cwd durationMs=3',
+    ...Array.from({ length: 30 }, (_, i) => `[debug] line ${i}`),
+  ].join("\n")
+
+  it("tells a killed agent process in one localized line, with its log folded (#1393)", async () => {
+    const handlers = await connectOwner()
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "error",
+      message: killedLog,
+      agent_type: "claude_code",
+      code: null,
+    })
+
+    const [title, options] = h.toastError.mock.calls[0]! as [
+      string,
+      {
+        description?: string
+        action?: { label: string; onClick: () => void }
+      },
+    ]
+    expect(title).toBe("The connection to Claude Code was lost.")
+    expect(options.description).toBeUndefined()
+    expect(options.action?.label).toBe("actions.retry")
+    const alert = h.recordAlert.mock.calls[0]![0] as {
+      message: string
+      evidence?: string
+    }
+    expect(alert.message).toBe(title)
+    expect(alert.evidence).toBe(killedLog)
+    expect(h.store!.getConnection(TAB)!.error).toBe(title)
+  })
+
+  it("does not put an unrecognized multi-line agent error in the toast (#1393)", async () => {
+    const handlers = await connectOwner()
+    const dump = `ACP protocol error: Internal error: boom\n${"at frame\n".repeat(20)}`
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "error",
+      message: dump,
+      agent_type: "claude_code",
+      code: null,
+    })
+
+    const title = h.toastError.mock.calls[0]![0] as string
+    expect(title).toBe("Claude Code reported an error.")
+    const alert = h.recordAlert.mock.calls[0]![0] as { evidence?: string }
+    expect(alert.evidence).toBe(dump.trim())
   })
 
   it("omits blank details rather than rendering an empty block", async () => {

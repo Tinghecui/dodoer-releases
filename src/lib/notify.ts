@@ -57,6 +57,9 @@ export interface NotifyInput {
 /** Upstream text can be a multi-line error body; keep its line breaks, but
  *  only as many lines as a toast can hold. */
 const DESCRIPTION_CLASS = "line-clamp-6 whitespace-pre-line break-words"
+/** Cowork（#1393）：标题也限行数。认不出的报错原样当标题时可能是几十行日志，
+ *  不限的话弹窗比屏幕还高，关闭按钮跑到屏幕外。 */
+const TITLE_CLASS = "line-clamp-3 break-words"
 
 export function notify(input: NotifyInput): void {
   const description = input.description?.trim() || undefined
@@ -83,7 +86,10 @@ export function notify(input: NotifyInput): void {
     show(input.title, {
       id: input.key,
       description,
-      classNames: description ? { description: DESCRIPTION_CLASS } : undefined,
+      classNames: {
+        title: TITLE_CLASS,
+        ...(description ? { description: DESCRIPTION_CLASS } : {}),
+      },
       action: primary
         ? { label: primary.label, onClick: primary.onClick }
         : undefined,

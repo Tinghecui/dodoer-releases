@@ -131,6 +131,11 @@ const en = {
   turnFailedConnectionLost:
     "The connection to {agent} was lost and this turn did not finish.",
   turnFailedTheAgent: "the agent",
+  // An agent error with no code (#1393): the agent's process was killed under
+  // the adapter, or its message is a log dump. The toast says one sentence; the
+  // raw text is kept behind the alert's disclosure.
+  agentConnectionLost: "The connection to {agent} was lost.",
+  agentErrorGeneric: "{agent} reported an error.",
   turnFailedRetry: "Retry",
   // A queued message read back after a reload or an app restart (#159):
   // marked failed, never sent on its own.
@@ -408,6 +413,8 @@ const zhCN: Record<CoworkTextKey, string> = {
     "{agent} 需要你重新登录后才能执行本轮回复。请到门户「我的账户 → AI 账户」配置，然后重新发送这条消息。",
   turnFailedConnectionLost: "与 {agent} 的连接断了，这一轮没有完成。",
   turnFailedTheAgent: "智能体",
+  agentConnectionLost: "和 {agent} 的连接断开了。",
+  agentErrorGeneric: "{agent} 报错了。",
   turnFailedRetry: "重试",
   queueRestoredReason:
     "页面刷新或应用重启时还没发出去，为免重复发送，不会自动续发。",
@@ -655,6 +662,8 @@ const zhTW: Record<CoworkTextKey, string> = {
     "{agent} 需要你重新登入後才能執行本輪回覆。請到入口網站「我的帳戶 → AI 帳戶」設定，然後重新傳送這則訊息。",
   turnFailedConnectionLost: "與 {agent} 的連線斷了，這一輪沒有完成。",
   turnFailedTheAgent: "智慧體",
+  agentConnectionLost: "和 {agent} 的連線斷開了。",
+  agentErrorGeneric: "{agent} 回報了錯誤。",
   turnFailedRetry: "重試",
   queueRestoredReason:
     "頁面重新整理或應用程式重新啟動時還沒送出，為避免重複傳送，不會自動續傳。",

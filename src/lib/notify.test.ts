@@ -60,6 +60,19 @@ describe("notify", () => {
     })
   })
 
+  it("clamps the toast's title too, so a long one cannot outgrow the screen (#1393)", () => {
+    notify({
+      level: "error",
+      key: "k",
+      title: Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"),
+    })
+    const options = h.error.mock.calls[0][1] as {
+      classNames?: { title?: string }
+    }
+    expect(options.classNames?.title).toMatch(/line-clamp-\d/)
+    expect(options.classNames?.title).toContain("break-words")
+  })
+
   it("keeps an info message out of the alert list", () => {
     notify({ level: "info", key: "k", title: "Model rerouted" })
     expect(h.info).toHaveBeenCalledTimes(1)
@@ -121,10 +134,12 @@ describe("notify", () => {
       id: "k",
       action: { label: "Retry", onClick: retry },
     })
-    for (const field of ["description", "classNames", "cancel"]) {
+    for (const field of ["description", "cancel"]) {
       expect(update).toHaveProperty(field)
       expect(update[field]).toBeUndefined()
     }
+    // classNames 整个换掉（#1393 起总带标题的限行），上一条的 description 样式不留。
+    expect(update.classNames).not.toHaveProperty("description")
   })
 
   it("gives the toast's two slots to toast-only actions when more are offered", () => {

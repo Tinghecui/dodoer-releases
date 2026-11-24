@@ -79,6 +79,26 @@ const MOBILE_TOAST_OFFSET = {
   left: "max(1rem, env(safe-area-inset-left))",
 }
 
+/**
+ * Cowork（#1393）：每个弹窗的标题都限三行。直接调 sonner 的地方会把
+ * err.message 原样当标题，那可能是几十行日志；不限的话弹窗比屏幕还高，
+ * 关闭按钮跑到屏幕外。sonner 会把这里的 class 和每个弹窗自己的合在一起。
+ */
+const TITLE_CLAMP_CLASS = "line-clamp-3 break-words"
+
+function withTitleClamp(
+  options: ToasterProps["toastOptions"]
+): ToasterProps["toastOptions"] {
+  const own = options?.classNames?.title
+  return {
+    ...options,
+    classNames: {
+      ...options?.classNames,
+      title: own ? `${own} ${TITLE_CLAMP_CLASS}` : TITLE_CLAMP_CLASS,
+    },
+  }
+}
+
 export function AppToaster(props: ToasterProps) {
   const isMobile = useIsMobile()
   const { resolvedTheme } = useTheme()
@@ -102,6 +122,7 @@ export function AppToaster(props: ToasterProps) {
           mobileOffset: MOBILE_TOAST_OFFSET,
         })}
         theme={theme}
+        toastOptions={withTitleClamp(props.toastOptions)}
       />
       {/* Its own component so the toast list it watches re-renders nothing
           but itself. */}

@@ -159,3 +159,32 @@ export function isFailedTurnVerdict(code: string | null | undefined): boolean {
 export function rejectedPromptText(message: string): string {
   return message.replace(/^ACP protocol error:\s*/, "")
 }
+
+/**
+ * Cowork 加的（#1393）：没有 code 的智能体报错里，是不是智能体底下的进程没了
+ * （被杀、崩了）：claude-agent-acp 这时拒掉请求，原文是「Process exited with
+ * signal: 9 (SIGKILL): …」后面跟几十行运行日志。按「连接断了」说，不显示原文。
+ */
+const PROCESS_EXITED = /\bProcess exited with (?:signal|code|exit status)\b/
+
+export function agentProcessExited(message: string): boolean {
+  return PROCESS_EXITED.test(message)
+}
+
+/** 原文超过这么长，就算机器输出，不进弹窗（#1393）。 */
+const MAX_INLINE_AGENT_ERROR = 200
+
+/**
+ * Cowork 加的（#1393）：没有 code 的智能体报错，原文是不是日志一类的机器输出
+ * （多行或者很长）。这种不当弹窗标题，换一句本地化的话，原文收进警报的折叠区；
+ * 一行的短句（「The command "/mcp" is not supported in this mode.」）照旧原样显示。
+ */
+export function agentErrorIsLog(message: string): boolean {
+  const text = rejectedPromptText(message.trim())
+  return text.includes("\n") || text.length > MAX_INLINE_AGENT_ERROR
+}
+
+/** 对话里「本轮失败」那一行用的原文：只留第一行（#1393）。 */
+export function rejectedPromptHeadline(message: string): string {
+  return rejectedPromptText(message.trim()).split("\n")[0].trim()
+}

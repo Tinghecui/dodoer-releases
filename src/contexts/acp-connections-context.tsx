@@ -131,7 +131,9 @@ import {
   acpErrorNotifiesDesktop,
   isFailedTurnVerdict,
   isTurnFailureCode,
-  rejectedPromptText,
+  agentErrorIsLog,
+  agentProcessExited,
+  rejectedPromptHeadline,
   routeAcpError,
   type AcpErrorLevel,
 } from "@/lib/acp-error-presentation"
@@ -5459,20 +5461,30 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       agentType?: AgentType | null
     ) => {
       const route = routeAcpError(code)
-      const text = localizeBackendError(code, message, agentLabel, agentType)
+      // Cowork（#1393）：没有 code 的报错原样就是智能体的原文。底下的进程被杀时
+      // 那是英文加几十行日志，别的日志一类的原文也一样：弹窗只说一句本地化的话，
+      // 原文收进警报列表那条的折叠区。一行的短句照旧原样显示。
+      const processExited = !code && agentProcessExited(message)
+      const foldRaw = !code && (processExited || agentErrorIsLog(message))
+      const text = processExited
+        ? coworkT("agentConnectionLost", { agent: agentLabel })
+        : foldRaw
+          ? coworkT("agentErrorGeneric", { agent: agentLabel })
+          : localizeBackendError(code, message, agentLabel, agentType)
       const raw = message.trim()
       const extra = raw && raw !== text ? raw : undefined
       // 原文要折叠的（#1111），放在后端给的证据前面，一起收进折叠区。
-      const folded = route.rawAsEvidence ? extra : undefined
+      const folded = route.rawAsEvidence || foldRaw ? extra : undefined
       return {
         route,
         text,
+        processExited,
         reason: route.rawAsDetail ? extra : undefined,
         evidence:
           [folded, details?.trim()].filter(Boolean).join("\n\n") || undefined,
       }
     },
-    [localizeBackendError]
+    [localizeBackendError, coworkT]
   )
 
   const handleMappedEvent = useCallback(
@@ -6428,13 +6440,16 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           const agentLabel = nc
             ? getAgentLabel(nc.agentType)
             : (e.agent_type as string)
-          const { route, text, reason, evidence } = presentBackendError(
-            e.code,
-            e.message,
-            e.details,
-            agentLabel,
-            nc?.agentType
-          )
+          const { route, text, reason, evidence, processExited } =
+            presentBackendError(
+              e.code,
+              e.message,
+              e.details,
+              agentLabel,
+              nc?.agentType
+            )
+          // 报错时这一轮还在跑没有（下面的 TURN_FAILED 不改状态，先记下）。
+          const wasPrompting = nc?.status === "prompting"
 
           // A verdict that the turn FAILED, or a prompt the agent rejected (no
           // code: the message is the agent's own), closes the turn with the
@@ -6448,11 +6463,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               fromAgent: false,
             })
           } else if (!e.code) {
+            // Cowork（#1393）：底下的进程被杀的，那一行按「连接断了」说，带
+            // 「重试」（先重连再重发这一轮，#1120）；别的只留原文第一行。
             dispatch({
               type: "TURN_FAILED",
               contextKey,
-              message: rejectedPromptText(e.message),
+              message: processExited ? text : rejectedPromptHeadline(e.message),
               fromAgent: true,
+              ...(processExited ? { kind: "connection_lost" as const } : {}),
             })
           }
 
@@ -6521,6 +6539,33 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             break
           }
           const errorAgentType = nc?.agentType
+          const actions: NotifyAction[] = []
+          if (route.opensAgentSettings && errorAgentType) {
+            actions.push({
+              label: t("actions.openAgentsSettings"),
+              onClick: () => {
+                openSettingsWindow("agents", {
+                  agentType: errorAgentType,
+                }).catch((err) => {
+                  console.error("[AcpConnections] open agent settings:", err)
+                })
+              },
+            })
+          }
+          // Cowork（#1393）：进程被杀、这时没有在跑的一轮：「重试」就是重新连上。
+          // 回合中途被杀的，重发这一轮的「重试」在对话里那一行上，这里不放只
+          // 重连的按钮（只接上连接、不重发不算重试）。
+          if (processExited && !wasPrompting) {
+            actions.push({
+              label: t("actions.retry"),
+              onClick: () => {
+                void reconnectRef.current?.(contextKey).catch(() => {
+                  // 重连失败会自己报。
+                })
+              },
+              toastOnly: true,
+            })
+          }
           notify({
             level: route.level,
             // One per connection and code: the same refusal twice in a row, or
@@ -6529,24 +6574,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             title: text,
             description: reason,
             evidence,
-            actions:
-              route.opensAgentSettings && errorAgentType
-                ? [
-                    {
-                      label: t("actions.openAgentsSettings"),
-                      onClick: () => {
-                        openSettingsWindow("agents", {
-                          agentType: errorAgentType,
-                        }).catch((err) => {
-                          console.error(
-                            "[AcpConnections] open agent settings:",
-                            err
-                          )
-                        })
-                      },
-                    },
-                  ]
-                : undefined,
+            actions: actions.length > 0 ? actions : undefined,
           })
           break
         }

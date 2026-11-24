@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest"
 
 import {
   acpErrorNotifiesDesktop,
+  agentErrorIsLog,
+  agentProcessExited,
   isFailedTurnVerdict,
   isTurnFailureCode,
+  rejectedPromptHeadline,
   rejectedPromptText,
   routeAcpError,
 } from "./acp-error-presentation"
@@ -198,5 +201,34 @@ describe("session_lost", () => {
     const route = routeAcpError("session_lost")
     expect(route).toMatchObject({ kind: "session", level: "warning" })
     expect(acpErrorNotifiesDesktop(route)).toBe(false)
+  })
+})
+
+// #1393：没有 code 的智能体报错，哪些不能原样进弹窗。
+describe("agent errors without a code", () => {
+  it("recognizes the agent's process being killed or exiting", () => {
+    expect(
+      agentProcessExited(
+        'ACP protocol error: Internal error: "Process exited with signal: 9 (SIGKILL): …'
+      )
+    ).toBe(true)
+    expect(agentProcessExited("Process exited with code 1")).toBe(true)
+    expect(agentProcessExited("API key expired.")).toBe(false)
+  })
+
+  it("treats a multi-line or very long message as a log, not a one-liner", () => {
+    expect(agentErrorIsLog("ACP protocol error: boom\nat a")).toBe(true)
+    expect(agentErrorIsLog("x".repeat(201))).toBe(true)
+    expect(
+      agentErrorIsLog(
+        'ACP protocol error: The command "/mcp" is not supported in this mode.'
+      )
+    ).toBe(false)
+  })
+
+  it("keeps only the first line for the transcript", () => {
+    expect(rejectedPromptHeadline("ACP protocol error: boom\nat a")).toBe(
+      "boom"
+    )
   })
 })

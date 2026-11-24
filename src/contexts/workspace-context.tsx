@@ -25,7 +25,11 @@ import { useActiveFolder } from "@/contexts/active-folder-context"
 import { MonacoModelProvider } from "@/contexts/monaco-model-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabStore, isTabInScope } from "@/stores/tab-store"
-import { browserTabBackendId, buildFileTabId } from "@/lib/file-tab-id"
+import {
+  browserTabBackendId,
+  buildFileTabId,
+  parseFileTabId,
+} from "@/lib/file-tab-id"
 import {
   fileTabsServerKey,
   recordFileTabInFolder,
@@ -1760,8 +1764,25 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
   // Variant of decideLoad for diff tabs: content is inherently volatile
   // (git state changes), so we always refetch — but non-destructively.
+  //
+  // `refreshOnly`：文件监视发现工作区变了（改了文件、提交、暂存、切分支）时
+  // 重读已经开着的差异标签。不新建标签、不切换当前标签；正在读的那次作废，
+  // 以这次重读为准（那次可能读的是变化前的内容）。
   const beginDiffLoad = useCallback(
-    (seed: FileWorkspaceTab): { skip: true } | { skip: false; gen: number } => {
+    (
+      seed: FileWorkspaceTab,
+      refreshOnly = false
+    ): { skip: true } | { skip: false; gen: number } => {
+      if (refreshOnly) {
+        const existing = fileTabsRef.current.find((t) => t.id === seed.id)
+        if (!existing) return { skip: true }
+        if (existing.saveState === "error") {
+          markErrorRetry(seed.id, seed.kind)
+        } else {
+          markTabRefreshing(seed.id)
+        }
+        return { skip: false, gen: beginFetchGeneration(seed.id) }
+      }
       if (inFlightLoadsRef.current.has(seed.id)) {
         activateTab(seed.id)
         return { skip: true }
@@ -2504,8 +2525,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       options?: {
         mode?: "auto" | "unified" | "overview"
         folderId?: number
+        refreshOnly?: boolean
       }
     ) => {
+      const refreshOnly = options?.refreshOnly === true
       const target = resolveTargetFolder(options?.folderId)
       if (!target) return
       const folderPath = target.path
@@ -2526,7 +2549,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           null,
           "diff"
         )
-        const decision = beginDiffLoad(seed)
+        const decision = beginDiffLoad(seed, refreshOnly)
         if (decision.skip) return
         const { gen } = decision
         try {
@@ -2567,7 +2590,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           path,
           "diff"
         )
-        const decision = beginDiffLoad(seed)
+        const decision = beginDiffLoad(seed, refreshOnly)
         if (decision.skip) return
         const { gen } = decision
         try {
@@ -2601,7 +2624,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           path,
           "diff"
         )
-        const decision = beginDiffLoad(seed)
+        const decision = beginDiffLoad(seed, refreshOnly)
         if (decision.skip) return
         const { gen } = decision
         try {
@@ -2637,7 +2660,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         path,
         lang
       )
-      const decision = beginDiffLoad(seed)
+      const decision = beginDiffLoad(seed, refreshOnly)
       if (decision.skip) return
       const { gen } = decision
       if (isImageDiff) {
@@ -2682,6 +2705,40 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       settleFetch,
       t,
     ]
+  )
+
+  // 文件监视用：按标签 id 原地重读一个工作区差异标签（四种工作区差异都算），
+  // 不激活它。别的标签、已经关掉的标签什么都不做。
+  const refreshWorkingTreeDiffTab = useCallback(
+    (tabId: string) => {
+      const parts = parseFileTabId(tabId)
+      if (!parts) return
+      switch (parts.kind) {
+        case "diff-working-all":
+          void openWorkingTreeDiff(undefined, {
+            folderId: parts.folderId,
+            refreshOnly: true,
+          })
+          return
+        case "diff-working":
+        case "diff-working-unified":
+        case "diff-working-overview":
+          void openWorkingTreeDiff(parts.path, {
+            folderId: parts.folderId,
+            mode:
+              parts.kind === "diff-working"
+                ? "auto"
+                : parts.kind === "diff-working-unified"
+                  ? "unified"
+                  : "overview",
+            refreshOnly: true,
+          })
+          return
+        default:
+          return
+      }
+    },
+    [openWorkingTreeDiff]
   )
 
   const openBranchDiff = useCallback(
@@ -3880,6 +3937,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     rejectFileTab,
     enqueueExternalConflict,
     consumeSelfWriteEcho,
+    refreshWorkingTreeDiffTab,
   })
 
   const toggleFileTabPreview = useCallback((tabId: string) => {

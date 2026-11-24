@@ -40,6 +40,7 @@ import {
   isOfficePreviewable,
   isPdfFile,
 } from "@/lib/language-detect"
+import { parseFileTabId } from "@/lib/file-tab-id"
 import { getWorkspaceStateStore } from "@/hooks/use-workspace-state-store"
 import type { FileEditContent } from "@/lib/types"
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
@@ -155,6 +156,52 @@ function tabPathAffected(tabPath: string, changedSet: Set<string>): boolean {
   return false
 }
 
+// 工作区差异标签（拿 HEAD 和工作区比的那几种）认出它属于哪个项目、比的是
+// 哪个相对路径。diff-working-all 比的是整个项目，记成 "."。
+function workingTreeDiffTarget(
+  tabId: string
+): { folderId: number; relPath: string } | null {
+  const parts = parseFileTabId(tabId)
+  if (!parts) return null
+  switch (parts.kind) {
+    case "diff-working-all":
+      return { folderId: parts.folderId, relPath: "." }
+    case "diff-working":
+    case "diff-working-unified":
+    case "diff-working-overview":
+      return { folderId: parts.folderId, relPath: parts.path }
+    default:
+      return null
+  }
+}
+
+function isGitMetadataRelPath(rel: string): boolean {
+  const normalized = rel.replace(/\\/g, "/").replace(/^\.\//, "")
+  return normalized === ".git" || normalized.startsWith(".git/")
+}
+
+// 这批变化会不会让一个工作区差异标签过时：`.git` 下的 HEAD、index、refs
+// 变了（提交、暂存、切分支、reset）时 HEAD 那一边变了，所有差异标签都过时；
+// 否则只看变的路径是不是这个文件本身、它下面的文件或它所在的目录。
+function workingTreeDiffAffected(
+  relPath: string,
+  rootPath: string,
+  changedRel: string[]
+): boolean {
+  if (changedRel.some(isGitMetadataRelPath)) return true
+  if (relPath === "." || relPath === "") return changedRel.length > 0
+  const tabAbs = joinRootRel(rootPath, relPath)
+  const tabPrefix = `${tabAbs}/`
+  const changedSet = new Set<string>()
+  for (const rel of changedRel) {
+    const abs = joinRootRel(rootPath, rel)
+    // 目录差异（overview）：目录下面任何一个文件变了都算。
+    if (abs === tabAbs || abs.startsWith(tabPrefix)) return true
+    changedSet.add(abs)
+  }
+  return tabPathAffected(tabAbs, changedSet)
+}
+
 export interface UseOpenFileTabsWatchParams {
   // Render-scoped tab list — used ONLY to derive the watch signature.
   fileTabs: FileWorkspaceTab[]
@@ -180,6 +227,8 @@ export interface UseOpenFileTabsWatchParams {
   enqueueExternalConflict: (conflict: WorkspaceExternalConflict) => void
   // One-shot save-echo suppression (owned by the provider's saveFileTab).
   consumeSelfWriteEcho: (path: string) => boolean
+  // 原地重读一个工作区差异标签，不切换当前标签。
+  refreshWorkingTreeDiffTab: (tabId: string) => void
 }
 
 export function useOpenFileTabsWatch({
@@ -196,6 +245,7 @@ export function useOpenFileTabsWatch({
   rejectFileTab,
   enqueueExternalConflict,
   consumeSelfWriteEcho,
+  refreshWorkingTreeDiffTab,
 }: UseOpenFileTabsWatchParams): void {
   // Collision-safe, stable-by-value signature of the roots to watch: the
   // deduped owning folders of the open file tabs. JSON encoding (not join)
@@ -211,6 +261,17 @@ export function useOpenFileTabsWatch({
       if (!owning) continue
       rootByFolder.set(owning.folderId, owning.rootPath)
     }
+    // 工作区差异标签按项目 id 认根目录：提交只改 `.git`，不改文件本身，
+    // 不订阅这个根目录的话，开着的差异标签永远停在提交前的样子。
+    for (const tab of fileTabs) {
+      const target = workingTreeDiffTarget(tab.id)
+      if (!target) continue
+      const folder = allFolders.find((f) => f.id === target.folderId)
+      if (!folder) continue
+      const root = normalizeAbsPath(folder.path)
+      if (!root) continue
+      rootByFolder.set(folder.id, root)
+    }
     const entries = [...rootByFolder.entries()].sort((a, b) => a[0] - b[0])
     return JSON.stringify(entries)
   }, [fileTabs, allFolders])
@@ -219,7 +280,7 @@ export function useOpenFileTabsWatch({
     const targets = JSON.parse(watchSignature) as Array<[number, string]>
     if (targets.length === 0) return
 
-    const subscriptions = targets.map(([, rootPath]) => {
+    const subscriptions = targets.map(([folderId, rootPath]) => {
       const store = getWorkspaceStateStore(rootPath)
       // Paths-only: tab watching consumes changed_paths exclusively. The
       // backend runs tree/git scans on this root only while an aux
@@ -239,6 +300,20 @@ export function useOpenFileTabsWatch({
         paths: string[],
         fullScan: boolean
       ): Promise<void> => {
+        // 工作区差异标签：不管是不是当前标签都原地重读（只读这个项目开着的
+        // 几个差异标签，不切换标签）。放在文件标签前面，因为下面没有文件
+        // 标签时会提前返回。
+        for (const tab of fileTabsRef.current ?? []) {
+          const target = workingTreeDiffTarget(tab.id)
+          if (!target || target.folderId !== folderId) continue
+          if (
+            fullScan ||
+            workingTreeDiffAffected(target.relPath, rootPath, paths)
+          ) {
+            refreshWorkingTreeDiffTab(tab.id)
+          }
+        }
+
         // Tabs covered by THIS stream: boundary containment on the
         // absolute path. Nested roots (a worktree inside a parent repo,
         // both watched) can both match one tab — the duplicate resolve is
@@ -412,6 +487,7 @@ export function useOpenFileTabsWatch({
     rejectFileTab,
     enqueueExternalConflict,
     consumeSelfWriteEcho,
+    refreshWorkingTreeDiffTab,
   ])
 
   // Activation pass — one effect, three exclusive branches, no double

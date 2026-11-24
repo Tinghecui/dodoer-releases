@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react"
+import { act, render, screen, waitFor } from "@testing-library/react"
 import { useEffect, type ReactNode } from "react"
 import type { Monaco } from "@monaco-editor/react"
 import { useTrackMonacoModel } from "@/contexts/monaco-model-context"
@@ -3423,6 +3423,97 @@ describe("provider tab watcher (per-folder streams, lazy staleness)", () => {
     expect(
       snap().tabs.find((t) => t.id === fileTabId("/repo2/a.ts"))?.stale
     ).toBe(false)
+  })
+})
+
+function WorkingDiffWatchProbe({
+  onCapture,
+}: {
+  onCapture: (snapshot: {
+    activeId: string | null
+    diff: { original?: string; modified?: string } | null
+  }) => void
+}) {
+  const { openWorkingTreeDiff, openFilePreview, fileTabs, activeFileTabId } =
+    useWorkspaceContext()
+  const diff = fileTabs.find((t) => t.id === "diff:working:1:notes.txt")
+  onCapture({
+    activeId: activeFileTabId,
+    diff: diff
+      ? { original: diff.originalContent, modified: diff.modifiedContent }
+      : null,
+  })
+  return (
+    <div>
+      <button onClick={() => void openWorkingTreeDiff("notes.txt")}>
+        open-diff
+      </button>
+      <button onClick={() => void openFilePreview("a.ts")}>open-a</button>
+    </div>
+  )
+}
+
+describe("工作区差异标签跟着文件流刷新", () => {
+  const readFilePreview = (api as unknown as { readFilePreview: Mock })
+    .readFilePreview
+
+  beforeEach(() => {
+    mockedApi.readFileForEdit.mockReset()
+    mockedApi.gitIsTracked.mockReset()
+    mockedApi.gitShowFile.mockReset()
+    readFilePreview.mockReset()
+    mockedApi.gitIsTracked.mockResolvedValue(false)
+    mockedApi.readFileForEdit.mockResolvedValue({
+      path: "a.ts",
+      content: "a",
+      etag: "e1",
+      mtime_ms: 1,
+      readonly: false,
+      line_ending: "lf",
+    })
+  })
+
+  it("提交后（.git/index 变了）开着的差异标签原地重读，不抢当前标签", async () => {
+    let snap: {
+      activeId: string | null
+      diff: { original?: string; modified?: string } | null
+    } = { activeId: null, diff: null }
+    render(
+      <WorkspaceProvider>
+        <WorkingDiffWatchProbe onCapture={(s) => (snap = s)} />
+      </WorkspaceProvider>
+    )
+
+    mockedApi.gitShowFile.mockResolvedValue("edited line")
+    readFilePreview.mockResolvedValue({
+      path: "notes.txt",
+      content: "edited linesecond line",
+    })
+    await act(async () => {
+      screen.getByText("open-diff").click()
+    })
+    expect(snap.diff).toEqual({
+      original: "edited line",
+      modified: "edited linesecond line",
+    })
+    await act(async () => {
+      screen.getByText("open-a").click()
+    })
+    expect(snap.activeId).toBe(fileTabId("/repo/a.ts"))
+
+    // 提交以后 HEAD 那一边追上了工作区。
+    mockedApi.gitShowFile.mockResolvedValue("edited linesecond line")
+    await act(async () => {
+      workspaceStoreMock.emitRoot("/repo", [".git/index", ".git/HEAD"])
+    })
+
+    await waitFor(() =>
+      expect(snap.diff).toEqual({
+        original: "edited linesecond line",
+        modified: "edited linesecond line",
+      })
+    )
+    expect(snap.activeId).toBe(fileTabId("/repo/a.ts"))
   })
 })
 

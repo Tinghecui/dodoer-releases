@@ -439,6 +439,11 @@ impl AcpAgent {
                 {
                     cmd.creation_flags(CREATE_NO_WINDOW);
                 }
+                // 智能体自己当组长（pgid = pid）。它起的命令默认留在这一组里，
+                // 智能体死了以后它们被过继给 1 号进程、不在进程树里了，
+                // `ChildGuard` 照样能按组把它们收掉。
+                #[cfg(unix)]
+                cmd.process_group(0);
                 cmd.stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped());
@@ -481,9 +486,21 @@ struct ChildGuard {
     /// [`AcpAgent::on_exit`] for why that moment, and only that moment, is the
     /// one worth reporting.
     exit_callback: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
+    /// 子进程自己当组长的那个进程组（见 [`own_process_group`]）。子进程收尸
+    /// 以后，组里剩下的进程（智能体起的命令、放到后台的服务）一起结束。
+    process_group: Option<u32>,
 }
 
 impl ChildGuard {
+    fn new(child: Child, exit_callback: Option<Arc<dyn Fn() + Send + Sync + 'static>>) -> Self {
+        let process_group = child.id().and_then(own_process_group);
+        Self {
+            child: Some(child),
+            exit_callback,
+            process_group,
+        }
+    }
+
     async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
         let Some(child) = self.child.as_mut() else {
             return Err(std::io::Error::other("child already handed to the reaper"));
@@ -492,6 +509,9 @@ impl ChildGuard {
         if status.is_ok() {
             // `wait` succeeded, so the child has been reaped and its pid is
             // free for the OS to reassign.
+            if let Some(pgid) = self.process_group.take() {
+                sweep_process_group(pgid);
+            }
             self.notify_exit();
         }
         status
@@ -512,11 +532,20 @@ impl Drop for ChildGuard {
         let Some(pid) = child.id() else {
             // Already reaped, so the pid is free — report the exit.
             let _ = child.start_kill();
+            if let Some(pgid) = self.process_group.take() {
+                sweep_process_group(pgid);
+            }
             self.notify_exit();
             return;
         };
 
         let _ = kill_tree::blocking::kill_tree(pid);
+        // 子进程还没收尸，组号不会被别人占去：现在就给整组发 SIGTERM，
+        // 进程树里够不着的（已经被过继走的）也一起收到。
+        let process_group = self.process_group.take();
+        if let Some(pgid) = process_group {
+            signal_process_group(pgid, ProcessGroupSignal::Terminate);
+        }
 
         // `kill_tree` only signals (SIGTERM on Unix) and does not wait, so the
         // process may well outlive this call. Keep OWNING the child until it is
@@ -536,7 +565,26 @@ impl Drop for ChildGuard {
                     // proves the child was reaped. Reporting an exit we failed
                     // to observe would tell the host to stop tracking a pid
                     // whose process may still be running.
-                    if child.wait().await.is_ok() {
+                    let waited = match process_group {
+                        // 智能体自己当组长时，不理 SIGTERM 的不能一直等下去：
+                        // 半秒后给整组补 SIGKILL。组长这时还没收尸，组号还是
+                        // 我们的，打不到别人。
+                        Some(pgid) => {
+                            match tokio::time::timeout(PROCESS_GROUP_KILL_GRACE, child.wait()).await
+                            {
+                                Ok(waited) => waited,
+                                Err(_) => {
+                                    signal_process_group(pgid, ProcessGroupSignal::Kill);
+                                    child.wait().await
+                                }
+                            }
+                        }
+                        None => child.wait().await,
+                    };
+                    if waited.is_ok() {
+                        if let Some(pgid) = process_group {
+                            sweep_process_group(pgid);
+                        }
                         if let Some(callback) = exit_callback {
                             callback();
                         }
@@ -550,6 +598,108 @@ impl Drop for ChildGuard {
                 drop(child);
             }
         }
+    }
+}
+
+/// 组长收尸以后，组里还不走的进程等多久补 SIGKILL。和 `manager.rs` 的
+/// `ESCALATE_TO_SIGKILL_AFTER` 一样长。
+const PROCESS_GROUP_KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// 给进程组发的信号。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessGroupSignal {
+    Terminate,
+    Kill,
+}
+
+/// `pid` 自己当组长时返回它的组号：`spawn_process` 在 unix 上用
+/// `process_group(0)` 起智能体，组号就是它的 pid。别的情况（Windows、测试里
+/// 没单独分组的子进程）返回 `None`，免得把信号发到 codeg 自己所在的组。
+/// 只能在子进程还没收尸时调，pid 才不会是别人的。
+fn own_process_group(pid: u32) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        // SAFETY: `getpgid` 只读进程表，不碰我们的内存。
+        let pgid = unsafe { libc::getpgid(pid as libc::pid_t) };
+        (pgid > 0 && pgid as u32 == pid).then_some(pid)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// 给整组发信号。组里已经没有进程（ESRCH）返回 `false`。
+pub(crate) fn signal_process_group(pgid: u32, signal: ProcessGroupSignal) -> bool {
+    #[cfg(unix)]
+    {
+        let signal = match signal {
+            ProcessGroupSignal::Terminate => libc::SIGTERM,
+            ProcessGroupSignal::Kill => libc::SIGKILL,
+        };
+        // SAFETY: `killpg` 只收整数，不碰我们的内存。
+        unsafe { libc::killpg(pgid as libc::pid_t, signal) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pgid, signal);
+        false
+    }
+}
+
+/// 组长（智能体）已经收尸以后，把组里剩下的进程收掉：先 SIGTERM，
+/// [`PROCESS_GROUP_KILL_GRACE`] 后还有就 SIGKILL。不阻塞调用方，等待放在
+/// 单独的任务里；没有 tokio 运行时就直接 SIGKILL。
+///
+/// 组里还有进程时，内核不会把这个组号当 pid 分给新进程，所以 SIGTERM
+/// 打不到别人；半秒后补的 SIGKILL 赶上组刚好空了、号又被一个自己当组长的
+/// 新进程拿去，才会打错，和 `workbench_apps` 停应用时冒的险一样。
+fn sweep_process_group(pgid: u32) {
+    if !signal_process_group(pgid, ProcessGroupSignal::Terminate) {
+        return;
+    }
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(async move {
+                tokio::time::sleep(PROCESS_GROUP_KILL_GRACE).await;
+                signal_process_group(pgid, ProcessGroupSignal::Kill);
+            });
+        }
+        Err(_) => {
+            signal_process_group(pgid, ProcessGroupSignal::Kill);
+        }
+    }
+}
+
+/// 组里还有进程（僵尸也算）。
+fn process_group_alive(pgid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: 信号 0 只查组在不在，什么也不发。
+        unsafe { libc::killpg(pgid as libc::pid_t, 0) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pgid;
+        false
+    }
+}
+
+/// 阻塞版的 [`sweep_process_group`]，给程序退出、断开兜底这些等不了后台任务的
+/// 地方用：组长已经收尸（或者已经收到 SIGTERM）以后，在当前线程上最多等
+/// `grace`，组里还有进程就直接补 SIGKILL 再返回。`sweep_process_group` 挂在
+/// 运行时上的那次 SIGKILL 赶上运行时关掉会被取消，这里不靠它。
+///
+/// 只在 `spawn_blocking` 这类阻塞线程上调。
+pub(crate) fn finish_process_group_blocking(pgid: u32, grace: std::time::Duration) {
+    let started = std::time::Instant::now();
+    while process_group_alive(pgid) {
+        if started.elapsed() >= grace {
+            signal_process_group(pgid, ProcessGroupSignal::Kill);
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
 
@@ -762,10 +912,7 @@ fn monitor_child(
     // future against the protocol driver; when that driver wins before the
     // child monitor's first poll, dropping the future must still drop a guard
     // that owns the child and starts the detached reap.
-    let guard = ChildGuard {
-        child: Some(child),
-        exit_callback,
-    };
+    let guard = ChildGuard::new(child, exit_callback);
 
     async move {
         let mut guard = guard;
@@ -1042,6 +1189,7 @@ mod tests {
             let mut guard = ChildGuard {
                 child: Some(child),
                 exit_callback: Some(counting_callback(&calls)),
+                process_group: None,
             };
             guard.wait().await.expect("wait");
             assert_eq!(
@@ -1243,6 +1391,7 @@ mod tests {
             let guard = ChildGuard {
                 child: Some(child),
                 exit_callback: Some(counting_callback(&calls)),
+                process_group: None,
             };
 
             drop(guard);
@@ -1306,6 +1455,7 @@ mod tests {
             let guard = ChildGuard {
                 child: Some(child),
                 exit_callback: Some(counting_callback(&calls)),
+                process_group: None,
             };
 
             let mut trapped = false;
@@ -1611,5 +1761,118 @@ read -r _"#;
             .expect_err("the agent refused initialize");
         assert_eq!(error.data, None);
         assert_eq!(error.to_string(), "Authentication required");
+    }
+
+    /// 进程还在跑（僵尸不算：被过继给 1 号进程以后，收尸可能慢一拍）。
+    #[cfg(target_os = "linux")]
+    fn process_is_running(pid: &str) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // 状态字段在最后一个 `)` 后面，进程名里可能带括号。
+            Ok(stat) => stat
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.trim_start().chars().next())
+                .is_some_and(|state| state != 'Z'),
+            Err(_) => false,
+        }
+    }
+
+    /// 智能体被外部 `kill -9` 以后，它起的命令已经被过继给 1 号进程，不在
+    /// 它的进程树里了；也得跟着结束，不能留在机器上空跑。
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn killing_the_agent_ends_the_commands_it_started() {
+        use tokio::io::AsyncBufReadExt;
+
+        let agent = AcpAgent::from_args([
+            "/bin/sh",
+            "-c",
+            "sleep 300 & echo $!; sleep 300 & echo $!; wait",
+        ])
+        .unwrap();
+        let (_stdin, stdout, stderr, child) = agent.spawn_process().expect("spawn agent");
+        let agent_pid = child.id().expect("agent pid");
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let mut sleepers = Vec::new();
+        for _ in 0..2 {
+            let pid = lines.next_line().await.expect("read").expect("sleeper pid");
+            sleepers.push(StraySleeper(pid.trim().to_string()));
+        }
+
+        let stderr = spawn_stderr_reader(stderr, None);
+        let monitor = monitor_child(child, stderr, STDERR_DRAIN_LIMIT, None);
+        // SAFETY: 只给自己刚起的、还没收尸的子进程发信号。
+        unsafe {
+            libc::kill(agent_pid as libc::pid_t, libc::SIGKILL);
+        }
+        let _ = monitor.await;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while sleepers.iter().any(|s| process_is_running(&s.0))
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let survivors: Vec<&str> = sleepers
+            .iter()
+            .filter(|s| process_is_running(&s.0))
+            .map(|s| s.0.as_str())
+            .collect();
+        assert!(
+            survivors.is_empty(),
+            "智能体死后它起的命令还在跑：{survivors:?}"
+        );
+    }
+
+    /// 测试收尾：不理 SIGTERM 的进程用 SIGKILL 收掉。
+    #[cfg(target_os = "linux")]
+    struct HardKillOnDrop(String);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for HardKillOnDrop {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &self.0])
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+
+    /// 用户断开会话（`ChildGuard` 被丢掉）时，智能体和它起的命令都不理
+    /// SIGTERM，也不能一直留着：半秒后整组补 SIGKILL。
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dropping_the_guard_hard_kills_a_group_that_ignores_sigterm() {
+        use tokio::io::AsyncBufReadExt;
+
+        let agent = AcpAgent::from_args([
+            "/bin/sh",
+            "-c",
+            "trap '' TERM; echo $$; sleep 300 & echo $!; while :; do sleep 1; done",
+        ])
+        .unwrap();
+        let (_stdin, stdout, _stderr, child) = agent.spawn_process().expect("spawn agent");
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let mut pids = Vec::new();
+        for _ in 0..2 {
+            let pid = lines.next_line().await.expect("read").expect("pid");
+            pids.push(HardKillOnDrop(pid.trim().to_string()));
+        }
+
+        drop(ChildGuard::new(child, None));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while pids.iter().any(|p| process_is_running(&p.0)) && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let survivors: Vec<&str> = pids
+            .iter()
+            .filter(|p| process_is_running(&p.0))
+            .map(|p| p.0.as_str())
+            .collect();
+        assert!(
+            survivors.is_empty(),
+            "断开 3 秒后不理 SIGTERM 的智能体和命令还在跑：{survivors:?}"
+        );
     }
 }

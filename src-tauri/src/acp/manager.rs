@@ -10,15 +10,18 @@ use sea_orm::{
     TransactionTrait,
 };
 
+use crate::acp::agent_mentions::strip_route_separator_from_prompt;
+use crate::acp::agent_process::{
+    finish_process_group_blocking, signal_process_group, ProcessGroupSignal,
+};
 use crate::acp::connection::{
     spawn_agent_connection, AgentConnection, ConnectionCommand, GoalControlAction, SetterOutcome,
     SteerOutcome,
 };
-use crate::acp::agent_mentions::strip_route_separator_from_prompt;
 use crate::acp::error::AcpError;
 use crate::acp::feedback::{
-    bounded_feedback_batch, FeedbackItem, FeedbackStatus, PendingFeedback,
-    SessionFeedbackAccess, MAX_FEEDBACK_CHARS, MAX_FEEDBACK_RESPONSE_BYTES,
+    bounded_feedback_batch, FeedbackItem, FeedbackStatus, PendingFeedback, SessionFeedbackAccess,
+    MAX_FEEDBACK_CHARS, MAX_FEEDBACK_RESPONSE_BYTES,
 };
 use crate::acp::plan_approval::{
     PlanApprovalAnswer, RegisteredPlanApproval, SessionPlanApprovalAccess,
@@ -177,12 +180,11 @@ fn wait_for_reap(cell: &std::sync::atomic::AtomicU32, budget: Duration) -> bool 
 /// that died instantly.
 ///
 /// Scope: this tracks the ROOT. Each pass re-walks and signals the whole tree,
-/// but a descendant that ignores `SIGTERM` and outlives its parent is
-/// reparented out of that tree and left to the OS — the same limit
-/// `disconnect_all` has always had. Fine for the sign-out this exists for: the
-/// credential lives in the agent process itself, not in the MCP servers it
-/// starts. Closing it properly would mean giving every agent a process group or
-/// a job object at spawn time.
+/// and on Unix also the agent's process group (`spawn_process` makes every
+/// agent a group leader), so a descendant already reparented out of the tree
+/// still gets both signals. A descendant that left the group (`setsid`) and
+/// the tree is left to the OS; so is everything outside the tree on Windows,
+/// which would need a job object.
 ///
 /// Blocking — call from `spawn_blocking`.
 fn kill_tree_and_wait(cell: &std::sync::atomic::AtomicU32) -> bool {
@@ -190,13 +192,18 @@ fn kill_tree_and_wait(cell: &std::sync::atomic::AtomicU32) -> bool {
     if pid == 0 {
         return true;
     }
-    if kill_tree_pass(pid, "SIGTERM") == KillPass::AlreadyGone {
-        return true;
-    }
-    if wait_for_reap(cell, ESCALATE_TO_SIGKILL_AFTER) {
+    // 组长还没收尸（cell 非 0），组号就不会是别人的。
+    signal_process_group(pid, ProcessGroupSignal::Terminate);
+    if kill_tree_pass(pid, "SIGTERM") == KillPass::AlreadyGone
+        || wait_for_reap(cell, ESCALATE_TO_SIGKILL_AFTER)
+    {
+        // 智能体自己走了，组里不理 SIGTERM 的命令还得在这里补 SIGKILL：
+        // 程序退出时运行时一关，`ChildGuard` 挂在上面的那次 SIGKILL 就没了。
+        finish_process_group_blocking(pid, ESCALATE_TO_SIGKILL_AFTER);
         return true;
     }
 
+    signal_process_group(pid, ProcessGroupSignal::Kill);
     if kill_tree_pass(pid, "SIGKILL") == KillPass::Failed {
         // Neither gone nor reachable: someone else owns that pid now (recycled
         // onto another user's process, say), so it is not ours to wait for.
@@ -5785,6 +5792,81 @@ fn report_agent_chosen_values(
 mod tests {
     use super::*;
     use crate::acp::connection::AgentConnection;
+
+    /// 进程还在跑（僵尸不算）。
+    #[cfg(target_os = "linux")]
+    fn process_is_running(pid: &str) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.trim_start().chars().next())
+                .is_some_and(|state| state != 'Z'),
+            Err(_) => false,
+        }
+    }
+
+    /// 程序退出时：智能体收到 SIGTERM 就走了，它起的命令不理 SIGTERM。
+    /// 运行时随后关掉，挂在运行时上的后台任务都会被取消；`kill_tree_and_wait`
+    /// 返回之前就得把这个命令收掉，不能指望后台任务。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kill_tree_and_wait_ends_group_members_that_ignore_sigterm_before_returning() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use tokio::io::AsyncBufReadExt;
+
+        struct HardKillOnDrop(String);
+        impl Drop for HardKillOnDrop {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", &self.0])
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let sleeper = rt.block_on(async {
+            let mut cmd = tokio::process::Command::new("/bin/sh");
+            cmd.args(["-c", "(trap '' TERM; exec sleep 300) & echo $!; wait"])
+                .stdout(std::process::Stdio::piped())
+                .process_group(0);
+            let mut child = cmd.spawn().expect("spawn sh");
+            let cell = Arc::new(AtomicU32::new(child.id().expect("pid")));
+            let stdout = child.stdout.take().expect("stdout");
+            let mut lines = tokio::io::BufReader::new(stdout).lines();
+            let pid = lines.next_line().await.expect("read").expect("sleeper pid");
+            let sleeper = HardKillOnDrop(pid.trim().to_string());
+            // 等子 shell 装好 trap、换成 sleep 以后再动手。
+            for _ in 0..100 {
+                let comm = std::fs::read_to_string(format!("/proc/{}/comm", sleeper.0))
+                    .unwrap_or_default();
+                if comm.trim() == "sleep" {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+
+            let reaper_cell = cell.clone();
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+                reaper_cell.store(0, Ordering::SeqCst);
+            });
+            let swept = tokio::task::spawn_blocking(move || kill_tree_and_wait(&cell))
+                .await
+                .expect("sweep");
+            assert!(swept);
+            sleeper
+        });
+        // 程序退出：运行时关掉，上面挂着的任务一个不剩。
+        drop(rt);
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !process_is_running(&sleeper.0),
+            "退出清理返回后，智能体起的、不理 SIGTERM 的命令还在跑：{}",
+            sleeper.0
+        );
+    }
 
     /// A select option holding `current`; its value list plays no part here.
     fn probe_option(id: &str, current: &str) -> crate::acp::types::SessionConfigOptionInfo {

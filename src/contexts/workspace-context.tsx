@@ -206,6 +206,11 @@ interface FileWorkspaceTabBase {
   // workspace watcher while the tab was inactive or otherwise not yet
   // resolved against disk. Cleared by any successful content reload.
   stale?: boolean
+  // 读失败（content 里放的是「无法加载」那句报错）时为 true。saveState 的
+  // "error" 读失败和存失败共用：存失败时 content 还是用户打的字，重新打开、
+  // 重载都不能走读失败的冷加载（清空内容、卸掉编辑器，#1443）。开始下一次
+  // 读或保存时清掉。
+  loadFailed?: boolean
 }
 
 /** A file, a unified diff, or a rich (side-by-side) diff. */
@@ -1616,6 +1621,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
               loading: true,
               saveState: "idle",
               saveError: null,
+              loadFailed: false,
             }
           : tab
       )
@@ -1640,6 +1646,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                   kind === "rich-diff" ? undefined : tab.modifiedContent,
                 saveState: "idle",
                 saveError: null,
+                loadFailed: false,
               }
             : tab
         )
@@ -1715,7 +1722,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
       activateTab(existing.id, background, scope)
 
-      if (existing.saveState === "error") {
+      // 只有读失败才冷加载重试。文件标签保存失败时 content 是用户没存下的字：
+      // 不重载就原样留着（缓存命中），重载走下面不清内容的刷新，编辑器不卸载，
+      // 读回的磁盘内容照常同步进去（#1443）。
+      if (
+        existing.saveState === "error" &&
+        (existing.kind !== "file" || existing.loadFailed === true)
+      ) {
         markErrorRetry(existing.id, existing.kind)
         return { kind: "fetch", gen: beginFetchGeneration(seed.id) }
       }
@@ -1818,6 +1831,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                 ...tab,
                 saveState: "error",
                 saveError: errorMessage,
+                loadFailed: true,
                 // 和 rejectFileTab 一样清掉过期标记：读失败本身就是这次核对的
                 // 结果。不清的话，激活中的过期标签会被监视钩子当成要重读的，
                 // 失败了又重读，无限循环（文件被删后点它的后台标签）。
@@ -2137,6 +2151,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             stale: false,
             saveState: "error",
             saveError: errorMessage,
+            loadFailed: true,
           }
         })
       )
@@ -3219,6 +3234,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                 ...candidate,
                 saveState: "saving",
                 saveError: null,
+                loadFailed: false,
               }
             : candidate
         )
@@ -3333,6 +3349,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                 loading: true,
                 saveError: null,
                 saveState: "idle",
+                loadFailed: false,
               }
             : candidate
         )
@@ -3381,6 +3398,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                   loading: false,
                   saveState: "error",
                   saveError: message,
+                  // 这是读失败：再打开要重新读，不能当成保存失败命中缓存
+                  loadFailed: true,
                 }
               : candidate
           )

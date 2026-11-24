@@ -6648,3 +6648,192 @@ describe("Office file tabs", () => {
     expect(await openThenSwitch("b.ts")).toBe(fileTabId("/repo/b.ts"))
   })
 })
+
+// #1443：冲突框开着时自动保存失败（标签 saveState=error，内容还是用户打的字），
+// 再点「重载」。之前保存失败和读失败共用 saveState=error，重载走了读失败的冷
+// 加载：内容先清成空串、编辑器卸掉，重挂时 Monaco 复用旧模型，屏幕上还是旧字。
+interface SaveFailSnapshot {
+  content: string | undefined
+  isDirty: boolean
+  saveState: string | undefined
+}
+
+function SaveFailReloadProbe({
+  onCapture,
+}: {
+  onCapture: (snapshot: SaveFailSnapshot) => void
+}) {
+  const { openFilePreview, fileTabs, updateActiveFileContent, saveActiveFile } =
+    useWorkspaceContext()
+  const tab = fileTabs.find((t) => t.id === fileTabId("/repo/a.ts"))
+  onCapture({
+    content: tab?.content,
+    isDirty: Boolean(tab?.isDirty),
+    saveState: tab?.saveState,
+  })
+  return (
+    <div>
+      <button onClick={() => void openFilePreview("a.ts")}>open-a</button>
+      <button onClick={() => void openFilePreview("a.ts", { reload: true })}>
+        reload-a
+      </button>
+      <button onClick={() => updateActiveFileContent("typed")}>edit</button>
+      <button onClick={() => void saveActiveFile()}>save</button>
+    </div>
+  )
+}
+
+describe("reload after a failed save (#1443)", () => {
+  beforeEach(() => {
+    mockedApi.readFileForEdit.mockReset()
+    mockedApi.gitIsTracked.mockReset()
+    mockedApi.gitShowFile.mockReset()
+    mockedApi.saveFileContent.mockReset()
+    mockedApi.gitIsTracked.mockResolvedValue(false)
+  })
+
+  async function openEditAndFailSave() {
+    mockedApi.readFileForEdit
+      .mockResolvedValueOnce({
+        path: "a.ts",
+        content: "v1",
+        etag: "e1",
+        mtime_ms: 1,
+        readonly: false,
+        line_ending: "lf",
+      })
+      .mockResolvedValue({
+        path: "a.ts",
+        content: "v1\nconflict3",
+        etag: "e2",
+        mtime_ms: 2,
+        readonly: false,
+        line_ending: "lf",
+      })
+    mockedApi.saveFileContent.mockRejectedValue(new Error("etag mismatch"))
+    const history: SaveFailSnapshot[] = []
+    render(
+      <WorkspaceProvider>
+        <SaveFailReloadProbe onCapture={(s) => history.push(s)} />
+      </WorkspaceProvider>
+    )
+    await act(async () => {
+      screen.getByText("open-a").click()
+    })
+    await act(async () => {
+      screen.getByText("edit").click()
+    })
+    await act(async () => {
+      screen.getByText("save").click()
+    })
+    const last = history[history.length - 1]
+    expect(last.saveState).toBe("error")
+    expect(last.content).toBe("typed")
+    return history
+  }
+
+  it("reload keeps the editor mounted (content never blanked) and lands disk content", async () => {
+    const history = await openEditAndFailSave()
+    const before = history.length
+    await act(async () => {
+      screen.getByText("reload-a").click()
+    })
+    const during = history.slice(before)
+    // 内容清成空串 = 编辑器被卸掉重挂，Monaco 会复用旧模型显示旧字
+    expect(during.map((s) => s.content)).not.toContain("")
+    const last = history[history.length - 1]
+    expect(last.content).toBe("v1\nconflict3")
+    expect(last.isDirty).toBe(false)
+    expect(last.saveState).toBe("idle")
+  })
+
+  it("reopening a save-failed tab without reload keeps the unsaved buffer", async () => {
+    const history = await openEditAndFailSave()
+    const readsBefore = mockedApi.readFileForEdit.mock.calls.length
+    await act(async () => {
+      screen.getByText("open-a").click()
+    })
+    expect(mockedApi.readFileForEdit.mock.calls.length).toBe(readsBefore)
+    const last = history[history.length - 1]
+    expect(last.content).toBe("typed")
+    expect(last.isDirty).toBe(true)
+  })
+
+  it("a load-failed tab still retries with a cold load", async () => {
+    mockedApi.readFileForEdit
+      .mockRejectedValueOnce(new Error("EACCES"))
+      .mockResolvedValue({
+        path: "a.ts",
+        content: "v1",
+        etag: "e1",
+        mtime_ms: 1,
+        readonly: false,
+        line_ending: "lf",
+      })
+    const history: SaveFailSnapshot[] = []
+    render(
+      <WorkspaceProvider>
+        <SaveFailReloadProbe onCapture={(s) => history.push(s)} />
+      </WorkspaceProvider>
+    )
+    await act(async () => {
+      screen.getByText("open-a").click()
+    })
+    expect(history[history.length - 1].saveState).toBe("error")
+    const before = history.length
+    await act(async () => {
+      screen.getByText("open-a").click()
+    })
+    // 读失败时内容是报错文字，重试先清掉它，不要闪一下报错
+    expect(history.slice(before).map((s) => s.content)).toContain("")
+    expect(history[history.length - 1].content).toBe("v1")
+  })
+
+  it("a failed reloadActiveFile keeps the tab marked load-failed so reopening retries the read", async () => {
+    mockedApi.readFileForEdit
+      .mockResolvedValueOnce({
+        path: "a.ts",
+        content: "v1",
+        etag: "e1",
+        mtime_ms: 1,
+        readonly: false,
+        line_ending: "lf",
+      })
+      .mockRejectedValueOnce(new Error("EACCES"))
+      .mockResolvedValue({
+        path: "a.ts",
+        content: "v2",
+        etag: "e2",
+        mtime_ms: 2,
+        readonly: false,
+        line_ending: "lf",
+      })
+    const history: SaveFailSnapshot[] = []
+    render(
+      <WorkspaceProvider>
+        <SaveFailReloadProbe onCapture={(s) => history.push(s)} />
+        <ReloadActiveButton />
+      </WorkspaceProvider>
+    )
+    await act(async () => {
+      screen.getByText("open-a").click()
+    })
+    await act(async () => {
+      screen.getByText("reload-active").click()
+    })
+    expect(history[history.length - 1].saveState).toBe("error")
+    const readsBefore = mockedApi.readFileForEdit.mock.calls.length
+    await act(async () => {
+      screen.getByText("open-a").click()
+    })
+    // 重载读失败也是读失败：再打开要重新读，不能当成保存失败命中缓存
+    expect(mockedApi.readFileForEdit.mock.calls.length).toBe(readsBefore + 1)
+    expect(history[history.length - 1].content).toBe("v2")
+    expect(history[history.length - 1].saveState).toBe("idle")
+  })
+})
+
+function ReloadActiveButton() {
+  const { reloadActiveFile } = useWorkspaceContext()
+  return <button onClick={() => void reloadActiveFile()}>reload-active</button>
+}

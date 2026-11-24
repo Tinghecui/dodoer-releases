@@ -13,6 +13,7 @@
 
 import { isDesktop, isRemoteDesktopWindow, openUrl } from "@/lib/platform"
 import { getServerBaseUrl } from "@/lib/transport"
+import { isIosShell } from "@/lib/transport/detect"
 import { clearStoredToken } from "./sso"
 
 export const COWORK_ACCOUNT_URL = "/_cowork/account"
@@ -68,4 +69,21 @@ export async function openCoworkInDesktop(): Promise<void> {
     throw new Error("unexpected response")
   }
   window.location.assign(link)
+}
+
+/**
+ * iOS 壳里「切换服务器」要去的固定地址。从服务器的 https 页面不能直接跳壳的本地协议，
+ * 所以导航到这个地址，由壳的导航规则拦下、换成本地启动页（和
+ * `mobile/ios-shell/src/navigation.rs` 的 `RETURN_TO_LAUNCHER_URL` 一致）。
+ */
+export const COWORK_SHELL_LAUNCHER_URL = "https://coteam-shell.invalid/launcher"
+
+/** 「切换服务器」只在 iOS 壳里有意义：浏览器和桌面窗口没有启动页可回。 */
+export function coworkCanSwitchServer(): boolean {
+  return isIosShell()
+}
+
+/** 回到 iOS 壳的启动页，换一个服务器。 */
+export function switchCoworkServer(): void {
+  window.location.assign(COWORK_SHELL_LAUNCHER_URL)
 }

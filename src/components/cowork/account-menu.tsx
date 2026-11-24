@@ -6,6 +6,7 @@ import {
   LogOut,
   MessageSquareWarning,
   MonitorDown,
+  Server,
   UserRound,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -24,9 +25,11 @@ import {
 import {
   coworkCanOpenInDesktop,
   coworkCanSignOut,
+  coworkCanSwitchServer,
   coworkSignOut,
   openCoworkAccount,
   openCoworkInDesktop,
+  switchCoworkServer,
 } from "@/lib/cowork/account"
 import { useCoworkText } from "@/lib/cowork/i18n"
 import { useCoworkInfo } from "@/lib/cowork/info"
@@ -52,6 +55,10 @@ import { cn } from "@/lib/utils"
  *
  * While the server collects telemetry, "Report a problem" opens a box whose
  * text goes there too (`feedback-dialog.tsx`), in either kind of window.
+ *
+ * 在 iOS 壳里（`window.__CODEG_SHELL__ === "ios"`）多一项「切换服务器」，回壳的启动页。
+ * 这一项不靠门户，所以壳里连的是没有门户的服务器时菜单也显示，只剩这一项，
+ * 不然在壳里就没有回启动页的路。
  */
 export function CoworkAccountMenu({
   className,
@@ -65,11 +72,13 @@ export function CoworkAccountMenu({
 } = {}) {
   const info = useCoworkInfo()
   const t = useCoworkText()
+  const portal = info?.portal === true
   const session = coworkCanSignOut()
-  const upgrade = useCoworkUpgradeHint(info?.portal === true && session)
+  const upgrade = useCoworkUpgradeHint(portal && session)
   const telemetryOn = useTelemetryOn()
   const [feedbackOpen, setFeedbackOpen] = useState(false)
-  if (!info?.portal) return null
+  const canSwitchServer = coworkCanSwitchServer()
+  if (!portal && !canSwitchServer) return null
 
   return (
     <>
@@ -107,7 +116,7 @@ export function CoworkAccountMenu({
               <DropdownMenuSeparator />
             </>
           )}
-          {coworkCanOpenInDesktop() && (
+          {portal && coworkCanOpenInDesktop() && (
             <DropdownMenuItem
               onSelect={() => {
                 openCoworkInDesktop().catch((err: unknown) => {
@@ -123,17 +132,25 @@ export function CoworkAccountMenu({
               {t("openInDesktop")}
             </DropdownMenuItem>
           )}
-          {telemetryOn && (
+          {portal && telemetryOn && (
             <DropdownMenuItem onSelect={() => setFeedbackOpen(true)}>
               <MessageSquareWarning className="h-3.5 w-3.5 shrink-0" />
               {t("feedback")}
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem onSelect={() => openCoworkAccount()}>
-            <UserRound className="h-3.5 w-3.5 shrink-0" />
-            {t("myAccount")}
-          </DropdownMenuItem>
-          {session && (
+          {portal && (
+            <DropdownMenuItem onSelect={() => openCoworkAccount()}>
+              <UserRound className="h-3.5 w-3.5 shrink-0" />
+              {t("myAccount")}
+            </DropdownMenuItem>
+          )}
+          {canSwitchServer && (
+            <DropdownMenuItem onSelect={() => switchCoworkServer()}>
+              <Server className="h-3.5 w-3.5 shrink-0" />
+              {t("switchServer")}
+            </DropdownMenuItem>
+          )}
+          {portal && session && (
             <>
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={() => coworkSignOut()}>

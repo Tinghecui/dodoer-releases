@@ -18,11 +18,14 @@ import {
   COWORK_ACCOUNT_URL,
   COWORK_DESKTOP_LINK_URL,
   COWORK_LOGOUT_URL,
+  COWORK_SHELL_LAUNCHER_URL,
   coworkCanOpenInDesktop,
+  coworkCanSwitchServer,
   coworkCanSignOut,
   coworkSignOut,
   openCoworkAccount,
   openCoworkInDesktop,
+  switchCoworkServer,
 } from "@/lib/cowork/account"
 
 describe("cowork account navigation", () => {
@@ -40,6 +43,7 @@ describe("cowork account navigation", () => {
     })
   })
   afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).__CODEG_SHELL__
     vi.unstubAllGlobals()
     Object.defineProperty(window, "location", {
       configurable: true,
@@ -129,5 +133,22 @@ describe("cowork account navigation", () => {
     )
     await expect(openCoworkInDesktop()).rejects.toThrow()
     expect(assign).not.toHaveBeenCalled()
+  })
+
+  it("offers switching servers only inside the iOS shell", () => {
+    expect(coworkCanSwitchServer()).toBe(false)
+    ;(window as unknown as Record<string, unknown>).__CODEG_SHELL__ = "android"
+    expect(coworkCanSwitchServer()).toBe(false)
+    ;(window as unknown as Record<string, unknown>).__CODEG_SHELL__ = "ios"
+    expect(coworkCanSwitchServer()).toBe(true)
+  })
+
+  it("switches servers through the shell's fixed back-to-launcher address", () => {
+    // 和壳的导航规则拦的地址一致（mobile/ios-shell/src/navigation.rs）。
+    expect(COWORK_SHELL_LAUNCHER_URL).toBe(
+      "https://coteam-shell.invalid/launcher"
+    )
+    switchCoworkServer()
+    expect(assign).toHaveBeenCalledWith("https://coteam-shell.invalid/launcher")
   })
 })

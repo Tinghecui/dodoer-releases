@@ -16,6 +16,9 @@ const account = vi.hoisted(() => ({
   canOpenInDesktop: true,
   coworkCanOpenInDesktop: () => account.canOpenInDesktop,
   openCoworkInDesktop: vi.fn(),
+  canSwitchServer: false,
+  coworkCanSwitchServer: () => account.canSwitchServer,
+  switchCoworkServer: vi.fn(),
 }))
 vi.mock("@/lib/cowork/account", () => account)
 
@@ -80,6 +83,7 @@ beforeEach(() => {
   upgrade.enabledWith = []
   account.canSignOut = true
   account.canOpenInDesktop = true
+  account.canSwitchServer = false
   account.openCoworkInDesktop.mockResolvedValue(undefined)
   telemetry.on = false
   telemetry.sendFeedback.mockReturnValue(true)
@@ -287,5 +291,53 @@ describe("CoworkAccountMenu", () => {
         name: "CoTeam 0.9.0 可以升级，去门户升级",
       })
     ).toHaveAttribute("aria-disabled", "true")
+  })
+
+  it("offers switching servers inside the iOS shell", async () => {
+    state.info = portalInfo
+    account.canSwitchServer = true
+    renderMenu()
+    await userEvent.click(screen.getByRole("button", { name: "Account" }))
+    const items = await screen.findAllByRole("menuitem")
+    expect(items.map((i) => i.textContent)).toEqual([
+      "Open in desktop app",
+      "My account",
+      "Switch server",
+      "Sign out / switch account",
+    ])
+    await userEvent.click(items[2])
+    expect(account.switchCoworkServer).toHaveBeenCalledTimes(1)
+  })
+
+  it("has no switch-server entry outside the iOS shell", async () => {
+    state.info = portalInfo
+    renderMenu()
+    await userEvent.click(screen.getByRole("button", { name: "Account" }))
+    expect(
+      screen.queryByRole("menuitem", { name: "Switch server" })
+    ).not.toBeInTheDocument()
+  })
+
+  it("keeps the way back to the launcher on a server without the portal", async () => {
+    state.info = { ...portalInfo, portal: false }
+    account.canSwitchServer = true
+    renderMenu()
+    // 没有门户：只有「切换服务器」，门户的账户页、退出都不出现。
+    expect(upgrade.enabledWith[upgrade.enabledWith.length - 1]).toBe(false)
+    await userEvent.click(screen.getByRole("button", { name: "Account" }))
+    const items = await screen.findAllByRole("menuitem")
+    expect(items.map((i) => i.textContent)).toEqual(["Switch server"])
+    await userEvent.click(items[0])
+    expect(account.switchCoworkServer).toHaveBeenCalledTimes(1)
+  })
+
+  it("translates the switch-server entry", async () => {
+    state.info = portalInfo
+    account.canSwitchServer = true
+    renderMenu("zh-CN")
+    await userEvent.click(screen.getByRole("button", { name: "账户" }))
+    expect(
+      await screen.findByRole("menuitem", { name: "切换服务器" })
+    ).toBeInTheDocument()
   })
 })

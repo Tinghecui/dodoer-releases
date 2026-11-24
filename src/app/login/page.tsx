@@ -21,6 +21,7 @@ import { COWORK_ACCOUNT_URL } from "@/lib/cowork/account"
 import { COWORK_BUILD } from "@/lib/cowork/brand"
 import { useCoworkText } from "@/lib/cowork/i18n"
 import { noteLinkTokenIgnored, takeLinkToken } from "@/lib/cowork/token-link"
+import { resumeWebAfterLogin } from "@/lib/transport/web-connection-store"
 
 type TokenCheck =
   | { kind: "ok" }
@@ -104,6 +105,7 @@ export default function LoginPage() {
             // Said in the workspace (LinkTokenNotice): this page has no
             // toaster and is gone the moment the workspace opens.
             noteLinkTokenIgnored()
+            resumeWebAfterLogin()
             router.replace("/workspace")
             return
           }
@@ -125,6 +127,7 @@ export default function LoginPage() {
         setLoading(false)
         if (result.kind === "ok") {
           localStorage.setItem("codeg_token", fromLink)
+          resumeWebAfterLogin()
           router.replace("/workspace")
         } else {
           setFailure(result)
@@ -138,7 +141,9 @@ export default function LoginPage() {
       // Signed in through a proxy in front of Codeg (CODEG_AUTH=proxy-jwt),
       // there is no token to ask for.
       void probeProxyAuthentication().then((result) => {
-        if (!cancelled && result === "proxy") router.replace("/workspace")
+        if (cancelled || result !== "proxy") return
+        resumeWebAfterLogin()
+        router.replace("/workspace")
       })
       return () => {
         cancelled = true
@@ -148,6 +153,7 @@ export default function LoginPage() {
       const probe = await probeCoworkSso()
       if (cancelled) return
       if (probe === "ok") {
+        resumeWebAfterLogin()
         router.replace("/workspace")
         return
       }
@@ -164,6 +170,7 @@ export default function LoginPage() {
         const result = await checkToken(stored)
         if (cancelled) return
         if (result.kind === "ok") {
+          resumeWebAfterLogin()
           router.replace("/workspace")
           return
         }
@@ -201,6 +208,7 @@ export default function LoginPage() {
     setLoading(false)
     if (result.kind === "ok") {
       localStorage.setItem("codeg_token", token)
+      resumeWebAfterLogin()
       router.replace("/workspace")
     } else {
       setFailure(result)

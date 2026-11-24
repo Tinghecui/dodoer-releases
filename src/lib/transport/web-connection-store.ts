@@ -65,6 +65,19 @@ export function reconnectWebNow(): void {
 }
 
 /**
+ * #1440：登录成功、进工作区之前调：之前被拒过的连接用新令牌重新探测、重连，
+ * 免得工作区里又弹「会话已过期」。没被拒过时什么都不做。桌面端不做事。
+ */
+export function resumeWebAfterLogin(): void {
+  // 只是顺带复位连接状态：这里出了任何错都不能挡住登录页跳进工作区。
+  try {
+    webTransport()?.resumeAfterLogin()
+  } catch (err) {
+    console.warn("[web-connection] resume after login failed:", err)
+  }
+}
+
+/**
  * Funnel a definitive HTTP 401 (e.g. from a raw file-upload fetch in
  * `lib/api.ts` that bypasses `WebTransport.call`) into the same unauthorized
  * dialog state, rather than an abrupt redirect. No-op off the web shell.

@@ -426,6 +426,23 @@ export class WebTransport implements Transport {
   }
 
   /**
+   * #1440：登录页拿到新令牌、进工作区之前调。之前被明确拒过（unauthorized /
+   * proxyUnauthorized）的话，状态会一直停在那里（markUnauthorized 不再重试），
+   * 进了工作区「会话已过期」又会弹出来：这里用新令牌立刻探测一次，通过就重连
+   * 事件连接。没被拒过的什么都不做，不去打断正常的连接。
+   */
+  resumeAfterLogin(): void {
+    if (this.destroyed) return
+    if (
+      this.connState !== "unauthorized" &&
+      this.connState !== "proxyUnauthorized"
+    ) {
+      return
+    }
+    this.reconnectNow()
+  }
+
+  /**
    * Cowork fork: evidence the link is down that the event socket has not
    * seen yet — an HTTP call that got no response, or the browser's `offline`
    * event. Acts only while "connected" with a live socket, so a burst of

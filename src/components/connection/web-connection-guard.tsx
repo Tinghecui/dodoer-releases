@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react"
 import { Loader2, ShieldAlert } from "lucide-react"
+import { usePathname } from "next/navigation"
 import { useTranslations } from "next-intl"
 import {
   AlertDialog,
@@ -46,6 +47,7 @@ export function WebConnectionGuard() {
     getWebConnectionSnapshot,
     getWebConnectionServerSnapshot
   )
+  const pathname = usePathname()
 
   // Grace debounce: only reveal the reconnecting dialog once the link has been
   // down continuously for RECONNECT_DIALOG_GRACE_MS. `graceElapsed` is set
@@ -91,13 +93,17 @@ export function WebConnectionGuard() {
     }
   }, [])
 
+  // #1440：人已经在登录页上，「去登录」按了等于没按，弹框又关不掉，会把
+  // 令牌表单挡住。登录页自己有表单和失败说明，被拒的两种状态在这里不弹框；
+  // 断线重连的框照旧（登录页同样需要服务器）。
+  const onLoginPage = pathname?.startsWith("/login") ?? false
   const showReconnecting = state === "reconnecting" && graceElapsed
-  const showUnauthorized = state === "unauthorized"
+  const showUnauthorized = state === "unauthorized" && !onLoginPage
   // A proxy in front of Codeg (e.g. Cloudflare Access) rejected the request:
   // its session expired, not the Codeg token. A top-level reload lets the
   // proxy run its own login flow and keeps the token; "Go to login" stays as
   // the way out should the proxy keep refusing after the reload.
-  const showProxyUnauthorized = state === "proxyUnauthorized"
+  const showProxyUnauthorized = state === "proxyUnauthorized" && !onLoginPage
   const open = showReconnecting || showUnauthorized || showProxyUnauthorized
 
   if (!open) return null

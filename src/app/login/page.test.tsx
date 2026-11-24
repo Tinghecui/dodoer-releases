@@ -5,6 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const router = vi.hoisted(() => ({ replace: vi.fn() }))
 vi.mock("next/navigation", () => ({ useRouter: () => router }))
 vi.mock("@/lib/platform", () => ({ isDesktop: () => false }))
+const store = vi.hoisted(() => ({ resumeWebAfterLogin: vi.fn() }))
+vi.mock("@/lib/transport/web-connection-store", () => ({
+  resumeWebAfterLogin: store.resumeWebAfterLogin,
+}))
 
 import LoginPage from "./page"
 import enMessages from "@/i18n/messages/en.json"
@@ -19,6 +23,7 @@ let fetchMock: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   router.replace.mockClear()
+  store.resumeWebAfterLogin.mockClear()
   fetchMock = vi.fn()
   vi.stubGlobal("fetch", fetchMock)
 })
@@ -56,6 +61,26 @@ describe("login page", () => {
     })
   })
 
+  // #1440：之前被拒过的连接停在「会话已过期」，进工作区之前要用新令牌重连。
+  it("resumes the rejected connection before entering the workspace", async () => {
+    fetchMock
+      .mockResolvedValueOnce(reply(401, 'Bearer realm="codeg"'))
+      .mockResolvedValue(reply(200))
+    submit("tok")
+    await vi.waitFor(() =>
+      expect(router.replace).toHaveBeenCalledWith("/workspace")
+    )
+    expect(store.resumeWebAfterLogin).toHaveBeenCalledTimes(1)
+    expect(localStorage.getItem("codeg_token")).toBe("tok")
+  })
+
+  it("does not resume the connection for a rejected token", async () => {
+    fetchMock.mockResolvedValue(reply(401, 'Bearer realm="codeg"'))
+    submit("bad")
+    await screen.findByText("Invalid token. Please check and try again.")
+    expect(store.resumeWebAfterLogin).not.toHaveBeenCalled()
+  })
+
   it("calls the token invalid when Codeg rejects it", async () => {
     fetchMock.mockResolvedValue(reply(401, 'Bearer realm="codeg"'))
     submit("bad")
@@ -90,6 +115,7 @@ describe("login page behind a proxy", () => {
       expect(router.replace).toHaveBeenCalledWith("/workspace")
     )
     expect(localStorage.getItem("codeg_proxy_auth")).toBe("1")
+    expect(store.resumeWebAfterLogin).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -116,6 +142,7 @@ describe("login page opened from a sign-in link", () => {
       expect(router.replace).toHaveBeenCalledWith("/workspace")
     )
     expect(localStorage.getItem("codeg_token")).toBe("good")
+    expect(store.resumeWebAfterLogin).toHaveBeenCalledTimes(1)
     // Straight to the token check: no proxy probe without credentials first.
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0]

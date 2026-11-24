@@ -36,8 +36,11 @@ const store = vi.hoisted(() => {
       for (const l of listeners) l()
     }),
     redirectToCodegLogin: vi.fn(),
+    pathname: "/workspace",
   }
 })
+
+vi.mock("next/navigation", () => ({ usePathname: () => store.pathname }))
 
 vi.mock("@/lib/transport/web-connection-store", () => ({
   subscribeWebConnection: store.subscribe,
@@ -70,6 +73,7 @@ beforeEach(() => {
   store.reconnectWebNow.mockClear()
   store.noteWebNetworkLost.mockClear()
   store.redirectToCodegLogin.mockClear()
+  store.pathname = "/workspace"
 })
 
 afterEach(() => {
@@ -199,5 +203,28 @@ describe("WebConnectionGuard", () => {
     unmount()
     window.dispatchEvent(new Event("offline"))
     expect(store.noteWebNetworkLost).not.toHaveBeenCalled()
+  })
+
+  // #1440：在登录页上「去登录」没有去处，弹框又关不掉，会挡住令牌表单。
+  it("does not cover the login page with the session-expired dialog", () => {
+    store.pathname = "/login"
+    renderGuard()
+    act(() => store.setState("unauthorized"))
+    expect(screen.queryByText("Session expired")).not.toBeInTheDocument()
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+  })
+
+  it("does not cover the login page with the proxy sign-in dialog", () => {
+    store.pathname = "/login"
+    renderGuard()
+    act(() => store.setState("proxyUnauthorized"))
+    expect(screen.queryByText("Sign-in expired")).not.toBeInTheDocument()
+  })
+
+  it("still shows the session-expired dialog off the login page", () => {
+    store.pathname = "/workspace"
+    renderGuard()
+    act(() => store.setState("unauthorized"))
+    expect(screen.getByText("Session expired")).toBeInTheDocument()
   })
 })

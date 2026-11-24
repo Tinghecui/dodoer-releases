@@ -209,6 +209,40 @@ describe("WebTransport connection state machine", () => {
     expect(t.getConnectionSnapshot()).toBe("connected")
   })
 
+  // #1440：登录页换了新令牌后，被拒过的连接要能回到 connected。
+  it("resumeAfterLogin() re-probes with the new token after an unauthorized and reconnects", async () => {
+    const { t, ws } = connectReady()
+    fetchMock.mockResolvedValue(resp401())
+    ws.drop()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(t.getConnectionSnapshot()).toBe("unauthorized")
+
+    localStorage.setItem("codeg_token", "new-tok")
+    fetchMock.mockClear()
+    fetchMock.mockResolvedValue(ok200())
+    t.resumeAfterLogin()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({
+      Authorization: "Bearer new-tok",
+    })
+    const ws2 = lastWs()
+    expect(ws2).not.toBe(ws)
+    ws2.open()
+    ws2.ready()
+    expect(t.getConnectionSnapshot()).toBe("connected")
+  })
+
+  it("resumeAfterLogin() leaves a healthy link alone", async () => {
+    const { t, ws } = connectReady()
+    t.resumeAfterLogin()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(lastWs()).toBe(ws)
+    expect(t.getConnectionSnapshot()).toBe("connected")
+  })
+
   it("de-dupes concurrent probes (a button mash fires a single fetch)", () => {
     const { t, ws } = connectReady()
     // A probe that never settles, so the in-flight guard stays set.

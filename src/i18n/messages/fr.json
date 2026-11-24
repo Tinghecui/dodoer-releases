@@ -8514,6 +8514,13 @@
     "commentAnchor": "Sur : {text}",
     "commentFormer": "(ancien membre)",
     "commentAddFailed": "Envoi impossible : {message}",
+    "commentDeleteFailed": "Suppression impossible : {message}",
+    "errorNotFound": "Introuvable : le partage a peut-être été retiré ou supprimé",
+    "errorForbidden": "Vous n'avez pas l'autorisation de faire cela",
+    "errorSharingDisabled": "Votre administrateur a désactivé le partage des conversations",
+    "errorRateLimited": "Trop d'actions : réessayez dans un instant",
+    "errorGeneric": "Un problème est survenu. Réessayez plus tard",
+    "dialogClose": "Fermer",
     "commentForward": "Confier à mon agent",
     "commentForwarded": "Confié à l'agent"
   },

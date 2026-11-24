@@ -8514,6 +8514,13 @@
     "commentAnchor": "Zu: {text}",
     "commentFormer": "(ehemaliges Mitglied)",
     "commentAddFailed": "Senden fehlgeschlagen: {message}",
+    "commentDeleteFailed": "Löschen fehlgeschlagen: {message}",
+    "errorNotFound": "Nicht mehr vorhanden – die Freigabe wurde vielleicht aufgehoben oder gelöscht",
+    "errorForbidden": "Dafür hast du keine Berechtigung",
+    "errorSharingDisabled": "Dein Admin hat das Teilen von Unterhaltungen deaktiviert",
+    "errorRateLimited": "Zu viele Aktionen – versuche es gleich noch einmal",
+    "errorGeneric": "Etwas ist schiefgelaufen. Versuche es später noch einmal",
+    "dialogClose": "Schließen",
     "commentForward": "An meinen Agenten geben",
     "commentForwarded": "An Agenten gegeben"
   },

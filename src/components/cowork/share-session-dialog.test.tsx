@@ -11,6 +11,7 @@ import { NextIntlClientProvider } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
+import zhMessages from "@/i18n/messages/zh-CN.json"
 import {
   CoworkTeamError,
   type TeamShareTarget,
@@ -249,8 +250,9 @@ describe("ShareSessionDialog", () => {
     expect(api.teamUnshare.mock.calls[0]).toEqual(["42", undefined])
   })
 
-  it("服务端报错时原文显示在对话框里，对话框不关", async () => {
+  it("服务端报错时按错误码说人话、不显示原文，对话框不关", async () => {
     makeAvailable()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     api.teamShare.mockRejectedValue(
       new CoworkTeamError("invalid", "note too long <b>*x*</b>")
     )
@@ -258,17 +260,80 @@ describe("ShareSessionDialog", () => {
     await waitFor(() => expect(candidateKeys()).toHaveLength(2))
     fireEvent.click(screen.getByRole("checkbox", { name: "Lee" }))
     fireEvent.click(screen.getByRole("button", { name: "Share" }))
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "note too long <b>*x*</b>"
-    )
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent("Something went wrong. Try again later")
+    expect(alert).not.toHaveTextContent("note too long")
+    expect(String(warn.mock.calls[0]?.[0])).toContain("note too long")
+    warn.mockRestore()
     expect(onOpenChange).not.toHaveBeenCalledWith(false)
     expect(screen.getByText("Share conversation")).toBeInTheDocument()
+  })
+
+  it("中文界面：读取失败只说「出了点问题，稍后再试」，查不到服务端原文", async () => {
+    makeAvailable()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    api.teamShares.mockRejectedValue(
+      new CoworkTeamError("invalid", "group 要是整数")
+    )
+    render(
+      <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+        <ShareSessionDialog
+          open
+          onOpenChange={vi.fn()}
+          sessionId="42"
+          title="Fix login"
+        />
+      </NextIntlClientProvider>
+    )
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent("出了点问题，稍后再试")
+    expect(screen.queryByText(/要是整数/)).toBeNull()
+    warn.mockRestore()
+  })
+
+  it("中文界面：没有权限时说「你没有权限做这件事」", async () => {
+    makeAvailable()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    api.teamShares.mockRejectedValue(
+      new CoworkTeamError("forbidden", "not your session")
+    )
+    render(
+      <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+        <ShareSessionDialog
+          open
+          onOpenChange={vi.fn()}
+          sessionId="42"
+          title="Fix login"
+        />
+      </NextIntlClientProvider>
+    )
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "你没有权限做这件事"
+    )
+    warn.mockRestore()
+  })
+
+  it("右上角关闭按钮的读屏文字跟着界面语言（中文是「关闭」）", async () => {
+    makeAvailable()
+    render(
+      <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+        <ShareSessionDialog
+          open
+          onOpenChange={vi.fn()}
+          sessionId="42"
+          title="Fix login"
+        />
+      </NextIntlClientProvider>
+    )
+    expect(await screen.findByRole("button", { name: "关闭" })).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull()
   })
 
   it("会话刚建好回 not_found：提示过几秒再试，3 秒后自动重试一次（只一次）", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     makeAvailable()
     api.teamShare.mockRejectedValue(new CoworkTeamError("not_found", "gone"))
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     const onOpenChange = renderDialog()
     await waitFor(() => expect(candidateKeys()).toHaveLength(2))
     fireEvent.click(screen.getByRole("checkbox", { name: "Lee" }))
@@ -277,6 +342,11 @@ describe("ShareSessionDialog", () => {
       "This conversation was just created. Try again in a few seconds."
     )
     expect(api.teamShare).toHaveBeenCalledTimes(1)
+    // 专门提示照旧，但服务端原文也记一行，方便排查。
+    expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+      "not_found gone"
+    )
+    warn.mockRestore()
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(SHARE_RETRY_MS - 100)

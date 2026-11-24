@@ -8514,6 +8514,13 @@
     "commentAnchor": "対象：{text}",
     "commentFormer": "（退出済み）",
     "commentAddFailed": "送信できませんでした：{message}",
+    "commentDeleteFailed": "削除できませんでした：{message}",
+    "errorNotFound": "見つかりません。共有が取り消されたか、削除された可能性があります",
+    "errorForbidden": "この操作を行う権限がありません",
+    "errorSharingDisabled": "管理者が会話の共有をオフにしています",
+    "errorRateLimited": "操作が多すぎます。しばらくしてからもう一度お試しください",
+    "errorGeneric": "問題が発生しました。しばらくしてからもう一度お試しください",
+    "dialogClose": "閉じる",
     "commentForward": "自分のエージェントに渡す",
     "commentForwarded": "エージェントに渡しました"
   },

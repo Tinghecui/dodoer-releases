@@ -4,6 +4,7 @@ import { useCallback } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
+import zhMessages from "@/i18n/messages/zh-CN.json"
 import {
   type CoworkTeamSummary,
   type TeamComment,
@@ -337,7 +338,8 @@ describe("comments in the read-only view", () => {
     expect(api.teamComments).toHaveBeenCalledTimes(2)
   })
 
-  it("keeps the text and shows the server's message when sending fails", async () => {
+  it("keeps the text and says what went wrong in plain words when sending fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     const { CoworkTeamError } = await import("@/lib/cowork/team")
     api.teamCommentAdd.mockRejectedValue(
       new CoworkTeamError("rate_limited", "Slow down")
@@ -347,7 +349,76 @@ describe("comments in the read-only view", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }))
     await flush()
     expect(composer().value).toBe("hey")
-    expect(screen.getByText("Couldn't send: Slow down")).toBeTruthy()
+    expect(
+      screen.getByText(
+        "Couldn't send: Too many actions — try again in a moment"
+      )
+    ).toBeTruthy()
+    expect(screen.queryByText(/Slow down/)).toBeNull()
+    warn.mockRestore()
+  })
+
+  async function openViewZh() {
+    makeAvailable()
+    render(
+      <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+        <SharedSessionHost>
+          <div>own conversation</div>
+        </SharedSessionHost>
+      </NextIntlClientProvider>
+    )
+    act(() => {
+      useCoworkTeamStore.getState().openSharedSession(TARGET)
+    })
+    await flush()
+  }
+
+  it("中文界面：发送失败写「没发出去：」加人话，查不到服务端原文", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const { CoworkTeamError } = await import("@/lib/cowork/team")
+    api.teamCommentAdd.mockRejectedValue(
+      new CoworkTeamError("invalid", "replyTo 要是整数")
+    )
+    await openViewZh()
+    const box = screen.getByPlaceholderText("留言给Wang，不会发给Wang的智能体")
+    fireEvent.change(box, { target: { value: "hey" } })
+    fireEvent.click(screen.getByRole("button", { name: "发送" }))
+    await flush()
+    expect(screen.getByText("没发出去：出了点问题，稍后再试")).toBeTruthy()
+    expect(screen.queryByText(/要是整数/)).toBeNull()
+    warn.mockRestore()
+  })
+
+  it("中文界面：删除失败写「没删掉：」，不写「没发出去」", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const { CoworkTeamError } = await import("@/lib/cowork/team")
+    api.teamComments.mockResolvedValue(
+      commentsPage([comment({ id: "9", canDelete: true, mine: true })])
+    )
+    api.teamCommentDelete.mockRejectedValue(
+      new CoworkTeamError("invalid", "commentId 要是整数")
+    )
+    await openViewZh()
+    fireEvent.click(screen.getByRole("button", { name: "删除" }))
+    await flush()
+    expect(screen.getByText("没删掉：出了点问题，稍后再试")).toBeTruthy()
+    expect(screen.queryByText(/没发出去/)).toBeNull()
+    expect(screen.queryByText(/要是整数/)).toBeNull()
+    warn.mockRestore()
+  })
+
+  it("中文界面：读取留言失败只说人话", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const { CoworkTeamError } = await import("@/lib/cowork/team")
+    api.teamComments.mockRejectedValue(
+      new CoworkTeamError("invalid", "after 要是整数")
+    )
+    await openViewZh()
+    expect(
+      document.querySelector("[data-comments-sidebar]")?.textContent
+    ).toContain("读取失败：出了点问题，稍后再试")
+    expect(screen.queryByText(/要是整数/)).toBeNull()
+    warn.mockRestore()
   })
 
   it("keeps what was typed while the comment was being sent", async () => {

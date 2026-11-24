@@ -25,6 +25,7 @@ import {
   type TeamSessionState,
   type TeamView,
 } from "@/lib/cowork/team"
+import { noteTeamError, teamErrorText } from "@/lib/cowork/team-errors"
 import { formatTimeAgo } from "@/lib/relative-time"
 import { cn } from "@/lib/utils"
 import {
@@ -185,12 +186,14 @@ export function TeamMembersList({
         // 登录过期：入口整个收起，这里不用再提示。
         if (e.code === TEAM_SIGNED_OUT_CODE) return
         if (GONE_CODES.has(e.code)) {
+          // 专门提示照旧优先，原文也记一行方便排查。
+          noteTeamError("team", e)
           setView(null)
           setGone(true)
           setError(null)
           return
         }
-        setError(e.message || e.code)
+        setError(noteTeamError("team", e))
       }
     )
   }, [groupId, range])
@@ -302,7 +305,9 @@ export function TeamMembersList({
         {error !== null && (
           <div className="flex flex-col items-start gap-1 px-2 py-2 text-[0.75rem] text-destructive">
             <span data-team-error="" className="break-words">
-              {t("sharedLoadFailed", { message: error })}
+              {t("sharedLoadFailed", {
+                message: teamErrorText(error, t),
+              })}
             </span>
             <button
               type="button"

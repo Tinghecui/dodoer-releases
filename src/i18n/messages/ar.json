@@ -8514,6 +8514,13 @@
     "commentAnchor": "على: {text}",
     "commentFormer": "(عضو سابق)",
     "commentAddFailed": "تعذر الإرسال: {message}",
+    "commentDeleteFailed": "تعذر الحذف: {message}",
+    "errorNotFound": "لم يعد موجودًا، ربما أُلغيت المشاركة أو حُذف",
+    "errorForbidden": "ليست لديك صلاحية للقيام بذلك",
+    "errorSharingDisabled": "أوقف المسؤول مشاركة المحادثات",
+    "errorRateLimited": "عمليات كثيرة جدًا، حاول مرة أخرى بعد قليل",
+    "errorGeneric": "حدث خطأ ما. حاول مرة أخرى لاحقًا",
+    "dialogClose": "إغلاق",
     "commentForward": "أعطه لوكيلي",
     "commentForwarded": "أُعطي للوكيل"
   },

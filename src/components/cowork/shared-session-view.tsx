@@ -39,6 +39,7 @@ import {
   type TeamAgentInfo,
   type TeamEntry,
 } from "@/lib/cowork/team"
+import { noteTeamError, teamErrorText } from "@/lib/cowork/team-errors"
 import { formatTimeAgo } from "@/lib/relative-time"
 import { cn, copyTextToClipboard } from "@/lib/utils"
 import {
@@ -208,13 +209,15 @@ function SharedSessionView({
           // 登录过期：store 已经收起入口，视图跟着关掉。
           if (e.code === TEAM_SIGNED_OUT_CODE) return
           if (e.code === "not_found") {
+            // 专门提示照旧优先，原文也记一行方便排查。
+            noteTeamError("entries", e)
             stopped = true
             setEntries([])
             setAgent(null)
             setGone(true)
             return
           }
-          setError(e.message || e.code)
+          setError(noteTeamError("entries", e))
         }
       )
     }
@@ -356,7 +359,9 @@ function SharedSessionView({
               )}
               {!gone && error !== null && (
                 <p className="break-words text-[0.75rem] text-destructive">
-                  {t("sharedLoadFailed", { message: error })}
+                  {t("sharedLoadFailed", {
+                    message: teamErrorText(error, t),
+                  })}
                 </p>
               )}
               {!gone && !loaded && error === null && (

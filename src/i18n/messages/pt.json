@@ -8514,6 +8514,13 @@
     "commentAnchor": "Sobre: {text}",
     "commentFormer": "(ex-membro)",
     "commentAddFailed": "Não foi possível enviar: {message}",
+    "commentDeleteFailed": "Não foi possível excluir: {message}",
+    "errorNotFound": "Não está mais disponível: o compartilhamento pode ter sido removido ou excluído",
+    "errorForbidden": "Você não tem permissão para fazer isso",
+    "errorSharingDisabled": "Seu administrador desativou o compartilhamento de conversas",
+    "errorRateLimited": "Ações demais; tente novamente em instantes",
+    "errorGeneric": "Algo deu errado. Tente novamente mais tarde",
+    "dialogClose": "Fechar",
     "commentForward": "Passar ao meu agente",
     "commentForwarded": "Passado ao agente"
   },

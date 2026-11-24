@@ -3,6 +3,7 @@ import { NextIntlClientProvider } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
+import zhMessages from "@/i18n/messages/zh-CN.json"
 import {
   CoworkTeamError,
   type TeamEntriesPage,
@@ -350,6 +351,7 @@ describe("SharedSessionHost", () => {
     api.teamEntries
       .mockResolvedValueOnce(page([entry(0, "assistant", "secret plan")]))
       .mockRejectedValueOnce(new CoworkTeamError("not_found", "not found"))
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     renderHost()
     await open()
     expect(document.querySelectorAll("[data-shared-entry]")).toHaveLength(1)
@@ -363,11 +365,35 @@ describe("SharedSessionHost", () => {
         "The share was withdrawn, or you're no longer in this group"
       )
     ).toBeTruthy()
+    // 专门提示照旧，但服务端原文也记一行，方便排查。
+    expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+      "not_found not found"
+    )
+    warn.mockRestore()
     // 不再接着拉。
     await act(async () => {
       await vi.advanceTimersByTimeAsync(9000)
     })
     expect(api.teamEntries).toHaveBeenCalledTimes(2)
+  })
+
+  it("中文界面：读取失败只说「出了点问题，稍后再试」，查不到服务端原文", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    makeAvailable()
+    api.teamEntries.mockRejectedValue(
+      new CoworkTeamError("invalid", "after 要是整数")
+    )
+    render(
+      <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+        <SharedSessionHost>
+          <div>own conversation</div>
+        </SharedSessionHost>
+      </NextIntlClientProvider>
+    )
+    await open()
+    expect(screen.getByText("读取失败：出了点问题，稍后再试")).toBeTruthy()
+    expect(screen.queryByText(/要是整数/)).toBeNull()
+    warn.mockRestore()
   })
 
   it("loads again when the same share is opened after it was withdrawn", async () => {

@@ -55,12 +55,15 @@ function DialogContent({
   children,
   closeButtonClassName,
   showCloseButton = true,
+  closeLabel = "Close",
   ref,
   onPointerDownOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   closeButtonClassName?: string
   showCloseButton?: boolean
+  /** 右上角关闭按钮的读屏文字；不给时是 "Close"。 */
+  closeLabel?: string
 }) {
   // Without this, closing a nested Select/DropdownMenu by clicking elsewhere in
   // the dialog closes the dialog too.
@@ -117,7 +120,7 @@ function DialogContent({
                 )}
               >
                 <XIcon />
-                <span className="sr-only">Close</span>
+                <span className="sr-only">{closeLabel}</span>
               </Button>
             </DialogPrimitive.Close>
           )}

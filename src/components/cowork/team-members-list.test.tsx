@@ -3,6 +3,7 @@ import { NextIntlClientProvider } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
+import zhMessages from "@/i18n/messages/zh-CN.json"
 import {
   CoworkTeamError,
   type TeamGroupRef,
@@ -226,6 +227,7 @@ describe("TeamMembersList", () => {
       await act(async () => {})
       expect(document.querySelectorAll("[data-team-member]").length).toBe(2)
       api.teamView.mockRejectedValue(new CoworkTeamError(code, "nope"))
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
       // 下一次 summary 来了重拉，这次回 not_found / forbidden。
       act(() => {
         useCoworkTeamStore.getState().setSummary({
@@ -240,6 +242,11 @@ describe("TeamMembersList", () => {
       expect(
         screen.getByText("You are no longer a leader of this group")
       ).toBeTruthy()
+      // 专门提示照旧，但服务端原文也记一行，方便排查。
+      expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+        `${code} nope`
+      )
+      warn.mockRestore()
     }
   )
 
@@ -251,12 +258,33 @@ describe("TeamMembersList", () => {
     renderList()
     await act(async () => {})
     expect(document.querySelector("[data-team-error]")?.textContent).toContain(
-      "Slow down"
+      "Too many actions — try again in a moment"
     )
+    expect(
+      document.querySelector("[data-team-error]")?.textContent
+    ).not.toContain("Slow down")
     fireEvent.click(screen.getByRole("button", { name: "Retry" }))
     await act(async () => {})
     expect(document.querySelector("[data-team-error]")).toBeNull()
     expect(document.querySelectorAll("[data-team-member]").length).toBe(2)
+  })
+
+  it("中文界面：读取失败只说「出了点问题，稍后再试」，查不到服务端原文", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    makeAvailable([{ id: "1", name: "预发测试组" }])
+    api.teamView.mockRejectedValue(
+      new CoworkTeamError("invalid", "group 要是整数")
+    )
+    render(
+      <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+        <TeamMembersList />
+      </NextIntlClientProvider>
+    )
+    await act(async () => {})
+    expect(document.querySelector("[data-team-error]")?.textContent).toContain(
+      "读取失败：出了点问题，稍后再试"
+    )
+    expect(screen.queryByText(/要是整数/)).toBeNull()
   })
 
   it("opens a session row as the leader's read-only view", async () => {

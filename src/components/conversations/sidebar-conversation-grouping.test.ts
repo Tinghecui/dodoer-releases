@@ -98,6 +98,43 @@ describe("formatRelative", () => {
     expect(formatRelative(iso, now)).toBe("59m")
     expect(formatRelative(iso, now + MINUTE)).toBe("1h")
   })
+
+  // 每一档的边界：0、59 秒、1 分、59 分、1 小时、23 小时、1 天、29 天、
+  // 1 个月、11 个月、1 年。
+  const HOUR = 60 * MINUTE
+  const DAY = 24 * HOUR
+  const STEPS: [number, string, string, string][] = [
+    [0, "now", "刚刚", "剛剛"],
+    [59_000, "now", "刚刚", "剛剛"],
+    [MINUTE, "1m", "1分钟", "1分鐘"],
+    [59 * MINUTE, "59m", "59分钟", "59分鐘"],
+    [HOUR, "1h", "1小时", "1小時"],
+    [23 * HOUR, "23h", "23小时", "23小時"],
+    [DAY, "1d", "1天", "1天"],
+    [29 * DAY, "29d", "29天", "29天"],
+    [30 * DAY, "1mo", "1个月", "1個月"],
+    [11 * 30 * DAY, "11mo", "11个月", "11個月"],
+    [12 * 30 * DAY, "1y", "1年", "1年"],
+  ]
+
+  it("writes Chinese compact units in zh-CN and zh-TW", () => {
+    for (const [ago, , cn, tw] of STEPS) {
+      const iso = new Date(now - ago).toISOString()
+      expect(formatRelative(iso, now, "zh-CN"), `zh-CN ${ago}`).toBe(cn)
+      expect(formatRelative(iso, now, "zh-TW"), `zh-TW ${ago}`).toBe(tw)
+    }
+  })
+
+  it("every other locale reads exactly as before", () => {
+    for (const [ago, en] of STEPS) {
+      const iso = new Date(now - ago).toISOString()
+      expect(formatRelative(iso, now), `default ${ago}`).toBe(en)
+      for (const locale of ["en", "ja", "ko", "de", "ar"]) {
+        expect(formatRelative(iso, now, locale), `${locale} ${ago}`).toBe(en)
+      }
+    }
+    expect(formatRelative("", now, "zh-CN")).toBe("")
+  })
 })
 
 describe("conversationRowTimestamp", () => {

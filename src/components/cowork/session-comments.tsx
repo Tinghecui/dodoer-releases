@@ -47,6 +47,7 @@ import {
   type TeamCommentsPage,
   type CoworkTeamSummary,
 } from "@/lib/cowork/team"
+import { noteTeamError, teamErrorText } from "@/lib/cowork/team-errors"
 import { cn } from "@/lib/utils"
 import {
   useCoworkTeamAvailable,
@@ -138,13 +139,20 @@ export type CommentTarget =
   | { kind: "entry"; seq: number; preview: string }
   | { kind: "reply"; commentId: string; authorLabel: string }
 
+/** 发送或删除留言失败：哪一种、错误码（显示时按它写人话）。 */
+interface CommentActionError {
+  kind: "add" | "delete"
+  code: string
+}
+
 interface SessionCommentsApi {
   page: TeamCommentsPage | null
+  /** 拉留言失败的错误码；没出错是 null。 */
   error: string | null
   target: CommentTarget | null
   setTarget: (target: CommentTarget | null) => void
   add: (body: string) => Promise<boolean>
-  addError: string | null
+  addError: CommentActionError | null
   sending: boolean
   remove: (commentId: string) => void
 }
@@ -161,7 +169,7 @@ export function useSessionComments(
   const [page, setPage] = useState<TeamCommentsPage | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [target, setTargetState] = useState<CommentTarget | null>(null)
-  const [addError, setAddError] = useState<string | null>(null)
+  const [addError, setAddError] = useState<CommentActionError | null>(null)
   const [sending, setSending] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
   const unreadSummary = useUnreadSummary(owner, id, mine)
@@ -203,7 +211,7 @@ export function useSessionComments(
         if (!current) return
         const e = toCoworkTeamError(err)
         if (e.code === TEAM_SIGNED_OUT_CODE) return
-        setError(e.message || e.code)
+        setError(noteTeamError("comments", e))
       }
     )
     return () => {
@@ -232,7 +240,7 @@ export function useSessionComments(
       } catch (err) {
         if (alive.current) {
           const e = toCoworkTeamError(err)
-          setAddError(e.message || e.code)
+          setAddError({ kind: "add", code: noteTeamError("comment_add", e) })
         }
         return false
       } finally {
@@ -251,7 +259,10 @@ export function useSessionComments(
         (err: unknown) => {
           if (!alive.current) return
           const e = toCoworkTeamError(err)
-          setAddError(e.message || e.code)
+          setAddError({
+            kind: "delete",
+            code: noteTeamError("comment_delete", e),
+          })
         }
       )
     },
@@ -368,7 +379,7 @@ export function CommentThreadList({
   if (api.error !== null && api.page === null) {
     return (
       <p className="break-words text-[0.75rem] text-destructive">
-        {t("sharedLoadFailed", { message: api.error })}
+        {t("sharedLoadFailed", { message: teamErrorText(api.error, t) })}
       </p>
     )
   }
@@ -420,7 +431,10 @@ export function CommentThreadList({
   )
 }
 
-/** 留言输入：Enter 换行，Ctrl/⌘+Enter 或按钮发送。发失败时文字留着、原文报错。 */
+/**
+ * 留言输入：Enter 换行，Ctrl/⌘+Enter 或按钮发送。发失败时文字留着，按错误码
+ * 说人话（发送失败「没发出去：」，删除失败「没删掉：」）。
+ */
 export function CommentComposer({
   api,
   placeholder,
@@ -490,7 +504,12 @@ export function CommentComposer({
       </div>
       {api.addError !== null && (
         <p className="break-words text-[0.75rem] text-destructive">
-          {t("commentAddFailed", { message: api.addError })}
+          {t(
+            api.addError.kind === "delete"
+              ? "commentDeleteFailed"
+              : "commentAddFailed",
+            { message: teamErrorText(api.addError.code, t) }
+          )}
         </p>
       )}
     </div>

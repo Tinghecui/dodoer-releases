@@ -3,7 +3,8 @@ import { NextIntlClientProvider } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
-import type { TeamSharedItem } from "@/lib/cowork/team"
+import zhMessages from "@/i18n/messages/zh-CN.json"
+import { CoworkTeamError, type TeamSharedItem } from "@/lib/cowork/team"
 import { useCoworkTeamStore } from "@/stores/cowork-team-store"
 import { SharedWithMeList, ownerInitial } from "./shared-with-me-list"
 
@@ -268,7 +269,8 @@ describe("SharedWithMeList", () => {
     expect(row("member-a/7").getAttribute("title")).toContain("<i>note</i>")
   })
 
-  it("拉取失败时显示错误原文", async () => {
+  it("拉取失败时按错误码说人话，不显示服务端原文", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     api.teamShared.mockRejectedValue({
       error: { code: "rate_limited", message: "Too many requests" },
     })
@@ -276,9 +278,31 @@ describe("SharedWithMeList", () => {
     renderList()
     await waitFor(() =>
       expect(document.querySelector("[data-shared-error]")?.textContent).toBe(
-        "Couldn't load: Too many requests"
+        "Couldn't load: Too many actions — try again in a moment"
       )
     )
+    warn.mockRestore()
+  })
+
+  it("中文界面：服务端写给开发者的原文查不到，只说「出了点问题，稍后再试」", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    api.teamShared.mockRejectedValue(
+      new CoworkTeamError("invalid", "group 要是整数")
+    )
+    makeAvailable(0)
+    render(
+      <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+        <SharedWithMeList />
+      </NextIntlClientProvider>
+    )
+    await waitFor(() =>
+      expect(document.querySelector("[data-shared-error]")?.textContent).toBe(
+        "读取失败：出了点问题，稍后再试"
+      )
+    )
+    expect(screen.queryByText(/要是整数/)).toBeNull()
+    expect(String(warn.mock.calls[0]?.[0])).toContain("group 要是整数")
+    warn.mockRestore()
   })
 })
 

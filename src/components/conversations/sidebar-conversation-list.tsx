@@ -18,7 +18,7 @@ import {
   storedQueuesVersion,
   subscribeStoredQueues,
 } from "@/lib/cowork/message-queue-storage"
-import { useTranslations } from "next-intl"
+import { useLocale, useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { Virtualizer, type VirtualizerHandle } from "virtua"
 import {
@@ -1526,6 +1526,9 @@ export function SidebarConversationList({
   // `Date.now()` during render) keeps `timeLabel` referentially stable within a
   // render tick, so a single status event re-renders only the affected card.
   const [now, setNow] = useState(() => Date.now())
+  // 相对时间按界面语言写（中文「5分钟」）：在列表这一层读一次传下去，卡片
+  // 不各自订阅语言。
+  const locale = useLocale()
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 60_000)
     return () => clearInterval(interval)
@@ -3818,7 +3821,8 @@ export function SidebarConversationList({
           sessionActivity
             ? conv.updated_at
             : conversationRowTimestamp(row, sortMode),
-          now
+          now,
+          locale
         )}
         onSelect={handleSelect}
         onDoubleClick={handleDoubleClick}

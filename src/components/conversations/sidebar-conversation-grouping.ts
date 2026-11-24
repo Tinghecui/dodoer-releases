@@ -139,28 +139,57 @@ export function withQueuedFirst(
 }
 
 /**
- * Relative time label (e.g. "5m", "3h", "2d"). `now` is passed in rather than
+ * Relative time label (e.g. "5m", "3h", "2d"; "5分钟" in zh-CN). `now` is passed in rather than
  * read from `Date.now()` so a whole render tick shares one value: every
  * unchanged row then produces an identical label string and the card `memo`
  * stays hit. The list refreshes `now` once a minute (see
  * `SidebarConversationList`), bounding label staleness without making a single
  * status event re-render every card.
  */
-export function formatRelative(iso: string, now: number): string {
+export function formatRelative(
+  iso: string,
+  now: number,
+  locale?: string
+): string {
   const ts = parseTimestamp(iso)
   if (!ts) return ""
+  // 简体、繁体中文写「5分钟」「21小时」这种短写法；其他语言照旧（#1390）。
+  const u = RELATIVE_UNITS[locale ?? ""] ?? RELATIVE_UNITS_DEFAULT
   const diff = Math.max(0, now - ts)
   const m = Math.floor(diff / 60000)
-  if (m < 1) return "now"
-  if (m < 60) return `${m}m`
+  if (m < 1) return u.now
+  if (m < 60) return `${m}${u.m}`
   const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h`
+  if (h < 24) return `${h}${u.h}`
   const d = Math.floor(h / 24)
-  if (d < 30) return `${d}d`
+  if (d < 30) return `${d}${u.d}`
   const mo = Math.floor(d / 30)
-  if (mo < 12) return `${mo}mo`
+  if (mo < 12) return `${mo}${u.mo}`
   const y = Math.floor(mo / 12)
-  return `${y}y`
+  return `${y}${u.y}`
+}
+
+interface RelativeUnits {
+  now: string
+  m: string
+  h: string
+  d: string
+  mo: string
+  y: string
+}
+
+const RELATIVE_UNITS_DEFAULT: RelativeUnits = {
+  now: "now",
+  m: "m",
+  h: "h",
+  d: "d",
+  mo: "mo",
+  y: "y",
+}
+
+const RELATIVE_UNITS: Record<string, RelativeUnits> = {
+  "zh-CN": { now: "刚刚", m: "分钟", h: "小时", d: "天", mo: "个月", y: "年" },
+  "zh-TW": { now: "剛剛", m: "分鐘", h: "小時", d: "天", mo: "個月", y: "年" },
 }
 
 /**

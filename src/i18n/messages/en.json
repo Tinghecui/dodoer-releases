@@ -8514,6 +8514,13 @@
     "commentAnchor": "On: {text}",
     "commentFormer": "(former member)",
     "commentAddFailed": "Couldn't send: {message}",
+    "commentDeleteFailed": "Couldn't delete: {message}",
+    "errorNotFound": "It's no longer there — the share may have been withdrawn or deleted",
+    "errorForbidden": "You don't have permission to do this",
+    "errorSharingDisabled": "Your admin has turned off conversation sharing",
+    "errorRateLimited": "Too many actions — try again in a moment",
+    "errorGeneric": "Something went wrong. Try again later",
+    "dialogClose": "Close",
     "commentForward": "Give to my agent",
     "commentForwarded": "Given to agent"
   },

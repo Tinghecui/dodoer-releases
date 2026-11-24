@@ -43,6 +43,7 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { ownerInitial } from "@/components/cowork/shared-with-me-list"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { noteTeamError, teamErrorText } from "@/lib/cowork/team-errors"
 
 /** 回 `not_found`（会话刚建好）后多久自动重试一次。 */
 export const SHARE_RETRY_MS = 3000
@@ -92,10 +93,8 @@ export function shareCandidates(
   return [...groups, ...users].filter((c) => !shared.has(c.key))
 }
 
-type Notice =
-  | { kind: "error"; message: string }
-  | { kind: "justCreated" }
-  | null
+// 出错时记错误码，显示时按它写人话，不给员工看服务端原文。
+type Notice = { kind: "error"; code: string } | { kind: "justCreated" } | null
 
 export function ShareSessionDialog({
   open,
@@ -190,6 +189,8 @@ export function ShareSessionDialog({
             return false
           }
           if (e.code === "not_found") {
+            // 专门提示照旧优先，原文也记一行方便排查。
+            noteTeamError("share", e)
             setNotice({ kind: "justCreated" })
             // 分享发出以后用户改过勾选或说明：旧的对象不再重试。
             const stale = isShare && shareEdits.current !== editsAtStart
@@ -205,7 +206,7 @@ export function ShareSessionDialog({
             }
             return false
           }
-          setNotice({ kind: "error", message: e.message || e.code })
+          setNotice({ kind: "error", code: noteTeamError("share", e) })
           return false
         }
       }
@@ -309,7 +310,7 @@ export function ShareSessionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent data-share-session-dialog="">
+      <DialogContent data-share-session-dialog="" closeLabel={t("dialogClose")}>
         <DialogHeader>
           <DialogTitle>{t("shareDialogTitle")}</DialogTitle>
           <DialogDescription className="break-words">
@@ -328,7 +329,7 @@ export function ShareSessionDialog({
           >
             {notice.kind === "justCreated"
               ? t("shareJustCreated")
-              : notice.message}
+              : teamErrorText(notice.code, t)}
           </p>
         ) : null}
 

@@ -551,4 +551,56 @@ describe("SharedSessionHost", () => {
     const last = row.lastElementChild as HTMLElement
     expect(last.style.width).toBe("0px")
   })
+
+  // #1416：侧栏收起时左下角浮着状态胶囊，底部留言框和它重叠就整体往上让开，
+  // 不然胶囊压住留言框左端，点那里弹的是账户菜单。
+  it("lifts the comment box above the bottom-left status capsule it would sit under", async () => {
+    chrome.sidebarOpen = false
+    const capsule = document.createElement("div")
+    capsule.setAttribute("data-status-capsule", "left")
+    document.body.appendChild(capsule)
+    const rect = (left: number, top: number, width: number, height: number) =>
+      ({
+        left,
+        top,
+        width,
+        height,
+        right: left + width,
+        bottom: top + height,
+        x: left,
+        y: top,
+        toJSON: () => ({}),
+      }) as DOMRect
+    const spy = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: Element) {
+        if (this === capsule) return rect(12, 854, 200, 32)
+        if (this.closest("[data-shared-session-view]")) {
+          return rect(100, 800, 700, 100)
+        }
+        return rect(0, 0, 0, 0)
+      })
+    try {
+      makeAvailable()
+      api.teamEntries.mockResolvedValue(page([]))
+      renderHost()
+      await open()
+      const box = screen.getByPlaceholderText(/Leave a comment/)
+      const footer = box.closest(".border-t") as HTMLElement
+      expect(footer.style.paddingBottom).toBe("40px")
+    } finally {
+      spy.mockRestore()
+      capsule.remove()
+    }
+  })
+
+  it("leaves the comment box where it is when no status capsule overlaps it", async () => {
+    makeAvailable()
+    api.teamEntries.mockResolvedValue(page([]))
+    renderHost()
+    await open()
+    const box = screen.getByPlaceholderText(/Leave a comment/)
+    const footer = box.closest(".border-t") as HTMLElement
+    expect(footer.style.paddingBottom).toBe("")
+  })
 })

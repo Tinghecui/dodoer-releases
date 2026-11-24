@@ -31,6 +31,7 @@ import { ConversationCornerReserve } from "@/components/layout/conversation-corn
 import { OverlayHostHiddenProvider } from "@/components/ui/overlay-host-hidden"
 import { useOptionalWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useOptionalWorkspaceActions } from "@/contexts/workspace-context"
+import { useStatusCapsuleLift } from "@/hooks/use-status-capsule-lift"
 import {
   TEAM_SIGNED_OUT_CODE,
   teamEntries,
@@ -387,18 +388,34 @@ function SharedSessionView({
             </div>
           </div>
           {!gone && (
-            <div className="shrink-0 border-t border-border">
-              <div className="mx-auto w-full max-w-3xl px-4 py-3">
-                <CommentComposer
-                  api={comments}
-                  placeholder={t("commentPlaceholder", { owner: ownerLabel })}
-                />
-              </div>
-            </div>
+            <SharedCommentFooter>
+              <CommentComposer
+                api={comments}
+                placeholder={t("commentPlaceholder", { owner: ownerLabel })}
+              />
+            </SharedCommentFooter>
           )}
         </div>
         {!gone && <CommentsSidebar api={comments} />}
       </div>
+    </div>
+  )
+}
+
+/**
+ * #1416：底部留言框。侧栏收起时窗口左下角浮着状态胶囊，留言框和它重叠时
+ * 像会话输入框一样整体往上让开，不然胶囊压住留言框左端、点到的是账户菜单。
+ */
+function SharedCommentFooter({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const lift = useStatusCapsuleLift(ref)
+  return (
+    <div
+      ref={ref}
+      className="shrink-0 border-t border-border"
+      style={lift ? { paddingBottom: `${lift}px` } : undefined}
+    >
+      <div className="mx-auto w-full max-w-3xl px-4 py-3">{children}</div>
     </div>
   )
 }

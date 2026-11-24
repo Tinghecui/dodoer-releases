@@ -24,6 +24,7 @@ import type {
   ClaudeApiRetryState,
 } from "@/contexts/acp-connections-context"
 import type { QueuedMessage } from "@/hooks/use-message-queue"
+import { statusCapsuleLift } from "@/hooks/use-status-capsule-lift"
 import { ChatInput } from "@/components/chat/chat-input"
 import type { QueueFailedHeadNotice } from "@/components/chat/message-queue-display"
 import { ChatWidthHandles } from "@/components/chat/chat-width-handles"
@@ -458,21 +459,10 @@ function useGlassDockInset(
     let frame = 0
     const update = () => {
       frame = 0
-      let lift = 0
-      const dockRect = dock.getBoundingClientRect()
-      const content = dock.lastElementChild?.getBoundingClientRect()
-      if (content && content.width > 0) {
-        for (const capsule of document.querySelectorAll<HTMLElement>(
-          "[data-status-capsule]"
-        )) {
-          const r = capsule.getBoundingClientRect()
-          const overlapsX = r.left < content.right && r.right > content.left
-          const sameBand = r.bottom > dockRect.bottom - 64
-          if (overlapsX && sameBand) {
-            lift = Math.max(lift, r.height + 8)
-          }
-        }
-      }
+      const lift = statusCapsuleLift(
+        dock.lastElementChild?.getBoundingClientRect(),
+        dock.getBoundingClientRect().bottom
+      )
       dock.style.setProperty("--glass-dock-lift", `${lift}px`)
       dock.style.paddingBottom = lift ? `calc(0.875rem + ${lift}px)` : ""
       shell.style.setProperty("--glass-dock-h", `${dock.offsetHeight}px`)

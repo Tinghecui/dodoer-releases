@@ -3278,3 +3278,106 @@ describe("SidebarConversationList — 触屏长按分组标题", () => {
     expect(queryByText("docs-site")).toBeNull()
   })
 })
+
+// #1455：触屏长按会话卡片、文件夹行开的是这一行自己的菜单，松手后浏览器补发的
+// click 不能再落到行上（打开会话、收起抽屉，菜单跟着关）；普通点按照旧打开。
+describe("SidebarConversationList — 触屏长按行内菜单后松手", () => {
+  function touchPointer(
+    type: "pointerdown" | "pointerup",
+    target: Element,
+    pointerType: "touch" | "mouse" = "touch"
+  ) {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true })
+    Object.defineProperty(event, "pointerType", { value: pointerType })
+    act(() => {
+      target.dispatchEvent(event)
+    })
+  }
+
+  function seed() {
+    const folders = [folder(1, "demo")]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: [conv(11, 1)],
+    })
+    store.activeTabId = null
+    store.tabSpec = []
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear()
+  })
+
+  afterEach(() => {
+    window.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it("长按会话卡片弹出菜单后松手：不打开会话，菜单还开着", () => {
+    vi.useFakeTimers()
+    seed()
+    const onSelect = vi.spyOn(stableTabFns, "openTab")
+    render(tree())
+    const card = document.querySelector('[data-conversation-id="11"]')!
+    touchPointer("pointerdown", card)
+    act(() => {
+      vi.advanceTimersByTime(800)
+    })
+    expect(document.querySelector('[role="menu"]')).not.toBeNull()
+    touchPointer("pointerup", card)
+    act(() => {
+      fireEvent.click(card)
+    })
+    expect(onSelect).not.toHaveBeenCalled()
+    expect(document.querySelector('[role="menu"]')).not.toBeNull()
+  })
+
+  it("长按文件夹行弹出菜单后松手：文件夹不被收起", () => {
+    vi.useFakeTimers()
+    seed()
+    const { queryByText } = render(tree())
+    const row = document.querySelector('[data-folder-id="1"]')!
+    expect(queryByText("conv-11")).not.toBeNull()
+    touchPointer("pointerdown", row)
+    act(() => {
+      vi.advanceTimersByTime(800)
+    })
+    expect(document.querySelector('[role="menu"]')).not.toBeNull()
+    touchPointer("pointerup", row)
+    act(() => {
+      fireEvent.click(row)
+    })
+    expect(queryByText("conv-11")).not.toBeNull()
+  })
+
+  it("普通点按会话卡片照旧打开会话", () => {
+    seed()
+    const onSelect = vi.spyOn(stableTabFns, "openTab")
+    render(tree())
+    const card = document.querySelector('[data-conversation-id="11"]')!
+    touchPointer("pointerdown", card)
+    touchPointer("pointerup", card)
+    act(() => {
+      fireEvent.click(card)
+    })
+    expect(onSelect).toHaveBeenCalledTimes(1)
+  })
+
+  it("鼠标点按会话卡片不受影响", () => {
+    seed()
+    const onSelect = vi.spyOn(stableTabFns, "openTab")
+    render(tree())
+    const card = document.querySelector('[data-conversation-id="11"]')!
+    act(() => {
+      fireEvent.contextMenu(card)
+    })
+    touchPointer("pointerdown", card, "mouse")
+    touchPointer("pointerup", card, "mouse")
+    act(() => {
+      fireEvent.click(card)
+    })
+    expect(onSelect).toHaveBeenCalledTimes(1)
+  })
+})

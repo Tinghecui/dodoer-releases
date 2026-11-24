@@ -111,6 +111,7 @@ import { AgentIcon } from "@/components/agent-icon"
 import { AssistantAvatar } from "@/components/assistants/assistant-avatar"
 import { useBranchChip, useResolvedTags } from "@/hooks/use-conversation-tags"
 import { useAssistant } from "@/stores/assistants-store"
+import { useNotifyTouchMenuOpened } from "./sidebar-touch-menu-context"
 
 /**
  * Horizontal indent added per delegation-nesting level. Chosen so a child's
@@ -334,22 +335,28 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   // Liquid Glass (handoff 6.11 #4): the right-clicked row carries an accent
   // ring while its menu is open, and loses it when the menu closes.
   const [menuOpen, setMenuOpen] = useState(false)
-  const handleMenuOpenChange = useCallback((open: boolean) => {
-    setMenuOpen(open)
-    if (!open) return
-    // Mobile is out of scope for sharing (#1235): same breakpoint as
-    // `useIsMobile` (hooks/use-mobile.ts), read once here rather than
-    // subscribed per row.
-    setShareable(
-      useCoworkTeamStore.getState().available &&
-        !window.matchMedia("(max-width: 767px)").matches
-    )
-    // The context menu takes the row over; drop the details bubble so the two
-    // don't stack on the same spot.
-    setHoverOpen(false)
-    setAttachTabId(resolveAttachTabId())
-    setUnreadShortcut(readShortcutSettings().toggle_conversation_unread)
-  }, [])
+  // #1455：触屏长按打开菜单时告诉列表外层，松手后补发的 click 才不会打开会话。
+  const notifyTouchMenuOpened = useNotifyTouchMenuOpened()
+  const handleMenuOpenChange = useCallback(
+    (open: boolean) => {
+      setMenuOpen(open)
+      if (!open) return
+      notifyTouchMenuOpened()
+      // Mobile is out of scope for sharing (#1235): same breakpoint as
+      // `useIsMobile` (hooks/use-mobile.ts), read once here rather than
+      // subscribed per row.
+      setShareable(
+        useCoworkTeamStore.getState().available &&
+          !window.matchMedia("(max-width: 767px)").matches
+      )
+      // The context menu takes the row over; drop the details bubble so the two
+      // don't stack on the same spot.
+      setHoverOpen(false)
+      setAttachTabId(resolveAttachTabId())
+      setUnreadShortcut(readShortcutSettings().toggle_conversation_unread)
+    },
+    [notifyTouchMenuOpened]
+  )
 
   // See `isKeyboardFocus`: suppress Radix's open-on-focus unless the focus
   // really came from the keyboard, so clicking a row doesn't pop the bubble.

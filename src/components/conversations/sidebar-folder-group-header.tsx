@@ -43,6 +43,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { SubsessionAncestorRails } from "./sidebar-conversation-card"
+import { useNotifyTouchMenuOpened } from "./sidebar-touch-menu-context"
 
 /**
  * Heading row for one folder GROUP inside the sidebar's "Folders" section.
@@ -126,6 +127,14 @@ export const SidebarFolderGroupHeader = memo(function SidebarFolderGroupHeader({
   // top-of-page dropdown's), so the same action reads the same everywhere.
   const tDropdown = useTranslations("Folder.folderNameDropdown")
   const ime = useImeGuard()
+  // #1455：触屏长按打开本行菜单时告诉列表外层，松手补发的 click 才会被吞掉。
+  const notifyTouchMenuOpened = useNotifyTouchMenuOpened()
+  const handleMenuOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) notifyTouchMenuOpened()
+    },
+    [notifyTouchMenuOpened]
+  )
 
   // Controlled dialog rendered as a SIBLING of the ContextMenu, never a child:
   // the menu unmounts its content on select, which would take a nested dialog
@@ -323,7 +332,7 @@ export const SidebarFolderGroupHeader = memo(function SidebarFolderGroupHeader({
 
   return (
     <>
-      <ContextMenu>
+      <ContextMenu onOpenChange={handleMenuOpenChange}>
         <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
         <ContextMenuContent>
           <ContextMenuItem onSelect={openRename}>

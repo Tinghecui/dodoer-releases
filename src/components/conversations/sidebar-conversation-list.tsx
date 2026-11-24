@@ -183,6 +183,10 @@ import {
 import { ConversationManageDialog } from "./conversation-manage-dialog"
 import { openConversationTagsManager } from "./conversation-tags-manager"
 import {
+  SidebarTouchMenuProvider,
+  useNotifyTouchMenuOpened,
+} from "./sidebar-touch-menu-context"
+import {
   EMPTY_TAG_FILTER,
   isTagFilterActive,
   matchesTagFilter,
@@ -479,6 +483,15 @@ const FolderHeader = memo(function FolderHeader({
     setAliasDialogOpen(false)
   }, [aliasValue, folderId, onSetAlias])
 
+  // #1455：触屏长按打开本行菜单时告诉列表外层，松手补发的 click 才会被吞掉。
+  const notifyTouchMenuOpened = useNotifyTouchMenuOpened()
+  const handleMenuOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) notifyTouchMenuOpened()
+    },
+    [notifyTouchMenuOpened]
+  )
+
   const titleTint = folderTitleTintVars(themeColor)
   // The `[ name ]` half of an aliased label is normally a DEEPER shade than the
   // alias beside it. A tinted title has no deeper shade to reach for (the tint
@@ -490,7 +503,7 @@ const FolderHeader = memo(function FolderHeader({
 
   return (
     <>
-      <ContextMenu>
+      <ContextMenu onOpenChange={handleMenuOpenChange}>
         <ContextMenuTrigger asChild>
           <div
             inert={suppressed || undefined}
@@ -1307,11 +1320,20 @@ export function SidebarConversationList({
     }
     blankMenuPressRef.current = { active: false, opened: false }
   }, [])
-  const handleBlankMenuOpenChange = useCallback((open: boolean) => {
-    if (open && blankMenuPressRef.current.active) {
+  // #1455：行内（会话卡片、文件夹行、分组标题）的菜单打开时也走这里，经
+  // SidebarTouchMenuProvider 下发——外层不为里层的行起长按（#1378），只靠外层自己
+  // 的 onOpenChange 看不到那些菜单打开。
+  const notifyTouchMenuOpened = useCallback(() => {
+    if (blankMenuPressRef.current.active) {
       blankMenuPressRef.current.opened = true
     }
   }, [])
+  const handleBlankMenuOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) notifyTouchMenuOpened()
+    },
+    [notifyTouchMenuOpened]
+  )
   const handleBlankMenuClickCapture = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
       if (Date.now() >= suppressClickUntilRef.current) return
@@ -3864,7 +3886,7 @@ export function SidebarConversationList({
     return `${prefix}conv-${row.conversation.agent_type}-${row.conversation.id}`
   }
 
-  return (
+  const content = (
     <div className="relative flex flex-col flex-1 min-h-0">
       {(loading || refreshing) && (
         // z-20 keeps the refresh spinner above the sticky header overlay (z-10),
@@ -4371,5 +4393,11 @@ export function SidebarConversationList({
         />
       )}
     </div>
+  )
+  // #1455：行内菜单经这里告诉外层「这次触屏按下期间有菜单打开了」。
+  return (
+    <SidebarTouchMenuProvider value={notifyTouchMenuOpened}>
+      {content}
+    </SidebarTouchMenuProvider>
   )
 }

@@ -20,8 +20,15 @@ import {
   probeCoworkTeam,
   resetCoworkTeamForTests,
   startCoworkTeamPolling,
+  normalizeTeamShares,
+  normalizeTeamStatus,
+  normalizeTeamTargets,
   teamCommentAdd,
+  teamCommentDelete,
+  teamCommentForwarded,
   teamEntries,
+  teamGroupNoticeDismiss,
+  teamSearch,
   teamSessionId,
   teamShare,
   teamShares,
@@ -31,12 +38,13 @@ import {
   toCoworkTeamError,
   useCoworkTeamPolling,
 } from "./team"
+import { TEAM_CONTRACT_FIXTURE } from "./team-contract.fixture"
 
 const STATUS = {
   applicable: true,
   enabled: true,
   me: { name: "alice", label: "爱丽丝" },
-  leaderOf: [{ id: "g1", name: "前端组" }],
+  leaderOf: [{ id: "1", name: "前端组" }],
   portalUrl: "https://portal.example.com",
 }
 
@@ -55,7 +63,7 @@ const SUMMARY = {
       },
     ],
   },
-  groupNotices: [{ id: "n1", groupName: "前端组", leaders: ["鲍勃"] }],
+  groupNotices: [{ id: "3", groupName: "前端组", leaders: ["鲍勃"] }],
 }
 
 /** 假的命令层：按 op 回答。 */
@@ -452,13 +460,13 @@ describe("宽容地读返回值", () => {
   it("comments：seq、parentId、anchor 可为 null", () => {
     const page = normalizeTeamComments({
       isOwner: true,
-      ids: ["c1", 2],
-      comments: [{ id: "c1", body: "<b>*hi*</b>", seq: null, canDelete: 1 }],
+      ids: ["5", 6],
+      comments: [{ id: 5, body: "<b>*hi*</b>", seq: null, canDelete: 1 }],
     })
     expect(page.isOwner).toBe(true)
-    expect(page.ids).toEqual(["c1", "2"])
+    expect(page.ids).toEqual(["5", "6"])
     expect(page.comments[0]).toMatchObject({
-      id: "c1",
+      id: "5",
       body: "<b>*hi*</b>",
       seq: null,
       parentId: null,
@@ -469,7 +477,7 @@ describe("宽容地读返回值", () => {
 
   it("team：会话缺 owner 时用成员名", () => {
     const view = normalizeTeamView({
-      id: "g1",
+      id: 1,
       members: [
         { name: "bob", running: 1, sessions: [{ id: "3", state: "running" }] },
         { label: "没名字" },
@@ -500,19 +508,19 @@ describe("命令和错误", () => {
       op: "unshare",
       id: "12",
     })
-    await teamUnshare("12", { type: "group", id: "g1" })
+    await teamUnshare("12", { type: "group", id: "1" })
     expect(env.call).toHaveBeenLastCalledWith(COWORK_TEAM_COMMAND, {
       op: "unshare",
       id: "12",
-      target: { type: "group", id: "g1" },
+      target: { type: "group", id: 1 },
     })
   })
 
   it("entries、comment_add、team 按契约发参数", async () => {
     answer({
       entries: { entries: [] },
-      comment_add: { id: "c9", body: "好" },
-      team: { id: "g1", members: [] },
+      comment_add: { id: 9, body: "好" },
+      team: { id: 1, members: [] },
     })
     await teamEntries("bob", "7", -1)
     expect(env.call).toHaveBeenLastCalledWith(COWORK_TEAM_COMMAND, {
@@ -529,10 +537,10 @@ describe("命令和错误", () => {
       body: "好",
       seq: 3,
     })
-    await teamView("g1")
+    await teamView("1")
     expect(env.call).toHaveBeenLastCalledWith(COWORK_TEAM_COMMAND, {
       op: "team",
-      group: "g1",
+      group: 1,
     })
   })
 
@@ -569,5 +577,169 @@ describe("命令和错误", () => {
     expect(teamSessionId(-3)).toBeNull()
     expect(teamSessionId("42")).toBeNull()
     expect(teamSessionId(undefined)).toBeNull()
+  })
+})
+
+/** 最后一次发出去的参数。 */
+function lastArgs(): Record<string, unknown> {
+  const calls = env.call.mock.calls
+  return calls[calls.length - 1][1] as Record<string, unknown>
+}
+
+/** 什么 op 都回一个空对象，只看发出去的参数。 */
+function answerAnything() {
+  env.call.mockImplementation(async () => ({}))
+}
+
+describe("编号按契约发成数字（#1390）", () => {
+  beforeEach(answerAnything)
+
+  it("team、search 的 group 是数字", async () => {
+    await teamView("1")
+    expect(typeof lastArgs().group).toBe("number")
+    expect(lastArgs().group).toBe(1)
+    await teamSearch("q", { group: "1" })
+    expect(typeof lastArgs().group).toBe("number")
+    expect(lastArgs()).toEqual({ op: "search", q: "q", group: 1 })
+  })
+
+  it("group_notice_dismiss 的 noticeId 是数字", async () => {
+    await teamGroupNoticeDismiss("3")
+    expect(typeof lastArgs().noticeId).toBe("number")
+    expect(lastArgs().noticeId).toBe(3)
+  })
+
+  it("comment_delete、comment_forwarded 的 commentId 是数字，会话号仍是文字", async () => {
+    await teamCommentDelete("alice", "75", "9")
+    expect(typeof lastArgs().commentId).toBe("number")
+    expect(lastArgs().commentId).toBe(9)
+    expect(typeof lastArgs().id).toBe("string")
+    expect(lastArgs().id).toBe("75")
+    expect(typeof lastArgs().owner).toBe("string")
+    await teamCommentForwarded("75", "9")
+    expect(typeof lastArgs().commentId).toBe("number")
+    expect(lastArgs().commentId).toBe(9)
+    expect(typeof lastArgs().id).toBe("string")
+  })
+
+  it("comment_add 的 replyTo 是数字", async () => {
+    env.call.mockImplementation(async () => ({ id: 10, body: "好" }))
+    await teamCommentAdd("alice", "75", "好", { replyTo: "9" })
+    expect(typeof lastArgs().replyTo).toBe("number")
+    expect(lastArgs().replyTo).toBe(9)
+    expect(typeof lastArgs().id).toBe("string")
+    expect(typeof lastArgs().owner).toBe("string")
+  })
+
+  it("share、unshare 里组对象的 id 是数字，个人对象原样", async () => {
+    await teamShare("75", [
+      { type: "group", id: "1" },
+      { type: "user", name: "bob" },
+    ])
+    const targets = lastArgs().targets as Record<string, unknown>[]
+    expect(typeof targets[0].id).toBe("number")
+    expect(targets[0]).toEqual({ type: "group", id: 1 })
+    expect(targets[1]).toEqual({ type: "user", name: "bob" })
+    expect(typeof lastArgs().id).toBe("string")
+    await teamUnshare("75", { type: "group", id: "1" })
+    const target = lastArgs().target as Record<string, unknown>
+    expect(typeof target.id).toBe("number")
+    expect(target).toEqual({ type: "group", id: 1 })
+    await teamUnshare("75", { type: "user", name: "bob" })
+    expect(lastArgs().target).toEqual({ type: "user", name: "bob" })
+  })
+})
+
+describe("坏编号不发请求（#1390）", () => {
+  beforeEach(answerAnything)
+
+  const BAD = ["", "g1", "1.5", "-1", "0", " 1", "9007199254740992"]
+
+  async function expectInvalid(run: () => Promise<unknown>) {
+    const err = await run().then(
+      () => null,
+      (e: unknown) => e
+    )
+    expect(err).toBeInstanceOf(CoworkTeamError)
+    expect((err as CoworkTeamError).code).toBe("invalid")
+  }
+
+  it.each(BAD)("编号 %j：各个包装函数都抛 invalid、不调命令层", async (bad) => {
+    await expectInvalid(() => teamView(bad))
+    await expectInvalid(() => teamSearch("q", { group: bad }))
+    await expectInvalid(() => teamGroupNoticeDismiss(bad))
+    await expectInvalid(() => teamCommentDelete("alice", "75", bad))
+    await expectInvalid(() => teamCommentForwarded("75", bad))
+    await expectInvalid(() =>
+      teamCommentAdd("alice", "75", "好", { replyTo: bad })
+    )
+    await expectInvalid(() => teamShare("75", [{ type: "group", id: bad }]))
+    await expectInvalid(() => teamUnshare("75", { type: "group", id: bad }))
+    expect(env.call).not.toHaveBeenCalled()
+  })
+})
+
+describe("契约样例：读进来的编号原样发回去还是同一个数字（#1390）", () => {
+  const F = TEAM_CONTRACT_FIXTURE
+
+  beforeEach(answerAnything)
+
+  it("status.leaderOf 的组号 → team", async () => {
+    const [g] = normalizeTeamStatus(F.status).leaderOf
+    await teamView(g.id)
+    expect(lastArgs().group).toBe(F.status.leaderOf[0].id)
+    expect(typeof lastArgs().group).toBe("number")
+  })
+
+  it("summary.groupNotices 的编号 → group_notice_dismiss", async () => {
+    const [n] = normalizeTeamSummary(F.summary).groupNotices
+    await teamGroupNoticeDismiss(n.id)
+    expect(lastArgs().noticeId).toBe(F.summary.groupNotices[0].id)
+    expect(typeof lastArgs().noticeId).toBe("number")
+  })
+
+  it("targets.groups 的组号 → share、search", async () => {
+    const [g] = normalizeTeamTargets(F.targets).groups
+    await teamShare("75", [{ type: "group", id: g.id }])
+    const targets = lastArgs().targets as Record<string, unknown>[]
+    expect(targets[0].id).toBe(F.targets.groups[0].id)
+    expect(typeof targets[0].id).toBe("number")
+    await teamSearch("q", { group: g.id })
+    expect(lastArgs().group).toBe(F.targets.groups[0].id)
+  })
+
+  it("shares 里的组对象 → unshare", async () => {
+    const share = normalizeTeamShares(F.shares).shares.find(
+      (s) => s.type === "group"
+    )
+    if (share?.type !== "group") throw new Error("样例里要有组对象")
+    await teamUnshare("75", { type: "group", id: share.id })
+    const target = lastArgs().target as Record<string, unknown>
+    expect(target.id).toBe(F.shares.shares[1].id)
+    expect(typeof target.id).toBe("number")
+  })
+
+  it("comments 的 id、parentId → comment_delete、comment_forwarded、comment_add", async () => {
+    const [first, reply] = normalizeTeamComments(F.comments).comments
+    await teamCommentDelete("alice", "75", first.id)
+    expect(lastArgs().commentId).toBe(F.comments.comments[0].id)
+    expect(typeof lastArgs().commentId).toBe("number")
+    await teamCommentForwarded("75", first.id)
+    expect(lastArgs().commentId).toBe(F.comments.comments[0].id)
+    env.call.mockImplementation(async () => ({ id: 11, body: "好" }))
+    await teamCommentAdd("alice", "75", "好", { replyTo: reply.parentId! })
+    expect(lastArgs().replyTo).toBe(F.comments.comments[1].parentId)
+    expect(typeof lastArgs().replyTo).toBe("number")
+  })
+
+  it("shared[].via 的组号、team.id → team", async () => {
+    const [item] = normalizeTeamShared(F.shared)
+    const via = item.via.find((v) => v.type === "group")
+    await teamView(via!.id!)
+    expect(lastArgs().group).toBe(F.shared[0].via[1].id)
+    const view = normalizeTeamView(F.team)
+    await teamView(view.id)
+    expect(lastArgs().group).toBe(F.team.id)
+    expect(typeof lastArgs().group).toBe("number")
   })
 })

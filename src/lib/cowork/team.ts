@@ -624,6 +624,26 @@ export async function callCoworkTeam(
   return raw
 }
 
+// ─── 发请求时的编号 ─────────────────────────────────────────────────────────
+
+/**
+ * 组、留言、回复的上一条、进组提示的编号：界面里存成文字，按契约发成 JSON
+ * 数字（服务端要 `typeof === "number"`）。只认正的十进制整数、在安全整数
+ * 以内；别的一律不发请求，抛 `invalid`。会话号 `id` 照旧发文字，不走这里。
+ */
+export function teamNumericId(raw: string): number {
+  const n = /^[1-9][0-9]*$/.test(raw) ? Number(raw) : NaN
+  if (!Number.isSafeInteger(n)) throw new CoworkTeamError("invalid", "")
+  return n
+}
+
+/** 分享对象里组的 `id` 换成数字，个人对象原样。 */
+function wireShareTarget(target: TeamShareTarget): Record<string, unknown> {
+  return target.type === "group"
+    ? { type: "group", id: teamNumericId(target.id) }
+    : target
+}
+
 // ─── 各个 op ────────────────────────────────────────────────────────────────
 
 /** `status` 的原始结果（可能是 `{ signedOut: true }`）。 */
@@ -649,7 +669,10 @@ export async function teamShare(
   targets: TeamShareTarget[],
   note?: string
 ): Promise<TeamShares> {
-  const args: Record<string, unknown> = { id, targets }
+  const args: Record<string, unknown> = {
+    id,
+    targets: targets.map(wireShareTarget),
+  }
   if (note) args.note = note
   return normalizeTeamShares(await callCoworkTeam("share", args))
 }
@@ -660,7 +683,7 @@ export async function teamUnshare(
   target?: TeamShareTarget
 ): Promise<TeamShares> {
   const args: Record<string, unknown> = { id }
-  if (target) args.target = target
+  if (target) args.target = wireShareTarget(target)
   return normalizeTeamShares(await callCoworkTeam("unshare", args))
 }
 
@@ -705,7 +728,8 @@ export async function teamCommentAdd(
 ): Promise<TeamComment> {
   const args: Record<string, unknown> = { owner, id, body }
   if (options.seq !== undefined) args.seq = options.seq
-  if (options.replyTo !== undefined) args.replyTo = options.replyTo
+  if (options.replyTo !== undefined)
+    args.replyTo = teamNumericId(options.replyTo)
   const comment = normalizeTeamComment(
     await callCoworkTeam("comment_add", args)
   )
@@ -719,7 +743,11 @@ export async function teamCommentDelete(
   commentId: string
 ): Promise<TeamCommentDeleted> {
   const r = obj(
-    await callCoworkTeam("comment_delete", { owner, id, commentId })
+    await callCoworkTeam("comment_delete", {
+      owner,
+      id,
+      commentId: teamNumericId(commentId),
+    })
   )
   return { id: str(r.id) || commentId, replies: count(r.replies) }
 }
@@ -736,7 +764,10 @@ export async function teamCommentForwarded(
   id: string,
   commentId: string
 ): Promise<void> {
-  await callCoworkTeam("comment_forwarded", { id, commentId })
+  await callCoworkTeam("comment_forwarded", {
+    id,
+    commentId: teamNumericId(commentId),
+  })
 }
 
 /** `since` 不给 = 服务器当地今天零点。 */
@@ -744,7 +775,7 @@ export async function teamView(
   groupId: string,
   since?: string
 ): Promise<TeamView> {
-  const args: Record<string, unknown> = { group: groupId }
+  const args: Record<string, unknown> = { group: teamNumericId(groupId) }
   if (since) args.since = since
   return normalizeTeamView(await callCoworkTeam("team", args))
 }
@@ -754,13 +785,15 @@ export async function teamSearch(
   scope: { group?: string; shared?: boolean } = {}
 ): Promise<TeamSearchHit[]> {
   const args: Record<string, unknown> = { q }
-  if (scope.group !== undefined) args.group = scope.group
+  if (scope.group !== undefined) args.group = teamNumericId(scope.group)
   if (scope.shared) args.shared = true
   return normalizeTeamSearch(await callCoworkTeam("search", args))
 }
 
 export async function teamGroupNoticeDismiss(noticeId: string): Promise<void> {
-  await callCoworkTeam("group_notice_dismiss", { noticeId })
+  await callCoworkTeam("group_notice_dismiss", {
+    noticeId: teamNumericId(noticeId),
+  })
 }
 
 /** 工作界面会话的数字 id 转成契约里的 `id`（十进制字符串）；草稿等没有数字号的给 null。 */

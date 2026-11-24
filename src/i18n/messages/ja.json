@@ -5767,6 +5767,11 @@
       "cancelled": "操作はキャンセルされました。"
     }
   },
+  "systemProxy": {
+    "error": {
+      "invalidUrl": "プロキシアドレスの形式が正しくありません。http://127.0.0.1:7890 のように入力してください"
+    }
+  },
   "configSync": {
     "error": {
       "newerSchema": "このスナップショットは新しいバージョンの dodoer（形式 {snapshotVersion}）で作成されています。このバージョンは形式 {appVersion} まで対応しています。",

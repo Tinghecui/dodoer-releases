@@ -85,6 +85,26 @@ pub(crate) fn normalize_proxy_settings(
     })
 }
 
+/// 保存用的规范化：在 [`normalize_proxy_settings`] 之上，代理没开时也校验
+/// 填了的地址，非法就整个不存（报错带 i18n key，页面就地提示）。地址照旧
+/// 按填的原样存，不补 scheme。读取路径不走这里：老版本存下的、没启用的
+/// 非法地址读出来不报错，设置页照常打开。
+pub(crate) fn normalize_proxy_settings_for_save(
+    settings: SystemProxySettings,
+) -> Result<SystemProxySettings, AppCommandError> {
+    if !settings.enabled {
+        if let Some(url) = settings
+            .proxy_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            proxy::normalize_proxy_url(url)?;
+        }
+    }
+    normalize_proxy_settings(settings)
+}
+
 pub(crate) async fn load_system_proxy_settings(
     conn: &DatabaseConnection,
 ) -> Result<SystemProxySettings, AppCommandError> {
@@ -704,7 +724,7 @@ pub async fn update_system_proxy_settings(
     settings: SystemProxySettings,
     db: State<'_, AppDatabase>,
 ) -> Result<SystemProxySettings, AppCommandError> {
-    let normalized = normalize_proxy_settings(settings)?;
+    let normalized = normalize_proxy_settings_for_save(settings)?;
     let serialized = serde_json::to_string(&normalized).map_err(|e| {
         AppCommandError::invalid_input("Failed to serialize proxy settings")
             .with_detail(e.to_string())
@@ -1241,6 +1261,64 @@ mod tests {
 
         assert!(!normalized.enabled);
         assert_eq!(normalized.proxy_url.as_deref(), Some("127.0.0.1:7890"));
+    }
+
+    /// 保存时代理没开也要校验地址：不然失焦就把「not a url!!」存进库，
+    /// 等勾上启用才报一句英文错。报错带 i18n key，页面就地显示中文提示。
+    #[test]
+    fn saving_a_disabled_proxy_rejects_an_invalid_address() {
+        let err = normalize_proxy_settings_for_save(SystemProxySettings {
+            enabled: false,
+            proxy_url: Some("not a url!!".to_string()),
+            no_proxy: None,
+        })
+        .expect_err("an invalid address must not be saved");
+        assert_eq!(
+            err.i18n_key.as_deref(),
+            Some(crate::app_error::PROXY_I18N_KEY_INVALID_URL)
+        );
+
+        // 启用时同一个地址报同一个 key。
+        let err = normalize_proxy_settings_for_save(enabled_proxy("not a url!!"))
+            .expect_err("an invalid address must not be enabled");
+        assert_eq!(
+            err.i18n_key.as_deref(),
+            Some(crate::app_error::PROXY_I18N_KEY_INVALID_URL)
+        );
+
+        // 空地址、合法地址照常保存，合法地址仍按原样存（不补 scheme）。
+        for (raw, stored) in [
+            (None, None),
+            (Some("   "), None),
+            (Some(" 127.0.0.1:7890 "), Some("127.0.0.1:7890")),
+        ] {
+            let saved = normalize_proxy_settings_for_save(SystemProxySettings {
+                enabled: false,
+                proxy_url: raw.map(str::to_string),
+                no_proxy: None,
+            })
+            .expect("a blank or valid address saves while disabled");
+            assert_eq!(saved.proxy_url.as_deref(), stored);
+        }
+    }
+
+    /// 老版本存下的、没启用的非法地址读出来不报错，设置页照常打开。
+    #[tokio::test]
+    async fn stored_invalid_disabled_address_still_loads() {
+        let db = fresh_in_memory_db().await;
+        app_metadata_service::upsert_value(
+            &db.conn,
+            SYSTEM_PROXY_SETTINGS_KEY,
+            r#"{"enabled":false,"proxy_url":"not a url!!"}"#,
+        )
+        .await
+        .expect("seed legacy proxy row");
+
+        let loaded = load_system_proxy_settings(&db.conn)
+            .await
+            .expect("a disabled row loads whatever its address");
+        assert!(!loaded.enabled);
+        assert_eq!(loaded.proxy_url.as_deref(), Some("not a url!!"));
     }
 
     /// What actually reaches `HTTP_PROXY` and every spawned agent.

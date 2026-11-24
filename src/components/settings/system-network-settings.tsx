@@ -77,7 +77,12 @@ import {
   useCoworkInfo,
   useCoworkInfoLoaded,
 } from "@/lib/cowork/info"
-import { toErrorMessage } from "@/lib/app-error"
+import {
+  extractAppCommandError,
+  toErrorMessage,
+  toLocalizedErrorMessage,
+  type AppErrorTranslator,
+} from "@/lib/app-error"
 import { useHideDesktopOnly } from "@/hooks/use-hide-desktop-only"
 import type { AppCommandError } from "@/lib/types"
 
@@ -109,6 +114,8 @@ function formatBytes(bytes: number): string {
 const PAGE_RECHECK_AFTER_MS = 5 * 60 * 1000
 
 const PROXY_EXAMPLE = "http://127.0.0.1:7890"
+// 后端报「代理地址非法」时带的 i18n key（app_error.rs 的 PROXY_I18N_KEY_INVALID_URL）。
+const PROXY_INVALID_URL_I18N_KEY = "systemProxy.error.invalidUrl"
 // Written exactly as the backend stores the list — comma-separated, no spaces —
 // so the example, the placeholder and the saved value all read the same.
 const PROXY_BYPASS_EXAMPLE = "git.example.com,.example.org,192.168.1.10"
@@ -134,6 +141,7 @@ type UpdateAction = "check" | "install"
 export function SystemNetworkSettings() {
   const t = useTranslations("SystemSettings")
   const tLanguage = useTranslations("Language")
+  const tRoot = useTranslations()
   const locale = useLocale()
   const { languageSettings, languageSettingsLoaded, setLanguageSettings } =
     useAppI18n()
@@ -369,7 +377,12 @@ export function SystemNetworkSettings() {
   }, [])
 
   const saveProxySettings = useCallback(
-    async (nextEnabled: boolean, nextProxyUrl: string, nextNoProxy: string) => {
+    async (
+      nextEnabled: boolean,
+      nextProxyUrl: string,
+      nextNoProxy: string,
+      previousEnabled: boolean
+    ) => {
       if (nextEnabled && !nextProxyUrl.trim()) return
       // The fields hold placeholders, not the stored proxy, until a read
       // succeeds; a blur can still reach here, so refuse it too.
@@ -386,13 +399,24 @@ export function SystemNetworkSettings() {
         setProxyUrl(next.proxy_url ?? "")
         setNoProxy(next.no_proxy ?? "")
       } catch (err) {
-        const message = toErrorMessage(err)
+        // 没存进去：勾选框退回保存前的样子，和刷新后读到的一致。
+        setEnabled(previousEnabled)
+        const message = toLocalizedErrorMessage(
+          err,
+          tRoot as unknown as AppErrorTranslator
+        )
+        // 地址不对就在地址框下面直接说，不只靠右下角一闪而过的提示。
+        if (
+          extractAppCommandError(err)?.i18n_key === PROXY_INVALID_URL_I18N_KEY
+        ) {
+          setProxyUrlError(message)
+        }
         toast.error(t("saveFailed", { message }))
       } finally {
         setSaving(false)
       }
     },
-    [loadError, t]
+    [loadError, t, tRoot]
   )
 
   const saveAutostartSettings = useCallback(
@@ -889,7 +913,7 @@ export function SystemNetworkSettings() {
                   }
                   setProxyUrlError(null)
                   setEnabled(next)
-                  saveProxySettings(next, proxyUrl, noProxy)
+                  saveProxySettings(next, proxyUrl, noProxy, enabled)
                 }}
               />
               {t("enableProxy")}
@@ -911,7 +935,7 @@ export function SystemNetworkSettings() {
                     return
                   }
                   setProxyUrlError(null)
-                  saveProxySettings(enabled, proxyUrl, noProxy)
+                  saveProxySettings(enabled, proxyUrl, noProxy, enabled)
                 }}
                 placeholder={PROXY_EXAMPLE}
                 disabled={proxyLocked}
@@ -939,7 +963,9 @@ export function SystemNetworkSettings() {
                 dir="ltr"
                 value={noProxy}
                 onChange={(event) => setNoProxy(event.target.value)}
-                onBlur={() => saveProxySettings(enabled, proxyUrl, noProxy)}
+                onBlur={() =>
+                  saveProxySettings(enabled, proxyUrl, noProxy, enabled)
+                }
                 placeholder={PROXY_BYPASS_EXAMPLE}
                 disabled={proxyLocked}
               />

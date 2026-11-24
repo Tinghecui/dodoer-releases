@@ -5767,6 +5767,11 @@
       "cancelled": "操作已取消。"
     }
   },
+  "systemProxy": {
+    "error": {
+      "invalidUrl": "代理位址格式不對，請填寫如 http://127.0.0.1:7890 的位址"
+    }
+  },
   "configSync": {
     "error": {
       "newerSchema": "這份快照由更新版本的 dodoer 建立（格式 {snapshotVersion}），目前版本最高支援格式 {appVersion}。",

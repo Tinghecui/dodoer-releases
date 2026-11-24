@@ -5767,6 +5767,11 @@
       "cancelled": "Der Vorgang wurde abgebrochen."
     }
   },
+  "systemProxy": {
+    "error": {
+      "invalidUrl": "Ungültige Proxy-Adresse. Gib eine Adresse wie http://127.0.0.1:7890 ein"
+    }
+  },
   "configSync": {
     "error": {
       "newerSchema": "Dieser Snapshot stammt aus einer neueren dodoer-Version (Format {snapshotVersion}); diese Version unterstützt höchstens Format {appVersion}.",

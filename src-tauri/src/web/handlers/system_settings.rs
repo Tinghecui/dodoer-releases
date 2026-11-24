@@ -95,7 +95,7 @@ pub async fn update_system_proxy_settings(
     // Normalize before storing, exactly like the desktop command does. The
     // frontend only checks for emptiness, so this is the only thing that
     // validates the URL and gives it an explicit scheme in server mode.
-    let settings = settings_commands::normalize_proxy_settings(params.settings)?;
+    let settings = settings_commands::normalize_proxy_settings_for_save(params.settings)?;
     let serialized = serde_json::to_string(&settings).map_err(|e| {
         AppCommandError::invalid_input("Failed to serialize proxy settings")
             .with_detail(e.to_string())

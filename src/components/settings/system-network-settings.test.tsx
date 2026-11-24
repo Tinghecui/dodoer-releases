@@ -976,6 +976,42 @@ describe("SystemNetworkSettings — proxy bypass list", () => {
     })
   })
 
+  it("一个非法地址存不进去时就地提示，勾选框退回没勾（#1420）", async () => {
+    mockGetProxy.mockResolvedValue({
+      enabled: false,
+      proxy_url: null,
+      no_proxy: null,
+    })
+    const invalid = {
+      code: "configuration_invalid",
+      message: "Invalid proxy URL",
+      detail: "invalid international domain name",
+      i18n_key: "systemProxy.error.invalidUrl",
+    }
+    mockSetProxy.mockRejectedValue(invalid)
+
+    renderWithIntl()
+
+    const address = await screen.findByPlaceholderText("http://127.0.0.1:7890")
+    fireEvent.change(address, { target: { value: "not a url!!" } })
+    fireEvent.blur(address)
+    await waitFor(() => expect(mockSetProxy).toHaveBeenCalledTimes(1))
+    const hint = enMessages.systemProxy.error.invalidUrl
+    expect(await screen.findByText(hint)).toBeInTheDocument()
+    expect(address).toHaveAttribute("aria-invalid", "true")
+
+    const checkbox = screen.getByLabelText("Enable system proxy")
+    fireEvent.click(checkbox)
+    await waitFor(() => expect(mockSetProxy).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(checkbox).not.toBeChecked())
+    expect(screen.getByText(hint)).toBeInTheDocument()
+    // toast 也用本地化的文案，不出 url 库的英文原文。
+    const { toast } = await import("sonner")
+    for (const [message] of vi.mocked(toast.error).mock.calls) {
+      expect(String(message)).not.toContain("invalid international domain")
+    }
+  })
+
   it("clears the list with an empty field", async () => {
     mockGetProxy.mockResolvedValue({
       enabled: true,

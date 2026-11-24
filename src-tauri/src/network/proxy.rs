@@ -58,18 +58,23 @@ pub(crate) fn normalize_proxy_url(raw: &str) -> Result<String, AppCommandError> 
         trimmed.to_string()
     };
 
-    let parsed = reqwest::Url::parse(&normalized).map_err(|e| {
-        AppCommandError::configuration_invalid("Invalid proxy URL").with_detail(e.to_string())
-    })?;
+    let parsed = reqwest::Url::parse(&normalized)
+        .map_err(|e| invalid_proxy_url().with_detail(e.to_string()))?;
     if !names_a_host(&parsed) {
-        return Err(AppCommandError::configuration_invalid("Invalid proxy URL")
+        return Err(invalid_proxy_url()
             .with_detail("a proxy address must include a host, e.g. http://127.0.0.1:7890"));
     }
-    reqwest::Proxy::all(&normalized).map_err(|e| {
-        AppCommandError::configuration_invalid("Invalid proxy URL").with_detail(e.to_string())
-    })?;
+    reqwest::Proxy::all(&normalized).map_err(|e| invalid_proxy_url().with_detail(e.to_string()))?;
 
     Ok(normalized)
+}
+
+/// 代理地址非法：带 i18n key，页面显示本地化的提示，不显示 url 库的英文原文。
+fn invalid_proxy_url() -> AppCommandError {
+    AppCommandError::configuration_invalid("Invalid proxy URL").with_i18n(
+        crate::app_error::PROXY_I18N_KEY_INVALID_URL,
+        std::collections::BTreeMap::new(),
+    )
 }
 
 /// Whether the URL actually names a host. `has_host()` is not enough: for a

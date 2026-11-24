@@ -5767,6 +5767,11 @@
       "cancelled": "L'opération a été annulée."
     }
   },
+  "systemProxy": {
+    "error": {
+      "invalidUrl": "Adresse de proxy invalide. Saisissez une adresse comme http://127.0.0.1:7890"
+    }
+  },
   "configSync": {
     "error": {
       "newerSchema": "Cet instantané a été créé par une version plus récente de dodoer (format {snapshotVersion}) ; cette version gère au maximum le format {appVersion}.",

@@ -5767,6 +5767,11 @@
       "cancelled": "تم إلغاء العملية."
     }
   },
+  "systemProxy": {
+    "error": {
+      "invalidUrl": "عنوان الوكيل غير صالح. أدخل عنوانًا مثل http://127.0.0.1:7890"
+    }
+  },
   "configSync": {
     "error": {
       "newerSchema": "أُنشئت هذه اللقطة بإصدار أحدث من dodoer (الصيغة {snapshotVersion})؛ وهذا الإصدار يدعم الصيغة {appVersion} كحد أقصى.",

@@ -5767,6 +5767,11 @@
       "cancelled": "작업이 취소되었습니다."
     }
   },
+  "systemProxy": {
+    "error": {
+      "invalidUrl": "프록시 주소 형식이 올바르지 않습니다. http://127.0.0.1:7890 형식으로 입력하세요"
+    }
+  },
   "configSync": {
     "error": {
       "newerSchema": "이 스냅샷은 더 새로운 버전의 dodoer(형식 {snapshotVersion})에서 만들었습니다. 현재 버전은 형식 {appVersion}까지 지원합니다.",

@@ -2,11 +2,89 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
     <title>coteam</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: -apple-system, system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: calc(env(safe-area-inset-top) + 24px) 20px
+          calc(env(safe-area-inset-bottom) + 24px);
+      }
+      h1 {
+        font-size: 28px;
+        margin: 0 0 4px;
+      }
+      p.hint {
+        margin: 0 0 20px;
+        opacity: 0.7;
+      }
+      ul {
+        list-style: none;
+        margin: 0 0 24px;
+        padding: 0;
+      }
+      li {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      button,
+      input {
+        font: inherit;
+        border-radius: 10px;
+        border: 1px solid rgba(127, 127, 127, 0.4);
+        padding: 12px;
+        background: transparent;
+        color: inherit;
+      }
+      button.open {
+        flex: 1;
+        text-align: left;
+        overflow-wrap: anywhere;
+      }
+      .badge {
+        font-size: 12px;
+        opacity: 0.7;
+      }
+      form {
+        display: flex;
+        gap: 8px;
+      }
+      form input {
+        flex: 1;
+        min-width: 0;
+      }
+      #error {
+        color: #d33;
+      }
+    </style>
   </head>
   <body>
-    <!-- 占位的启动页：服务器列表、按地址添加和删除、记住上次的服务器由后面的 PR 做。 -->
     <h1>coteam</h1>
+    <p class="hint">选择一个服务器，或者按地址添加。</p>
+    <ul id="servers"></ul>
+    <p id="empty" hidden>还没有服务器。</p>
+    <form id="add-form">
+      <input
+        id="address"
+        type="text"
+        inputmode="url"
+        autocapitalize="off"
+        autocorrect="off"
+        spellcheck="false"
+        placeholder="服务器地址，例如 team.example.com"
+        aria-label="服务器地址"
+      />
+      <button type="submit">添加</button>
+    </form>
+    <p id="error" role="alert" hidden></p>
+    <script type="module" src="main.js"></script>
   </body>
 </html>

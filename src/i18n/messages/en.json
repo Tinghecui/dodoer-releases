@@ -8464,6 +8464,7 @@
     "sharedViewViaShared": "Shared by {owner}",
     "sharedViewViaLeader": "You lead {group}",
     "sharedViewHint": "{owner} only allows viewing; you can't message their agent from here",
+    "sharedViewSessionDetails": "Viewing {owner}'s conversation “{title}” read-only. Session details are only available for your own conversations.",
     "sharedViewUpdated": "Last updated: {ago}",
     "sharedViewCopyLink": "Copy link",
     "sharedViewLinkCopied": "Link copied",

@@ -8464,6 +8464,7 @@
     "sharedViewViaShared": "由{owner}分享",
     "sharedViewViaLeader": "你是{group}组长",
     "sharedViewHint": "{owner}只允许查看，不能从这里发话",
+    "sharedViewSessionDetails": "正在只读查看{owner}的会话「{title}」，会话详情只对自己的会话可用",
     "sharedViewUpdated": "最后更新：{ago}",
     "sharedViewCopyLink": "复制链接",
     "sharedViewLinkCopied": "已复制链接",

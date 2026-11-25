@@ -8464,6 +8464,7 @@
     "sharedViewViaShared": "{owner} 님이 공유",
     "sharedViewViaLeader": "{group}의 리더입니다",
     "sharedViewHint": "{owner} 님은 보기만 허용했습니다. 여기서는 메시지를 보낼 수 없습니다",
+    "sharedViewSessionDetails": "{owner} 님의 대화 「{title}」을(를) 읽기 전용으로 보고 있습니다. 세션 세부 정보는 내 대화에서만 볼 수 있습니다",
     "sharedViewUpdated": "마지막 업데이트: {ago}",
     "sharedViewCopyLink": "링크 복사",
     "sharedViewLinkCopied": "링크를 복사했습니다",

@@ -8464,6 +8464,7 @@
     "sharedViewViaShared": "شاركها {owner}",
     "sharedViewViaLeader": "أنت قائد {group}",
     "sharedViewHint": "يسمح {owner} بالعرض فقط؛ لا يمكنك مراسلة وكيله من هنا",
+    "sharedViewSessionDetails": "تعرض محادثة {owner} «{title}» للقراءة فقط. تفاصيل الجلسة متاحة لمحادثاتك فقط.",
     "sharedViewUpdated": "آخر تحديث: {ago}",
     "sharedViewCopyLink": "نسخ الرابط",
     "sharedViewLinkCopied": "تم نسخ الرابط",

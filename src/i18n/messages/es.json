@@ -8464,6 +8464,7 @@
     "sharedViewViaShared": "Compartida por {owner}",
     "sharedViewViaLeader": "Eres líder de {group}",
     "sharedViewHint": "{owner} solo permite ver; desde aquí no puedes escribir a su agente",
+    "sharedViewSessionDetails": "Estás viendo en solo lectura la conversación «{title}» de {owner}. Los detalles de la sesión solo están disponibles para tus propias conversaciones.",
     "sharedViewUpdated": "Última actualización: {ago}",
     "sharedViewCopyLink": "Copiar enlace",
     "sharedViewLinkCopied": "Enlace copiado",

@@ -8464,6 +8464,7 @@
     "sharedViewViaShared": "Geteilt von {owner}",
     "sharedViewViaLeader": "Du leitest {group}",
     "sharedViewHint": "{owner} erlaubt nur das Ansehen; von hier aus kannst du dem Agenten nicht schreiben",
+    "sharedViewSessionDetails": "Du siehst {owner}s Unterhaltung „{title}“ schreibgeschützt. Sitzungsdetails gibt es nur für deine eigenen Unterhaltungen.",
     "sharedViewUpdated": "Zuletzt aktualisiert: {ago}",
     "sharedViewCopyLink": "Link kopieren",
     "sharedViewLinkCopied": "Link kopiert",

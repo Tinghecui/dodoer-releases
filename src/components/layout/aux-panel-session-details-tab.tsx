@@ -6,6 +6,7 @@ import { useShallow } from "zustand/react/shallow"
 import { useTabStore } from "@/contexts/tab-context"
 import { useConversationRuntimeStore } from "@/stores/conversation-runtime-store"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { useCoworkTeamStore } from "@/stores/cowork-team-store"
 import {
   projectRuntimeSessionDetails,
   resolveActiveSessionDetailsFromSnapshot,
@@ -31,6 +32,11 @@ import { SessionDetailsInsights } from "./session-details-insights"
  */
 export function SessionDetailsTab() {
   const t = useTranslations("Folder.sessionDetails")
+  const tTeam = useTranslations("CoworkTeam")
+  // 主区域盖着只读分享视图时（#1457），下面自己的会话还是活动标签；这里只认
+  // 活动标签，接着画会把自己的会话当成正在看的那条。改成一句说明，关掉视图后
+  // 自动回到原样。
+  const viewing = useCoworkTeamStore((s) => (s.available ? s.viewing : null))
   const { isOpen, activeTab } = useAuxPanelContext()
   const active = isOpen && activeTab === "session_details"
 
@@ -82,7 +88,14 @@ export function SessionDetailsTab() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      {summary ? (
+      {viewing ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
+          {tTeam("sharedViewSessionDetails", {
+            owner: viewing.ownerLabel || viewing.owner,
+            title: viewing.title || tTeam("untitled"),
+          })}
+        </div>
+      ) : summary ? (
         <ScrollArea
           className="min-h-0 flex-1"
           onViewportRef={handleViewportRef}

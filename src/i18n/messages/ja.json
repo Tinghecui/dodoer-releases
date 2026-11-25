@@ -8464,6 +8464,7 @@
     "sharedViewViaShared": "{owner} が共有",
     "sharedViewViaLeader": "あなたは {group} のリーダーです",
     "sharedViewHint": "{owner} は閲覧のみ許可しています。ここからは送信できません",
+    "sharedViewSessionDetails": "{owner} の会話「{title}」を閲覧のみで表示しています。セッション詳細は自分の会話でのみ使えます",
     "sharedViewUpdated": "最終更新：{ago}",
     "sharedViewCopyLink": "リンクをコピー",
     "sharedViewLinkCopied": "リンクをコピーしました",

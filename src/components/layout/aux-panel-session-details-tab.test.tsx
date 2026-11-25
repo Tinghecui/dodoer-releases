@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest"
 
@@ -59,6 +59,7 @@ import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useTabStore } from "@/contexts/tab-context"
 import { useConversationRuntimeStore } from "@/stores/conversation-runtime-store"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { useCoworkTeamStore } from "@/stores/cowork-team-store"
 
 const mockAux = useAuxPanelContext as unknown as Mock
 const mockTabs = useTabStore as unknown as Mock
@@ -162,6 +163,7 @@ describe("SessionDetailsTab", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     insightsProps.length = 0
+    useCoworkTeamStore.getState().reset()
   })
 
   it("renders the active session's details with no folder-actions bar", () => {
@@ -331,5 +333,52 @@ describe("SessionDetailsTab", () => {
     setupScene({ hasActiveConversation: true, activeTab: "file_tree" })
     renderTab()
     expect(lastInsightsProps()?.active).toBe(false)
+  })
+
+  // #1457：主区域盖着只读分享视图时，下面自己的会话还是活动标签；面板不能
+  // 把它当成正在看的会话显示出来。
+  describe("while a colleague's shared conversation is open read-only", () => {
+    function openShared(title = "Release notes") {
+      useCoworkTeamStore.setState({ available: true })
+      useCoworkTeamStore.getState().openSharedSession({
+        owner: "member-b",
+        ownerLabel: "Robin",
+        id: "s-1",
+        title,
+        via: { kind: "shared" },
+      })
+    }
+
+    it("says the details are for your own conversations, not yours under it", () => {
+      setupScene({ hasActiveConversation: true })
+      openShared()
+      const { getByText, queryByText, queryByTestId, queryByRole } = renderTab()
+      expect(
+        getByText(
+          "Viewing Robin's conversation “Release notes” read-only. Session details are only available for your own conversations."
+        )
+      ).toBeInTheDocument()
+      expect(queryByText("My session")).toBeNull()
+      expect(queryByRole("term")).toBeNull()
+      expect(queryByTestId("session-insights")).toBeNull()
+    })
+
+    it("names an untitled one as such", () => {
+      setupScene({ hasActiveConversation: true })
+      openShared("")
+      const { getByText } = renderTab()
+      expect(
+        getByText(/^Viewing Robin's conversation “Untitled conversation”/)
+      ).toBeInTheDocument()
+    })
+
+    it("goes back to your own conversation once it's closed", () => {
+      setupScene({ hasActiveConversation: true })
+      openShared()
+      const { getByText, queryByText } = renderTab()
+      act(() => useCoworkTeamStore.getState().closeSharedSession())
+      expect(queryByText(/^Viewing Robin's/)).toBeNull()
+      expect(getByText("My session")).toBeTruthy()
+    })
   })
 })

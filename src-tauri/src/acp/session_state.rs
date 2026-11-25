@@ -2128,6 +2128,7 @@ impl SessionState {
             .map(|t| crate::acp::background_watch::EndedAsyncTask {
                 task_id: t.task_id.clone(),
                 tool_call_id: t.tool_call_id.clone(),
+                state: t.state.clone(),
             })
             .collect()
     }

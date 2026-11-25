@@ -796,6 +796,8 @@ async fn run_watch(
 pub(crate) struct EndedAsyncTask {
     pub(crate) task_id: String,
     pub(crate) tool_call_id: Option<String>,
+    /// AIR 报的终态：`completed` / `failed` / `stopped`。
+    pub(crate) state: String,
 }
 
 /// One launched-but-unresolved background task.
@@ -1638,29 +1640,54 @@ impl WatchState {
     /// max-age 才清掉，侧栏一直是「等待后台任务」。按任务号对，或者按启动它的工具调用对
     /// （AIR 的 `toolCallId` 就是记录里 tool_result 的 `tool_use_id`），两种都认。
     /// 每次轮询都调：AIR 的结束可能先于 watcher 读到启动记录。
+    ///
+    /// #1516：后台 shell 只认 AIR 的 `stopped` / `failed`。适配器有时在命令还在跑的时候
+    /// 就给它报 `completed`（启动 6 秒就算完了），算完以后侧栏没有沙漏，Claude 进程被杀
+    /// 也判不出「?」。shell 正常跑完会在会话记录里写结束信号，没写的由 max-age 兜底。
+    /// 后台子 agent 没有自己的进程，`completed` 照样算完。
     pub(crate) fn settle_ended_async_tasks(&mut self, ended: &[EndedAsyncTask]) {
         if ended.is_empty() || self.tasks.is_empty() {
             return;
         }
-        let matched: Vec<String> = self
-            .tasks
-            .keys()
-            .filter(|id| {
-                let tool_use_id = self
-                    .task_identities
-                    .get(*id)
-                    .and_then(|identity| identity.tool_use_id.as_deref());
-                ended.iter().any(|e| {
-                    e.task_id == **id
-                        || (tool_use_id.is_some() && e.tool_call_id.as_deref() == tool_use_id)
-                })
-            })
-            .cloned()
-            .collect();
-        for id in matched {
+        let mut matched: Vec<(String, &EndedAsyncTask, &'static str)> = Vec::new();
+        for (id, entry) in &self.tasks {
+            let tool_use_id = self
+                .task_identities
+                .get(id)
+                .and_then(|identity| identity.tool_use_id.as_deref());
+            let hit = ended.iter().find_map(|e| {
+                let by = if e.task_id == *id {
+                    "task_id"
+                } else if tool_use_id.is_some() && e.tool_call_id.as_deref() == tool_use_id {
+                    "tool_call_id"
+                } else {
+                    return None;
+                };
+                let settles = entry.kind != BackgroundTaskKind::Shell || e.state != "completed";
+                if !settles {
+                    // 每次轮询都会走到这里，不用 info。
+                    tracing::debug!(
+                        "[bg-watch] task={id} kept outstanding: AIR task={} tool_call={:?} state={} (matched by {by}), shell needs a transcript end signal",
+                        e.task_id,
+                        e.tool_call_id,
+                        e.state
+                    );
+                }
+                settles.then_some((e, by))
+            });
+            if let Some((e, by)) = hit {
+                matched.push((id.clone(), e, by));
+            }
+        }
+        for (id, e, by) in matched {
             self.tasks.remove(&id);
             self.settled_ids.insert(id.clone());
-            tracing::info!("[bg-watch] settled task={id} via ended async task");
+            tracing::info!(
+                "[bg-watch] settled task={id} via ended async task: AIR task={} tool_call={:?} state={} (matched by {by})",
+                e.task_id,
+                e.tool_call_id,
+                e.state
+            );
         }
     }
 
@@ -4990,6 +5017,7 @@ mod tests {
         ws.settle_ended_async_tasks(&[EndedAsyncTask {
             task_id: "bash9".into(),
             tool_call_id: None,
+            state: "stopped".into(),
         }]);
         let (_, outstanding, settled, _) =
             unpack(tick_now(&mut ws, &ledger).expect("accounting event"));
@@ -5013,12 +5041,73 @@ mod tests {
         ws.settle_ended_async_tasks(&[EndedAsyncTask {
             task_id: "other".into(),
             tool_call_id: Some("toolu_other".into()),
+            state: "stopped".into(),
         }]);
         assert!(tick_now(&mut ws, &ledger).is_none());
 
         ws.settle_ended_async_tasks(&[EndedAsyncTask {
             task_id: "air-1".into(),
             tool_call_id: Some("toolu_02".into()),
+            state: "stopped".into(),
+        }]);
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("accounting event"));
+        assert_eq!(outstanding, 0);
+    }
+
+    /// #1516：AIR 对一条后台 shell 报了 `completed`（按任务号或工具调用号对上），命令其实
+    /// 还在跑。只凭 AIR 的 `completed` 不能把它算完：要等会话记录里的结束信号或 max-age，
+    /// 否则侧栏没有沙漏，Claude 进程被杀以后也判不出「?」。`stopped` / `failed` 照样算完。
+    #[test]
+    fn an_air_completed_state_does_not_settle_a_background_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&bash_ack("bash9")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("ack event"));
+        assert_eq!(outstanding, 1);
+
+        ws.settle_ended_async_tasks(&[
+            EndedAsyncTask {
+                task_id: "bash9".into(),
+                tool_call_id: None,
+                state: "completed".into(),
+            },
+            EndedAsyncTask {
+                task_id: "air-1".into(),
+                tool_call_id: Some("toolu_02".into()),
+                state: "completed".into(),
+            },
+        ]);
+        assert!(
+            tick_now(&mut ws, &ledger).is_none(),
+            "AIR 报 completed 的后台 shell 还要算未完成"
+        );
+
+        ws.settle_ended_async_tasks(&[EndedAsyncTask {
+            task_id: "air-1".into(),
+            tool_call_id: Some("toolu_02".into()),
+            state: "failed".into(),
+        }]);
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("accounting event"));
+        assert_eq!(outstanding, 0);
+    }
+
+    /// 后台子 agent 没有自己的进程，AIR 报 `completed` 照样算完。
+    #[test]
+    fn an_air_completed_state_settles_a_background_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&agent_ack("agent7")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("ack event"));
+        assert_eq!(outstanding, 1);
+
+        ws.settle_ended_async_tasks(&[EndedAsyncTask {
+            task_id: "agent7".into(),
+            tool_call_id: None,
+            state: "completed".into(),
         }]);
         let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("accounting event"));
         assert_eq!(outstanding, 0);

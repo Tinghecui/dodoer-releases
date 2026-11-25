@@ -105,6 +105,20 @@ impl From<WebdavError> for AppCommandError {
     }
 }
 
+/// 「测试连接」建客户端和「保存」设置共用的地址校验：去掉首尾空白后不能为空，
+/// 要能解析，且只认 http / https。
+pub fn validate_server_url(raw: &str) -> Result<Url, WebdavError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(WebdavError::InvalidUrl);
+    }
+    let url = Url::parse(trimmed).map_err(|_| WebdavError::InvalidUrl)?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(WebdavError::InvalidUrl);
+    }
+    Ok(url)
+}
+
 pub struct WebdavClient {
     http: Client,
     /// Always ends in `/` so relative segments append rather than replace the
@@ -120,14 +134,7 @@ impl WebdavClient {
         username: &str,
         password: &str,
     ) -> Result<Self, WebdavError> {
-        let trimmed = server_url.trim();
-        if trimmed.is_empty() {
-            return Err(WebdavError::InvalidUrl);
-        }
-        let mut base = Url::parse(trimmed).map_err(|_| WebdavError::InvalidUrl)?;
-        if !matches!(base.scheme(), "http" | "https") {
-            return Err(WebdavError::InvalidUrl);
-        }
+        let mut base = validate_server_url(server_url)?;
         // `Url::join`-style appending drops the final segment unless the path
         // ends in a slash, which would silently write into the parent of the
         // directory the user configured.

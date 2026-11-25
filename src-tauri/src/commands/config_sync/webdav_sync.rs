@@ -32,7 +32,7 @@ use super::snapshot::{
 };
 use crate::app_error::{AppCommandError, CONFIG_SYNC_I18N_KEY_NO_REMOTE};
 use crate::db::service::app_metadata_service;
-use crate::network::webdav::{sanitize_path_segment, WebdavClient};
+use crate::network::webdav::{sanitize_path_segment, validate_server_url, WebdavClient};
 use crate::web::event_bridge::EventEmitter;
 
 /// Settings of this feature. NOT in `portable_keys`: if they travelled, one
@@ -469,6 +469,12 @@ pub fn merge_settings(
     input: ConfigSyncSettingsInput,
 ) -> Result<ConfigSyncSettings, AppCommandError> {
     let server_url = input.server_url.trim().to_string();
+    // 和「测试连接」用同一套校验，免得「测试连接」说地址无效、「保存」却照存。
+    // 同步开着、关着都一样，库里早就存着的非法地址原样带回来也不存。
+    // 空地址（刚打开开关还没填、或者清空地址再关同步）照常能存。
+    if !server_url.is_empty() {
+        validate_server_url(&server_url)?;
+    }
     let username = input.username.trim().to_string();
     let same_account = same_account(existing, &input.server_url, &input.username);
     let password = match input.password {
@@ -932,6 +938,98 @@ mod tests {
         )
         .expect("merge");
         assert_eq!(merged.interval_minutes, MAX_INTERVAL_MINUTES);
+    }
+
+    #[test]
+    fn an_invalid_server_url_is_refused_while_enabled() {
+        for bad in ["not a url", "ftp://h", " dav.example.com "] {
+            let err = merge_settings(
+                &ConfigSyncSettings::default(),
+                ConfigSyncSettingsInput {
+                    server_url: bad.to_string(),
+                    ..input()
+                },
+            )
+            .expect_err("must reject");
+            assert_eq!(
+                err.i18n_key.as_deref(),
+                Some(crate::app_error::CONFIG_SYNC_I18N_KEY_INVALID_URL),
+                "for {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_invalid_server_url_is_refused_while_disabled() {
+        for bad in ["not a url", "ftp://h"] {
+            let err = merge_settings(
+                &ConfigSyncSettings::default(),
+                ConfigSyncSettingsInput {
+                    enabled: false,
+                    server_url: bad.to_string(),
+                    ..input()
+                },
+            )
+            .expect_err("must reject");
+            assert_eq!(
+                err.i18n_key.as_deref(),
+                Some(crate::app_error::CONFIG_SYNC_I18N_KEY_INVALID_URL),
+                "for {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stored_invalid_url_is_refused_even_while_disabled() {
+        // 库里早就存着的非法地址原样带回来也不存，保存和「测试连接」用同一套校验。
+        // 要关掉同步，把地址清空或改对就能存。
+        let existing = ConfigSyncSettings {
+            enabled: true,
+            server_url: "not a url".to_string(),
+            ..ConfigSyncSettings::default()
+        };
+        let err = merge_settings(
+            &existing,
+            ConfigSyncSettingsInput {
+                enabled: false,
+                server_url: " not a url ".to_string(),
+                ..input()
+            },
+        )
+        .expect_err("must reject");
+        assert_eq!(
+            err.i18n_key.as_deref(),
+            Some(crate::app_error::CONFIG_SYNC_I18N_KEY_INVALID_URL)
+        );
+        merge_settings(
+            &existing,
+            ConfigSyncSettingsInput {
+                enabled: false,
+                server_url: String::new(),
+                ..input()
+            },
+        )
+        .expect("clearing the url must save");
+    }
+
+    #[test]
+    fn a_blank_url_or_a_disabled_sync_still_saves() {
+        // 刚打开开关、还没填地址，要能存；关掉开关也不能被地址卡住。
+        for (enabled, url) in [
+            (true, "  "),
+            (false, ""),
+            (false, "https://dav.example.com"),
+        ] {
+            merge_settings(
+                &ConfigSyncSettings::default(),
+                ConfigSyncSettingsInput {
+                    enabled,
+                    server_url: url.to_string(),
+                    ..input()
+                },
+            )
+            .unwrap_or_else(|e| panic!("{enabled} {url:?}: {e:?}"));
+        }
     }
 
     #[test]

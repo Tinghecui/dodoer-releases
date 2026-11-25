@@ -46,11 +46,35 @@ vi.mock("@/lib/api", () => ({
   automationCancelRun: vi.fn(),
   automationRuns: vi.fn().mockResolvedValue([]),
 }))
-vi.mock("./automation-editor", () => ({
-  AutomationEditor: ({ automation }: { automation: { name?: string } }) => (
-    <div data-testid="editor-name">{automation?.name ?? "<blank>"}</div>
-  ),
-}))
+vi.mock("./automation-editor", async () => {
+  const { useState } = await import("react")
+  // 假编辑器：名称输入框自己记着改了的值，改过就通过 onDirtyChange 报给页面，
+  // 和真编辑器一样（#1456）。
+  function FakeEditor({
+    automation,
+    onDirtyChange,
+  }: {
+    automation: { name?: string } | null
+    onDirtyChange?: (dirty: boolean) => void
+  }) {
+    const initial = automation?.name ?? ""
+    const [name, setName] = useState(initial)
+    return (
+      <div>
+        <div data-testid="editor-name">{automation?.name ?? "<blank>"}</div>
+        <input
+          aria-label="editor-name-input"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value)
+            onDirtyChange?.(e.target.value !== initial)
+          }}
+        />
+      </div>
+    )
+  }
+  return { AutomationEditor: FakeEditor }
+})
 
 import enMessages from "@/i18n/messages/en.json"
 import { MobileBackButton } from "@/components/layout/mobile-back-button"
@@ -191,5 +215,138 @@ describe("AutomationsPage 手机布局：列表加详情", () => {
         name: enMessages.Folder.windowControls.back,
       })
     ).not.toBeInTheDocument()
+  })
+})
+
+describe("AutomationsPage 手机布局：编辑到一半返回列表（#1456）", () => {
+  function backToList() {
+    fireEvent.click(
+      within(pane("detail")).getByRole("button", {
+        name: enMessages.Folder.windowControls.back,
+      })
+    )
+  }
+  function editAndRename(item: string, newName: string) {
+    openItem(item)
+    fireEvent.click(
+      within(pane("detail")).getByRole("button", {
+        name: enMessages.Automations.edit,
+      })
+    )
+    fireEvent.change(screen.getByLabelText("editor-name-input"), {
+      target: { value: newName },
+    })
+  }
+
+  it("返回后再点同一项，直接回到编辑器，改的名称还在", async () => {
+    renderPage()
+    await act(async () => {})
+    editAndRename("Nightly sweep", "Nightly sweep 改名未保存")
+    backToList()
+    expect(pane("detail")).toHaveClass("hidden")
+
+    openItem("Nightly sweep")
+    expect(pane("detail")).not.toHaveClass("hidden")
+    expect(screen.getByLabelText("editor-name-input")).toHaveValue(
+      "Nightly sweep 改名未保存"
+    )
+  })
+
+  it("编辑器藏着时，列表里正在编辑的那一项标着「编辑中」", async () => {
+    renderPage()
+    await act(async () => {})
+    editAndRename("Nightly sweep", "x")
+    backToList()
+    const rows = within(pane("list")).getAllByRole("listitem")
+    expect(
+      within(rows[0]).getByText(enMessages.Automations.editingBadge)
+    ).toBeInTheDocument()
+    expect(
+      within(rows[1]).queryByText(enMessages.Automations.editingBadge)
+    ).not.toBeInTheDocument()
+  })
+
+  it("改过以后点另一项先问；取消就回到原来的编辑器，草稿不变", async () => {
+    renderPage()
+    await act(async () => {})
+    editAndRename("Nightly sweep", "改名未保存")
+    backToList()
+
+    openItem("Weekly report")
+    const dialog = screen.getByRole("alertdialog")
+    expect(
+      within(dialog).getByText(enMessages.Automations.discardDraftTitle)
+    ).toBeInTheDocument()
+    fireEvent.click(
+      within(dialog).getByRole("button", {
+        name: enMessages.Automations.discardDraftKeep,
+      })
+    )
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+    expect(pane("detail")).not.toHaveClass("hidden")
+    expect(screen.getByLabelText("editor-name-input")).toHaveValue("改名未保存")
+  })
+
+  it("改过以后点另一项，确认放弃才进那一项的详情", async () => {
+    renderPage()
+    await act(async () => {})
+    editAndRename("Nightly sweep", "改名未保存")
+    backToList()
+
+    openItem("Weekly report")
+    fireEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: enMessages.Automations.discardDraftConfirm,
+      })
+    )
+    expect(screen.queryByLabelText("editor-name-input")).not.toBeInTheDocument()
+    expect(pane("detail")).not.toHaveClass("hidden")
+    expect(
+      within(pane("detail")).getAllByText("Weekly report").length
+    ).toBeGreaterThan(0)
+  })
+
+  it("没改过就点另一项，不问，直接进那一项的详情", async () => {
+    renderPage()
+    await act(async () => {})
+    openItem("Nightly sweep")
+    fireEvent.click(
+      within(pane("detail")).getByRole("button", {
+        name: enMessages.Automations.edit,
+      })
+    )
+    backToList()
+    openItem("Weekly report")
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("editor-name-input")).not.toBeInTheDocument()
+  })
+
+  it("返回列表后点「新建」：改过先问，取消就回到原来的编辑器，确认才进模板列表", async () => {
+    renderPage()
+    await act(async () => {})
+    editAndRename("Nightly sweep", "改名未保存")
+    backToList()
+
+    const newButton = () =>
+      screen.getByRole("button", { name: enMessages.Automations.new })
+    fireEvent.click(newButton())
+    const dialog = screen.getByRole("alertdialog")
+    fireEvent.click(
+      within(dialog).getByRole("button", {
+        name: enMessages.Automations.discardDraftKeep,
+      })
+    )
+    expect(pane("detail")).not.toHaveClass("hidden")
+    expect(screen.getByLabelText("editor-name-input")).toHaveValue("改名未保存")
+
+    backToList()
+    fireEvent.click(newButton())
+    fireEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: enMessages.Automations.discardDraftConfirm,
+      })
+    )
+    expect(pane("detail")).not.toHaveClass("hidden")
+    expect(screen.queryByLabelText("editor-name-input")).not.toBeInTheDocument()
   })
 })

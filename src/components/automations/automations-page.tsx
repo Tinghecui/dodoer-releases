@@ -260,6 +260,11 @@ export function AutomationsPage() {
   const [detailOpen, setDetailOpen] = useState(
     () => mode !== "detail" || focus?.automationId != null
   )
+  // 编辑器里的内容和打开时比改过没有（编辑器报上来的）。手机上点返回编辑器只是
+  // 藏起来，草稿还在；切到别的自动化、新建之前改过的话先问一句（#1456）。
+  const [editorDirty, setEditorDirty] = useState(false)
+  // 等用户确认「放弃修改」后才做的那一步；null 表示没在问。
+  const [pendingLeave, setPendingLeave] = useState<(() => void) | null>(null)
 
   // Clear the unseen-failure badges while the page is open — on entry and again
   // whenever a new failure arrives live (the failed run is already on screen, so
@@ -370,17 +375,34 @@ export function AutomationsPage() {
     visibleAutomations[0] ??
     null
 
-  const openGallery = () => {
-    setEditing(null)
-    setMode("gallery")
-    setDetailOpen(true)
+  // 会扔掉编辑器草稿的操作都走这里：编辑器开着（包括手机上藏着的）而且改过，
+  // 先弹确认框，用户点「放弃修改」才做。
+  const leaveEditor = (action: () => void) => {
+    if (mode === "editor" && editing != null && editorDirty) {
+      setPendingLeave(() => action)
+      return
+    }
+    action()
   }
+  // 编辑器里正在改的那个已有自动化的 id；新建或没在编辑时是 null。
+  const editingId =
+    mode === "editor" && editing?.kind === "edit" ? editing.automation.id : null
+
+  const openGallery = () =>
+    leaveEditor(() => {
+      setEditing(null)
+      setEditorDirty(false)
+      setMode("gallery")
+      setDetailOpen(true)
+    })
   const backToGallery = () => {
     setEditing(null)
+    setEditorDirty(false)
     setMode("gallery")
   }
   const closeToDetail = () => {
     setEditing(null)
+    setEditorDirty(false)
     setMode("detail")
   }
   const createFolderId = pickCreateFolder(
@@ -397,18 +419,46 @@ export function AutomationsPage() {
         })
       : null
     setEditing({ kind: "create", seed })
+    setEditorDirty(false)
     setMode("editor")
   }
   const startEdit = (a: Automation) => {
-    setEditing({ kind: "edit", automation: a })
-    setMode("editor")
-    setDetailOpen(true)
+    // 正在编辑的就是它：回到（手机上藏起来的）编辑器，不重开、不丢草稿。
+    if (editingId === a.id) {
+      setDetailOpen(true)
+      return
+    }
+    leaveEditor(() => {
+      setEditing({ kind: "edit", automation: a })
+      setEditorDirty(false)
+      setMode("editor")
+      setDetailOpen(true)
+    })
   }
   const selectAutomation = (a: Automation) => {
-    setSelectedId(a.id)
-    setEditing(null)
-    setMode("detail")
+    // 点的是正在编辑的那一项：直接回到编辑器，改了一半的内容还在（#1456）。
+    if (editingId === a.id) {
+      setSelectedId(a.id)
+      setDetailOpen(true)
+      return
+    }
+    leaveEditor(() => {
+      setSelectedId(a.id)
+      setEditing(null)
+      setEditorDirty(false)
+      setMode("detail")
+      setDetailOpen(true)
+    })
+  }
+  // 确认框里选「继续编辑」或关掉：回到原来的编辑器，草稿不动。
+  const keepEditing = () => {
+    setPendingLeave(null)
     setDetailOpen(true)
+  }
+  const confirmLeave = () => {
+    const action = pendingLeave
+    setPendingLeave(null)
+    action?.()
   }
   // 手机布局下详情顶部返回按钮旁边的标题；模板列表自己有标题，不再重复。
   const detailTitle =
@@ -467,6 +517,7 @@ export function AutomationsPage() {
               editing.kind === "create" ? backToGallery : undefined
             }
             defaultFolderId={createFolderId}
+            onDirtyChange={setEditorDirty}
           />
         </div>
       </ScrollArea>
@@ -526,7 +577,9 @@ export function AutomationsPage() {
             onFolderFilter={setFolderFilter}
             statusFilter={statusFilter}
             onStatusFilter={setStatusFilter}
-            showNew={mode === "detail"}
+            // 编辑器开着时也给新建：手机上点返回回到列表后要能从这里新建，
+            // 改过的话 openGallery 会先问一句（#1456）。只在模板列表正显示时藏。
+            showNew={mode !== "gallery" || !detailOpen}
             onNew={openGallery}
           />
           {/* 1rem of clearance on all four sides of the shell: left/right/bottom
@@ -556,6 +609,7 @@ export function AutomationsPage() {
                               selected={
                                 mode === "detail" && current?.id === a.id
                               }
+                              editing={editingId === a.id}
                               onSelect={() => selectAutomation(a)}
                               onRunNow={() =>
                                 runAction(() => automationRunNow(a.id))
@@ -673,6 +727,27 @@ export function AutomationsPage() {
           </div>
         </div>
       )}
+      <AlertDialog
+        open={pendingLeave != null}
+        onOpenChange={(open) => {
+          if (!open) keepEditing()
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("discardDraftTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("discardDraftDescription")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("discardDraftKeep")}</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={confirmLeave}>
+              {t("discardDraftConfirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
@@ -792,10 +867,9 @@ function PageToolbar({
 
       <div className="flex-1" />
 
-      {/* Detail mode only: the gallery IS the new-automation flow, and the
-          editor has its own cancel / back-to-templates exits — offering "New"
-          there would silently discard a draft. Right-aligned, so its absence
-          never shifts the filters. */}
+      {/* 模板列表正显示时不给（它本身就是新建流程）；编辑器开着时给，改过的话
+          点它先问要不要放弃修改（#1456）。Right-aligned, so its absence never
+          shifts the filters. */}
       {showNew ? (
         <Button
           type="button"
@@ -866,6 +940,7 @@ export function AutomationListItem({
   automation,
   now,
   selected,
+  editing = false,
   onSelect,
   onRunNow,
   onToggleEnabled,
@@ -875,6 +950,8 @@ export function AutomationListItem({
   automation: Automation
   now: number
   selected: boolean
+  /** 编辑器正开着这一项（手机上可能藏着）：名字后面标「编辑中」，点它回到编辑器。 */
+  editing?: boolean
   onSelect: () => void
   onRunNow: () => void
   onToggleEnabled: () => void
@@ -1003,6 +1080,12 @@ export function AutomationListItem({
               >
                 {automation.name}
               </span>
+              {editing ? (
+                <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full bg-primary/10 px-2 text-[0.6875rem] font-medium text-primary">
+                  <Pencil className="size-3" aria-hidden="true" />
+                  {t("editingBadge")}
+                </span>
+              ) : null}
             </button>
 
             <div className="flex shrink-0 items-center gap-0.5 pl-1">

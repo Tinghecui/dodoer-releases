@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -19,8 +19,18 @@ vi.mock("@/lib/api", () => ({
 vi.mock("@/lib/custom-agents", () => ({
   getAgentLabel: () => "Claude Code",
 }))
+// 两个按钮模拟用户在智能体选择器里换智能体（#1456 的「改过没有」要用）。
 vi.mock("@/components/chat/agent-selector", () => ({
-  AgentSelector: () => null,
+  AgentSelector: ({ onSelect }: { onSelect: (a: string) => void }) => (
+    <>
+      <button type="button" onClick={() => onSelect("codex")}>
+        pick-codex
+      </button>
+      <button type="button" onClick={() => onSelect("claude_code")}>
+        pick-claude
+      </button>
+    </>
+  ),
 }))
 vi.mock("@/components/chat/composer/rich-composer", async () => {
   const { forwardRef, useImperativeHandle } = await import("react")
@@ -83,8 +93,23 @@ vi.mock("./use-agent-options", () => ({
     ensure: async () => null,
   }),
 }))
+// 每个可选文件夹一个按钮，模拟用户手动选文件夹。
 vi.mock("@/components/shared/folder-select", () => ({
-  FolderSelect: () => null,
+  FolderSelect: ({
+    folders,
+    onChange,
+  }: {
+    folders: { id: number; name: string }[]
+    onChange: (id: number) => void
+  }) => (
+    <>
+      {folders.map((f) => (
+        <button key={f.id} type="button" onClick={() => onChange(f.id)}>
+          {`pick-folder-${f.name}`}
+        </button>
+      ))}
+    </>
+  ),
 }))
 
 import { AutomationEditor } from "./automation-editor"
@@ -261,5 +286,118 @@ describe("AutomationEditor — localized cron errors", () => {
     const alert = await screen.findByRole("alert")
     expect(alert).toHaveTextContent(enMessages.Automations.cronErrorNeverFires)
     expect(alert).not.toHaveTextContent("validation error")
+  })
+})
+
+describe("AutomationEditor — 报告改没改过（#1456）", () => {
+  function renderWithDirty(onDirtyChange: (dirty: boolean) => void) {
+    mockNextRun.mockResolvedValue("2026-06-02T09:00:00Z")
+    return render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AutomationEditor
+          automation={draft}
+          onSubmit={vi.fn()}
+          onCancel={() => {}}
+          onDirtyChange={onDirtyChange}
+        />
+      </NextIntlClientProvider>
+    )
+  }
+
+  it("刚打开不算改过；改名算改过，改回原样又不算", () => {
+    const onDirtyChange = vi.fn()
+    renderWithDirty(onDirtyChange)
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
+
+    const name = screen.getByLabelText(enMessages.Automations.name)
+    fireEvent.change(name, { target: { value: "Nightly review 改名" } })
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+
+    fireEvent.change(name, { target: { value: "Nightly review" } })
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
+  })
+
+  it("换了智能体算改过，换回原来的智能体又不算", () => {
+    const onDirtyChange = vi.fn()
+    renderWithDirty(onDirtyChange)
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
+
+    fireEvent.click(screen.getByRole("button", { name: "pick-codex" }))
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+
+    fireEvent.click(screen.getByRole("button", { name: "pick-claude" }))
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
+  })
+
+  it("新建时没给文件夹：手动选了别的文件夹算改过，选回来不算", () => {
+    useAppWorkspaceStore.setState({
+      folders: [
+        {
+          id: 1,
+          name: "repo",
+          path: "/repo",
+          parent_id: null,
+          kind: "regular",
+        },
+        { id: 2, name: "web", path: "/web", parent_id: null, kind: "regular" },
+      ] as never,
+    })
+    const onDirtyChange = vi.fn()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AutomationEditor
+          automation={null}
+          onSubmit={vi.fn()}
+          onCancel={() => {}}
+          onDirtyChange={onDirtyChange}
+        />
+      </NextIntlClientProvider>
+    )
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
+
+    fireEvent.click(screen.getByRole("button", { name: "pick-folder-web" }))
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+
+    fireEvent.click(screen.getByRole("button", { name: "pick-folder-repo" }))
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
+  })
+
+  it("打开时文件夹还没加载、之后自动补上的默认文件夹不算改过", () => {
+    useAppWorkspaceStore.setState({ folders: [] as never })
+    const onDirtyChange = vi.fn()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AutomationEditor
+          automation={null}
+          onSubmit={vi.fn()}
+          onCancel={() => {}}
+          onDirtyChange={onDirtyChange}
+        />
+      </NextIntlClientProvider>
+    )
+    act(() => {
+      useAppWorkspaceStore.setState({
+        folders: [
+          {
+            id: 1,
+            name: "repo",
+            path: "/repo",
+            parent_id: null,
+            kind: "regular",
+          },
+          {
+            id: 2,
+            name: "web",
+            path: "/web",
+            parent_id: null,
+            kind: "regular",
+          },
+        ] as never,
+      })
+    })
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
+
+    fireEvent.click(screen.getByRole("button", { name: "pick-folder-web" }))
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
   })
 })

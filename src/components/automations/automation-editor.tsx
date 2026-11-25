@@ -59,6 +59,9 @@ interface AutomationEditorProps {
    *  to. A template draft and an edit carry their own folder; without either,
    *  the first folder. */
   defaultFolderId?: number | null
+  /** 表单和打开时比改没改过，变了就报一次。页面靠它在切到别的自动化、新建之前
+   *  先问一句，不悄悄丢掉没保存的修改（#1456）。 */
+  onDirtyChange?: (dirty: boolean) => void
 }
 
 const CRON_PRESETS = [
@@ -81,6 +84,7 @@ export function AutomationEditor({
   onCancel,
   onBackToTemplates,
   defaultFolderId = null,
+  onDirtyChange,
 }: AutomationEditorProps) {
   const t = useTranslations("Automations")
   const errorMessage = useAutomationErrorMessage()
@@ -132,6 +136,11 @@ export function AutomationEditor({
   // "—", in the user's language.
   const [nextRunError, setNextRunError] = useState<string | null>(null)
   const [cronBuilderOpen, setCronBuilderOpen] = useState(false)
+  // 判断「改过没有」用的智能体和文件夹基准：打开时的值，系统替换智能体
+  // （onFallback）、自动补默认文件夹时跟着挪，不算用户改的；用户自己选的、
+  // 改回原样就不算改过。
+  const [agentBaseline, setAgentBaseline] = useState<AgentType>(agentType)
+  const [folderBaseline, setFolderBaseline] = useState<number | null>(folderId)
 
   const editorRef = useRef<RichComposerHandle>(null)
   const chromeFocus = useComposerChromeFocus(editorRef)
@@ -235,8 +244,39 @@ export function AutomationEditor({
       selectableFolders.length > 0
     ) {
       setFolderId(selectableFolders[0].id)
+      setFolderBaseline(selectableFolders[0].id)
     }
   }, [selectableFolders, folderId, automation])
+
+  // 改过没有：和打开时的值比，改回原样就不算。
+  const [initial] = useState(() => ({
+    name: automation?.name ?? "",
+    action: automation?.config?.action ?? "launch_session",
+    prompt: (automation?.config?.display_text ?? "").trim(),
+    isolation: automation?.isolation ?? "worktree_per_run",
+    trigger: automation?.trigger_kind ?? "schedule",
+    cron: automation?.cron ?? "0 9 * * 1-5",
+    modeId: automation?.config?.mode_id ?? null,
+    configValues: JSON.stringify(automation?.config?.config_values ?? {}),
+    branch: automation?.branch ?? "",
+    isRemoteBranch: automation?.is_remote_branch ?? false,
+  }))
+  const dirty =
+    agentType !== agentBaseline ||
+    name !== initial.name ||
+    action !== initial.action ||
+    prompt.trim() !== initial.prompt ||
+    folderId !== folderBaseline ||
+    isolation !== initial.isolation ||
+    trigger !== initial.trigger ||
+    cron !== initial.cron ||
+    modeId !== initial.modeId ||
+    JSON.stringify(configValues) !== initial.configValues ||
+    branch !== initial.branch ||
+    isRemoteBranch !== initial.isRemoteBranch
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
 
   const submit = async () => {
     setError(null)
@@ -379,7 +419,10 @@ export function AutomationEditor({
           }}
           // A system substitution (saved agent unavailable) updates the type but
           // must NOT be treated as a user choice that wipes the saved config.
-          onFallback={setAgentType}
+          onFallback={(a) => {
+            setAgentType(a)
+            if (!userChoseAgentRef.current) setAgentBaseline(a)
+          }}
         />
       </div>
 

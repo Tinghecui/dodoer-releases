@@ -11,7 +11,11 @@ import {
   type TeamCommentsPage,
   type TeamEntriesPage,
 } from "@/lib/cowork/team"
-import { useMessageQueue } from "@/hooks/use-message-queue"
+import {
+  messageQueueStorageKey,
+  useMessageQueue,
+} from "@/hooks/use-message-queue"
+import { readStoredQueue } from "@/lib/cowork/message-queue-storage"
 import { clearMessageInputDraft } from "@/lib/message-input-draft"
 import {
   useCoworkTeamStore,
@@ -106,6 +110,7 @@ function comment(over: Partial<TeamComment>): TeamComment {
     mine: false,
     canDelete: false,
     anchor: null,
+    forwardedAt: null,
     ...over,
   }
 }
@@ -692,9 +697,14 @@ describe("comments in the read-only view", () => {
 
 // ─── 完成标准 10：自己会话的留言栏和「交给我的智能体」 ──────────────────────
 
-/** 一个会话面板的替身：真的排队区，`onForward` 和面板里一样只入队。 */
+/**
+ * 一个会话面板的替身：真的排队区，和会话面板一样按会话号存进这台机器，
+ * `onForward` 和面板里一样只入队（把入队的结果交回去）。
+ */
 function OwnConversation({ conversationId }: { conversationId: number }) {
-  const { queue, enqueue } = useMessageQueue(null)
+  const { queue, enqueue, moveToFront, dequeue, settle } = useMessageQueue(
+    messageQueueStorageKey(conversationId)
+  )
   const onForward = useCallback(
     (text: string) =>
       enqueue({ blocks: [{ type: "text", text }], displayText: text }, null),
@@ -713,6 +723,35 @@ function OwnConversation({ conversationId }: { conversationId: number }) {
           <li key={item.id}>{item.draft.displayText}</li>
         ))}
       </ul>
+      {/* 排队区里把最后一条拖到最前面（和排队区的拖动排序一样） */}
+      <button
+        type="button"
+        data-testid="last-to-front"
+        onClick={() => {
+          const last = queue[queue.length - 1]
+          if (last) moveToFront(last.id)
+        }}
+      />
+      {/* 用户自己在输入框里排进一条普通消息 */}
+      <button
+        type="button"
+        data-testid="enqueue-plain"
+        onClick={() =>
+          enqueue(
+            { blocks: [{ type: "text", text: "plain" }], displayText: "plain" },
+            null
+          )
+        }
+      />
+      {/* 发出排队区最前面那条：出队、送达 */}
+      <button
+        type="button"
+        data-testid="send-head"
+        onClick={() => {
+          const head = dequeue()
+          if (head) settle(head.id)
+        }}
+      />
     </div>
   )
 }
@@ -817,5 +856,299 @@ describe("own conversation comments", () => {
     expect(document.querySelectorAll("[data-comment-id]")).toHaveLength(2)
     expect(queueItems()).toHaveLength(1)
     expect(api.teamCommentForwarded).toHaveBeenCalledTimes(1)
+  })
+
+  it("after a reload a forwarded comment still reads Given to agent and cannot be forwarded again (#1512)", async () => {
+    makeAvailable()
+    api.teamComments.mockResolvedValue(
+      commentsPage([comment({ id: "c5" })], true)
+    )
+    const first = wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    fireEvent.click(screen.getByRole("button", { name: "Give to my agent" }))
+    await flush()
+    expect(api.teamCommentForwarded).toHaveBeenCalledTimes(1)
+    first.unmount()
+
+    // 刷新：内存里的记号没了，留言栏重新打开。
+    act(() => useOwnCommentsStore.getState().reset())
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    expect(
+      screen.queryByRole("button", { name: "Give to my agent" })
+    ).toBeNull()
+    const done = screen.getByRole("button", { name: "Given to agent" })
+    expect((done as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(done)
+    await flush()
+    expect(queueItems()).toEqual([])
+    expect(api.teamCommentForwarded).toHaveBeenCalledTimes(1)
+  })
+
+  it("a comment the server marks forwardedAt reads Given to agent and is not queued (#1512)", async () => {
+    makeAvailable()
+    api.teamComments.mockResolvedValue(
+      commentsPage(
+        [comment({ id: "c5", forwardedAt: "2026-11-24T08:00:00Z" })],
+        true
+      )
+    )
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    const done = screen.getByRole("button", { name: "Given to agent" })
+    expect((done as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(done)
+    await flush()
+    expect(queueItems()).toEqual([])
+    expect(api.teamCommentForwarded).not.toHaveBeenCalled()
+  })
+
+  it("the forwarded mark belongs to the team account: another account on this machine can still forward (#1512)", async () => {
+    makeAvailable()
+    api.teamComments.mockResolvedValue(
+      commentsPage([comment({ id: "c5" })], true)
+    )
+    const first = wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    fireEvent.click(screen.getByRole("button", { name: "Give to my agent" }))
+    await flush()
+    first.unmount()
+
+    act(() => {
+      useOwnCommentsStore.getState().reset()
+      useCoworkTeamStore.getState().setStatus({
+        applicable: true,
+        enabled: true,
+        me: { name: "member-d", label: "Du" },
+        leaderOf: [],
+        portalUrl: "https://portal.example.com",
+      })
+    })
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    expect(
+      screen.getByRole("button", { name: "Give to my agent" })
+    ).not.toBeNull()
+  })
+})
+
+describe("forwarded marks survive a reload (#1512 rework)", () => {
+  it("forwarding many other comments does not push out an earlier mark", async () => {
+    makeAvailable()
+    const many = Array.from({ length: 510 }, (_, i) => comment({ id: `c${i}` }))
+    api.teamComments.mockResolvedValue(commentsPage(many, true))
+    const first = wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    const forwardOf = (id: string) =>
+      document.querySelector<HTMLButtonElement>(
+        `[data-comment-id="${id}"] [data-comment-forward]`
+      )!
+    // 一次 act 里点一批，只重画一次（一条条点要几十秒）。排队区存得下 50 条，
+    // 每交一批就把它们发出去，再交下一批（#1512 第 4 次返工：存不下的不交）。
+    const buttons = many.map((c) => forwardOf(c.id))
+    const sendHead = screen.getByTestId("send-head")
+    for (let i = 0; i < buttons.length; i += 50) {
+      act(() => {
+        for (const b of buttons.slice(i, i + 50)) b.click()
+      })
+      await flush()
+      act(() => {
+        for (let j = 0; j < 50; j++) sendHead.click()
+      })
+      await flush()
+    }
+    expect(api.teamCommentForwarded).toHaveBeenCalledTimes(510)
+    first.unmount()
+
+    act(() => useOwnCommentsStore.getState().reset())
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    expect(forwardOf("c0").textContent).toBe("Given to agent")
+    expect(forwardOf("c0").disabled).toBe(true)
+  })
+
+  it("when the mark cannot be saved, the comment is not queued and the user is told", async () => {
+    makeAvailable()
+    api.teamComments.mockResolvedValue(
+      commentsPage([comment({ id: "c5" })], true)
+    )
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError")
+      })
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Give to my agent" }))
+      await flush()
+    } finally {
+      setItem.mockRestore()
+    }
+    expect(queueItems()).toEqual([])
+    expect(api.teamCommentForwarded).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert").textContent).toBe(
+      "This browser could not save that the comment was given, so it was not given to your agent. Free up browser storage and try again."
+    )
+    // 存得下了就能接着交。
+    fireEvent.click(screen.getByRole("button", { name: "Give to my agent" }))
+    await flush()
+    expect(queueItems()).toHaveLength(1)
+    expect(screen.queryByRole("alert")).toBeNull()
+  })
+})
+
+describe("the forwarded mark follows the queued message (#1512 rework 2)", () => {
+  const forwardOf = (id: string) =>
+    document.querySelector<HTMLButtonElement>(
+      `[data-comment-id="${id}"] [data-comment-forward]`
+    )!
+
+  it("the forwarded comment is in the saved queue, and after a reload still reads Given to agent", async () => {
+    makeAvailable()
+    api.teamComments.mockResolvedValue(
+      commentsPage([comment({ id: "c5", authorLabel: "Li", body: "hi" })], true)
+    )
+    const first = wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    fireEvent.click(forwardOf("c5"))
+    await flush()
+    expect(
+      readStoredQueue(messageQueueStorageKey(7)).map((i) => i.draft.displayText)
+    ).toEqual([forwardedCommentText("Li", "hi")])
+    first.unmount()
+
+    act(() => useOwnCommentsStore.getState().reset())
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    expect(forwardOf("c5").textContent).toBe("Given to agent")
+    expect(forwardOf("c5").disabled).toBe(true)
+  })
+
+  it("when the queue cannot keep the message (already 50 waiting), the comment is not given and stays not given after a reload (#1512 rework 4)", async () => {
+    makeAvailable()
+    const many = Array.from({ length: 51 }, (_, i) =>
+      comment({ id: `c${i}`, body: `note ${i}` })
+    )
+    api.teamComments.mockResolvedValue(commentsPage(many, true))
+    const first = wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    const buttons = many.map((c) => forwardOf(c.id))
+    act(() => {
+      for (const b of buttons) b.click()
+    })
+    await flush()
+    // 排队区只存得下 50 条：第 51 条不交，说一声为什么
+    expect(readStoredQueue(messageQueueStorageKey(7))).toHaveLength(50)
+    expect(queueItems()).toHaveLength(50)
+    expect(queueItems()).not.toContain(
+      forwardedCommentText(many[50].authorLabel, "note 50")
+    )
+    expect(forwardOf("c50").textContent).toBe("Give to my agent")
+    expect(screen.getByRole("alert").textContent).toContain("queue")
+    first.unmount()
+
+    act(() => useOwnCommentsStore.getState().reset())
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    // 交出去的 50 条刷新后都算交过，不能再交；没交的那条照旧能交
+    for (let i = 0; i < 50; i++) {
+      expect(forwardOf(`c${i}`).textContent).toBe("Given to agent")
+      expect(forwardOf(`c${i}`).disabled).toBe(true)
+    }
+    expect(forwardOf("c50").textContent).toBe("Give to my agent")
+  })
+
+  it("a later reorder that pushes a forwarded message out of the saved queue lets that comment be given again after a reload (#1512 rework 3)", async () => {
+    makeAvailable()
+    const many = Array.from({ length: 50 }, (_, i) =>
+      comment({ id: `c${i}`, body: `note ${i}` })
+    )
+    api.teamComments.mockResolvedValue(commentsPage(many, true))
+    const first = wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    const buttons = many.map((c) => forwardOf(c.id))
+    act(() => {
+      for (const b of buttons) b.click()
+    })
+    await flush()
+    // c0..c49 都存下了。用户再排一条普通消息（只在内存里），把它拖到最前面：
+    // 它存下了，c49 被挤出存下的那 50 条。
+    fireEvent.click(screen.getByTestId("enqueue-plain"))
+    await flush()
+    fireEvent.click(screen.getByTestId("last-to-front"))
+    await flush()
+    const storedTexts = readStoredQueue(messageQueueStorageKey(7)).map(
+      (i) => i.draft.displayText
+    )
+    expect(storedTexts).toHaveLength(50)
+    expect(storedTexts[0]).toBe("plain")
+    expect(storedTexts).not.toContain(
+      forwardedCommentText(many[49].authorLabel, "note 49")
+    )
+    first.unmount()
+
+    act(() => useOwnCommentsStore.getState().reset())
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    // 被挤出去的那条刷新后消息没了，留言要能再交（不算重复）；别的算交过
+    expect(forwardOf("c49").textContent).toBe("Give to my agent")
+    expect(forwardOf("c49").disabled).toBe(false)
+    expect(forwardOf("c48").textContent).toBe("Given to agent")
+    expect(forwardOf("c0").textContent).toBe("Given to agent")
+  })
+
+  it("a forwarded message that was sent stays Given to agent after a reload, even if it was only in memory (#1512 rework 3)", async () => {
+    makeAvailable()
+    const many = Array.from({ length: 50 }, (_, i) =>
+      comment({ id: `c${i}`, body: `note ${i}` })
+    )
+    api.teamComments.mockResolvedValue(commentsPage(many, true))
+    const first = wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    const buttons = many.map((c) => forwardOf(c.id))
+    act(() => {
+      for (const b of buttons) b.click()
+    })
+    await flush()
+    // 普通消息拖到最前面，c49 被挤出存储、只在内存里；再把 c49 拖到最前面
+    // 发出去（出队、送达）
+    fireEvent.click(screen.getByTestId("enqueue-plain"))
+    await flush()
+    fireEvent.click(screen.getByTestId("last-to-front"))
+    await flush()
+    fireEvent.click(screen.getByTestId("last-to-front"))
+    await flush()
+    expect(queueItems()[0]).toBe(
+      forwardedCommentText(many[49].authorLabel, "note 49")
+    )
+    fireEvent.click(screen.getByTestId("send-head"))
+    await flush()
+    expect(
+      readStoredQueue(messageQueueStorageKey(7)).map((i) => i.draft.displayText)
+    ).not.toContain(forwardedCommentText(many[49].authorLabel, "note 49"))
+    first.unmount()
+
+    act(() => useOwnCommentsStore.getState().reset())
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    // 发出去了的不能再交第二次
+    expect(forwardOf("c49").textContent).toBe("Given to agent")
   })
 })

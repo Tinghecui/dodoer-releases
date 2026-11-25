@@ -8525,7 +8525,9 @@
     "errorGeneric": "문제가 발생했습니다. 잠시 후 다시 시도하세요",
     "dialogClose": "닫기",
     "commentForward": "내 에이전트에게 넘기기",
-    "commentForwarded": "에이전트에게 넘김"
+    "commentForwarded": "에이전트에게 넘김",
+    "commentForwardNotSaved": "이 브라우저에 '넘김' 기록을 저장할 수 없어 에이전트에게 넘기지 않았습니다. 브라우저 저장 공간을 확보한 뒤 다시 시도하세요.",
+    "commentForwardQueueFull": "대기열에 이 메시지를 저장할 수 없어(가득 찼거나 너무 큼) 에이전트에게 전달하지 않았습니다. 대기 중인 메시지가 일부 전송된 뒤 다시 시도하세요."
   },
   "DesktopOnly": {
     "message": "이 기능은 컴퓨터에서 사용하세요",

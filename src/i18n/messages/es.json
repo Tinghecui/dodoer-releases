@@ -8525,7 +8525,9 @@
     "errorGeneric": "Algo salió mal. Inténtalo de nuevo más tarde",
     "dialogClose": "Cerrar",
     "commentForward": "Pasar a mi agente",
-    "commentForwarded": "Pasado al agente"
+    "commentForwarded": "Pasado al agente",
+    "commentForwardNotSaved": "Este navegador no pudo guardar que el comentario se pasó, así que no se pasó a tu agente. Libera espacio de almacenamiento del navegador y vuelve a intentarlo.",
+    "commentForwardQueueFull": "La cola no puede guardar este mensaje (está llena o es demasiado grande), así que no se entregó a tu agente. Vuelve a intentarlo cuando se hayan enviado algunos mensajes en cola."
   },
   "DesktopOnly": {
     "message": "Usa esta función en un ordenador",

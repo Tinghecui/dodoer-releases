@@ -8525,7 +8525,9 @@
     "errorGeneric": "Something went wrong. Try again later",
     "dialogClose": "Close",
     "commentForward": "Give to my agent",
-    "commentForwarded": "Given to agent"
+    "commentForwarded": "Given to agent",
+    "commentForwardNotSaved": "This browser could not save that the comment was given, so it was not given to your agent. Free up browser storage and try again.",
+    "commentForwardQueueFull": "The queue cannot keep this message (it is full or too large), so it was not given to your agent. Try again once some queued messages have been sent."
   },
   "DesktopOnly": {
     "message": "This feature is available on a computer",

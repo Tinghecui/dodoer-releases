@@ -8525,7 +8525,9 @@
     "errorGeneric": "Etwas ist schiefgelaufen. Versuche es später noch einmal",
     "dialogClose": "Schließen",
     "commentForward": "An meinen Agenten geben",
-    "commentForwarded": "An Agenten gegeben"
+    "commentForwarded": "An Agenten gegeben",
+    "commentForwardNotSaved": "Dieser Browser konnte nicht speichern, dass der Kommentar weitergegeben wurde, daher wurde er nicht an deinen Agenten gegeben. Gib Browser-Speicher frei und versuche es erneut.",
+    "commentForwardQueueFull": "Die Warteschlange kann diese Nachricht nicht speichern (voll oder zu groß), daher wurde sie nicht an deinen Agenten übergeben. Versuche es erneut, sobald einige Nachrichten gesendet wurden."
   },
   "DesktopOnly": {
     "message": "Diese Funktion bitte am Computer verwenden",

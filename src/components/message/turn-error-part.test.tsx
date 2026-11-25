@@ -147,6 +147,40 @@ describe("a lost connection's failure line", () => {
     expect(onRetry).toHaveBeenCalledTimes(1)
   })
 
+  it("retries once on a quick double click and drops the button", () => {
+    // #1500：第一下点完，面板要等连接进了回合才收按钮；这之间再点一下，
+    // 原消息就又进了一次排队区，这一轮结束后再发一遍。
+    const onRetry = vi.fn()
+    renderLine(onRetry)
+    const button = screen.getByRole("button", { name: "重试" })
+    fireEvent.click(button)
+    fireEvent.click(button)
+    expect(onRetry).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole("button", { name: "重试" })).toBeNull()
+  })
+
+  it("offers the retry again on a new failure line", () => {
+    // 重发后又失败，是新的一行：又能重试一次。
+    const onRetry = vi.fn()
+    const tree = (lineId: string) => (
+      <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+        <TurnErrorAgentProvider value="claude_code">
+          <TurnErrorRetryProvider value={{ lineId, retry: onRetry }}>
+            <TurnErrorLineProvider value={lineId}>
+              <ContentPartsRenderer parts={[lost]} role="system" />
+            </TurnErrorLineProvider>
+          </TurnErrorRetryProvider>
+        </TurnErrorAgentProvider>
+      </NextIntlClientProvider>
+    )
+    const { rerender } = render(tree("f1"))
+    fireEvent.click(screen.getByRole("button", { name: "重试" }))
+    expect(screen.queryByRole("button", { name: "重试" })).toBeNull()
+    rerender(tree("f2"))
+    fireEvent.click(screen.getByRole("button", { name: "重试" }))
+    expect(onRetry).toHaveBeenCalledTimes(2)
+  })
+
   it("has no retry where nothing can retry it", () => {
     renderLine(null)
     expect(screen.getByRole("note")).toHaveTextContent(

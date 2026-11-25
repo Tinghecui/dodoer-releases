@@ -1,6 +1,13 @@
 "use client"
 
-import { createContext, useContext } from "react"
+import {
+  createContext,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import { CircleAlert } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { getAgentLabel } from "@/lib/custom-agents"
@@ -29,12 +36,48 @@ export const TurnErrorAgentProvider = TurnErrorAgentContext.Provider
  * `lineId` 是对话最后那一行失败的轮次 id：只有那一行画按钮，更早的同类失败行
  * 不画（点了重发的是最后那一轮的消息）。
  */
-const TurnErrorRetryContext = createContext<{
+type TurnErrorRetry = {
   lineId: string
   retry: () => void
-} | null>(null)
+}
 
-export const TurnErrorRetryProvider = TurnErrorRetryContext.Provider
+const TurnErrorRetryContext = createContext<TurnErrorRetry | null>(null)
+
+/**
+ * #1500：同一行失败只重试一次。点了以后面板要等连接进了回合才收按钮，这之间
+ * 再点一下（双击），存着的原样已经清掉，又从对话里拼一份放进排队区，这一轮
+ * 结束后再发一遍。所以点过的那一行马上不画按钮（state），同一次渲染里的
+ * 第二下也不再调（ref）。最后一行换了（重发后又失败，是新的一行）自然又给。
+ * 重发没发出去的，消息在排队区，用排队区自己的「重试」。
+ */
+export function TurnErrorRetryProvider({
+  value,
+  children,
+}: {
+  value: TurnErrorRetry | null
+  children: ReactNode
+}) {
+  const firedRef = useRef<string | null>(null)
+  const [fired, setFired] = useState<string | null>(null)
+  const guarded = useMemo((): TurnErrorRetry | null => {
+    if (value == null || fired === value.lineId) return null
+    const { lineId, retry } = value
+    return {
+      lineId,
+      retry: () => {
+        if (firedRef.current === lineId) return
+        firedRef.current = lineId
+        setFired(lineId)
+        retry()
+      },
+    }
+  }, [value, fired])
+  return (
+    <TurnErrorRetryContext.Provider value={guarded}>
+      {children}
+    </TurnErrorRetryContext.Provider>
+  )
+}
 
 /**
  * Cowork 加的（#1120 返工）：这一行失败是哪一轮（轮次 id），由消息列表给；

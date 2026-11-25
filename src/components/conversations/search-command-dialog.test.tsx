@@ -62,10 +62,20 @@ vi.mock("@/stores/app-workspace-store", () => ({
     selector({ conversations: workspace.conversations }),
 }))
 
-const fileTree = vi.hoisted(() => ({ reset: vi.fn() }))
+const fileTree = vi.hoisted(() => ({
+  reset: vi.fn(),
+  retry: vi.fn(),
+  error: null as string | null,
+}))
 
 vi.mock("@/hooks/use-file-tree", () => ({
-  useFileTree: () => ({ allFiles: [], loading: false, reset: fileTree.reset }),
+  useFileTree: () => ({
+    allFiles: [],
+    loading: false,
+    error: fileTree.error,
+    reset: fileTree.reset,
+    retry: fileTree.retry,
+  }),
 }))
 
 function dialog(open: boolean) {
@@ -85,6 +95,8 @@ describe("SearchCommandDialog focus", () => {
     workspace.activeFolderId = null
     workspace.conversations = []
     fileTree.reset.mockReset()
+    fileTree.retry.mockReset()
+    fileTree.error = null
   })
 
   it("opens with the cursor in the search box, so typing searches", async () => {
@@ -399,6 +411,22 @@ describe("SearchCommandDialog failed search (#1009)", () => {
     expect(screen.getByPlaceholderText(msgs.placeholder)).toHaveFocus()
   })
 
+  it("still says the search failed when the error carries no text", async () => {
+    // 网页端 500 且响应体是 JSON 空字符串时，错误转出来就是空字符串
+    search.mockRejectedValueOnce("")
+    const user = userEvent.setup()
+    renderDialog()
+    await user.keyboard("README")
+
+    expect(
+      await screen.findByText(msgs.searchFailedNoDetail, undefined, {
+        timeout: 2000,
+      })
+    ).toBeInTheDocument()
+    expect(screen.queryByText(msgs.noResults)).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: msgs.retry })).toBeInTheDocument()
+  })
+
   it("says the listing failed when only an agent filter is picked", async () => {
     workspace.conversations = [
       { folder_id: 1, agent_type: "claude_code" },
@@ -412,6 +440,45 @@ describe("SearchCommandDialog failed search (#1009)", () => {
     expect(
       await screen.findByText(/list exploded/, undefined, { timeout: 2000 })
     ).toBeInTheDocument()
+    expect(screen.queryByText(msgs.noResults)).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: msgs.retry })).toBeInTheDocument()
+  })
+})
+
+describe("SearchCommandDialog file search failure (#1514)", () => {
+  const msgs = enMessages.Folder.search
+
+  beforeEach(() => {
+    workspace.activeFolderId = 1
+    workspace.activeFolder = { id: 1, name: "docs-site", path: "/p/docs" }
+    workspace.conversations = []
+    fileTree.reset.mockReset()
+    fileTree.retry.mockReset()
+    fileTree.error = null
+  })
+
+  it("says the file search failed, not that nothing matched, and retries", async () => {
+    fileTree.error = "index exploded"
+    const user = userEvent.setup()
+    renderDialog()
+    await user.click(screen.getByRole("button", { name: msgs.tabFiles }))
+    await user.keyboard("READ")
+
+    expect(screen.getByText(/index exploded/)).toBeInTheDocument()
+    expect(screen.queryByText(msgs.noResults)).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: msgs.retry }))
+    expect(fileTree.retry).toHaveBeenCalledTimes(1)
+    // 重试后光标还在搜索框里
+    expect(screen.getByPlaceholderText(msgs.filePlaceholder)).toHaveFocus()
+  })
+  it("still says it failed when the error carries no text", async () => {
+    fileTree.error = ""
+    const user = userEvent.setup()
+    renderDialog()
+    await user.click(screen.getByRole("button", { name: msgs.tabFiles }))
+    await user.keyboard("READ")
+
+    expect(screen.getByText(msgs.searchFailedNoDetail)).toBeInTheDocument()
     expect(screen.queryByText(msgs.noResults)).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: msgs.retry })).toBeInTheDocument()
   })

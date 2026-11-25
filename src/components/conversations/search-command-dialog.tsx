@@ -96,6 +96,10 @@ export function SearchCommandDialog({
   onOpenChange,
 }: SearchCommandDialogProps) {
   const t = useTranslations("Folder.search")
+  // 错误转出来可能是空字符串（例如 500 的响应体是 JSON 空字符串），
+  // 那也是失败，只是没有原因可写，不能当成没有结果（#1514）
+  const failedText = (message: string) =>
+    message.trim() ? t("searchFailed", { message }) : t("searchFailedNoDetail")
   const locale = useLocale()
   const dateFnsLocale =
     locale === "zh-CN" ? zhCN : locale === "zh-TW" ? zhTW : enUS
@@ -148,7 +152,9 @@ export function SearchCommandDialog({
   const {
     allFiles,
     loading: filesLoading,
+    error: filesError,
     reset: resetFileTree,
+    retry: retryFileSearch,
   } = useFileTree({
     folderPath: folderPath || undefined,
     enabled: open && activeTab === "files",
@@ -448,10 +454,10 @@ export function SearchCommandDialog({
             <CommandEmpty>
               {searching ? (
                 t("searching")
-              ) : searchError ? (
+              ) : searchError !== null ? (
                 <span className="flex flex-col items-center gap-2">
                   <span className="text-destructive">
-                    {t("searchFailed", { message: searchError })}
+                    {failedText(searchError)}
                   </span>
                   <button
                     type="button"
@@ -556,11 +562,28 @@ export function SearchCommandDialog({
         {activeTab === "files" && (
           <>
             <CommandEmpty>
-              {filesLoading
-                ? t("searching")
-                : !query.trim()
-                  ? t("typeToSearchFiles")
-                  : t("noResults")}
+              {filesLoading ? (
+                t("searching")
+              ) : filesError !== null ? (
+                <span className="flex flex-col items-center gap-2">
+                  <span className="text-destructive">
+                    {failedText(filesError)}
+                  </span>
+                  <button
+                    type="button"
+                    // 焦点留在搜索框里，重试后接着打字还是在搜
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={retryFileSearch}
+                    className="rounded-md border px-2 py-0.5 text-xs text-foreground hover:bg-muted"
+                  >
+                    {t("retry")}
+                  </button>
+                </span>
+              ) : !query.trim() ? (
+                t("typeToSearchFiles")
+              ) : (
+                t("noResults")
+              )}
             </CommandEmpty>
             {filteredFiles.length > 0 && (
               <CommandGroup>

@@ -2631,6 +2631,7 @@
       "scanTimedOut": "Temps écoulé : messages recherchés uniquement dans les {scanned} conversations les plus récentes sur {total} ; titres dans toutes.",
       "resultsLimited": "Seuls les {count} premiers résultats sont affichés. Précisez la recherche pour voir les autres.",
       "searchFailed": "La recherche a échoué : {message}",
+      "searchFailedNoDetail": "La recherche a échoué",
       "retry": "Réessayer"
     },
     "folderTitleBar": {

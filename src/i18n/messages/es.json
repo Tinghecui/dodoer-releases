@@ -2631,6 +2631,7 @@
       "scanTimedOut": "Se agotó el tiempo: solo se buscaron mensajes en las {scanned} conversaciones más recientes de {total}; los títulos, en todas.",
       "resultsLimited": "Solo se muestran las primeras {count} coincidencias. Haz una búsqueda más específica para ver las demás.",
       "searchFailed": "La búsqueda falló: {message}",
+      "searchFailedNoDetail": "La búsqueda falló",
       "retry": "Reintentar"
     },
     "folderTitleBar": {

@@ -2631,6 +2631,7 @@
       "scanTimedOut": "搜尋逾時：只搜尋了最近 {scanned} 個對話的訊息（共 {total} 個），標題已全部搜尋過。",
       "resultsLimited": "只顯示前 {count} 個結果，換個更具體的關鍵字才能看到其餘的。",
       "searchFailed": "搜尋失敗：{message}",
+      "searchFailedNoDetail": "搜尋失敗",
       "retry": "重試"
     },
     "folderTitleBar": {

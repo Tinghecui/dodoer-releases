@@ -2631,6 +2631,7 @@
       "scanTimedOut": "Tempo esgotado: mensagens pesquisadas apenas nas {scanned} conversas mais recentes de {total}; títulos em todas.",
       "resultsLimited": "Mostrando apenas as primeiras {count} correspondências. Faça uma pesquisa mais específica para ver as outras.",
       "searchFailed": "A pesquisa falhou: {message}",
+      "searchFailedNoDetail": "A pesquisa falhou",
       "retry": "Tentar novamente"
     },
     "folderTitleBar": {

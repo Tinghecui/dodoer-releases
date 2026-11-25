@@ -2631,6 +2631,7 @@
       "scanTimedOut": "انتهى الوقت: تم البحث في رسائل أحدث {scanned} محادثة فقط من أصل {total}، وفي العناوين كلها.",
       "resultsLimited": "يتم عرض أول {count} نتيجة فقط. ابحث بكلمات أدق لرؤية البقية.",
       "searchFailed": "فشل البحث: {message}",
+      "searchFailedNoDetail": "فشل البحث",
       "retry": "إعادة المحاولة"
     },
     "folderTitleBar": {

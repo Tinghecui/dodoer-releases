@@ -2631,6 +2631,7 @@
       "scanTimedOut": "時間切れのため、メッセージは最近の {scanned} 件の会話のみ検索しました（全 {total} 件）。タイトルはすべて検索済みです。",
       "resultsLimited": "最初の {count} 件のみ表示しています。他の結果を見るには、より具体的に検索してください。",
       "searchFailed": "検索に失敗しました：{message}",
+      "searchFailedNoDetail": "検索に失敗しました",
       "retry": "再試行"
     },
     "folderTitleBar": {

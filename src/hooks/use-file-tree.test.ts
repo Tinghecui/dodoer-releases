@@ -233,4 +233,67 @@ describe("bounded workspace file search", () => {
     unmount()
     expect(second.signal.aborted).toBe(true)
   })
+
+  it("reports a failed search instead of an empty result, and retries (#1514)", async () => {
+    api.search.mockRejectedValueOnce(new Error("index exploded"))
+    const { result } = renderHook(() =>
+      useFileTree({ folderPath: "/repo", enabled: true, query: "READ" })
+    )
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150)
+    })
+    expect(result.current.loading).toBe(false)
+    expect(result.current.allFiles).toEqual([])
+    expect(result.current.error).toMatch(/index exploded/)
+
+    api.search.mockResolvedValueOnce([file("README.md")])
+    act(() => result.current.retry())
+    expect(result.current.error).toBeNull()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150)
+    })
+    expect(api.search).toHaveBeenCalledTimes(2)
+    expect(result.current.error).toBeNull()
+    expect(result.current.allFiles.map((f) => f.relativePath)).toEqual([
+      "README.md",
+    ])
+  })
+
+  it("still reports a failure whose error carries no text", async () => {
+    // 网页端 500 且响应体是 JSON 空字符串时，抛出来的就是 ""
+    api.search.mockRejectedValueOnce("")
+    const { result } = renderHook(() =>
+      useFileTree({ folderPath: "/repo", enabled: true, query: "READ" })
+    )
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150)
+    })
+    expect(result.current.loading).toBe(false)
+    expect(result.current.error).not.toBeNull()
+  })
+
+  it("does not report an aborted request as a failure", async () => {
+    let rejectFirst!: (err: unknown) => void
+    api.search.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectFirst = reject
+        })
+    )
+    const { result, rerender } = renderHook(
+      (query: string) =>
+        useFileTree({ folderPath: "/repo", enabled: true, query }),
+      { initialProps: "a" }
+    )
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150)
+    })
+    api.search.mockReturnValue(new Promise(() => {}))
+    rerender("ab")
+    await act(async () => {
+      rejectFirst(new DOMException("aborted", "AbortError"))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.error).toBeNull()
+  })
 })

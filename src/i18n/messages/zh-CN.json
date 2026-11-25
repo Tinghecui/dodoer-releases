@@ -2631,6 +2631,7 @@
       "scanTimedOut": "搜索超时：只搜了最近 {scanned} 个会话的消息（共 {total} 个），标题已全部搜过。",
       "resultsLimited": "只显示前 {count} 个结果，换个更具体的词才能看到其余的。",
       "searchFailed": "搜索失败：{message}",
+      "searchFailedNoDetail": "搜索失败",
       "retry": "重试"
     },
     "folderTitleBar": {

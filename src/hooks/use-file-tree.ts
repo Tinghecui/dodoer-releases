@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import { searchWorkspaceFiles } from "@/lib/api"
 import type { WorkspaceFileEntry } from "@/lib/types"
+import { toErrorMessage } from "@/lib/app-error"
 import { randomUUID } from "@/lib/utils"
 
 export interface FlatFileEntry {
@@ -28,6 +29,10 @@ interface UseFileTreeResult {
   allFiles: FlatFileEntry[]
   loading: boolean
   loaded: boolean
+  /** 最近一次搜索失败的原因；调用方据此写「搜索失败」并给重试，不当成没有结果（#1514）。 */
+  error: string | null
+  /** 用同样的条件重新搜一次。 */
+  retry: () => void
   /** Discard local results; an explicit refresh also invalidates native data. */
   reset: (refreshIndex?: boolean) => void
 }
@@ -45,6 +50,7 @@ export function useFileTree({
 }: UseFileTreeOptions): UseFileTreeResult {
   const [allFiles, setAllFiles] = useState<FlatFileEntry[]>([])
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const loadedForPathRef = useRef<string | null>(null)
   const [revision, setRevision] = useState(0)
   const generation = useRef(0)
@@ -68,6 +74,7 @@ export function useFileTree({
       scopeRef.current = scope
       loadedForPathRef.current = null
       setAllFiles([])
+      setError(null)
     }
     if (!enabled || !folderPath) {
       setLoading(false)
@@ -76,6 +83,7 @@ export function useFileTree({
     let canceled = false
     const abort = new AbortController()
     setLoading(true)
+    setError(null)
     if (refresh.current) {
       refresh.current = false
       freshSince.current = performance.now()
@@ -116,8 +124,11 @@ export function useFileTree({
           setAllFiles(flat)
           loadedForPathRef.current = folderPath!
         }
-      } catch {
-        if (!canceled && generation.current === current) setAllFiles([])
+      } catch (err) {
+        // 被取消（换了查询、关了弹窗）的请求不算失败
+        if (canceled || generation.current !== current) return
+        setAllFiles([])
+        setError(toErrorMessage(err))
       } finally {
         if (!canceled && generation.current === current) setLoading(false)
       }
@@ -140,6 +151,12 @@ export function useFileTree({
       freshSince.current = null
     }
     setAllFiles([])
+    setError(null)
+    setRevision((value) => value + 1)
+  }, [])
+
+  const retry = useCallback(() => {
+    setError(null)
     setRevision((value) => value + 1)
   }, [])
 
@@ -147,6 +164,8 @@ export function useFileTree({
     allFiles,
     loading,
     loaded: loadedForPathRef.current === folderPath,
+    error,
     reset,
+    retry,
   }
 }

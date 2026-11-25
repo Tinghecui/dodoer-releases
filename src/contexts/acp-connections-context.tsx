@@ -1000,6 +1000,12 @@ type StreamingAction =
  *  自己再连一次（和项目列表、会话列表的限流重试同一个间隔）。 */
 export const RATE_LIMITED_CONNECT_RETRY_MS = 5_000
 
+/** #1501：打开着的已保存对话，连接没了以后每隔这么久问一次后端「这个对话
+ *  现在有没有别的活连接」（计划内重启后，后端会用新连接把对话接上），
+ *  最多问这么多次（约一分钟，后端接一个对话要起智能体，几个之间还隔两秒）。 */
+export const CONNECTION_REDISCOVERY_INTERVAL_MS = 3_000
+export const CONNECTION_REDISCOVERY_ATTEMPTS = 20
+
 /** One display frame: the narrowest window streaming deltas coalesce into. */
 export const STREAM_FLUSH_FRAME_MS = 16
 /**
@@ -4245,6 +4251,93 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       timers.clear()
     }
   }, [])
+  // #1501：连接没了以后，去找这个对话有没有别的活连接的计时器，一个界面最多一个。
+  const rediscoveryTimersRef = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>()
+  )
+  const clearConnectionRediscovery = useCallback((contextKey: string) => {
+    const timer = rediscoveryTimersRef.current.get(contextKey)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    rediscoveryTimersRef.current.delete(contextKey)
+  }, [])
+  /**
+   * #1501：打开着的已保存对话，连接被后端回收（attach 流报 connection_gone、
+   * 存活探测发现没了）以后，隔一会儿问一次后端这个对话现在有没有活连接。
+   * 计划内重启后，后端会用一条新连接把被打断的对话接着跑；这条连接不是这个
+   * 页面开的，不去找就收不到它的事件，要刷新才看得到。找到了就走 connect()，
+   * 由它现成的发现逻辑作为旁观者接上；一直找不到就停，绝不为此新起智能体。
+   * 界面关了、已经有了新连接、或别的 connect() 正在跑时也停。
+   */
+  const scheduleConnectionRediscovery = useCallback(
+    (contextKey: string) => {
+      clearConnectionRediscovery(contextKey)
+      const stillWanted = () => {
+        if (
+          !heldOpenKeys().has(contextKey) &&
+          storeRef.current.activeKey !== contextKey
+        )
+          return false
+        if (connectingKeysRef.current.has(contextKey)) return false
+        const conn = storeRef.current.connections.get(contextKey)
+        return (
+          !conn || conn.status === "disconnected" || conn.status === "error"
+        )
+      }
+      const arm = (attempt: number) => {
+        if (attempt > CONNECTION_REDISCOVERY_ATTEMPTS) return
+        const params = lastConnectParamsRef.current.get(contextKey)
+        if (params?.conversationId == null || params.conversationId <= 0) return
+        const timer = setTimeout(() => {
+          rediscoveryTimersRef.current.delete(contextKey)
+          void (async () => {
+            if (!stillWanted()) return
+            const current = lastConnectParamsRef.current.get(contextKey)
+            if (current?.conversationId == null || current.conversationId <= 0)
+              return
+            let found: ConversationConnectionInfo | null = null
+            try {
+              found = await acpFindConnectionForConversation(
+                current.conversationId,
+                current.sessionId,
+                current.agentType
+              )
+            } catch {
+              // 查不到当作还没有，下一轮再问。
+            }
+            // 等的时候界面可能关了、换了参数，或已经有了别的计时器。
+            if (!stillWanted()) return
+            if (rediscoveryTimersRef.current.has(contextKey)) return
+            if (!found) {
+              arm(attempt + 1)
+              return
+            }
+            await connectRef
+              .current?.(
+                contextKey,
+                current.agentType,
+                current.workingDir,
+                current.sessionId,
+                current.conversationId
+              )
+              .catch(() => {
+                // connect() 自己提示失败。
+              })
+          })()
+        }, CONNECTION_REDISCOVERY_INTERVAL_MS)
+        rediscoveryTimersRef.current.set(contextKey, timer)
+      }
+      arm(1)
+    },
+    [clearConnectionRediscovery, heldOpenKeys]
+  )
+  useEffect(() => {
+    const timers = rediscoveryTimersRef.current
+    return () => {
+      for (const timer of timers.values()) clearTimeout(timer)
+      timers.clear()
+    }
+  }, [])
   // `reconnect` for callbacks created before it is (a connect failure's
   // "Retry").
   const reconnectRef = useRef<AcpActionsValue["reconnect"] | null>(null)
@@ -7021,6 +7114,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // button has to resume the session rather than start a new one.
           captureIdentityBeforeRemoval(contextKey)
           dispatch({ type: "CONNECTION_REMOVED", contextKey })
+          // 计划内重启后，后端可能已经（或马上会）用新连接把对话接上（#1501）。
+          scheduleConnectionRediscovery(contextKey)
         },
       }
 
@@ -7033,6 +7128,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       captureIdentityBeforeRemoval,
       dispatch,
       flushStreamingQueue,
+      scheduleConnectionRediscovery,
       seedDelegationsFromSnapshot,
     ]
   )
@@ -7228,12 +7324,15 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // probe settles a connection out from under it.
       flushStreamingQueue(contextKey)
       dispatch({ type: "STATUS_CHANGED", contextKey, status: "disconnected" })
+      // 同 attach 流的 connection_gone：去找后端有没有接上这个对话的新连接（#1501）。
+      scheduleConnectionRediscovery(contextKey)
       return true
     },
     [
       dispatch,
       flushStreamingQueue,
       releaseConnectionRoute,
+      scheduleConnectionRediscovery,
       teardownAttachSubscription,
     ]
   )
@@ -7611,6 +7710,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       lastConnectParamsRef.current.set(contextKey, request)
       // 新的请求替代了限流后等着的那次重连（#872）。
       clearRateLimitedConnectRetry(contextKey)
+      // 也替代了连接没了以后在等着的找连接（#1501）。
+      clearConnectionRediscovery(contextKey)
       if (connectingKeysRef.current.has(contextKey)) {
         // Parked: the call in flight runs this next, unless a newer request
         // replaces it first. The surface is waiting on THIS request from now
@@ -8185,6 +8286,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       applyMappedEnvelope,
       bindConnectionRoute,
       captureIdentityBeforeRemoval,
+      clearConnectionRediscovery,
       clearRateLimitedConnectRetry,
       connectAsViewer,
       consumeBufferedEvents,
@@ -8274,6 +8376,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     async (contextKey: string): Promise<boolean> => {
       pendingConnectRequestsRef.current.delete(contextKey)
       clearRateLimitedConnectRetry(contextKey)
+      clearConnectionRediscovery(contextKey)
       // Whatever the surface does next — close, switch agent, reconnect — the
       // last attempt's failure no longer describes it.
       setConnectError(contextKey, null)
@@ -8349,6 +8452,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     },
     [
       captureIdentityBeforeRemoval,
+      clearConnectionRediscovery,
       clearRateLimitedConnectRetry,
       dispatch,
       releaseConnectionRoute,

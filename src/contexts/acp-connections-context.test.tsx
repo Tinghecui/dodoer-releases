@@ -12,6 +12,8 @@ import {
 } from "vitest"
 import {
   AcpConnectionsProvider,
+  CONNECTION_REDISCOVERY_ATTEMPTS,
+  CONNECTION_REDISCOVERY_INTERVAL_MS,
   RATE_LIMITED_CONNECT_RETRY_MS,
   STREAM_FLUSH_FRAME_MS,
   STREAM_FLUSH_MAX_MS,
@@ -10814,5 +10816,154 @@ describe("hasPrompted: whether a turn has run on the connection", () => {
     })
     expect(h.store!.getConnection(TAB)!.connectionId).toBe("respawned-conn")
     expect(hasPrompted()).toBe(false)
+  })
+})
+
+// #1501：计划内重启后，后端用一条新连接把被打断的对话接上。页面上的旧连接
+// 没了，要自己去找这条新连接、作为旁观者接上，不能等用户刷新。
+describe("re-discovering a conversation's connection after the old one is gone", () => {
+  async function promptingConversationTab() {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    act(() => h.actions!.registerOpenTabKeys(new Set([TAB])))
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    const handlers = latestAttachHandlers()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    } as EventEnvelope)
+    expect(h.store!.getConnection(TAB)!.status).toBe("prompting")
+    h.acpFindConnectionForConversation.mockClear()
+    return handlers
+  }
+
+  it("attaches to the resumed connection once the attach stream reports the old one gone", async () => {
+    vi.useFakeTimers()
+    try {
+      const handlers = await promptingConversationTab()
+      act(() => {
+        handlers.onDetached("connection_gone")
+      })
+      expect(h.store!.getConnection(TAB)).toBeUndefined()
+
+      // 刚重启时后端还没接上：头一次找不到，过一会儿再找就有了。
+      h.acpFindConnectionForConversation.mockResolvedValueOnce(null)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONNECTION_REDISCOVERY_INTERVAL_MS)
+      })
+      expect(h.store!.getConnection(TAB)).toBeUndefined()
+      h.acpFindConnectionForConversation.mockResolvedValue({
+        connection_id: "resumed-conn",
+        event_seq: 3,
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONNECTION_REDISCOVERY_INTERVAL_MS)
+      })
+
+      expect(h.acpFindConnectionForConversation).toHaveBeenCalledWith(
+        42,
+        "sess-1",
+        "claude_code"
+      )
+      expect(h.attach).toHaveBeenLastCalledWith(
+        "resumed-conn",
+        { sinceSeq: undefined },
+        expect.anything()
+      )
+      const conn = h.store!.getConnection(TAB)!
+      expect(conn.connectionId).toBe("resumed-conn")
+      expect(conn.isViewer).toBe(true)
+      // 不会为了接上再起一个智能体。
+      expect(h.acpConnect).toHaveBeenCalledTimes(1)
+
+      h.denormalizeSnapshot.mockReturnValue({
+        ...snapshotBase(),
+        connectionId: "resumed-conn",
+        status: "prompting",
+        eventSeq: 3,
+      })
+      hydrateSnapshot(latestAttachHandlers(), {
+        event_seq: 3,
+      } as unknown as LiveSessionSnapshot)
+      expect(h.store!.getConnection(TAB)!.status).toBe("prompting")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("attaches to the resumed connection once the liveness probe settles the old one", async () => {
+    vi.useFakeTimers()
+    try {
+      await promptingConversationTab()
+      h.acpFindConnectionForConversation.mockResolvedValue({
+        connection_id: "resumed-conn",
+        event_seq: 3,
+      })
+      h.acpTouchConnection.mockResolvedValue(false)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONNECTION_KEEPALIVE_INTERVAL_MS)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONNECTION_REDISCOVERY_INTERVAL_MS)
+      })
+
+      const conn = h.store!.getConnection(TAB)!
+      expect(conn.connectionId).toBe("resumed-conn")
+      expect(conn.isViewer).toBe(true)
+      expect(h.acpConnect).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("stops looking after a bounded number of tries and never spawns an agent", async () => {
+    vi.useFakeTimers()
+    try {
+      const handlers = await promptingConversationTab()
+      act(() => {
+        handlers.onDetached("connection_gone")
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(
+          (CONNECTION_REDISCOVERY_ATTEMPTS + 3) *
+            CONNECTION_REDISCOVERY_INTERVAL_MS
+        )
+      })
+      expect(h.acpFindConnectionForConversation).toHaveBeenCalledTimes(
+        CONNECTION_REDISCOVERY_ATTEMPTS
+      )
+      expect(h.acpConnect).toHaveBeenCalledTimes(1)
+      expect(h.store!.getConnection(TAB)).toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not look for a tab that is no longer open", async () => {
+    vi.useFakeTimers()
+    try {
+      const handlers = await promptingConversationTab()
+      act(() => h.actions!.registerOpenTabKeys(new Set()))
+      h.acpFindConnectionForConversation.mockResolvedValue({
+        connection_id: "resumed-conn",
+        event_seq: 3,
+      })
+      act(() => {
+        handlers.onDetached("connection_gone")
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(
+          3 * CONNECTION_REDISCOVERY_INTERVAL_MS
+        )
+      })
+      expect(h.acpFindConnectionForConversation).not.toHaveBeenCalled()
+      expect(h.store!.getConnection(TAB)).toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

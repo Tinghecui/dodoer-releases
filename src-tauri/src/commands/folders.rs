@@ -3003,7 +3003,12 @@ pub(crate) async fn git_commit_core(
             &format!("user.email={email}"),
         ]);
     }
-    commit_cmd.args(["commit", "-m", message]).current_dir(path);
+    commit_cmd.args(["commit", "-m", message]);
+    // 暂存区里还有没勾选的改动时，只提交勾选的路径，没勾的原样留在暂存区（#1442）。
+    if let Some(only_specs) = commit_only_pathspecs(path, files).await {
+        commit_cmd.args(["--only", "--"]).args(&only_specs);
+    }
+    commit_cmd.current_dir(path);
 
     let commit_output = commit_cmd.output().await.map_err(AppCommandError::io)?;
 
@@ -3034,6 +3039,104 @@ pub(crate) async fn git_commit_core(
     }
 
     Ok(GitCommitResult { committed_files })
+}
+
+/// 提交窗口勾选了 `files`（相对 `path`）、而暂存区里还有没勾选的改动时，
+/// 给 `git commit --only` 用的路径：勾选的文件，加上勾选的改名的另一边
+/// （只按新名字勾选时，旧名字的删除也要进提交，不然提交里只有新增）。
+/// 暂存区里的改动都在勾选范围内（或没勾选任何文件、git 查不出来）时给 `None`，
+/// 照旧提交整个暂存区：这时两者结果一样，提交钩子看到的也还是真正的暂存区。
+async fn commit_only_pathspecs(path: &str, files: &[String]) -> Option<Vec<String>> {
+    if files.is_empty() {
+        return None;
+    }
+    // 勾选的路径相对打开的文件夹，暂存区的路径相对仓库根。
+    let prefix_output = crate::process::tokio_command("git")
+        .args(["rev-parse", "--show-prefix"])
+        .current_dir(path)
+        .output()
+        .await
+        .ok()
+        .filter(|output| output.status.success())?;
+    let prefix = String::from_utf8_lossy(&prefix_output.stdout)
+        .trim_end_matches(['\n', '\r'])
+        .to_string();
+    let staged_output = crate::process::tokio_command("git")
+        .args([
+            "-c",
+            "diff.relative=false",
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--name-status",
+            "-M",
+            "-z",
+        ])
+        .current_dir(path)
+        .output()
+        .await
+        .ok()
+        .filter(|output| output.status.success())?;
+    let staged = String::from_utf8_lossy(&staged_output.stdout).to_string();
+
+    let picked: Vec<String> = files
+        .iter()
+        .map(|file| format!("{prefix}{}", file.trim_end_matches('/')))
+        .collect();
+    let is_picked = |file: &str| {
+        picked.iter().any(|pick| {
+            file == pick
+                || (file.len() > pick.len()
+                    && file.starts_with(pick.as_str())
+                    && file.as_bytes()[pick.len()] == b'/')
+        })
+    };
+
+    let mut fields = staged.split('\0').filter(|field| !field.is_empty());
+    let mut unpicked = false;
+    let mut other_sides = Vec::new();
+    while let Some(status) = fields.next() {
+        if status.starts_with('R') {
+            let (Some(old), Some(new)) = (fields.next(), fields.next()) else {
+                break;
+            };
+            match (is_picked(old), is_picked(new)) {
+                (false, false) => unpicked = true,
+                (old_picked, new_picked) => {
+                    if !old_picked {
+                        other_sides.push(format!(":(top,literal){old}"));
+                    }
+                    if !new_picked {
+                        other_sides.push(format!(":(top,literal){new}"));
+                    }
+                }
+            }
+        } else if status.starts_with('C') {
+            // 复制：旧文件没变，只看新文件。
+            let (Some(_), Some(new)) = (fields.next(), fields.next()) else {
+                break;
+            };
+            if !is_picked(new) {
+                unpicked = true;
+            }
+        } else {
+            let Some(file) = fields.next() else {
+                break;
+            };
+            if !is_picked(file) {
+                unpicked = true;
+            }
+        }
+    }
+    if !unpicked {
+        return None;
+    }
+    let mut specs: Vec<String> = files
+        .iter()
+        .map(|file| to_git_literal_pathspec(file))
+        .collect();
+    specs.extend(other_sides);
+    Some(specs)
 }
 
 /// The index entries `pathspecs` match, as repository-relative path → staged
@@ -9845,6 +9948,128 @@ branch refs/heads/main";
         assert_eq!(tree, "d/新 name.txt");
         let status = git_capture(root, &["status", "--porcelain=v1"]);
         assert_eq!(status, "", "nothing should be left staged or unstaged");
+    }
+
+    /// 建一个有一次提交的仓库给下面几条用：已跟踪的 b.txt、gone.txt、d/old.txt。
+    fn commit_pick_fixture(root: &std::path::Path) {
+        init_quoting_fixture(root);
+        git_run(root, &["config", "user.name", "t"]);
+        git_run(root, &["config", "user.email", "t@example.com"]);
+        std::fs::create_dir(root.join("d")).expect("mkdir");
+        std::fs::write(root.join("b.txt"), "b\n").expect("write");
+        std::fs::write(root.join("gone.txt"), "gone\n").expect("write");
+        std::fs::write(root.join("d").join("old.txt"), "1\n2\n3\n").expect("write");
+        git_run(root, &["add", "-A"]);
+        git_run(root, &["commit", "-q", "-m", "base"]);
+    }
+
+    async fn commit_picked(path: &std::path::Path, files: &[&str]) {
+        let db = fresh_in_memory_db().await;
+        let files: Vec<String> = files.iter().map(|f| f.to_string()).collect();
+        git_commit_core(
+            &EventEmitter::Noop,
+            None,
+            &db.conn,
+            path.to_str().expect("utf-8 path"),
+            "only picked",
+            &files,
+        )
+        .await
+        .expect("commit");
+    }
+
+    fn head_changes(root: &std::path::Path) -> String {
+        git_capture(
+            root,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                "--name-status",
+                "-M",
+                "HEAD~1",
+                "HEAD",
+            ],
+        )
+    }
+
+    fn staged_changes(root: &std::path::Path) -> String {
+        git_capture(
+            root,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                "--cached",
+                "--name-status",
+                "-M",
+            ],
+        )
+    }
+
+    /// 提交窗口里取消勾选的已暂存文件不进提交，留在暂存区（#1442）。
+    #[tokio::test]
+    async fn git_commit_leaves_an_unpicked_staged_file_out_of_the_commit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        commit_pick_fixture(root);
+        std::fs::write(root.join("a.txt"), "staged\n").expect("write");
+        git_run(root, &["add", "a.txt"]);
+        std::fs::write(root.join("b.txt"), "b\nmore\n").expect("write");
+
+        commit_picked(root, &["b.txt"]).await;
+
+        assert_eq!(head_changes(root), "M\tb.txt");
+        assert_eq!(staged_changes(root), "A\ta.txt");
+    }
+
+    /// 勾选的暂存删除照样进提交，没勾的已暂存文件照样留下。
+    #[tokio::test]
+    async fn git_commit_takes_a_picked_staged_deletion_and_leaves_the_unpicked() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        commit_pick_fixture(root);
+        git_run(root, &["rm", "-q", "gone.txt"]);
+        std::fs::write(root.join("a.txt"), "staged\n").expect("write");
+        git_run(root, &["add", "a.txt"]);
+
+        commit_picked(root, &["gone.txt"]).await;
+
+        assert_eq!(head_changes(root), "D\tgone.txt");
+        assert_eq!(staged_changes(root), "A\ta.txt");
+    }
+
+    /// 只按新名字勾选的暂存改名，旁边还有没勾的已暂存文件时，提交里仍是完整的改名。
+    #[tokio::test]
+    async fn git_commit_of_a_picked_rename_beside_an_unpicked_staged_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        commit_pick_fixture(root);
+        git_run(root, &["mv", "d/old.txt", "d/新.txt"]);
+        std::fs::write(root.join("a.txt"), "staged\n").expect("write");
+        git_run(root, &["add", "a.txt"]);
+
+        commit_picked(root, &["d/新.txt"]).await;
+
+        assert_eq!(head_changes(root), "R100\td/old.txt\td/新.txt");
+        assert_eq!(staged_changes(root), "A\ta.txt");
+    }
+
+    /// 在仓库子目录里打开的文件夹：勾选的路径相对这个目录，
+    /// 目录外没勾的已暂存文件也不进提交。
+    #[tokio::test]
+    async fn git_commit_below_the_root_leaves_unpicked_staged_files_outside() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        commit_pick_fixture(root);
+        std::fs::write(root.join("a.txt"), "staged\n").expect("write");
+        git_run(root, &["add", "a.txt"]);
+        std::fs::write(root.join("d").join("old.txt"), "1\n2\n3\n4\n").expect("write");
+
+        commit_picked(&root.join("d"), &["old.txt"]).await;
+
+        assert_eq!(head_changes(root), "M\td/old.txt");
+        assert_eq!(staged_changes(root), "A\ta.txt");
     }
 
     #[test]

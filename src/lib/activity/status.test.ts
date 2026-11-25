@@ -48,6 +48,14 @@ describe("toolCallStatus", () => {
     ).toBe("cancelled")
   })
 
+  it("shows a call cut off by a lost connection as interrupted (#1454)", () => {
+    // 刷新后补回的失败把没配上结果的调用标成 cancelled，不能当成通过。
+    expect(toolCallStatus(call({ toolStatus: "cancelled" }))).toBe("cancelled")
+    expect(toolCallStatus(call({ toolStatus: " Cancelled " }))).toBe(
+      "cancelled"
+    )
+  })
+
   it("lets a pending permission win", () => {
     expect(toolCallStatus(call({}), { awaiting: true })).toBe("awaiting")
   })

@@ -5,7 +5,10 @@
  */
 
 import type { AdaptedToolCallPart } from "@/lib/adapters/ai-elements-adapter"
-import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
+import {
+  isUnsettledToolCall,
+  toolStatusCancelled,
+} from "@/lib/tool-call-lifecycle"
 
 export type StepStatus =
   | "pending"
@@ -54,6 +57,8 @@ export function toolCallStatus(
   if (isUnsettledToolCall(part)) {
     return part.state === "input-streaming" ? "pending" : "running"
   }
+  // 一轮中途连接断了、刷新后补回失败时，没跑完的命令被标成中断（#1454）。
+  if (toolStatusCancelled(part.toolStatus)) return "cancelled"
   return "succeeded"
 }
 

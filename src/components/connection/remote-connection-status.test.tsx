@@ -2,6 +2,12 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import enMessages from "@/i18n/messages/en.json"
+import {
+  isNativeSurfaceOccluded,
+  isNativeSurfaceOcclusionPassive,
+  requestNativeSurfaceReclaim,
+  resetNativeSurfaceOcclusionForTests,
+} from "@/lib/browser/native-surface-occlusion"
 import type { RemoteConnectionState } from "@/lib/transport/remote-desktop-transport"
 import { RemoteConnectionStatus } from "./remote-connection-status"
 
@@ -39,6 +45,7 @@ function renderStatus(transport = createHealth()) {
 beforeEach(() => vi.useFakeTimers())
 afterEach(() => {
   cleanup()
+  resetNativeSurfaceOcclusionForTests()
   vi.useRealTimers()
 })
 
@@ -133,6 +140,51 @@ describe("RemoteConnectionStatus", () => {
     act(() => transport.setState("reconnecting"))
 
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
+  })
+
+  it("holds the browser surfaces down passively while the pill is up", () => {
+    const { transport, unmount } = renderStatus()
+    // 宽限期里提示条没出来，不遮浏览器。
+    expect(isNativeSurfaceOccluded()).toBe(false)
+    act(() => vi.advanceTimersByTime(4_000))
+    expect(screen.getByRole("status")).toBeInTheDocument()
+    expect(isNativeSurfaceOccluded()).toBe(true)
+    expect(isNativeSurfaceOcclusionPassive()).toBe(true)
+
+    act(() => transport.setState("disconnected"))
+    expect(isNativeSurfaceOccluded()).toBe(true)
+
+    act(() => transport.setState("connected"))
+    expect(isNativeSurfaceOccluded()).toBe(false)
+
+    act(() => transport.setState("disconnected"))
+    expect(isNativeSurfaceOccluded()).toBe(true)
+    unmount()
+    expect(isNativeSurfaceOccluded()).toBe(false)
+  })
+
+  it("gives the page back on reclaim and stays out of the way for that outage", () => {
+    const { transport } = renderStatus()
+    act(() => transport.setState("disconnected"))
+    expect(isNativeSurfaceOccluded()).toBe(true)
+
+    act(() => requestNativeSurfaceReclaim())
+    expect(isNativeSurfaceOccluded()).toBe(false)
+    // 提示条本身还在（左边看得到的那截照样能点重连）。
+    expect(screen.getByRole("status")).toBeInTheDocument()
+
+    // 同一次断线里重试、再失败，都不再遮。
+    transport.reconnectNow.mockImplementation(() =>
+      transport.setState("reconnecting")
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect now" }))
+    act(() => transport.setState("disconnected"))
+    expect(isNativeSurfaceOccluded()).toBe(false)
+
+    // 连上以后再断，是新的一次断线，照常遮。
+    act(() => transport.setState("connected"))
+    act(() => transport.setState("disconnected"))
+    expect(isNativeSurfaceOccluded()).toBe(true)
   })
 
   it("unsubscribes and cancels the grace timer on unmount", () => {

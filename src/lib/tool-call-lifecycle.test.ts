@@ -26,6 +26,11 @@ describe("toolStatusUnsettled", () => {
     expect(toolStatusUnsettled(" COMPLETED ")).toBe(false)
   })
 
+  it("treats a call the backend marked cut off as settled (#1454)", () => {
+    expect(toolStatusUnsettled("cancelled")).toBe(false)
+    expect(isUnsettledToolCall(part({ toolStatus: "cancelled" }))).toBe(false)
+  })
+
   it("treats any non-terminal status as unsettled", () => {
     expect(toolStatusUnsettled("pending")).toBe(true)
     expect(toolStatusUnsettled("in_progress")).toBe(true)

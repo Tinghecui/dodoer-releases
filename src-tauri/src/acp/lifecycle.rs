@@ -866,10 +866,14 @@ async fn try_cache_link(
 /// `Error` → `Disconnected` sequence that `connection.rs` emits on the error
 /// path: the second event finds an empty cache and is a clean no-op, so we
 /// don't pay a redundant DB read.
+///
+/// `terminal_error` 是连接因为出错而结束时（`AcpEvent::Error{terminal}`）的
+/// 原话；单纯的 `Disconnected` 是 `None`。
 async fn handle_terminal_event(
     db_conn: &DatabaseConnection,
     cache: &mut HashMap<String, CachedConn>,
     connection_id: &str,
+    terminal_error: Option<&str>,
 ) -> Result<(), DbError> {
     let Some(entry) = cache.remove(connection_id) else {
         return Ok(());
@@ -884,6 +888,20 @@ async fn handle_terminal_event(
     .await?;
     if !changed {
         return Ok(());
+    }
+    // #1454：一轮中途连接出错断了（claude-agent-acp 被杀，没有 TurnComplete），
+    // 失败说明也存下来，刷新后补回对话、带「重试」。只在 InProgress 被翻成
+    // Cancelled 时存：用户主动停止时 `manager.cancel` 已经先写了 Cancelled，
+    // 这里 CAS 落空，不会误存。存不下只少一行说明，不挡状态。
+    if let Some(message) = terminal_error {
+        let failure = crate::acp::turn_failure::PersistedTurnFailure {
+            message: message.to_string(),
+            kind: Some(crate::acp::turn_failure::KIND_CONNECTION_LOST.to_string()),
+            at: chrono::Utc::now(),
+        };
+        if let Err(e) = crate::acp::turn_failure::save(db_conn, cid, &failure).await {
+            tracing::warn!(conversation_id = cid, error = %e, "[lifecycle] turn failure not kept");
+        }
     }
     emit_with_state(
         &entry.state,
@@ -3488,7 +3506,7 @@ async fn connection_worker_loop(
                 if terminal_dispatched {
                     continue;
                 }
-                if let Err(e) = handle_terminal_event(&db, &mut cache, &connection_id).await {
+                if let Err(e) = handle_terminal_event(&db, &mut cache, &connection_id, None).await {
                     tracing::error!("[lifecycle][ERROR] terminal event for {connection_id}: {e}");
                 }
                 if let Some(b) = broker.as_ref() {
@@ -3530,11 +3548,13 @@ async fn connection_worker_loop(
                 // (`cancel_by_child_connection` no-ops on empty pending),
                 // so the subsequent Disconnected will short-circuit on
                 // `terminal_dispatched`.
-                if let Err(e) = handle_terminal_event(&db, &mut cache, &connection_id).await {
+                let detail = format_terminal_error(message, code.as_deref());
+                if let Err(e) =
+                    handle_terminal_event(&db, &mut cache, &connection_id, Some(&detail)).await
+                {
                     tracing::error!("[lifecycle][ERROR] terminal event for {connection_id}: {e}");
                 }
                 if let Some(b) = broker.as_ref() {
-                    let detail = format_terminal_error(message, code.as_deref());
                     forward_disconnect_to_broker(b.as_ref(), &connection_id, Some(&detail)).await;
                 }
                 terminal_dispatched = true;
@@ -4674,7 +4694,7 @@ mod tests {
             vec![ConversationStatus::PendingReview]
         );
 
-        handle_terminal_event(&db.conn, &mut cache, "c1")
+        handle_terminal_event(&db.conn, &mut cache, "c1", None)
             .await
             .unwrap();
         assert_eq!(
@@ -4954,7 +4974,7 @@ mod tests {
             "ConversationLinked should populate cache"
         );
 
-        handle_terminal_event(&db.conn, &mut cache, "c1")
+        handle_terminal_event(&db.conn, &mut cache, "c1", None)
             .await
             .unwrap();
         assert_eq!(
@@ -4966,6 +4986,75 @@ mod tests {
             !cache.contains_key("c1"),
             "cache entry must be drained after first terminal event"
         );
+    }
+
+    /// #1454：智能体进程（claude-agent-acp）在一轮中途被杀，没有 TurnComplete，
+    /// 只有终止的 Error。失败说明也要存下来，刷新后补回对话、带「重试」；
+    /// 已经收尾的（PendingReview）不存。
+    #[tokio::test]
+    async fn handle_terminal_event_keeps_the_failure_of_a_turn_cut_off_mid_way() {
+        use crate::acp::turn_failure;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-kept").await;
+        let mid_turn =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let settled =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        conversation_service::update_status(
+            &db.conn,
+            settled.id,
+            ConversationStatus::PendingReview,
+        )
+        .await
+        .unwrap();
+
+        let mgr = ConnectionManager::new();
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(mid_turn.id)),
+            );
+            map.insert(
+                "c2".to_string(),
+                fake_connection_with_state("c2", Some(settled.id)),
+            );
+        }
+        let mut cache: HashMap<String, CachedConn> = HashMap::new();
+        seed_cache(&mut cache, &mgr, "c1", mid_turn.id).await;
+        seed_cache(&mut cache, &mgr, "c2", settled.id).await;
+
+        handle_terminal_event(
+            &db.conn,
+            &mut cache,
+            "c1",
+            Some("server shut down unexpectedly"),
+        )
+        .await
+        .unwrap();
+        handle_terminal_event(
+            &db.conn,
+            &mut cache,
+            "c2",
+            Some("server shut down unexpectedly"),
+        )
+        .await
+        .unwrap();
+
+        let saved = turn_failure::load(&db.conn, mid_turn.id)
+            .await
+            .expect("a turn cut off mid-way keeps its failure");
+        assert_eq!(saved.message, "server shut down unexpectedly");
+        assert_eq!(
+            saved.kind.as_deref(),
+            Some(turn_failure::KIND_CONNECTION_LOST)
+        );
+        assert_eq!(turn_failure::load(&db.conn, settled.id).await, None);
     }
 
     #[tokio::test]
@@ -4992,7 +5081,7 @@ mod tests {
         let mut cache: HashMap<String, CachedConn> = HashMap::new();
         seed_cache(&mut cache, &mgr, "c1", conv.id).await;
 
-        handle_terminal_event(&db.conn, &mut cache, "c1")
+        handle_terminal_event(&db.conn, &mut cache, "c1", None)
             .await
             .unwrap();
         assert_eq!(
@@ -5028,7 +5117,7 @@ mod tests {
         let mut cache: HashMap<String, CachedConn> = HashMap::new();
         seed_cache(&mut cache, &mgr, "c1", conv.id).await;
 
-        handle_terminal_event(&db.conn, &mut cache, "c1")
+        handle_terminal_event(&db.conn, &mut cache, "c1", None)
             .await
             .unwrap();
         assert_eq!(
@@ -5090,12 +5179,12 @@ mod tests {
         seed_cache(&mut cache, &mgr, "c1", conv.id).await;
 
         // First terminal event: cancels, drains.
-        handle_terminal_event(&db.conn, &mut cache, "c1")
+        handle_terminal_event(&db.conn, &mut cache, "c1", None)
             .await
             .unwrap();
         assert!(!cache.contains_key("c1"));
         // Second terminal event: empty cache, returns Ok with no DB writes.
-        handle_terminal_event(&db.conn, &mut cache, "c1")
+        handle_terminal_event(&db.conn, &mut cache, "c1", None)
             .await
             .unwrap();
         assert_eq!(
@@ -5117,7 +5206,7 @@ mod tests {
         assert_eq!(sentinel.status, ConversationStatus::InProgress);
 
         let mut cache: HashMap<String, CachedConn> = HashMap::new();
-        handle_terminal_event(&db.conn, &mut cache, "ghost-connection")
+        handle_terminal_event(&db.conn, &mut cache, "ghost-connection", None)
             .await
             .unwrap();
         assert_eq!(

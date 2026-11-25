@@ -4,6 +4,10 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
 import { Loader2, WifiOff } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
+import {
+  acquireNativeSurfaceOcclusion,
+  subscribeNativeSurfaceReclaim,
+} from "@/lib/browser/native-surface-occlusion"
 import type { RemoteDesktopTransport } from "@/lib/transport/remote-desktop-transport"
 
 type ConnectionHealth = Pick<
@@ -62,12 +66,35 @@ export function RemoteConnectionStatus({
     setRetryRequested(transport.getConnectionSnapshot() === "reconnecting")
   }
 
-  if (
+  const showing = !(
     state === "connected" ||
     (state === "reconnecting" && !graceElapsed && !retryRequested)
-  ) {
-    return null
-  }
+  )
+
+  // 用户这次断线里已经点回了浏览器：这次断线不再遮，连上以后清掉。
+  const [reclaimed, setReclaimed] = useState(false)
+  const outage = state !== "connected"
+  useEffect(() => {
+    if (!outage) return
+    return () => setReclaimed(false)
+  }, [outage])
+
+  // 内置浏览器是盖在所有 DOM 上面的原生视图，提示条伸进浏览器栏的那截会被
+  // 挡住。跟弹出提示（app-toaster 的 ToastOcclusion）一样拿一个被动租约：
+  // 浏览器停在最后一帧，用户一点浏览器就放掉租约、把页面还给他。
+  useEffect(() => {
+    if (!showing || reclaimed) return
+    const release = acquireNativeSurfaceOcclusion("connection-status", {
+      passive: true,
+    })
+    const unsubscribe = subscribeNativeSurfaceReclaim(() => setReclaimed(true))
+    return () => {
+      unsubscribe()
+      release()
+    }
+  }, [showing, reclaimed])
+
+  if (!showing) return null
 
   const retrying = state === "reconnecting"
   return (

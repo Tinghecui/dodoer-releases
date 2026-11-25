@@ -14,13 +14,23 @@ import type { AdaptedToolCallPart } from "@/lib/adapters/ai-elements-adapter"
  * Whether a forwarded ACP tool status is present and not yet terminal. Absent
  * status (`undefined`/`null`, as on DB-persisted rows) counts as settled, so
  * historical tool calls are never treated as still-in-flight.
+ *
+ * `cancelled` 不是 ACP 的状态：Cowork 后端补「本轮失败」那一行时，把这一轮
+ * 被打断、没配上结果的调用标成它（#1454），也是终态。
  */
 export function toolStatusUnsettled(
   status: string | null | undefined
 ): boolean {
   if (status == null) return false
   const s = status.trim().toLowerCase()
-  return s !== "completed" && s !== "failed"
+  return s !== "completed" && s !== "failed" && s !== "cancelled"
+}
+
+/** 后端标成被打断的调用（#1454，见 `toolStatusUnsettled`）。 */
+export function toolStatusCancelled(
+  status: string | null | undefined
+): boolean {
+  return status?.trim().toLowerCase() === "cancelled"
 }
 
 /** Whether a forwarded ACP tool status is present and terminal — what a

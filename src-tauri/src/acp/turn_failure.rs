@@ -87,6 +87,37 @@ fn is_turn_error_turn(turn: &MessageTurn) -> bool {
             .all(|block| matches!(block, ContentBlock::TurnError { .. }))
 }
 
+/// 这一轮被失败打断、没配上结果的工具调用（#1454：命令跑到一半智能体被杀）
+/// 标成 `cancelled`，界面显示中断，不再当成已完成。智能体自己记了终态的不动。
+fn mark_cut_off_calls(round: &mut [MessageTurn]) {
+    let answered: std::collections::HashSet<String> = round
+        .iter()
+        .flat_map(|turn| turn.blocks.iter())
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult {
+                tool_use_id: Some(id),
+                ..
+            } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    for block in round.iter_mut().flat_map(|turn| turn.blocks.iter_mut()) {
+        if let ContentBlock::ToolUse {
+            tool_use_id: Some(id),
+            status,
+            ..
+        } = block
+        {
+            let settled = status
+                .as_deref()
+                .is_some_and(|s| matches!(s.trim(), "completed" | "failed" | "cancelled"));
+            if !settled && !answered.contains(id.as_str()) {
+                *status = Some("cancelled".to_string());
+            }
+        }
+    }
+}
+
 /// 最后一轮没有失败行的，按存下来的失败补一行，放在最后。
 ///
 /// 不补的：最后一条用户消息比失败晚（已经是下一轮了）；最后一条用户消息之后
@@ -104,6 +135,7 @@ pub fn inject(turns: &mut Vec<MessageTurn>, failure: &PersistedTurnFailure) {
     if turns[last_user + 1..].iter().any(is_turn_error_turn) {
         return;
     }
+    mark_cut_off_calls(&mut turns[last_user + 1..]);
     turns.push(MessageTurn {
         id: "cowork-turn-failure".to_string(),
         role: TurnRole::System,
@@ -191,6 +223,72 @@ mod tests {
             }
             other => panic!("not a failure line: {other:?}"),
         }
+    }
+
+    fn tool_use(id: &str, status: Option<&str>) -> ContentBlock {
+        ContentBlock::ToolUse {
+            tool_use_id: Some(id.into()),
+            tool_name: "Bash".into(),
+            input_preview: None,
+            status: status.map(String::from),
+            meta: None,
+        }
+    }
+
+    fn tool_result(id: &str) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: Some(id.into()),
+            output_preview: Some("ok".into()),
+            is_error: false,
+            agent_stats: None,
+            images: Vec::new(),
+            exit_code: None,
+        }
+    }
+
+    fn status_of(turns: &[MessageTurn], id: &str) -> Option<String> {
+        turns
+            .iter()
+            .flat_map(|turn| turn.blocks.iter())
+            .find_map(|block| match block {
+                ContentBlock::ToolUse {
+                    tool_use_id: Some(tid),
+                    status,
+                    ..
+                } if tid == id => Some(status.clone()),
+                _ => None,
+            })
+            .flatten()
+    }
+
+    /// #1454：被打断的命令没有结果，补失败行时标成中断，界面不再写「全部通过」。
+    /// 配上了结果的、上一轮的不动。
+    #[test]
+    fn calls_cut_off_by_the_failure_are_marked_cancelled() {
+        let mut turns = vec![
+            turn("turn-0", TurnRole::User, text("先前"), 0),
+            turn(
+                "turn-1",
+                TurnRole::Assistant,
+                vec![tool_use("old", None)],
+                1,
+            ),
+            turn("turn-2", TurnRole::User, text("跑 dd"), 2),
+            turn(
+                "turn-3",
+                TurnRole::Assistant,
+                vec![
+                    tool_use("bg", None),
+                    tool_result("bg"),
+                    tool_use("dd", None),
+                ],
+                3,
+            ),
+        ];
+        inject(&mut turns, &lost(4));
+        assert_eq!(status_of(&turns, "dd").as_deref(), Some("cancelled"));
+        assert_eq!(status_of(&turns, "bg"), None);
+        assert_eq!(status_of(&turns, "old"), None);
     }
 
     #[test]

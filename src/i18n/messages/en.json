@@ -3734,6 +3734,7 @@
         "attachLocalUpload": "Upload local file",
         "attachServerFile": "Pick server file",
         "addActions": "Add",
+        "addMenuBack": "Back",
         "quickMessages": "Quick messages",
         "quickMessagesEmpty": "No quick messages yet",
         "quickMessagesLoading": "Loading...",

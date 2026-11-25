@@ -3732,6 +3732,7 @@
         "removeAttachmentAria": "Remover {name}",
         "attachFiles": "Anexar arquivos",
         "addActions": "Adicionar",
+        "addMenuBack": "Voltar",
         "quickMessages": "Mensagens rápidas",
         "quickMessagesEmpty": "Ainda não há mensagens rápidas",
         "quickMessagesLoading": "Carregando...",

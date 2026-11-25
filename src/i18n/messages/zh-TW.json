@@ -3732,6 +3732,7 @@
         "removeAttachmentAria": "移除 {name}",
         "attachFiles": "附加檔案",
         "addActions": "新增",
+        "addMenuBack": "返回",
         "quickMessages": "快捷訊息",
         "quickMessagesEmpty": "尚無快捷訊息",
         "quickMessagesLoading": "載入中...",

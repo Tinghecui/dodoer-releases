@@ -52,6 +52,12 @@ import {
   loadMessageInputDraft,
   saveMessageInputDraft,
 } from "@/lib/message-input-draft"
+import {
+  messageQueueStorageKey,
+  queueCanStoreAnother,
+  queuedMessageTexts,
+  subscribeStoredQueues,
+} from "@/lib/cowork/message-queue-storage"
 import { cn } from "@/lib/utils"
 import {
   useCoworkTeamAvailable,
@@ -76,23 +82,182 @@ export function forwardedCommentText(
 interface OwnCommentsState {
   /** 打开着留言栏的自己的会话（契约里的会话号）；没开是 null。 */
   openFor: string | null
-  /** 这次打开期间已经交给智能体的留言：`<会话号>/<留言 id>`。 */
+  /** 这次打开期间已经交给智能体的留言：forwardedKey 算出来的键。 */
   forwarded: Record<string, true>
   open: (id: string) => void
   close: () => void
-  markForwarded: (id: string, commentId: string) => void
+  /**
+   * 记下这条交过了：先存进这台机器，再记进内存。存不下返回 false、什么也不记，
+   * 调用方就不能把留言交出去（不然刷新以后又能交一次）。
+   */
+  markForwarded: (
+    viewer: CommentDraftViewer,
+    id: string,
+    commentId: string,
+    /** 交出去的那条消息的文字（刷新后靠它在排队区里找这条消息）。 */
+    text: string
+  ) => boolean
   reset: () => void
 }
+
+/**
+ * 交过的留言记在哪（#1512）：服务器的留言还不带「交过了」的字段时，刷新以后
+ * 靠这里认出交过的那几条，不再交第二次。一个会话一条记录，里面是交过的留言 id；
+ * 不设条数上限（一个会话的留言本来就有限），免得挤掉早先交过的那几条。
+ */
+const FORWARDED_STORAGE_PREFIX = "cowork-comment-forwarded:"
+
+/**
+ * 一个会话交过的留言记在哪个键下：带上当前团队账号（门户地址和我的账号名，和
+ * 留言草稿一样），同一台机器换了账号不会把上一个账号交过的当成自己交过的。
+ */
+function forwardedStorageKey(viewer: CommentDraftViewer, id: string): string {
+  return `${FORWARDED_STORAGE_PREFIX}${teamAccountKey(viewer)}:${id}`
+}
+
+/** 内存里那份记号的键。 */
+function forwardedKey(
+  viewer: CommentDraftViewer,
+  id: string,
+  commentId: string
+): string {
+  return `${forwardedStorageKey(viewer, id)}/${commentId}`
+}
+
+/**
+ * 一个会话的记录里每条是一条交过的留言：只有留言 id 的是确定交过了；带着
+ * `text`（交出去的那条消息的文字）的是那条消息还在排队区里，交没交成要看它
+ * （#1512 第 3 次返工）。
+ */
+type StoredForwardedEntry = string | { id: string; text: string }
+
+function readForwardedEntries(key: string): StoredForwardedEntry[] {
+  const raw = window.localStorage.getItem(key)
+  const list: unknown = raw ? JSON.parse(raw) : []
+  if (!Array.isArray(list)) return []
+  return list.filter(
+    (x): x is StoredForwardedEntry =>
+      typeof x === "string" ||
+      (!!x &&
+        typeof x === "object" &&
+        typeof (x as { id?: unknown }).id === "string" &&
+        typeof (x as { text?: unknown }).text === "string")
+  )
+}
+
+/**
+ * 这台机器上记着交过的留言 id。消息还在排队区里的那几条，只有消息存进了
+ * 这台机器才算：没存下（排队区超过条数或大小上限、后来被别的消息挤出去）
+ * 的那条刷新后就没了，留言要能再交（宁可重复一份，也不让留言丢了还交不出去）。
+ */
+function loadStoredForwarded(
+  viewer: CommentDraftViewer,
+  id: string
+): Set<string> {
+  try {
+    const entries = readForwardedEntries(forwardedStorageKey(viewer, id))
+    const done = new Set<string>()
+    let queued: Set<string> | null = null
+    for (const entry of entries) {
+      if (typeof entry === "string") {
+        done.add(entry)
+        continue
+      }
+      queued ??= queuedMessageTexts().stored
+      if (queued.has(entry.text)) done.add(entry.id)
+    }
+    return done
+  } catch {
+    return new Set()
+  }
+}
+
+/**
+ * 记下这条交过了，交出去的消息文字一起记上（还在排队区里）；存不下（隐私
+ * 模式、满了）返回 false。
+ */
+function storeForwarded(
+  viewer: CommentDraftViewer,
+  id: string,
+  commentId: string,
+  text: string
+): boolean {
+  try {
+    const key = forwardedStorageKey(viewer, id)
+    const entries = readForwardedEntries(key).filter(
+      (e) => (typeof e === "string" ? e : e.id) !== commentId
+    )
+    window.localStorage.setItem(
+      key,
+      JSON.stringify([...entries, { id: commentId, text }])
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 这次打开页面期间在排队区里（存下的或内存里的）见过的、交出去的消息文字。 */
+const seenForwardedTexts = new Set<string>()
+
+/**
+ * 排队区一变就看一遍还在排队的那些转交消息（#1512 第 3 次返工）：还在排队区
+ * 里的记下「见过」；见过、现在排队区里没有了的，是发出去了（或者用户自己删了），
+ * 记录改成确定交过，以后不再看排队区。存储写不进去就下次再改。
+ */
+function settleForwardedEntries(): void {
+  let store: Storage
+  try {
+    store = window.localStorage
+  } catch {
+    return
+  }
+  const keys: string[] = []
+  try {
+    for (let i = 0; i < store.length; i++) {
+      const key = store.key(i)
+      if (key?.startsWith(FORWARDED_STORAGE_PREFIX)) keys.push(key)
+    }
+  } catch {
+    return
+  }
+  let texts: { stored: Set<string>; live: Set<string> } | null = null
+  for (const key of keys) {
+    try {
+      const entries = readForwardedEntries(key)
+      let changed = false
+      const next = entries.map((entry) => {
+        if (typeof entry === "string") return entry
+        texts ??= queuedMessageTexts()
+        if (texts.stored.has(entry.text) || texts.live.has(entry.text)) {
+          seenForwardedTexts.add(entry.text)
+          return entry
+        }
+        if (!seenForwardedTexts.has(entry.text)) return entry
+        seenForwardedTexts.delete(entry.text)
+        changed = true
+        return entry.id
+      })
+      if (changed) store.setItem(key, JSON.stringify(next))
+    } catch {
+      // 这个会话的记录读不了、写不进：下次排队区变了再试
+    }
+  }
+}
+
+if (typeof window !== "undefined") subscribeStoredQueues(settleForwardedEntries)
 
 export const useOwnCommentsStore = create<OwnCommentsState>((set) => ({
   openFor: null,
   forwarded: {},
   open: (id) => set({ openFor: id }),
   close: () => set((s) => (s.openFor ? { openFor: null } : {})),
-  markForwarded: (id, commentId) =>
-    set((s) => ({
-      forwarded: { ...s.forwarded, [`${id}/${commentId}`]: true },
-    })),
+  markForwarded: (viewer, id, commentId, text) => {
+    if (!storeForwarded(viewer, id, commentId, text)) return false
+    const key = forwardedKey(viewer, id, commentId)
+    set((s) => ({ forwarded: { ...s.forwarded, [key]: true } }))
+    return true
+  },
   reset: () => set({ openFor: null, forwarded: {} }),
 }))
 
@@ -180,8 +345,12 @@ export function commentDraftKey(
   owner: string,
   id: string
 ): string {
-  const account = `${encodeURIComponent(viewer.portalUrl ?? "")}|${encodeURIComponent(viewer.name)}`
-  return `comment:${account}:${owner}/${id}`
+  return `comment:${teamAccountKey(viewer)}:${owner}/${id}`
+}
+
+/** 当前团队账号：门户地址 + 我的账号名。 */
+function teamAccountKey(viewer: CommentDraftViewer): string {
+  return `${encodeURIComponent(viewer.portalUrl ?? "")}|${encodeURIComponent(viewer.name)}`
 }
 
 /**
@@ -706,7 +875,9 @@ export function SessionCommentsButton({
 
 /**
  * 自己会话右侧的留言栏：只在这个会话是当前会话、留言栏对它开着时画。
- * `onForward` 是这个会话的排队区入队（和实时反馈重发用同一个）。
+ * `onForward` 是这个会话的排队区入队（和实时反馈重发用同一个）。排队区
+ * 存不下的不交；交出去的消息后来被挤出这台机器存下的排队区、也没发出去的，
+ * 刷新后这条留言可以再交（消息已经没了，不算重复，也不让留言丢了）。
  */
 export function OwnSessionComments({
   conversationId,
@@ -737,25 +908,77 @@ function OwnSessionCommentsPanel({
   const t = useTranslations("CoworkTeam")
   const api = useSessionComments(owner, id, true)
   const forwarded = useOwnCommentsStore((s) => s.forwarded)
+  const portalUrl = useCoworkTeamStore((s) => s.status?.portalUrl ?? null)
   const isOwner = api.page?.isOwner === true
+
+  // 没交出去的那条留言，旁边说一声为什么：这台机器存不下记号（"mark"），
+  // 或者排队区存不下这条消息（"queue"）。
+  const [saveFailed, setSaveFailed] = useState<{
+    commentId: string
+    reason: "mark" | "queue"
+  } | null>(null)
+
+  // 交过没有：服务器说交过（forwardedAt），或者这台机器上这个账号交过（刷新后
+  // 也还在），或者这次打开期间刚交的。
+  const isForwarded = useCallback(
+    (
+      comment: TeamComment,
+      inMemory: Record<string, true>,
+      stored: Set<string>
+    ) => {
+      if (comment.forwardedAt) return true
+      const key = forwardedKey({ name: owner, portalUrl }, id, comment.id)
+      return inMemory[key] === true || stored.has(comment.id)
+    },
+    [owner, portalUrl, id]
+  )
+
+  // 这台机器上记着的，内存记号变了（刚交了一条）就重读一遍。
+  const stored = useMemo(
+    () => loadStoredForwarded({ name: owner, portalUrl }, id),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- forwarded 变了要重读
+    [owner, portalUrl, id, forwarded]
+  )
 
   const forward = useCallback(
     (comment: TeamComment) => {
       const store = useOwnCommentsStore.getState()
-      if (store.forwarded[`${id}/${comment.id}`]) return
-      // 先记下来再入队：连点两下也只进一次排队区。
-      store.markForwarded(id, comment.id)
-      onForward(forwardedCommentText(comment.authorLabel, comment.body))
+      const viewer = { name: owner, portalUrl }
+      if (
+        isForwarded(comment, store.forwarded, loadStoredForwarded(viewer, id))
+      )
+        return
+      // 排队区存不下这条（已经 50 条、太大、别的窗口占着）就不交：交了
+      // 刷新后消息没了，留言又能再交（#1512 第 4 次返工）。
+      const text = forwardedCommentText(comment.authorLabel, comment.body)
+      if (
+        !queueCanStoreAnother(messageQueueStorageKey(Number(id)), {
+          blocks: [{ type: "text", text }],
+          displayText: text,
+        })
+      ) {
+        setSaveFailed({ commentId: comment.id, reason: "queue" })
+        return
+      }
+      // 先记下来再入队：连点两下也只进一次排队区。记不下来就不交，
+      // 不然刷新以后它又能再交一次。消息后来被没被挤出去，刷新后看
+      // 排队区（见 loadStoredForwarded）。
+      if (!store.markForwarded(viewer, id, comment.id, text)) {
+        setSaveFailed({ commentId: comment.id, reason: "mark" })
+        return
+      }
+      setSaveFailed(null)
+      onForward(text)
       void teamCommentForwarded(id, comment.id).catch(() => {})
     },
-    [id, onForward]
+    [isForwarded, owner, portalUrl, id, onForward]
   )
 
   const renderForward = useCallback(
     (comment: TeamComment) => {
       if (!isOwner) return null
-      const done = forwarded[`${id}/${comment.id}`] === true
-      return (
+      const done = isForwarded(comment, forwarded, stored)
+      const button = (
         <button
           type="button"
           data-comment-forward=""
@@ -771,8 +994,19 @@ function OwnSessionCommentsPanel({
           {done ? t("commentForwarded") : t("commentForward")}
         </button>
       )
+      if (saveFailed?.commentId !== comment.id || done) return button
+      return (
+        <>
+          {button}
+          <span role="alert" className="text-[0.6875rem] text-destructive">
+            {saveFailed.reason === "queue"
+              ? t("commentForwardQueueFull")
+              : t("commentForwardNotSaved")}
+          </span>
+        </>
+      )
     },
-    [isOwner, forwarded, id, forward, t]
+    [isOwner, isForwarded, forwarded, stored, forward, saveFailed, t]
   )
 
   return (

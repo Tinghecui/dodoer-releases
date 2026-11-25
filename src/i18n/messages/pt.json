@@ -8525,7 +8525,9 @@
     "errorGeneric": "Algo deu errado. Tente novamente mais tarde",
     "dialogClose": "Fechar",
     "commentForward": "Passar ao meu agente",
-    "commentForwarded": "Passado ao agente"
+    "commentForwarded": "Passado ao agente",
+    "commentForwardNotSaved": "Este navegador não conseguiu guardar que o comentário foi passado, por isso ele não foi passado ao seu agente. Libere espaço de armazenamento do navegador e tente novamente.",
+    "commentForwardQueueFull": "A fila não consegue guardar esta mensagem (está cheia ou é grande demais), por isso ela não foi entregue ao seu agente. Tente de novo depois que algumas mensagens da fila forem enviadas."
   },
   "DesktopOnly": {
     "message": "Use este recurso em um computador",

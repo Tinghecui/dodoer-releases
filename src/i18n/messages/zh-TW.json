@@ -8525,7 +8525,9 @@
     "errorGeneric": "出了點問題，稍後再試",
     "dialogClose": "關閉",
     "commentForward": "交給我的智慧體",
-    "commentForwarded": "已交給智慧體"
+    "commentForwarded": "已交給智慧體",
+    "commentForwardNotSaved": "這個瀏覽器存不下「已交過」的記錄，所以沒有交給智慧體。騰出瀏覽器儲存空間後再試。",
+    "commentForwardQueueFull": "排隊區存不下這則訊息（已滿或太大），所以沒有交給智慧體。等排隊的訊息送出一些再試。"
   },
   "DesktopOnly": {
     "message": "這個功能請在電腦上使用",

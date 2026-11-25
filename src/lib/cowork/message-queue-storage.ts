@@ -547,6 +547,75 @@ export function draftQueueFullyStored(tabId: string): boolean {
   return true
 }
 
+/**
+ * #1512 第 3 次返工：现在排队区里有的消息文字（`displayText`），存进这台机器
+ * 的（所有会话、草稿的 key）和挂着的排队区内存里的分开给。转交的留言靠它
+ * 认出「交出去的那条消息还在不在、存没存下」。
+ */
+export function queuedMessageTexts(): {
+  stored: Set<string>
+  live: Set<string>
+} {
+  const stored = new Set<string>()
+  const store = storage()
+  if (store) {
+    const keys: string[] = []
+    try {
+      for (let i = 0; i < store.length; i++) {
+        const key = store.key(i)
+        if (
+          key &&
+          key.startsWith(`${STORAGE_PREFIX}:`) &&
+          !key.endsWith(CLAIM_SUFFIX)
+        )
+          keys.push(key)
+      }
+    } catch {
+      // 读不了存储：当作什么也没存
+    }
+    for (const key of keys) {
+      for (const item of readStoredQueue(key))
+        stored.add(item.draft.displayText)
+    }
+  }
+  const live = new Set<string>()
+  for (const readers of liveQueueReaders.values()) {
+    for (const read of readers) {
+      for (const item of read()) live.add(item.draft.displayText)
+    }
+  }
+  return { stored, live }
+}
+
+/**
+ * #1512 第 4 次返工：`key` 的排队区再排进一条 `draft`，这条能不能存进这台
+ * 机器（刷新后还在）。存储用不了、别的窗口占着、已经存满 `MAX_STORED_ITEMS`
+ * 条、排队区里已经有没存下的（大小超了）、加上这条超过 `MAX_STORED_CHARS`
+ * 时是 false。转交留言在交之前问它：存不下就不交，免得刷新后消息没了、
+ * 留言又能再交。
+ */
+export function queueCanStoreAnother(key: string, draft: PromptDraft): boolean {
+  const store = storage()
+  if (!store) return false
+  if (!canClaimStoredQueue(key)) return false
+  const stored = readStoredQueue(key)
+  if (stored.length >= MAX_STORED_ITEMS) return false
+  const storedIds = new Set(stored.map((item) => item.id))
+  for (const read of liveQueueReaders.get(key) ?? []) {
+    for (const item of read()) if (!storedIds.has(item.id)) return false
+  }
+  let size = 2
+  try {
+    size = store.getItem(key)?.length ?? 2
+  } catch {
+    return false
+  }
+  // 这条存进去的大概长度：id、草稿，模式名和别的标记留一点余量
+  const extra =
+    JSON.stringify({ id: randomUUID(), draft, modeId: null }).length + 1 + 256
+  return size + extra <= MAX_STORED_CHARS
+}
+
 /** Mirror `queue` into `key`; an empty queue removes the entry. Never
  *  throws: storage full or unavailable only loses the restart copy. Only the
  *  window holding the claim (`claimStoredQueue`) calls this. */

@@ -8525,7 +8525,9 @@
     "errorGeneric": "出了点问题，稍后再试",
     "dialogClose": "关闭",
     "commentForward": "交给我的智能体",
-    "commentForwarded": "已交给智能体"
+    "commentForwarded": "已交给智能体",
+    "commentForwardNotSaved": "这个浏览器存不下「已交过」的记录，所以没有交给智能体。腾出浏览器存储空间后再试。",
+    "commentForwardQueueFull": "排队区存不下这条消息（已满或太大），所以没有交给智能体。等排队的消息发出去一些再试。"
   },
   "DesktopOnly": {
     "message": "这个功能请在电脑上使用",

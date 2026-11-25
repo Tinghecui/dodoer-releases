@@ -472,7 +472,22 @@ describe("宽容地读返回值", () => {
       parentId: null,
       anchor: null,
       canDelete: false,
+      forwardedAt: null,
     })
+  })
+
+  it("comments：forwardedAt 有就带上，缺了是 null", () => {
+    const page = normalizeTeamComments({
+      isOwner: true,
+      comments: [
+        { id: 5, body: "a", forwardedAt: "2026-11-24T08:00:00Z" },
+        { id: 6, body: "b", forwardedAt: null },
+      ],
+    })
+    expect(page.comments.map((c) => c.forwardedAt)).toEqual([
+      "2026-11-24T08:00:00Z",
+      null,
+    ])
   })
 
   it("team：会话缺 owner 时用成员名", () => {

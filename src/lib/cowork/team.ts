@@ -159,6 +159,8 @@ export interface TeamComment {
   mine: boolean
   canDelete: boolean
   anchor: string | null
+  /** 主人已经把这条交给过智能体的时间；没交过、或者服务器还不带这个字段是 null。 */
+  forwardedAt: string | null
 }
 
 export interface TeamCommentsPage {
@@ -469,6 +471,7 @@ export function normalizeTeamComment(raw: unknown): TeamComment | null {
     mine: c.mine === true,
     canDelete: c.canDelete === true,
     anchor: strOrNull(c.anchor),
+    forwardedAt: strOrNull(c.forwardedAt),
   }
 }
 

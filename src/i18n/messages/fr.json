@@ -8525,7 +8525,9 @@
     "errorGeneric": "Un problème est survenu. Réessayez plus tard",
     "dialogClose": "Fermer",
     "commentForward": "Confier à mon agent",
-    "commentForwarded": "Confié à l'agent"
+    "commentForwarded": "Confié à l'agent",
+    "commentForwardNotSaved": "Ce navigateur n'a pas pu enregistrer que le commentaire a été confié, il n'a donc pas été confié à votre agent. Libérez de l'espace de stockage du navigateur et réessayez.",
+    "commentForwardQueueFull": "La file d'attente ne peut pas conserver ce message (pleine ou trop volumineuse), il n'a donc pas été confié à votre agent. Réessayez une fois que quelques messages en attente auront été envoyés."
   },
   "DesktopOnly": {
     "message": "Utilisez cette fonction sur un ordinateur",

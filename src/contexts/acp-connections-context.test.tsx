@@ -39,6 +39,11 @@ import {
 import { saveConfigPreference } from "@/lib/selector-prefs-storage"
 import { collectLiveRuns } from "@/lib/live-runs"
 import { inferLiveToolName } from "@/lib/tool-call-normalization"
+import {
+  adaptMessageTurn,
+  type AdaptedToolCallPart,
+} from "@/lib/adapters/ai-elements-adapter"
+import { toolCallStatus } from "@/lib/activity/status"
 import type { AttachHandlers } from "@/lib/transport/types"
 import {
   resetAppWorkspaceStore,
@@ -1647,6 +1652,82 @@ describe("AcpConnectionsProvider failed-turn line", () => {
         kind: "connection_lost",
       },
     ])
+  })
+
+  // #1555：智能体跑长命令时被杀，这一轮没跑完的命令要标成被打断，刷新前后
+  // 一样（刷新后由后端的 mark_cut_off_calls 标）。已经有结果的不动。
+  it("marks a lost connection's unfinished tool calls cancelled", async () => {
+    const handlers = await promptingOwner()
+    const call = (seq: number, id: string, status: string) =>
+      emitAcpEvent(handlers, {
+        seq,
+        connection_id: "spawned-conn",
+        type: "tool_call",
+        tool_call_id: id,
+        title: "Terminal",
+        kind: "execute",
+        status,
+        content: null,
+        raw_input: null,
+        raw_output: null,
+      })
+    call(2, "call_done", "completed")
+    call(3, "call_dd", "in_progress")
+    call(4, "call_queued", "pending")
+    emitAcpEvent(handlers, {
+      seq: 5,
+      connection_id: "spawned-conn",
+      type: "session_failure",
+      record: {
+        id: "t1:error",
+        revision: 1,
+        category: "connection",
+        severity: "error",
+        title: "The connection to Claude was lost.",
+        actions: ["new_session"],
+      },
+    })
+    const statuses = Object.fromEntries(
+      h
+        .store!.getConnection(TAB)!
+        .liveMessage!.content.flatMap((block) =>
+          block.type === "tool_call"
+            ? [[block.info.tool_call_id, block.info.status]]
+            : []
+        )
+    )
+    expect(statuses).toEqual({
+      call_done: "completed",
+      call_dd: "cancelled",
+      call_queued: "cancelled",
+    })
+  })
+
+  // 别的失败（服务报错）智能体自己会给调用记终态，不替它改。
+  it("leaves tool calls alone on a failure that is not a lost connection", async () => {
+    const handlers = await promptingOwner()
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "tool_call",
+      tool_call_id: "call_dd",
+      title: "Terminal",
+      kind: "execute",
+      status: "in_progress",
+      content: null,
+      raw_input: null,
+      raw_output: null,
+    })
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "session_failure",
+      record: failureRecord(1, "error", "API Error: 503"),
+    })
+    const block = h
+      .store!.getConnection(TAB)!
+      .liveMessage!.content.find((b) => b.type === "tool_call")
+    expect(block?.type === "tool_call" && block.info.status).toBe("in_progress")
   })
 
   it("lands text still queued for the stream before the line", async () => {
@@ -4358,15 +4439,35 @@ describe("out-of-turn wire guard + background activity", () => {
         { type: "tool_use", status: "pending" },
       ])
       closeCall("toolu_1")
+      // #1555：停止打断的调用随后报 failed，记成被打断，和刷新后一样。
       expect(blocksOf("toolu_1")).toMatchObject([
-        { type: "tool_use", status: "failed" },
+        { type: "tool_use", status: "cancelled" },
         {
           type: "tool_result",
           output_preview:
             "The user doesn't want to proceed with this tool use.",
-          is_error: true,
+          is_error: false,
         },
       ])
+      expect(
+        toolCallStatus(
+          adaptMessageTurn(
+            {
+              id: "t",
+              role: "assistant",
+              timestamp: new Date(0).toISOString(),
+              blocks: blocksOf("toolu_1"),
+            },
+            {
+              attachedResources: "Attached resources",
+              toolCallFailed: "Tool failed",
+              pageHandoffName: () => "page",
+            }
+          ).content.find(
+            (part): part is AdaptedToolCallPart => part.type === "tool-call"
+          )!
+        )
+      ).toBe("cancelled")
 
       // A progress report folds in and rides along to the one that closes the
       // call, which lands as it would have inside the turn: streamed output
@@ -4390,8 +4491,8 @@ describe("out-of-turn wire guard + background activity", () => {
       ])
       closeCall("toolu_2")
       expect(blocksOf("toolu_2")).toMatchObject([
-        { type: "tool_use", status: "failed" },
-        { type: "tool_result", output_preview: "partial\n", is_error: true },
+        { type: "tool_use", status: "cancelled" },
+        { type: "tool_result", output_preview: "partial\n", is_error: false },
       ])
 
       // A turn that ended on its own leaves a late report out of its cards.

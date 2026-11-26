@@ -56,6 +56,26 @@ describe("toolCallStatus", () => {
     )
   })
 
+  it("shows a call the user stopped as interrupted, not declined (#1555)", () => {
+    // 解析器认出被停止打断的调用、标成 cancelled：Claude 给它写的结果和拒绝
+    // 是同一句话，仍要显示「已中断」，和刷新前一样。
+    const refusal =
+      "The user doesn't want to proceed with this tool use. The tool use was rejected"
+    expect(
+      toolCallStatus(
+        call({
+          state: "output-error",
+          errorText: refusal,
+          toolStatus: "cancelled",
+        })
+      )
+    ).toBe("cancelled")
+    // 没有这个标记的照旧是拒绝。
+    expect(
+      toolCallStatus(call({ state: "output-error", errorText: refusal }))
+    ).toBe("rejected")
+  })
+
   it("lets a pending permission win", () => {
     expect(toolCallStatus(call({}), { awaiting: true })).toBe("awaiting")
   })

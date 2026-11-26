@@ -23,7 +23,10 @@ import { isGrepNoMatchCommandResult } from "@/lib/grep-no-match"
 import { isBackgroundTaskToolCall } from "@/lib/background-task"
 import { isContextCompactionMeta } from "@/lib/context-compaction"
 import { readKimiMcpOAuth } from "@/lib/kimi-mcp-oauth"
-import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
+import {
+  isUnsettledToolCall,
+  toolStatusCancelled,
+} from "@/lib/tool-call-lifecycle"
 import { feedbackCheckHasContent } from "@/lib/feedback-check"
 import {
   extractPlanMarkdown,
@@ -2461,6 +2464,11 @@ export function adaptMessageTurn(
           agentStats: matchedResult.agent_stats ?? undefined,
           exitCode: matchedResult.exit_code ?? undefined,
           meta: block.meta ?? null,
+          // 一轮中途连接断了、被打断的调用带着半截输出（#1555）：只转这一种
+          // 状态，界面显示中断；别的状态照旧以结果为准。
+          ...(toolStatusCancelled(block.status)
+            ? { toolStatus: block.status }
+            : {}),
           // The settled card keeps its interleaved view from whichever source
           // survives: the live transcript while localTurns still holds it, the
           // parsed child transcript once history reloads from disk.

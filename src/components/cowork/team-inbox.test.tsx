@@ -577,6 +577,30 @@ describe("重新打开收件箱时的旧分享列表（第 4 次返工）", () =
     expect(useCoworkTeamStore.getState().summary?.sharedNew).toBe(0)
   })
 
+  it("旧列表里的分享已在别处看过、关着期间又来一条新分享：全部标已读也把新的标掉", async () => {
+    makeAvailable({ ...NO_SHARES, sharedNew: 1 })
+    // 第一次打开时 11 还是新的。
+    api.teamShared.mockReset().mockResolvedValueOnce(SHARED)
+    renderInbox()
+    await openThenClose()
+    // 关着期间 11 在别处看过了，又来了一条新分享 12：数字还是 1。
+    act(() => {
+      useCoworkTeamStore.getState().setSummary({ ...NO_SHARES, sharedNew: 1 })
+    })
+    const fresh = item({ owner: "member-d", id: "12", isNew: true })
+    api.teamShared
+      .mockReturnValueOnce(new Promise<TeamSharedItem[]>(() => {}))
+      .mockResolvedValue([{ ...SHARED[1], isNew: false }, fresh])
+    fireEvent.click(inboxButton())
+    // 新列表回来前手上还是旧的，里面有已经看过的 11。
+    await waitFor(() => expect(itemKeys()).toContain("share:member-b/11"))
+    fireEvent.click(screen.getByRole("button", { name: "Mark all read" }))
+    await waitFor(() =>
+      expect(api.teamSharedSeen).toHaveBeenCalledWith("member-d", "12")
+    )
+    expect(useCoworkTeamStore.getState().summary?.sharedNew).toBe(0)
+  })
+
   it("关着期间同事分享了会话又回复，重新打开、新列表回来前点回复：按分享来的写", async () => {
     makeAvailable(NO_SHARES, [{ id: "g1", name: "Backend" }])
     api.teamShared.mockReset().mockResolvedValueOnce([])

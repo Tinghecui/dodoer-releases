@@ -171,6 +171,12 @@ export function useCoworkTeamAvailable(): boolean {
   return useCoworkTeamStore((state) => state.available)
 }
 
+/**
+ * 点到这些就算用户自己换了地方：侧栏里自己的会话、标签栏里的标签。只读视图
+ * 外壳靠它收起视图，收件箱靠它判断等完要不要再盖上去，两处共用这一份。
+ */
+export const USER_NAV_TARGETS = "[data-conversation-id], [data-tab-id]"
+
 /** 「分享给我」里点了一行：在主区域只读打开它。 */
 export function openSharedItem(item: TeamSharedItem): void {
   useCoworkTeamStore.getState().openSharedSession({

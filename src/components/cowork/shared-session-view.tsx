@@ -57,6 +57,7 @@ import {
   useSessionComments,
 } from "@/components/cowork/session-comments"
 import {
+  USER_NAV_TARGETS,
   useCoworkTeamStore,
   type SharedSessionTarget,
 } from "@/stores/cowork-team-store"
@@ -76,12 +77,9 @@ export function sharedSessionPortalLink(
   return `${base}/s/${encodeURIComponent(owner)}/${encodeURIComponent(id)}`
 }
 
-/**
- * 点到这些就收起只读视图：侧栏里自己的会话、标签栏里的标签。鼠标看
- * pointerdown；键盘回车、空格激活只发 click（激活本来就选中的那个时，活动
- * 标签也不变），所以 click 也看。
- */
-const FOLD_ON_POINTER = "[data-conversation-id], [data-tab-id]"
+// 点到 USER_NAV_TARGETS（侧栏里自己的会话、标签栏里的标签）就收起只读视图。
+// 鼠标看 pointerdown；键盘回车、空格激活只发 click（激活本来就选中的那个时，
+// 活动标签也不变），所以 click 也看。
 
 /**
  * 会话面板内容的外壳：没在看同事的会话时原样画 children；在看时 children
@@ -110,7 +108,7 @@ export function SharedSessionHost({ children }: { children: ReactNode }) {
     if (!open) return
     const onPointerDown = (event: Event) => {
       const target = event.target
-      if (target instanceof Element && target.closest(FOLD_ON_POINTER)) close()
+      if (target instanceof Element && target.closest(USER_NAV_TARGETS)) close()
     }
     document.addEventListener("pointerdown", onPointerDown, true)
     document.addEventListener("click", onPointerDown, true)

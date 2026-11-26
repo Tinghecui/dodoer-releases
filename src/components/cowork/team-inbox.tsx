@@ -46,6 +46,7 @@ import { useTabStore } from "@/stores/tab-store"
 import {
   openSharedItem,
   type SharedSessionTarget,
+  USER_NAV_TARGETS,
   useCoworkTeamAvailable,
   useCoworkTeamStore,
   withoutCommentSession,
@@ -144,9 +145,6 @@ export async function resolveReplyVia(
   if (!list) return { kind: "shared" }
   return { kind: "leader", groupName: leaderOf[0].name }
 }
-
-/** 点到这些就算用户自己换了会话：侧栏里自己的会话、标签栏里的标签。 */
-const USER_NAV_TARGETS = "[data-conversation-id], [data-tab-id]"
 
 /**
  * 从现在起盯着用户有没有自己换到别的地方：点了侧栏里的会话或标签、活动标签
@@ -460,12 +458,13 @@ function TeamInboxButton({
   )
 
   const markAll = useCallback(() => {
-    for (const entry of entries) markEntry(entry)
     // 分享列表还在加载（包括重新打开后手上还是上次的旧列表）或加载失败时，
     // 新分享不一定都在条目里：现拉一次，把拉到的新分享也逐个标掉，「全部」
-    // 才名副其实。
+    // 才名副其实。新分享数要在标条目之前取：旧列表里可能有已在别处看过的
+    // 分享，标它们会先把数字减到零，再取就会以为没有新分享、跳过现拉。
     const sharedNew = useCoworkTeamStore.getState().summary?.sharedNew ?? 0
     const stale = shared === null || error !== null || sharedPending.current
+    for (const entry of entries) markEntry(entry)
     if (stale && sharedNew > 0) {
       fetchShared((list) => {
         for (const x of list) if (x.isNew) markShareSeen(x)

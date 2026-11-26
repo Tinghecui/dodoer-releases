@@ -3761,13 +3761,38 @@ impl ConnectionManager {
 
     /// Cowork 加的：15 秒一次的进程观察（`lifecycle_subscriber_task` 调）。只看在跑或在等
     /// 后台、pid 格子非 0（或先前非 0、现在 0）的连接，读法见 `acp::process_watch`。
+    /// #1554：空闲的 Claude 连接也看记下的 Claude 进程，它没了就把转接进程停掉，
+    /// 走和智能体进程退出一样的路（发 Error 和 Disconnected，下一条消息重新连上）。
     pub async fn refresh_process_watch(&self) {
-        self.refresh_process_watch_with(
-            Arc::new(crate::acp::process_watch::LiveProc),
-            chrono::Utc::now(),
-            crate::acp::process_watch::silence_timeout(),
-        )
-        .await;
+        let ended = self
+            .refresh_process_watch_with(
+                Arc::new(crate::acp::process_watch::LiveProc),
+                chrono::Utc::now(),
+                crate::acp::process_watch::silence_timeout(),
+            )
+            .await;
+        for (conn_id, pid) in ended {
+            self.end_idle_claude_connection(&conn_id, pid).await;
+        }
+    }
+
+    /// #1554：空闲时 Claude 进程没了的连接：转接进程还是 `pid` 那一个时，把它的进程树停掉。
+    /// 连接循环看到智能体退出，照常发 Error 和 Disconnected、把连接摘掉。
+    async fn end_idle_claude_connection(&self, conn_id: &str, pid: u32) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let cell = {
+            let connections = self.connections.lock().await;
+            match connections.get(conn_id) {
+                Some(conn) if conn.child_pid.load(SeqCst) == pid => Arc::clone(&conn.child_pid),
+                _ => return,
+            }
+        };
+        tracing::warn!(
+            "[ACP] claude process gone while idle; ending connection={conn_id} adapter_pid={pid}"
+        );
+        if let Err(err) = tokio::task::spawn_blocking(move || kill_tree_and_wait(&cell)).await {
+            tracing::warn!("[ACP] ending idle claude connection={conn_id} failed: {err}");
+        }
     }
 
     /// [`Self::refresh_process_watch`] 的本体，读进程的办法和时钟可以注入。
@@ -3775,12 +3800,14 @@ impl ConnectionManager {
     /// 先在读锁下给每条要看的连接记下 `event_seq` 和 pid，放开所有锁以后在
     /// `spawn_blocking` 里读 `/proc`；回来拿写锁时 `event_seq` 或 pid 变了，这次观察整个
     /// 丢掉（不写、不广播）。结论变了才广播，走 [`crate::web::event_bridge`] 同一条路。
+    ///
+    /// 返回空闲时 Claude 进程确定没了的连接（连接 id 和当时的转接进程 pid），由调用方停掉。
     pub(crate) async fn refresh_process_watch_with(
         &self,
         reader: Arc<dyn crate::acp::process_watch::ProcReader>,
         now: chrono::DateTime<chrono::Utc>,
         silence: chrono::Duration,
-    ) {
+    ) -> Vec<(String, u32)> {
         use crate::acp::process_watch::{WatchInput, WatchTarget};
         use std::sync::atomic::Ordering::SeqCst;
 
@@ -3792,12 +3819,14 @@ impl ConnectionManager {
             seq: u64,
             input: WatchInput,
             target: Option<WatchTarget>,
+            /// #1554：空闲的 Claude 连接，`target` 只看记下的 Claude 进程，不判「?」。
+            idle_claude: Option<String>,
         }
 
         let plans: Vec<Plan> = {
             let connections = self.connections.lock().await;
             let mut plans = Vec::new();
-            for conn in connections.values() {
+            for (conn_id, conn) in connections.iter() {
                 let s = conn.state.read().await;
                 if s.status == ConnectionStatus::Disconnected {
                     continue;
@@ -3817,6 +3846,13 @@ impl ConnectionManager {
                 let settling = !running && !waiting && s.process_watch.was_waiting;
                 let watched =
                     (running || waiting || settling) && (pid != 0 || s.process_watch.seen_pid != 0);
+                let is_claude = conn.agent_type == crate::models::agent::AgentType::ClaudeCode;
+                // #1554：空闲、记下过 Claude 进程的 Claude 连接：只查它一次 stat。
+                let idle_claude = !watched
+                    && is_claude
+                    && pid != 0
+                    && pid == s.process_watch.seen_pid
+                    && s.process_watch.claude_child.is_some();
                 let target = if watched {
                     Some(WatchTarget {
                         pid,
@@ -3825,8 +3861,15 @@ impl ConnectionManager {
                         needs_children: now.signed_duration_since(s.last_progress_at) >= silence,
                         // 只有 Claude 连接看转接进程下面的 Claude 进程（在跑或等后台时都记下，
                         // 判「?」只在等后台时）：别的智能体有的没有子进程、有的每轮起一个，看了会误标。
-                        claude_child: conn.agent_type
-                            == crate::models::agent::AgentType::ClaudeCode,
+                        claude_child: is_claude,
+                    })
+                } else if idle_claude {
+                    Some(WatchTarget {
+                        pid,
+                        watch: s.process_watch.clone(),
+                        tasks: Vec::new(),
+                        needs_children: false,
+                        claude_child: true,
                     })
                 } else if s.process_watch.uncertain.is_some() {
                     None
@@ -3840,12 +3883,13 @@ impl ConnectionManager {
                     seq: s.event_seq,
                     input,
                     target,
+                    idle_claude: idle_claude.then(|| conn_id.clone()),
                 });
             }
             plans
         };
         if plans.is_empty() {
-            return;
+            return Vec::new();
         }
 
         // 放开了所有锁才读 `/proc`。
@@ -3865,10 +3909,11 @@ impl ConnectionManager {
             Ok(samples) => samples,
             Err(err) => {
                 tracing::warn!("[ACP] process watch sampling failed: {err}");
-                return;
+                return Vec::new();
             }
         };
 
+        let mut ended = Vec::new();
         for (plan, sample) in plans.into_iter().zip(samples) {
             let mut s = plan.state.write().await;
             if s.event_seq != plan.seq
@@ -3878,8 +3923,17 @@ impl ConnectionManager {
                 continue;
             }
             let before = s.process_watch.uncertain;
+            if let (Some(conn_id), Some(sample)) = (plan.idle_claude.as_ref(), sample.as_ref()) {
+                if crate::acp::process_watch::idle_claude_exited(
+                    &s.process_watch,
+                    &plan.input,
+                    sample,
+                ) {
+                    ended.push((conn_id.clone(), plan.input.pid));
+                }
+            }
             match (plan.target.as_ref(), sample) {
-                (Some(target), Some(sample)) => {
+                (Some(target), Some(sample)) if plan.idle_claude.is_none() => {
                     crate::acp::process_watch::observe(
                         &mut s.process_watch,
                         &plan.input,
@@ -3901,6 +3955,7 @@ impl ConnectionManager {
                 crate::web::event_bridge::publish_process_observation(&plan.emitter, &s, before);
             }
         }
+        ended
     }
 
     /// Cowork 加的：`acp_list_background_pending` 两个入口返回的东西：活着的连接的读数
@@ -9886,9 +9941,10 @@ mod tests {
     }
 
     /// #1452：一轮正常跑完、没有后台任务的 Claude 连接，空闲以后 Claude 进程不在了不标「?」
-    /// （只有刚从等后台变成不等的那一次才看）。
+    /// （只有刚从等后台变成不等的那一次才看）。#1554：但要把这条连接交出去停掉；
+    /// Claude 进程还在时不停，别的智能体空闲时一个文件都不读。
     #[tokio::test]
-    async fn process_watch_ignores_a_claude_child_after_a_plain_turn() {
+    async fn process_watch_ends_an_idle_claude_connection_whose_claude_child_vanished() {
         use crate::acp::process_watch::ProcessProbe;
         use crate::models::agent::AgentType;
         let mgr = ConnectionManager::new();
@@ -9898,22 +9954,57 @@ mod tests {
         conn.agent_type = AgentType::ClaudeCode;
         let state = Arc::clone(&conn.state);
         mgr.connections.lock().await.insert("claude".into(), conn);
+        let mut codex = watched_connection("codex", 4343, &broadcaster);
+        codex.agent_type = AgentType::Codex;
+        let codex_state = Arc::clone(&codex.state);
+        mgr.connections.lock().await.insert("codex".into(), codex);
 
         let first = CountingReader::with_children(
             &[
                 (4242, ProcessProbe::Alive { start: 1 }),
+                (4343, ProcessProbe::Alive { start: 2 }),
                 (5000, ProcessProbe::Alive { start: 50 }),
             ],
             &[5000],
             || {},
         );
-        mgr.refresh_process_watch_with(first, chrono::Utc::now(), silence())
+        let ended = mgr
+            .refresh_process_watch_with(first.clone(), chrono::Utc::now(), silence())
             .await;
+        assert!(ended.is_empty(), "{ended:?}");
         state.write().await.status = ConnectionStatus::Connected;
+        codex_state.write().await.status = ConnectionStatus::Connected;
+
+        // 空闲、Claude 进程还在：只读转接进程和 Claude 进程各一次 stat，Codex 一个不读。
+        let still = CountingReader::with_children(
+            &[
+                (4242, ProcessProbe::Alive { start: 1 }),
+                (4343, ProcessProbe::Alive { start: 2 }),
+                (5000, ProcessProbe::Alive { start: 50 }),
+            ],
+            &[5000],
+            || {},
+        );
+        let ended = mgr
+            .refresh_process_watch_with(still.clone(), chrono::Utc::now(), silence())
+            .await;
+        assert!(ended.is_empty(), "{ended:?}");
+        assert_eq!(still.calls(), 2);
+        assert_eq!(
+            state.read().await.process_watch.claude_child,
+            Some(crate::acp::process_watch::ProcessIdentity {
+                pid: 5000,
+                start: 50
+            })
+        );
+
+        // Claude 进程被杀、转接进程还活着：不标「?」，把这条连接交出去停掉。
         let gone =
             CountingReader::with_children(&[(4242, ProcessProbe::Alive { start: 1 })], &[], || {});
-        mgr.refresh_process_watch_with(gone, chrono::Utc::now(), silence())
+        let ended = mgr
+            .refresh_process_watch_with(gone, chrono::Utc::now(), silence())
             .await;
+        assert_eq!(ended, vec![("claude".to_string(), 4242)]);
         assert!(background_broadcasts(&mut rx).is_empty());
         assert_eq!(state.read().await.process_watch.uncertain, None);
     }

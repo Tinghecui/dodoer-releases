@@ -299,7 +299,7 @@ pub(crate) struct ProcessWatch {
     pub writers: BTreeMap<String, Vec<ProcessIdentity>>,
     /// 只有 Claude 连接用：在跑或等后台时第一次看到的、转接进程（pid 格子里那个）下面的
     /// 直接子进程，也就是真正的 Claude 进程。之后只认这一个，不猜新冒出来的子进程。
-    /// 不在跑也不在等后台、pid 格子换了时丢掉。
+    /// pid 格子换了时丢掉；空闲时留着（#1554，空闲时它没了就把连接停掉）。
     pub claude_child: Option<ProcessIdentity>,
     /// 上一次观察时在等后台（`count > 0`）。#1452：Claude 进程被杀以后适配器会把后台任务
     /// 报成结束，计数先归零，所以刚从等后台变成不等的那一次观察还要按记下的 Claude 进程判一次。
@@ -325,7 +325,7 @@ pub(crate) struct WatchTarget {
     pub tasks: Vec<WatchedTask>,
     /// 要不要数活着的子进程（已经安静过了时限才要）。
     pub needs_children: bool,
-    /// 要不要看转接进程下面的 Claude 进程：Claude 连接（在跑或等后台）才看。
+    /// 要不要看转接进程下面的 Claude 进程：Claude 连接（在跑或等后台，或空闲但记下过）才看。
     pub claude_child: bool,
 }
 
@@ -519,6 +519,30 @@ pub(crate) fn judge(
     None
 }
 
+/// #1554：一轮已经回完、不在等后台（也不是刚等完）的 Claude 连接，转接进程还活着（还是
+/// 先前那一个），先前记下的 Claude 进程确定不在了。这时连接已经用不了，但不进「?」
+/// （「?」会让侧栏把会话算成在跑），由调用方按智能体进程退出把连接停掉（纯函数）。
+pub(crate) fn idle_claude_exited(
+    watch: &ProcessWatch,
+    input: &WatchInput,
+    sample: &WatchSample,
+) -> bool {
+    if input.running || input.waiting || watch.was_waiting {
+        return false;
+    }
+    if input.pid == 0 || watch.seen_pid != input.pid || watch.claude_child.is_none() {
+        return false;
+    }
+    let ProcessProbe::Alive { start } = sample.agent else {
+        return false;
+    };
+    let same_agent = watch
+        .agent
+        .filter(|a| a.pid == input.pid)
+        .is_none_or(|a| a.start == start);
+    same_agent && sample.claude_child_alive == Some(false)
+}
+
 /// 把一次（没过期的）采样记进 `watch`，返回新的结论（也写进 `watch.uncertain`）。
 /// `tasks` 是采样时要看的任务，不在里面的任务的绑定丢掉。
 pub(crate) fn observe(
@@ -542,9 +566,8 @@ pub(crate) fn observe(
         }
     }
     watch.was_waiting = input.waiting;
-    if !(input.running || input.waiting) {
-        watch.claude_child = None;
-    } else if watch.claude_child.is_none() && input.pid != 0 {
+    // #1554：空闲时也留着（空闲时按它判 [`idle_claude_exited`]），只在 pid 格子换了时丢掉（上面）。
+    if (input.running || input.waiting) && watch.claude_child.is_none() && input.pid != 0 {
         watch.claude_child = sample.new_claude_child;
     }
     watch
@@ -1322,13 +1345,13 @@ mod tests {
         // 又开始跑一轮：留着。
         observe(&mut watch, &input(), &[], &again);
         assert!(watch.claude_child.is_some());
-        // 不在跑也不在等后台了：丢掉。
+        // 不在跑也不在等后台了：留着（#1554）。
         let idle = WatchInput {
             running: false,
             ..input()
         };
         observe(&mut watch, &idle, &[], &again);
-        assert_eq!(watch.claude_child, None);
+        assert!(watch.claude_child.is_some());
         // pid 格子换了：丢掉。
         let mut watch = watched_with_claude();
         let other = WatchInput {
@@ -1411,8 +1434,10 @@ mod tests {
             Some(BackgroundUncertainReason::AgentExited)
         );
         assert!(!watch.was_waiting);
-        assert_eq!(watch.claude_child, None);
+        // #1554：记下的留着，之后空闲时按它判 `idle_claude_exited`，不再进「?」。
+        assert!(watch.claude_child.is_some());
         assert_eq!(judge(&watch, &idle, &gone), None);
+        assert!(idle_claude_exited(&watch, &idle, &gone));
 
         // Claude 进程还活着：后台任务正常做完，不标；写进程不在了、安静太久也不看。
         let mut watch = ProcessWatch {
@@ -1434,6 +1459,62 @@ mod tests {
         // 上一次就不在等后台（一轮正常跑完）：不看。
         let plain = watched_with_claude();
         assert_eq!(judge(&plain, &idle, &gone), None);
+    }
+
+    /// #1554：一轮回完、空闲的 Claude 连接，记下的 Claude 进程留着；它确定不在了（转接进程
+    /// 还活着）不进「?」，而是得出「空闲时 Claude 进程退出」，由调用方把连接停掉。
+    #[test]
+    fn an_idle_claude_child_is_kept_and_its_exit_is_reported_without_uncertain() {
+        let idle = WatchInput {
+            running: false,
+            waiting: false,
+            ..input()
+        };
+        let alive = WatchSample {
+            claude_child_alive: Some(true),
+            ..healthy()
+        };
+        let gone = WatchSample {
+            claude_child_alive: Some(false),
+            ..healthy()
+        };
+        let mut watch = watched_with_claude();
+        assert_eq!(observe(&mut watch, &idle, &[], &alive), None);
+        assert_eq!(
+            watch.claude_child,
+            Some(ProcessIdentity {
+                pid: 200,
+                start: 20
+            })
+        );
+        assert!(!idle_claude_exited(&watch, &idle, &alive));
+        assert_eq!(judge(&watch, &idle, &gone), None);
+        assert!(idle_claude_exited(&watch, &idle, &gone));
+
+        // 不知道（读不了）、转接进程不在了或被换了、没记下过、在跑或在等后台：都不算。
+        let unknown = WatchSample {
+            claude_child_alive: None,
+            ..healthy()
+        };
+        assert!(!idle_claude_exited(&watch, &idle, &unknown));
+        let adapter_gone = WatchSample {
+            agent: ProcessProbe::Gone,
+            ..gone.clone()
+        };
+        assert!(!idle_claude_exited(&watch, &idle, &adapter_gone));
+        let reused = WatchSample {
+            agent: ProcessProbe::Alive { start: 8 },
+            ..gone.clone()
+        };
+        assert!(!idle_claude_exited(&watch, &idle, &reused));
+        assert!(!idle_claude_exited(&watched(), &idle, &gone));
+        assert!(!idle_claude_exited(&watch, &input(), &gone));
+        assert!(!idle_claude_exited(&watch, &waiting(), &gone));
+        let settling = ProcessWatch {
+            was_waiting: true,
+            ..watch.clone()
+        };
+        assert!(!idle_claude_exited(&settling, &idle, &gone));
     }
 
     #[test]

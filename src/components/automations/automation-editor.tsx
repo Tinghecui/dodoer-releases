@@ -35,6 +35,7 @@ import { Label } from "@/components/ui/label"
 import { FolderSelect } from "@/components/shared/folder-select"
 import { cn } from "@/lib/utils"
 import { automationComputeNextRun } from "@/lib/api"
+import type { AutomationEditorDraft } from "@/lib/automation-draft"
 import type {
   AgentType,
   Automation,
@@ -62,6 +63,12 @@ interface AutomationEditorProps {
   /** 表单和打开时比改没改过，变了就报一次。页面靠它在切到别的自动化、新建之前
    *  先问一句，不悄悄丢掉没保存的修改（#1456）。 */
   onDirtyChange?: (dirty: boolean) => void
+  /** 上次没保存、存在浏览器里的草稿（#1564）：有的话各个字段用它的值打开，
+   *  「改过没有」照旧和 `automation` 比。 */
+  initialDraft?: AutomationEditorDraft | null
+  /** 表单改过就报当前的值，改回原样报 null；页面拿它存草稿，刷新、离开页面
+   *  再回来还能接着改（#1564）。 */
+  onDraftChange?: (draft: AutomationEditorDraft | null) => void
 }
 
 const CRON_PRESETS = [
@@ -85,48 +92,68 @@ export function AutomationEditor({
   onBackToTemplates,
   defaultFolderId = null,
   onDirtyChange,
+  initialDraft = null,
+  onDraftChange,
 }: AutomationEditorProps) {
   const t = useTranslations("Automations")
   const errorMessage = useAutomationErrorMessage()
   const folders = useAppWorkspaceStore((s) => s.folders)
 
-  const [name, setName] = useState(automation?.name ?? "")
-  const [action, setAction] = useState<AutomationAction>(
-    automation?.config?.action ?? "launch_session"
-  )
-  const [agentType, setAgentType] = useState<AgentType>(
+  // 草稿只在打开时读一次。
+  const [draft0] = useState(initialDraft)
+  // 打开时自动化本身的智能体和文件夹，「改过没有」拿它们当基准。
+  const [openedAgent] = useState<AgentType>(
     automation?.agent_type ?? "claude_code"
+  )
+  const [openedFolder] = useState<number | null>(
+    () =>
+      (automation == null ? defaultFolderId : automation.root_folder_id) ??
+      folders[0]?.id ??
+      null
+  )
+  const [name, setName] = useState(draft0?.name ?? automation?.name ?? "")
+  const [action, setAction] = useState<AutomationAction>(
+    draft0?.action ?? automation?.config?.action ?? "launch_session"
+  )
+  // 草稿里的智能体只有用户自己选过才用：系统替换上的（原来的智能体这台设备上
+  // 没有）下次打开会再替换一次，不当成用户改的。
+  const [agentType, setAgentType] = useState<AgentType>(
+    draft0?.userChoseAgent ? draft0.agentType : openedAgent
   )
   // Mirrors the composer's plain text for live validation; the authoritative
   // value is read from the editor ref at submit (so a prefilled edit validates
   // even before the user types — defaultText applies without firing onChange).
-  const [prompt, setPrompt] = useState(automation?.config?.display_text ?? "")
+  const [prompt, setPrompt] = useState(
+    draft0?.prompt ?? automation?.config?.display_text ?? ""
+  )
   const [folderId, setFolderId] = useState<number | null>(
-    (automation == null ? defaultFolderId : automation.root_folder_id) ??
-      folders[0]?.id ??
-      null
+    draft0 ? draft0.folderId : openedFolder
   )
   const [isolation, setIsolation] = useState<AutomationIsolation>(
-    automation?.isolation ?? "worktree_per_run"
+    draft0?.isolation ?? automation?.isolation ?? "worktree_per_run"
   )
   const [trigger, setTrigger] = useState<AutomationTriggerKind>(
-    automation?.trigger_kind ?? "schedule"
+    draft0?.trigger ?? automation?.trigger_kind ?? "schedule"
   )
-  const [cron, setCron] = useState(automation?.cron ?? "0 9 * * 1-5")
+  const [cron, setCron] = useState(
+    draft0?.cron ?? automation?.cron ?? "0 9 * * 1-5"
+  )
   // Detected from this device once and shown read-only (Codex-style — no manual
   // override). Still feeds the next-run preview and the cron builder.
   const [timezone] = useState(automation?.timezone ?? detectTimezone())
   const [modeId, setModeId] = useState<string | null>(
-    automation?.config?.mode_id ?? null
+    draft0 ? draft0.modeId : (automation?.config?.mode_id ?? null)
   )
   const [configValues, setConfigValues] = useState<Record<string, string>>(
-    automation?.config?.config_values ?? {}
+    draft0?.configValues ?? automation?.config?.config_values ?? {}
   )
-  const [branch, setBranch] = useState(automation?.branch ?? "")
+  const [branch, setBranch] = useState(
+    draft0?.branch ?? automation?.branch ?? ""
+  )
   // Whether `branch` was picked from the remote group — persisted so the engine
   // can resolve a remote-only branch unambiguously (see is_remote_branch).
   const [isRemoteBranch, setIsRemoteBranch] = useState(
-    automation?.is_remote_branch ?? false
+    draft0?.isRemoteBranch ?? automation?.is_remote_branch ?? false
   )
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -139,8 +166,10 @@ export function AutomationEditor({
   // 判断「改过没有」用的智能体和文件夹基准：打开时的值，系统替换智能体
   // （onFallback）、自动补默认文件夹时跟着挪，不算用户改的；用户自己选的、
   // 改回原样就不算改过。
-  const [agentBaseline, setAgentBaseline] = useState<AgentType>(agentType)
-  const [folderBaseline, setFolderBaseline] = useState<number | null>(folderId)
+  const [agentBaseline, setAgentBaseline] = useState<AgentType>(openedAgent)
+  const [folderBaseline, setFolderBaseline] = useState<number | null>(
+    openedFolder
+  )
 
   const editorRef = useRef<RichComposerHandle>(null)
   const chromeFocus = useComposerChromeFocus(editorRef)
@@ -150,7 +179,7 @@ export function AutomationEditor({
   // unavailable on this device) updates the displayed type via onFallback but
   // leaves this false, so submit can persist the original agent instead of
   // silently swapping it (see the submit handler).
-  const userChoseAgentRef = useRef(false)
+  const userChoseAgentRef = useRef(draft0?.userChoseAgent ?? false)
 
   const folderPath = useMemo(
     () => folders.find((f) => f.id === folderId)?.path ?? null,
@@ -277,6 +306,37 @@ export function AutomationEditor({
   useEffect(() => {
     onDirtyChange?.(dirty)
   }, [dirty, onDirtyChange])
+
+  // 改过就把当前的值报给页面存草稿，改回原样报 null（#1564）。每次改都马上报，
+  // 不防抖：刚打完字就刷新也不丢。回调放 ref 里，页面重渲染不重报。
+  const onDraftChangeRef = useRef(onDraftChange)
+  useEffect(() => {
+    onDraftChangeRef.current = onDraftChange
+  })
+  const draftJson = dirty
+    ? JSON.stringify({
+        name,
+        action,
+        agentType,
+        userChoseAgent: agentType !== agentBaseline,
+        prompt,
+        folderId,
+        isolation,
+        trigger,
+        cron,
+        modeId,
+        configValues,
+        branch,
+        isRemoteBranch,
+      } satisfies AutomationEditorDraft)
+    : null
+  useEffect(() => {
+    onDraftChangeRef.current?.(
+      draftJson == null
+        ? null
+        : (JSON.parse(draftJson) as AutomationEditorDraft)
+    )
+  }, [draftJson])
 
   const submit = async () => {
     setError(null)
@@ -442,7 +502,7 @@ export function AutomationEditor({
         <ComposerInvocationsPopup inv={invocations} />
         <RichComposer
           ref={editorRef}
-          defaultText={automation?.config?.display_text ?? ""}
+          defaultText={draft0?.prompt ?? automation?.config?.display_text ?? ""}
           placeholder={t("promptPlaceholder")}
           ariaLabel={t("prompt")}
           referenceSearch={referenceSearch}

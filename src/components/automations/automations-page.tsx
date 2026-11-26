@@ -40,6 +40,14 @@ import { useTabActions } from "@/contexts/tab-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { AutomationEditor } from "./automation-editor"
 import {
+  clearAutomationDraft,
+  listAutomationDraftIds,
+  loadAutomationDraft,
+  saveAutomationDraft,
+  type AutomationDraftTarget,
+  type AutomationEditorDraft,
+} from "@/lib/automation-draft"
+import {
   templateToDraft,
   type AutomationTemplate,
 } from "./automation-templates"
@@ -209,8 +217,23 @@ function formatDateTime(iso: string | null): string {
  *  starting a new automation; "editor" hosts the form, seeded from a template
  *  (create) or an existing automation (edit). */
 type EditingState =
-  | { kind: "create"; seed: AutomationDraft | null }
-  | { kind: "edit"; automation: Automation }
+  | {
+      kind: "create"
+      seed: AutomationDraft | null
+      /** 上次没保存、存在浏览器里的草稿，有的话编辑器用它的值打开（#1564）。 */
+      draft?: AutomationEditorDraft | null
+    }
+  | {
+      kind: "edit"
+      automation: Automation
+      draft?: AutomationEditorDraft | null
+    }
+
+function draftTargetOf(editing: EditingState): AutomationDraftTarget {
+  return editing.kind === "edit"
+    ? { kind: "edit", id: editing.automation.id }
+    : { kind: "create" }
+}
 
 /** Page title rendered into the window-chrome strip above the page (the h-10
  *  band shared with the fixed corner overlays) — the shared breadcrumb header,
@@ -246,7 +269,13 @@ export function AutomationsPage() {
   const [editing, setEditing] = useState<EditingState | null>(() => {
     if (focus?.intent !== "edit" || focus.automationId == null) return null
     const target = automations.find((a) => a.id === focus.automationId)
-    return target ? { kind: "edit", automation: target } : null
+    return target
+      ? {
+          kind: "edit",
+          automation: target,
+          draft: loadAutomationDraft({ kind: "edit", id: target.id }),
+        }
+      : null
   })
   const [mode, setMode] = useState<"detail" | "gallery" | "editor">(() =>
     editing != null
@@ -265,6 +294,73 @@ export function AutomationsPage() {
   const [editorDirty, setEditorDirty] = useState(false)
   // 等用户确认「放弃修改」后才做的那一步；null 表示没在问。
   const [pendingLeave, setPendingLeave] = useState<(() => void) | null>(null)
+  // 浏览器里存着没保存草稿的那些自动化（#1564）：刷新、离开页面再回来，列表上
+  // 照样标「编辑中」，点进去回到编辑器接着改。
+  const [draftIds, setDraftIds] = useState<ReadonlySet<number>>(
+    () => new Set(listAutomationDraftIds())
+  )
+  const markDraft = (id: number, has: boolean) =>
+    setDraftIds((prev) => {
+      if (prev.has(id) === has) return prev
+      const next = new Set(prev)
+      if (has) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  // 编辑器报上来的草稿：改过就存，改回原样就删。
+  const handleDraftChange = (draft: AutomationEditorDraft | null) => {
+    if (editing == null) return
+    const target = draftTargetOf(editing)
+    if (draft) saveAutomationDraft(target, draft)
+    else clearAutomationDraft(target)
+    if (target.kind === "edit") markDraft(target.id, draft != null)
+  }
+  // 保存、取消、确认放弃以后，编辑器里那份草稿也不要了。
+  const dropEditorDraft = () => {
+    if (editing == null) return
+    const target = draftTargetOf(editing)
+    clearAutomationDraft(target)
+    if (target.kind === "edit") markDraft(target.id, false)
+  }
+  // 已经被删掉的自动化，它的草稿也删掉；列表没加载好、加载失败时不动。
+  // 编辑器正开着的那一项被删掉（列表 ⋯ 菜单或别处删的）：编辑器也关掉，不然
+  // 接着改又会把草稿写回去，保存时还会去更新一个已经不在的自动化。
+  const editingGoneId =
+    editing?.kind === "edit" &&
+    loaded &&
+    error == null &&
+    !automations.some((a) => a.id === editing.automation.id)
+      ? editing.automation.id
+      : null
+  useEffect(() => {
+    if (!loaded || error != null) return
+    const alive = new Set(automations.map((a) => a.id))
+    for (const id of listAutomationDraftIds()) {
+      if (!alive.has(id)) clearAutomationDraft({ kind: "edit", id })
+    }
+    if (editingGoneId != null) {
+      /* eslint-disable react-hooks/set-state-in-effect */
+      setEditing(null)
+      setEditorDirty(false)
+      setPendingLeave(null)
+      setMode("detail")
+      /* eslint-enable react-hooks/set-state-in-effect */
+    }
+  }, [loaded, error, automations, editingGoneId])
+  // 一个自动化都没有时页面只有模板引导、没有「新建」按钮：上次新建到一半没保存
+  // 的，直接回到那个编辑器，不然草稿找不回来，再选模板还会把它冲掉。
+  const resumeCreateOnEmpty =
+    loaded && error == null && automations.length === 0 && editing == null
+  useEffect(() => {
+    if (!resumeCreateOnEmpty) return
+    const createDraft = loadAutomationDraft({ kind: "create" })
+    if (!createDraft) return
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setEditing({ kind: "create", seed: null, draft: createDraft })
+    setEditorDirty(true)
+    setMode("editor")
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [resumeCreateOnEmpty])
 
   // Clear the unseen-failure badges while the page is open — on entry and again
   // whenever a new failure arrives live (the failed run is already on screen, so
@@ -390,17 +486,28 @@ export function AutomationsPage() {
 
   const openGallery = () =>
     leaveEditor(() => {
-      setEditing(null)
-      setEditorDirty(false)
-      setMode("gallery")
+      dropEditorDraft()
+      // 上次新建到一半没保存的：直接回到那个编辑器接着填（#1564）。
+      const createDraft = loadAutomationDraft({ kind: "create" })
+      if (createDraft) {
+        setEditing({ kind: "create", seed: null, draft: createDraft })
+        setEditorDirty(true)
+        setMode("editor")
+      } else {
+        setEditing(null)
+        setEditorDirty(false)
+        setMode("gallery")
+      }
       setDetailOpen(true)
     })
   const backToGallery = () => {
+    dropEditorDraft()
     setEditing(null)
     setEditorDirty(false)
     setMode("gallery")
   }
   const closeToDetail = () => {
+    dropEditorDraft()
     setEditing(null)
     setEditorDirty(false)
     setMode("detail")
@@ -429,11 +536,16 @@ export function AutomationsPage() {
       return
     }
     leaveEditor(() => {
-      setEditing({ kind: "edit", automation: a })
-      setEditorDirty(false)
-      setMode("editor")
-      setDetailOpen(true)
+      dropEditorDraft()
+      openEditor(a, loadAutomationDraft({ kind: "edit", id: a.id }))
     })
+  }
+  // 打开某个已有自动化的编辑器；带着草稿的话用草稿的值，一打开就算改过。
+  const openEditor = (a: Automation, draft: AutomationEditorDraft | null) => {
+    setEditing({ kind: "edit", automation: a, draft })
+    setEditorDirty(draft != null)
+    setMode("editor")
+    setDetailOpen(true)
   }
   const selectAutomation = (a: Automation) => {
     // 点的是正在编辑的那一项：直接回到编辑器，改了一半的内容还在（#1456）。
@@ -443,7 +555,15 @@ export function AutomationsPage() {
       return
     }
     leaveEditor(() => {
+      dropEditorDraft()
       setSelectedId(a.id)
+      // 这一项上次改到一半没保存（刷新、离开过页面）：回到编辑器接着改（#1564）。
+      const draft = loadAutomationDraft({ kind: "edit", id: a.id })
+      if (draft) {
+        openEditor(a, draft)
+        return
+      }
+      markDraft(a.id, false)
       setEditing(null)
       setEditorDirty(false)
       setMode("detail")
@@ -511,6 +631,8 @@ export function AutomationsPage() {
             automation={
               editing.kind === "edit" ? editing.automation : editing.seed
             }
+            initialDraft={editing.draft ?? null}
+            onDraftChange={handleDraftChange}
             onSubmit={handleSubmit}
             onCancel={closeToDetail}
             onBackToTemplates={
@@ -609,7 +731,7 @@ export function AutomationsPage() {
                               selected={
                                 mode === "detail" && current?.id === a.id
                               }
-                              editing={editingId === a.id}
+                              editing={editingId === a.id || draftIds.has(a.id)}
                               onSelect={() => selectAutomation(a)}
                               onRunNow={() =>
                                 runAction(() => automationRunNow(a.id))

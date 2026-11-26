@@ -6,6 +6,7 @@ import enMessages from "@/i18n/messages/en.json"
 import zhCNMessages from "@/i18n/messages/zh-CN.json"
 import { automationComputeNextRun } from "@/lib/api"
 import type { AutomationDraft } from "@/lib/types"
+import type { AutomationEditorDraft } from "@/lib/automation-draft"
 import {
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
@@ -399,5 +400,86 @@ describe("AutomationEditor — 报告改没改过（#1456）", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "pick-folder-web" }))
     expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+  })
+})
+
+// #1564：刷新、离开页面再回来，编辑器用浏览器里存的草稿打开。
+describe("AutomationEditor — 存草稿、从草稿打开（#1564）", () => {
+  const saved: AutomationEditorDraft = {
+    name: "Nightly review 改名未保存",
+    action: "launch_session",
+    agentType: "codex",
+    userChoseAgent: true,
+    prompt: "Review the open PRs",
+    folderId: 1,
+    isolation: "worktree_per_run",
+    trigger: "schedule",
+    cron: "0 8 * * *",
+    modeId: null,
+    configValues: {},
+    branch: "",
+    isRemoteBranch: false,
+  }
+
+  it("改过就报当前的值，改回原样报 null", () => {
+    mockNextRun.mockResolvedValue("2026-06-02T09:00:00Z")
+    const onDraftChange = vi.fn()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AutomationEditor
+          automation={draft}
+          onSubmit={vi.fn()}
+          onCancel={() => {}}
+          onDraftChange={onDraftChange}
+        />
+      </NextIntlClientProvider>
+    )
+    expect(onDraftChange).toHaveBeenLastCalledWith(null)
+
+    const name = screen.getByLabelText(enMessages.Automations.name)
+    fireEvent.change(name, { target: { value: "Nightly review 改名" } })
+    expect(onDraftChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        name: "Nightly review 改名",
+        cron: "every day",
+        agentType: "claude_code",
+        userChoseAgent: false,
+        folderId: 1,
+      })
+    )
+
+    fireEvent.change(name, { target: { value: "Nightly review" } })
+    expect(onDraftChange).toHaveBeenLastCalledWith(null)
+  })
+
+  it("给了草稿就用草稿的值打开，一打开就算改过，保存的也是草稿的值", async () => {
+    mockNextRun.mockResolvedValue("2026-06-02T08:00:00Z")
+    const onDirtyChange = vi.fn()
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AutomationEditor
+          automation={draft}
+          initialDraft={saved}
+          onSubmit={onSubmit}
+          onCancel={() => {}}
+          onDirtyChange={onDirtyChange}
+        />
+      </NextIntlClientProvider>
+    )
+    expect(screen.getByLabelText(enMessages.Automations.name)).toHaveValue(
+      "Nightly review 改名未保存"
+    )
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+
+    fireEvent.click(
+      screen.getByRole("button", { name: enMessages.Automations.save })
+    )
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({
+      name: "Nightly review 改名未保存",
+      cron: "0 8 * * *",
+      agent_type: "codex",
+    })
   })
 })

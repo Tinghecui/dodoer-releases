@@ -2758,7 +2758,8 @@
         "hintStoppedLocal": "Arrêté. Au démarrage, il écoutera sur {address}, cet ordinateur uniquement.",
         "copyAddress": "Copier l’adresse",
         "openSettings": "Ouvrir les réglages du service web"
-      }
+      },
+      "more": "Plus"
     },
     "auxPanel": {
       "label": "Panneau auxiliaire",

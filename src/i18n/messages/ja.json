@@ -2758,7 +2758,8 @@
         "hintStoppedLocal": "停止中。開始すると {address} で待ち受け、このコンピューターからのみアクセスできます。",
         "copyAddress": "アドレスをコピー",
         "openSettings": "Web サービス設定を開く"
-      }
+      },
+      "more": "その他"
     },
     "auxPanel": {
       "label": "補助パネル",

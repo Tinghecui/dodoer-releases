@@ -2758,7 +2758,8 @@
         "hintStoppedLocal": "중지됨. 시작하면 {address}에서 수신 대기하며 이 컴퓨터에서만 접근할 수 있습니다.",
         "copyAddress": "주소 복사",
         "openSettings": "웹 서비스 설정 열기"
-      }
+      },
+      "more": "더 보기"
     },
     "auxPanel": {
       "label": "보조 패널",

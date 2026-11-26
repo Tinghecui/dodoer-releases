@@ -10,6 +10,14 @@ import { StatusBarUpdate } from "@/components/layout/status-bar-update"
 import { StatusBarWebService } from "@/components/layout/status-bar-web-service"
 import { CommandDropdown } from "@/components/layout/command-dropdown"
 import { QuickActionsDropdown } from "@/components/layout/quick-actions-dropdown"
+import { Ellipsis } from "lucide-react"
+import { useTranslations } from "next-intl"
+import { Button } from "@/components/ui/button"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
 import { CoworkAccountMenu } from "@/components/cowork/account-menu"
@@ -17,38 +25,75 @@ import { StatusBarDevices } from "@/components/cowork/status-bar-devices"
 import { StatusBarHostSsh } from "@/components/cowork/status-bar-host-ssh"
 import { ResourceMeter } from "@/components/cowork/resource-meter"
 
+/**
+ * 手机布局的状态栏（#1334）：一行装不下十来项，390px 宽时会被截断。所以这一行
+ * 只直接放「提醒类」的项和账户，其余收进左边的「更多」。
+ *
+ * 提醒类 = 按钮本身会变红或变黄、不点开也要看得到的项：借出电脑（出问题时琥珀色）、
+ * Chrome（等待连接时琥珀色、暂停网站时琥珀点）、MCP 服务（停了红、不可用黄）、
+ * 提醒铃（按最坏的一条红或黄）、资源表（吃紧黄、告急红）。其余的（快捷操作、
+ * 工作区统计、更新、命令、网页服务、设备）只在弹层里才有颜色，收进「更多」。
+ */
+function MobileStatusBar() {
+  const t = useTranslations("Folder.statusBar")
+  return (
+    <div
+      data-testid="status-bar-mobile"
+      className="h-8 min-w-0 shrink-0 overflow-hidden border-t border-border ws-chrome-border ws-surface-muted px-3 flex items-center justify-between gap-3 text-xs text-muted-foreground"
+    >
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={t("more")}
+            title={t("more")}
+            className="shrink-0 hover:text-foreground"
+          >
+            <Ellipsis className="size-3.5" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          side="top"
+          align="start"
+          className="w-auto max-w-[calc(100vw-1.5rem)] p-2"
+        >
+          {/* 每一项还是原来那个按钮，点了照旧打开它自己的弹层。 */}
+          <div
+            data-testid="status-bar-more"
+            className="flex min-w-0 flex-wrap items-center gap-3 text-xs text-muted-foreground"
+          >
+            <QuickActionsDropdown />
+            <StatusBarStats />
+            <StatusBarUpdate />
+            <CommandDropdown />
+            {/* Narrow is a viewport width, not a browser: a desktop window
+                shrunk below the breakpoint must still say the web service is
+                listening. Renders nothing outside the local desktop. */}
+            <StatusBarWebService />
+            <StatusBarDevices />
+          </div>
+        </PopoverContent>
+      </Popover>
+      <div
+        data-testid="status-bar-direct"
+        className="flex shrink-0 items-center gap-3"
+      >
+        <StatusBarHostSsh />
+        <StatusBarChrome />
+        <StatusBarMcp />
+        <StatusBarAlerts />
+        <ResourceMeter />
+        <CoworkAccountMenu />
+      </div>
+    </div>
+  )
+}
+
 export function StatusBar() {
   const isMobile = useIsMobile()
 
-  if (isMobile) {
-    // Mobile mirrors the desktop bar: workspace stats on the left, the command
-    // launcher + alerts on the right. `h-8` (matching desktop) gives the h-6
-    // command control room. The branch selector and context-window circle live
-    // in the below-composer row, so those are the bar's only two clusters.
-    return (
-      <div className="h-8 shrink-0 border-t border-border ws-chrome-border ws-surface-muted px-3 flex items-center justify-between text-xs text-muted-foreground">
-        <div className="flex items-center gap-3">
-          <QuickActionsDropdown />
-          <StatusBarStats />
-        </div>
-        <div className="flex items-center gap-3">
-          <StatusBarUpdate />
-          <CommandDropdown />
-          {/* Narrow is a viewport width, not a browser: a desktop window
-              shrunk below the breakpoint must still say the web service is
-              listening. Renders nothing outside the local desktop. */}
-          <StatusBarWebService />
-          <StatusBarHostSsh />
-          <StatusBarChrome />
-          <StatusBarDevices />
-          <StatusBarMcp />
-          <StatusBarAlerts />
-          <ResourceMeter />
-          <CoworkAccountMenu />
-        </div>
-      </div>
-    )
-  }
+  if (isMobile) return <MobileStatusBar />
 
   // Desktop has no full-width status bar any more (Liquid Glass, handoff
   // 6.2): the bottom edge is left to the floating composer. Its left half

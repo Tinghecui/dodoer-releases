@@ -2758,7 +2758,8 @@
         "hintStoppedLocal": "已停止。啟動後將監聽 {address}，僅本機可存取。",
         "copyAddress": "複製位址",
         "openSettings": "開啟 Web 服務設定"
-      }
+      },
+      "more": "更多"
     },
     "auxPanel": {
       "label": "輔助面板",

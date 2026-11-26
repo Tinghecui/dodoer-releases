@@ -2758,7 +2758,8 @@
         "hintStoppedLocal": "Detenido. Al iniciarse escuchará en {address}, solo este equipo.",
         "copyAddress": "Copiar dirección",
         "openSettings": "Abrir ajustes del servicio web"
-      }
+      },
+      "more": "Más"
     },
     "auxPanel": {
       "label": "Panel auxiliar",

@@ -2758,7 +2758,8 @@
         "hintStoppedLocal": "Stopped. Starting will listen on {address}, this computer only.",
         "copyAddress": "Copy address",
         "openSettings": "Open Web service settings"
-      }
+      },
+      "more": "More"
     },
     "auxPanel": {
       "label": "Auxiliary panel",

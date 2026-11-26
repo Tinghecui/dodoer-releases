@@ -2758,7 +2758,8 @@
         "hintStoppedLocal": "Beendet. Nach dem Start lauscht er auf {address}, nur dieser Computer.",
         "copyAddress": "Adresse kopieren",
         "openSettings": "Webdienst-Einstellungen öffnen"
-      }
+      },
+      "more": "Mehr"
     },
     "auxPanel": {
       "label": "Hilfspaneel",

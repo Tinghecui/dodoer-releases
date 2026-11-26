@@ -2758,7 +2758,8 @@
         "hintStoppedLocal": "Parado. Ao iniciar, vai escutar em {address}, apenas este computador.",
         "copyAddress": "Copiar endereço",
         "openSettings": "Abrir configurações do serviço web"
-      }
+      },
+      "more": "Mais"
     },
     "auxPanel": {
       "label": "Painel auxiliar",

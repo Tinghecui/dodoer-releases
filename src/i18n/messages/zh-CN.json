@@ -2758,7 +2758,8 @@
         "hintStoppedLocal": "已停止。启动后将监听 {address}，仅本机可访问。",
         "copyAddress": "复制地址",
         "openSettings": "打开 Web 服务设置"
-      }
+      },
+      "more": "更多"
     },
     "auxPanel": {
       "label": "辅助面板",

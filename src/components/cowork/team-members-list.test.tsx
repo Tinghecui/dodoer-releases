@@ -132,11 +132,11 @@ describe("TeamMembersList", () => {
     expect(
       memberRow("member-a").querySelector("[data-team-member-counts]")
         ?.textContent
-    ).toBe("2 running · 1 waiting")
+    ).toBe("2 running · 1 to review")
     expect(
       memberRow("member-b").querySelector("[data-team-member-counts]")
         ?.textContent
-    ).toBe("0 running · 3 waiting")
+    ).toBe("0 running · 3 to review")
   })
 
   it("folds sessions under each member and expands on click", async () => {
@@ -172,7 +172,52 @@ describe("TeamMembersList", () => {
     expect(
       memberRow("member-a").querySelector("[data-team-member-counts]")
         ?.textContent
-    ).toBe("2 running · 1 waiting")
+    ).toBe("2 running · 1 to review")
+  })
+
+  it("labels finished sessions as ready for review, and says what a blocked one waits for (#1513)", async () => {
+    const sessions = MEMBERS[0].sessions
+    api.teamView.mockReset().mockResolvedValue({
+      ...teamOf("Backend"),
+      members: [
+        {
+          ...MEMBERS[0],
+          sessions: [
+            ...sessions,
+            {
+              owner: "member-a",
+              id: "44",
+              title: "Run migration",
+              state: "waiting",
+              awaiting: { reason: "permission", title: "Run the script" },
+              updatedAt: "2026-11-22T11:40:00Z",
+              summary: null,
+            },
+          ],
+        },
+      ],
+    })
+    makeAvailable([{ id: "g1", name: "Backend" }])
+    renderList()
+    await act(async () => {})
+    fireEvent.click(memberRow("member-a"))
+    const stateOf = (key: string) =>
+      document.querySelector(
+        `[data-team-session="${key}"] [data-team-session-state]`
+      )
+    expect(stateOf("member-a/42")?.textContent).toBe("Ready for review")
+    expect(
+      stateOf("member-a/42")?.hasAttribute("data-team-session-awaiting")
+    ).toBe(false)
+    expect(stateOf("member-a/44")?.textContent).toBe("Waiting for approval")
+    expect(
+      stateOf("member-a/44")?.getAttribute("data-team-session-awaiting")
+    ).toBe("permission")
+    expect(document.body.textContent).not.toContain("Waiting for an answer")
+    // 筛选项也不再写「等人回答」。
+    expect(
+      document.querySelector('[data-team-state-filter="waiting"]')?.textContent
+    ).toBe("Ready for review")
   })
 
   it("asks without `since` for today and with 7 days ago for the week", async () => {

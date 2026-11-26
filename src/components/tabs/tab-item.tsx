@@ -25,6 +25,7 @@ import {
 import { useLongPressDrag } from "@/hooks/use-long-press-drag"
 import type { TabItem as TabItemData } from "@/contexts/tab-context"
 import type { SplitDirection } from "@/lib/tab-group-layout"
+import { HOVER_NONE_REVEAL } from "@/lib/touch-target"
 
 /** A group this tab could move to (every group EXCEPT the tab's own), labeled
  *  by its traversal-order number and its selected tab's title. */
@@ -362,8 +363,8 @@ export const TabItem = memo(function TabItem({
                 isActive
                   ? "opacity-100"
                   : embedded
-                    ? "opacity-0 pointer-events-none group-hover/tab:opacity-100 group-hover/tab:pointer-events-auto"
-                    : "opacity-0 group-hover/tab:opacity-100"
+                    ? `opacity-0 pointer-events-none group-hover/tab:opacity-100 group-hover/tab:pointer-events-auto ${HOVER_NONE_REVEAL}`
+                    : `opacity-0 group-hover/tab:opacity-100 ${HOVER_NONE_REVEAL}`
               )}
               onClick={(event) => {
                 event.stopPropagation()

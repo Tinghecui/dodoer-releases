@@ -444,11 +444,32 @@ impl AcpAgent {
                 // `ChildGuard` 照样能按组把它们收掉。
                 #[cfg(unix)]
                 cmd.process_group(0);
+                // 每次起智能体一个唯一的标记。它起的命令都继承这个环境变量，
+                // 用 setsid 离组、被过继给 1 号进程都不影响，收尾时按标记再找一遍
+                // （见 [`RunMarker::sweep`]）。
+                let run_marker = uuid::Uuid::new_v4().to_string();
+                cmd.env(AGENT_RUN_ENV, &run_marker);
+                // 智能体自己当「收养人」（child subreaper）：它下面的命令父进程先退出时，
+                // 过继给智能体而不是 1 号进程，智能体活着时就一直在它的进程树里。
+                // 这样连 `env -i` 清掉了标记的命令，断开时也能按进程树找到
+                // （见 [`RunMarker::with_descendants_of`]）。这个设置跨 exec 保留。
+                #[cfg(target_os = "linux")]
+                // SAFETY: 闭包在 fork 之后、exec 之前跑，只调一个系统调用，
+                // 不分配内存、不碰锁，满足 `pre_exec` 的要求。
+                unsafe {
+                    cmd.pre_exec(|| {
+                        libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
+                        Ok(())
+                    });
+                }
                 cmd.stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped());
 
                 let mut child = cmd.spawn().map_err(agent_client_protocol::Error::into_internal_error)?;
+                if let Some(pid) = child.id() {
+                    register_run_marker(pid, run_marker);
+                }
 
                 let child_stdin = child
                     .stdin
@@ -489,15 +510,20 @@ struct ChildGuard {
     /// 子进程自己当组长的那个进程组（见 [`own_process_group`]）。子进程收尸
     /// 以后，组里剩下的进程（智能体起的命令、放到后台的服务）一起结束。
     process_group: Option<u32>,
+    /// `spawn_process` 给这个智能体打的标记（见 [`AGENT_RUN_ENV`]）。收尸以后
+    /// 按它把离开了进程组、进程树的命令也收掉。
+    run_marker: Option<RunMarker>,
 }
 
 impl ChildGuard {
     fn new(child: Child, exit_callback: Option<Arc<dyn Fn() + Send + Sync + 'static>>) -> Self {
         let process_group = child.id().and_then(own_process_group);
+        let run_marker = child.id().and_then(RunMarker::for_pid);
         Self {
             child: Some(child),
             exit_callback,
             process_group,
+            run_marker,
         }
     }
 
@@ -505,12 +531,48 @@ impl ChildGuard {
         let Some(child) = self.child.as_mut() else {
             return Err(std::io::Error::other("child already handed to the reaper"));
         };
+        // Linux 上智能体活着时定期记下它的进程树：它被直接杀掉时，收养关系
+        // 跟着没了，`env -i` 清掉标记的命令只能靠记下的树找到；它下面的 CLI
+        // 死了（智能体还活着、连接不断）时，CLI 起的命令当场结束。
+        #[cfg(target_os = "linux")]
+        let status = match (child.id(), self.run_marker.as_mut()) {
+            (Some(root), Some(marker)) => {
+                let mut tick = tokio::time::interval(TREE_SNAPSHOT_INTERVAL);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        status = child.wait() => break status,
+                        _ = tick.tick() => {
+                            // 智能体这时还没收尸（只有上面的 `wait` 会收），号还是它的。
+                            let now = tokio::task::spawn_blocking(move || descendant_tree(root))
+                                .await
+                                .unwrap_or_default();
+                            let orphaned = marker.refresh_tree(root, now);
+                            if !orphaned.is_empty() {
+                                tokio::task::spawn_blocking(move || {
+                                    finish_marked_processes_blocking(
+                                        None,
+                                        &orphaned,
+                                        PROCESS_GROUP_KILL_GRACE,
+                                    );
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            _ => child.wait().await,
+        };
+        #[cfg(not(target_os = "linux"))]
         let status = child.wait().await;
         if status.is_ok() {
             // `wait` succeeded, so the child has been reaped and its pid is
             // free for the OS to reassign.
             if let Some(pgid) = self.process_group.take() {
                 sweep_process_group(pgid);
+            }
+            if let Some(marker) = self.run_marker.take() {
+                marker.sweep();
             }
             self.notify_exit();
         }
@@ -535,10 +597,19 @@ impl Drop for ChildGuard {
             if let Some(pgid) = self.process_group.take() {
                 sweep_process_group(pgid);
             }
+            if let Some(marker) = self.run_marker.take() {
+                marker.sweep();
+            }
             self.notify_exit();
             return;
         };
 
+        // 智能体还没收尸、还是收养人：趁现在记下它整棵进程树（含 `env -i`
+        // 清掉了标记、被它收养的命令），收尸后它们会被过继给 1 号进程。
+        let run_marker = self
+            .run_marker
+            .take()
+            .map(|marker| marker.with_descendants_of(pid));
         let _ = kill_tree::blocking::kill_tree(pid);
         // 子进程还没收尸，组号不会被别人占去：现在就给整组发 SIGTERM，
         // 进程树里够不着的（已经被过继走的）也一起收到。
@@ -585,6 +656,9 @@ impl Drop for ChildGuard {
                         if let Some(pgid) = process_group {
                             sweep_process_group(pgid);
                         }
+                        if let Some(marker) = run_marker {
+                            marker.sweep();
+                        }
                         if let Some(callback) = exit_callback {
                             callback();
                         }
@@ -596,6 +670,10 @@ impl Drop for ChildGuard {
                 // Fall back to the previous behaviour and deliberately stay
                 // silent about an exit we cannot observe.
                 drop(child);
+                // 等不了收尸，按标记找到的进程现在就收掉。
+                if let Some(marker) = run_marker {
+                    marker.sweep();
+                }
             }
         }
     }
@@ -604,6 +682,10 @@ impl Drop for ChildGuard {
 /// 组长收尸以后，组里还不走的进程等多久补 SIGKILL。和 `manager.rs` 的
 /// `ESCALATE_TO_SIGKILL_AFTER` 一样长。
 const PROCESS_GROUP_KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// 智能体活着时多久记一次它的进程树（见 [`RunMarker::refresh_tree`]）。
+#[cfg(target_os = "linux")]
+const TREE_SNAPSHOT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// 给进程组发的信号。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -700,6 +782,388 @@ pub(crate) fn finish_process_group_blocking(pgid: u32, grace: std::time::Duratio
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// 给智能体打标记的环境变量名。值是每次起智能体时新生成的 uuid，
+/// 它起的所有命令都继承下来。
+pub(crate) const AGENT_RUN_ENV: &str = "CODEG_AGENT_RUN";
+
+/// 还没收完尾的智能体：pid → 标记。退出兜底（`manager.rs` 的
+/// `kill_tree_and_wait`）手里只有 pid，靠这张表找到标记。
+fn run_markers() -> &'static std::sync::Mutex<std::collections::HashMap<u32, String>> {
+    static MARKERS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u32, String>>> =
+        std::sync::OnceLock::new();
+    MARKERS.get_or_init(Default::default)
+}
+
+fn register_run_marker(pid: u32, marker: String) {
+    if let Ok(mut markers) = run_markers().lock() {
+        markers.insert(pid, marker);
+    }
+}
+
+/// 一个智能体的标记。只在 [`ChildGuard`] 收尾时从表里摘掉，
+/// 摘之前先核对值，免得把同一个 pid 号上后来起的智能体的标记摘了。
+pub(crate) struct RunMarker {
+    pid: u32,
+    value: String,
+    /// 智能体收尸前记下的它整棵进程树：pid 和启动时刻（见 [`process_stat`]），
+    /// 收尸后按启动时刻核对，号被别人占去了也打不到别人。
+    descendants: Vec<(u32, u64)>,
+    /// 上一次记下的进程树：pid、父进程号、启动时刻。用来看出智能体的哪个
+    /// 直接子进程（CLI）死了、它下面原来有哪些命令。只 Linux 读它。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    tree: Vec<(u32, u32, u64)>,
+    /// 上一次记树时智能体的直接子进程跑的程序：pid、启动时刻、`/proc/<pid>/exe`。
+    /// CLI 死了以后才读不到它的程序，所以每次记树时先记下来。只 Linux 读它。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    child_programs: Vec<(u32, u64, PathBuf)>,
+}
+
+impl RunMarker {
+    /// `pid` 的智能体还没收尸时调，号才不会是别人的。
+    pub(crate) fn for_pid(pid: u32) -> Option<Self> {
+        let markers = run_markers().lock().ok()?;
+        markers.get(&pid).map(|value| Self {
+            pid,
+            value: value.clone(),
+            descendants: Vec::new(),
+            tree: Vec::new(),
+            child_programs: Vec::new(),
+        })
+    }
+
+    /// 记下 `root`（智能体）现在的整棵进程树，收尾时连同带标记的进程一起收。
+    /// 智能体是收养人（见 `spawn_process`），离组又被过继的命令、`env -i`
+    /// 清掉了标记的命令，只要智能体还活着就都在这棵树里。
+    /// 只能在智能体还没收尸时调。
+    /// 和之前定期记下的合在一起（之前记下、现在已经不在树里但还活着的也留着）。
+    pub(crate) fn with_descendants_of(mut self, root: u32) -> Self {
+        self.merge_tree(descendant_tree(root));
+        self
+    }
+
+    /// 把这次记下的树 `now` 并进来：树里的都记下，之前记下、这次不在树里、
+    /// 启动时刻还对得上的也留着（智能体刚死、它们刚被过继走的那一下）。
+    fn merge_tree(&mut self, now: Vec<(u32, u32, u64)>) {
+        let still_live = live_descendants(&self.descendants);
+        let mut merged: Vec<(u32, u64)> =
+            now.iter().map(|(pid, _, start)| (*pid, *start)).collect();
+        for entry in &self.descendants {
+            if !merged.contains(entry) && still_live.contains(&entry.0) {
+                merged.push(*entry);
+            }
+        }
+        self.descendants = merged;
+        self.tree = now;
+    }
+
+    /// 智能体活着时定期调：记下它现在的进程树，返回上次记下以后死掉的直接
+    /// 子进程（claude-agent-acp 下面的 Claude CLI）原来下面的命令，调用方把它们
+    /// 收掉。它们已经被智能体收养，连接也不会因此断开，不收就一直跑到重新连接。
+    ///
+    /// CLI 在两次记树之间才起的命令、又跟着 CLI 一起没了主人的，上一次的树里
+    /// 没有，这一次成了智能体新冒出来的直接子进程：跑的程序和智能体自己、
+    /// 死掉的 CLI 都不一样的，算 CLI 留下的，连它下面的一起收。和它们跑同一个
+    /// 程序的新直接子进程当成智能体新起的 CLI，不碰。
+    #[cfg(target_os = "linux")]
+    fn refresh_tree(&mut self, root: u32, now: Vec<(u32, u32, u64)>) -> Vec<(u32, u64)> {
+        let program = |pid: u32| std::fs::read_link(format!("/proc/{pid}/exe")).ok();
+        let mut orphaned = orphaned_by_dead_children(root, &self.tree, &now);
+        let dead = dead_direct_children(root, &self.tree, &now);
+        if !dead.is_empty() {
+            let mut known: Vec<PathBuf> = self
+                .child_programs
+                .iter()
+                .filter(|(pid, start, _)| dead.contains(&(*pid, *start)))
+                .map(|(_, _, exe)| exe.clone())
+                .collect();
+            known.extend(program(root));
+            for entry in adopted_in_the_gap(root, &self.tree, &now, |pid| {
+                program(pid).is_some_and(|exe| !known.contains(&exe))
+            }) {
+                if !orphaned.contains(&entry) {
+                    orphaned.push(entry);
+                }
+            }
+        }
+        self.child_programs = now
+            .iter()
+            .filter(|(_, ppid, _)| *ppid == root)
+            .filter_map(|(pid, _, start)| Some((*pid, *start, program(*pid)?)))
+            .collect();
+        self.merge_tree(now);
+        orphaned
+    }
+
+    fn forget(&self) {
+        if let Ok(mut markers) = run_markers().lock() {
+            if markers.get(&self.pid) == Some(&self.value) {
+                markers.remove(&self.pid);
+            }
+        }
+    }
+
+    /// 智能体收尸以后调：把带这个标记、还在跑的进程收掉（先 SIGTERM，
+    /// [`PROCESS_GROUP_KILL_GRACE`] 后还在就 SIGKILL）。扫进程表放在阻塞线程上，
+    /// 不阻塞调用方；没有 tokio 运行时就当场 SIGTERM 加 SIGKILL。
+    fn sweep(self) {
+        self.forget();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn_blocking(move || {
+                    finish_marked_processes_blocking(
+                        Some(&self.value),
+                        &self.descendants,
+                        PROCESS_GROUP_KILL_GRACE,
+                    );
+                });
+            }
+            Err(_) => finish_marked_processes_blocking(
+                Some(&self.value),
+                &self.descendants,
+                std::time::Duration::ZERO,
+            ),
+        }
+    }
+
+    /// 阻塞版，给退出兜底用：返回时带标记的进程已经收到 SIGTERM，
+    /// `grace` 内没走的也补了 SIGKILL。只在阻塞线程上调。
+    pub(crate) fn finish_blocking(self, grace: std::time::Duration) {
+        self.forget();
+        finish_marked_processes_blocking(Some(&self.value), &self.descendants, grace);
+    }
+}
+
+/// 进程表里带 `CODEG_AGENT_RUN=<marker>` 的进程（不含 codeg 自己）。
+/// 只有 Linux 能读别的进程的初始环境（`/proc/<pid>/environ`，只读得到同一用户的）；
+/// 别的系统返回空，照旧只靠进程组和进程树。
+fn marked_processes(marker: &str) -> Vec<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        let needle = format!("{AGENT_RUN_ENV}={marker}");
+        let me = std::process::id();
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return Vec::new();
+        };
+        entries
+            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+            .filter(|pid| *pid != me)
+            .filter(|pid| {
+                std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|environ| {
+                    environ
+                        .split(|byte| *byte == 0)
+                        .any(|entry| entry == needle.as_bytes())
+                })
+            })
+            .collect()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = marker;
+        Vec::new()
+    }
+}
+
+/// `/proc/<pid>/stat` 里的状态、父进程号和启动时刻（开机后的时钟滴答数）。
+/// 同一个 pid 号换了进程，启动时刻就不一样。只 Linux。
+#[cfg(target_os = "linux")]
+fn process_stat(pid: u32) -> Option<(char, u32, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // 进程名在括号里、自己也可能带括号和空格，从最后一个 `)` 往后数。
+    let fields: Vec<&str> = stat
+        .get(stat.rfind(')')? + 1..)?
+        .split_whitespace()
+        .collect();
+    let state = fields.first()?.chars().next()?;
+    let ppid = fields.get(1)?.parse().ok()?;
+    let start = fields.get(19)?.parse().ok()?;
+    Some((state, ppid, start))
+}
+
+/// `root` 现在的所有后代（不含 `root`、codeg 自己和僵尸）：pid、父进程号和
+/// 启动时刻。别的系统返回空。
+fn descendant_tree(root: u32) -> Vec<(u32, u32, u64)> {
+    #[cfg(target_os = "linux")]
+    {
+        let me = std::process::id();
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return Vec::new();
+        };
+        let table: Vec<(u32, u32, u64)> = entries
+            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+            .filter_map(|pid| {
+                let (state, ppid, start) = process_stat(pid)?;
+                (state != 'Z').then_some((pid, ppid, start))
+            })
+            .collect();
+        let mut found: Vec<(u32, u32, u64)> = Vec::new();
+        let mut frontier = vec![root];
+        while let Some(parent) = frontier.pop() {
+            for (pid, ppid, start) in &table {
+                if *ppid == parent
+                    && *pid != me
+                    && *pid != root
+                    && !found.iter().any(|(p, _, _)| p == pid)
+                {
+                    found.push((*pid, *ppid, *start));
+                    frontier.push(*pid);
+                }
+            }
+        }
+        found
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = root;
+        Vec::new()
+    }
+}
+
+/// 上次记下的树 `prev` 里 `root` 的直接子进程，这次（`now`）不在了的，它们
+/// 原来下面的所有后代（pid 和启动时刻，不含死掉的那个本身）。
+#[cfg(target_os = "linux")]
+fn orphaned_by_dead_children(
+    root: u32,
+    prev: &[(u32, u32, u64)],
+    now: &[(u32, u32, u64)],
+) -> Vec<(u32, u64)> {
+    let alive = |pid: u32, start: u64| now.iter().any(|(p, _, s)| *p == pid && *s == start);
+    let mut frontier: Vec<u32> = prev
+        .iter()
+        .filter(|(pid, ppid, start)| *ppid == root && !alive(*pid, *start))
+        .map(|(pid, _, _)| *pid)
+        .collect();
+    let mut orphaned: Vec<(u32, u64)> = Vec::new();
+    while let Some(parent) = frontier.pop() {
+        for (pid, ppid, start) in prev {
+            if *ppid == parent && !orphaned.iter().any(|(p, _)| p == pid) {
+                orphaned.push((*pid, *start));
+                frontier.push(*pid);
+            }
+        }
+    }
+    orphaned
+}
+
+/// 上次记下的树 `prev` 里 `root` 的直接子进程，这次（`now`）不在了的：pid 和启动时刻。
+#[cfg(target_os = "linux")]
+fn dead_direct_children(
+    root: u32,
+    prev: &[(u32, u32, u64)],
+    now: &[(u32, u32, u64)],
+) -> Vec<(u32, u64)> {
+    prev.iter()
+        .filter(|(pid, ppid, start)| {
+            *ppid == root && !now.iter().any(|(p, _, s)| p == pid && s == start)
+        })
+        .map(|(pid, _, start)| (*pid, *start))
+        .collect()
+}
+
+/// 这次（`now`）`root` 新冒出来的直接子进程（上次 `prev` 里没有这个 pid 和
+/// 启动时刻）里，`is_orphan` 认定是别人留下的，连同它们这次的整棵子树：
+/// pid 和启动时刻。
+#[cfg(target_os = "linux")]
+fn adopted_in_the_gap(
+    root: u32,
+    prev: &[(u32, u32, u64)],
+    now: &[(u32, u32, u64)],
+    is_orphan: impl Fn(u32) -> bool,
+) -> Vec<(u32, u64)> {
+    let mut found: Vec<(u32, u64)> = now
+        .iter()
+        .filter(|(pid, ppid, start)| {
+            *ppid == root && !prev.iter().any(|(p, _, s)| p == pid && s == start) && is_orphan(*pid)
+        })
+        .map(|(pid, _, start)| (*pid, *start))
+        .collect();
+    let mut frontier: Vec<u32> = found.iter().map(|(pid, _)| *pid).collect();
+    while let Some(parent) = frontier.pop() {
+        for (pid, ppid, start) in now {
+            if *ppid == parent && !found.iter().any(|(p, _)| p == pid) {
+                found.push((*pid, *start));
+                frontier.push(*pid);
+            }
+        }
+    }
+    found
+}
+
+/// 收尸前记下的后代里还活着的：启动时刻对得上（号没被别人占去）、不是僵尸。
+fn live_descendants(descendants: &[(u32, u64)]) -> Vec<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        descendants
+            .iter()
+            .filter(|(pid, start)| {
+                process_stat(*pid).is_some_and(|(state, _, now)| now == *start && state != 'Z')
+            })
+            .map(|(pid, _)| *pid)
+            .collect()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = descendants;
+        Vec::new()
+    }
+}
+
+/// 这次要收的进程：带标记的，加上收尸前记下、还活着的后代。
+fn marked_or_remembered(marker: Option<&str>, descendants: &[(u32, u64)]) -> Vec<u32> {
+    let mut pids = marker.map(marked_processes).unwrap_or_default();
+    for pid in live_descendants(descendants) {
+        if !pids.contains(&pid) {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
+/// 给带标记的进程和收尸前记下的后代发 SIGTERM，最多等 `grace`，还在的补 SIGKILL。
+/// `marker` 为 `None` 时只收 `descendants`。
+/// 每次都重新扫：带标记的按标记，记下的后代按启动时刻核对，pid 号被别人占去
+/// 也打不到别人（扫完到发信号之间那一下除外）。僵尸的 environ 读出来是空的，
+/// 记下的后代成了僵尸也不算，都不在内。
+fn finish_marked_processes_blocking(
+    marker: Option<&str>,
+    descendants: &[(u32, u64)],
+    grace: std::time::Duration,
+) {
+    #[cfg(unix)]
+    {
+        let signal_all = |signal: libc::c_int| {
+            let pids = marked_or_remembered(marker, descendants);
+            for pid in &pids {
+                // SAFETY: `kill` 只收整数，不碰我们的内存。
+                unsafe {
+                    libc::kill(*pid as libc::pid_t, signal);
+                }
+            }
+            !pids.is_empty()
+        };
+        if !signal_all(libc::SIGTERM) {
+            return;
+        }
+        let started = std::time::Instant::now();
+        while started.elapsed() < grace {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if marked_or_remembered(marker, descendants).is_empty() {
+                return;
+            }
+        }
+        // 收的时候又起了新的也一起收：最多补两轮。
+        for _ in 0..2 {
+            if !signal_all(libc::SIGKILL) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (marked_or_remembered(marker, descendants), grace);
     }
 }
 
@@ -1190,6 +1654,7 @@ mod tests {
                 child: Some(child),
                 exit_callback: Some(counting_callback(&calls)),
                 process_group: None,
+                run_marker: None,
             };
             guard.wait().await.expect("wait");
             assert_eq!(
@@ -1392,6 +1857,7 @@ mod tests {
                 child: Some(child),
                 exit_callback: Some(counting_callback(&calls)),
                 process_group: None,
+                run_marker: None,
             };
 
             drop(guard);
@@ -1456,6 +1922,7 @@ mod tests {
                 child: Some(child),
                 exit_callback: Some(counting_callback(&calls)),
                 process_group: None,
+                run_marker: None,
             };
 
             let mut trapped = false;
@@ -1873,6 +2340,278 @@ read -r _"#;
         assert!(
             survivors.is_empty(),
             "断开 3 秒后不理 SIGTERM 的智能体和命令还在跑：{survivors:?}"
+        );
+    }
+
+    /// 起一个用 `setsid` 离开智能体进程组和会话的后台命令，读出它的 pid，
+    /// 等它真的换成 sleep 再返回。
+    #[cfg(target_os = "linux")]
+    async fn read_detached_sleeper(
+        lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+        agent_pid: u32,
+    ) -> HardKillOnDrop {
+        let pid = lines.next_line().await.expect("read").expect("sleeper pid");
+        let sleeper = HardKillOnDrop(pid.trim().to_string());
+        for _ in 0..100 {
+            let comm =
+                std::fs::read_to_string(format!("/proc/{}/comm", sleeper.0)).unwrap_or_default();
+            if comm.trim() == "sleep" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let pid: libc::pid_t = sleeper.0.parse().expect("pid");
+        // SAFETY: 只读进程表。
+        let (pgid, sid) = unsafe { (libc::getpgid(pid), libc::getsid(pid)) };
+        assert!(
+            pgid > 0 && pgid as u32 != agent_pid && sid as u32 != agent_pid,
+            "测试前提：sleep 已经离开智能体的进程组和会话"
+        );
+        sleeper
+    }
+
+    /// 智能体（这里是 sh）用 `setsid nohup … &` 起的后台命令离开了它的进程组，
+    /// 智能体先退出以后又被过继给 1 号进程：按组、按进程树都找不到它，
+    /// 也得跟着智能体一起结束。
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn an_agent_exit_ends_commands_that_left_its_process_group() {
+        use tokio::io::AsyncBufReadExt;
+
+        let agent = AcpAgent::from_args([
+            "/bin/sh",
+            "-c",
+            "(setsid nohup sleep 300 >/dev/null 2>&1 & echo $!); sleep 0.3; exit 0",
+        ])
+        .unwrap();
+        let (_stdin, stdout, stderr, child) = agent.spawn_process().expect("spawn agent");
+        let agent_pid = child.id().expect("agent pid");
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let sleeper = read_detached_sleeper(&mut lines, agent_pid).await;
+
+        let stderr = spawn_stderr_reader(stderr, None);
+        let _ = monitor_child(child, stderr, STDERR_DRAIN_LIMIT, None).await;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while process_is_running(&sleeper.0) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            !process_is_running(&sleeper.0),
+            "智能体退出 3 秒后，它用 setsid 起的后台命令还在跑：{}",
+            sleeper.0
+        );
+    }
+
+    /// 用户断开会话（`ChildGuard` 被丢掉）时，离开了智能体进程组、又被过继
+    /// 走（子 shell 先退出）的后台命令也一起结束：智能体还活着，但进程树里
+    /// 已经没有它了。
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dropping_the_guard_ends_commands_that_left_the_process_group() {
+        use tokio::io::AsyncBufReadExt;
+
+        let agent = AcpAgent::from_args([
+            "/bin/sh",
+            "-c",
+            "(setsid nohup sleep 300 >/dev/null 2>&1 & echo $!); while :; do sleep 1; done",
+        ])
+        .unwrap();
+        let (_stdin, stdout, _stderr, child) = agent.spawn_process().expect("spawn agent");
+        let agent_pid = child.id().expect("agent pid");
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let sleeper = read_detached_sleeper(&mut lines, agent_pid).await;
+
+        drop(ChildGuard::new(child, None));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while process_is_running(&sleeper.0) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            !process_is_running(&sleeper.0),
+            "断开 3 秒后，智能体用 setsid 起的后台命令还在跑：{}",
+            sleeper.0
+        );
+    }
+
+    /// 智能体用 `env -i` 清空环境（标记也跟着没了）、`setsid` 离组、子 shell
+    /// 先退出的后台命令，还不理 SIGTERM：用户断开会话（`ChildGuard` 被丢掉）
+    /// 以后也得结束。
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dropping_the_guard_ends_commands_that_cleared_their_environment() {
+        use tokio::io::AsyncBufReadExt;
+
+        let agent = AcpAgent::from_args([
+            "/bin/sh",
+            "-c",
+            "(env -i /usr/bin/setsid /bin/sh -c 'trap \"\" TERM; exec /bin/sleep 300' >/dev/null 2>&1 & echo $!); while :; do sleep 1; done",
+        ])
+        .unwrap();
+        let (_stdin, stdout, _stderr, child) = agent.spawn_process().expect("spawn agent");
+        let agent_pid = child.id().expect("agent pid");
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let sleeper = read_detached_sleeper(&mut lines, agent_pid).await;
+        let environ = std::fs::read(format!("/proc/{}/environ", sleeper.0)).unwrap_or_default();
+        assert!(
+            !environ
+                .windows(AGENT_RUN_ENV.len())
+                .any(|w| w == AGENT_RUN_ENV.as_bytes()),
+            "测试前提：sleep 的环境里已经没有标记"
+        );
+
+        drop(ChildGuard::new(child, None));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while process_is_running(&sleeper.0) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            !process_is_running(&sleeper.0),
+            "断开 3 秒后，智能体用 env -i 起的后台命令还在跑：{}",
+            sleeper.0
+        );
+    }
+
+    /// 智能体被直接杀掉（不是 codeg 去收的，走 `ChildGuard::wait`）时，
+    /// 它用 `env -i` 清空环境、`setsid` 离组、不理 SIGTERM 的命令也得结束：
+    /// 收养关系跟着智能体一起没了，只能靠它活着时定期记下的进程树。
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_killed_agent_ends_commands_that_cleared_their_environment() {
+        use tokio::io::AsyncBufReadExt;
+
+        let agent = AcpAgent::from_args([
+            "/bin/sh",
+            "-c",
+            "(env -i /usr/bin/setsid /bin/sh -c 'trap \"\" TERM; exec /bin/sleep 300' >/dev/null 2>&1 & echo $!); while :; do sleep 1; done",
+        ])
+        .unwrap();
+        let (_stdin, stdout, stderr, child) = agent.spawn_process().expect("spawn agent");
+        let agent_pid = child.id().expect("agent pid");
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let sleeper = read_detached_sleeper(&mut lines, agent_pid).await;
+
+        let stderr = spawn_stderr_reader(stderr, None);
+        let monitor = tokio::spawn(monitor_child(child, stderr, STDERR_DRAIN_LIMIT, None));
+        // 让监视的那一头看到过一次进程树。
+        tokio::time::sleep(TREE_SNAPSHOT_INTERVAL * 2).await;
+        // SAFETY: 只给测试自己起的 sh 发信号。
+        unsafe {
+            libc::kill(agent_pid as libc::pid_t, libc::SIGKILL);
+        }
+        let _ = monitor.await;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while process_is_running(&sleeper.0) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            !process_is_running(&sleeper.0),
+            "智能体被杀 3 秒后，它用 env -i 起的后台命令还在跑：{}",
+            sleeper.0
+        );
+    }
+
+    /// 智能体（claude-agent-acp）还活着、只有它下面的 CLI（这里是里层的 sh）
+    /// 被杀了：CLI 起的命令被智能体收养，连接也不会断，可它们的主人已经没了，
+    /// 不等重新连接就得结束。
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_dead_agent_child_ends_the_commands_it_started() {
+        use tokio::io::AsyncBufReadExt;
+
+        let agent = AcpAgent::from_args([
+            "/bin/sh",
+            "-c",
+            "/bin/sh -c 'env -i /usr/bin/setsid /bin/sh -c \"trap \\\"\\\" TERM; exec /bin/sleep 300\" >/dev/null 2>&1 & echo $!; echo $$; wait'; while :; do sleep 1; done",
+        ])
+        .unwrap();
+        let (_stdin, stdout, stderr, child) = agent.spawn_process().expect("spawn agent");
+        let agent_pid = child.id().expect("agent pid");
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let sleeper = read_detached_sleeper(&mut lines, agent_pid).await;
+        let cli = lines
+            .next_line()
+            .await
+            .expect("read")
+            .expect("cli pid")
+            .trim()
+            .parse::<libc::pid_t>()
+            .expect("pid");
+
+        let stderr = spawn_stderr_reader(stderr, None);
+        let monitor = tokio::spawn(monitor_child(child, stderr, STDERR_DRAIN_LIMIT, None));
+        tokio::time::sleep(TREE_SNAPSHOT_INTERVAL * 2).await;
+        // SAFETY: 只给测试自己起的里层 sh 发信号。
+        unsafe {
+            libc::kill(cli, libc::SIGKILL);
+        }
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        while process_is_running(&sleeper.0) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let still_running = process_is_running(&sleeper.0);
+        // 收掉智能体本身（丢掉监视它的任务就会丢掉 `ChildGuard`）。
+        monitor.abort();
+        let _ = monitor.await;
+        assert!(
+            !still_running,
+            "智能体下面的 CLI 被杀 4 秒后，CLI 起的命令还在跑：{}",
+            sleeper.0
+        );
+    }
+    /// CLI 在两次记树之间才起命令、紧接着又被杀：上一次的树里没有这条命令，
+    /// 它被智能体收养后成了智能体新冒出来的直接子进程，也得跟着 CLI 结束，
+    /// 不能一直跑到重新连接。
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_command_started_between_snapshots_ends_with_its_dead_cli() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        let agent = AcpAgent::from_args([
+            "/bin/sh",
+            "-c",
+            "/bin/sh -c 'echo $$; read go; env -i /usr/bin/setsid /bin/sh -c \"trap \\\"\\\" TERM; exec /bin/sleep 300\" >/dev/null 2>&1 & echo $!; wait'; while :; do sleep 1; done",
+        ])
+        .unwrap();
+        let (mut stdin, stdout, stderr, child) = agent.spawn_process().expect("spawn agent");
+        let agent_pid = child.id().expect("agent pid");
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let cli = lines
+            .next_line()
+            .await
+            .expect("read")
+            .expect("cli pid")
+            .trim()
+            .parse::<libc::pid_t>()
+            .expect("pid");
+
+        let stderr = spawn_stderr_reader(stderr, None);
+        let monitor = tokio::spawn(monitor_child(child, stderr, STDERR_DRAIN_LIMIT, None));
+        // 让 CLI 进过记下的树，再在两次记树中间起命令、杀 CLI。
+        tokio::time::sleep(TREE_SNAPSHOT_INTERVAL * 5 / 2).await;
+        stdin.write_all(b"go\n").await.expect("write");
+        stdin.flush().await.expect("flush");
+        let sleeper = read_detached_sleeper(&mut lines, agent_pid).await;
+        // SAFETY: 只给测试自己起的里层 sh 发信号。
+        unsafe {
+            libc::kill(cli, libc::SIGKILL);
+        }
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        while process_is_running(&sleeper.0) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let still_running = process_is_running(&sleeper.0);
+        monitor.abort();
+        let _ = monitor.await;
+        assert!(
+            !still_running,
+            "CLI 起了命令随即被杀，4 秒后命令还在跑：{}",
+            sleeper.0
         );
     }
 }

@@ -166,3 +166,48 @@ describe("ComposerImageThumbnails", () => {
     expect(mocks.ancestorContextMenu).not.toHaveBeenCalled()
   })
 })
+
+describe("ComposerImageThumbnails touch target", () => {
+  function removeButton() {
+    return screen.getByRole("button", {
+      name: enMessages.Folder.chat.messageInput.removeAttachmentAria.replace(
+        "{name}",
+        "shot.png"
+      ),
+    })
+  }
+
+  it("grows the remove cross itself, with no invisible area over the tile", () => {
+    renderStrip()
+    const remove = removeButton()
+    expect(remove).toHaveClass(
+      "absolute",
+      "right-1",
+      "top-1",
+      "pointer-coarse:size-6"
+    )
+    // 看不见的 ::after 会盖住缩略图右上角，点那里想看预览却删了附件
+    expect(remove.className).not.toMatch(/(^|\s)\S*after:/)
+    expect(remove.querySelector("svg")).toHaveClass("h-3", "w-3")
+  })
+
+  it("opens the preview, not removal, when the tile is tapped", async () => {
+    const onRemove = vi.fn()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ComposerImageThumbnails
+          attachments={[ATTACHMENT]}
+          onRemove={onRemove}
+        />
+      </NextIntlClientProvider>
+    )
+    // 缩略图本身是另一个按钮，叉不在它里面，点缩略图（包括右上方叉旁边）
+    // 落到的是预览按钮
+    const tile = screen.getByAltText(ATTACHMENT.name).closest("button")
+    expect(tile).not.toBeNull()
+    expect(tile?.contains(removeButton())).toBe(false)
+    fireEvent.click(tile as HTMLElement)
+    expect(await screen.findByRole("dialog")).not.toBeNull()
+    expect(onRemove).not.toHaveBeenCalled()
+  })
+})

@@ -115,6 +115,33 @@ describe("SharedWithMeList", () => {
     expect(api.teamShared).toHaveBeenCalledTimes(1)
   })
 
+  it("做完等人看的写待查看，真在等的写在等什么（#1513）", async () => {
+    api.teamShared.mockReset().mockResolvedValue([
+      item({ id: "20", title: "Finished", state: "waiting" }),
+      item({
+        id: "21",
+        title: "Blocked",
+        state: "waiting",
+        awaiting: { reason: "plan", title: null },
+      }),
+    ])
+    makeAvailable(0)
+    renderList()
+    await waitFor(() => expect(rowKeys()).toHaveLength(2))
+    const stateOf = (key: string) =>
+      row(key).querySelector("[data-shared-state]")
+    expect(stateOf("member-a/20")?.textContent).toBe("Ready for review")
+    expect(stateOf("member-a/20")?.hasAttribute("data-shared-awaiting")).toBe(
+      false
+    )
+    expect(stateOf("member-a/21")?.textContent).toBe(
+      "Waiting for plan approval"
+    )
+    expect(stateOf("member-a/21")?.getAttribute("data-shared-awaiting")).toBe(
+      "plan"
+    )
+  })
+
   it("isNew 的行有「新」点，点开后调 shared_seen，点和数字随之减少", async () => {
     makeAvailable(1)
     const onOpen = vi.fn()

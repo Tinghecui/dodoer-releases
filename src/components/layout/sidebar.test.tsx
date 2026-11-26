@@ -41,6 +41,7 @@ const spies = vi.hoisted(() => ({
   openUrl: vi.fn<() => Promise<void>>(),
   openNewConversationTab: vi.fn(),
   openChatModeTab: vi.fn(),
+  openTab: vi.fn(),
   setRoute: vi.fn(),
   openConversations: vi.fn(),
   // The list's imperative handle, driven by the header buttons.
@@ -120,6 +121,7 @@ const teamApi = vi.hoisted(() => ({
   polling: vi.fn(),
   teamShared: vi.fn(),
   teamView: vi.fn(),
+  teamCommentsSeen: vi.fn(),
 }))
 vi.mock("@/lib/cowork/team", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/cowork/team")>()
@@ -128,6 +130,7 @@ vi.mock("@/lib/cowork/team", async (importOriginal) => {
     useCoworkTeamPolling: teamApi.polling,
     teamShared: teamApi.teamShared,
     teamView: teamApi.teamView,
+    teamCommentsSeen: teamApi.teamCommentsSeen,
   }
 })
 vi.mock("@/components/conversations/conversation-tags-manager", () => ({
@@ -143,6 +146,7 @@ vi.mock("@/contexts/tab-context", () => ({
   useTabActions: () => ({
     openNewConversationTab: spies.openNewConversationTab,
     openChatModeTab: spies.openChatModeTab,
+    openTab: spies.openTab,
   }),
 }))
 vi.mock("@/contexts/automations-view-context", () => ({
@@ -1450,6 +1454,8 @@ describe("Sidebar — CoTeam scope switch", () => {
     expect(sharedList()).toBeNull()
     expect(teamApi.teamShared).not.toHaveBeenCalled()
     expect(spies.listProps).not.toBeNull()
+    // 收件箱按钮也不画（#1235 第 6 行）。
+    expect(document.querySelector("[data-team-inbox-button]")).toBeNull()
   })
 
   it("leaves the team switch and shared list out on mobile", async () => {
@@ -1466,6 +1472,7 @@ describe("Sidebar — CoTeam scope switch", () => {
       expect(sharedList()).toBeNull()
       expect(teamApi.teamShared).not.toHaveBeenCalled()
       expect(spies.listProps).not.toBeNull()
+      expect(document.querySelector("[data-team-inbox-button]")).toBeNull()
     } finally {
       mobileState.isMobile = false
     }
@@ -1489,6 +1496,68 @@ describe("Sidebar — CoTeam scope switch", () => {
     // 「我的」：原来的会话列表照旧，不拉「分享给我」。
     expect(sharedList()).toBeNull()
     expect(teamApi.teamShared).not.toHaveBeenCalled()
+    // 收件箱按钮紧跟在铃铛右边（#1235 第 6 行），没打开不拉分享列表。
+    const bell = document.querySelector("[data-sidebar-bell]")
+    expect(
+      bell?.nextElementSibling?.hasAttribute("data-team-inbox-button")
+    ).toBe(true)
+  })
+
+  it("opens the own session from an inbox comment once the list has loaded", async () => {
+    // 收件箱里点自己会话上的留言，会话列表还在首次加载：等它回来再切过去。
+    teamApi.teamCommentsSeen.mockReset().mockResolvedValue({})
+    spies.openTab.mockClear()
+    useAppWorkspaceStore.setState({
+      conversations: [],
+      conversationsLoaded: false,
+      conversationsLoading: true,
+    })
+    makeAvailable()
+    act(() => {
+      useCoworkTeamStore.getState().setSummary({
+        sharedNew: 0,
+        commentUnread: {
+          total: 1,
+          sessions: [
+            {
+              owner: "member-a",
+              ownerLabel: "甲",
+              id: "42",
+              title: "Mine",
+              mine: true,
+              count: 1,
+            },
+          ],
+        },
+        groupNotices: [],
+      })
+    })
+    renderSidebar()
+    await act(async () => {})
+    fireEvent.click(document.querySelector("[data-team-inbox-button]")!)
+    await act(async () => {})
+    fireEvent.click(
+      document.querySelector(
+        '[data-inbox-item="comment:member-a/42"] [data-inbox-open]'
+      )!
+    )
+    await act(async () => {})
+    expect(spies.openTab).not.toHaveBeenCalled()
+    await act(async () => {
+      useAppWorkspaceStore.setState({
+        conversations: [
+          {
+            id: 42,
+            folder_id: 7,
+            agent_type: "claude_code",
+          } as unknown as DbConversationSummary,
+        ],
+        conversationsLoaded: true,
+        conversationsLoading: false,
+      })
+    })
+    expect(spies.openTab).toHaveBeenCalledWith(7, 42, "claude_code", false)
+    useAppWorkspaceStore.setState({ conversations: [], folders: [] })
   })
 
   it("shows the shared list for 'Shared with me' and keeps the list mounted", async () => {

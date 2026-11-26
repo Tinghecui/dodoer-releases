@@ -4,9 +4,10 @@
 // 会话列表的位置换成本组成员和他们的会话。
 //
 // 数据只来自 `team`：组选择（只当一个组的组长时不显示）、状态筛选（全部 /
-// 进行中 / 等人回答，只按会话的 `state` 在本地过滤）、日期（「今天」不给
+// 进行中 / 待查看，只按会话的 `state` 在本地过滤）、日期（「今天」不给
 // `since`，「最近 7 天」给 7 天前的时间）。下面按成员分层折叠：成员行是头像、
-// 名字、「进行中 N · 等人回答 N」（数字原样用 `team` 给的），展开是他的会话行，
+// 名字、「进行中 N · 待查看 N」（数字原样用 `team` 给的），展开是他的会话行，
+// 会话的 `waiting` 带 `awaiting` 时才写在等什么，没带的只是做完等人看（#1513），
 // 点一行在主区域只读打开（第 2 行的视图，只读条写「你是某组组长」）。
 //
 // 挂上、换组、换日期时拉一次，之后每来一次新的 `summary` 就再拉（跟着 60 秒
@@ -20,9 +21,9 @@ import {
   TEAM_SIGNED_OUT_CODE,
   teamView,
   toCoworkTeamError,
+  teamStateLabelKey,
   type TeamMember,
   type TeamMemberSession,
-  type TeamSessionState,
   type TeamView,
 } from "@/lib/cowork/team"
 import { noteTeamError, teamErrorText } from "@/lib/cowork/team-errors"
@@ -63,17 +64,11 @@ const GONE_CODES = new Set(["not_found", "forbidden"])
 /** 「几分钟前」多久刷新一次。 */
 const CLOCK_TICK_MS = 60_000
 
-const STATE_LABEL_KEYS = {
-  running: "stateRunning",
-  waiting: "stateWaiting",
-  done: "stateDone",
-} as const satisfies Record<TeamSessionState, string>
-
 const STATE_FILTERS: readonly TeamStateFilter[] = ["all", "running", "waiting"]
 const STATE_FILTER_KEYS = {
   all: "teamFilterAll",
   running: "stateRunning",
-  waiting: "stateWaiting",
+  waiting: "stateReview",
 } as const satisfies Record<TeamStateFilter, string>
 
 const DATE_RANGES: readonly TeamDateRange[] = ["today", "week"]
@@ -379,7 +374,10 @@ export function TeamMembersList({
                       {sessions.map((session) => {
                         const title = session.title || t("untitled")
                         const updatedAt = timeOf(session.updatedAt)
-                        const stateLabel = t(STATE_LABEL_KEYS[session.state])
+                        const awaiting = session.awaiting ?? null
+                        const stateLabel = t(
+                          teamStateLabelKey(session.state, awaiting)
+                        )
                         return (
                           <li key={`${session.owner}/${session.id}`}>
                             <button
@@ -400,12 +398,23 @@ export function TeamMembersList({
                               {session.state !== "done" && (
                                 <span
                                   data-team-session-state={session.state}
-                                  title={stateLabel}
+                                  data-team-session-awaiting={
+                                    awaiting
+                                      ? (awaiting.reason ?? "other")
+                                      : undefined
+                                  }
+                                  title={
+                                    awaiting?.title
+                                      ? `${stateLabel} · ${awaiting.title}`
+                                      : stateLabel
+                                  }
                                   className={cn(
                                     "inline-flex h-[0.4375rem] w-[0.4375rem] shrink-0 rounded-full",
                                     session.state === "running"
                                       ? "animate-pulse bg-emerald-500"
-                                      : "bg-amber-500"
+                                      : awaiting
+                                        ? "bg-amber-500"
+                                        : "bg-sky-500"
                                   )}
                                 >
                                   <span className="sr-only">{stateLabel}</span>

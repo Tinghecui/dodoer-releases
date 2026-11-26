@@ -13,6 +13,7 @@ import { ApprovalChip, showsApproval } from "./approval-chip"
 import { useFoldRow } from "./fold-back"
 import { TimelineFoot } from "./timeline-foot"
 import { useRailGrowth } from "./use-rail-growth"
+import { HOVER_NONE_REVEAL } from "@/lib/touch-target"
 
 const MARKER_POSITION = {
   main: {
@@ -260,6 +261,9 @@ export function RowChevron({
         always
           ? "opacity-100"
           : "opacity-0 group-hover/row:opacity-100 group-focus-visible/row:opacity-100 group-has-[:focus-visible]/row:opacity-100",
+        // 不能悬停的设备上一直半透明显示；展开后由下面的 opacity-100 接管，
+        // 不让触屏兜底把它压暗。
+        !always && !open && HOVER_NONE_REVEAL,
         // Mirrored under RTL, so it turns the other way to point down.
         open && "rotate-90 opacity-100 rtl:-rotate-90",
         className

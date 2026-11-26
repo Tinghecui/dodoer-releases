@@ -595,6 +595,13 @@ function MessageResponseImpl({
         // Upright, not italic: CJK has no true italic, so a browser fakes it by
         // skewing, which looks broken.
         "[&_blockquote]:border-s-2 [&_blockquote]:border-border [&_blockquote]:ps-4 [&_blockquote]:pe-0 [&_blockquote]:not-italic",
+        // 长链接、长路径、不带空格的行内代码放不下一行时就地断开，不撑出
+        // 消息（手机上最明显）。用 break-word 而不是 anywhere：它不改元素的
+        // 最小宽度，表格照旧在自己的滚动区里横向滚，代码块本来就不换行。
+        "break-words",
+        // 独立成行的大公式不断行，放不下时左右滚动；y 方向关掉，免得
+        // 上下标的一点溢出冒出竖滚动条。
+        "[&_.katex-display]:overflow-x-auto [&_.katex-display]:overflow-y-hidden",
         className
       )}
       plugins={plugins}

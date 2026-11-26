@@ -10,6 +10,9 @@
 // `seq` 增量拉；页面不可见时不拉，回到可见时马上补一次。`not_found`（对方
 // 取消了分享、或者我已经不在这个组里）清空内容、不再拉。
 //
+// 顶部「在等 TA ……」只在服务端说了真在等（带 `awaiting`）时出：`waiting`
+// 本身也包括一轮做完、只是等人看的会话（#1513）。
+//
 // 这里没有任何能给对方智能体发话、停止、批准的控件。谁能看由服务端判断。
 // 输入框的位置是留言输入（第 5 行），右侧一栏是这个会话的留言线程；每条记录
 // 旁边能「对这条留言」。留言不会发给对方的智能体。
@@ -37,6 +40,7 @@ import {
   teamEntries,
   toCoworkTeamError,
   type TeamAgentInfo,
+  type TeamAwaitingReason,
   type TeamEntry,
 } from "@/lib/cowork/team"
 import { noteTeamError, teamErrorText } from "@/lib/cowork/team-errors"
@@ -147,6 +151,20 @@ export function SharedSessionHost({ children }: { children: ReactNode }) {
   )
 }
 
+/** 只读视图顶部「在等 TA ……」按在等什么换文案；认不出的原因用笼统的那句。 */
+function sharedViewAwaitingKey(reason: TeamAwaitingReason | null) {
+  switch (reason) {
+    case "permission":
+      return "sharedViewAwaitingPermission" as const
+    case "question":
+      return "sharedViewAwaitingQuestion" as const
+    case "plan":
+      return "sharedViewAwaitingPlan" as const
+    default:
+      return "sharedViewWaiting" as const
+  }
+}
+
 function timeOf(raw: string): number {
   const at = Date.parse(raw)
   return Number.isFinite(at) ? at : 0
@@ -255,6 +273,7 @@ function SharedSessionView({
   const ownerLabel = agent?.ownerLabel || target.ownerLabel || owner
   const title = agent?.title || target.title || t("untitled")
   const updatedAt = agent ? timeOf(agent.updatedAt) : 0
+  const awaiting = agent?.state === "waiting" ? (agent.awaiting ?? null) : null
   const link = sharedSessionPortalLink(portalUrl, owner, id)
   const viaText =
     target.via.kind === "leader"
@@ -337,12 +356,19 @@ function SharedSessionView({
             {t("sharedViewHint", { owner: ownerLabel })}
           </span>
         </div>
-        {agent?.state === "waiting" && (
+        {awaiting && (
           <p
-            data-shared-session-waiting=""
-            className="text-[0.75rem] text-amber-600 dark:text-amber-400"
+            data-shared-session-waiting={awaiting.reason ?? "other"}
+            className="min-w-0 truncate text-[0.75rem] text-amber-600 dark:text-amber-400"
+            title={awaiting.title ?? undefined}
           >
-            {t("sharedViewWaiting", { owner: ownerLabel })}
+            {t(sharedViewAwaitingKey(awaiting.reason), { owner: ownerLabel })}
+            {awaiting.title && (
+              <span className="text-muted-foreground">
+                {" · "}
+                {awaiting.title}
+              </span>
+            )}
           </p>
         )}
       </header>

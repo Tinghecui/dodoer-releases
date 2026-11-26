@@ -7,6 +7,7 @@ import { ChevronDown, ChevronUp } from "lucide-react"
 import { CommitCopyButton } from "@/components/ai-elements/commit"
 import { useCollapsibleOverflow } from "@/hooks/use-collapsible-overflow"
 import { cn } from "@/lib/utils"
+import { HOVER_NONE_REVEAL } from "@/lib/touch-target"
 
 /**
  * An expanded commit's full message body. Release commits can run to dozens of
@@ -59,7 +60,7 @@ export const GitLogCommitMessage = memo(function GitLogCommitMessage({
         </button>
       )}
       <CommitCopyButton
-        className="absolute top-1.5 right-1.5 size-5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100"
+        className={`absolute top-1.5 right-1.5 size-5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 ${HOVER_NONE_REVEAL}`}
         hash={message}
         title={t("copyMessage")}
       />

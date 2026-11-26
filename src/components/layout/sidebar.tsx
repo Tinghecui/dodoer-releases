@@ -116,6 +116,10 @@ import {
   TeamMembersList,
   openTeamSession,
 } from "@/components/cowork/team-members-list"
+import {
+  TeamInbox,
+  waitForOwnConversation,
+} from "@/components/cowork/team-inbox"
 import { useCoworkTeamPolling } from "@/lib/cowork/team"
 import { openSharedItem } from "@/stores/cowork-team-store"
 
@@ -310,7 +314,7 @@ export function Sidebar({
   const showPrStatus = usePrStatusStore((s) => s.enabled)
   const { isOpen, toggle } = useSidebarContext()
   const { activeFolder } = useActiveFolder()
-  const { openNewConversationTab, openChatModeTab } = useTabActions()
+  const { openNewConversationTab, openChatModeTab, openTab } = useTabActions()
   const { unseenFailures } = useAutomationsView()
   const { attentionCount } = useTasksView()
   const { routeId, setRoute, openConversations } = useWorkbenchRoute()
@@ -378,6 +382,22 @@ export function Sidebar({
   useCoworkTeamPolling(!isMobile)
   const { scope: storedTeamScope, setScope: setTeamScope } = useTeamScope()
   const teamScope = isMobile ? "mine" : storedTeamScope
+  // 收件箱里点了自己会话上的留言：切到那个会话（和侧栏点它一样）。会话列表
+  // 还没加载到它时等一下（见 waitForOwnConversation），不悄悄不切。
+  const openOwnTeamSession = useCallback(
+    async (conversationId: number) => {
+      const conversation = await waitForOwnConversation(conversationId)
+      if (!conversation) return
+      openConversations()
+      openTab(
+        conversation.folder_id,
+        conversation.id,
+        conversation.agent_type,
+        false
+      )
+    },
+    [openConversations, openTab]
+  )
   const newConversationShortcutLabel = formatShortcutLabel(
     shortcuts.new_conversation,
     isMac
@@ -602,6 +622,8 @@ export function Sidebar({
           pressed={sessionActivity}
           onClick={() => setSessionActivity((value) => !value)}
         />
+        {/* Cowork（#1235）：团队收件箱，铃铛右边；团队功能不可用时不画。 */}
+        {!isMobile && <TeamInbox onOpenOwnSession={openOwnTeamSession} />}
         {/* One row at the window-chrome buttons' 2px rhythm — toggle,
             search, the bell, then the list tools — with no gap opening inside
             it at any width; the empty space after the tools is the header's

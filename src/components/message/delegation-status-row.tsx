@@ -52,6 +52,7 @@ import { ErrorLabel } from "@/components/message/delegation-status-badge"
 import { useDelegationStatusContext } from "@/components/message/delegation-status-index-context"
 import { useDelegationTaskLive } from "@/hooks/use-delegation-task-live"
 import { useElapsedLabel } from "@/hooks/use-elapsed-label"
+import { TOUCH_GAP_1 } from "@/lib/touch-target"
 
 interface DelegationStatusRowProps {
   /** Which companion tool this row represents — selects the label + icon. */
@@ -328,7 +329,9 @@ export const DelegationStatusRow = memo(function DelegationStatusRow({
             </ScrollArea>
           )}
           {hasAnyResultText && hasPager && (
-            <div className="flex items-center justify-center gap-1 border-t border-border px-3 py-1">
+            <div
+              className={`flex items-center justify-center border-t border-border px-3 py-1 ${TOUCH_GAP_1}`}
+            >
               <Button
                 type="button"
                 variant="ghost"
@@ -340,7 +343,9 @@ export const DelegationStatusRow = memo(function DelegationStatusRow({
               >
                 <ChevronLeft className="size-3" />
               </Button>
-              <span className="min-w-12 text-center text-xs tabular-nums text-muted-foreground">
+              {/* relative：保险。「上一条」按钮的触屏点按区域最多伸进空隙的
+                  一半，碰不到这段文字；万一伸过来，定位元素后画、盖在它上面 */}
+              <span className="relative min-w-12 text-center text-xs tabular-nums text-muted-foreground">
                 {t("resultPageOf", {
                   current: idx + 1,
                   total: results.length,

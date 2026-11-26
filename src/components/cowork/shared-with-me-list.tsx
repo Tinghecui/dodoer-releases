@@ -16,9 +16,9 @@ import {
   TEAM_SIGNED_OUT_CODE,
   teamShared,
   teamSharedSeen,
+  teamStateLabelKey,
   toCoworkTeamError,
   type CoworkTeamSummary,
-  type TeamSessionState,
   type TeamSharedItem,
 } from "@/lib/cowork/team"
 import { noteTeamError, teamErrorText } from "@/lib/cowork/team-errors"
@@ -68,12 +68,6 @@ function decrementSharedNew(): CoworkTeamSummary | null {
 
 /** 「几分钟前」多久刷新一次。 */
 const CLOCK_TICK_MS = 60_000
-
-const STATE_LABEL_KEYS = {
-  running: "stateRunning",
-  waiting: "stateWaiting",
-  done: "stateDone",
-} as const satisfies Record<TeamSessionState, string>
 
 export function SharedWithMeList({
   onOpen,
@@ -233,7 +227,9 @@ export function SharedWithMeList({
           {visible.map((item) => {
             const title = item.title || t("untitled")
             const updatedAt = timeOf(item.updatedAt)
-            const stateLabel = t(STATE_LABEL_KEYS[item.state])
+            // `waiting` 没带 `awaiting` 只是做完等人看，写「待查看」（#1513）。
+            const awaiting = item.awaiting ?? null
+            const stateLabel = t(teamStateLabelKey(item.state, awaiting))
             const hover = [
               title,
               t("sharedBy", { owner: item.ownerLabel }),
@@ -277,12 +273,21 @@ export function SharedWithMeList({
                   {item.state !== "done" && (
                     <span
                       data-shared-state={item.state}
-                      title={stateLabel}
+                      data-shared-awaiting={
+                        awaiting ? (awaiting.reason ?? "other") : undefined
+                      }
+                      title={
+                        awaiting?.title
+                          ? `${stateLabel} · ${awaiting.title}`
+                          : stateLabel
+                      }
                       className={cn(
                         "inline-flex h-[0.4375rem] w-[0.4375rem] shrink-0 rounded-full",
                         item.state === "running"
                           ? "animate-pulse bg-emerald-500"
-                          : "bg-amber-500"
+                          : awaiting
+                            ? "bg-amber-500"
+                            : "bg-sky-500"
                       )}
                     >
                       <span className="sr-only">{stateLabel}</span>

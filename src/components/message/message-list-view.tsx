@@ -157,6 +157,7 @@ import {
   type AwaitingUserKind,
 } from "@/stores/awaiting-user-store"
 import { MarkdownImageProvider } from "@/components/ai-elements/markdown-local-image"
+import { HOVER_NONE_REVEAL, TOUCH_GAP_1 } from "@/lib/touch-target"
 
 interface MessageListViewProps {
   conversationId: number
@@ -1244,7 +1245,7 @@ const UserMessageCopyButton = memo(function UserMessageCopyButton({
   return (
     <MessageAction
       tooltip={isCopied ? t("copied") : t("copyMessage")}
-      className="opacity-0 group-hover/user-msg:opacity-100 transition-opacity self-end"
+      className={`opacity-0 group-hover/user-msg:opacity-100 transition-opacity self-end ${HOVER_NONE_REVEAL}`}
       onClick={handleCopy}
       size="icon-xs"
     >
@@ -1267,7 +1268,7 @@ const UserMessageTaskButton = memo(function UserMessageTaskButton({
   return (
     <MessageAction
       tooltip={t("createFromMessage")}
-      className="opacity-0 group-hover/user-msg:opacity-100 transition-opacity self-end"
+      className={`opacity-0 group-hover/user-msg:opacity-100 transition-opacity self-end ${HOVER_NONE_REVEAL}`}
       onClick={createTask}
       size="icon-xs"
     >
@@ -1398,7 +1399,9 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
           <UserImageAttachments images={group.images} className="self-end" />
         ) : null}
         {group.role === "user" ? (
-          <div className="group/user-msg flex w-fit ml-auto max-w-full items-start gap-1">
+          <div
+            className={`group/user-msg flex w-fit ml-auto max-w-full items-start ${TOUCH_GAP_1}`}
+          >
             <UserMessageTaskButton parts={group.parts} />
             <UserMessageCopyButton parts={group.parts} />
             <MessageContent>

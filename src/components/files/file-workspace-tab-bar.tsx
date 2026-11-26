@@ -39,6 +39,7 @@ import { isHtmlPreviewable } from "@/lib/language-detect"
 import { openFileDialog } from "@/lib/platform"
 import { isDesktop, isRemoteDesktopMode } from "@/lib/transport"
 import { cn, handleMiddleClickClose } from "@/lib/utils"
+import { HOVER_NONE_REVEAL } from "@/lib/touch-target"
 import { STRIP_ICON_BTN } from "@/components/tabs/strip-icon-button"
 import {
   ContextMenu,
@@ -486,7 +487,9 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
                 "flex h-4 w-4 shrink-0 items-center justify-center rounded-full hover:bg-foreground/10",
                 active
                   ? "opacity-100"
-                  : "pointer-events-none opacity-0 group-hover/filetab:pointer-events-auto group-hover/filetab:opacity-100"
+                  : "pointer-events-none opacity-0 group-hover/filetab:pointer-events-auto group-hover/filetab:opacity-100",
+                // 不能悬停的设备上未激活标签的叉也一直显示、能点。
+                !active && HOVER_NONE_REVEAL
               )}
               onClick={(event) => {
                 event.stopPropagation()

@@ -29,6 +29,15 @@ export const TEAM_SUMMARY_MS = 60_000
 /** 服务端算好的会话状态：进行中、等人回答、已结束。 */
 export type TeamSessionState = "running" | "waiting" | "done"
 
+/** 服务端 `waiting` 只说明「轮到人了」：一轮做完等人看也算。真卡在等批准、
+ *  等回答时另带 `awaiting`；认不出的原因记成 `null`（仍算在等人）。 */
+export type TeamAwaitingReason = "permission" | "question" | "plan"
+
+export interface TeamAwaiting {
+  reason: TeamAwaitingReason | null
+  title: string | null
+}
+
 export interface TeamUser {
   name: string
   label: string
@@ -108,6 +117,8 @@ export interface TeamSharedItem {
   id: string
   title: string
   state: TeamSessionState
+  /** 读进来时总会填；手写的数据（测试）可以不写，当 `null`。 */
+  awaiting?: TeamAwaiting | null
   updatedAt: string
   note: string
   sharedAt: string
@@ -137,6 +148,8 @@ export interface TeamAgentInfo {
   id: string
   title: string
   state: TeamSessionState
+  /** 读进来时总会填；手写的数据（测试）可以不写，当 `null`。 */
+  awaiting?: TeamAwaiting | null
   updatedAt: string
 }
 
@@ -183,6 +196,8 @@ export interface TeamMemberSession {
   id: string
   title: string
   state: TeamSessionState
+  /** 读进来时总会填；手写的数据（测试）可以不写，当 `null`。 */
+  awaiting?: TeamAwaiting | null
   updatedAt: string
   summary: TeamSummaryText | null
 }
@@ -251,6 +266,59 @@ function count(raw: unknown): number {
 /** 只认三种状态；不认识的当「已结束」（不自己从别的字段推）。 */
 function sessionState(raw: unknown): TeamSessionState {
   return raw === "running" || raw === "waiting" ? raw : "done"
+}
+
+/** 没有这个字段（老服务端）或不是对象时当没在等；只在 `waiting` 时才有意义。 */
+function awaitingOf(
+  state: TeamSessionState,
+  raw: unknown
+): TeamAwaiting | null {
+  if (state !== "waiting") return null
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
+  const r = raw as Raw
+  const reason =
+    r.reason === "permission" || r.reason === "question" || r.reason === "plan"
+      ? r.reason
+      : null
+  return { reason, title: strOrNull(r.title) }
+}
+
+/** 会话状态的文案 key：做完等人看的写「待查看」，真在等的写在等什么。 */
+export type TeamStateLabelKey =
+  | "stateRunning"
+  | "stateDone"
+  | "stateReview"
+  | "stateWaiting"
+  | "stateAwaitingPermission"
+  | "stateAwaitingQuestion"
+  | "stateAwaitingPlan"
+
+export function teamStateLabelKey(
+  state: TeamSessionState,
+  awaiting: TeamAwaiting | null | undefined
+): TeamStateLabelKey {
+  if (state === "running") return "stateRunning"
+  if (state === "done") return "stateDone"
+  if (!awaiting) return "stateReview"
+  switch (awaiting.reason) {
+    case "permission":
+      return "stateAwaitingPermission"
+    case "question":
+      return "stateAwaitingQuestion"
+    case "plan":
+      return "stateAwaitingPlan"
+    default:
+      return "stateWaiting"
+  }
+}
+
+function stateAndAwaiting(r: Raw): {
+  state: TeamSessionState
+  /** 读进来时总会填；手写的数据（测试）可以不写，当 `null`。 */
+  awaiting?: TeamAwaiting | null
+} {
+  const state = sessionState(r.state)
+  return { state, awaiting: awaitingOf(state, r.awaiting) }
 }
 
 function user(raw: unknown): TeamUser | null {
@@ -399,7 +467,7 @@ export function normalizeTeamShared(raw: unknown): TeamSharedItem[] {
         ownerLabel: str(s.ownerLabel) || owner,
         id,
         title: str(s.title),
-        state: sessionState(s.state),
+        ...stateAndAwaiting(s),
         updatedAt: str(s.updatedAt),
         note: str(s.note),
         sharedAt: str(s.sharedAt),
@@ -435,7 +503,7 @@ export function normalizeTeamEntries(raw: unknown): TeamEntriesPage {
       ownerLabel: str(a.ownerLabel) || owner,
       id: str(a.id),
       title: str(a.title),
-      state: sessionState(a.state),
+      ...stateAndAwaiting(a),
       updatedAt: str(a.updatedAt),
     },
     entries: compact(
@@ -505,7 +573,7 @@ export function normalizeTeamView(raw: unknown): TeamView {
                 owner: str(x.owner) || m.name,
                 id,
                 title: str(x.title),
-                state: sessionState(x.state),
+                ...stateAndAwaiting(x),
                 updatedAt: str(x.updatedAt),
                 summary: summaryText(x.summary),
               }

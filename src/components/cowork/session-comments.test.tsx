@@ -106,6 +106,7 @@ function comment(over: Partial<TeamComment>): TeamComment {
     mine: false,
     canDelete: false,
     anchor: null,
+    forwardedAt: null,
     ...over,
   }
 }
@@ -845,6 +846,37 @@ describe("own conversation comments", () => {
     expect((done as HTMLButtonElement).disabled).toBe(true)
     fireEvent.click(done)
     expect(queueItems()).toHaveLength(1)
+  })
+
+  it("after a refresh, a comment the server says was forwarded stays Given to agent and cannot be forwarded again", async () => {
+    makeAvailable()
+    api.teamComments.mockResolvedValue(
+      commentsPage(
+        [
+          comment({ id: "c5", forwardedAt: "2026-11-23T09:05:00Z" }),
+          comment({ id: "c6" }),
+        ],
+        true
+      )
+    )
+    // 刷新：这次打开期间的内存记录是空的，只有服务器给的 forwardedAt。
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+
+    const done = screen.getByRole("button", { name: "Given to agent" })
+    expect((done as HTMLButtonElement).disabled).toBe(true)
+    expect(
+      done.closest("[data-comment-id]")?.getAttribute("data-comment-id")
+    ).toBe("c5")
+    fireEvent.click(done)
+    await flush()
+    expect(queueItems()).toEqual([])
+    expect(api.teamCommentForwarded).not.toHaveBeenCalled()
+    // 没转过的那条照旧能点。
+    expect(
+      screen.getAllByRole("button", { name: "Give to my agent" })
+    ).toHaveLength(1)
   })
 
   it("a polled new comment only updates the hint and thread; the queue stays as it was", async () => {

@@ -476,6 +476,22 @@ describe("宽容地读返回值", () => {
     })
   })
 
+  it("comments：forwardedAt 是服务器记下的转交时间，没有或是空的时是 null", () => {
+    const page = normalizeTeamComments({
+      isOwner: true,
+      comments: [
+        { id: 5, body: "a", forwardedAt: "2026-11-23T08:05:00Z" },
+        { id: 6, body: "b" },
+        { id: 7, body: "c", forwardedAt: "" },
+      ],
+    })
+    expect(page.comments.map((c) => c.forwardedAt)).toEqual([
+      "2026-11-23T08:05:00Z",
+      null,
+      null,
+    ])
+  })
+
   it("team：会话缺 owner 时用成员名", () => {
     const view = normalizeTeamView({
       id: 1,
@@ -799,6 +815,15 @@ describe("契约样例：读进来的编号原样发回去还是同一个数字�
     await teamCommentAdd("alice", "75", "好", { replyTo: reply.parentId! })
     expect(lastArgs().replyTo).toBe(F.comments.comments[1].parentId)
     expect(typeof lastArgs().replyTo).toBe("number")
+  })
+
+  it("ownerComments 的 forwardedAt：会话主人读得出哪条转交过", () => {
+    const page = normalizeTeamComments(F.ownerComments)
+    expect(page.isOwner).toBe(true)
+    expect(page.comments.map((c) => c.forwardedAt)).toEqual([
+      F.ownerComments.comments[0].forwardedAt,
+      null,
+    ])
   })
 
   it("shared[].via 的组号、team.id → team", async () => {

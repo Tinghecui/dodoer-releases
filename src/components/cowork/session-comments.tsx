@@ -78,7 +78,10 @@ export function forwardedCommentText(
 interface OwnCommentsState {
   /** 打开着留言栏的自己的会话（契约里的会话号）；没开是 null。 */
   openFor: string | null
-  /** 这次打开期间已经交给智能体的留言：`<会话号>/<留言 id>`。 */
+  /**
+   * 这次打开期间刚交给智能体的留言：`<会话号>/<留言 id>`。刷新以后靠服务器在
+   * 留言列表里给的 `forwardedAt`。
+   */
   forwarded: Record<string, true>
   open: (id: string) => void
   close: () => void
@@ -749,7 +752,7 @@ function OwnSessionCommentsPanel({
   const forward = useCallback(
     (comment: TeamComment) => {
       const store = useOwnCommentsStore.getState()
-      if (store.forwarded[`${id}/${comment.id}`]) return
+      if (comment.forwardedAt || store.forwarded[`${id}/${comment.id}`]) return
       // 先记下来再入队：连点两下也只进一次排队区。
       store.markForwarded(id, comment.id)
       onForward(forwardedCommentText(comment.authorLabel, comment.body))
@@ -761,7 +764,10 @@ function OwnSessionCommentsPanel({
   const renderForward = useCallback(
     (comment: TeamComment) => {
       if (!isOwner) return null
-      const done = forwarded[`${id}/${comment.id}`] === true
+      // 服务器记下的转交（刷新、换浏览器后还在）或这次刚点的，都算已交。
+      const done =
+        comment.forwardedAt !== null ||
+        forwarded[`${id}/${comment.id}`] === true
       return (
         <button
           type="button"

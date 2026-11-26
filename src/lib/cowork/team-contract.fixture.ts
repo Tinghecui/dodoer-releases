@@ -83,6 +83,42 @@ export const TEAM_CONTRACT_FIXTURE = {
       },
     ],
   },
+  // 会话主人 alice 看自己会话的留言：服务器给每条带上 forwardedAt
+  // （转过给智能体的是转交时间，没转过的是 null）。
+  ownerComments: {
+    isOwner: true,
+    ids: [9, 12],
+    comments: [
+      {
+        id: 9,
+        seq: 4,
+        parentId: null,
+        author: "bob",
+        authorLabel: "鲍勃",
+        former: false,
+        body: "这里要再查一下",
+        createdAt: "2026-11-23T08:02:00Z",
+        mine: false,
+        canDelete: true,
+        anchor: null,
+        forwardedAt: "2026-11-23T08:05:00Z",
+      },
+      {
+        id: 12,
+        seq: 5,
+        parentId: null,
+        author: "bob",
+        authorLabel: "鲍勃",
+        former: false,
+        body: "还有一处",
+        createdAt: "2026-11-23T08:06:00Z",
+        mine: false,
+        canDelete: true,
+        anchor: null,
+        forwardedAt: null,
+      },
+    ],
+  },
   shared: [
     {
       owner: "alice",

@@ -507,7 +507,8 @@
       "email": "Correo",
       "emailPlaceholder": "you@example.com",
       "notSet": "Sin configurar: los commits fallarán hasta que rellenes ambos.",
-      "required": "Rellena el nombre y el correo."
+      "required": "Rellena el nombre y el correo.",
+      "emailInvalid": "El correo no tiene un formato válido."
     }
   },
   "ShortcutSettings": {

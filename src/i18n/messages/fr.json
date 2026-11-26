@@ -507,7 +507,8 @@
       "email": "E-mail",
       "emailPlaceholder": "you@example.com",
       "notSet": "Pas encore défini : les commits échoueront tant que les deux ne sont pas renseignés.",
-      "required": "Renseignez le nom et l’e-mail."
+      "required": "Renseignez le nom et l’e-mail.",
+      "emailInvalid": "L’adresse e-mail n’est pas valide."
     }
   },
   "ShortcutSettings": {

@@ -92,6 +92,34 @@ describe("GitIdentitySettings", () => {
     expect(mockSet).not.toHaveBeenCalled()
   })
 
+  // #1563：不带 @ 的邮箱就地提示，保存按钮不能点。
+  it("flags an email that is not an address and does not save it", async () => {
+    mockGet.mockResolvedValue({
+      name: "Test Person",
+      email: "person@example.com",
+    })
+    renderCard()
+    await waitFor(() =>
+      expect(screen.getByLabelText(tIdentity.email)).toHaveValue(
+        "person@example.com"
+      )
+    )
+
+    const emailInput = screen.getByLabelText(tIdentity.email)
+    fireEvent.change(emailInput, { target: { value: "not-an-email" } })
+    expect(screen.getByText(tIdentity.emailInvalid)).toBeInTheDocument()
+    expect(emailInput).toHaveAttribute("aria-invalid", "true")
+    const save = screen.getByRole("button", { name: "Save" })
+    expect(save).toBeDisabled()
+    fireEvent.click(save)
+    expect(mockSet).not.toHaveBeenCalled()
+
+    fireEvent.change(emailInput, { target: { value: "other@example.com" } })
+    expect(screen.queryByText(tIdentity.emailInvalid)).toBeNull()
+    expect(emailInput).not.toHaveAttribute("aria-invalid", "true")
+    expect(save).toBeEnabled()
+  })
+
   it("says why when the save fails and keeps what was typed", async () => {
     mockGet.mockResolvedValue({ name: null, email: null })
     mockSet.mockRejectedValue({
@@ -105,7 +133,7 @@ describe("GitIdentitySettings", () => {
       target: { value: "Test Person" },
     })
     fireEvent.change(screen.getByLabelText(tIdentity.email), {
-      target: { value: "<x>" },
+      target: { value: "<person@example.com>" },
     })
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
 
@@ -114,6 +142,8 @@ describe("GitIdentitySettings", () => {
         "Failed to save: Git email contains characters git does not allow"
       )
     )
-    expect(screen.getByLabelText(tIdentity.email)).toHaveValue("<x>")
+    expect(screen.getByLabelText(tIdentity.email)).toHaveValue(
+      "<person@example.com>"
+    )
   })
 })

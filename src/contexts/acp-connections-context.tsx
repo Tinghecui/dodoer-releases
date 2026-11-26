@@ -3994,6 +3994,8 @@ type TurnFailurePart =
       recordId: string
       title: string
       description?: string
+      /** 收进警报「详情」的原文（#1510：换成本地化标题时适配器的原话）。 */
+      evidence?: string
       actions: NotifyAction[]
     }
   | {
@@ -4003,6 +4005,18 @@ type TurnFailurePart =
       /** Buttons of the verdict's own, for a failure no typed record explains. */
       actions?: NotifyAction[]
     }
+
+/** 几段证据拼成警报「详情」的一段；都空的给 undefined。 */
+function joinEvidence(
+  ...parts: (string | null | undefined)[]
+): string | undefined {
+  return (
+    parts
+      .map((part) => part?.trim())
+      .filter(Boolean)
+      .join("\n\n") || undefined
+  )
+}
 
 /** A connect failure's notification key: one per surface. */
 function connectErrorNotificationKey(contextKey: string): string {
@@ -4020,6 +4034,7 @@ interface TurnFailureState {
     key: string
     title: string
     description?: string
+    evidence?: string
     actions: NotifyAction[]
   }
   /** codeg's verdict; `paired` once a typed account carries it. */
@@ -5102,7 +5117,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           notify({
             level: "error",
             ...typed,
-            evidence: part.evidence,
+            evidence: joinEvidence(typed.evidence, part.evidence),
             bellOnly: true,
           })
           return
@@ -5150,6 +5165,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         key,
         title: part.title,
         description: part.description,
+        evidence: part.evidence,
         actions,
       }
       notify({
@@ -5157,8 +5173,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         key,
         title: part.title,
         description: part.description,
-        evidence:
-          state.verdict?.key === key ? state.verdict.evidence : undefined,
+        evidence: joinEvidence(
+          part.evidence,
+          state.verdict?.key === key ? state.verdict.evidence : undefined
+        ),
         actions,
       })
     },
@@ -6270,6 +6288,37 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           if (quiet || !failureConn) break
           if (noticeKind === null) break
           const connKey = failureConn.connectionId
+          // Cowork（#1510）：底下的 CLI 没了（「The connection to Claude was
+          // lost.」，建议开新会话）的，和 #1393 没有 code 的那条一样：弹窗只一句
+          // 本地化的「连接断开了」，适配器的原话收进警报的「详情」。按钮不给
+          // 「新建会话」：没在跑的一轮时是只重连的「重试」；回合中失败的，重发
+          // 这一轮的「重试」在对话里那一行上，弹窗不放按钮。
+          if (turnErrorKindOf(e.record) === "connection_lost") {
+            const idle = failureConn.status !== "prompting"
+            notifyTurnFailure(connKey, {
+              kind: "typed",
+              recordId: e.record.id,
+              title: coworkT("agentConnectionLost", {
+                agent: getAgentLabel(failureConn.agentType),
+              }),
+              evidence: joinEvidence(e.record.title, e.record.details),
+              actions:
+                failureConn.isViewer || !idle
+                  ? []
+                  : [
+                      {
+                        label: t("actions.retry"),
+                        onClick: () => {
+                          void reconnectRef.current?.(contextKey).catch(() => {
+                            // 重连失败会自己报。
+                          })
+                        },
+                        toastOnly: true,
+                      },
+                    ],
+            })
+            break
+          }
           // Adapter-authored English, shown verbatim like a notice's text —
           // first line as the headline, the rest (a passed-through upstream
           // body, the record's details) below it. A blank title falls back to
@@ -6533,16 +6582,23 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           const agentLabel = nc
             ? getAgentLabel(nc.agentType)
             : (e.agent_type as string)
-          const { route, text, reason, evidence, processExited } =
-            presentBackendError(
-              e.code,
-              e.message,
-              e.details,
-              agentLabel,
-              nc?.agentType
-            )
+          const presented = presentBackendError(
+            e.code,
+            e.message,
+            e.details,
+            agentLabel,
+            nc?.agentType
+          )
+          const { route, reason, evidence, processExited } = presented
           // 报错时这一轮还在跑没有（下面的 TURN_FAILED 不改状态，先记下）。
           const wasPrompting = nc?.status === "prompting"
+          // Cowork（#1510）：`session_lost` 的说法（「这条消息没有执行」）是给发出去
+          // 的那一轮的。没有在跑的一轮时它只是连接断了的收尾：说成「连接断开了」，
+          // 和前面那条失败记录的提示合成一条（见下面的 `notifyTurnFailure`）。
+          const idleSessionLost = e.code === "session_lost" && !wasPrompting
+          const text = idleSessionLost
+            ? coworkT("agentConnectionLost", { agent: agentLabel })
+            : presented.text
 
           // A verdict that the turn FAILED, or a prompt the agent rejected (no
           // code: the message is the agent's own), closes the turn with the
@@ -6604,6 +6660,30 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           }
           if (quiet) break
           const connKey = nc?.connectionId ?? contextKey
+          if (idleSessionLost) {
+            // 前面已经有「连接断开了」那条（失败记录）的，只把后端的证据
+            // （stderr 的最后几行）加进它的「详情」；没有的，自己弹这一条，
+            // 带只重连的「重试」。
+            notifyTurnFailure(connKey, {
+              kind: "verdict",
+              title: text,
+              evidence,
+              actions: nc?.isViewer
+                ? undefined
+                : [
+                    {
+                      label: t("actions.retry"),
+                      onClick: () => {
+                        void reconnectRef.current?.(contextKey).catch(() => {
+                          // 重连失败会自己报。
+                        })
+                      },
+                      toastOnly: true,
+                    },
+                  ],
+            })
+            break
+          }
           if (isTurnFailureCode(e.code)) {
             // The same failed turn the adapter may also report as a typed
             // record — told once, together (see `notifyTurnFailure`).

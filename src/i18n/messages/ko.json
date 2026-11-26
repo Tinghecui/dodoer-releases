@@ -507,7 +507,8 @@
       "email": "이메일",
       "emailPlaceholder": "you@example.com",
       "notSet": "아직 설정되지 않았습니다. 둘 다 입력하기 전까지 커밋이 실패합니다.",
-      "required": "이름과 이메일을 모두 입력하세요."
+      "required": "이름과 이메일을 모두 입력하세요.",
+      "emailInvalid": "이메일 형식이 올바르지 않습니다."
     }
   },
   "ShortcutSettings": {

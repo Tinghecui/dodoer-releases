@@ -5799,9 +5799,16 @@ describe("empty-turn error diagnostics", () => {
   // 带 `session_lost`。显示本地化的一句，不是「Resource not found: { "sessionId": … }」。
   it("localizes a session the agent lost", async () => {
     const handlers = await connectOwner()
-
+    // 「这条消息没有执行」说的是发出去的那一轮；空闲时的见 #1510 的测试。
     emitAcpEvent(handlers, {
       seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+
+    emitAcpEvent(handlers, {
+      seq: 2,
       connection_id: "spawned-conn",
       type: "error",
       message: "the agent's session has ended; this message was not run",
@@ -9916,9 +9923,10 @@ describe("AIR session failures are told as notifications", () => {
 
   it("offers retry / new session only while the conversation view answers them", async () => {
     const handlers = await connectOwner()
+    // 不是「连接断了」那种（#1510 那种不给「新建会话」，见下面）。
     const record = failure({
-      category: "connection",
-      title: "The connection to Claude was lost.",
+      category: "server",
+      title: "Claude is overloaded.",
       actions: ["retry", "new_session"],
     })
 
@@ -9952,6 +9960,101 @@ describe("AIR session failures are told as notifications", () => {
     act(() => unregister())
     act(() => options.action!.onClick())
     expect(handler).not.toHaveBeenCalled()
+  })
+
+  // #1510：空闲时底下的 claude 被杀，claude-agent-acp 发的是带类型的失败记录。
+  const lostRecord = failure({
+    category: "connection",
+    title: "The connection to Claude was lost.",
+    details: "query ended unexpectedly",
+    actions: ["new_session"],
+  })
+
+  it("tells an idle lost connection in one localized line with Retry, the raw words in the details (#1510)", async () => {
+    const handlers = await connectOwner()
+    emit(handlers, { type: "session_failure", record: lostRecord })
+
+    expect(h.toastError).toHaveBeenCalledTimes(1)
+    const [title, options] = h.toastError.mock.calls[0] as [
+      string,
+      ReturnType<typeof toastOptions>,
+    ]
+    expect(title).toBe("The connection to Claude Code was lost.")
+    expect(options.description).toBeUndefined()
+    expect(options.action?.label).toBe("actions.retry")
+    expect(options.cancel).toBeUndefined()
+    const alert = h.recordAlert.mock.calls[0][0] as {
+      message: string
+      evidence?: string
+    }
+    expect(alert.message).toBe(title)
+    expect(alert.evidence).toBe(
+      "The connection to Claude was lost.\n\nquery ended unexpectedly"
+    )
+
+    // 后端随后以 session_lost 收尾：不再弹「这条消息没有执行」，stderr 里
+    // 进程怎么没的加进同一条警报的「详情」。
+    emit(handlers, {
+      type: "error",
+      message: "session lost",
+      agent_type: "claude_code",
+      code: "session_lost",
+      details:
+        "stderr (last 1 lines):\n  Process exited with signal: 9 (SIGKILL)",
+    })
+    expect(h.toastWarning).not.toHaveBeenCalled()
+    expect(h.toastError).toHaveBeenCalledTimes(1)
+    expect(
+      h.recordAlert.mock.calls.map(([a]) => (a as { message: string }).message)
+    ).not.toContain("backendErrors.sessionLost")
+    const merged = h.recordAlert.mock.lastCall![0] as {
+      key: string
+      message: string
+      evidence?: string
+    }
+    expect(merged.key).toBe(options.id)
+    expect(merged.message).toBe(title)
+    expect(merged.evidence).toContain("The connection to Claude was lost.")
+    expect(merged.evidence).toContain("Process exited with signal: 9")
+  })
+
+  it("gives a lost connection mid-turn no toast buttons — Retry is on the transcript line (#1510)", async () => {
+    const handlers = await connectOwner()
+    const handler = vi.fn()
+    act(() => {
+      h.actions!.registerSessionFailureActions(TAB, handler)
+    })
+    startTurn(handlers)
+    emit(handlers, { type: "session_failure", record: lostRecord })
+
+    const [title, options] = h.toastError.mock.calls[0] as [
+      string,
+      ReturnType<typeof toastOptions>,
+    ]
+    expect(title).toBe("The connection to Claude Code was lost.")
+    expect(options.action).toBeUndefined()
+    expect(options.cancel).toBeUndefined()
+  })
+
+  it("tells an idle session_lost with no record before it as a lost connection (#1510)", async () => {
+    const handlers = await connectOwner()
+    emit(handlers, {
+      type: "error",
+      message: "session lost",
+      agent_type: "claude_code",
+      code: "session_lost",
+      details: "stderr (last 1 lines):\n  Process exited with signal: 9",
+    })
+    const calls = [...h.toastError.mock.calls, ...h.toastWarning.mock.calls]
+    expect(calls).toHaveLength(1)
+    const [title, options] = calls[0] as [
+      string,
+      ReturnType<typeof toastOptions>,
+    ]
+    expect(title).toBe("The connection to Claude Code was lost.")
+    expect(options.action?.label).toBe("actions.retry")
+    const alert = h.recordAlert.mock.calls[0][0] as { evidence?: string }
+    expect(alert.evidence).toContain("Process exited with signal: 9")
   })
 
   it("tells one failed turn once — the typed record first, then codeg's verdict", async () => {

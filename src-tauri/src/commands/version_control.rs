@@ -230,13 +230,34 @@ fn identity_value(value: &str, field: &str) -> Result<String, AppCommandError> {
     Ok(value.to_string())
 }
 
+/// 邮箱在 identity_value 之外还要像个邮箱（#1563）：恰好一个 @，前后都不为空，
+/// 中间没有空白。规则和前端 git-identity-settings.tsx 的 isEmailLike 一致。
+fn identity_email(value: &str) -> Result<String, AppCommandError> {
+    let email = identity_value(value, "email")?;
+    let looks_like_email = match email.split_once('@') {
+        Some((local, domain)) => {
+            !local.is_empty()
+                && !domain.is_empty()
+                && !domain.contains('@')
+                && !email.chars().any(char::is_whitespace)
+        }
+        None => false,
+    };
+    if !looks_like_email {
+        return Err(AppCommandError::invalid_input(
+            "Git email is not a valid address",
+        ));
+    }
+    Ok(email)
+}
+
 async fn write_identity(
     file: Option<&std::path::Path>,
     name: &str,
     email: &str,
 ) -> Result<GitIdentity, AppCommandError> {
     let name = identity_value(name, "name")?;
-    let email = identity_value(email, "email")?;
+    let email = identity_email(email)?;
     for (key, value) in [("user.name", &name), ("user.email", &email)] {
         let output = crate::process::tokio_command("git")
             .arg("config")
@@ -935,7 +956,7 @@ mod git_identity_tests {
         assert_eq!(read_identity(Some(&file)).await.expect("read"), expected);
     }
 
-    /// 空的、带换行或尖括号的不写，原来的配置不动。
+    /// 空的、带换行或尖括号的、邮箱不像邮箱的不写，原来的配置不动。
     #[tokio::test]
     async fn a_git_identity_git_cannot_take_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -945,6 +966,12 @@ mod git_identity_tests {
             ("Test Person", "  "),
             ("Test\nPerson", "person@example.com"),
             ("Test Person", "<person@example.com>"),
+            // #1563：不像邮箱的也不收。
+            ("Test Person", "not-an-email"),
+            ("Test Person", "person@"),
+            ("Test Person", "@example.com"),
+            ("Test Person", "person@@example.com"),
+            ("Test Person", "test person@example.com"),
         ] {
             let err = write_identity(Some(&file), name, email)
                 .await

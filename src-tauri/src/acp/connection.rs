@@ -3077,94 +3077,96 @@ pub async fn spawn_agent_connection(
         .spawn(move || {
             let _cleanup = cleanup_guard;
             connection_rt.block_on(async move {
-        let delegation_for_cleanup = delegation_injection.clone();
-        let result = run_connection(
-            agent,
-            conn_id.clone(),
-            agent_type,
-            working_dir,
-            session_id,
-            cmd_rx,
-            handshake,
-            emitter_clone.clone(),
-            Arc::clone(&state_clone),
-            terminal_base_env,
-            terminal_shell_config,
-            preferred_mode_id,
-            preferred_config_values,
-            delegation_injection,
-            fs_policy,
-            host_tools,
-            claude_projects_dir,
-            stderr_tail,
-        )
-        .await;
-
-        // Revoke the per-launch token + cascade cancel any still-pending
-        // delegations AND questions owned by this parent connection. All are
-        // best-effort: a missing token entry is a no-op, and both
-        // `cancel_by_parent` calls are safe on an empty pending map.
-        if let Some(inj) = delegation_for_cleanup {
-            let token = {
-                let snap = state_clone.read().await;
-                snap.delegation_token.clone()
-            };
-            if let Some(tok) = token {
-                inj.tokens.revoke(&tok).await;
-            }
-            inj.broker.cancel_by_parent(&conn_id).await;
-            // Reclaim a parked `ask_user_question` instead of waiting for the
-            // companion's ask socket to close (which a reparented/hard-killed
-            // agent may never do); the dropped sender declines the tool cleanly.
-            inj.questions.cancel_questions_by_parent(&conn_id).await;
-            // Likewise reclaim a parked Grok `exit_plan_mode` approval; the
-            // dropped sender replies disconnect so grok keeps plan mode active.
-            inj.plan_approvals
-                .cancel_plan_approvals_by_parent(&conn_id)
+                let delegation_for_cleanup = delegation_injection.clone();
+                let report_stderr_tail = Arc::clone(&stderr_tail);
+                let result = run_connection(
+                    agent,
+                    conn_id.clone(),
+                    agent_type,
+                    working_dir,
+                    session_id,
+                    cmd_rx,
+                    handshake,
+                    emitter_clone.clone(),
+                    Arc::clone(&state_clone),
+                    terminal_base_env,
+                    terminal_shell_config,
+                    preferred_mode_id,
+                    preferred_config_values,
+                    delegation_injection,
+                    fs_policy,
+                    host_tools,
+                    claude_projects_dir,
+                    stderr_tail,
+                )
                 .await;
-        }
 
-        if let Err(e) = result {
-            let code = e.code().map(String::from);
-            emit_with_state(
-                &state_clone,
-                &emitter_clone,
-                AcpEvent::Error {
-                    message: e.to_string(),
-                    agent_type: agent_type.to_string(),
-                    code,
-                    details: None,
-                    // The only genuinely terminal emit site: `run_connection`
-                    // is unwinding and the next event is `Disconnected`.
-                    // The lifecycle worker uses this flag to decide whether
-                    // to flip the conversation row to Cancelled and to
-                    // buffer the detail for the broker's cancel reason.
-                    terminal: true,
-                },
-            )
-            .await;
-            // Drive the state machine through `Error` before `Disconnected`
-            // so the frontend's error-handling effect (cancelled-on-error)
-            // engages — without this hop the connection would jump straight
-            // to Disconnected and look like a clean shutdown.
-            emit_with_state(
-                &state_clone,
-                &emitter_clone,
-                AcpEvent::StatusChanged {
-                    status: ConnectionStatus::Error,
-                },
-            )
-            .await;
-        }
+                // Revoke the per-launch token + cascade cancel any still-pending
+                // delegations AND questions owned by this parent connection. All are
+                // best-effort: a missing token entry is a no-op, and both
+                // `cancel_by_parent` calls are safe on an empty pending map.
+                if let Some(inj) = delegation_for_cleanup {
+                    let token = {
+                        let snap = state_clone.read().await;
+                        snap.delegation_token.clone()
+                    };
+                    if let Some(tok) = token {
+                        inj.tokens.revoke(&tok).await;
+                    }
+                    inj.broker.cancel_by_parent(&conn_id).await;
+                    // Reclaim a parked `ask_user_question` instead of waiting for the
+                    // companion's ask socket to close (which a reparented/hard-killed
+                    // agent may never do); the dropped sender declines the tool cleanly.
+                    inj.questions.cancel_questions_by_parent(&conn_id).await;
+                    // Likewise reclaim a parked Grok `exit_plan_mode` approval; the
+                    // dropped sender replies disconnect so grok keeps plan mode active.
+                    inj.plan_approvals
+                        .cancel_plan_approvals_by_parent(&conn_id)
+                        .await;
+                }
 
-        emit_with_state(
-            &state_clone,
-            &emitter_clone,
-            AcpEvent::StatusChanged {
-                status: ConnectionStatus::Disconnected,
-            },
-        )
-        .await;
+                if let Err(e) = result {
+                    let code = e.code().map(String::from);
+                    let details = terminal_error_details(&e, &report_stderr_tail);
+                    emit_with_state(
+                        &state_clone,
+                        &emitter_clone,
+                        AcpEvent::Error {
+                            message: e.to_string(),
+                            agent_type: agent_type.to_string(),
+                            code,
+                            details,
+                            // The only genuinely terminal emit site: `run_connection`
+                            // is unwinding and the next event is `Disconnected`.
+                            // The lifecycle worker uses this flag to decide whether
+                            // to flip the conversation row to Cancelled and to
+                            // buffer the detail for the broker's cancel reason.
+                            terminal: true,
+                        },
+                    )
+                    .await;
+                    // Drive the state machine through `Error` before `Disconnected`
+                    // so the frontend's error-handling effect (cancelled-on-error)
+                    // engages — without this hop the connection would jump straight
+                    // to Disconnected and look like a clean shutdown.
+                    emit_with_state(
+                        &state_clone,
+                        &emitter_clone,
+                        AcpEvent::StatusChanged {
+                            status: ConnectionStatus::Error,
+                        },
+                    )
+                    .await;
+                }
+
+                emit_with_state(
+                    &state_clone,
+                    &emitter_clone,
+                    AcpEvent::StatusChanged {
+                        status: ConnectionStatus::Disconnected,
+                    },
+                )
+                .await;
                 // Connection loop ended; `block_on` returns and `_cleanup`
                 // (bound at the top of the thread body) drops next, removing
                 // the manager map entry — same as on a panic unwind.
@@ -14592,6 +14594,26 @@ fn with_stderr_tail(
         e.message.push_str(line);
     }
     e
+}
+
+/// Cowork 加的（#1510）：连接收尾那条报错的折叠区内容。`session_lost` 不带智能体的
+/// 原文（见 [`SESSION_LOST_SENTINEL`]），可底下的进程是怎么没的（`Process exited with
+/// signal: 9`）就在智能体 stderr 的最后几行里：放进 `details`，前端收进警报的「详情」，
+/// 不进弹窗。别的报错的原文本来就在 message 里，不加。
+fn terminal_error_details(e: &AcpError, stderr_tail: &StderrTail) -> Option<String> {
+    if !matches!(e, AcpError::SessionLost) {
+        return None;
+    }
+    let tail = stderr_tail.tail_since(0, EMPTY_TURN_STDERR_LINES, EMPTY_TURN_STDERR_BYTES);
+    if tail.is_empty() {
+        return None;
+    }
+    let mut block = format!("stderr (last {} lines):", tail.lines.len());
+    for line in &tail.lines {
+        block.push_str("\n  ");
+        block.push_str(line);
+    }
+    Some(block)
 }
 
 /// Whether codeg can absorb a "the agent forgot this session" load failure by
@@ -53021,6 +53043,30 @@ mod tests {
             actions: actions.iter().map(|a| a.to_string()).collect(),
             resolved: false,
         }
+    }
+
+    #[test]
+    fn a_session_lost_report_carries_the_agent_stderr_tail() {
+        // #1510：底下的 claude 被杀时，怎么没的只在 stderr 里。
+        let tail = StderrTail::new();
+        tail.push("[debug] query ended");
+        tail.push("Process exited with signal: 9 (SIGKILL)");
+        let details = terminal_error_details(&AcpError::SessionLost, &tail)
+            .expect("session_lost should carry the stderr tail");
+        assert!(
+            details.contains("Process exited with signal: 9"),
+            "{details}"
+        );
+        // 原文本来就在 message 里的报错不重复带。
+        assert_eq!(
+            terminal_error_details(&AcpError::protocol("boom".to_string()), &tail),
+            None
+        );
+        // stderr 什么都没有时不给空的详情。
+        assert_eq!(
+            terminal_error_details(&AcpError::SessionLost, &StderrTail::new()),
+            None
+        );
     }
 
     #[test]

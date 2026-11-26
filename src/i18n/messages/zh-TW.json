@@ -507,7 +507,8 @@
       "email": "電子郵件",
       "emailPlaceholder": "you@example.com",
       "notSet": "還沒設定：兩項都填好之前，提交會失敗。",
-      "required": "姓名和電子郵件都要填。"
+      "required": "姓名和電子郵件都要填。",
+      "emailInvalid": "電子郵件格式不對。"
     }
   },
   "ShortcutSettings": {

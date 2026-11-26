@@ -10,6 +10,12 @@ import { getGitIdentity, setGitIdentity } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import type { GitIdentity } from "@/lib/types"
 
+/** 邮箱要像个邮箱（#1563）：恰好一个 @，前后都不为空，没有空白；后端
+ *  version_control.rs 的 identity_email 用同样的规则再查一遍。 */
+function isEmailLike(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+$/.test(value)
+}
+
 /**
  * 提交身份（#1419）：提交记录上的作者姓名和邮箱，读写的是运行 dodoer 的
  * 那个系统用户的全局 git 配置（user.name / user.email）。没配过的机器上
@@ -19,6 +25,7 @@ export function GitIdentitySettings() {
   const t = useTranslations("VersionControlSettings")
   const nameId = useId()
   const emailId = useId()
+  const emailErrorId = useId()
   const [saved, setSaved] = useState<GitIdentity | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [name, setName] = useState("")
@@ -44,7 +51,8 @@ export function GitIdentitySettings() {
 
   const trimmedName = name.trim()
   const trimmedEmail = email.trim()
-  const complete = trimmedName !== "" && trimmedEmail !== ""
+  const emailInvalid = trimmedEmail !== "" && !isEmailLike(trimmedEmail)
+  const complete = trimmedName !== "" && trimmedEmail !== "" && !emailInvalid
   const dirty =
     saved != null &&
     (trimmedName !== (saved.name ?? "") || trimmedEmail !== (saved.email ?? ""))
@@ -120,12 +128,19 @@ export function GitIdentitySettings() {
             placeholder={t("identity.emailPlaceholder")}
             disabled={saved == null}
             autoComplete="email"
+            aria-invalid={emailInvalid || undefined}
+            aria-describedby={emailInvalid ? emailErrorId : undefined}
           />
+          {emailInvalid && (
+            <p id={emailErrorId} className="text-2xs text-red-400">
+              {t("identity.emailInvalid")}
+            </p>
+          )}
         </div>
       </div>
 
       <div className="flex items-center justify-end gap-3">
-        {dirty && !complete && (
+        {dirty && !complete && !emailInvalid && (
           <span className="text-2xs text-muted-foreground">
             {t("identity.required")}
           </span>

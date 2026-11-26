@@ -507,7 +507,8 @@
       "email": "E-Mail",
       "emailPlaceholder": "you@example.com",
       "notSet": "Noch nicht festgelegt: Commits schlagen fehl, bis beides ausgefüllt ist.",
-      "required": "Bitte Name und E-Mail ausfüllen."
+      "required": "Bitte Name und E-Mail ausfüllen.",
+      "emailInvalid": "Die E-Mail-Adresse ist ungültig."
     }
   },
   "ShortcutSettings": {

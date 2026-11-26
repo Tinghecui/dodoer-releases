@@ -507,7 +507,8 @@
       "email": "メールアドレス",
       "emailPlaceholder": "you@example.com",
       "notSet": "未設定です。両方を入力するまでコミットは失敗します。",
-      "required": "名前とメールアドレスの両方を入力してください。"
+      "required": "名前とメールアドレスの両方を入力してください。",
+      "emailInvalid": "メールアドレスの形式が正しくありません。"
     }
   },
   "ShortcutSettings": {

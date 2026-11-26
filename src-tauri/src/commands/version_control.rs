@@ -6,6 +6,7 @@ use crate::app_error::AppCommandError;
 use crate::db::service::app_metadata_service;
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
+use crate::models::system::GitIdentity;
 use crate::models::GitDetectResult;
 #[cfg(feature = "tauri-runtime")]
 use crate::models::GitHubAccountsSettings;
@@ -161,6 +162,111 @@ pub async fn update_git_settings(
         .map_err(AppCommandError::from)?;
 
     Ok(settings)
+}
+
+// ---------------------------------------------------------------------------
+// Git identity（提交作者，#1419）
+// ---------------------------------------------------------------------------
+
+/// 读写哪份 git 配置：平时是这个系统用户的全局配置（`--global`），测试给一个
+/// 自己的文件，不碰跑测试那台机器的配置。
+fn identity_config_args(file: Option<&std::path::Path>) -> Vec<std::ffi::OsString> {
+    match file {
+        Some(file) => vec!["--file".into(), file.as_os_str().to_owned()],
+        None => vec!["--global".into()],
+    }
+}
+
+async fn read_identity_key(
+    file: Option<&std::path::Path>,
+    key: &str,
+) -> Result<Option<String>, AppCommandError> {
+    let output = crate::process::tokio_command("git")
+        .arg("config")
+        .args(identity_config_args(file))
+        .args(["--get", key])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(AppCommandError::io)?;
+    // 退出码 1 = 没配这一项。
+    if output.status.code() == Some(1) {
+        return Ok(None);
+    }
+    if !output.status.success() {
+        return Err(crate::commands::folders::git_command_error(
+            "config --get",
+            &output.stderr,
+        ));
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!value.is_empty()).then_some(value))
+}
+
+async fn read_identity(file: Option<&std::path::Path>) -> Result<GitIdentity, AppCommandError> {
+    Ok(GitIdentity {
+        name: read_identity_key(file, "user.name").await?,
+        email: read_identity_key(file, "user.email").await?,
+    })
+}
+
+/// 去掉首尾空白；空的、带换行这类控制字符或尖括号的不收（git 的作者行是
+/// `姓名 <邮箱>`，这些字符会把它弄乱）。
+fn identity_value(value: &str, field: &str) -> Result<String, AppCommandError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(AppCommandError::invalid_input(format!(
+            "Git {field} cannot be empty"
+        )));
+    }
+    if value
+        .chars()
+        .any(|c| c.is_control() || c == '<' || c == '>')
+    {
+        return Err(AppCommandError::invalid_input(format!(
+            "Git {field} contains characters git does not allow"
+        )));
+    }
+    Ok(value.to_string())
+}
+
+async fn write_identity(
+    file: Option<&std::path::Path>,
+    name: &str,
+    email: &str,
+) -> Result<GitIdentity, AppCommandError> {
+    let name = identity_value(name, "name")?;
+    let email = identity_value(email, "email")?;
+    for (key, value) in [("user.name", &name), ("user.email", &email)] {
+        let output = crate::process::tokio_command("git")
+            .arg("config")
+            .args(identity_config_args(file))
+            .args([key, value.as_str()])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await
+            .map_err(AppCommandError::io)?;
+        if !output.status.success() {
+            return Err(crate::commands::folders::git_command_error(
+                "config",
+                &output.stderr,
+            ));
+        }
+    }
+    read_identity(file).await
+}
+
+/// 这个系统用户的全局 Git 姓名和邮箱（设置 → 版本控制「提交身份」）。
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_git_identity() -> Result<GitIdentity, AppCommandError> {
+    read_identity(None).await
+}
+
+/// 写进全局 git 配置（`git config --global user.name / user.email`），
+/// 之后的提交都用它当作者；返回写完再读出来的值。
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn set_git_identity(name: String, email: String) -> Result<GitIdentity, AppCommandError> {
+    write_identity(None, &name, &email).await
 }
 
 // ---------------------------------------------------------------------------
@@ -801,5 +907,53 @@ mod probe_tests {
             .await
             .unwrap();
         assert!(result.success, "{:?}", result.message);
+    }
+}
+
+#[cfg(test)]
+mod git_identity_tests {
+    use super::*;
+
+    /// 存进去的姓名和邮箱读得回来，首尾空白去掉；没配过的读出来是空的。
+    #[tokio::test]
+    async fn the_git_identity_saved_is_the_one_read_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("gitconfig");
+        assert_eq!(
+            read_identity(Some(&file)).await.expect("read"),
+            GitIdentity::default()
+        );
+
+        let saved = write_identity(Some(&file), "  Test Person ", " person@example.com ")
+            .await
+            .expect("write");
+        let expected = GitIdentity {
+            name: Some("Test Person".to_string()),
+            email: Some("person@example.com".to_string()),
+        };
+        assert_eq!(saved, expected);
+        assert_eq!(read_identity(Some(&file)).await.expect("read"), expected);
+    }
+
+    /// 空的、带换行或尖括号的不写，原来的配置不动。
+    #[tokio::test]
+    async fn a_git_identity_git_cannot_take_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("gitconfig");
+        for (name, email) in [
+            ("", "person@example.com"),
+            ("Test Person", "  "),
+            ("Test\nPerson", "person@example.com"),
+            ("Test Person", "<person@example.com>"),
+        ] {
+            let err = write_identity(Some(&file), name, email)
+                .await
+                .expect_err("refused");
+            assert_eq!(err.code, crate::app_error::AppErrorCode::InvalidInput);
+        }
+        assert_eq!(
+            read_identity(Some(&file)).await.expect("read"),
+            GitIdentity::default()
+        );
     }
 }

@@ -2169,6 +2169,8 @@ mod tauri_app {
                 version_control::test_git_path,
                 version_control::get_git_settings,
                 version_control::update_git_settings,
+                version_control::get_git_identity,
+                version_control::set_git_identity,
                 version_control::get_github_accounts,
                 version_control::validate_github_token,
                 version_control::validate_gitlab_token,

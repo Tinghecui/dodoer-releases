@@ -55,6 +55,7 @@ import type {
 import { toErrorMessage } from "@/lib/app-error"
 import { AddForgeAccountDialog } from "./add-forge-account-dialog"
 import { AddGitAccountDialog } from "./add-git-account-dialog"
+import { GitIdentitySettings } from "./git-identity-settings"
 import { WorktreeLocationSettings } from "./worktree-location-settings"
 
 // ---------------------------------------------------------------------------
@@ -605,6 +606,9 @@ export function VersionControlSettings() {
             </div>
           )}
         </section>
+
+        {/* ---- Commit identity（#1419） ---- */}
+        <GitIdentitySettings />
 
         {/* ---- Worktree location ---- */}
         <WorktreeLocationSettings />

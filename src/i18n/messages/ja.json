@@ -498,6 +498,16 @@
       "serverReachable": "サーバーには接続できますが、この種類のアカウントではトークンを検証できません。",
       "usernameRequired": "ユーザー名を入力してください。",
       "passwordRequired": "パスワードを入力してください。"
+    },
+    "identity": {
+      "title": "コミットの作成者",
+      "description": "コミットに記録される作成者の名前とメールアドレスです。dodoer を実行しているマシンのグローバル Git 設定に保存されます。",
+      "name": "名前",
+      "namePlaceholder": "あなたの名前",
+      "email": "メールアドレス",
+      "emailPlaceholder": "you@example.com",
+      "notSet": "未設定です。両方を入力するまでコミットは失敗します。",
+      "required": "名前とメールアドレスの両方を入力してください。"
     }
   },
   "ShortcutSettings": {
@@ -3209,7 +3219,11 @@
       "head": "HEAD",
       "workingTree": "作業ツリー",
       "clickFileToDiff": "ファイル名をクリックして差分を表示",
-      "loadingDiff": "差分を読み込み中..."
+      "loadingDiff": "差分を読み込み中...",
+      "errors": {
+        "gitIdentityMissing": "Git の名前とメールアドレスが未設定のため、コミットできません。設定 → バージョン管理 で入力してから、もう一度コミットしてください。",
+        "openSettings": "設定を開く"
+      }
     },
     "pushWindow": {
       "title": "コードをプッシュ",

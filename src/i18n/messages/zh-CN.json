@@ -498,6 +498,16 @@
       "serverReachable": "服务器能连上，但这类账号没法验证令牌。",
       "usernameRequired": "请输入用户名。",
       "passwordRequired": "请输入密码。"
+    },
+    "identity": {
+      "title": "提交身份",
+      "description": "写进提交记录的作者姓名和邮箱，保存在运行 dodoer 的这台机器的全局 Git 配置里。",
+      "name": "姓名",
+      "namePlaceholder": "你的名字",
+      "email": "邮箱",
+      "emailPlaceholder": "you@example.com",
+      "notSet": "还没设置：两项都填好之前，提交会失败。",
+      "required": "姓名和邮箱都要填。"
     }
   },
   "ShortcutSettings": {
@@ -3209,7 +3219,11 @@
       "head": "HEAD（当前提交）",
       "workingTree": "工作区",
       "clickFileToDiff": "点击文件名查看差异",
-      "loadingDiff": "加载差异..."
+      "loadingDiff": "加载差异...",
+      "errors": {
+        "gitIdentityMissing": "还没设置 Git 姓名和邮箱，提交不了。请到 设置 → 版本控制 填写后再提交。",
+        "openSettings": "去设置"
+      }
     },
     "pushWindow": {
       "title": "推送代码",

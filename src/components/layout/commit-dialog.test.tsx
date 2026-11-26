@@ -19,6 +19,7 @@ const api = vi.hoisted(() => ({
   gitRollbackFile: vi.fn<(path: string, file: string) => Promise<void>>(
     async () => {}
   ),
+  openSettingsWindow: vi.fn(async () => {}),
 }))
 
 vi.mock("@/lib/api", () => ({
@@ -31,6 +32,7 @@ vi.mock("@/lib/api", () => ({
   gitStatus: api.gitStatus,
   deleteFileTreeEntry: vi.fn(),
   readFilePreview: api.readFilePreview,
+  openSettingsWindow: api.openSettingsWindow,
 }))
 vi.mock("@/contexts/git-credential-context", () => ({
   useGitCredential: () => ({
@@ -85,6 +87,7 @@ beforeEach(() => {
   api.readFilePreview.mockClear()
   api.gitShowFile.mockClear()
   api.gitRollbackFile.mockClear()
+  api.openSettingsWindow.mockClear()
   imageDiff.loadImageDiffSides.mockClear()
   toast.warning.mockClear()
   toast.error.mockClear()
@@ -130,6 +133,57 @@ describe("CommitWorkspace after a commit", () => {
     expect(screen.getByPlaceholderText("Enter commit message...")).toHaveValue(
       ""
     )
+  })
+})
+
+// #1419：服务器上没配 Git 姓名和邮箱时提交。
+describe("CommitWorkspace without a git identity", () => {
+  const GIT_STDERR =
+    "Author identity unknown\n\n*** Please tell me who you are.\n\nfatal: empty ident name (for <>) not allowed"
+
+  async function commitAndFail(error: unknown) {
+    api.gitStatus.mockResolvedValue([{ status: "M", file: "notes.md" }])
+    api.gitCommit.mockRejectedValueOnce(error)
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <CommitWorkspace folderPath="/repo" folderId={1} />
+      </NextIntlClientProvider>
+    )
+    const commit = await screen.findByRole("button", { name: "Commit (1)" })
+    fireEvent.change(screen.getByPlaceholderText("Enter commit message..."), {
+      target: { value: "notes" },
+    })
+    fireEvent.click(commit)
+  }
+
+  it("says the name and email are missing and offers the settings page", async () => {
+    await commitAndFail({
+      code: "configuration_missing",
+      message: "git identity is not configured",
+      detail: GIT_STDERR,
+      i18n_key: "errors.gitIdentityMissing",
+    })
+
+    expect(
+      await screen.findByText(
+        enMessages.Folder.commitDialog.errors.gitIdentityMissing
+      )
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Please tell me who you are/)).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: "Open settings" }))
+    expect(api.openSettingsWindow).toHaveBeenCalledWith("version-control")
+  })
+
+  it("shows other commit failures as before, without the settings button", async () => {
+    await commitAndFail({
+      code: "external_command_failed",
+      message: "git commit failed",
+      detail: "refused by a hook",
+    })
+
+    expect(await screen.findByText("refused by a hook")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Open settings" })).toBeNull()
   })
 })
 

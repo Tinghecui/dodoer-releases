@@ -498,6 +498,16 @@
       "serverReachable": "Der Server ist erreichbar, aber das Token dieser Kontoart lässt sich nicht prüfen.",
       "usernameRequired": "Benutzername ist erforderlich.",
       "passwordRequired": "Passwort ist erforderlich."
+    },
+    "identity": {
+      "title": "Commit-Identität",
+      "description": "Name und E-Mail des Autors, die in deine Commits geschrieben werden. Gespeichert in der globalen Git-Konfiguration des Rechners, auf dem dodoer läuft.",
+      "name": "Name",
+      "namePlaceholder": "Dein Name",
+      "email": "E-Mail",
+      "emailPlaceholder": "you@example.com",
+      "notSet": "Noch nicht festgelegt: Commits schlagen fehl, bis beides ausgefüllt ist.",
+      "required": "Bitte Name und E-Mail ausfüllen."
     }
   },
   "ShortcutSettings": {
@@ -3209,7 +3219,11 @@
       "head": "HEAD",
       "workingTree": "Arbeitsverzeichnis",
       "clickFileToDiff": "Dateinamen anklicken, um Diff zu sehen",
-      "loadingDiff": "Diff wird geladen..."
+      "loadingDiff": "Diff wird geladen...",
+      "errors": {
+        "gitIdentityMissing": "Git-Name und -E-Mail sind noch nicht festgelegt, daher konnte nicht committet werden. Trage sie unter Einstellungen → Versionsverwaltung ein und committe erneut.",
+        "openSettings": "Einstellungen öffnen"
+      }
     },
     "pushWindow": {
       "title": "Code pushen",

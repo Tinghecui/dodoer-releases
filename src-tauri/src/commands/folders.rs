@@ -388,6 +388,35 @@ pub(crate) fn git_command_error(operation: &str, stderr: &[u8]) -> AppCommandErr
     AppCommandError::external_command(format!("git {operation} failed"), stderr)
 }
 
+/// git 找不到提交作者时 stderr 里的几种说法（`process.rs` 把子进程的语言
+/// 钉成英文，只认英文就够）。
+const GIT_IDENTITY_MISSING_MARKERS: [&str; 5] = [
+    "Author identity unknown",
+    "Please tell me who you are",
+    "empty ident name",
+    "unable to auto-detect email address",
+    "no email was given and auto-detection is disabled",
+];
+
+/// 提交窗口认的 i18n 键（`Folder.commitDialog.errors.gitIdentityMissing`）：
+/// 显示中文说明和「去设置」入口（#1419）。
+pub(crate) const GIT_IDENTITY_MISSING_I18N_KEY: &str = "errors.gitIdentityMissing";
+
+/// `git commit` 失败时的错误。没配 Git 姓名和邮箱的，报「缺少 Git 身份」
+/// 并带 i18n 键，git 原文放进 detail；别的失败照旧是 git 原文。
+fn git_commit_error(stderr: &[u8]) -> AppCommandError {
+    let text = String::from_utf8_lossy(stderr);
+    if GIT_IDENTITY_MISSING_MARKERS
+        .iter()
+        .any(|marker| text.contains(marker))
+    {
+        return AppCommandError::configuration_missing("git identity is not configured")
+            .with_detail(text.trim().to_string())
+            .with_i18n(GIT_IDENTITY_MISSING_I18N_KEY, Default::default());
+    }
+    git_command_error("commit", stderr)
+}
+
 use crate::git_repo::ensure_git_repo;
 
 pub(crate) async fn detect_conflicts(path: &str) -> Result<Vec<String>, AppCommandError> {
@@ -3020,7 +3049,7 @@ pub(crate) async fn git_commit_core(
             ),
             None => {}
         }
-        return Err(git_command_error("commit", &commit_output.stderr));
+        return Err(git_commit_error(&commit_output.stderr));
     }
 
     let committed_files = count_files_in_commit(path, "HEAD")
@@ -10265,6 +10294,91 @@ branch refs/heads/main";
             .await
             .expect("branch diff");
         assert!(names_itself(&branch), "{branch}");
+    }
+    /// 没配 Git 姓名和邮箱时提交（#1419）：报的是「缺少 Git 身份」，带界面认的
+    /// i18n 键，git 的原文放进 detail；暂存的新文件照旧退回去。
+    #[tokio::test]
+    async fn a_commit_without_a_git_identity_says_the_identity_is_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        git_run(root, &["init", "-q", "-b", "main"]);
+        git_run(root, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        // 仓库自己的配置把姓名和邮箱设成空的，盖过这台机器的全局配置：
+        // git 就和没配过身份一样拒绝提交。
+        git_run(root, &["config", "user.name", ""]);
+        git_run(root, &["config", "user.email", ""]);
+        std::fs::write(root.join("new.txt"), "x\n").unwrap();
+
+        let db = fresh_in_memory_db().await;
+        let err = git_commit_core(
+            &EventEmitter::Noop,
+            None,
+            &db.conn,
+            root.to_str().unwrap(),
+            "feat: no identity",
+            &["new.txt".to_string()],
+        )
+        .await
+        .expect_err("git refuses a commit without an author");
+
+        assert_eq!(
+            err.code,
+            crate::app_error::AppErrorCode::ConfigurationMissing,
+            "{err:?}"
+        );
+        assert_eq!(err.i18n_key.as_deref(), Some("errors.gitIdentityMissing"));
+        assert!(
+            err.detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("Please tell me who you are"),
+            "{err:?}"
+        );
+        assert_eq!(
+            git_capture(root, &["status", "--porcelain=v1", "-uall"]),
+            "?? new.txt"
+        );
+    }
+
+    /// git 报身份缺失的几种说法都认得出来，别的失败照旧是 git 原文。
+    #[test]
+    fn git_commit_error_recognises_a_missing_identity_only() {
+        // 照这台机器上真跑出来的样子：不许自动猜身份时 git 的原话。
+        let home = tempfile::tempdir().expect("tempdir");
+        let repo = tempfile::tempdir().expect("tempdir");
+        git_run(repo.path(), &["init", "-q"]);
+        let out = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.useConfigOnly=true",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "x",
+            ])
+            .current_dir(repo.path())
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", home.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_CONFIG_GLOBAL")
+            .env_remove("GIT_AUTHOR_NAME")
+            .env_remove("GIT_AUTHOR_EMAIL")
+            .env_remove("GIT_COMMITTER_NAME")
+            .env_remove("GIT_COMMITTER_EMAIL")
+            .output()
+            .expect("spawn git");
+        assert!(!out.status.success());
+
+        let err = git_commit_error(&out.stderr);
+        assert_eq!(err.i18n_key.as_deref(), Some("errors.gitIdentityMissing"));
+        let err =
+            git_commit_error(b"fatal: unable to auto-detect email address (got 'x@y.(none)')");
+        assert_eq!(err.i18n_key.as_deref(), Some("errors.gitIdentityMissing"));
+
+        let err = git_commit_error(b"refused by a hook");
+        assert_eq!(err.i18n_key, None);
+        assert_eq!(err.message, "git commit failed");
+        assert_eq!(err.detail.as_deref(), Some("refused by a hook"));
     }
 }
 

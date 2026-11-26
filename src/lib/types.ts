@@ -5260,6 +5260,12 @@ export interface GitSettings {
   custom_path: string | null
 }
 
+/** 提交作者：全局 git 配置里的 user.name / user.email，没配的是 null。 */
+export interface GitIdentity {
+  name: string | null
+  email: string | null
+}
+
 /** A stored forge credential. Despite the name (kept for the wire format),
  *  this is any host's account — GitHub, GitLab, or a plain git remote. */
 export interface GitHubAccount {

@@ -188,6 +188,14 @@ pub struct GitSettings {
     pub custom_path: Option<String>,
 }
 
+/// 提交作者：全局 git 配置里的 `user.name` / `user.email`，没配的是 `None`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct GitIdentity {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubAccount {
     pub id: String,

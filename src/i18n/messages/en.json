@@ -498,6 +498,16 @@
       "serverReachable": "The server is reachable, but the token for this kind of account cannot be verified.",
       "usernameRequired": "Username is required.",
       "passwordRequired": "Password is required."
+    },
+    "identity": {
+      "title": "Commit identity",
+      "description": "The author name and email written into your commits. Saved to the global Git config of the machine running dodoer.",
+      "name": "Name",
+      "namePlaceholder": "Your Name",
+      "email": "Email",
+      "emailPlaceholder": "you@example.com",
+      "notSet": "Not set yet: commits will fail until both are filled in.",
+      "required": "Fill in both the name and the email."
     }
   },
   "ShortcutSettings": {
@@ -3209,7 +3219,11 @@
       "head": "HEAD",
       "workingTree": "Working Tree",
       "clickFileToDiff": "Click a file name to view diff",
-      "loadingDiff": "Loading diff..."
+      "loadingDiff": "Loading diff...",
+      "errors": {
+        "gitIdentityMissing": "Git name and email are not set yet, so the commit could not be made. Fill them in under Settings → Version Control, then commit again.",
+        "openSettings": "Open settings"
+      }
     },
     "pushWindow": {
       "title": "Push Code",

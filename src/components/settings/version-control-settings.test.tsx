@@ -29,6 +29,11 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }))
 
+// 提交身份那张卡片有自己的测试（git-identity-settings.test）。
+vi.mock("./git-identity-settings", () => ({
+  GitIdentitySettings: () => <div data-testid="git-identity" />,
+}))
+
 // The worktree section has its own tests (worktree-location-settings.test).
 vi.mock("./worktree-location-settings", () => ({
   WorktreeLocationSettings: () => <div data-testid="worktree-location" />,

@@ -498,6 +498,16 @@
       "serverReachable": "Le serveur est joignable, mais le jeton de ce type de compte ne peut pas être vérifié.",
       "usernameRequired": "Le nom d'utilisateur est requis.",
       "passwordRequired": "Le mot de passe est requis."
+    },
+    "identity": {
+      "title": "Identité de commit",
+      "description": "Le nom et l’e-mail de l’auteur inscrits dans vos commits. Enregistrés dans la configuration Git globale de la machine qui exécute dodoer.",
+      "name": "Nom",
+      "namePlaceholder": "Votre nom",
+      "email": "E-mail",
+      "emailPlaceholder": "you@example.com",
+      "notSet": "Pas encore défini : les commits échoueront tant que les deux ne sont pas renseignés.",
+      "required": "Renseignez le nom et l’e-mail."
     }
   },
   "ShortcutSettings": {
@@ -3209,7 +3219,11 @@
       "head": "HEAD",
       "workingTree": "Arbre de travail",
       "clickFileToDiff": "Cliquez sur un nom de fichier pour voir le diff",
-      "loadingDiff": "Chargement du diff..."
+      "loadingDiff": "Chargement du diff...",
+      "errors": {
+        "gitIdentityMissing": "Le nom et l’e-mail Git ne sont pas encore définis, le commit n’a donc pas pu être fait. Renseignez-les dans Paramètres → Contrôle de version, puis recommencez.",
+        "openSettings": "Ouvrir les paramètres"
+      }
     },
     "pushWindow": {
       "title": "Pousser le code",

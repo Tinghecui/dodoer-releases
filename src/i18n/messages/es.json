@@ -498,6 +498,16 @@
       "serverReachable": "El servidor es accesible, pero el token de este tipo de cuenta no se puede verificar.",
       "usernameRequired": "El nombre de usuario es obligatorio.",
       "passwordRequired": "La contraseña es obligatoria."
+    },
+    "identity": {
+      "title": "Identidad de commit",
+      "description": "El nombre y el correo del autor que se escriben en tus commits. Se guardan en la configuración global de Git de la máquina que ejecuta dodoer.",
+      "name": "Nombre",
+      "namePlaceholder": "Tu nombre",
+      "email": "Correo",
+      "emailPlaceholder": "you@example.com",
+      "notSet": "Sin configurar: los commits fallarán hasta que rellenes ambos.",
+      "required": "Rellena el nombre y el correo."
     }
   },
   "ShortcutSettings": {
@@ -3209,7 +3219,11 @@
       "head": "HEAD",
       "workingTree": "Árbol de trabajo",
       "clickFileToDiff": "Haz clic en un nombre de archivo para ver diff",
-      "loadingDiff": "Cargando diff..."
+      "loadingDiff": "Cargando diff...",
+      "errors": {
+        "gitIdentityMissing": "Aún no hay nombre ni correo de Git, así que no se pudo hacer el commit. Complétalos en Ajustes → Control de versiones y vuelve a hacer commit.",
+        "openSettings": "Abrir ajustes"
+      }
     },
     "pushWindow": {
       "title": "Enviar código",

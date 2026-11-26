@@ -227,6 +227,7 @@ import type {
   PackageManagerInfo,
   HyperframesSkillAgent,
   GitSettings,
+  GitIdentity,
   GitHubAccountsSettings,
   GitHubTokenValidation,
   McpAppType,
@@ -2258,6 +2259,17 @@ export async function updateGitSettings(
   settings: GitSettings
 ): Promise<GitSettings> {
   return getTransport().call("update_git_settings", { settings })
+}
+
+export async function getGitIdentity(): Promise<GitIdentity> {
+  return getTransport().call("get_git_identity")
+}
+
+export async function setGitIdentity(
+  name: string,
+  email: string
+): Promise<GitIdentity> {
+  return getTransport().call("set_git_identity", { name, email })
 }
 
 export async function getGitHubAccounts(): Promise<GitHubAccountsSettings> {

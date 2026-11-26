@@ -1035,6 +1035,14 @@ pub fn build_router_with_proxy_auth(
             post(handlers::version_control::update_git_settings),
         )
         .route(
+            "/get_git_identity",
+            post(handlers::version_control::get_git_identity),
+        )
+        .route(
+            "/set_git_identity",
+            post(handlers::version_control::set_git_identity),
+        )
+        .route(
             "/get_github_accounts",
             post(handlers::version_control::get_github_accounts),
         )

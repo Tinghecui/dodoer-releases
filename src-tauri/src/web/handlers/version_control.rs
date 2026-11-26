@@ -7,6 +7,7 @@ use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::version_control as vc_commands;
 use crate::db::service::app_metadata_service;
+use crate::models::system::GitIdentity;
 use crate::models::*;
 
 const GIT_SETTINGS_KEY: &str = "git_settings";
@@ -46,6 +47,12 @@ pub struct AccountIdParams {
 pub struct SaveAccountTokenParams {
     pub account_id: String,
     pub token: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetGitIdentityParams {
+    pub name: String,
+    pub email: String,
 }
 
 #[derive(Deserialize)]
@@ -115,6 +122,22 @@ pub async fn update_git_settings(
         .map_err(AppCommandError::from)?;
 
     Ok(Json(settings))
+}
+
+// ---------------------------------------------------------------------------
+// Git identity
+// ---------------------------------------------------------------------------
+
+pub async fn get_git_identity() -> Result<Json<GitIdentity>, AppCommandError> {
+    Ok(Json(vc_commands::get_git_identity().await?))
+}
+
+pub async fn set_git_identity(
+    Json(params): Json<SetGitIdentityParams>,
+) -> Result<Json<GitIdentity>, AppCommandError> {
+    Ok(Json(
+        vc_commands::set_git_identity(params.name, params.email).await?,
+    ))
 }
 
 // ---------------------------------------------------------------------------

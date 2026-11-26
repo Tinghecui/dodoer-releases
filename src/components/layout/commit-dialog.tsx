@@ -48,6 +48,7 @@ import {
   gitShowFile,
   gitStatus,
   deleteFileTreeEntry,
+  openSettingsWindow,
   readFilePreview,
 } from "@/lib/api"
 import {
@@ -72,7 +73,11 @@ import { DiffViewer } from "@/components/diff/diff-viewer"
 import { ImageDiffView } from "@/components/diff/image-diff-view"
 import { loadImageDiffSides, type ImageDiffSides } from "@/lib/image-diff"
 import { isBinaryImageFile, languageFromPath } from "@/lib/language-detect"
-import { toErrorMessage } from "@/lib/app-error"
+import {
+  toErrorMessage,
+  toLocalizedErrorMessage,
+  type AppErrorTranslator,
+} from "@/lib/app-error"
 import type { CommitScope } from "@/lib/commit-window-paths"
 import {
   sameFiles,
@@ -315,6 +320,8 @@ export function CommitWorkspace({
   const [loadingDiff, setLoadingDiff] = useState(false)
   const [committing, setCommitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 红框里显示的正是「缺少 Git 身份」的说明时，旁边给「去设置」。
+  const identityMissingMessage = t("errors.gitIdentityMissing")
   const [untrackedOpen, setUntrackedOpen] = useState(false)
   const [expandedTrackedDirs, setExpandedTrackedDirs] = useState<Set<string>>(
     new Set()
@@ -638,7 +645,11 @@ export function CommitWorkspace({
 
         onCommitted?.()
       } catch (err) {
-        setError(toErrorMessage(err))
+        // 没配 Git 姓名和邮箱时后端带 errors.gitIdentityMissing（#1419），
+        // 显示中文说明，不再是整段 git 原文。
+        setError(
+          toLocalizedErrorMessage(err, t as unknown as AppErrorTranslator)
+        )
       } finally {
         setCommitting(false)
       }
@@ -1206,8 +1217,22 @@ export function CommitWorkspace({
         >
           <div className="flex h-full min-h-0 flex-col">
             {error && (
-              <div className="border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {error}
+              <div className="flex items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                <span className="min-w-0 flex-1 break-words">{error}</span>
+                {error === identityMissingMessage && (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    className="shrink-0"
+                    onClick={() => {
+                      openSettingsWindow("version-control").catch((e) =>
+                        toast.error(toErrorMessage(e))
+                      )
+                    }}
+                  >
+                    {t("errors.openSettings")}
+                  </Button>
+                )}
               </div>
             )}
 

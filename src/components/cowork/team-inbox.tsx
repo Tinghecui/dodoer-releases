@@ -48,6 +48,7 @@ import {
   type SharedSessionTarget,
   useCoworkTeamAvailable,
   useCoworkTeamStore,
+  withoutCommentSession,
 } from "@/stores/cowork-team-store"
 import { openOwnSessionComments } from "./session-comments"
 import { sortSharedItems } from "./shared-with-me-list"
@@ -238,30 +239,6 @@ function withoutShares(count: number) {
     ...s,
     sharedNew: Math.max(0, s.sharedNew - count),
   })
-}
-
-function withoutCommentSession(session: TeamCommentUnreadSession) {
-  return (s: CoworkTeamSummary): CoworkTeamSummary => {
-    const sessions = s.commentUnread.sessions.filter(
-      (x) =>
-        !(
-          x.id === session.id &&
-          x.mine === session.mine &&
-          x.owner === session.owner
-        )
-    )
-    const removed = s.commentUnread.sessions.length - sessions.length
-    return {
-      ...s,
-      commentUnread: {
-        total: Math.max(
-          0,
-          s.commentUnread.total - (removed > 0 ? session.count : 0)
-        ),
-        sessions,
-      },
-    }
-  }
 }
 
 function withoutNotice(noticeId: string) {

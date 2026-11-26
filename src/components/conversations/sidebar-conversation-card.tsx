@@ -98,6 +98,7 @@ import { SessionDetailsDialog } from "./session-details-dialog"
 import { SidebarConversationHoverDetails } from "./sidebar-conversation-hover-details"
 import { SidebarPrIndicator } from "./sidebar-pr-status"
 import { SessionUsageMark } from "@/components/cowork/session-usage-mark"
+import { SessionCommentUnreadMark } from "@/components/cowork/session-comment-unread-mark"
 import { ShareSessionDialog } from "@/components/cowork/share-session-dialog"
 import { teamSessionId } from "@/lib/cowork/team"
 import { useCoworkTeamStore } from "@/stores/cowork-team-store"
@@ -760,6 +761,11 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                       folder that is not a worktree. Its own store, so a row
                       re-renders only when its folder's status changes. Like
                       the branch chip, sub-sessions leave it to their parent. */}
+                      {/* Cowork（#1390）：同事在这个会话上的新留言。 */}
+                      <SessionCommentUnreadMark
+                        conversationId={conversation.id}
+                        className="mr-1.5"
+                      />
                       {!isSubsession && (
                         <SidebarPrIndicator
                           folderId={conversation.folder_id}

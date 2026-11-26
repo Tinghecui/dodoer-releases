@@ -288,6 +288,65 @@ describe("SidebarConversationCard share item (#1235)", () => {
     )
   }
 
+  it("#1390：自己的会话有未读留言时，时间旁边画留言图标和条数", () => {
+    useCoworkTeamStore.getState().setStatus({
+      applicable: true,
+      enabled: true,
+      me: { name: "member-c", label: "C" },
+      leaderOf: [],
+      portalUrl: null,
+    })
+    useCoworkTeamStore.getState().setSummary({
+      sharedNew: 0,
+      commentUnread: {
+        total: 2,
+        sessions: [
+          {
+            owner: "member-c",
+            ownerLabel: "C",
+            id: "7",
+            title: "t",
+            mine: true,
+            count: 2,
+          },
+        ],
+      },
+      groupNotices: [],
+    })
+    renderWithIntl(
+      <>
+        <SidebarConversationCard
+          conversation={conv(7)}
+          isSelected={false}
+          timeLabel="5m"
+          onSelect={onSelect}
+          onDoubleClick={onDoubleClick}
+          onRename={onRename}
+          onDelete={onDelete}
+          onStatusChange={onStatusChange}
+        />
+        <SidebarConversationCard
+          conversation={conv(8)}
+          isSelected={false}
+          timeLabel="5m"
+          onSelect={onSelect}
+          onDoubleClick={onDoubleClick}
+          onRename={onRename}
+          onDelete={onDelete}
+          onStatusChange={onStatusChange}
+        />
+      </>
+    )
+    const marks = document.querySelectorAll<HTMLElement>(
+      "[data-session-comment-unread]"
+    )
+    expect(marks).toHaveLength(1)
+    expect(marks[0].title).toBe("2 new comments")
+    expect(
+      marks[0].closest("[data-conv-key]")?.getAttribute("data-conv-key")
+    ).toBe("claude_code:7")
+  })
+
   it("offers no Share item while the team feature is unavailable", () => {
     const { getByText, queryByText } = renderCard(conv(1))
     fireEvent.contextMenu(getByText("conv-1"))

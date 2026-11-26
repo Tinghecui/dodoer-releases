@@ -11,6 +11,9 @@
 // 会话刚建好、CoTeam 那边还没收到它时回 `not_found`：提示「刚建好，过几秒再试」，
 // 3 秒后自动把同一个操作再做一次（只重试一次）；等重试时用户又做了别的操作，
 // 旧的重试作废。人名、组名、说明一律纯文字。手机端不做：不画入口。
+//
+// 顶栏按钮出现时按会话问一次 `shares`（这次打开期间同一个会话只问一次，不轮询），
+// 分享给了别人时按钮上带分享对象个数；对话框里拿到新结果时跟着更新（#1390）。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Search, Share2, Users, X } from "lucide-react"
@@ -44,6 +47,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { ownerInitial } from "@/components/cowork/shared-with-me-list"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { noteTeamError, teamErrorText } from "@/lib/cowork/team-errors"
+import { cn } from "@/lib/utils"
 
 /** 回 `not_found`（会话刚建好）后多久自动重试一次。 */
 export const SHARE_RETRY_MS = 3000
@@ -112,7 +116,15 @@ export function ShareSessionDialog({
   const me = useCoworkTeamStore((s) => s.status?.me.name ?? "")
   const available = useCoworkTeamStore((s) => s.available)
   const [targets, setTargets] = useState<TeamTargets | null>(null)
-  const [shares, setShares] = useState<TeamShares | null>(null)
+  const [shares, setSharesState] = useState<TeamShares | null>(null)
+  // 拿到新的分享结果时顺手告诉顶栏的分享按钮分享给了几个对象（#1390）。
+  const setShares = useCallback(
+    (next: TeamShares) => {
+      setSharesState(next)
+      useCoworkTeamStore.getState().setShareCount(sessionId, next.shares.length)
+    },
+    [sessionId]
+  )
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [note, setNote] = useState("")
@@ -229,7 +241,7 @@ export function ShareSessionDialog({
         setTargets(nextTargets)
         setShares(nextShares)
       }, true),
-    [run, sessionId]
+    [run, sessionId, setShares]
   )
 
   useEffect(() => {
@@ -292,7 +304,7 @@ export function ShareSessionDialog({
       true,
       true
     )
-  }, [picked, busy, note, run, sessionId])
+  }, [picked, busy, note, run, sessionId, setShares])
 
   const handleUnshare = useCallback(
     (target?: TeamShareTarget) => {
@@ -302,7 +314,7 @@ export function ShareSessionDialog({
         if (alive.current) setShares(next)
       }, true)
     },
-    [busy, run, sessionId]
+    [busy, run, sessionId, setShares]
   )
 
   const current = shares?.shares ?? []
@@ -506,18 +518,56 @@ export function ShareSessionButton({
   // 手机端不做（#1235「不做什么」）：手机上也用这个顶栏，这里不画。
   const isMobile = useIsMobile()
   const show = available && sessionId !== null && !isMobile
+  const shareCount = useCoworkTeamStore((s) =>
+    sessionId === null ? null : (s.shareCounts[sessionId] ?? null)
+  )
+
+  // 按钮出现时问一次这个会话分享给了谁（#1390）：同一个会话这次打开期间只问
+  // 一次（切标签回来不重问、不轮询），之后只靠对话框拿到的新结果更新。
+  useEffect(() => {
+    if (!show || sessionId === null) return
+    const store = useCoworkTeamStore.getState()
+    if (sessionId in store.shareCounts) return
+    store.setShareCount(sessionId, null)
+    teamShares(sessionId).then(
+      (next) => {
+        const now = useCoworkTeamStore.getState()
+        // 期间对话框已经拿到更新的结果了，以它为准。
+        if (now.shareCounts[sessionId] === null)
+          now.setShareCount(sessionId, next.shares.length)
+      },
+      () => {}
+    )
+  }, [show, sessionId])
+
+  const shared = typeof shareCount === "number" && shareCount > 0
+  const label = shared
+    ? t("shareButtonShared", { count: shareCount })
+    : t("shareButton")
   return (
     <>
       {show ? (
         <button
           type="button"
           data-share-session-button=""
-          className="flex h-7 w-[1.875rem] shrink-0 items-center justify-center rounded-full text-[var(--ink2)] transition-colors hover:bg-[var(--g-hover)] hover:text-foreground"
-          aria-label={t("shareButton")}
-          title={t("shareButton")}
+          className={cn(
+            "flex h-7 shrink-0 items-center justify-center rounded-full text-[var(--ink2)] transition-colors hover:bg-[var(--g-hover)] hover:text-foreground",
+            shared ? "gap-0.5 px-1.5" : "w-[1.875rem]"
+          )}
+          aria-label={label}
+          title={label}
           onClick={() => setTarget({ id: sessionId, title })}
         >
           <Share2 className="h-4 w-4" />
+          {shared ? (
+            <span
+              data-share-count=""
+              aria-hidden
+              className="text-[0.6875rem] tabular-nums"
+            >
+              {shareCount}
+            </span>
+          ) : null}
         </button>
       ) : null}
       {available && !isMobile && target ? (

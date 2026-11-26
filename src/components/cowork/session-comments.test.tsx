@@ -751,6 +751,62 @@ describe("own conversation comments", () => {
     expect(api.teamCommentsSeen).toHaveBeenCalledWith("member-c", "7")
   })
 
+  it("#1390：留言栏拉到留言、comments_seen 成功后，顶栏马上变回「留言」，store 里这个会话清零", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] })
+    try {
+      makeAvailable()
+      setSummary([
+        { id: "7", count: 2, mine: true },
+        { id: "8", count: 1, mine: true },
+      ])
+      api.teamComments.mockResolvedValue(
+        commentsPage([comment({ id: "c5" })], true)
+      )
+      wrap(<OwnConversation conversationId={7} />)
+      const button = () =>
+        document.querySelector<HTMLButtonElement>(
+          "[data-session-comments-button]"
+        )!
+      expect(button().getAttribute("aria-label")).toBe("Comments (2 new)")
+      act(() => useOwnCommentsStore.getState().open("7"))
+      await flush()
+      expect(api.teamCommentsSeen).toHaveBeenCalledWith("member-c", "7")
+      // 没推进任何定时器（没有新一次轮询），提示已经消失。
+      expect(button().getAttribute("aria-label")).toBe("Comments")
+      const unread = useCoworkTeamStore.getState().summary!.commentUnread
+      expect(unread.sessions.map((s) => s.id)).toEqual(["8"])
+      expect(unread.total).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("#1390：comments_seen 失败时不清本地的未读数", async () => {
+    makeAvailable()
+    setSummary([{ id: "7", count: 2, mine: true }])
+    api.teamCommentsSeen.mockRejectedValue(new Error("boom"))
+    wrap(<OwnConversation conversationId={7} />)
+    act(() => useOwnCommentsStore.getState().open("7"))
+    await flush()
+    expect(
+      document
+        .querySelector("[data-session-comments-button]")!
+        .getAttribute("aria-label")
+    ).toBe("Comments (2 new)")
+  })
+
+  it("#1390：只读看同事会话时拉到留言不动 summary 里的未读（只清自己的会话）", async () => {
+    makeAvailable()
+    setSummary([{ id: "42", count: 1, mine: false }])
+    act(() => useCoworkTeamStore.getState().openSharedSession(TARGET))
+    wrap(<SharedSessionHost>{null}</SharedSessionHost>)
+    await flush()
+    expect(api.teamCommentsSeen).toHaveBeenCalledWith("member-a", "42")
+    expect(
+      useCoworkTeamStore.getState().summary!.commentUnread.sessions
+    ).toHaveLength(1)
+  })
+
   it("no Give-to-my-agent when isOwner is false", async () => {
     makeAvailable()
     api.teamComments.mockResolvedValue(commentsPage([comment({})], false))
@@ -809,11 +865,13 @@ describe("own conversation comments", () => {
     setSummary([{ id: "7", count: 1, mine: true }])
     await flush()
 
+    // #1390：拉到新留言、标了已读后，提示在本地马上清掉（不等下一次轮询）。
+    expect(api.teamCommentsSeen).toHaveBeenCalledTimes(2)
     expect(
       document.querySelector<HTMLButtonElement>(
         "[data-session-comments-button]"
       )!.textContent
-    ).toBe("Comments (1 new)")
+    ).toBe("")
     expect(document.querySelectorAll("[data-comment-id]")).toHaveLength(2)
     expect(queueItems()).toHaveLength(1)
     expect(api.teamCommentForwarded).toHaveBeenCalledTimes(1)

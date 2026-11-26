@@ -38,10 +38,13 @@ import { useStatusCapsuleLift } from "@/hooks/use-status-capsule-lift"
 import {
   TEAM_SIGNED_OUT_CODE,
   teamEntries,
+  teamShared,
+  teamView,
   toCoworkTeamError,
   type TeamAgentInfo,
   type TeamAwaitingReason,
   type TeamEntry,
+  type TeamSharedVia,
 } from "@/lib/cowork/team"
 import { noteTeamError, teamErrorText } from "@/lib/cowork/team-errors"
 import { formatTimeAgo } from "@/lib/relative-time"
@@ -165,6 +168,111 @@ function sharedViewAwaitingKey(reason: TeamAwaitingReason | null) {
   }
 }
 
+type TeamText = ReturnType<typeof useTranslations<"CoworkTeam">>
+
+/** 我为什么看得到这个会话：直接分享给我、分享给了我所在的组、我是对方组长。 */
+export interface SharedViewReasons {
+  /** 直接分享给我（`via` 里有 `user`）。 */
+  direct: boolean
+  /** 分享给了我所在的这些组（组名）。 */
+  groups: string[]
+  /** 我当组长、对方在里面的这些组（组名）。 */
+  leaderOf: string[]
+}
+
+/**
+ * 只读条上的原因：按「直接分享 → 分享给组 → 组长」的顺序、每种（每个组）
+ * 最多一次，用「 · 」连起来。组名是别人起的，原样当纯文字。
+ */
+export function sharedViewReasonsText(
+  reasons: SharedViewReasons,
+  ownerLabel: string,
+  t: TeamText
+): string {
+  const parts: string[] = []
+  const push = (text: string) => {
+    if (!parts.includes(text)) parts.push(text)
+  }
+  if (reasons.direct) push(t("sharedViewViaShared", { owner: ownerLabel }))
+  for (const group of reasons.groups) push(t("sharedViewViaGroup", { group }))
+  for (const group of reasons.leaderOf)
+    push(t("sharedViewViaLeader", { group }))
+  return parts.join(" · ")
+}
+
+function viaReasons(
+  via: TeamSharedVia[]
+): Pick<SharedViewReasons, "direct" | "groups"> {
+  const groups: string[] = []
+  for (const v of via) {
+    if (v.type !== "group") continue
+    const name = v.name || v.id || ""
+    if (name && !groups.includes(name)) groups.push(name)
+  }
+  return { direct: via.some((v) => v.type === "user"), groups }
+}
+
+function sessionKeyOf(x: { owner: string; id: string }): string {
+  return `${x.owner}/${x.id}`
+}
+
+/**
+ * 只读条的可见原因（#1390）。从「分享给我」打开的：`sharedVia` 给出直接分享和
+ * 分享给组；再用 `team` 查我当组长的各组里有没有对方（查不到、失败就不写）。
+ * 从「团队」打开的：组长那一条直接用打开时的组，再去「分享给我」里找这个会话，
+ * 有就按它的 `via` 加上前两种。别处打开、没带 `via` 的分享，同样去列表里找，
+ * 找不到按「由对方分享」写（原来的写法）。
+ */
+function useSharedViewReasons(target: SharedSessionTarget): SharedViewReasons {
+  const fromLeader = target.via.kind === "leader" ? target.via.groupName : null
+  const [reasons, setReasons] = useState<SharedViewReasons>(() => ({
+    ...(target.sharedVia
+      ? viaReasons(target.sharedVia)
+      : { direct: fromLeader === null, groups: [] }),
+    leaderOf: fromLeader !== null ? [fromLeader] : [],
+  }))
+  const { owner, id, sharedVia } = target
+
+  // 打开期间只查一次（视图每次打开都重新挂）。
+  useEffect(() => {
+    let alive = true
+    if (!sharedVia) {
+      teamShared().then(
+        (list) => {
+          if (!alive) return
+          const hit = list.find(
+            (x) => sessionKeyOf(x) === sessionKeyOf({ owner, id })
+          )
+          if (hit) setReasons((prev) => ({ ...prev, ...viaReasons(hit.via) }))
+        },
+        () => {}
+      )
+    }
+    // 我当组长的组：打开那一刻的；之后 status 再探测换了也不重查。
+    const leaderGroups = useCoworkTeamStore.getState().status?.leaderOf ?? []
+    const groups = fromLeader === null ? leaderGroups : []
+    if (groups.length > 0) {
+      void Promise.all(
+        groups.map((g) =>
+          teamView(g.id).then(
+            (v) => (v.members.some((m) => m.name === owner) ? g.name : null),
+            () => null
+          )
+        )
+      ).then((names) => {
+        if (!alive) return
+        const leaderOf = names.filter((n): n is string => n !== null)
+        if (leaderOf.length > 0) setReasons((prev) => ({ ...prev, leaderOf }))
+      })
+    }
+    return () => {
+      alive = false
+    }
+    // 视图每次打开都重新挂，target 在一次打开期间不变：只查这一次。
+  }, [owner, id, sharedVia, fromLeader])
+  return reasons
+}
+
 function timeOf(raw: string): number {
   const at = Date.parse(raw)
   return Number.isFinite(at) ? at : 0
@@ -275,15 +383,15 @@ function SharedSessionView({
   const updatedAt = agent ? timeOf(agent.updatedAt) : 0
   const awaiting = agent?.state === "waiting" ? (agent.awaiting ?? null) : null
   const link = sharedSessionPortalLink(portalUrl, owner, id)
-  const viaText =
-    target.via.kind === "leader"
-      ? t("sharedViewViaLeader", { group: target.via.groupName })
-      : t("sharedViewViaShared", { owner: ownerLabel })
+  const reasons = useSharedViewReasons(target)
+  const viaText = sharedViewReasonsText(reasons, ownerLabel, t)
   const barText = [
     t("sharedViewReadOnly"),
     t("sharedViewSessionOf", { owner: ownerLabel }),
     viaText,
-  ].join(" · ")
+  ]
+    .filter(Boolean)
+    .join(" · ")
 
   const handleCopy = useCallback(() => {
     if (!link) return

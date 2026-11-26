@@ -54,8 +54,10 @@ import {
 } from "@/lib/message-input-draft"
 import { cn } from "@/lib/utils"
 import {
+  commentUnreadCount,
   useCoworkTeamAvailable,
   useCoworkTeamStore,
+  withoutCommentSession,
 } from "@/stores/cowork-team-store"
 
 // ─── 交给智能体的文字 ───────────────────────────────────────────────────────
@@ -102,23 +104,23 @@ export function openOwnSessionComments(conversationId: unknown): void {
   if (id) useOwnCommentsStore.getState().open(id)
 }
 
-/** `summary` 里这个会话还有几条未读留言。 */
-function unreadIn(
-  summary: CoworkTeamSummary | null,
-  owner: string,
-  id: string,
-  mine: boolean
-): number {
-  const sessions = summary?.commentUnread.sessions ?? []
-  const hit = sessions.find(
-    (x) => x.id === id && (mine ? x.mine : x.owner === owner)
-  )
-  return hit?.count ?? 0
+/**
+ * 自己会话的留言标了已读：先在本地把 `summary` 里这个会话的未读去掉，顶栏
+ * 「留言（N 条新）」和侧栏那一行的提示马上消失；下一次轮询以服务器为准。
+ */
+function clearOwnUnread(id: string): void {
+  const store = useCoworkTeamStore.getState()
+  const summary = store.summary
+  const hit = summary?.commentUnread.sessions.find((x) => x.id === id && x.mine)
+  if (!summary || !hit) return
+  store.setSummary(withoutCommentSession(hit)(summary))
 }
 
 /** `summary` 里这个会话还有几条未读留言。 */
 function useUnreadCount(owner: string, id: string, mine: boolean): number {
-  return useCoworkTeamStore((s) => unreadIn(s.summary, owner, id, mine))
+  return useCoworkTeamStore((s) =>
+    commentUnreadCount(s.summary, owner, id, mine)
+  )
 }
 
 /**
@@ -132,7 +134,7 @@ function useUnreadSummary(
   mine: boolean
 ): CoworkTeamSummary | null {
   return useCoworkTeamStore((s) =>
-    unreadIn(s.summary, owner, id, mine) > 0 ? s.summary : null
+    commentUnreadCount(s.summary, owner, id, mine) > 0 ? s.summary : null
   )
 }
 
@@ -232,7 +234,12 @@ export function useSessionComments(
         if (!current) return
         setPage(next)
         setError(null)
-        void teamCommentsSeen(owner, id).catch(() => {})
+        teamCommentsSeen(owner, id).then(
+          () => {
+            if (mine) clearOwnUnread(id)
+          },
+          () => {}
+        )
       },
       (err: unknown) => {
         if (!current) return
@@ -245,7 +252,7 @@ export function useSessionComments(
       current = false
     }
     // reloadKey：自己发删之后、轮询到新留言时重新拉（只更新留言栏和提示）。
-  }, [owner, id, reloadKey])
+  }, [owner, id, mine, reloadKey])
 
   const add = useCallback(
     async (body: string) => {

@@ -1617,6 +1617,8 @@ describe("Sidebar — CoTeam scope switch", () => {
       id: "42",
       title: "Fix login",
       via: { kind: "shared" },
+      // #1390：带上这一条的 via，只读条按它写可见原因。
+      sharedVia: [{ type: "user" }],
     })
   })
 

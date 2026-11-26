@@ -3,7 +3,9 @@ import type {
   CoworkTeamStatus,
   CoworkTeamSummary,
   TeamAgentInfo,
+  TeamCommentUnreadSession,
   TeamSharedItem,
+  TeamSharedVia,
 } from "@/lib/cowork/team"
 
 // CoTeam 的会话分享（#1230）：工作界面里「团队功能可不可用」和最近一次
@@ -23,6 +25,12 @@ export interface SharedSessionTarget {
   /** 列表里已经知道的标题；拉到 `entries` 后以它的为准。 */
   title: string
   via: { kind: "shared" } | { kind: "leader"; groupName: string }
+  /**
+   * 从「分享给我」打开时，那一条的 `via`（直接分享给我、分享给了我所在的哪些
+   * 组）。只读条按它把所有成立的原因都列出来；没给（别处打开的）时视图自己
+   * 去「分享给我」列表里找。
+   */
+  sharedVia?: TeamSharedVia[]
 }
 
 /**
@@ -51,6 +59,11 @@ export interface CoworkTeamState {
   /** `viewing` 那个会话最近一次拉到的信息；还没拉到、没开视图时是 null。 */
   viewingInfo: SharedSessionInfo | null
   /**
+   * 顶栏分享按钮：自己的会话（契约里的会话号）分享给了几个对象。键在 = 这次
+   * 打开期间已经问过 `shares`（不再问）；值是 null = 还没回来或者没问到。
+   */
+  shareCounts: Record<string, number | null>
+  /**
    * 每打开一次（含再点同一条）加一：外壳靠它在每次打开时都回到会话区域，
    * 只看 `viewing` 的话，再点同一条时它没变、不会再回。
    */
@@ -73,6 +86,8 @@ export interface CoworkTeamState {
     agent: TeamAgentInfo | null,
     fetchedAt: number
   ) => void
+  /** 记下一个会话分享给了几个对象（null = 问过了、还没有数）；不可用时不记。 */
+  setShareCount: (id: string, count: number | null) => void
 }
 
 const INITIAL = {
@@ -83,6 +98,7 @@ const INITIAL = {
   viewing: null,
   viewingInfo: null,
   openCount: 0,
+  shareCounts: {},
 } as const
 
 export const useCoworkTeamStore = create<CoworkTeamState>((set) => ({
@@ -105,6 +121,7 @@ export const useCoworkTeamStore = create<CoworkTeamState>((set) => ({
       summary: null,
       viewing: null,
       viewingInfo: null,
+      shareCounts: {},
     }),
   reset: () => set({ ...INITIAL }),
   openSharedSession: (target) =>
@@ -141,6 +158,12 @@ export const useCoworkTeamStore = create<CoworkTeamState>((set) => ({
           }
         : {}
     ),
+  setShareCount: (id, count) =>
+    set((state) =>
+      state.available
+        ? { shareCounts: { ...state.shareCounts, [id]: count } }
+        : {}
+    ),
 }))
 
 /** 团队功能可不可用（界面决定画不画入口只看这个）。 */
@@ -156,5 +179,48 @@ export function openSharedItem(item: TeamSharedItem): void {
     id: item.id,
     title: item.title,
     via: { kind: "shared" },
+    sharedVia: item.via,
   })
+}
+
+/** `summary` 里自己（`mine`）或别人（按 `owner`）的这个会话还有几条未读留言。 */
+export function commentUnreadCount(
+  summary: CoworkTeamSummary | null,
+  owner: string,
+  id: string,
+  mine: boolean
+): number {
+  const sessions = summary?.commentUnread.sessions ?? []
+  const hit = sessions.find(
+    (x) => x.id === id && (mine ? x.mine : x.owner === owner)
+  )
+  return hit?.count ?? 0
+}
+
+/**
+ * 标了已读之后先在本地把这个会话的未读留言去掉（下一次轮询以服务器为准）。
+ * 收件箱和留言栏都用它。
+ */
+export function withoutCommentSession(session: TeamCommentUnreadSession) {
+  return (s: CoworkTeamSummary): CoworkTeamSummary => {
+    const sessions = s.commentUnread.sessions.filter(
+      (x) =>
+        !(
+          x.id === session.id &&
+          x.mine === session.mine &&
+          x.owner === session.owner
+        )
+    )
+    const removed = s.commentUnread.sessions.length - sessions.length
+    return {
+      ...s,
+      commentUnread: {
+        total: Math.max(
+          0,
+          s.commentUnread.total - (removed > 0 ? session.count : 0)
+        ),
+        sessions,
+      },
+    }
+  }
 }

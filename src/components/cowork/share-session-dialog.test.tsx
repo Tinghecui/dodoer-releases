@@ -175,6 +175,145 @@ describe("ShareSessionButton", () => {
   })
 })
 
+describe("ShareSessionButton 已分享的数字（#1390）", () => {
+  const button = () =>
+    document.querySelector<HTMLButtonElement>("[data-share-session-button]")!
+
+  it("分享对象个数大于 0 时按钮上带数字，读屏和悬停写「分享（已分享给 N 个对象）」", async () => {
+    makeAvailable()
+    api.teamShares.mockResolvedValue({
+      id: "42",
+      shares: [
+        SHARES.shares[0],
+        {
+          type: "group",
+          id: "1",
+          name: "Backend",
+          note: "",
+          createdAt: "2026-11-22T08:00:00Z",
+        },
+      ],
+    })
+    render(
+      <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+        <ShareSessionButton conversationId={42} title="Fix login" />
+      </NextIntlClientProvider>
+    )
+    await waitFor(() =>
+      expect(button().getAttribute("aria-label")).toBe(
+        "分享（已分享给 2 个对象）"
+      )
+    )
+    expect(button().title).toBe("分享（已分享给 2 个对象）")
+    expect(button().querySelector("[data-share-count]")?.textContent).toBe("2")
+    expect(api.teamShares).toHaveBeenCalledTimes(1)
+    expect(api.teamShares).toHaveBeenCalledWith("42")
+    expect(api.teamTargets).not.toHaveBeenCalled()
+  })
+
+  it("没分享给任何人时和原来一样：只有图标，名字是「Share」", async () => {
+    makeAvailable()
+    api.teamShares.mockResolvedValue({ id: "42", shares: [] })
+    render(intl(<ShareSessionButton conversationId={42} title="Fix login" />))
+    await waitFor(() => expect(api.teamShares).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(button().getAttribute("aria-label")).toBe("Share")
+    expect(button().querySelector("[data-share-count]")).toBeNull()
+  })
+
+  it("shares 调用失败时和原来一样，也不再重调", async () => {
+    makeAvailable()
+    api.teamShares.mockRejectedValue(new CoworkTeamError("unknown", "x"))
+    const { unmount } = render(
+      intl(<ShareSessionButton conversationId={42} title="Fix login" />)
+    )
+    await waitFor(() => expect(api.teamShares).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(button().getAttribute("aria-label")).toBe("Share")
+    unmount()
+    render(intl(<ShareSessionButton conversationId={42} title="Fix login" />))
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(api.teamShares).toHaveBeenCalledTimes(1)
+  })
+
+  it("同一个会话只调一次：切到别的会话再切回来不重调", async () => {
+    makeAvailable()
+    const { rerender } = render(
+      intl(<ShareSessionButton conversationId={42} title="Fix login" />)
+    )
+    await waitFor(() =>
+      expect(button().getAttribute("aria-label")).toBe(
+        "Share (shared with 1 target)"
+      )
+    )
+    rerender(intl(<ShareSessionButton conversationId={43} title="Other" />))
+    await waitFor(() => expect(api.teamShares).toHaveBeenCalledWith("43"))
+    rerender(intl(<ShareSessionButton conversationId={42} title="Fix login" />))
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(api.teamShares).toHaveBeenCalledTimes(2)
+    expect(button().getAttribute("aria-label")).toBe(
+      "Share (shared with 1 target)"
+    )
+  })
+
+  it("对话框里取消分享后，按钮用对话框拿到的新结果更新", async () => {
+    makeAvailable()
+    render(intl(<ShareSessionButton conversationId={42} title="Fix login" />))
+    await waitFor(() =>
+      expect(button().getAttribute("aria-label")).toBe(
+        "Share (shared with 1 target)"
+      )
+    )
+    fireEvent.click(button())
+    const remove = await screen.findByRole("button", {
+      name: "Stop sharing with Dana",
+    })
+    fireEvent.click(remove)
+    await waitFor(() => expect(api.teamUnshare).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(button().getAttribute("aria-label")).toBe("Share")
+    )
+  })
+
+  it("对话框里分享以后，按钮上的数字跟着变", async () => {
+    makeAvailable()
+    api.teamShares.mockResolvedValue({ id: "42", shares: [] })
+    api.teamShare.mockResolvedValue({
+      id: "42",
+      shares: [
+        {
+          type: "user",
+          name: "member-b",
+          label: "Lee",
+          note: "",
+          createdAt: "2026-11-22T08:00:00Z",
+        },
+      ],
+    })
+    render(intl(<ShareSessionButton conversationId={42} title="Fix login" />))
+    fireEvent.click(button())
+    await waitFor(() => expect(candidateKeys().length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByRole("checkbox", { name: "Lee" }))
+    const dialog = document.querySelector(
+      "[data-share-session-dialog]"
+    ) as HTMLElement
+    fireEvent.click(within(dialog).getByRole("button", { name: "Share" }))
+    await waitFor(() =>
+      expect(button().getAttribute("aria-label")).toBe(
+        "Share (shared with 1 target)"
+      )
+    )
+  })
+})
+
 describe("ShareSessionDialog", () => {
   it("列出候选的人和组（不含自己、不含已分享的）和现有分享，写明对方能看到全部", async () => {
     makeAvailable()

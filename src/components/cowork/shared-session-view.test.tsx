@@ -8,6 +8,8 @@ import {
   CoworkTeamError,
   type TeamEntriesPage,
   type TeamEntry,
+  type TeamSharedItem,
+  type TeamView,
 } from "@/lib/cowork/team"
 import {
   useCoworkTeamStore,
@@ -29,6 +31,8 @@ const api = vi.hoisted(() => ({
   copy: vi.fn<(text: string) => Promise<boolean>>(),
   teamComments: vi.fn(),
   teamCommentsSeen: vi.fn(),
+  teamShared: vi.fn<() => Promise<TeamSharedItem[]>>(),
+  teamView: vi.fn<(group: string) => Promise<TeamView>>(),
   openConversations: vi.fn(),
   activateConversationPane: vi.fn(),
 }))
@@ -73,6 +77,8 @@ vi.mock("@/lib/cowork/team", async (importOriginal) => {
     teamEntries: api.teamEntries,
     teamComments: api.teamComments,
     teamCommentsSeen: api.teamCommentsSeen,
+    teamShared: api.teamShared,
+    teamView: api.teamView,
   }
 })
 vi.mock("@/lib/utils", async (importOriginal) => {
@@ -122,14 +128,15 @@ function page(
 }
 
 function makeAvailable(
-  portalUrl: string | null = "https://portal.example.com/"
+  portalUrl: string | null = "https://portal.example.com/",
+  leaderOf: { id: string; name: string }[] = []
 ) {
   act(() => {
     useCoworkTeamStore.getState().setStatus({
       applicable: true,
       enabled: true,
       me: { name: "member-c", label: "Chen" },
-      leaderOf: [],
+      leaderOf,
       portalUrl,
     })
   })
@@ -180,6 +187,10 @@ beforeEach(() => {
   api.teamComments.mockResolvedValue({ isOwner: false, ids: [], comments: [] })
   api.teamCommentsSeen.mockReset()
   api.teamCommentsSeen.mockResolvedValue({ owner: "", id: "", seenId: null })
+  api.teamShared.mockReset()
+  api.teamShared.mockResolvedValue([])
+  api.teamView.mockReset()
+  api.teamView.mockRejectedValue(new CoworkTeamError("forbidden", ""))
   api.openConversations.mockReset()
   api.activateConversationPane.mockReset()
   chrome.sidebarOpen = true
@@ -334,6 +345,155 @@ describe("SharedSessionHost", () => {
       "Read-only · Wang's conversation · You lead Backend"
     )
     expect(screen.queryByRole("button", { name: "Copy link" })).toBeNull()
+  })
+
+  describe("只读条按可见原因写（#1390）", () => {
+    const barText = () =>
+      document.querySelector("[data-shared-session-bar]")?.textContent ?? ""
+
+    function sharedItem(via: TeamSharedItem["via"]): TeamSharedItem {
+      return {
+        owner: "member-a",
+        ownerLabel: "Wang",
+        id: "42",
+        title: "Fix login",
+        state: "running",
+        updatedAt: "2026-11-23T09:57:00Z",
+        note: "",
+        sharedAt: "2026-11-23T09:00:00Z",
+        isNew: false,
+        summary: null,
+        via,
+      }
+    }
+
+    function teamOf(members: string[]): TeamView {
+      return {
+        id: "1",
+        name: "Backend",
+        since: "",
+        members: members.map((name) => ({
+          name,
+          label: name,
+          running: 0,
+          waiting: 0,
+          sessions: [],
+        })),
+      }
+    }
+
+    it("只直接分享：写「由对方分享」，我不是组长时不查 team", async () => {
+      makeAvailable()
+      api.teamEntries.mockResolvedValue(page([]))
+      renderHost()
+      await open({ ...TARGET, sharedVia: [{ type: "user" }] })
+      await flush()
+      expect(barText()).toContain(
+        "Read-only · Wang's conversation · Shared by Wang"
+      )
+      expect(barText()).not.toContain("Shared with")
+      expect(api.teamView).not.toHaveBeenCalled()
+    })
+
+    it("只分享给组：写「分享给了某组」，不写「由对方分享」", async () => {
+      makeAvailable()
+      api.teamEntries.mockResolvedValue(page([]))
+      renderHost()
+      await open({
+        ...TARGET,
+        sharedVia: [{ type: "group", id: "1", name: "Backend" }],
+      })
+      await flush()
+      expect(barText()).toContain(
+        "Read-only · Wang's conversation · Shared with Backend"
+      )
+      expect(barText()).not.toContain("Shared by")
+    })
+
+    it("直接分享加组长：按「直接分享 → 分享给组 → 组长」列出，每种只出现一次", async () => {
+      makeAvailable(null, [
+        { id: "1", name: "Backend" },
+        { id: "2", name: "Ops" },
+      ])
+      api.teamEntries.mockResolvedValue(page([]))
+      api.teamView.mockImplementation(async (group) =>
+        group === "1"
+          ? teamOf(["member-a", "member-b"])
+          : { ...teamOf(["member-b"]), id: "2", name: "Ops" }
+      )
+      renderHost()
+      await open({
+        ...TARGET,
+        sharedVia: [
+          { type: "group", id: "3", name: "Infra" },
+          { type: "user" },
+          { type: "user" },
+          { type: "group", id: "3", name: "Infra" },
+        ],
+      })
+      await flush()
+      await flush()
+      expect(barText()).toContain(
+        "Read-only · Wang's conversation · Shared by Wang · Shared with Infra · You lead Backend"
+      )
+      expect(barText()).not.toContain("You lead Ops")
+      expect(api.teamView).toHaveBeenCalledWith("1")
+      expect(api.teamView).toHaveBeenCalledWith("2")
+    })
+
+    it("查 team 失败时不写组长那一条", async () => {
+      makeAvailable(null, [{ id: "1", name: "Backend" }])
+      api.teamEntries.mockResolvedValue(page([]))
+      renderHost()
+      await open({ ...TARGET, sharedVia: [{ type: "user" }] })
+      await flush()
+      await flush()
+      expect(barText()).toContain(
+        "Read-only · Wang's conversation · Shared by Wang"
+      )
+      expect(barText()).not.toContain("You lead")
+    })
+
+    it("只组长（从「团队」打开、分享给我里没有它）：只写「你是某组组长」", async () => {
+      makeAvailable(null, [{ id: "1", name: "Backend" }])
+      api.teamEntries.mockResolvedValue(page([]))
+      api.teamShared.mockResolvedValue([])
+      renderHost()
+      await open({ ...TARGET, via: { kind: "leader", groupName: "Backend" } })
+      await flush()
+      await flush()
+      expect(api.teamShared).toHaveBeenCalledTimes(1)
+      expect(barText()).toContain(
+        "Read-only · Wang's conversation · You lead Backend"
+      )
+      expect(barText()).not.toContain("Shared")
+    })
+
+    it("中文：从「团队」打开、分享给我里也有它，按它的 via 加上前两种", async () => {
+      makeAvailable(null, [{ id: "1", name: "预发测试组" }])
+      api.teamEntries.mockResolvedValue(page([]))
+      api.teamShared.mockResolvedValue([
+        sharedItem([
+          { type: "user" },
+          { type: "group", id: "1", name: "预发测试组" },
+        ]),
+      ])
+      render(
+        <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+          <SharedSessionHost>{null}</SharedSessionHost>
+        </NextIntlClientProvider>
+      )
+      await open({
+        ...TARGET,
+        ownerLabel: "爱丽丝",
+        via: { kind: "leader", groupName: "预发测试组" },
+      })
+      await flush()
+      await flush()
+      expect(barText()).toContain(
+        "由Wang分享 · 分享给了预发测试组 · 你是预发测试组组长"
+      )
+    })
   })
 
   it("says what the agent waits for when it is blocked on its owner", async () => {

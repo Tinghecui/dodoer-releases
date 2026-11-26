@@ -309,6 +309,77 @@ pub(crate) fn fit_window_rect(
     }
 }
 
+/// 窗口（左上角 `pos`、外框尺寸 `size`，逻辑像素）有一边超出可用区域
+/// `area = (x, y, w, h)` 时，算出挪进来以后的 `(x, y, w, h)`：先把比可用区域大的
+/// 宽高收小到可用区域，再把左上角就近挪进可用区域，不重新居中，尽量留住用户摆的
+/// 位置。整个窗口已经在可用区域里时返回 `None`，不动它。window-state 插件会把
+/// 旧版存下的出界位置（比如 1024 宽的屏上 x=-118）原样恢复，建完窗口后用它把
+/// 窗口挪回来（#1561）。纯函数，方便单测。
+pub(crate) fn clamp_rect_into_area(
+    area: (f64, f64, f64, f64),
+    pos: (f64, f64),
+    size: (f64, f64),
+) -> Option<(f64, f64, f64, f64)> {
+    let (ax, ay, aw, ah) = area;
+    let aw = aw.max(1.0);
+    let ah = ah.max(1.0);
+    let inside =
+        pos.0 >= ax && pos.1 >= ay && pos.0 + size.0 <= ax + aw && pos.1 + size.1 <= ay + ah;
+    if inside {
+        return None;
+    }
+    let width = size.0.min(aw);
+    let height = size.1.min(ah);
+    let x = pos.0.clamp(ax, ax + aw - width);
+    let y = pos.1.clamp(ay, ay + ah - height);
+    Some((x, y, width, height))
+}
+
+/// 建好的窗口有一边跑出所在显示器（取不到就用主显示器）的可用区域时，把它收小、
+/// 挪回来；整个在屏幕里的不动。window-state 插件在窗口建好时恢复上次存下的位置，
+/// 会盖掉 [`fit_builder_to_monitor`] 算好的位置，所以要在 `build()` 之后调（#1561）。
+#[cfg(feature = "tauri-runtime")]
+pub(crate) fn clamp_window_to_monitor<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let (Ok(outer_pos), Ok(outer_size), Ok(inner_size)) = (
+        window.outer_position(),
+        window.outer_size(),
+        window.inner_size(),
+    ) else {
+        return;
+    };
+    let sf = monitor.scale_factor();
+    let sf = if sf > 0.0 { sf } else { 1.0 };
+    let wa = monitor.work_area();
+    let area = work_area_to_logical(
+        (wa.position.x, wa.position.y),
+        (wa.size.width, wa.size.height),
+        sf,
+    );
+    let pos = (outer_pos.x as f64 / sf, outer_pos.y as f64 / sf);
+    let size = (outer_size.width as f64 / sf, outer_size.height as f64 / sf);
+    let Some((x, y, w, h)) = clamp_rect_into_area(area, pos, size) else {
+        return;
+    };
+    if w < size.0 || h < size.1 {
+        // set_size 设的是内容区，减掉外框比内容区多出来的那一圈
+        let frame_w = (outer_size.width as f64 - inner_size.width as f64).max(0.0) / sf;
+        let frame_h = (outer_size.height as f64 - inner_size.height as f64).max(0.0) / sf;
+        let _ = window.set_size(LogicalSize::new(
+            (w - frame_w).max(1.0),
+            (h - frame_h).max(1.0),
+        ));
+    }
+    let _ = window.set_position(LogicalPosition::new(x, y));
+}
+
 /// 把显示器 `work_area()` 给的物理像素起点和尺寸按缩放比例换成逻辑像素
 /// `(x, y, w, h)`；缩放比例不是正数时按 1 算。纯函数，方便单测。
 pub(crate) fn work_area_to_logical(
@@ -3419,7 +3490,7 @@ mod commit_window_route_tests {
 
 #[cfg(test)]
 mod fit_window_rect_tests {
-    use super::{fit_window_rect, work_area_to_logical, FittedWindowRect};
+    use super::{clamp_rect_into_area, fit_window_rect, work_area_to_logical, FittedWindowRect};
 
     fn assert_inside(r: FittedWindowRect, area: (f64, f64, f64, f64)) {
         assert!(r.x >= area.0, "左边在屏幕外：{r:?}");
@@ -3513,6 +3584,54 @@ mod fit_window_rect_tests {
         let r = fit_window_rect(area, (1220.0, 820.0), (980.0, 620.0));
         assert_eq!((r.x, r.width, r.min_width), (0.0, 1024.0, 980.0));
         assert_inside(r, area);
+    }
+
+    /// 1024×768（菜单栏 25、Dock 70）上恢复出 x=-118、1024×686 的远端窗口（#1561）
+    #[test]
+    fn restored_off_screen_window_is_pulled_back() {
+        let area = (0.0, 25.0, 1024.0, 673.0);
+        let r = clamp_rect_into_area(area, (-118.0, 25.0), (1024.0, 686.0)).expect("要挪");
+        assert_eq!(r, (0.0, 25.0, 1024.0, 673.0));
+    }
+
+    #[test]
+    fn window_inside_work_area_is_left_alone() {
+        let area = (0.0, 25.0, 1920.0, 1055.0);
+        assert_eq!(
+            clamp_rect_into_area(area, (100.0, 60.0), (1260.0, 860.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn partly_off_screen_window_moves_minimally() {
+        // 右边超出 100，只往左挪 100，大小和纵向位置不变
+        let area = (0.0, 25.0, 1920.0, 1055.0);
+        let r = clamp_rect_into_area(area, (760.0, 100.0), (1260.0, 860.0)).expect("要挪");
+        assert_eq!(r, (660.0, 100.0, 1260.0, 860.0));
+    }
+
+    #[test]
+    fn oversized_window_shrinks_then_fits_on_negative_monitor() {
+        let area = (-1024.0, 0.0, 1024.0, 768.0);
+        let r = clamp_rect_into_area(area, (-1300.0, -40.0), (1260.0, 860.0)).expect("要挪");
+        assert_eq!(r, (-1024.0, 0.0, 1024.0, 768.0));
+    }
+
+    /// 远端窗口建好以后（window-state 已经恢复过位置）要再按屏幕可用区域挪一次。
+    #[test]
+    fn remote_workspace_window_clamps_after_build() {
+        let src = include_str!("remote_workspace.rs");
+        let start = src
+            .find("pub(crate) fn build_remote_workspace_window(")
+            .expect("找不到 build_remote_workspace_window");
+        let rest = &src[start..];
+        let body = &rest[..rest.find("\n}\n").expect("函数没结束")];
+        let built = body.find(".build()").expect("没有 build()");
+        let clamp = body
+            .find("clamp_window_to_monitor(")
+            .expect("建完远端窗口没有把它挪回屏幕里");
+        assert!(clamp > built, "要在 build() 之后挪");
     }
 
     #[test]

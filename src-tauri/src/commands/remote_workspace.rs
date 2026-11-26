@@ -265,6 +265,8 @@ pub(crate) fn build_remote_workspace_window(
     let built = builder
         .build()
         .map_err(|e| AppCommandError::window("Failed to open remote workspace", e.to_string()))?;
+    // window-state 建好窗口时会恢复上次存下的位置，旧版存的可能在屏幕外（#1561）。
+    crate::commands::windows::clamp_window_to_monitor(&built);
     if let Some(proxy) =
         app.try_state::<std::sync::Arc<crate::commands::remote_proxy::RemoteProxyState>>()
     {

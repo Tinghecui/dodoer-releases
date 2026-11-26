@@ -120,6 +120,19 @@ describe("SidebarConversationHoverDetails", () => {
     expect(screen.queryByText("In Progress")).toBeNull()
   })
 
+  // #1557：侧栏的时间一律是最近活动，创建时间挪进悬停说明，两个时间都在这里写全。
+  it("shows when the conversation was created and last active", () => {
+    seed()
+    renderBubble(conv())
+
+    const fmt = new Intl.DateTimeFormat("en", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    })
+    expect(fieldValue("Created")).toBe(fmt.format(new Date(CREATED_AT)))
+    expect(fieldValue("Updated")).toBe(fmt.format(new Date(UPDATED_AT)))
+  })
+
   it("names the folder and shows its absolute path", () => {
     seed()
     renderBubble(conv())
@@ -216,20 +229,6 @@ describe("SidebarConversationHoverDetails", () => {
     renderBubble(conv({ git_branch: null }))
 
     expect(fieldValue("Git Branch")).toBe("—")
-  })
-
-  // The bubble answers "where does this session live", not "when did it run".
-  // The timestamps are still in the right-click Session Details dialog.
-  it("does not show the created/updated timestamps", () => {
-    seed()
-    renderBubble(conv())
-
-    expect(screen.queryByText("Created")).toBeNull()
-    expect(screen.queryByText("Updated")).toBeNull()
-    // And no formatted timestamp under any label. Matched on a clock time
-    // rather than on the date text, which `dateStyle: "short"` renders in the
-    // runner's own timezone (and with a two-digit year).
-    expect(document.body.textContent).not.toMatch(/\d{1,2}:\d{2}/)
   })
 
   // The model reads as a chip beside the agent, not as a labelled field: there

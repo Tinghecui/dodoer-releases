@@ -51,6 +51,7 @@ import {
 import {
   getComputerToolsSettings,
   setComputerToolsEnabled,
+  useComputerAvailable,
 } from "@/lib/computer/computer-api"
 import {
   COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
@@ -141,6 +142,8 @@ const known =
 export function AgentToolsSettingsSection() {
   const t = useTranslations("AgentToolsSettings")
   const tools = useTranslations(AGENT_TOOLS_NAMESPACE)
+  const computerSwitch = useTranslations("ComputerUse.settings.switch")
+  const computerServed = useComputerAvailable()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [values, setValues] = useState<AgentToolValues>(DEFAULTS)
@@ -515,13 +518,19 @@ export function AgentToolsSettingsSection() {
           // A row that only means anything while another is on: shown off and
           // not touchable until it is.
           const gate = meta.requires ? FIELD_OF_SLUG[meta.requires] : undefined
-          const available = !gate || values[gate]
+          // 电脑操作只在开放了它的地方有：服务器没开放时关着的显示关、置灰；
+          // 开着的还能关掉（只能关、不能开），免得服务器以后开放时自己生效。
+          const unserved = row.slug === "computer" && !computerServed
+          const lockedOff = unserved && !values[row.key]
+          const available = (!gate || values[gate]) && !lockedOff
           return (
             <SettingRow
               key={row.key}
               icon={meta.icon}
               title={tools(meta.label)}
-              description={tools(meta.hint)}
+              description={
+                unserved ? computerSwitch("unavailableHere") : tools(meta.hint)
+              }
               htmlFor={row.id}
               control={
                 <Switch

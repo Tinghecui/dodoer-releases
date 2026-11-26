@@ -6332,7 +6332,8 @@
       "switch": {
         "label": "Enable computer use",
         "hint": "Agents can list your apps and windows, read the windows you share, and click and type in the ones you let them act on. No window can be read until you share it from the status bar.",
-        "failed": "Could not switch computer use"
+        "failed": "Could not switch computer use",
+        "unavailableHere": "Computer use is only available in the desktop app: this server does not offer it."
       },
       "driver": {
         "title": "Driver",

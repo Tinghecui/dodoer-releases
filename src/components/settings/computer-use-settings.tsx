@@ -111,11 +111,26 @@ export function ComputerUseSettings() {
             <Switch
               id="computer-use-enabled"
               checked={enabled === true}
-              onCheckedChange={(next) => void setEnabled(next)}
-              disabled={enabled === null || switching}
+              onCheckedChange={(next) => {
+                // 服务器没开放电脑操作时只能关、不能开。
+                if (next && !desktop) return
+                void setEnabled(next)
+              }}
+              // 服务器没开放电脑操作（网页、连远程服务器的窗口）：关着的置灰、
+              // 打不开；存着的是开，还能点一下关掉，免得服务器以后开放时它
+              // 自己生效。服务器回答之前也按没开放算。
+              disabled={
+                enabled === null || switching || (!desktop && enabled !== true)
+              }
             />
           }
-        />
+        >
+          {!desktop && (
+            <p className="text-xs text-muted-foreground">
+              {t("switch.unavailableHere")}
+            </p>
+          )}
+        </SettingsSection>
 
         {desktop && <DriverSection />}
 

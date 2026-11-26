@@ -1809,13 +1809,13 @@ describe("SidebarConversationList — Recent section", () => {
     // The Folders section emits the canonical copies first (creation order:
     // conv-12 is newer); everything after them is the Recent duplicate, in
     // activity order (conv-11 was touched last). Each row's text is its title
-    // followed by its age label: the Folders copies keep their creation age
-    // ("4m", "5m"), while the Recent copies read their last activity ("now"
-    // for 30s ago, "3m"), so each row's position is explained by what it shows.
+    // followed by its age label. #1557: every copy reads its last activity
+    // ("now" for 30s ago, "3m"), so a conversation's Folders copy and its
+    // Recent copy agree even while the folder is sorted by creation time.
     const rows = Array.from(document.querySelectorAll("[data-conv-key]"))
     expect(rows.map((el) => el.textContent)).toEqual([
-      "conv-124m",
-      "conv-115m",
+      "conv-123m",
+      "conv-11now",
       "conv-11now",
       "conv-123m",
     ])
@@ -2093,7 +2093,7 @@ describe("SidebarConversationList — time labels", () => {
           updated_at: new Date(t0 - HOUR).toISOString(),
         }),
         // Pinned (ordered by pin time) and Folders (ordered by creation here)
-        // keep the creation age.
+        // read their last activity too (#1557).
         conv(23, 99, {
           kind: "chat",
           created_at: new Date(t0 - 3 * HOUR).toISOString(),
@@ -2117,8 +2117,8 @@ describe("SidebarConversationList — time labels", () => {
     // "1h".
     const rows = Array.from(document.querySelectorAll("[data-conv-key]"))
     expect(rows.map((el) => el.textContent)).toEqual([
-      "conv-233h",
-      "conv-245m",
+      "conv-23now",
+      "conv-24now",
       "conv-21now",
       "conv-221h",
     ])

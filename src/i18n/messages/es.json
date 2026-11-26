@@ -6332,7 +6332,8 @@
       "switch": {
         "label": "Activar el uso del ordenador",
         "hint": "Los agentes pueden listar tus aplicaciones y ventanas, leer las ventanas que compartas y hacer clic y escribir en aquellas en las que les permitas actuar. No pueden leer ninguna ventana hasta que la compartas desde la barra de estado.",
-        "failed": "No se pudo cambiar el uso del ordenador"
+        "failed": "No se pudo cambiar el uso del ordenador",
+        "unavailableHere": "El uso del ordenador solo está disponible en la aplicación de escritorio: este servidor no lo ofrece."
       },
       "driver": {
         "title": "Controlador",

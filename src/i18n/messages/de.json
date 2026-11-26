@@ -6332,7 +6332,8 @@
       "switch": {
         "label": "Computernutzung aktivieren",
         "hint": "Agenten können deine Apps und Fenster auflisten, freigegebene Fenster lesen und in denen klicken und tippen, in denen du sie handeln lässt. Kein Fenster ist lesbar, bevor du es über die Statusleiste freigibst.",
-        "failed": "Computernutzung konnte nicht umgeschaltet werden"
+        "failed": "Computernutzung konnte nicht umgeschaltet werden",
+        "unavailableHere": "Computersteuerung ist nur in der Desktop-App verfügbar: Dieser Server bietet sie nicht an."
       },
       "driver": {
         "title": "Treiber",

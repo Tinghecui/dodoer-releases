@@ -3834,15 +3834,11 @@ export function SidebarConversationList({
           selectedConversation?.id === conv.id
         }
         isOpenInTab={openTabKeys.has(`${conv.agent_type}:${conv.id}`)}
-        // The stamp the row is ordered by, so the label explains its position:
-        // Recent's and Chat's own rows read their last activity even while the
-        // rest of the sidebar is sorted by creation time, and sub-sessions
-        // their creation time even while it is sorted by activity. The
-        // activity view orders every row by its last activity.
+        // Cowork fork (#1557): every row, sub-sessions included, reads its
+        // last activity whatever the sort mode, so a conversation's label
+        // agrees between its folder and Recent.
         timeLabel={formatRelative(
-          sessionActivity
-            ? conv.updated_at
-            : conversationRowTimestamp(row, sortMode),
+          sessionActivity ? conv.updated_at : conversationRowTimestamp(row),
           now,
           locale
         )}

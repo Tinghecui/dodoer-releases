@@ -195,33 +195,18 @@ const RELATIVE_UNITS: Record<string, RelativeUnits> = {
 /**
  * The timestamp a conversation row's relative time label reads.
  *
- * The label has to explain where its row sits, so it reads the stamp the row
- * is ordered by:
- * - Sub-sessions read `created_at`. They are creation-ordered under every
- *   parent whatever the sidebar's `sortMode` says (see
- *   {@link mergeChildrenById}), so the copies under a Recent parent also read
- *   the same as their twins under the folder. Told apart by `parent_id`, the
- *   card's own test, not by depth: a folder's own rows sit at depth 1 too
- *   inside a folder group, and under Show worktrees.
- * - Recent's and Chat's own rows read `updated_at`. Both sections order by
- *   last activity whatever `sortMode` says (see
- *   {@link selectRecentConversationsWithReuse} and
- *   {@link selectChatConversationsWithReuse}). A Chat row is recognised by what
- *   that bucket admits: a chat-kind conversation that is not pinned (a pinned
- *   one sits in Pinned instead).
- * - Every other row follows `sortMode`: the Folders rows, which are sorted by
- *   it, and the Pinned rows, which are ordered by pin time, a stamp no label
- *   shows.
+ * Cowork fork (#1557): the label tells how recently the conversation moved,
+ * not where its row sits. Upstream made it follow the row's ordering, so the
+ * Folders rows under the default creation sort read `created_at` while the
+ * same conversation in Recent read `updated_at`: after another turn Recent
+ * said "now" and the folder still said "7m". Every row (Folders, Recent, Chat,
+ * Pinned and sub-sessions alike) now reads `updated_at` whatever the sidebar's
+ * `sortMode` (which still orders the Folders rows; sub-sessions stay
+ * creation-ordered under their parent); the creation time lives in the row's
+ * hover bubble.
  */
-export function conversationRowTimestamp(
-  row: ConversationRow,
-  sortMode: SidebarSortMode
-): string {
-  const conv = row.conversation
-  if (conv.parent_id != null) return conv.created_at
-  if (row.recent) return conv.updated_at
-  if (conv.kind === "chat" && conv.pinned_at == null) return conv.updated_at
-  return sortMode === "updated" ? conv.updated_at : conv.created_at
+export function conversationRowTimestamp(row: ConversationRow): string {
+  return row.conversation.updated_at
 }
 
 function arraysShallowEqual<T>(a: readonly T[], b: readonly T[]): boolean {

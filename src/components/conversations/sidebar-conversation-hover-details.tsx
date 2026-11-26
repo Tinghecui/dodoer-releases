@@ -1,7 +1,7 @@
 "use client"
 
 import type { ReactNode } from "react"
-import { useTranslations } from "next-intl"
+import { useLocale, useTranslations } from "next-intl"
 import type { DbConversationSummary } from "@/lib/types"
 import { formatConversationTitle } from "@/lib/conversation-title"
 import { cn } from "@/lib/utils"
@@ -68,6 +68,7 @@ export function SidebarConversationHoverDetails({
   const tSidebar = useTranslations("Folder.sidebar")
   const tTags = useTranslations("ConversationTags")
   const tags = useResolvedTags(conversation.tag_ids)
+  const locale = useLocale()
 
   const folderId = conversation.folder_id
   // `allFolders` rather than `folders`: a conversation can live in a folder the
@@ -89,6 +90,18 @@ export function SidebarConversationHoverDetails({
   // predate the column being written (imported sessions).
   const branch = conversation.git_branch || liveBranch || null
   const model = conversation.model?.trim() || null
+  // Cowork fork (#1557): the row's label reads the last activity whatever the
+  // sidebar's sort mode, so the creation time the folder rows are ordered by
+  // (by default) is spelled out here, next to the last activity. Same format
+  // as the Session Details dialog.
+  const dateFormatter = new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  })
+  const formatDate = (iso: string): string => {
+    const date = new Date(iso)
+    return Number.isNaN(date.getTime()) ? iso : dateFormatter.format(date)
+  }
 
   return (
     // `select-none` is load-bearing, not cosmetic. Radix refuses to close a
@@ -188,6 +201,12 @@ export function SidebarConversationHoverDetails({
             <LtrValue>{conversation.origin_cwd}</LtrValue>
           </InfoItem>
         )}
+        <InfoItem label={t("createdAt")}>
+          {formatDate(conversation.created_at)}
+        </InfoItem>
+        <InfoItem label={t("updatedAt")}>
+          {formatDate(conversation.updated_at)}
+        </InfoItem>
       </dl>
     </div>
   )

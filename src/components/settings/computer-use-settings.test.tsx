@@ -262,4 +262,66 @@ describe("ComputerUseSettings", () => {
     expect(screen.queryByText("Permissions")).toBeNull()
     expect(api.computerDriverInfo).not.toHaveBeenCalled()
   })
+
+  /** A server that does not share its screen has no computer use to switch
+   *  on: off, the switch is greyed out, and the page says it is the desktop
+   *  app's. */
+  it("greys the switch out where the server does not serve it", async () => {
+    api.computerAvailable.mockReturnValue(false)
+    mount()
+    const toggle = await screen.findByRole("switch", {
+      name: "Enable computer use",
+    })
+    await waitFor(() => expect(api.getComputerToolsSettings).toHaveBeenCalled())
+    await act(async () => {})
+    expect(toggle).toBeDisabled()
+    expect(toggle).not.toBeChecked()
+    expect(
+      screen.getByText(enMessages.ComputerUse.settings.switch.unavailableHere)
+    ).toBeInTheDocument()
+    fireEvent.click(toggle)
+    expect(api.setComputerToolsEnabled).not.toHaveBeenCalled()
+  })
+
+  /** Stored on where the server does not serve it: still switchable off,
+   *  so it does not come on by itself once the server serves it. */
+  it("lets a stored-on switch be turned off where it is not served", async () => {
+    api.computerAvailable.mockReturnValue(false)
+    api.getComputerToolsSettings.mockResolvedValue(settings(true))
+    mount()
+    const toggle = await screen.findByRole("switch", {
+      name: "Enable computer use",
+    })
+    await waitFor(() => expect(toggle).toBeChecked())
+    expect(toggle).not.toBeDisabled()
+    expect(
+      screen.getByText(enMessages.ComputerUse.settings.switch.unavailableHere)
+    ).toBeInTheDocument()
+    fireEvent.click(toggle)
+    await waitFor(() =>
+      expect(api.setComputerToolsEnabled).toHaveBeenCalledWith(false)
+    )
+    expect(api.setComputerToolsEnabled).not.toHaveBeenCalledWith(true)
+  })
+
+  /** Where it is served, no such note. */
+  it("says nothing of the desktop app where it is served", async () => {
+    mount()
+    const toggle = await screen.findByRole("switch", {
+      name: "Enable computer use",
+    })
+    await waitFor(() => expect(toggle).not.toBeDisabled())
+    expect(
+      screen.queryByText(enMessages.ComputerUse.settings.switch.unavailableHere)
+    ).toBeNull()
+  })
+
+  it("keeps the sharing settings in a browser session", async () => {
+    api.computerAvailable.mockReturnValue(false)
+    mount()
+    await screen.findByRole("switch", { name: "Enable computer use" })
+    expect(screen.queryByText("Driver")).toBeNull()
+    expect(screen.queryByText("Permissions")).toBeNull()
+    expect(api.computerDriverInfo).not.toHaveBeenCalled()
+  })
 })

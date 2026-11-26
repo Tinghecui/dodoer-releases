@@ -15,10 +15,11 @@ vi.mock("@/lib/api", () => ({
   setChatAuthoringSettings: vi.fn(),
 }))
 
+const computerServed = vi.hoisted(() => ({ available: true }))
 vi.mock("@/lib/computer/computer-api", () => ({
   getComputerToolsSettings: vi.fn(),
   setComputerToolsEnabled: vi.fn(),
-  useComputerAvailable: () => false,
+  useComputerAvailable: () => computerServed.available,
 }))
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -569,6 +570,58 @@ describe("AgentToolsSettingsSection", () => {
     await waitFor(() => expect(mockSetComputer).toHaveBeenCalledWith(true))
     expect(mockSetComputer).toHaveBeenCalledTimes(1)
     expect(mockSetBrowser).not.toHaveBeenCalled()
+  })
+
+  /** A server that does not share its screen: the computer row, off, is
+   * greyed out, saying it is the desktop app's. */
+  it("greys the computer row out where the server does not serve it", async () => {
+    computerServed.available = false
+    try {
+      primeBackend({ computer: false })
+
+      renderWithIntl()
+      await loaded()
+
+      const row = screen.getByLabelText(LABELS.computer)
+      expect(row).toBeDisabled()
+      expect(row).toHaveAttribute("data-state", "unchecked")
+      expect(
+        screen.getByText(enMessages.ComputerUse.settings.switch.unavailableHere)
+      ).toBeInTheDocument()
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+    } finally {
+      computerServed.available = true
+    }
+  })
+
+  /** Stored on where the server does not serve it: it can still be switched
+   * off and saved (only off, never back on), so it does not come on by itself
+   * once the server serves it. */
+  it("lets a stored-on computer row be switched off where it is not served", async () => {
+    computerServed.available = false
+    try {
+      primeBackend({ computer: true })
+
+      renderWithIntl()
+      await loaded()
+
+      const row = screen.getByLabelText(LABELS.computer)
+      expect(row).not.toBeDisabled()
+      expect(row).toHaveAttribute("data-state", "checked")
+      expect(
+        screen.getByText(enMessages.ComputerUse.settings.switch.unavailableHere)
+      ).toBeInTheDocument()
+
+      fireEvent.click(row)
+      expect(row).toHaveAttribute("data-state", "unchecked")
+      // Off now: no switching it back on here.
+      expect(row).toBeDisabled()
+      fireEvent.click(screen.getByRole("button", { name: "Save" }))
+      await waitFor(() => expect(mockSetComputer).toHaveBeenCalledWith(false))
+      expect(mockSetComputer).toHaveBeenCalledTimes(1)
+    } finally {
+      computerServed.available = true
+    }
   })
 
   /** A popover toggle elsewhere moves this form's switch too, unless the

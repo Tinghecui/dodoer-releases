@@ -175,36 +175,33 @@ describe("conversationRowTimestamp", () => {
 
   it("reads the last activity on Recent's own rows, whatever the sort mode", () => {
     expect(parents.map((r) => r.recent ?? false)).toEqual([false, true])
-    expect(conversationRowTimestamp(parents[1], "created")).toBe(updated)
-    expect(conversationRowTimestamp(parents[1], "updated")).toBe(updated)
+    expect(conversationRowTimestamp(parents[1])).toBe(updated)
   })
 
-  it("follows the sort mode under the folder", () => {
-    expect(conversationRowTimestamp(parents[0], "created")).toBe(created)
-    expect(conversationRowTimestamp(parents[0], "updated")).toBe(updated)
+  it("reads the last activity under the folder too, whatever the sort mode", () => {
+    // #1557：文件夹下的行和「最近」里的同一个会话写同一个时间，回完一轮两处都是「刚刚」。
+    expect(conversationRowTimestamp(parents[0])).toBe(updated)
+    expect(conversationRowTimestamp(parents[0])).toBe(
+      conversationRowTimestamp(parents[1])
+    )
   })
 
-  it("reads the creation time on sub-sessions, which are sorted by it", () => {
-    // Creation-ordered under every parent and in either sort mode, so neither
-    // the activity stamp a Recent parent reads nor an activity sort moves
-    // their label off it, and the Recent copy matches its twin.
+  it("reads the last activity on sub-sessions too", () => {
+    // #1557：「所有地方」都显示最后一次活动。子会话在父会话下面照旧按创建顺序排，
+    // 时间却读最近活动：子会话又跑了一轮，文件夹下和「最近」里都写「刚刚」。
     expect(kids.map((r) => [r.depth, r.recent ?? false])).toEqual([
       [1, false],
       [1, true],
     ])
-    expect(kids.map((r) => conversationRowTimestamp(r, "created"))).toEqual([
-      created,
-      created,
-    ])
-    expect(kids.map((r) => conversationRowTimestamp(r, "updated"))).toEqual([
-      created,
-      created,
+    expect(kids.map((r) => conversationRowTimestamp(r))).toEqual([
+      updated,
+      updated,
     ])
   })
 
-  it("tells a sub-session apart by its parent, not by its indent", () => {
+  it("reads the last activity on worktree rows nested under their repo", () => {
     // Under Show worktrees a repo's own rows and its worktree's rows both sit
-    // at depth 1, yet they are top-level conversations sorted by `sortMode`.
+    // at depth 1; they read their last activity like every other row.
     const rootConv = conv(5, 10, { created_at: created, updated_at: updated })
     const wtConv = conv(6, 11, { created_at: created, updated_at: updated })
     const nested = buildRows({
@@ -229,7 +226,7 @@ describe("conversationRowTimestamp", () => {
       [5, 1],
       [6, 1],
     ])
-    expect(nested.map((r) => conversationRowTimestamp(r, "updated"))).toEqual([
+    expect(nested.map((r) => conversationRowTimestamp(r))).toEqual([
       updated,
       updated,
     ])
@@ -242,7 +239,7 @@ describe("conversationRowTimestamp", () => {
       updated_at: updated,
     })
     // Pinned chats leave the Chat bucket for Pinned, which is ordered by pin
-    // time, so they keep the sort mode's stamp like every other pinned row.
+    // time; like every other row they read their last activity (#1557).
     const pinnedChat = conv(4, 99, {
       kind: "chat",
       created_at: created,
@@ -261,12 +258,10 @@ describe("conversationRowTimestamp", () => {
       chatsExpanded: true,
     }).filter((r): r is ConversationRow => r.kind === "conversation")
     expect(chatRows.map((r) => r.conversation.id)).toEqual([4, 3])
-    expect(chatRows.map((r) => conversationRowTimestamp(r, "created"))).toEqual(
-      [created, updated]
-    )
-    expect(chatRows.map((r) => conversationRowTimestamp(r, "updated"))).toEqual(
-      [updated, updated]
-    )
+    expect(chatRows.map((r) => conversationRowTimestamp(r))).toEqual([
+      updated,
+      updated,
+    ])
   })
 })
 

@@ -32,6 +32,8 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 // codeg-mcp popover).
 vi.mock("@/lib/platform", () => ({
   isDesktop: () => true,
+  // 智能体工具一节要问电脑操作开没开放：本机桌面版一直有，不用问服务器。
+  isLocalDesktop: () => true,
   subscribe: () => Promise.resolve(() => {}),
 }))
 vi.mock("@/hooks/use-feedback-enabled", () => ({

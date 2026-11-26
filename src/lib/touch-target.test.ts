@@ -233,16 +233,35 @@ function hitRects(
   })
 }
 
-/** globals.css 里 `gap-*` 规则告诉直接子元素的间距（px）；没有规则的类是 0。 */
+/**
+ * globals.css 里 `gap-*` 规则告诉直接子元素的间距（px）；没有规则的类是 0。
+ * 竖着排的行（`flex-col`，没有响应式改回 `flex-row` 的）左右不挨着别的按钮，
+ * 那条规则选择器多一个 `:not(...)`，权重更高，盖过 `gap-*` 的值。
+ */
 function touchGapFromGlobals(rowClasses: string): number {
   const css = readFileSync("src/app/globals.css", "utf8")
+  const classes = rowClasses.split(/\s+/)
+  const names = (list: string) =>
+    list.split(",").map((x) => x.trim().slice(1).replace(/\\/g, ""))
+  for (const [, layouts, excluded, px] of css.matchAll(
+    /:where\(([^)]*)\):not\(([^)]*)\)\s*>\s*\* \{\s*--touch-gap: ([\d.]+)px;/g
+  )) {
+    if (!classes.some((c) => names(layouts).includes(c))) continue
+    // `[class*="x"]` 按子串排除，带响应式前缀的（`sm:flex-row`）也算；
+    // `.x` 只排除一模一样的类名
+    const hit = excluded.split(",").some((raw) => {
+      const sel = raw.trim()
+      const sub = /^\[class\*="([^"]+)"\]$/.exec(sel)
+      if (sub) return classes.some((c) => c.includes(sub[1]))
+      return classes.includes(sel.slice(1))
+    })
+    if (hit) continue
+    return Number(px)
+  }
   for (const [, selectors, n] of css.matchAll(
     /:where\(([^)]*)\) > \* \{\s*--touch-gap: calc\(var\(--spacing\) \* ([\d.]+)\);/g
   )) {
-    const names = selectors
-      .split(",")
-      .map((x) => x.trim().slice(1).replace(/\\/g, ""))
-    if (rowClasses.split(/\s+/).some((c) => names.includes(c))) {
+    if (classes.some((c) => names(selectors).includes(c))) {
       return Number(n) * 4
     }
   }
@@ -376,6 +395,39 @@ describe("rows laid out with gap-* share the gap without declaring it", () => {
     expect(touchGapFromGlobals("flex gap-0")).toBe(0)
   })
 
+  // 竖着排的一列按钮（`flex flex-col gap-1`）：左右并没有挨着别的按钮，
+  // 中间那几个左右照样扩满 40，不因为 gap-1 只伸半个间距
+  it("does not narrow buttons stacked in a flex-col row", async () => {
+    const decls = await compiledDecls(COARSE_HIT_40)
+    const gap = touchGapFromGlobals("flex flex-col gap-1")
+    // 三个按钮竖着排；横向上每个都从 x = 0 开始，DOM 里前后都有兄弟
+    const row: Box[] = [
+      { x: 0, w: 24, h: 24 },
+      { x: 0, w: 24, h: 24 },
+      { x: 0, w: 24, h: 24 },
+    ]
+    const [, middle] = hitRects(decls, row, [0, 1, 2], gap)
+    expect(middle.left).toBe(-8)
+    expect(middle.right).toBe(32)
+  })
+
+  // 窄屏竖排、宽屏又改回横排的行，横排时按钮左右是挨着的，照样按间距平分
+  it("keeps sharing the gap when a flex-col row can sit side by side", () => {
+    expect(touchGapFromGlobals("flex flex-col gap-2 sm:flex-row")).toBe(8)
+    // 竖排又折行，折成几列，左右也挨着
+    expect(touchGapFromGlobals("flex flex-col flex-wrap gap-2")).toBe(8)
+    // 只在某个宽度才折行（`sm:flex-wrap`）的，折成几列时左右同样挨着
+    expect(touchGapFromGlobals("flex flex-col sm:flex-wrap gap-2")).toBe(8)
+    expect(
+      touchGapFromGlobals("flex flex-col md:flex-wrap-reverse gap-1")
+    ).toBe(4)
+    // 宽屏改成网格（`md:grid md:grid-cols-2`）的，也会排成几列
+    expect(
+      touchGapFromGlobals("flex flex-col gap-2 md:grid md:grid-cols-2")
+    ).toBe(8)
+    expect(touchGapFromGlobals("flex items-center gap-2")).toBe(8)
+  })
+
   // 任务列表一行的操作按钮：几个 icon-xs，`flex items-center gap-1`
   it("splits the 4px gap between a task row's action buttons", async () => {
     const source = readFileSync("src/components/tasks/task-row.tsx", "utf8")
@@ -493,7 +545,7 @@ describe("rows announce their gap to the small buttons in them", () => {
  * globals.css 里给会换行、竖着排的行（flex-wrap、flex-col、grid）告诉直接子元素的
  * 上下空地（px）：没有行距是 0，有 gap-* / gap-y-* 是半个行距。别的行按 20（不限）。
  */
-function roomFromGlobals(rowClasses: string): number {
+function roomFromGlobals(rowClasses: string, onlyChild = false): number {
   const css = readFileSync("src/app/globals.css", "utf8")
   const classes = rowClasses.split(/\s+/)
   const names = (list: string) =>
@@ -508,6 +560,17 @@ function roomFromGlobals(rowClasses: string): number {
     const m = /calc\(var\(--spacing\) \* ([\d.]+)\)/.exec(top)
     // 后面的规则盖过前面的（都是 :where，权重一样）
     room = m ? Number(m[1]) * 4 : Number.parseFloat(top)
+  }
+  // 这一行只有一个子元素：上下没有同一行的按钮，`> :only-child` 的规则
+  // 权重更高，盖过上面的
+  if (onlyChild) {
+    for (const [, layouts, top, bottom] of css.matchAll(
+      /:where\(([^)]*)\) > :only-child \{\s*--touch-room-top: ([^;]+);\s*--touch-room-bottom: ([^;]+);/g
+    )) {
+      if (!classes.some((c) => names(layouts).includes(c))) continue
+      expect(top).toBe(bottom)
+      room = Number.parseFloat(top)
+    }
   }
   return room
 }
@@ -569,5 +632,25 @@ describe("rows that wrap or stack keep small buttons off each other vertically",
     expect(upper.bottom).toBeLessThanOrEqual(lowerTop)
     expect(upper.bottom).toBe(28)
     expect(lowerTop).toBe(28)
+  })
+
+  // 同一个空状态只剩一个按钮（只有搜索、或只有状态筛选）时，上下没有别的按钮，
+  // 单独的按钮照样上下扩满 40
+  it("gives a lone empty-state button its full 40px height", async () => {
+    const rowClasses = "flex flex-wrap items-center justify-center gap-2"
+    const decls = await compiledDecls(COARSE_HIT_40)
+    for (const layout of [
+      rowClasses,
+      "flex flex-col gap-2",
+      "grid gap-3",
+      "flex flex-wrap",
+    ]) {
+      const room = roomFromGlobals(layout, true)
+      const [lone] = hitRects(decls, layoutRow([[90, 24]], 0), [0], 8, {
+        roomTop: room,
+        roomBottom: room,
+      })
+      expect(lone.bottom - lone.top, layout).toBe(40)
+    }
   })
 })

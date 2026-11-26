@@ -3392,6 +3392,20 @@ div.monaco-diff-editor.side-by-side .editor.modified {
   :where(.gap-8, .gap-x-8) > * {
     --touch-gap: calc(var(--spacing) * 8);
   }
+  /* 竖着排的一列（flex-col）：间距在上下，左右并没有挨着别的按钮，左右照样
+     扩满。40px 的一半就是 20px，比补满 40px 要伸的量大，等于不限。
+     `:not` 多一份权重，盖过上面 `gap-*` 的值。窄屏竖排、宽屏改回横排的
+     （类名里带 `flex-row`，如 `sm:flex-row`）横排时左右是挨着的，不放开；
+     又带 flex-wrap 的会折成几列，左右也挨着，同样不放开。按子串排除，
+     `sm:flex-wrap`、`md:grid` 这类只在某个宽度才折成几列的也算。 */
+  :where(.flex-col):not(
+      [class*="flex-row"],
+      [class*="flex-wrap"],
+      [class*="grid"]
+    )
+    > * {
+    --touch-gap: 40px;
+  }
 }
 
 /* 小按钮上面（下面）紧贴着可点、可编辑的内容时，那一行用 TOUCH_ROOM_TOP_0 /
@@ -3458,6 +3472,13 @@ div.monaco-diff-editor.side-by-side .editor.modified {
   :where(.flex-wrap, .flex-col, .grid):where(.gap-8, .gap-y-8) > * {
     --touch-room-top: calc(var(--spacing) * 4);
     --touch-room-bottom: calc(var(--spacing) * 4);
+  }
+  /* 这一行只有一个子元素（比如空状态只剩一个按钮）：上下没有同一行的按钮，
+     照单独的按钮上下扩满。`:only-child` 多一份权重，盖过上面的；
+     TOUCH_ROOM_*_0 在 utilities 层，照样盖过它。 */
+  :where(.flex-wrap, .flex-col, .grid) > :only-child {
+    --touch-room-top: 20px;
+    --touch-room-bottom: 20px;
   }
 }
 

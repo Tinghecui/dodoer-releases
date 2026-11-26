@@ -6,6 +6,7 @@ import {
   within,
 } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
+import { compile } from "tailwindcss"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
@@ -209,5 +210,72 @@ describe("ComposerImageThumbnails touch target", () => {
     fireEvent.click(tile as HTMLElement)
     expect(await screen.findByRole("dialog")).not.toBeNull()
     expect(onRemove).not.toHaveBeenCalled()
+  })
+
+  // jsdom 不排版：把叉和缩略图图片的类名真的用 Tailwind 编成 CSS，按粗指针下的
+  // 规则算出叉的矩形，再按缩略图上的几个具体位置检查点到的是不是叉
+  it("only removes inside the visible cross; centre and the area beside it preview", async () => {
+    renderStrip()
+    const remove = removeButton()
+    const image = screen.getByAltText(ATTACHMENT.name)
+    const classes = [
+      ...remove.className.split(/\s+/),
+      ...image.getAttribute("class")!.split(/\s+/),
+    ].filter(Boolean)
+    const compiler = await compile(
+      "@theme { --spacing: 0.25rem; }\n@tailwind utilities;",
+      {}
+    )
+    const css = compiler.build(classes)
+    // 一个类一块：`.类名 { … }`，取出它在粗指针下（有的话）和平时的声明
+    const px = (cls: string, prop: string, coarse: boolean) => {
+      const escaped = cls.replace(/[:.]/g, (c) => `\\\\${c}`)
+      const block = new RegExp(`\\.${escaped} \\{([\\s\\S]*?)\\n\\}`).exec(
+        css
+      )?.[1]
+      expect(block, cls).toBeDefined()
+      if (coarse) expect(block).toContain("@media (pointer: coarse)")
+      const value = new RegExp(
+        `${prop}: calc\\(var\\(--spacing\\) \\* ([\\d.]+)\\)`
+      ).exec(block!)?.[1]
+      expect(value, `${cls} ${prop}`).toBeDefined()
+      return Number(value) * 4
+    }
+    const tile = px("h-14", "height", false)
+    expect(px("w-14", "width", false)).toBe(tile)
+    const right = px("right-1", "right", false)
+    const top = px("top-1", "top", false)
+    const size = px("pointer-coarse:size-6", "width", true)
+    expect(px("pointer-coarse:size-6", "height", true)).toBe(size)
+    // 叉就是看得见的那一块，没有往外扩的 ::after（上一个测试查过）
+    const cross = {
+      left: tile - right - size,
+      right: tile - right,
+      top,
+      bottom: top + size,
+    }
+    const hitsCross = (x: number, y: number) =>
+      x >= cross.left && x < cross.right && y >= cross.top && y < cross.bottom
+    // 叉在缩略图里面，不伸出去
+    expect(cross.left).toBeGreaterThan(0)
+    expect(cross.right).toBeLessThanOrEqual(tile)
+    // 正中间、右上方叉的左边和下边、紧贴叉的外沿：都是预览
+    for (const [x, y, where] of [
+      [tile / 2, tile / 2, "centre"],
+      [cross.left - 2, cross.top + size / 2, "left of the cross"],
+      [cross.left + size / 2, cross.bottom + 2, "below the cross"],
+      [cross.left - 1, cross.bottom, "next to the cross corner"],
+      [tile - 1, cross.bottom + 1, "top-right edge below the cross"],
+    ] as const) {
+      expect(hitsCross(x, y), where).toBe(false)
+    }
+    // 叉自己（中心和四角里面一点）是删除
+    for (const [x, y] of [
+      [cross.left + size / 2, cross.top + size / 2],
+      [cross.left + 1, cross.top + 1],
+      [cross.right - 1, cross.bottom - 1],
+    ]) {
+      expect(hitsCross(x, y)).toBe(true)
+    }
   })
 })

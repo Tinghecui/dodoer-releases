@@ -389,9 +389,11 @@ export function AgentSelector({
         align === "center" && "justify-center"
       )}
     >
+      {/* `isolate`：按钮的 z-10 只在这一排里压住滑动高亮块，不漏到页面上，
+          否则手机上往上长的 / 命令菜单会被这排图标盖住（#1567） */}
       <div
         ref={frameRef}
-        className="relative inline-flex max-w-full items-center overflow-hidden rounded-full bg-muted/50 p-0.5 border border-border/50"
+        className="relative isolate inline-flex max-w-full items-center overflow-hidden rounded-full bg-muted/50 p-0.5 border border-border/50"
       >
         {/* Sliding droplet indicator */}
         {indicator && (

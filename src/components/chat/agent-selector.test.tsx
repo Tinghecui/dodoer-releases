@@ -221,6 +221,25 @@ describe("AgentSelector", () => {
     expect(onSelect).toHaveBeenCalledWith("codex")
   })
 
+  it("isolates the pill row so its z-10 can't paint over the composer's slash menu", () => {
+    // 按钮的 z-10 只用来压住滑动高亮块；外框不 isolate 的话它会漏到页面这一层，
+    // 手机上 / 命令菜单往上长、盖到这一排时，图标会画在菜单上面（#1567）
+    mockUseAcpAgents.mockReturnValue({
+      agents: [agent("claude_code"), agent("codex")],
+      fresh: true,
+      refresh: async () => {},
+    })
+    const { container } = renderWithIntl(
+      <AgentSelector defaultAgentType="claude_code" onSelect={() => {}} />
+    )
+    const pill = pills(container)[0] as HTMLElement
+    expect(pill.className).toContain("z-10")
+    const frame = pill.closest('[data-slot="agent-selector"]')
+      ?.firstElementChild as HTMLElement
+    expect(frame.contains(pill)).toBe(true)
+    expect(frame.className.split(/\s+/)).toContain("isolate")
+  })
+
   it("keeps the icon wrapper a flex box so the mark stays vertically centered", () => {
     // jsdom has no layout engine, so this guards the cause rather than the
     // symptom: as a bare inline box the wrapper lays the icon out on a text

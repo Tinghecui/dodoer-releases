@@ -4358,6 +4358,7 @@
           "needsYou": "precisa de você",
           "allPassed": "tudo certo",
           "someFailed": "{count, plural, one {# falhou} other {# falharam}}",
+          "someNotFound": "{count, plural, one {# não encontrado} other {# não encontrados}}",
           "lineRange": "L{start}–{end}",
           "line": "L{line}",
           "done": "concluído",

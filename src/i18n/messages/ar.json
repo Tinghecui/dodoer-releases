@@ -4358,6 +4358,7 @@
           "needsYou": "بانتظارك",
           "allPassed": "نجحت جميعها",
           "someFailed": "{count, plural, zero {لا إخفاقات} one {فشل واحد} two {فشل اثنان} few {فشل #} many {فشل #} other {فشل #}}",
+          "someNotFound": "{count} غير موجود",
           "lineRange": "L{start}–{end}",
           "line": "L{line}",
           "done": "تم",

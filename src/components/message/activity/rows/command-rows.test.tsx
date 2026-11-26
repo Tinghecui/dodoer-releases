@@ -49,4 +49,19 @@ describe("command group trailing", () => {
     // 被打断是终态：这组命令不能一直显示还在跑。
     expect(screen.queryByLabelText(/running/i)).toBeNull()
   })
+
+  // #1502：ls 一个不存在的目录（退出码 2）单条算「未找到」，
+  // 但汇总不能写「全部通过」，要写出有几条未找到。
+  it("counts not-found answers instead of saying all passed", () => {
+    renderParts([
+      bash("c1", "ls /nonexistent-dir-xyz", {
+        output:
+          "Exit code 2\nls: cannot access '/nonexistent-dir-xyz': No such file or directory",
+        state: "output-error",
+      }),
+      bash("c2", "echo ok"),
+    ])
+    expect(screen.queryByText("all passed")).toBeNull()
+    expect(screen.getByText("1 not found")).toBeInTheDocument()
+  })
 })

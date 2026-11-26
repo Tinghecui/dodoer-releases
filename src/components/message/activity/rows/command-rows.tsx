@@ -678,6 +678,10 @@ export const CommandGroupRow = memo(function CommandGroupRow({
             ) ?? null)
         : null))
   const allSucceeded = steps.every((s) => s.tool.status === "succeeded")
+  // 「未找到」单条算完成（是回答，不是失败），但汇总要说出来，不能写「全部通过」。
+  const notFound = steps.filter(
+    (s) => s.tool.status === "succeeded" && s.tool.exitMeaning === "notFound"
+  ).length
 
   return (
     <ActivityRow
@@ -700,6 +704,8 @@ export const CommandGroupRow = memo(function CommandGroupRow({
           <span className="text-tone-danger">
             {t("metric.someFailed", { count: failures.length })}
           </span>
+        ) : notFound > 0 ? (
+          t("metric.someNotFound", { count: notFound })
         ) : allSucceeded ? (
           t("metric.allPassed")
         ) : null

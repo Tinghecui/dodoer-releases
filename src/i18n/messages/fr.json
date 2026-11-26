@@ -4358,6 +4358,7 @@
           "needsYou": "attend votre action",
           "allPassed": "tout a réussi",
           "someFailed": "{count, plural, one {# échec} other {# échecs}}",
+          "someNotFound": "{count, plural, one {# introuvable} other {# introuvables}}",
           "lineRange": "L{start}–{end}",
           "line": "L{line}",
           "done": "terminé",

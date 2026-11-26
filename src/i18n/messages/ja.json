@@ -4358,6 +4358,7 @@
           "needsYou": "対応待ち",
           "allPassed": "すべて成功",
           "someFailed": "{count} 件失敗",
+          "someNotFound": "{count} 件見つからず",
           "lineRange": "L{start}–{end}",
           "line": "L{line}",
           "done": "完了",

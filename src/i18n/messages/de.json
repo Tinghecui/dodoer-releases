@@ -4358,6 +4358,7 @@
           "needsYou": "wartet auf dich",
           "allPassed": "alle erfolgreich",
           "someFailed": "{count, plural, one {# fehlgeschlagen} other {# fehlgeschlagen}}",
+          "someNotFound": "{count} nicht gefunden",
           "lineRange": "Z.{start}–{end}",
           "line": "Z.{line}",
           "done": "erledigt",

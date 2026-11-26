@@ -4358,6 +4358,7 @@
           "needsYou": "等你處理",
           "allPassed": "全部通過",
           "someFailed": "{count} 條失敗",
+          "someNotFound": "{count} 條未找到",
           "lineRange": "L{start}–{end}",
           "line": "L{line}",
           "done": "完成",

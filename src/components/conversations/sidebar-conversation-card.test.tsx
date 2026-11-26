@@ -2233,3 +2233,70 @@ describe("SidebarConversationCard using the person's computer", () => {
     expect(usage(container)).toBeNull()
   })
 })
+
+describe("SidebarConversationCard touch ⋯ menu (#1334)", () => {
+  afterEach(() => {
+    cleanup()
+    onRename.mockClear()
+  })
+
+  function renderCard(c: DbConversationSummary) {
+    return renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={false}
+        timeLabel=""
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+        onTogglePin={onTogglePin}
+      />
+    )
+  }
+
+  function moreButton(): HTMLElement {
+    return screen.getByRole("button", { name: "More options" })
+  }
+
+  it("shows the ⋯ button only where there is no hover", () => {
+    renderCard(conv(1))
+    const cls = moreButton().className
+    // 有鼠标的设备上不占位（桌面不变），不能悬停的设备上一直显示
+    expect(cls).toContain("hidden")
+    expect(cls).toContain("[@media(hover:none)]:flex")
+  })
+
+  it("opens the same menu as right-click, and Rename acts the same", async () => {
+    onSelect.mockClear()
+    renderCard(conv(7))
+    fireEvent.click(moreButton())
+
+    // 菜单里和右键菜单是同一份：重命名、置顶、删除都在
+    const rename = await screen.findByRole("menuitem", { name: "Rename" })
+    expect(screen.getByRole("menuitem", { name: "Pin" })).toBeDefined()
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeDefined()
+    // 点「…」不会顺带打开会话
+    expect(onSelect).not.toHaveBeenCalled()
+
+    fireEvent.click(rename)
+    const input = await screen.findByDisplayValue("conv-7")
+    fireEvent.change(input, { target: { value: "renamed" } })
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(onRename).toHaveBeenCalledWith(7, "renamed"))
+  })
+
+  it("is offered on a sub-session too, whose menu still has Rename", async () => {
+    renderCard({ ...conv(8), parent_id: 1 })
+    fireEvent.click(moreButton())
+    await screen.findByRole("menuitem", { name: "Rename" })
+  })
+
+  it("keeps the row from selecting text or raising the iOS long-press callout", () => {
+    const { container } = renderCard(conv(1))
+    const row = container.querySelector<HTMLElement>("[data-conv-key]")
+    expect(row?.className).toContain("select-none")
+    expect(row?.className).toContain("[-webkit-touch-callout:none]")
+  })
+})

@@ -6,6 +6,7 @@ import {
   cleanup,
   fireEvent,
   act,
+  createEvent,
 } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
@@ -3480,6 +3481,59 @@ describe("MessageInput right-click token selection", () => {
     // appear — but it now opens over a selected address instead of a caret.
     expect(screen.queryByRole("menuitem", { name: "Copy" })).toBeNull()
     expect(selectedText(editor)).toBe("adam@example.com")
+  })
+
+  describe("on a coarse pointer", () => {
+    // 手指当主指针（手机、平板）：自定义右键菜单不接管，留给系统自带的选字、粘贴菜单。
+    let pointerCoarse = true
+    beforeEach(() => {
+      pointerCoarse = true
+      const desktop = window.matchMedia
+      vi.spyOn(window, "matchMedia").mockImplementation((query) =>
+        query === "(pointer: coarse)"
+          ? ({
+              media: query,
+              get matches() {
+                return pointerCoarse
+              },
+              addEventListener: () => {},
+              removeEventListener: () => {},
+            } as unknown as MediaQueryList)
+          : desktop(query)
+      )
+    })
+    afterEach(() => {
+      vi.mocked(window.matchMedia).mockRestore()
+    })
+
+    it("leaves the native menu to the browser even with clipboard read", async () => {
+      const editor = await mountWithEditor()
+      seed(editor, "ping adam@example.com today", 8)
+
+      const event = createEvent.contextMenu(editingSurface(), {
+        clientX: 40,
+        clientY: 12,
+      })
+      fireEvent(editingSurface(), event)
+
+      // 没有拦下默认行为，系统菜单照常弹出；自定义菜单不出现
+      expect(event.defaultPrevented).toBe(false)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      })
+      expect(screen.queryByRole("menuitem", { name: "Copy" })).toBeNull()
+      expect(screen.queryByRole("menuitem", { name: "Send email" })).toBeNull()
+    })
+
+    it("keeps the custom menu on a fine pointer", async () => {
+      pointerCoarse = false
+      const editor = await mountWithEditor()
+      seed(editor, "ping adam@example.com today", 8)
+
+      fireEvent.contextMenu(editingSurface(), { clientX: 40, clientY: 12 })
+
+      await screen.findByRole("menuitem", { name: "Send email" })
+    })
   })
 })
 

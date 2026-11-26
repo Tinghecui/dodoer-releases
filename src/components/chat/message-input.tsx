@@ -85,7 +85,10 @@ import {
   type SessionSettingTarget,
 } from "@/lib/session-settings"
 import { useAgentSkills } from "@/hooks/use-agent-skills"
-import { isPrimaryPointerCoarse } from "@/hooks/use-is-coarse-pointer"
+import {
+  isPrimaryPointerCoarse,
+  useIsCoarsePointer,
+} from "@/hooks/use-is-coarse-pointer"
 import {
   hasComposerTypeahead,
   subscribeComposerTypeahead,
@@ -596,6 +599,9 @@ export function MessageInput({
   // works over the editable text. Resolved on the client after mount so SSR and
   // the first client render agree (no hydration mismatch on the trigger).
   const [clipboardReadSupported, setClipboardReadSupported] = useState(false)
+  // 手指当主指针（手机、平板）时也不启用自定义右键菜单：长按要留给系统自带的
+  // 选字、粘贴菜单，自定义菜单会把它拦掉。随指针变化（平板接上鼠标）跟着切换。
+  const isCoarsePointer = useIsCoarsePointer()
   // Snapshotted when the custom right-click menu opens: whether the editor holds
   // a non-empty selection, which gates the Cut/Copy items. Read from the editor's
   // ProseMirror state (not the DOM Selection) so it stays correct after the radix
@@ -2499,8 +2505,12 @@ export function MessageInput({
         <ContextMenu onOpenChange={handleContextMenuOpenChange}>
           {/* Disabled in non-secure web (no async clipboard read) so the native
               context menu — whose Paste still works over the editor text — is
-              not suppressed. Desktop/secure-web get the full custom menu. */}
-          <ContextMenuTrigger asChild disabled={!clipboardReadSupported}>
+              not suppressed. Desktop/secure-web get the full custom menu.
+              A coarse pointer leaves it to the native menu too. */}
+          <ContextMenuTrigger
+            asChild
+            disabled={!clipboardReadSupported || isCoarsePointer}
+          >
             <div
               {...chromeFocus}
               onContextMenuCapture={handleComposerContextMenu}

@@ -25,6 +25,7 @@ import {
   Repeat2,
   ListChecks,
   Share2,
+  MoreHorizontal,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useImeGuard } from "@/hooks/use-ime-guard"
@@ -512,7 +513,9 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
           <ContextMenuTrigger asChild>
             <HoverCardTrigger asChild onFocus={handleHoverTriggerFocus}>
               <div
-                className="relative h-[2rem]"
+                // 触屏上长按是打开菜单的手势：不让它先选中标题文字、也不让 iOS
+                // 弹出系统的长按菜单（#1334）。
+                className="relative h-[2rem] select-none [-webkit-touch-callout:none]"
                 data-conv-key={`${conversation.agent_type}:${conversation.id}`}
                 // Per-level indent: shift the shared rail axis right by one step per
                 // depth. Root rows (depth 0) leave the var untouched so they inherit
@@ -850,6 +853,45 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                         </button>
                       </div>
                     )}
+                    {/* 不能悬停的设备（手机、平板）上的「…」：没有右键，长按又常被
+                    当成选字，这里点一下就打开右键菜单（#1334）。和侧栏文件夹行的
+                    「…」同一个办法：从按钮上发一个合成的 contextmenu 事件，冒泡到
+                    外面的 ContextMenuTrigger，打开的就是下面那一份菜单，菜单项只有
+                    一处定义。有鼠标的设备上不显示，桌面照旧。子会话也有，它们的
+                    右键菜单同样能重命名、删除。 */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        e.preventDefault()
+                        // 菜单挂在按钮下沿；键盘或程序触发的 click 坐标是 0，
+                        // 用它会把菜单放到视口左上角。
+                        const rect = e.currentTarget.getBoundingClientRect()
+                        e.currentTarget.dispatchEvent(
+                          new MouseEvent("contextmenu", {
+                            bubbles: true,
+                            cancelable: true,
+                            button: 2,
+                            clientX: rect.left,
+                            clientY: rect.bottom,
+                          })
+                        )
+                      }}
+                      title={tSidebar("moreOptions")}
+                      aria-label={tSidebar("moreOptions")}
+                      aria-haspopup="menu"
+                      className={cn(
+                        "hidden [@media(hover:none)]:flex",
+                        "ml-1 h-6 w-6 shrink-0 items-center justify-end rounded-[0.375rem]",
+                        "cursor-pointer outline-none transition-colors duration-150",
+                        "text-muted-foreground/90 hover:text-sidebar-foreground"
+                      )}
+                    >
+                      <MoreHorizontal
+                        aria-hidden
+                        className="h-[0.875rem] w-[0.875rem]"
+                      />
+                    </button>
                   </div>
                 </div>
               </div>

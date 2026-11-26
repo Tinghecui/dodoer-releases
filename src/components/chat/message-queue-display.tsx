@@ -7,6 +7,7 @@ import { useTranslations } from "next-intl"
 import { cn } from "@/lib/utils"
 import { draftRidesBlocks } from "@/lib/prompt-draft"
 import type { QueuedMessage } from "@/hooks/use-message-queue"
+import { COARSE_BOX_32, COARSE_HIT_32, TOUCH_GAP_1 } from "@/lib/touch-target"
 
 /**
  * Cowork fork: what the host knows about a failed head, shown with the hint
@@ -105,7 +106,9 @@ function QueueItem({
       dragControls={dragControls}
       data-queue-item={index + 1}
       className={cn(
-        "flex items-center gap-1 rounded-md border px-1.5 py-1 text-3xs leading-none select-none [text-box-trim:both] [text-box-edge:cap_alphabetic]",
+        "flex items-center rounded-md border px-1.5 py-1 text-3xs leading-none select-none [text-box-trim:both] [text-box-edge:cap_alphabetic]",
+        // 间距同时告诉重试、引导按钮，触屏上它们的点按区域各伸进空隙的一半
+        TOUCH_GAP_1,
         "bg-[var(--g-fill1)] border-transparent",
         item.failed && "border-destructive/60 bg-destructive/5"
       )}
@@ -135,7 +138,7 @@ function QueueItem({
           onClick={() => onRetry(item.id)}
           // On the composer's glass: red text on a light red fill, never a
           // second layer of glass (handoff 6.12 #7).
-          className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-destructive/10 px-1.5 py-1 text-destructive hover:bg-destructive/15"
+          className={`relative inline-flex shrink-0 items-center gap-1 rounded-sm bg-destructive/10 px-1.5 py-1 text-destructive hover:bg-destructive/15 ${COARSE_HIT_32}`}
           title={t("retryItem")}
         >
           <RotateCcw className="h-2.5 w-2.5" />
@@ -146,7 +149,7 @@ function QueueItem({
         type="button"
         onClick={() => void onSteerStart(item.id)}
         disabled={steering || !canSteer}
-        className="inline-flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-1 text-primary hover:bg-primary/10 disabled:opacity-50"
+        className={`relative inline-flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-1 text-primary hover:bg-primary/10 disabled:opacity-50 ${COARSE_HIT_32}`}
         title={t(steerChannel === "pull" ? "steerItemAsNote" : "steerItemNow")}
       >
         {steerChannel === "pull" ? (
@@ -156,10 +159,12 @@ function QueueItem({
         )}
         <span>{t("steer")}</span>
       </button>
+      {/* 编辑、删除挨在一起：触屏上按钮本身撑到 32px，不用居中的 ::after，
+          免得删除的点按区域盖住编辑的右半边。 */}
       <button
         type="button"
         onClick={() => onEdit(item.id)}
-        className="shrink-0 rounded-sm p-0.5 hover:bg-muted-foreground/15 text-muted-foreground"
+        className={`shrink-0 rounded-sm p-0.5 hover:bg-muted-foreground/15 text-muted-foreground ${COARSE_BOX_32}`}
         title={t("editItem")}
       >
         <Pencil className="h-2.5 w-2.5" />
@@ -167,7 +172,7 @@ function QueueItem({
       <button
         type="button"
         onClick={() => onDelete(item.id)}
-        className="shrink-0 rounded-sm p-0.5 hover:bg-muted-foreground/15 text-muted-foreground"
+        className={`shrink-0 rounded-sm p-0.5 hover:bg-muted-foreground/15 text-muted-foreground ${COARSE_BOX_32}`}
         title={t("deleteItem")}
       >
         <X className="h-2.5 w-2.5" />

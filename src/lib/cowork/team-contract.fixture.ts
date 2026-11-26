@@ -2,6 +2,7 @@
 // 组、留言、进组提示的编号都是 JSON 数字，会话号 `id`、`owner` 是文字。
 // 测试把它们读进来，再原样传回发请求的包装函数，确认发出去的还是同一个数字。
 // 账户都是编的：alice（爱丽丝）、bob（鲍勃），组「预发测试组」编号 1。
+// `waiting` 的会话分两种：真在等人的带 `awaiting`（原因、标题），做完等人看的不带。
 
 export const TEAM_CONTRACT_FIXTURE = {
   status: {
@@ -90,12 +91,26 @@ export const TEAM_CONTRACT_FIXTURE = {
       id: "75",
       title: "修登录",
       state: "waiting",
+      awaiting: { reason: "permission", title: "运行 pnpm test" },
       updatedAt: "2026-11-23T08:04:00Z",
       note: "看看",
       sharedAt: "2026-11-23T08:01:00Z",
       isNew: true,
       summary: null,
       via: [{ type: "user" }, { type: "group", id: 1, name: "预发测试组" }],
+    },
+    {
+      owner: "alice",
+      ownerLabel: "爱丽丝",
+      id: "76",
+      title: "改注册页",
+      state: "waiting",
+      updatedAt: "2026-11-23T08:05:00Z",
+      note: "",
+      sharedAt: "2026-11-23T08:01:30Z",
+      isNew: false,
+      summary: null,
+      via: [{ type: "user" }],
     },
   ],
   team: {
@@ -107,14 +122,23 @@ export const TEAM_CONTRACT_FIXTURE = {
         name: "alice",
         label: "爱丽丝",
         running: 0,
-        waiting: 1,
+        waiting: 2,
         sessions: [
           {
             owner: "alice",
             id: "75",
             title: "修登录",
             state: "waiting",
+            awaiting: { reason: "permission", title: "运行 pnpm test" },
             updatedAt: "2026-11-23T08:04:00Z",
+            summary: null,
+          },
+          {
+            owner: "alice",
+            id: "76",
+            title: "改注册页",
+            state: "waiting",
+            updatedAt: "2026-11-23T08:05:00Z",
             summary: null,
           },
         ],

@@ -9,6 +9,7 @@ import type { ToolCallStatus } from "@/lib/types"
 import { ImagePreviewDialog } from "@/components/ui/image-preview-dialog"
 import { ImageActions, useImageActions } from "./image-actions"
 import { cn } from "@/lib/utils"
+import { HOVER_NONE_REVEAL } from "@/lib/touch-target"
 
 interface GeneratedImagesBlockProps {
   /**
@@ -132,7 +133,7 @@ export const GeneratedImagesBlock = memo(function GeneratedImagesBlock({
                 e.stopPropagation()
                 void download(image)
               }}
-              className="absolute right-1 top-1 rounded-full bg-background/80 p-1 text-foreground/80 opacity-0 shadow-sm transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+              className={`absolute right-1 top-1 rounded-full bg-background/80 p-1 text-foreground/80 opacity-0 shadow-sm transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 ${HOVER_NONE_REVEAL}`}
               aria-label={t("downloadImage")}
               title={t("downloadImage")}
             >

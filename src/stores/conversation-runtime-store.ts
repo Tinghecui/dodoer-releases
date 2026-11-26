@@ -858,6 +858,10 @@ function narrowToolCallStatus(status: string): ToolCallStatus | null {
     case "completed":
     case "failed":
       return status
+    // 一轮中途连接断了，reducer 把没出图的调用标成 cancelled（#1555）：
+    // 图不会再来了，按失败画，不然卡片一直显示加载中。
+    case "cancelled":
+      return "failed"
     default:
       return null
   }
@@ -1211,8 +1215,11 @@ export function buildStreamingTurnsFromLiveMessage(
       const toolName = getToolName(block.info)
 
       if (toolName === "agent") {
+        // cancelled：连接断了被打断的（#1555），也算结束了。
         const isFinal =
-          block.info.status === "completed" || block.info.status === "failed"
+          block.info.status === "completed" ||
+          block.info.status === "failed" ||
+          block.info.status === "cancelled"
         // Only capture children while the agent is still running
         positionalAgentId = isFinal ? null : block.info.tool_call_id
       } else {
@@ -1558,8 +1565,12 @@ export function buildStreamingTurnsFromLiveMessage(
           // does not interpret.
           meta: block.info.meta,
         })
+        // `cancelled`：一轮中途连接断了，reducer 把没跑完的调用标成被打断
+        // （#1555）。它不会再有结果，按结束了画，界面据此显示中断。
         const isFinalState =
-          block.info.status === "completed" || block.info.status === "failed"
+          block.info.status === "completed" ||
+          block.info.status === "failed" ||
+          block.info.status === "cancelled"
         // Output precedence: raw_output_chunks (terminal polling / SDK
         // raw_output field) wins over content. Some agents stream bash output
         // via raw_output with raw_output_append, others via content-only
@@ -1587,7 +1598,9 @@ export function buildStreamingTurnsFromLiveMessage(
             ? {
                 tool_calls: children.map(({ info: ci, toolName: cn }) => {
                   const cFinal =
-                    ci.status === "completed" || ci.status === "failed"
+                    ci.status === "completed" ||
+                    ci.status === "failed" ||
+                    ci.status === "cancelled"
                   const cOutput =
                     ci.raw_output_chunks.length > 0
                       ? getJoinedChunks(ci.raw_output_chunks)

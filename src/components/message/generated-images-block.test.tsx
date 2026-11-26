@@ -48,3 +48,17 @@ describe("GeneratedImagesBlock heading", () => {
     expect(heading).toHaveAttribute("title", long)
   })
 })
+
+describe("GeneratedImagesBlock download on touch", () => {
+  it("keeps the download button visible on devices without hover", () => {
+    renderCard()
+    const download = screen.getByRole("button", {
+      name: enMessages.Folder.chat.messageList.downloadImage,
+    })
+    expect(download).toHaveClass(
+      "opacity-0",
+      "group-hover:opacity-100",
+      "[@media(hover:none)]:opacity-70"
+    )
+  })
+})

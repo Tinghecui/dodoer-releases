@@ -30,6 +30,7 @@ import {
   teamGroupNoticeDismiss,
   teamSearch,
   teamSessionId,
+  teamStateLabelKey,
   teamShare,
   teamShares,
   teamTargets,
@@ -489,6 +490,74 @@ describe("宽容地读返回值", () => {
   })
 })
 
+describe("awaiting：做完等人看和真在等人分开（#1513）", () => {
+  it("三处都读 awaiting；没有、不是对象、不在 waiting 时当 null", () => {
+    const shared = normalizeTeamShared([
+      {
+        owner: "bob",
+        id: "1",
+        state: "waiting",
+        awaiting: { reason: "permission", title: "运行 rm" },
+      },
+      { owner: "bob", id: "2", state: "waiting", awaiting: null },
+      { owner: "bob", id: "3", state: "waiting" },
+      { owner: "bob", id: "4", state: "waiting", awaiting: { reason: "x" } },
+      { owner: "bob", id: "5", state: "done", awaiting: { reason: "plan" } },
+      { owner: "bob", id: "6", state: "waiting", awaiting: "question" },
+    ])
+    expect(shared.map((s) => s.awaiting)).toEqual([
+      { reason: "permission", title: "运行 rm" },
+      null,
+      null,
+      { reason: null, title: null },
+      null,
+      null,
+    ])
+
+    const page = normalizeTeamEntries({
+      agent: {
+        owner: "bob",
+        id: "7",
+        state: "waiting",
+        awaiting: { reason: "question", title: null },
+      },
+    })
+    expect(page.agent.awaiting).toEqual({ reason: "question", title: null })
+    expect(
+      normalizeTeamEntries({ agent: { id: "7", state: "waiting" } }).agent
+        .awaiting
+    ).toBeNull()
+
+    const view = normalizeTeamView({
+      members: [
+        {
+          name: "bob",
+          sessions: [
+            { id: "1", state: "waiting", awaiting: { reason: "plan" } },
+            { id: "2", state: "waiting" },
+          ],
+        },
+      ],
+    })
+    expect(view.members[0].sessions.map((s) => s.awaiting)).toEqual([
+      { reason: "plan", title: null },
+      null,
+    ])
+  })
+
+  it("文案：做完的写待查看，在等的写等什么", () => {
+    expect(teamStateLabelKey("running", null)).toBe("stateRunning")
+    expect(teamStateLabelKey("done", null)).toBe("stateDone")
+    expect(teamStateLabelKey("waiting", null)).toBe("stateReview")
+    const wait = (reason: "permission" | "question" | "plan" | null) =>
+      teamStateLabelKey("waiting", { reason, title: null })
+    expect(wait("permission")).toBe("stateAwaitingPermission")
+    expect(wait("question")).toBe("stateAwaitingQuestion")
+    expect(wait("plan")).toBe("stateAwaitingPlan")
+    expect(wait(null)).toBe("stateWaiting")
+  })
+})
+
 describe("命令和错误", () => {
   it("share 按契约发 op、id、targets、note", async () => {
     answer({ share: { id: "12", shares: [] } })
@@ -741,5 +810,25 @@ describe("契约样例：读进来的编号原样发回去还是同一个数字�
     await teamView(view.id)
     expect(lastArgs().group).toBe(F.team.id)
     expect(typeof lastArgs().group).toBe("number")
+  })
+
+  it("shared、team 的 awaiting：真在等的读出原因和标题，做完等人看的当 null（#1599）", () => {
+    const shared = normalizeTeamShared(F.shared)
+    expect(shared.map((s) => [s.state, s.awaiting])).toEqual([
+      ["waiting", { reason: "permission", title: "运行 pnpm test" }],
+      ["waiting", null],
+    ])
+    expect(shared.map((s) => teamStateLabelKey(s.state, s.awaiting))).toEqual([
+      "stateAwaitingPermission",
+      "stateReview",
+    ])
+    const sessions = normalizeTeamView(F.team).members[0].sessions
+    expect(sessions.map((s) => [s.state, s.awaiting])).toEqual([
+      ["waiting", { reason: "permission", title: "运行 pnpm test" }],
+      ["waiting", null],
+    ])
+    expect(sessions.map((s) => teamStateLabelKey(s.state, s.awaiting))).toEqual(
+      ["stateAwaitingPermission", "stateReview"]
+    )
   })
 })

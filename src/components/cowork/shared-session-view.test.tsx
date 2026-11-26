@@ -336,14 +336,31 @@ describe("SharedSessionHost", () => {
     expect(screen.queryByRole("button", { name: "Copy link" })).toBeNull()
   })
 
-  it("says the agent is waiting when the session waits for its owner", async () => {
+  it("says what the agent waits for when it is blocked on its owner", async () => {
+    makeAvailable()
+    api.teamEntries.mockResolvedValue(
+      page([], {
+        state: "waiting",
+        awaiting: { reason: "question", title: "Which schema?" },
+      })
+    )
+    renderHost()
+    await open()
+    const banner = document.querySelector("[data-shared-session-waiting]")
+    expect(banner?.getAttribute("data-shared-session-waiting")).toBe("question")
+    expect(banner?.textContent).toContain(
+      "Wang's agent is waiting for them to answer a question"
+    )
+    expect(banner?.textContent).toContain("Which schema?")
+  })
+
+  it("does not claim the agent is waiting when a finished turn only needs a look (#1513)", async () => {
     makeAvailable()
     api.teamEntries.mockResolvedValue(page([], { state: "waiting" }))
     renderHost()
     await open()
-    expect(
-      screen.getByText("Wang's agent is waiting for their answer")
-    ).toBeTruthy()
+    expect(document.querySelector("[data-shared-session-waiting]")).toBeNull()
+    expect(screen.queryByText(/is waiting for/)).toBeNull()
   })
 
   it("clears the content when the share is gone", async () => {

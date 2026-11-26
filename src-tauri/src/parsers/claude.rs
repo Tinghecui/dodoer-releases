@@ -772,6 +772,67 @@ pub(crate) fn is_interrupt_marker(value: &serde_json::Value) -> bool {
     MARKERS.contains(&text)
 }
 
+/// 中断记录里「… for tool use」那一种：停止打在了正在跑的调用上。
+fn is_tool_use_interrupt_marker(value: &serde_json::Value) -> bool {
+    is_interrupt_marker(value)
+        && serde_json::to_string(
+            value
+                .pointer("/message/content")
+                .unwrap_or(&serde_json::Value::Null),
+        )
+        .is_ok_and(|text| text.contains("[Request interrupted by user for tool use]"))
+}
+
+/// #1555：用户点停止时正在跑的调用，Claude 给它写的结果是出错的
+/// 「The user doesn't want to proceed with this tool use…」，和权限框里点拒绝
+/// 是同一句话，紧跟着一条「[Request interrupted by user for tool use]」。
+/// 把紧挨在这条中断记录前面的那一个结果（出错的）对应的调用标成 `cancelled`，
+/// 界面显示「已中断」，和刷新前实时画面一样，不再显示成「已拒绝」。
+/// 更前面的出错结果不算：同一轮里先在权限框里点了拒绝的，也是这句话，不能
+/// 改成「已中断」（返工）。智能体自己记了状态的调用不动。
+fn mark_stopped_calls(messages: &mut [UnifiedMessage]) {
+    // 从末尾往回找最后一个结果，跳过调用块，碰到文字、思考这类别的块就停：
+    // 结果有时单独成一条消息，有时并在发起调用的那条里。
+    let mut stopped: Option<String> = None;
+    for block in messages
+        .iter()
+        .rev()
+        .flat_map(|msg| msg.content.iter().rev())
+    {
+        match block {
+            ContentBlock::ToolResult {
+                tool_use_id: Some(id),
+                is_error: true,
+                ..
+            } => {
+                stopped = Some(id.clone());
+                break;
+            }
+            ContentBlock::ToolUse { .. } => {}
+            _ => break,
+        }
+    }
+    let Some(stopped) = stopped else {
+        return;
+    };
+    for block in messages
+        .iter_mut()
+        .rev()
+        .flat_map(|msg| msg.content.iter_mut())
+    {
+        if let ContentBlock::ToolUse {
+            tool_use_id: Some(id),
+            status,
+            ..
+        } = block
+        {
+            if status.is_none() && *id == stopped {
+                *status = Some("cancelled".to_string());
+            }
+        }
+    }
+}
+
 /// The prompt of a message the user sent while a turn was running and Claude
 /// Code folded into that turn, or `None` for any other record.
 ///
@@ -2171,6 +2232,9 @@ impl ClaudeRecordAccumulator {
         // Skip system meta messages and interrupt bookkeeping (see the
         // matching filter on the batch path).
         if is_meta_message(&value) || is_interrupt_marker(&value) {
+            if is_tool_use_interrupt_marker(&value) {
+                mark_stopped_calls(messages);
+            }
             return;
         }
 
@@ -9201,6 +9265,134 @@ mod tests {
             })
             .collect();
         assert_eq!(texts, vec!["/goal ship it", "never mind"]);
+    }
+
+    /// #1555：用户点停止时正在跑的命令，结果是出错的拒绝那句话，后面紧跟
+    /// 「[Request interrupted by user for tool use]」：调用标成 cancelled。
+    /// 没有这条中断记录的拒绝照旧不带状态（前端按原话判成「已拒绝」）。
+    #[test]
+    fn a_call_the_user_stopped_reads_as_cancelled() {
+        const REFUSAL: &str = "The user doesn't want to proceed with this tool use. \
+            The tool use was rejected (eg. if it was a file edit, the new_string was NOT \
+            written to the file). STOP what you are doing and wait for the user to tell \
+            you how to proceed.";
+        let feed = |interrupted: bool| {
+            let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+            let mut records = vec![
+                json!({
+                    "type": "user", "timestamp": "2026-11-26T01:00:00.000Z", "uuid": "u1",
+                    "message": {"role": "user", "content": [{"type": "text", "text": "run dd"}]}
+                }),
+                json!({
+                    "type": "assistant", "timestamp": "2026-11-26T01:00:01.000Z", "uuid": "a1",
+                    "message": {"role": "assistant", "id": "msg-1", "content": [
+                        {"type": "text", "text": "Running it."},
+                        {"type": "tool_use", "id": "toolu_dd", "name": "Bash",
+                         "input": {"command": "dd if=/dev/zero of=/dev/null"}}
+                    ]}
+                }),
+                json!({
+                    "type": "user", "timestamp": "2026-11-26T01:01:00.000Z", "uuid": "u2",
+                    "message": {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_dd",
+                         "content": REFUSAL, "is_error": true}
+                    ]}
+                }),
+            ];
+            if interrupted {
+                records.push(json!({
+                    "type": "user", "timestamp": "2026-11-26T01:01:00.100Z", "uuid": "u3",
+                    "message": {"role": "user", "content": [
+                        {"type": "text", "text": "[Request interrupted by user for tool use]"}
+                    ]}
+                }));
+            }
+            for record in records {
+                acc.feed_line(&record.to_string());
+            }
+            acc.finalize_background_lifecycle();
+            group_into_turns(acc.messages)
+                .iter()
+                .flat_map(|t| t.blocks.iter())
+                .find_map(|b| match b {
+                    ContentBlock::ToolUse {
+                        tool_use_id: Some(id),
+                        status,
+                        ..
+                    } if id == "toolu_dd" => Some(status.clone()),
+                    _ => None,
+                })
+                .expect("the call is parsed")
+        };
+        assert_eq!(feed(true).as_deref(), Some("cancelled"));
+        assert_eq!(feed(false), None);
+    }
+
+    /// 同一轮里先在权限框里拒绝了一个调用，再停止另一个正在跑的：只有紧挨着
+    /// 中断记录的那个是被停止的，前面那个拒绝照旧不带状态（显示「已拒绝」）。
+    #[test]
+    fn only_the_call_right_before_the_stop_reads_as_cancelled() {
+        const REFUSAL: &str = "The user doesn't want to proceed with this tool use. \
+            The tool use was rejected (eg. if it was a file edit, the new_string was NOT \
+            written to the file). STOP what you are doing and wait for the user to tell \
+            you how to proceed.";
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        let records = [
+            json!({
+                "type": "user", "timestamp": "2026-11-26T01:00:00.000Z", "uuid": "u1",
+                "message": {"role": "user", "content": [{"type": "text", "text": "two things"}]}
+            }),
+            json!({
+                "type": "assistant", "timestamp": "2026-11-26T01:00:01.000Z", "uuid": "a1",
+                "message": {"role": "assistant", "id": "msg-1", "content": [
+                    {"type": "tool_use", "id": "toolu_rm", "name": "Bash",
+                     "input": {"command": "rm -rf build"}},
+                    {"type": "tool_use", "id": "toolu_dd", "name": "Bash",
+                     "input": {"command": "dd if=/dev/zero of=/dev/null"}}
+                ]}
+            }),
+            json!({
+                "type": "user", "timestamp": "2026-11-26T01:00:05.000Z", "uuid": "u2",
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_rm",
+                     "content": REFUSAL, "is_error": true}
+                ]}
+            }),
+            json!({
+                "type": "user", "timestamp": "2026-11-26T01:01:00.000Z", "uuid": "u3",
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_dd",
+                     "content": REFUSAL, "is_error": true}
+                ]}
+            }),
+            json!({
+                "type": "user", "timestamp": "2026-11-26T01:01:00.100Z", "uuid": "u4",
+                "message": {"role": "user", "content": [
+                    {"type": "text", "text": "[Request interrupted by user for tool use]"}
+                ]}
+            }),
+        ];
+        for record in records {
+            acc.feed_line(&record.to_string());
+        }
+        acc.finalize_background_lifecycle();
+        let turns = group_into_turns(acc.messages);
+        let status = |want: &str| {
+            turns
+                .iter()
+                .flat_map(|t| t.blocks.iter())
+                .find_map(|b| match b {
+                    ContentBlock::ToolUse {
+                        tool_use_id: Some(id),
+                        status,
+                        ..
+                    } if id == want => Some(status.clone()),
+                    _ => None,
+                })
+                .expect("the call is parsed")
+        };
+        assert_eq!(status("toolu_dd").as_deref(), Some("cancelled"));
+        assert_eq!(status("toolu_rm"), None);
     }
 
     /// The record Claude Code writes when a request FAILED for good closes its

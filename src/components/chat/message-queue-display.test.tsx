@@ -5,6 +5,7 @@ import {
   screen,
   cleanup,
   waitFor,
+  within,
 } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
@@ -540,5 +541,67 @@ describe("MessageQueueDisplay while a row is edited", () => {
     expect(container.querySelector('[data-queue-item="2"]')).toHaveTextContent(
       "two, edited"
     )
+  })
+})
+
+// 触屏：重试、引导、编辑、删除四个按钮在粗指针设备上至少 32×32 可点。
+// 重试、引导带文字、本身比 32px 宽，用看不见的 ::after 补足高度；
+// 编辑、删除两个图标按钮挨在一起，居中的 ::after 会互相盖住（点编辑的右半边
+// 会落到后画的删除上），所以触屏上让按钮本身变成 32×32，不用 ::after。
+describe("MessageQueueDisplay touch targets", () => {
+  function rowButtons() {
+    const { container } = renderDisplay({
+      queue: [{ ...item("q1", "use pnpm"), failed: true }],
+      onRetry: vi.fn(),
+      onSteerItem: vi.fn(),
+    })
+    const row = container.querySelector<HTMLElement>('[data-queue-item="1"]')
+    if (!row) throw new Error("expected the queued row")
+    const scoped = within(row)
+    return {
+      retry: scoped.getByRole("button", { name: "Retry" }),
+      steer: scoped.getByRole("button", { name: "Steer" }),
+      edit: scoped.getByTitle("Edit"),
+      remove: scoped.getByTitle("Remove"),
+    }
+  }
+
+  it("gives the text buttons a 32px coarse-pointer hit area", () => {
+    const { retry, steer } = rowButtons()
+    for (const button of [retry, steer]) {
+      expect(button).toHaveClass(
+        "relative",
+        "pointer-coarse:after:absolute",
+        "pointer-coarse:after:top-[max(min(0px,calc(50%-16px)),calc(var(--touch-hit-room-top,20px)*-1))]",
+        "pointer-coarse:after:bottom-[max(min(0px,calc(50%-16px)),calc(var(--touch-hit-room-bottom,20px)*-1))]",
+        // 前后挨着文字、按钮的那一侧最多伸进半个间距
+        "pointer-coarse:[&:not(:first-child)]:after:start-[max(min(0px,calc(50%-16px)),calc(var(--touch-hit-gap,0px)/-2))]",
+        "pointer-coarse:[&:not(:last-child)]:after:end-[max(min(0px,calc(50%-16px)),calc(var(--touch-hit-gap,0px)/-2))]"
+      )
+      // 这一行把 4px 的间距告诉它
+      expect(button.parentElement).toHaveClass(
+        "gap-1",
+        "[&>*]:[--touch-gap:4px]"
+      )
+      // 图标尺寸不变
+      expect(button.querySelector("svg")).toHaveClass("h-2.5", "w-2.5")
+    }
+  })
+
+  it("makes edit and remove themselves 32px so their hit areas never overlap", () => {
+    const { edit, remove } = rowButtons()
+    for (const button of [edit, remove]) {
+      expect(button).toHaveClass(
+        "pointer-coarse:min-h-8",
+        "pointer-coarse:min-w-8",
+        "pointer-coarse:inline-flex",
+        "pointer-coarse:items-center",
+        "pointer-coarse:justify-center"
+      )
+      // 不再有伸到隔壁按钮上的 ::after
+      expect(button.className).not.toContain("pointer-coarse:after:")
+      // 图标尺寸不变
+      expect(button.querySelector("svg")).toHaveClass("h-2.5", "w-2.5")
+    }
   })
 })

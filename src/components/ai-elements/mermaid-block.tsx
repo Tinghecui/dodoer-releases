@@ -67,6 +67,7 @@ import {
 } from "./mermaid-view"
 import { renderPlantUml } from "./plantuml-engine"
 import { useMermaidEngine } from "./streamdown-plugins"
+import { TOUCH_GAP_0_5 } from "@/lib/touch-target"
 
 // --- Why this file exists ----------------------------------------------------
 //
@@ -508,7 +509,8 @@ function MermaidCanvas({
 function ZoomControls({ controller }: { controller: ViewportController }) {
   const t = useTranslations("Folder.chat.mermaid")
   return (
-    <div className="flex items-center gap-0.5">
+    // TOUCH_GAP_0_5：触屏上相邻按钮的点按区域各伸进 2px 空隙的一半
+    <div className={`flex items-center ${TOUCH_GAP_0_5}`}>
       <Button
         aria-label={t("zoomOut")}
         disabled={!controller.canZoomOut}
@@ -520,7 +522,9 @@ function ZoomControls({ controller }: { controller: ViewportController }) {
       >
         <ZoomOutIcon />
       </Button>
-      <span className="min-w-9 text-center text-2xs text-muted-foreground tabular-nums">
+      {/* relative：保险。缩小按钮的触屏点按区域最多伸进它和百分比之间空隙的
+          一半，碰不到百分比；万一伸过来，定位元素后画、盖在它上面，点百分比不会缩小 */}
+      <span className="relative min-w-9 text-center text-2xs text-muted-foreground tabular-nums">
         {Math.round(controller.zoom * 100)}%
       </span>
       <Button

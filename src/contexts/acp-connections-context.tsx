@@ -2026,10 +2026,16 @@ function foldCancelledTurnReport(
   )
   const block = content[index]
   if (!block || block.type !== "tool_call") return turn
+  const merged = mergeToolCallUpdate(block.info, update)
   const next = content.slice()
+  // #1555：用户点了停止，这一轮没跑完的调用随后由智能体报成 failed（Claude
+  // 写的是「The user doesn't want to proceed…」）。它是被停止打断的，不是自己
+  // 失败了：记成 cancelled，界面显示「已中断」，和刷新后解析器读出来的一样。
+  const stopped =
+    turn.openCalls.has(update.tool_call_id) && merged.status === "failed"
   next[index] = {
     type: "tool_call",
-    info: mergeToolCallUpdate(block.info, update),
+    info: stopped ? { ...merged, status: "cancelled" } : merged,
   }
   return { ...turn, message: { ...turn.message, content: next } }
 }
@@ -3287,13 +3293,28 @@ function connectionsReducer(
           return state
         }
       }
+      // #1555：连接断了（智能体被杀），这一轮还没跑完的调用不会再有结果，
+      // 标成被打断，和刷新后后端补的一样（turn_failure.rs 的
+      // mark_cut_off_calls）。别的失败智能体自己会记终态，不替它改。
+      const content =
+        action.kind === "connection_lost"
+          ? prev.content.map((block) =>
+              block.type === "tool_call" &&
+              toolStatusUnsettled(block.info.status)
+                ? {
+                    type: "tool_call" as const,
+                    info: { ...block.info, status: "cancelled" },
+                  }
+                : block
+            )
+          : prev.content
       const next = new Map(state)
       next.set(action.contextKey, {
         ...conn,
         liveMessage: {
           ...prev,
           content: [
-            ...prev.content.filter((block) => block.type !== "turn_error"),
+            ...content.filter((block) => block.type !== "turn_error"),
             {
               type: "turn_error" as const,
               message,

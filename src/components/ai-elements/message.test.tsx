@@ -82,6 +82,22 @@ describe("MessageResponse", () => {
     )
   })
 
+  it("wraps long links, paths and inline code instead of overflowing", () => {
+    render(<MessageResponse>{"see `/a/very/long/path`"}</MessageResponse>)
+
+    // break-word 只在一行放不下时才断，不改表格、代码块的最小宽度。
+    expect(screen.getByTestId("streamdown-root")).toHaveClass("break-words")
+  })
+
+  it("scrolls a wide display formula sideways", () => {
+    render(<MessageResponse>{"$$x$$"}</MessageResponse>)
+
+    expect(screen.getByTestId("streamdown-root")).toHaveClass(
+      "[&_.katex-display]:overflow-x-auto",
+      "[&_.katex-display]:overflow-y-hidden"
+    )
+  })
+
   it("reads each block in the direction of its own text", () => {
     render(<MessageResponse>{"Hello."}</MessageResponse>)
 

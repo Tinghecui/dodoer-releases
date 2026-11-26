@@ -36,6 +36,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { cn, copyTextFromMenu } from "@/lib/utils"
+import { TOUCH_ROOM_TOP_0 } from "@/lib/touch-target"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { imageFilesFromClipboardApi } from "@/lib/clipboard-images"
 import { toErrorMessage } from "@/lib/app-error"
@@ -2581,7 +2582,14 @@ export function MessageInput({
                 className={cn("grow", editableMinHeight)}
               />
               <div className="flex shrink-0 items-end justify-between gap-1 px-2 pb-2">
-                <div className="flex min-w-0 items-end gap-1">
+                {/* 这一排上面紧贴着编辑区：触屏上「+」和设置这两个小按钮
+                    不往上扩点按区域，点编辑区下沿照样是定位光标。 */}
+                <div
+                  className={cn(
+                    "flex min-w-0 items-end gap-1",
+                    TOUCH_ROOM_TOP_0
+                  )}
+                >
                   <ComposerAddMenu
                     disabled={disabled}
                     attachments={attach}

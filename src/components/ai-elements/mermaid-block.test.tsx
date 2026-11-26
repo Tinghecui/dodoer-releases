@@ -333,3 +333,15 @@ describe("PlantUmlBlock", () => {
     expect(await screen.findByTestId("plantuml-body")).toBeTruthy()
   })
 })
+
+describe("ZoomControls touch target", () => {
+  it("keeps the zoom percentage above the zoom-out button's hit area", async () => {
+    renderWithIntl(mermaidFence())
+
+    const zoomOut = await screen.findByRole("button", { name: "Zoom out" })
+    const percent = zoomOut.nextElementSibling as HTMLElement
+    expect(percent.textContent).toMatch(/%$/)
+    // 定位元素后画，盖住缩小按钮伸过来的 40px 点按区域，点百分比不会缩小
+    expect(percent).toHaveClass("relative")
+  })
+})

@@ -12,7 +12,7 @@ use sea_orm::{
 
 use crate::acp::agent_mentions::strip_route_separator_from_prompt;
 use crate::acp::agent_process::{
-    finish_process_group_blocking, signal_process_group, ProcessGroupSignal,
+    finish_process_group_blocking, signal_process_group, ProcessGroupSignal, RunMarker,
 };
 use crate::acp::connection::{
     spawn_agent_connection, AgentConnection, ConnectionCommand, GoalControlAction, SetterOutcome,
@@ -183,8 +183,12 @@ fn wait_for_reap(cell: &std::sync::atomic::AtomicU32, budget: Duration) -> bool 
 /// and on Unix also the agent's process group (`spawn_process` makes every
 /// agent a group leader), so a descendant already reparented out of the tree
 /// still gets both signals. A descendant that left the group (`setsid`) and
-/// the tree is left to the OS; so is everything outside the tree on Windows,
-/// which would need a job object.
+/// the tree is found on Linux by the run marker `spawn_process` put in the
+/// agent's environment (`RunMarker`), or — when it cleared its environment —
+/// by the snapshot of the agent's tree taken before the first signal (the agent
+/// is a child subreaper, so orphaned commands stay in that tree while it lives);
+/// elsewhere it is left to the OS, and so
+/// is everything outside the tree on Windows, which would need a job object.
 ///
 /// Blocking — call from `spawn_blocking`.
 fn kill_tree_and_wait(cell: &std::sync::atomic::AtomicU32) -> bool {
@@ -193,6 +197,10 @@ fn kill_tree_and_wait(cell: &std::sync::atomic::AtomicU32) -> bool {
         return true;
     }
     // 组长还没收尸（cell 非 0），组号就不会是别人的。
+    // 标记也趁现在取：`ChildGuard` 收尾时会把它从表里摘掉。顺便记下智能体
+    // 现在的整棵进程树：它是收养人，`env -i` 清掉了标记的命令也在树里，
+    // 它一死这些命令就被过继给 1 号进程、树里找不到了。
+    let marker = RunMarker::for_pid(pid).map(|marker| marker.with_descendants_of(pid));
     signal_process_group(pid, ProcessGroupSignal::Terminate);
     if kill_tree_pass(pid, "SIGTERM") == KillPass::AlreadyGone
         || wait_for_reap(cell, ESCALATE_TO_SIGKILL_AFTER)
@@ -200,11 +208,20 @@ fn kill_tree_and_wait(cell: &std::sync::atomic::AtomicU32) -> bool {
         // 智能体自己走了，组里不理 SIGTERM 的命令还得在这里补 SIGKILL：
         // 程序退出时运行时一关，`ChildGuard` 挂在上面的那次 SIGKILL 就没了。
         finish_process_group_blocking(pid, ESCALATE_TO_SIGKILL_AFTER);
+        // 离开了进程组、又不在进程树里的命令，按标记找出来收掉。
+        if let Some(marker) = marker {
+            marker.finish_blocking(ESCALATE_TO_SIGKILL_AFTER);
+        }
         return true;
     }
 
     signal_process_group(pid, ProcessGroupSignal::Kill);
-    if kill_tree_pass(pid, "SIGKILL") == KillPass::Failed {
+    let pass = kill_tree_pass(pid, "SIGKILL");
+    // 按标记只打带标记的进程，pid 号被别人占去了也照样安全。
+    if let Some(marker) = marker {
+        marker.finish_blocking(std::time::Duration::ZERO);
+    }
+    if pass == KillPass::Failed {
         // Neither gone nor reachable: someone else owns that pid now (recycled
         // onto another user's process, say), so it is not ours to wait for.
         // Reported, not acted on — retrying would not change the answer.
@@ -5875,6 +5892,129 @@ mod tests {
         assert!(
             !process_is_running(&sleeper.0),
             "退出清理返回后，智能体起的、不理 SIGTERM 的命令还在跑：{}",
+            sleeper.0
+        );
+    }
+
+    /// 程序退出时：智能体用 `setsid` 起的后台命令既不在它的进程组里，也被
+    /// 过继走、不在进程树里了。`kill_tree_and_wait` 返回、运行时关掉以后，
+    /// 它也不能还在跑。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kill_tree_and_wait_ends_commands_that_left_the_group_and_the_tree() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use tokio::io::AsyncBufReadExt;
+
+        struct HardKillOnDrop(String);
+        impl Drop for HardKillOnDrop {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", &self.0])
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let sleeper = rt.block_on(async {
+            let agent = crate::acp::agent_process::AcpAgent::from_args([
+                "/bin/sh",
+                "-c",
+                "(setsid nohup sleep 300 >/dev/null 2>&1 & echo $!); while :; do sleep 1; done",
+            ])
+            .unwrap();
+            let (_stdin, stdout, _stderr, mut child) = agent.spawn_process().expect("spawn agent");
+            let cell = Arc::new(AtomicU32::new(child.id().expect("pid")));
+            let mut lines = tokio::io::BufReader::new(stdout).lines();
+            let pid = lines.next_line().await.expect("read").expect("sleeper pid");
+            let sleeper = HardKillOnDrop(pid.trim().to_string());
+            for _ in 0..100 {
+                let comm = std::fs::read_to_string(format!("/proc/{}/comm", sleeper.0))
+                    .unwrap_or_default();
+                if comm.trim() == "sleep" {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+
+            let reaper_cell = cell.clone();
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+                reaper_cell.store(0, Ordering::SeqCst);
+            });
+            let swept = tokio::task::spawn_blocking(move || kill_tree_and_wait(&cell))
+                .await
+                .expect("sweep");
+            assert!(swept);
+            sleeper
+        });
+        drop(rt);
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !process_is_running(&sleeper.0),
+            "退出清理返回后，智能体用 setsid 起的后台命令还在跑：{}",
+            sleeper.0
+        );
+    }
+
+    /// 同上，但命令用 `env -i` 清掉了标记，还不理 SIGTERM：
+    /// `kill_tree_and_wait` 返回、运行时关掉以后也不能还在跑。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kill_tree_and_wait_ends_commands_that_cleared_their_environment() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use tokio::io::AsyncBufReadExt;
+
+        struct HardKillOnDrop(String);
+        impl Drop for HardKillOnDrop {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", &self.0])
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let sleeper = rt.block_on(async {
+            let agent = crate::acp::agent_process::AcpAgent::from_args([
+                "/bin/sh",
+                "-c",
+                "(env -i /usr/bin/setsid /bin/sh -c 'trap \"\" TERM; exec /bin/sleep 300' >/dev/null 2>&1 & echo $!); while :; do sleep 1; done",
+            ])
+            .unwrap();
+            let (_stdin, stdout, _stderr, mut child) = agent.spawn_process().expect("spawn agent");
+            let cell = Arc::new(AtomicU32::new(child.id().expect("pid")));
+            let mut lines = tokio::io::BufReader::new(stdout).lines();
+            let pid = lines.next_line().await.expect("read").expect("sleeper pid");
+            let sleeper = HardKillOnDrop(pid.trim().to_string());
+            for _ in 0..100 {
+                let comm = std::fs::read_to_string(format!("/proc/{}/comm", sleeper.0))
+                    .unwrap_or_default();
+                if comm.trim() == "sleep" {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+
+            let reaper_cell = cell.clone();
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+                reaper_cell.store(0, Ordering::SeqCst);
+            });
+            let swept = tokio::task::spawn_blocking(move || kill_tree_and_wait(&cell))
+                .await
+                .expect("sweep");
+            assert!(swept);
+            sleeper
+        });
+        drop(rt);
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !process_is_running(&sleeper.0),
+            "退出清理返回后，智能体用 env -i 起的后台命令还在跑：{}",
             sleeper.0
         );
     }

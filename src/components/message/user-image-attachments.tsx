@@ -7,6 +7,7 @@ import { useTranslations } from "next-intl"
 import type { UserImageDisplay } from "@/lib/adapters/ai-elements-adapter"
 import { ImagePreviewDialog } from "@/components/ui/image-preview-dialog"
 import { ImageActions, useImageActions } from "./image-actions"
+import { HOVER_NONE_REVEAL } from "@/lib/touch-target"
 
 interface UserImageAttachmentsProps {
   images: UserImageDisplay[]
@@ -57,7 +58,7 @@ export function UserImageAttachments({
                 e.stopPropagation()
                 void download(image)
               }}
-              className="absolute right-0.5 top-0.5 rounded-full bg-background/80 p-0.5 text-foreground/80 opacity-0 shadow-sm transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+              className={`absolute right-0.5 top-0.5 rounded-full bg-background/80 p-0.5 text-foreground/80 opacity-0 shadow-sm transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 ${HOVER_NONE_REVEAL}`}
               aria-label={t("downloadImage")}
               title={t("downloadImage")}
             >

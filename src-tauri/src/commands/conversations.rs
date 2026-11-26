@@ -1593,7 +1593,7 @@ pub async fn get_folder_conversation_core(
         .await
         .map_err(AppCommandError::from)?;
 
-    let (mut turns, session_stats, resolved_ext_id, parsed_title, parsed_model, transcript_watermark) =
+    let (mut turns, mut session_stats, resolved_ext_id, parsed_title, parsed_model, transcript_watermark) =
         // jenny fork: a Loop row's id names no session; its view reads the Loop.
         if let Some(ref ext_id) = summary
             .external_id
@@ -1781,10 +1781,13 @@ pub async fn get_folder_conversation_core(
         .await
         .unwrap_or_default();
     inject_tool_approvals(&mut turns, &approvals);
-    // Cowork 加的（#1120）：上一轮失败时存下的说明，智能体自己没记下的，补成
-    // 最后一行（见 `acp::turn_failure`）。读不到只少这一行。
-    if let Some(failure) = crate::acp::turn_failure::load(conn, conversation_id).await {
-        crate::acp::turn_failure::inject(&mut turns, &failure);
+    // Cowork 加的（#1120）：失败时存下的说明，智能体自己没记下的，补成那一轮的
+    // 最后一行（见 `acp::turn_failure`）。读不到只少这一行。#1555：每一轮失败都
+    // 补回它自己那一轮；被打断那一轮补长的时长也加进会话的总时长，两边对得上。
+    let failures = crate::acp::turn_failure::load_history(conn, conversation_id).await;
+    let extended_ms = crate::acp::turn_failure::inject_all(&mut turns, &failures);
+    if let Some(stats) = session_stats.as_mut() {
+        stats.total_duration_ms += extended_ms;
     }
 
     Ok((

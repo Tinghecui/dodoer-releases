@@ -51,6 +51,9 @@ export function toolCallStatus(
   if (part.state === "output-error" || errorText) {
     const text = (errorText || part.output || "").trim()
     if (INTERRUPTED_RE.test(text)) return "cancelled"
+    // 用户停止打断的调用，Claude 写的结果和拒绝是同一句话；解析器据中断记录
+    // 把它标成 cancelled（#1555），以标记为准。
+    if (toolStatusCancelled(part.toolStatus)) return "cancelled"
     if (REJECTED_RE.test(text)) return "rejected"
     return "failed"
   }

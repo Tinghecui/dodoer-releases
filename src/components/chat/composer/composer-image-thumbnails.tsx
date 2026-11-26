@@ -12,6 +12,7 @@ import {
 } from "@/components/message/image-actions"
 import type { UserImageDisplay } from "@/lib/adapters/ai-elements-adapter"
 import type { ImageInputAttachment } from "@/components/chat/message-input-attachments"
+import { COARSE_VISIBLE_BOX_24 } from "@/lib/touch-target"
 
 /** The staged attachment reshaped for the shared transcript image actions. */
 function toDisplay(attachment: ImageInputAttachment): UserImageDisplay {
@@ -88,7 +89,9 @@ export function ComposerImageThumbnails({
           <button
             type="button"
             onClick={() => onRemove(attachment.id)}
-            className="absolute right-1 top-1 rounded-sm bg-background/70 p-0.5 hover:bg-background"
+            // 粗指针设备上叉本身变大到 24px（图标不变），不用看不见的扩大
+            // 区域：那块区域会盖住缩略图，点缩略图右上角想看预览却删了附件。
+            className={`absolute right-1 top-1 rounded-sm bg-background/70 p-0.5 hover:bg-background ${COARSE_VISIBLE_BOX_24}`}
             aria-label={t("removeAttachmentAria", { name: attachment.name })}
           >
             <X className="h-3 w-3" />

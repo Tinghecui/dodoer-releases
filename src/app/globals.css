@@ -3348,6 +3348,119 @@ div.monaco-diff-editor.side-by-side .editor.modified {
   cursor: pointer;
 }
 
+/* 小按钮触屏点按区域用的「这一行的间距」（src/lib/touch-target.ts）。
+   不继承：只有那一行的直接子元素拿得到，嵌在里面的另一组按钮按 0 算，
+   不会误用外面那一行的间距、伸到隔壁按钮上。 */
+@property --touch-gap {
+  syntax: "<length>";
+  initial-value: 0px;
+  inherits: false;
+}
+
+/* 用 Tailwind 的 `gap-*` / `gap-x-*` 排的行，把间距告诉直接子元素，挨在一起的
+   小按钮就把中间的空隙平分，不用每一行另外声明。`:where` 不加权重、放在 base
+   层，TOUCH_GAP_* 明写的值照样盖过它。没列的（`gap-0`、响应式的 `sm:gap-*`、
+   用 margin 隔开的）按 0 算，挨着的一侧不往外扩。 */
+@layer base {
+  :where(.gap-0\.5, .gap-x-0\.5) > * {
+    --touch-gap: calc(var(--spacing) * 0.5);
+  }
+  :where(.gap-1, .gap-x-1) > * {
+    --touch-gap: calc(var(--spacing) * 1);
+  }
+  :where(.gap-1\.5, .gap-x-1\.5) > * {
+    --touch-gap: calc(var(--spacing) * 1.5);
+  }
+  :where(.gap-2, .gap-x-2) > * {
+    --touch-gap: calc(var(--spacing) * 2);
+  }
+  :where(.gap-2\.5, .gap-x-2\.5) > * {
+    --touch-gap: calc(var(--spacing) * 2.5);
+  }
+  :where(.gap-3, .gap-x-3) > * {
+    --touch-gap: calc(var(--spacing) * 3);
+  }
+  :where(.gap-4, .gap-x-4) > * {
+    --touch-gap: calc(var(--spacing) * 4);
+  }
+  :where(.gap-5, .gap-x-5) > * {
+    --touch-gap: calc(var(--spacing) * 5);
+  }
+  :where(.gap-6, .gap-x-6) > * {
+    --touch-gap: calc(var(--spacing) * 6);
+  }
+  :where(.gap-8, .gap-x-8) > * {
+    --touch-gap: calc(var(--spacing) * 8);
+  }
+}
+
+/* 小按钮上面（下面）紧贴着可点、可编辑的内容时，那一行用 TOUCH_ROOM_TOP_0 /
+   TOUCH_ROOM_BOTTOM_0 把这一侧能往外扩的量设成 0。默认 20px，比补满 40px
+   要伸的量大，等于不限。同样不继承，只管那一行的直接子元素。 */
+@property --touch-room-top {
+  syntax: "<length>";
+  initial-value: 20px;
+  inherits: false;
+}
+@property --touch-room-bottom {
+  syntax: "<length>";
+  initial-value: 20px;
+  inherits: false;
+}
+
+/* 会换行、竖着排的行（flex-wrap、flex-col、grid）里，小按钮上下也挨着别的按钮：
+   换成两行的两个按钮各往上下扩 8px，中间 8px 的行距就重叠了。CSS 看不出这一行
+   实际换没换行，所以这些行一律上下最多只扩半个行距（`gap-*` / `gap-y-*`），没有
+   行距的不扩。没真换行的那一行上下点按范围就不满 40px，换来的是一定不重叠。
+   `gap-x-*` 只管横向，行距按 0 算。放在 base 层、`:where` 不加权重，
+   TOUCH_ROOM_*_0 照样盖过它。 */
+@layer base {
+  :where(.flex-wrap, .flex-col, .grid) > * {
+    --touch-room-top: 0px;
+    --touch-room-bottom: 0px;
+  }
+  :where(.flex-wrap, .flex-col, .grid):where(.gap-0\.5, .gap-y-0\.5) > * {
+    --touch-room-top: calc(var(--spacing) * 0.25);
+    --touch-room-bottom: calc(var(--spacing) * 0.25);
+  }
+  :where(.flex-wrap, .flex-col, .grid):where(.gap-1, .gap-y-1) > * {
+    --touch-room-top: calc(var(--spacing) * 0.5);
+    --touch-room-bottom: calc(var(--spacing) * 0.5);
+  }
+  :where(.flex-wrap, .flex-col, .grid):where(.gap-1\.5, .gap-y-1\.5) > * {
+    --touch-room-top: calc(var(--spacing) * 0.75);
+    --touch-room-bottom: calc(var(--spacing) * 0.75);
+  }
+  :where(.flex-wrap, .flex-col, .grid):where(.gap-2, .gap-y-2) > * {
+    --touch-room-top: calc(var(--spacing) * 1);
+    --touch-room-bottom: calc(var(--spacing) * 1);
+  }
+  :where(.flex-wrap, .flex-col, .grid):where(.gap-2\.5, .gap-y-2\.5) > * {
+    --touch-room-top: calc(var(--spacing) * 1.25);
+    --touch-room-bottom: calc(var(--spacing) * 1.25);
+  }
+  :where(.flex-wrap, .flex-col, .grid):where(.gap-3, .gap-y-3) > * {
+    --touch-room-top: calc(var(--spacing) * 1.5);
+    --touch-room-bottom: calc(var(--spacing) * 1.5);
+  }
+  :where(.flex-wrap, .flex-col, .grid):where(.gap-4, .gap-y-4) > * {
+    --touch-room-top: calc(var(--spacing) * 2);
+    --touch-room-bottom: calc(var(--spacing) * 2);
+  }
+  :where(.flex-wrap, .flex-col, .grid):where(.gap-5, .gap-y-5) > * {
+    --touch-room-top: calc(var(--spacing) * 2.5);
+    --touch-room-bottom: calc(var(--spacing) * 2.5);
+  }
+  :where(.flex-wrap, .flex-col, .grid):where(.gap-6, .gap-y-6) > * {
+    --touch-room-top: calc(var(--spacing) * 3);
+    --touch-room-bottom: calc(var(--spacing) * 3);
+  }
+  :where(.flex-wrap, .flex-col, .grid):where(.gap-8, .gap-y-8) > * {
+    --touch-room-top: calc(var(--spacing) * 4);
+    --touch-room-bottom: calc(var(--spacing) * 4);
+  }
+}
+
 /* Active-session composer: a gradient that flows around the input border as the
    active-conversation cue (replaces the old top-center icon). The ::before
    overlays the element's existing 1px border — `inset:-1px` reaches the

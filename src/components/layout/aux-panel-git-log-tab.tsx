@@ -132,6 +132,7 @@ import type {
 import { toast } from "sonner"
 import { isNotAGitRepoError, toErrorMessage } from "@/lib/app-error"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { HOVER_NONE_REVEAL } from "@/lib/touch-target"
 
 // Commits load in pages of PAGE_SIZE via the backend `skip` offset; the next
 // page is fetched once the scroll comes within LOAD_MORE_PX of the estimated
@@ -1169,7 +1170,7 @@ function AuthorFilter({
                             type="button"
                             title={t("removeFromRecent", { name })}
                             aria-label={t("removeFromRecent", { name })}
-                            className="-mr-1 ml-0.5 grid size-5 shrink-0 place-items-center rounded-sm text-muted-foreground/60 opacity-0 transition hover:bg-foreground/10 hover:text-foreground group-hover/recent:opacity-100 group-data-[selected=true]/recent:opacity-100"
+                            className={`-mr-1 ml-0.5 grid size-5 shrink-0 place-items-center rounded-sm text-muted-foreground/60 opacity-0 transition hover:bg-foreground/10 hover:text-foreground group-hover/recent:opacity-100 group-data-[selected=true]/recent:opacity-100 ${HOVER_NONE_REVEAL}`}
                             onPointerDown={(e) => {
                               e.preventDefault()
                               e.stopPropagation()
@@ -2432,7 +2433,7 @@ export function GitLogTab() {
                                               hash: entry.full_hash,
                                             }
                                           )}
-                                          className="size-5 shrink-0 opacity-0 transition-opacity group-hover/hash:opacity-100 group-focus-within/hash:opacity-100"
+                                          className={`size-5 shrink-0 opacity-0 transition-opacity group-hover/hash:opacity-100 group-focus-within/hash:opacity-100 ${HOVER_NONE_REVEAL}`}
                                           hash={entry.full_hash}
                                           title={t("copyHash")}
                                         />

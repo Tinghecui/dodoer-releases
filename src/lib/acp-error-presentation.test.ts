@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  acpErrorNotificationKey,
   acpErrorNotifiesDesktop,
   agentErrorIsLog,
   agentProcessExited,
@@ -230,5 +231,91 @@ describe("agent errors without a code", () => {
     expect(rejectedPromptHeadline("ACP protocol error: boom\nat a")).toBe(
       "boom"
     )
+  })
+})
+
+describe("acpErrorNotificationKey (#1556)", () => {
+  it("keys a connection that never came up per surface, not per connection", () => {
+    const first = acpErrorNotificationKey({
+      code: "agent_auth_required",
+      message: "Authentication required",
+      contextKey: "tab-1",
+      connectionId: "conn-a",
+      agentType: "codex",
+    })
+    const retried = acpErrorNotificationKey({
+      code: "agent_auth_required",
+      message: "Authentication required",
+      contextKey: "tab-1",
+      connectionId: "conn-b",
+      agentType: "codex",
+    })
+    const beforeConnectionId = acpErrorNotificationKey({
+      code: "agent_auth_required",
+      message: "Authentication required",
+      contextKey: "tab-1",
+      connectionId: null,
+      agentType: "codex",
+    })
+    expect(retried).toBe(first)
+    expect(beforeConnectionId).toBe(first)
+    expect(
+      acpErrorNotificationKey({
+        code: "agent_auth_required",
+        message: "Authentication required",
+        contextKey: "tab-2",
+        connectionId: "conn-c",
+        agentType: "codex",
+      })
+    ).not.toBe(first)
+  })
+
+  it("keys it per conversation when one is known, across surfaces", () => {
+    const tab = acpErrorNotificationKey({
+      code: "agent_auth_required",
+      message: "Authentication required",
+      contextKey: "tab-1",
+      connectionId: "conn-a",
+      conversationId: 42,
+      agentType: "codex",
+    })
+    const canvas = acpErrorNotificationKey({
+      code: "agent_auth_required",
+      message: "Authentication required",
+      contextKey: "canvas-card",
+      connectionId: "conn-b",
+      conversationId: 42,
+      agentType: "codex",
+    })
+    expect(canvas).toBe(tab)
+    expect(
+      acpErrorNotificationKey({
+        code: "agent_auth_required",
+        message: "Authentication required",
+        contextKey: "tab-1",
+        connectionId: "conn-c",
+        conversationId: 43,
+        agentType: "codex",
+      })
+    ).not.toBe(tab)
+  })
+
+  it("keeps other errors per connection and code", () => {
+    expect(
+      acpErrorNotificationKey({
+        code: "process_exited",
+        message: "agent process exited",
+        contextKey: "tab-1",
+        connectionId: "conn-a",
+      })
+    ).toBe("acp-error:conn-a:process_exited")
+    expect(
+      acpErrorNotificationKey({
+        code: null,
+        message: "boom",
+        contextKey: "tab-1",
+        connectionId: null,
+      })
+    ).toBe("acp-error:tab-1:boom")
   })
 })

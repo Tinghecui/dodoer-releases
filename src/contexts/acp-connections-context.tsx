@@ -128,6 +128,7 @@ import { contentBlocksFromUserMessage } from "@/lib/user-message-blocks"
 import { presentSessionNotice, splitHeadline } from "@/lib/session-notices"
 import { presentPluginLoadFailures } from "@/lib/plugin-load-failures"
 import {
+  acpErrorNotificationKey,
   acpErrorNotifiesDesktop,
   isFailedTurnVerdict,
   isTurnFailureCode,
@@ -4018,9 +4019,16 @@ function joinEvidence(
   )
 }
 
-/** A connect failure's notification key: one per surface. */
-function connectErrorNotificationKey(contextKey: string): string {
-  return `acp-connect:${contextKey}`
+/** A connect failure's notification key: one per surface — per conversation
+ *  once it has one, so the same conversation open on a workspace tab and a
+ *  canvas card, failing to connect on both, is one notification (#1556). */
+function connectErrorNotificationKey(
+  contextKey: string,
+  conversationId?: number | null
+): string {
+  return conversationId != null && conversationId > 0
+    ? `acp-connect:conversation-${conversationId}`
+    : `acp-connect:${contextKey}`
 }
 
 /** What a connection's current turn has told about its failures. */
@@ -4218,6 +4226,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   // at all, so the request as issued would reconnect into a FRESH session and
   // silently abandon the conversation's history.
   const lastConnectParamsRef = useRef(new Map<string, ConnectRequest>())
+  // contextKey → 它的连接失败通知用的 key（见 `connectErrorNotificationKey`）：
+  // 收走时用通知时的那个，不随之后记住的参数变（#1556）。
+  const connectErrorNotifyKeysRef = useRef(new Map<string, string>())
   // Keys whose disconnect was requested while connect was still in flight
   const abandonedKeysRef = useRef(new Set<string>())
   // Resolvers waiting for an in-flight connect() on a key to settle. Only a
@@ -4542,7 +4553,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       const { connectErrors } = storeRef.current
       if (info === null) {
         if (!connectErrors.delete(key)) return
-        resolveNotification(connectErrorNotificationKey(key))
+        // 按会话合并的那一条（#1556）：同一个会话还有别的界面失败着，就留着。
+        const keys = connectErrorNotifyKeysRef.current
+        const notifyKey = keys.get(key) ?? connectErrorNotificationKey(key)
+        keys.delete(key)
+        const stillFailing = Array.from(keys).some(
+          ([other, k]) => k === notifyKey && connectErrors.has(other)
+        )
+        if (!stillFailing) resolveNotification(notifyKey)
       } else {
         connectErrors.set(key, info)
       }
@@ -4574,19 +4592,42 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           },
         })
       }
+      const key = connectErrorNotificationKey(
+        contextKey,
+        lastConnectParamsRef.current.get(contextKey)?.conversationId
+      )
       actions.push({
         label: t("actions.retry"),
         onClick: () => {
-          if (storeRef.current.connectErrors.get(contextKey) !== info) return
-          void reconnectRef.current?.(contextKey).catch(() => {
+          const { connectErrors } = storeRef.current
+          let target: string | undefined
+          if (connectErrors.get(contextKey) === info) {
+            target = contextKey
+          } else {
+            // 按会话合并的那一条（#1556）：发它的界面已经放手或重新连了，
+            // 同一条下还失败着的别的界面接着用这个「重试」。
+            for (const [other, k] of connectErrorNotifyKeysRef.current) {
+              if (
+                other !== contextKey &&
+                k === key &&
+                connectErrors.has(other)
+              ) {
+                target = other
+                break
+              }
+            }
+          }
+          if (target === undefined) return
+          void reconnectRef.current?.(target).catch(() => {
             // A failed retry publishes (and notifies) its own failure.
           })
         },
         toastOnly: true,
       })
+      connectErrorNotifyKeysRef.current.set(contextKey, key)
       notify({
         level: "error",
-        key: connectErrorNotificationKey(contextKey),
+        key,
         title: info.title,
         description: info.detail,
         actions,
@@ -6742,8 +6783,19 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           notify({
             level: route.level,
             // One per connection and code: the same refusal twice in a row, or
-            // a second surface on the connection, refreshes it instead.
-            key: `acp-error:${connKey}:${e.code || e.message}`,
+            // a second surface on the connection, refreshes it instead. A
+            // connection that never came up is keyed per conversation instead
+            // (per surface before one is linked; #1556): a retry, or another
+            // surface on it, refused for the same reason is the same news.
+            key: acpErrorNotificationKey({
+              code: e.code,
+              message: e.message,
+              contextKey,
+              connectionId: nc?.connectionId,
+              conversationId:
+                lastConnectParamsRef.current.get(contextKey)?.conversationId,
+              agentType: nc?.agentType ?? (e.agent_type as string | undefined),
+            }),
             title: text,
             description: reason,
             evidence,

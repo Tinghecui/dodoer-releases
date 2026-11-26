@@ -6053,6 +6053,136 @@ describe("empty-turn error diagnostics", () => {
     ])
   })
 
+  it("keeps one entry per surface when every new connection is refused for the same reason (#1556)", async () => {
+    // 缺凭据：一次发送连了两次（发送前先连、失败后又连），两条连接都因为同一个
+    // 原因起不来。用户看到的是同一件事，只能有一条弹窗、一条告警。
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "error",
+      message: "Authentication required",
+      agent_type: "claude_code",
+      code: "agent_auth_required",
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "error",
+    })
+    expect(h.store!.getConnection(TAB)!.status).toBe("error")
+
+    h.acpConnect.mockResolvedValue("respawned-conn")
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+    })
+    expect(h.store!.getConnection(TAB)!.connectionId).toBe("respawned-conn")
+    emitAcpEvent(latestAttachHandlers(), {
+      seq: 1,
+      connection_id: "respawned-conn",
+      type: "error",
+      message: "Authentication required",
+      agent_type: "claude_code",
+      code: "agent_auth_required",
+    })
+
+    const keys = h.recordAlert.mock.calls.map(([alert]) => alert.key)
+    expect(keys).toHaveLength(2)
+    expect(keys[1]).toBe(keys[0])
+    const toastIds = h.toastError.mock.calls.map(
+      ([, options]) => (options as { id: string }).id
+    )
+    expect(toastIds).toHaveLength(2)
+    expect(toastIds[1]).toBe(toastIds[0])
+
+    // 别的界面（另一个会话）同样缺凭据，是它自己的一条。
+    h.acpConnect.mockResolvedValue("other-conn")
+    await act(async () => {
+      await h.actions!.connect("other-tab", "claude_code", "/tmp/y", "sess-2")
+    })
+    emitAcpEvent(latestAttachHandlers(), {
+      seq: 1,
+      connection_id: "other-conn",
+      type: "error",
+      message: "Authentication required",
+      agent_type: "claude_code",
+      code: "agent_auth_required",
+    })
+    const otherKey =
+      h.recordAlert.mock.calls[h.recordAlert.mock.calls.length - 1]![0].key
+    expect(otherKey).not.toBe(keys[0])
+  })
+
+  it("keeps one entry per conversation when two surfaces open it and both are refused (#1556)", async () => {
+    // 同一个会话同时开在工作区标签和画布卡片上：两个界面各连一次、都因为缺凭据
+    // 起不来，还是同一件事，只能有一条。
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    emitAcpEvent(latestAttachHandlers(), {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "error",
+      message: "Authentication required",
+      agent_type: "claude_code",
+      code: "agent_auth_required",
+    })
+
+    h.acpConnect.mockResolvedValue("canvas-conn")
+    await act(async () => {
+      await h.actions!.connect(
+        "canvas-card",
+        "claude_code",
+        "/tmp/x",
+        "sess-1",
+        42
+      )
+    })
+    emitAcpEvent(latestAttachHandlers(), {
+      seq: 1,
+      connection_id: "canvas-conn",
+      type: "error",
+      message: "Authentication required",
+      agent_type: "claude_code",
+      code: "agent_auth_required",
+    })
+
+    const keys = h.recordAlert.mock.calls.map(([alert]) => alert.key)
+    expect(keys).toHaveLength(2)
+    expect(keys[1]).toBe(keys[0])
+    const toastIds = h.toastError.mock.calls.map(
+      ([, options]) => (options as { id: string }).id
+    )
+    expect(toastIds).toHaveLength(2)
+    expect(toastIds[1]).toBe(toastIds[0])
+
+    // 另一个会话同样缺凭据，是它自己的一条。
+    h.acpConnect.mockResolvedValue("other-conn")
+    await act(async () => {
+      await h.actions!.connect(
+        "other-tab",
+        "claude_code",
+        "/tmp/x",
+        "sess-2",
+        43
+      )
+    })
+    emitAcpEvent(latestAttachHandlers(), {
+      seq: 1,
+      connection_id: "other-conn",
+      type: "error",
+      message: "Authentication required",
+      agent_type: "claude_code",
+      code: "agent_auth_required",
+    })
+    const otherKey =
+      h.recordAlert.mock.calls[h.recordAlert.mock.calls.length - 1]![0].key
+    expect(otherKey).not.toBe(keys[0])
+  })
+
   it("hydrates a snapshot's error as state — never as a notification", async () => {
     // It was notified when it happened; a re-attach (or a second client)
     // learning about it is not news.
@@ -9608,6 +9738,75 @@ describe("connect failures land on the surface that asked", () => {
       stale()
     })
     expect(h.acpConnect).not.toHaveBeenCalled()
+  })
+
+  // #1556：同一个会话开在工作区标签和画布卡片上，各连一次都直接失败（没进到
+  // 连接，没有 ACP error 事件），只留一条弹窗和告警；一个界面放手时另一个界面
+  // 还失败着，那一条不收走。另一个会话有自己的一条。
+  it("keeps one connect failure per conversation across surfaces (#1556)", async () => {
+    const CARD = "canvas-card"
+    const OTHER = "conv-2-claude_code-43"
+    h.acpConnect.mockRejectedValue(new Error("spawn claude ENOENT"))
+    await mountProvider()
+    for (const key of [TAB, CARD]) {
+      await act(async () => {
+        await expect(
+          h.actions!.connect(key, "claude_code", "/tmp/x", "sess-1", 42)
+        ).rejects.toThrow("spawn claude ENOENT")
+      })
+    }
+    const ids = h.toastError.mock.calls.map((call) => toastOptions(call).id)
+    expect(ids).toHaveLength(2)
+    expect(ids[1]).toBe(ids[0])
+    const alertKeys = h.recordAlert.mock.calls.map(([a]) => a.key)
+    expect(alertKeys[1]).toBe(alertKeys[0])
+
+    await act(async () => {
+      await h.actions!.disconnect(CARD)
+    })
+    expect(h.store!.getConnectError(TAB)).toBeDefined()
+    expect(h.resolveAlert).not.toHaveBeenCalledWith(alertKeys[0])
+    expect(h.toastDismiss).not.toHaveBeenCalledWith(ids[0])
+
+    await act(async () => {
+      await expect(
+        h.actions!.connect(OTHER, "claude_code", "/tmp/x", "sess-2", 43)
+      ).rejects.toThrow("spawn claude ENOENT")
+    })
+    expect(toastOptions(h.toastError.mock.calls[2]).id).not.toBe(ids[0])
+
+    await act(async () => {
+      await h.actions!.disconnect(TAB)
+    })
+    expect(h.resolveAlert).toHaveBeenCalledWith(alertKeys[0])
+    expect(h.toastDismiss).toHaveBeenCalledWith(ids[0])
+  })
+
+  // #1556：合用的那一条的「重试」绑的是最后失败的界面；那个界面放手了、另一个
+  // 界面还失败着，留下的这一条点「重试」要重连还失败着的那个界面。
+  it("retries the surface still failing after the last one to fail lets go (#1556)", async () => {
+    const CARD = "canvas-card"
+    h.acpConnect.mockRejectedValue(new Error("spawn claude ENOENT"))
+    await mountProvider()
+    for (const key of [TAB, CARD]) {
+      await act(async () => {
+        await expect(
+          h.actions!.connect(key, "claude_code", "/tmp/x", "sess-1", 42)
+        ).rejects.toThrow("spawn claude ENOENT")
+      })
+    }
+    const retry = toastOptions(h.toastError.mock.calls[1]).action!.onClick
+    await act(async () => {
+      await h.actions!.disconnect(CARD)
+    })
+    expect(h.store!.getConnectError(TAB)).toBeDefined()
+
+    h.acpConnect.mockClear()
+    await act(async () => {
+      retry()
+    })
+    expect(h.acpConnect).toHaveBeenCalledTimes(1)
+    expect(h.store!.getConnectError(CARD)).toBeUndefined()
   })
 
   // #141: the agent was disabled when the tab connected; enabling it again in

@@ -114,6 +114,51 @@ export function routeAcpError(code: string | null | undefined): AcpErrorRoute {
   return (code && ROUTES[code]) || DEFAULT_ROUTE
 }
 
+/**
+ * Cowork 加的（#1556）：连接没建起来的原因（缺登录凭据、版本太旧、没装完整、
+ * 拉不起进程……）。这些跟是哪一条连接无关：同一个会话重连一次还是同一个原因，
+ * 用户看到的是同一件事。
+ */
+const CONNECT_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "agent_auth_required",
+  "agent_runtime_outdated",
+  "agent_install_broken",
+  "sdk_not_installed",
+  "platform_not_supported",
+  "spawn_failed",
+  "download_failed",
+  "initialize_timeout",
+  "mcp_rejected_by_agent",
+])
+
+/**
+ * 一条 ACP `error` 的弹窗和告警用哪个 key（同一个 key 只更新原来那条）。
+ * 一般按连接和代码算：同一条连接上同一个报错只留一条。连接没建起来的原因按
+ * 会话（`conversationId`）、智能体和代码算，不带连接 id：一次发送先连一次、
+ * 失败后又连一次，或者同一个会话开在工作区标签和画布卡片上各连一次，都因为缺
+ * 凭据起不来，只该有一条（#1556）。还没有存下来的会话（没有 `conversationId`）
+ * 退回按界面（`contextKey`）算。
+ */
+export function acpErrorNotificationKey(input: {
+  code: string | null | undefined
+  message: string
+  contextKey: string
+  connectionId?: string | null
+  conversationId?: number | null
+  agentType?: string | null
+}): string {
+  const { code, message, contextKey, connectionId, conversationId, agentType } =
+    input
+  if (code && CONNECT_FAILURE_CODES.has(code)) {
+    const owner =
+      conversationId != null && conversationId > 0
+        ? `conversation-${conversationId}`
+        : contextKey
+    return `acp-error:${owner}:${agentType ?? ""}:${code}`
+  }
+  return `acp-error:${connectionId ?? contextKey}:${code || message}`
+}
+
 /** OS notifications are for a session that broke while the user was away —
  *  not for warnings, and not for the answer to a click. */
 export function acpErrorNotifiesDesktop(route: AcpErrorRoute): boolean {

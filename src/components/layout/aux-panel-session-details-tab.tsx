@@ -1,12 +1,18 @@
 "use client"
 
 import { useCallback, useMemo, useState } from "react"
-import { useTranslations } from "next-intl"
+import { useLocale, useTranslations } from "next-intl"
 import { useShallow } from "zustand/react/shallow"
 import { useTabStore } from "@/contexts/tab-context"
 import { useConversationRuntimeStore } from "@/stores/conversation-runtime-store"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useCoworkTeamStore } from "@/stores/cowork-team-store"
+import {
+  useCoworkTeamStore,
+  type SharedSessionInfo,
+  type SharedSessionTarget,
+} from "@/stores/cowork-team-store"
+import type { TeamSessionState } from "@/lib/cowork/team"
+import { formatTimeAgo } from "@/lib/relative-time"
 import {
   projectRuntimeSessionDetails,
   resolveActiveSessionDetailsFromSnapshot,
@@ -32,11 +38,11 @@ import { SessionDetailsInsights } from "./session-details-insights"
  */
 export function SessionDetailsTab() {
   const t = useTranslations("Folder.sessionDetails")
-  const tTeam = useTranslations("CoworkTeam")
-  // 主区域盖着只读分享视图时（#1457），下面自己的会话还是活动标签；这里只认
-  // 活动标签，接着画会把自己的会话当成正在看的那条。改成一句说明，关掉视图后
-  // 自动回到原样。
+  // 主区域盖着只读分享视图时（#1457、#1515），下面自己的会话还是活动标签；
+  // 这里只认活动标签，接着画会把自己的会话当成正在看的那条。改成画分享会话
+  // 本身的卡片，关掉视图后自动回到原样。
   const viewing = useCoworkTeamStore((s) => (s.available ? s.viewing : null))
+  const viewingInfo = useCoworkTeamStore((s) => s.viewingInfo)
   const { isOpen, activeTab } = useAuxPanelContext()
   const active = isOpen && activeTab === "session_details"
 
@@ -89,12 +95,15 @@ export function SessionDetailsTab() {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {viewing ? (
-        <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
-          {tTeam("sharedViewSessionDetails", {
-            owner: viewing.ownerLabel || viewing.owner,
-            title: viewing.title || tTeam("untitled"),
-          })}
-        </div>
+        <SharedSessionDetails
+          target={viewing}
+          info={
+            viewingInfo?.owner === viewing.owner &&
+            viewingInfo.id === viewing.id
+              ? viewingInfo
+              : null
+          }
+        />
       ) : summary ? (
         <ScrollArea
           className="min-h-0 flex-1"
@@ -117,6 +126,77 @@ export function SessionDetailsTab() {
           {t("noActiveSession")}
         </div>
       )}
+    </div>
+  )
+}
+
+const SHARED_STATE_KEYS = {
+  running: "stateRunning",
+  waiting: "stateWaiting",
+  done: "stateDone",
+} as const satisfies Record<TeamSessionState, string>
+
+/**
+ * 只读分享视图开着时的卡片（#1515）：只画服务端给的几项（标题、主人、怎么
+ * 看到的、状态、最后更新）。计划、消息导航这些只有本机的会话才有，不画。
+ */
+function SharedSessionDetails({
+  target,
+  info,
+}: {
+  target: SharedSessionTarget
+  info: SharedSessionInfo | null
+}) {
+  const t = useTranslations("CoworkTeam")
+  const locale = useLocale()
+  const agent = info?.agent ?? null
+  const gone = info !== null && agent === null
+  const ownerLabel = agent?.ownerLabel || target.ownerLabel || target.owner
+  const title = agent?.title || target.title || t("untitled")
+  const via =
+    target.via.kind === "leader"
+      ? t("sharedViewViaLeader", { group: target.via.groupName })
+      : t("sharedViewViaShared", { owner: ownerLabel })
+  const updatedAt = agent ? Date.parse(agent.updatedAt) : NaN
+  const rows: Array<[string, string]> = [
+    [t("sharedDetailsOwner"), ownerLabel],
+    [t("sharedDetailsAccess"), via],
+  ]
+  if (gone) rows.push([t("sharedDetailsStatus"), t("sharedViewGone")])
+  else if (!agent) rows.push([t("sharedDetailsStatus"), t("sharedViewLoading")])
+  else {
+    rows.push([t("sharedDetailsStatus"), t(SHARED_STATE_KEYS[agent.state])])
+    if (Number.isFinite(updatedAt) && info)
+      rows.push([
+        t("sharedDetailsUpdated"),
+        formatTimeAgo(updatedAt, info.fetchedAt, locale),
+      ])
+  }
+
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto p-3 text-sm">
+      <section
+        data-shared-session-details=""
+        className="min-w-0 space-y-2 rounded-lg border border-border p-3"
+      >
+        <div className="min-w-0">
+          <h3 className="break-words font-medium">{title}</h3>
+          <p className="text-[0.75rem] text-muted-foreground">
+            {t("sharedViewReadOnly")}
+          </p>
+        </div>
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[0.8125rem]">
+          {rows.map(([label, value]) => (
+            <div key={label} className="contents">
+              <dt className="text-muted-foreground">{label}</dt>
+              <dd className="min-w-0 break-words">{value}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="text-[0.75rem] text-muted-foreground">
+          {t("sharedViewSessionDetails")}
+        </p>
+      </section>
     </div>
   )
 }

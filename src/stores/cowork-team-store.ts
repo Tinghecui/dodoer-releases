@@ -2,6 +2,7 @@ import { create } from "zustand"
 import type {
   CoworkTeamStatus,
   CoworkTeamSummary,
+  TeamAgentInfo,
   TeamSharedItem,
 } from "@/lib/cowork/team"
 
@@ -24,6 +25,18 @@ export interface SharedSessionTarget {
   via: { kind: "shared" } | { kind: "leader"; groupName: string }
 }
 
+/**
+ * 只读视图最近一次拉到的会话信息（#1515）：辅助面板的「会话详情」靠它画
+ * 分享会话的卡片。`agent` 为 null 是对方取消了分享、或者我已经不在组里。
+ */
+export interface SharedSessionInfo {
+  owner: string
+  id: string
+  agent: TeamAgentInfo | null
+  /** 拉到的时间，「几分钟前」以它为参照。 */
+  fetchedAt: number
+}
+
 export interface CoworkTeamState {
   /** 最近一次 `status` 说可用时的结果；不可用时是 null。 */
   status: CoworkTeamStatus | null
@@ -35,6 +48,8 @@ export interface CoworkTeamState {
   summary: CoworkTeamSummary | null
   /** 主区域盖着的只读视图在看哪个会话；没开是 null。 */
   viewing: SharedSessionTarget | null
+  /** `viewing` 那个会话最近一次拉到的信息；还没拉到、没开视图时是 null。 */
+  viewingInfo: SharedSessionInfo | null
   /**
    * 每打开一次（含再点同一条）加一：外壳靠它在每次打开时都回到会话区域，
    * 只看 `viewing` 的话，再点同一条时它没变、不会再回。
@@ -49,6 +64,15 @@ export interface CoworkTeamState {
   openSharedSession: (target: SharedSessionTarget) => void
   /** 收起只读视图，下面的会话原样还在。 */
   closeSharedSession: () => void
+  /**
+   * 只读视图拉到（或确认没有了，`agent` 给 null）会话信息时写进来；不是
+   * 当前 `viewing` 的那条（已经换看别的、已经收起）不记。
+   */
+  setViewingAgent: (
+    target: { owner: string; id: string },
+    agent: TeamAgentInfo | null,
+    fetchedAt: number
+  ) => void
 }
 
 const INITIAL = {
@@ -57,6 +81,7 @@ const INITIAL = {
   probed: false,
   summary: null,
   viewing: null,
+  viewingInfo: null,
   openCount: 0,
 } as const
 
@@ -79,14 +104,43 @@ export const useCoworkTeamStore = create<CoworkTeamState>((set) => ({
       probed: true,
       summary: null,
       viewing: null,
+      viewingInfo: null,
     }),
   reset: () => set({ ...INITIAL }),
   openSharedSession: (target) =>
     set((state) =>
-      state.available ? { viewing: target, openCount: state.openCount + 1 } : {}
+      state.available
+        ? {
+            viewing: target,
+            // 换看另一条时丢掉上一条的；再点同一条时留着，等新一次拉到再换。
+            viewingInfo:
+              state.viewingInfo?.owner === target.owner &&
+              state.viewingInfo.id === target.id
+                ? state.viewingInfo
+                : null,
+            openCount: state.openCount + 1,
+          }
+        : {}
     ),
   closeSharedSession: () =>
-    set((state) => (state.viewing ? { viewing: null } : {})),
+    set((state) =>
+      state.viewing || state.viewingInfo
+        ? { viewing: null, viewingInfo: null }
+        : {}
+    ),
+  setViewingAgent: (target, agent, fetchedAt) =>
+    set((state) =>
+      state.viewing?.owner === target.owner && state.viewing.id === target.id
+        ? {
+            viewingInfo: {
+              owner: target.owner,
+              id: target.id,
+              agent,
+              fetchedAt,
+            },
+          }
+        : {}
+    ),
 }))
 
 /** 团队功能可不可用（界面决定画不画入口只看这个）。 */

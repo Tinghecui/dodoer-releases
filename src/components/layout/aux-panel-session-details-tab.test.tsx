@@ -335,50 +335,134 @@ describe("SessionDetailsTab", () => {
     expect(lastInsightsProps()?.active).toBe(false)
   })
 
-  // #1457：主区域盖着只读分享视图时，下面自己的会话还是活动标签；面板不能
-  // 把它当成正在看的会话显示出来。
+  // #1457 / #1515：主区域盖着只读分享视图时，下面自己的会话还是活动标签；
+  // 面板显示的是正在看的分享会话（标题、主人、怎么看到的、状态、更新时间），
+  // 不能把下面自己的会话当成正在看的那条。
   describe("while a colleague's shared conversation is open read-only", () => {
-    function openShared(title = "Release notes") {
+    function openShared(
+      title = "Release notes",
+      via: { kind: "shared" } | { kind: "leader"; groupName: string } = {
+        kind: "shared",
+      }
+    ) {
       useCoworkTeamStore.setState({ available: true })
       useCoworkTeamStore.getState().openSharedSession({
         owner: "member-b",
         ownerLabel: "Robin",
         id: "s-1",
         title,
-        via: { kind: "shared" },
+        via,
       })
     }
 
-    it("says the details are for your own conversations, not yours under it", () => {
+    function pulled(
+      over: Partial<{
+        title: string
+        state: "running" | "waiting" | "done"
+      }> = {}
+    ) {
+      act(() =>
+        useCoworkTeamStore.getState().setViewingAgent(
+          { owner: "member-b", id: "s-1" },
+          {
+            owner: "member-b",
+            ownerLabel: "Robin",
+            id: "s-1",
+            title: over.title ?? "Release notes v2",
+            state: over.state ?? "waiting",
+            updatedAt: "2026-06-12T11:55:00.000Z",
+          },
+          Date.parse("2026-06-12T12:00:00.000Z")
+        )
+      )
+    }
+
+    function detailRows(getAllByRole: (role: string) => HTMLElement[]) {
+      return getAllByRole("term").map((term) => [
+        term.textContent,
+        term.nextElementSibling?.textContent,
+      ])
+    }
+
+    it("shows the shared conversation's details, not yours under it", () => {
       setupScene({ hasActiveConversation: true })
       openShared()
-      const { getByText, queryByText, queryByTestId, queryByRole } = renderTab()
-      expect(
-        getByText(
-          "Viewing Robin's conversation “Release notes” read-only. Session details are only available for your own conversations."
-        )
-      ).toBeInTheDocument()
+      const { getByText, queryByText, queryByTestId, getAllByRole } =
+        renderTab()
+      pulled()
+      expect(getByText("Release notes v2")).toBeInTheDocument()
+      expect(detailRows(getAllByRole)).toEqual([
+        ["Owner", "Robin"],
+        ["Access", "Shared by Robin"],
+        ["Status", "Waiting for an answer"],
+        ["Last updated", "5 minutes ago"],
+      ])
       expect(queryByText("My session")).toBeNull()
-      expect(queryByRole("term")).toBeNull()
+      expect(queryByTestId("session-agent-avatar")).toBeNull()
       expect(queryByTestId("session-insights")).toBeNull()
+    })
+
+    it("says loading for what it hasn't pulled yet", () => {
+      setupScene({ hasActiveConversation: true })
+      openShared()
+      const { getByText, getAllByRole, queryByText } = renderTab()
+      expect(getByText("Release notes")).toBeInTheDocument()
+      expect(detailRows(getAllByRole)).toEqual([
+        ["Owner", "Robin"],
+        ["Access", "Shared by Robin"],
+        ["Status", "Loading…"],
+      ])
+      expect(queryByText("My session")).toBeNull()
+    })
+
+    it("says a leader sees it through their group", () => {
+      setupScene({ hasActiveConversation: true })
+      openShared("Release notes", { kind: "leader", groupName: "Platform" })
+      const { getAllByRole } = renderTab()
+      expect(detailRows(getAllByRole)[1]).toEqual([
+        "Access",
+        "You lead Platform",
+      ])
     })
 
     it("names an untitled one as such", () => {
       setupScene({ hasActiveConversation: true })
       openShared("")
       const { getByText } = renderTab()
-      expect(
-        getByText(/^Viewing Robin's conversation “Untitled conversation”/)
-      ).toBeInTheDocument()
+      expect(getByText("Untitled conversation")).toBeInTheDocument()
+    })
+
+    it("ignores details pulled for another shared conversation", () => {
+      setupScene({ hasActiveConversation: true })
+      openShared()
+      const { queryByText } = renderTab()
+      act(() =>
+        useCoworkTeamStore.getState().setViewingAgent(
+          { owner: "member-c", id: "s-9" },
+          {
+            owner: "member-c",
+            ownerLabel: "Sam",
+            id: "s-9",
+            title: "Someone else",
+            state: "done",
+            updatedAt: "2026-06-12T11:55:00.000Z",
+          },
+          Date.parse("2026-06-12T12:00:00.000Z")
+        )
+      )
+      expect(queryByText("Someone else")).toBeNull()
     })
 
     it("goes back to your own conversation once it's closed", () => {
       setupScene({ hasActiveConversation: true })
       openShared()
       const { getByText, queryByText } = renderTab()
+      pulled()
       act(() => useCoworkTeamStore.getState().closeSharedSession())
-      expect(queryByText(/^Viewing Robin's/)).toBeNull()
+      expect(queryByText("Release notes v2")).toBeNull()
       expect(getByText("My session")).toBeTruthy()
+      // 收起后再开另一条，不会带着上一条拉到的详情。
+      expect(useCoworkTeamStore.getState().viewingInfo).toBeNull()
     })
   })
 })

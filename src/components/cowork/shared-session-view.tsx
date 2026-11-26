@@ -174,6 +174,7 @@ function SharedSessionView({
   const stickToBottom = useRef(true)
 
   const { owner, id } = target
+  const setViewingAgent = useCoworkTeamStore((s) => s.setViewingAgent)
   const comments = useSessionComments(owner, id, false)
   const setCommentTarget = comments.setTarget
 
@@ -197,10 +198,13 @@ function SharedSessionView({
             after = fresh[fresh.length - 1].seq
             setEntries((prev) => [...prev, ...fresh])
           }
+          const at = Date.now()
           setAgent(page.agent)
           setLoaded(true)
           setError(null)
-          setNow(Date.now())
+          setNow(at)
+          // 辅助面板的「会话详情」画的是这一条（#1515）。
+          setViewingAgent({ owner, id }, page.agent, at)
         },
         (err: unknown) => {
           inFlight = false
@@ -215,6 +219,7 @@ function SharedSessionView({
             setEntries([])
             setAgent(null)
             setGone(true)
+            setViewingAgent({ owner, id }, null, Date.now())
             return
           }
           setError(noteTeamError("entries", e))
@@ -232,7 +237,7 @@ function SharedSessionView({
       clearInterval(timer)
       document.removeEventListener("visibilitychange", onVisibility)
     }
-  }, [owner, id])
+  }, [owner, id, setViewingAgent])
 
   // 停在底部时，新内容进来跟着滚到底；往上翻着看时不打扰。
   useLayoutEffect(() => {

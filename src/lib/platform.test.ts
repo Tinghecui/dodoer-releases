@@ -47,6 +47,8 @@ vi.mock("@tauri-apps/api/window", () => ({
 import { navigateInPage, setInPageRouter } from "@/lib/in-page-navigation"
 import {
   closeAppWindow,
+  closeCurrentWindow,
+  leaveProjectBoot,
   openFileDialog,
   openPath,
   openUrl,
@@ -338,5 +340,106 @@ describe("closeAppWindow 在当前页打开以后", () => {
     await expect(closeAppWindow()).resolves.toBe(true)
     expect(router.back).toHaveBeenCalledTimes(1)
     expect(close).not.toHaveBeenCalled()
+  })
+})
+
+// #1354：新建项目页直接用链接打开（没有当前页打开的记录）时，建好项目离开要
+// 回到工作区，不能停在新建项目页，也不能退回到别的网站
+describe("leaveProjectBoot 在手机布局下", () => {
+  const router = { push: vi.fn(), back: vi.fn() }
+  let unregister: () => void = () => {}
+
+  beforeEach(() => {
+    router.push.mockReset()
+    router.back.mockReset()
+    unregister = setInPageRouter(router)
+    window.history.replaceState({}, "", "/project-boot")
+  })
+
+  afterEach(() => {
+    navigateInPage("/workspace")
+    unregister()
+    window.history.replaceState({}, "", "/")
+    vi.restoreAllMocks()
+  })
+
+  function stubMobile(matches: boolean) {
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (query: string) =>
+        ({
+          matches,
+          media: query,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList
+    )
+  }
+
+  it("没有历史记录：回到工作区", async () => {
+    stubMobile(true)
+    vi.spyOn(window.history, "length", "get").mockReturnValue(1)
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {})
+    await leaveProjectBoot()
+    expect(router.push).toHaveBeenCalledWith("/workspace")
+    expect(router.back).not.toHaveBeenCalled()
+    expect(back).not.toHaveBeenCalled()
+  })
+
+  it("直接打开、标签页里有别的历史：也回到工作区，不后退", async () => {
+    stubMobile(true)
+    vi.spyOn(window.history, "length", "get").mockReturnValue(4)
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {})
+    await leaveProjectBoot()
+    expect(router.push).toHaveBeenCalledWith("/workspace")
+    expect(router.back).not.toHaveBeenCalled()
+    expect(back).not.toHaveBeenCalled()
+  })
+
+  it("带 opener 的链接打开的：手机上也回到工作区", async () => {
+    stubMobile(true)
+    vi.stubGlobal("opener", {})
+    vi.spyOn(window.history, "length", "get").mockReturnValue(1)
+    await leaveProjectBoot()
+    vi.unstubAllGlobals()
+    expect(router.push).toHaveBeenCalledWith("/workspace")
+  })
+
+  it("从工作区在当前页打开的：后退回工作区", async () => {
+    stubMobile(true)
+    navigateInPage("/project-boot")
+    router.push.mockReset()
+    vi.spyOn(window.history, "length", "get").mockReturnValue(3)
+    await leaveProjectBoot()
+    expect(router.back).toHaveBeenCalledTimes(1)
+    expect(router.push).not.toHaveBeenCalled()
+  })
+
+  it("宽屏网页版照旧后退", async () => {
+    stubMobile(false)
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {})
+    await leaveProjectBoot()
+    expect(back).toHaveBeenCalledTimes(1)
+    expect(router.push).not.toHaveBeenCalled()
+  })
+})
+
+// 工作区里关闭当前窗口的快捷键也走 closeCurrentWindow：宽窄都照旧后退，
+// 不被新建项目页的离开方式带走
+describe("closeCurrentWindow", () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it("手机布局下照旧后退", async () => {
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (query: string) =>
+        ({
+          matches: true,
+          media: query,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList
+    )
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {})
+    await closeCurrentWindow()
+    expect(back).toHaveBeenCalledTimes(1)
   })
 })

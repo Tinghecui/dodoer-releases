@@ -52,7 +52,11 @@ export function setInPageRouter(router: InPageRouter): () => void {
  * 放在 sessionStorage 里，在那一页上刷新以后还在；sessionStorage 用不了时退回
  * 内存。离开那个页面时不清（第 3 次返工）：按返回只退回上一个设置分区、用浏览器
  * 后退再前进回到那一页，都还在当前页打开的历史里。只有回到工作区
- * （{@link navigateInPage} 去 `/workspace`）时整个清空，那时往前的历史也没了。
+ * （{@link navigateInPage} 去 `/workspace`）时整个清空，那时往前的历史也没了；
+ * 用户直接打开某一页（整页载入）时也整个清空
+ * （{@link forgetInPageRecordIfOpenedDirectly}）。被清掉以后用浏览器后退前进
+ * 回到当初在当前页打开的那一条历史，靠记在那条历史上的标记补回来
+ * （{@link syncInPageHistoryEntry}）。
  * `window.open` 另开的窗口会复制一份 sessionStorage，所以另开那一下把记录先藏起来
  * （{@link withoutInPageRecord}），新窗口复制到的是空的。
  */
@@ -109,6 +113,114 @@ function writeOpenedRoots(roots: string[]): void {
   writeStored(OPENED_IN_PAGE_KEY, roots.length ? JSON.stringify(roots) : null)
 }
 
+/**
+ * 整页跳过去（{@link navigateInPage} 还没注册路由时）之前记下去的是哪一段：
+ * 那一下在新页面看来也是「直接打开」，靠它认出来，不把记录当成过期的清掉。
+ */
+const ASSIGNING_KEY = "codeg.inPage.assigning"
+
+/** 这个页面是怎么载入的（`navigate` / `reload` / `back_forward`），拿不到就是 null。 */
+function documentNavigationType(): string | null {
+  try {
+    if (typeof performance === "undefined") return null
+    const entry = performance.getEntriesByType("navigation")[0] as
+      | PerformanceNavigationTiming
+      | undefined
+    return entry?.type ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 页面整页载入时跑一次（#1354 第 2 次返工）：这一页是用户直接打开的（地址栏
+ * 输入、点外面的链接，载入方式是 `navigate`），这个文档里就没有在当前页打开
+ * 过的历史，标签页之前留下的记录都是过期的，清掉。不然之前在当前页打开过
+ * 提交页、新建项目页，后来离开了，再直接输入它的地址，做完会被当成在当前页
+ * 打开的，后退到别的页面甚至外部网站，而不是关掉或回到工作区。刷新
+ * （`reload`）、浏览器后退前进（`back_forward`）照旧留着；在当前页里跳转是
+ * 客户端路由，不会整页载入，也不经过这里。
+ */
+export function forgetInPageRecordIfOpenedDirectly(): void {
+  if (typeof window === "undefined") return
+  const assigning = readStored(ASSIGNING_KEY)
+  if (assigning !== null) writeStored(ASSIGNING_KEY, null)
+  if (documentNavigationType() !== "navigate") {
+    restoreInPageRecordFromHistoryEntry()
+    return
+  }
+  if (assigning !== null && assigning === rootOf(window.location.pathname))
+    return
+  writeOpenedRoots([])
+}
+
+/**
+ * 记在这一条浏览器历史上（`history.state` 里）的「这一页是在当前页打开的」
+ * （#1354 第 3 次返工）。标签页的记录会被中途某次直接打开清掉；之后用浏览器
+ * 后退前进回到这一条历史（整页载入也好、客户端路由也好），靠它把记录补回来，
+ * 宽屏下做完照旧返回，不会被当成另开的窗口去关、关不掉又回不去。
+ * `history.state` 跟着那一条历史走，直接打开的新历史上没有它。
+ */
+const HISTORY_ENTRY_KEY = "__codegInPageRoot"
+
+function historyEntryRoot(): string | null {
+  try {
+    const state: unknown = window.history.state
+    if (state && typeof state === "object") {
+      const root = (state as Record<string, unknown>)[HISTORY_ENTRY_KEY]
+      if (typeof root === "string") return root
+    }
+  } catch {
+    // 读不到就当没有
+  }
+  return null
+}
+
+/** 这一条历史上记着是在当前页打开的、而标签页的记录里没有：补回去。 */
+function restoreInPageRecordFromHistoryEntry(): void {
+  const root = rootOf(window.location.pathname)
+  if (historyEntryRoot() !== root) return
+  const roots = readOpenedRoots()
+  if (!roots.includes(root)) writeOpenedRoots([...roots, root])
+}
+
+/**
+ * 页面挂上、路径变了以后跑（`InPageRouterInit`）：先按这一条历史上的标记把
+ * 记录补回来；这一页是在当前页打开的，就给这一条历史记上标记。用
+ * `replaceState` 只改这一条历史的 state，保留 Next 自己的那几项、不改地址。
+ */
+export function syncInPageHistoryEntry(): void {
+  if (typeof window === "undefined") return
+  restoreInPageRecordFromHistoryEntry()
+  const root = rootOf(window.location.pathname)
+  if (!readOpenedRoots().includes(root)) return
+  if (historyEntryRoot() === root) return
+  try {
+    const state: unknown = window.history.state
+    window.history.replaceState(
+      {
+        ...(state && typeof state === "object" ? state : {}),
+        [HISTORY_ENTRY_KEY]: root,
+      },
+      ""
+    )
+  } catch {
+    // 记不上就只靠标签页的记录
+  }
+}
+
+forgetInPageRecordIfOpenedDirectly()
+
+// 浏览器后退前进时可能直接从 bfcache 恢复这一页（#1354 第 4 次返工）：模块不
+// 重新载入、组件不重新挂上、路径也没变，上面那一下和 `InPageRouterInit` 都不会
+// 再跑，而中间直接打开的页面可能已经把标签页的记录清掉了。只有 `pageshow`
+// （`persisted` 为真）告诉我们回来了，这时按这一条历史上的标记补回记录。
+if (typeof window !== "undefined") {
+  window.addEventListener("pageshow", (event) => {
+    if ((event as PageTransitionEvent).persisted) syncInPageHistoryEntry()
+  })
+}
+
 /** 现在这一页是不是在当前页里打开的（由 {@link navigateInPage} 打开）。 */
 export function wasOpenedInPage(): boolean {
   if (typeof window === "undefined") return false
@@ -128,6 +240,7 @@ export function navigateInPage(path: string): void {
     inPageRouter.push(path)
     return
   }
+  writeStored(ASSIGNING_KEY, root)
   window.location.assign(path)
 }
 
@@ -177,12 +290,45 @@ export function withoutInPageRecord<T>(fn: () => T): T {
  * （没有 opener），就当成在当前页里。
  */
 export function leaveIfOpenedInPage(): boolean {
-  if (!wasOpenedInPage()) {
-    if (!isMobileLayout()) return false
-    if (window.opener) return false
-  }
+  if (!isInPageContext()) return false
   leaveInPage()
   return true
+}
+
+/**
+ * 这一页算不算在当前页里：有打开时的记录，或者（没有记录时，比如直接用链接
+ * 打开、恢复的页面）手机布局、而且不是脚本另开的窗口。{@link leaveIfOpenedInPage}
+ * 和新建项目页记待打开文件夹（#1354）用同一条，离开的方式和交接对得上。
+ */
+export function isInPageContext(): boolean {
+  if (typeof window === "undefined") return false
+  if (wasOpenedInPage()) return true
+  return isMobileLayout() && !window.opener
+}
+
+/**
+ * 新建项目页建好项目以后，要不要在这一页里回到工作区、由工作区接着打开新项目
+ * （#1354）：从工作区在当前页打开的（有记录），或者手机布局（直接用链接打开、
+ * 恢复的、带 opener 的链接另开的都算：手机上没有另一个开着的工作区窗口可指望）。
+ * 记待打开文件夹和 {@link leaveProjectBootToWorkspace} 用同一条，交接和离开对得上。
+ */
+export function isProjectBootInPage(): boolean {
+  if (typeof window === "undefined") return false
+  return wasOpenedInPage() || isMobileLayout()
+}
+
+/**
+ * 新建项目页建好以后离开（#1354）：从工作区在当前页打开、有历史可退的，后退
+ * 回工作区；其他情况（直接打开的，不管标签页里之前是什么页面）直接去工作区，
+ * 不退回别的网站或页面。
+ */
+export function leaveProjectBootToWorkspace(): void {
+  if (wasOpenedInPage() && window.history.length > 1) {
+    if (inPageRouter) inPageRouter.back()
+    else window.history.back()
+    return
+  }
+  navigateInPage(IN_PAGE_HOME_PATH)
 }
 
 /**

@@ -75,30 +75,57 @@ describe("手机布局下在当前页打开", () => {
       "设置",
       () => openSettingsWindow("appearance"),
       "/settings/appearance?locale=en",
+      "open_settings_window",
+      { section: "appearance", agentType: null, focus: null },
     ],
-    ["推送", () => openPushWindow(7, "dev"), "/push?folderId=7&branch=dev"],
-    ["stash", () => openStashWindow(7), "/stash?folderId=7"],
+    [
+      "推送",
+      () => openPushWindow(7, "dev"),
+      "/push?folderId=7&branch=dev",
+      "open_push_window",
+      { folderId: 7, branch: "dev" },
+    ],
+    [
+      "stash",
+      () => openStashWindow(7),
+      "/stash?folderId=7",
+      "open_stash_window",
+      { folderId: 7 },
+    ],
     [
       "合并",
       () => openMergeWindow(7, "merge", "abc"),
       "/merge?folderId=7&operation=merge",
+      "open_merge_window",
+      { folderId: 7, operation: "merge", upstreamCommit: "abc" },
     ],
     [
       "导入会话",
       () => openImportSessionsWindow({ focusPath: "/tmp/demo" }),
       "/import-sessions?focusPath=%2Ftmp%2Fdemo",
+      "open_import_sessions_window",
+      { focusPath: "/tmp/demo" },
     ],
-  ])("%s：导航到后端给的路径，不开新窗口", async (_name, open, path) => {
-    stubMatchMedia(true)
-    const winOpen = vi.spyOn(window, "open")
-    mocks.call.mockResolvedValue({ path })
+  ])(
+    "%s：带着参数问后端要路径，导航过去，不开新窗口",
+    async (_name, open, path, command, args) => {
+      stubMatchMedia(true)
+      const winOpen = vi.spyOn(window, "open")
+      mocks.call.mockResolvedValue({ path })
 
-    await open()
+      await open()
 
-    expect(mocks.push).toHaveBeenCalledWith(path)
-    expect(winOpen).not.toHaveBeenCalled()
-    expect(mocks.shellCall).not.toHaveBeenCalled()
-  })
+      // 参数漏传时后端给的路径不对，光看导航不够（#1354）
+      expect(mocks.call).toHaveBeenCalledTimes(1)
+      expect(mocks.call).toHaveBeenCalledWith(
+        command,
+        expect.objectContaining(args)
+      )
+      expect(mocks.push).toHaveBeenCalledWith(path)
+      expect(winOpen).not.toHaveBeenCalled()
+      expect(mocks.shellCall).not.toHaveBeenCalled()
+    }
+  )
 
   it("提交：带上勾选的路径参数", async () => {
     stubMatchMedia(true)
@@ -107,6 +134,10 @@ describe("手机布局下在当前页打开", () => {
 
     await openCommitWindow(7, { paths: ["src/a.ts"] })
 
+    expect(mocks.call).toHaveBeenCalledWith(
+      "open_commit_window",
+      expect.objectContaining({ folderId: 7 })
+    )
     expect(winOpen).not.toHaveBeenCalled()
     expect(mocks.push).toHaveBeenCalledTimes(1)
     const pushed = String(mocks.push.mock.calls[0][0])
@@ -222,6 +253,33 @@ describe("openFolderInWorkspace", () => {
       path: "/tmp/demo-app",
     })
     expect(takePendingWorkspaceFolder()).toEqual(detail)
+  })
+
+  it("手机上直接打开的新建项目页（没有当前页打开的记录）也记下来", async () => {
+    stubMatchMedia(true)
+    window.history.replaceState({}, "", "/project-boot")
+    mocks.call.mockResolvedValue(detail)
+    await openFolderInWorkspace("/tmp/demo-app")
+    expect(takePendingWorkspaceFolder()).toEqual(detail)
+  })
+
+  it("手机上带 opener 的链接另开的新建项目页也记下来（建好会回到工作区）", async () => {
+    stubMatchMedia(true)
+    vi.stubGlobal("opener", {})
+    window.history.replaceState({}, "", "/project-boot")
+    mocks.call.mockResolvedValue(detail)
+    await openFolderInWorkspace("/tmp/demo-app")
+    vi.unstubAllGlobals()
+    expect(takePendingWorkspaceFolder()).toEqual(detail)
+  })
+
+  it("桌面版窗口窄也不记（广播收得到）", async () => {
+    stubMatchMedia(true)
+    mocks.isDesktop.mockReturnValue(true)
+    window.history.replaceState({}, "", "/project-boot")
+    mocks.call.mockResolvedValue(detail)
+    await openFolderInWorkspace("/tmp/demo-app")
+    expect(takePendingWorkspaceFolder()).toBeNull()
   })
 
   it("另开窗口的新建项目页不记（工作区开着，收得到广播）", async () => {

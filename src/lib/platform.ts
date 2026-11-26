@@ -4,7 +4,11 @@ import {
   getTransport,
 } from "./transport"
 import type { EventStream, UnsubscribeFn } from "./transport/types"
-import { leaveIfOpenedInPage } from "./in-page-navigation"
+import {
+  isProjectBootInPage,
+  leaveIfOpenedInPage,
+  leaveProjectBootToWorkspace,
+} from "./in-page-navigation"
 
 /**
  * Platform-aware API wrappers for features that differ between
@@ -290,4 +294,18 @@ export async function closeCurrentWindow(): Promise<void> {
   } else {
     window.history.back()
   }
+}
+
+/**
+ * 新建项目页建好项目以后离开（#1354）。桌面版和宽屏网页版照旧
+ * {@link closeCurrentWindow}；手机布局或从工作区在当前页打开的，回到工作区
+ * （工作区挂上时取走待打开的文件夹，打开新项目和新会话），不停在新建项目页，
+ * 也不退回到标签页里之前的别的页面。
+ */
+export async function leaveProjectBoot(): Promise<void> {
+  if (!isDesktop() && isProjectBootInPage()) {
+    leaveProjectBootToWorkspace()
+    return
+  }
+  await closeCurrentWindow()
 }

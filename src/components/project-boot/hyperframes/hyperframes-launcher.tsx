@@ -34,7 +34,7 @@ import {
   FieldTitle,
   FieldDescription,
 } from "@/components/ui/field"
-import { closeCurrentWindow } from "@/lib/platform"
+import { leaveProjectBoot } from "@/lib/platform"
 import {
   createHyperframesProject,
   openFolderInWorkspace,
@@ -180,7 +180,7 @@ export function HyperframesLauncher() {
       // this launcher — best-effort, must not surface as a creation failure.
       try {
         await openFolderInWorkspace(projectPath)
-        await closeCurrentWindow()
+        await leaveProjectBoot()
       } catch (handoffErr) {
         console.error(
           "[HyperframesLauncher] failed to hand project off to workspace:",

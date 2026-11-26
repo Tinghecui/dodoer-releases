@@ -28,7 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { closeCurrentWindow } from "@/lib/platform"
+import { leaveProjectBoot } from "@/lib/platform"
 import {
   createShadcnProject,
   openFolderInWorkspace,
@@ -111,7 +111,7 @@ export function CreateProjectDialog({
       // must not be reported as a creation failure.
       try {
         await openFolderInWorkspace(projectPath)
-        await closeCurrentWindow()
+        await leaveProjectBoot()
       } catch (handoffErr) {
         // The project exists and was persisted as open, so it will surface in
         // the workspace on its next load — only the live auto-open failed.

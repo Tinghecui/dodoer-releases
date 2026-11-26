@@ -17,9 +17,9 @@ import { randomUUID } from "./utils"
 import { getCurrentEffectiveAppLocale } from "./i18n"
 import {
   isMobileLayout,
+  isProjectBootInPage,
   navigateInPage,
   setPendingWorkspaceFolder,
-  wasOpenedInPage,
   withoutInPageRecord,
 } from "./in-page-navigation"
 import {
@@ -4060,7 +4060,9 @@ export async function openFolderInWorkspace(
   )
   // 新建项目页是在当前页里打开的（#1332）：工作区这会儿没挂着，收不到上面
   // 的广播。记下来，回到工作区时由 WorkspaceOpenFolderListener 接着打开。
-  if (wasOpenedInPage()) setPendingWorkspaceFolder(detail)
+  // 手机上直接用链接打开、没有记录的也算（#1354），和建好后离开
+  // （leaveProjectBoot）的判断同一条。
+  if (!isDesktop() && isProjectBootInPage()) setPendingWorkspaceFolder(detail)
   return detail
 }
 

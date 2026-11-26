@@ -162,3 +162,133 @@ describe("在当前页打开的记录（#1332）", () => {
     expect(nav.wasOpenedInPage()).toBe(true)
   })
 })
+
+/** 模拟这一页的载入方式（`performance` 的 navigation 条目）。 */
+function stubNavigationType(type: string) {
+  vi.spyOn(performance, "getEntriesByType").mockImplementation(
+    (entryType: string) =>
+      (entryType === "navigation"
+        ? [{ type } as unknown as PerformanceEntry]
+        : []) as PerformanceEntryList
+  )
+}
+
+describe("直接打开的页面不认之前留下的记录（#1354）", () => {
+  it("在当前页打开过新建项目页、离开后再直接输入地址：建好去工作区，不后退", async () => {
+    stubMatchMedia(true)
+    nav.navigateInPage("/project-boot")
+    // 用浏览器后退或跳到别的网站离开，记录还在；之后在地址栏直接输入
+    window.history.replaceState({}, "", "/project-boot")
+    stubNavigationType("navigate")
+
+    const direct = await freshModule()
+    const push = vi.fn()
+    const back = vi.fn()
+    direct.setInPageRouter({ push, back })
+    expect(direct.wasOpenedInPage()).toBe(false)
+    direct.leaveProjectBootToWorkspace()
+    expect(back).not.toHaveBeenCalled()
+    expect(push).toHaveBeenCalledWith("/workspace")
+  })
+
+  it("在当前页打开过提交页，宽屏下再直接输入提交页地址：做完按另开的窗口关", async () => {
+    stubMatchMedia(true)
+    nav.navigateInPage("/commit?folderId=1")
+    window.history.replaceState({}, "", "/commit?folderId=1")
+    stubNavigationType("navigate")
+    stubMatchMedia(false)
+
+    const direct = await freshModule()
+    const back = vi.fn()
+    direct.setInPageRouter({ push: vi.fn(), back })
+    expect(direct.leaveIfOpenedInPage()).toBe(false)
+    expect(back).not.toHaveBeenCalled()
+  })
+
+  it("刷新、浏览器后退前进载入的照旧认得出", async () => {
+    stubMatchMedia(true)
+    nav.navigateInPage("/commit?folderId=1")
+    window.history.replaceState({}, "", "/commit?folderId=1")
+
+    stubNavigationType("reload")
+    expect((await freshModule()).wasOpenedInPage()).toBe(true)
+    stubNavigationType("back_forward")
+    expect((await freshModule()).wasOpenedInPage()).toBe(true)
+  })
+
+  it("还没注册路由、整页跳过去的那一页照旧认得出", async () => {
+    stubMatchMedia(true)
+    const fresh = await freshModule()
+    const assign = vi.fn()
+    vi.spyOn(window, "location", "get").mockReturnValue({
+      ...window.location,
+      pathname: "/settings/general",
+      assign,
+    } as Location)
+    fresh.navigateInPage("/settings/general")
+    expect(assign).toHaveBeenCalledWith("/settings/general")
+    stubNavigationType("navigate")
+
+    const landed = await freshModule()
+    expect(landed.wasOpenedInPage()).toBe(true)
+  })
+})
+
+describe("浏览器后退前进整页恢复在当前页打开过的页面（#1354 第 3 次返工）", () => {
+  it("中间直接打开过别的页面清掉了记录，后退回提交页：宽屏下做完照旧返回", async () => {
+    stubMatchMedia(true)
+    nav.navigateInPage("/commit?folderId=1")
+    window.history.replaceState({}, "", "/commit?folderId=1")
+    // 提交页挂上以后给这一条历史记下来
+    nav.syncInPageHistoryEntry()
+
+    // 整页直接打开别的地址：记录被清掉
+    window.history.replaceState(window.history.state, "", "/settings")
+    stubNavigationType("navigate")
+    const other = await freshModule()
+    expect(other.wasOpenedInPage()).toBe(false)
+
+    // 浏览器后退整页恢复提交页（history.state 跟着这一条历史回来）
+    window.history.replaceState(window.history.state, "", "/commit?folderId=1")
+    stubNavigationType("back_forward")
+    stubMatchMedia(false)
+    const restored = await freshModule()
+    restored.setInPageRouter({ push: vi.fn(), back: vi.fn() })
+    expect(restored.wasOpenedInPage()).toBe(true)
+    // 在当前页里返回，不去 window.close
+    expect(restored.leaveIfOpenedInPage()).toBe(true)
+  })
+
+  it("从 bfcache 恢复提交页（模块不重新载入、记录已被别的页面清掉）：宽屏下做完照旧返回", async () => {
+    stubMatchMedia(true)
+    nav.navigateInPage("/commit?folderId=1")
+    window.history.replaceState({}, "", "/commit?folderId=1")
+    // 提交页是整页载入的（刷新过），记录只在 sessionStorage 里
+    stubNavigationType("reload")
+    const commit = await freshModule()
+    commit.syncInPageHistoryEntry()
+    expect(commit.wasOpenedInPage()).toBe(true)
+
+    // 用户直接打开别的地址，那个页面把 sessionStorage 里的记录清掉了
+    window.sessionStorage.clear()
+    // 按后退，浏览器从 bfcache 直接恢复提交页：不重新载入模块，只发 pageshow
+    const event = new Event("pageshow")
+    Object.defineProperty(event, "persisted", { value: true })
+    window.dispatchEvent(event)
+
+    stubMatchMedia(false)
+    commit.setInPageRouter({ push: vi.fn(), back: vi.fn() })
+    expect(commit.wasOpenedInPage()).toBe(true)
+    expect(commit.leaveIfOpenedInPage()).toBe(true)
+  })
+
+  it("直接打开的页面不给历史记标记，后退回来也不当成在当前页打开的", async () => {
+    window.history.replaceState({}, "", "/commit?folderId=1")
+    stubNavigationType("navigate")
+    const direct = await freshModule()
+    direct.syncInPageHistoryEntry()
+    stubNavigationType("back_forward")
+    stubMatchMedia(false)
+    expect((await freshModule()).wasOpenedInPage()).toBe(false)
+  })
+})

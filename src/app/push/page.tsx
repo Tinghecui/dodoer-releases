@@ -13,7 +13,8 @@ import { getFolder } from "@/lib/api"
 import type { FolderDetail } from "@/lib/types"
 import { RemoteConnectionGate } from "@/contexts/remote-connection-context"
 import { brandTitle } from "@/lib/cowork/brand"
-import { closeAppWindow } from "@/lib/platform"
+import { closeAppWindow, isDesktop } from "@/lib/platform"
+import { isInPageContext } from "@/lib/in-page-navigation"
 
 const TOAST_DURATION_MS = 6000
 
@@ -35,9 +36,13 @@ function PushPageInner() {
   // Desktop closes the window; so does a browser, for the window the app
   // opened. A tab that won't close (the user opened this link themselves)
   // gets the confirmation the closing window makes unnecessary.
+  // 在当前页里打开的（手机布局，#1354）：「关掉」是返回上一页，返回前就发提示，
+  // 回去的那一页挂着的提示区会把它补显示出来，用户看得到推送成功了。
   const handlePushed = useCallback(() => {
+    const inPage = !isDesktop() && isInPageContext()
+    if (inPage) toast.success(t("toasts.pushSuccess"))
     void closeAppWindow().then((closed) => {
-      if (!closed) toast.success(t("toasts.pushSuccess"))
+      if (!closed && !inPage) toast.success(t("toasts.pushSuccess"))
     })
   }, [t])
 

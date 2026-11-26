@@ -51,6 +51,7 @@ vi.mock("@/components/layout/push-workspace", () => ({
 }))
 
 import PushPage from "./page"
+import { navigateInPage, setInPageRouter } from "@/lib/in-page-navigation"
 import enMessages from "@/i18n/messages/en.json"
 
 let close: MockInstance<() => void>
@@ -97,5 +98,26 @@ describe("push page", () => {
     await vi.waitFor(() =>
       expect(mocks.toastSuccess).toHaveBeenCalledWith("Push successful")
     )
+  })
+
+  it("在当前页打开的（手机）：推送成功后返回，回去的页面上也有成功提示", async () => {
+    close = vi.spyOn(window, "close").mockImplementation(() => {})
+    const back = vi.fn()
+    const unregister = setInPageRouter({ push: vi.fn(), back })
+    navigateInPage("/push?folderId=1")
+    window.history.replaceState({}, "", "/push?folderId=1")
+    try {
+      renderPage()
+      fireEvent.click(await screen.findByRole("button", { name: "push" }))
+      await vi.waitFor(() =>
+        expect(mocks.toastSuccess).toHaveBeenCalledWith("Push successful")
+      )
+      expect(close).not.toHaveBeenCalled()
+    } finally {
+      unregister()
+      navigateInPage("/workspace")
+      window.sessionStorage.clear()
+      window.history.replaceState({}, "", "/")
+    }
   })
 })

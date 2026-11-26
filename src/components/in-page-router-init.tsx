@@ -1,8 +1,11 @@
 "use client"
 
 import { useEffect } from "react"
-import { useRouter } from "next/navigation"
-import { setInPageRouter } from "@/lib/in-page-navigation"
+import { usePathname, useRouter } from "next/navigation"
+import {
+  setInPageRouter,
+  syncInPageHistoryEntry,
+} from "@/lib/in-page-navigation"
 
 /**
  * 把 Next 的路由交给 `lib/in-page-navigation`：手机布局下设置、提交这些页面
@@ -18,5 +21,10 @@ export function InPageRouterInit() {
       }),
     [router]
   )
+  const pathname = usePathname()
+  // 给在当前页打开的那一条历史记上标记，后退前进回来时补回记录（#1354）
+  useEffect(() => {
+    syncInPageHistoryEntry()
+  }, [pathname])
   return null
 }

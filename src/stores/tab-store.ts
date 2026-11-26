@@ -1468,6 +1468,24 @@ function dropEmptyFillerDraft() {
 }
 
 /**
+ * 再次 hydrate 时（#1354）：把内存里还开着、读到的列表里没有的新会话草稿
+ * （没有 conversationId，只在本机）按它们原来的位置插回去。
+ */
+function keepLiveDraftTabs(
+  tabs: TabItemInternal[],
+  previous: TabItemInternal[]
+): TabItemInternal[] {
+  const seen = new Set(tabs.map((tab) => tab.id))
+  const out = [...tabs]
+  previous.forEach((tab, index) => {
+    if (tab.conversationId != null || seen.has(tab.id)) return
+    seen.add(tab.id)
+    out.splice(Math.min(index, out.length), 0, tab)
+  })
+  return out
+}
+
+/**
  * Splice the blob's draft tabs back among the freshly-hydrated conversation
  * tabs, returning the merged list plus the group assignments to seed. Consumed
  * once (the pending list is cleared), so a later refetch/reconnect never
@@ -3452,15 +3470,23 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         // 服务器还没确认的会话标签（#626）一起按原来的位置插回去；分组沿用
         // blob 的 assignments（按规范 id 记的）。
         dropEmptyFillerDraft()
-        const {
-          tabs: withDrafts,
-          groupOf: draftGroups,
-          unsyncedIds: restoredUnsyncedIds,
-        } = mergeRestoredLocalTabs(snapshotTabs)
+        // 工作区重新挂上又读一遍（手机上在当前页打开设置等页面再回来，#1354）：
+        // blob 里的草稿第一次就补回过、已经清空，内存里开着的新会话草稿只在
+        // 本机，快照里没有。照原来的位置留着，焦点也留在原来的标签上。
+        const rehydrating = get().tabsHydrated
+        const previousTabs = get().rawTabs
+        const previousActive = get().activeTabId
+        const merged = mergeRestoredLocalTabs(snapshotTabs)
+        const { groupOf: draftGroups, unsyncedIds: restoredUnsyncedIds } =
+          merged
+        const withDrafts = rehydrating
+          ? keepLiveDraftTabs(merged.tabs, previousTabs)
+          : merged.tabs
         // Cowork: this device's own last focus wins over the server's
         // `is_active` (which is whatever any client focused last), so opening
         // the app here never lands on what another computer was looking at.
         const localActive = [
+          rehydrating ? previousActive : null,
           pendingRestoreActiveDraft,
           pendingRestoreActiveConversation,
         ].find((id) => id != null && withDrafts.some((tab) => tab.id === id))

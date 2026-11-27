@@ -1414,7 +1414,7 @@ const ConversationTabView = memo(function ConversationTabView({
   useEffect(() => {
     if (agentUnavailable == null) return
     if (msgQueue.length === 0 || queueHeadFailed) return
-    mqFailHead()
+    mqFailHead("send_failed")
   }, [agentUnavailable, msgQueue.length, queueHeadFailed, mqFailHead])
 
   // Cowork fork（#792）：连上了、但连的还是别的目录 / 智能体（刚用完上一个
@@ -1444,7 +1444,7 @@ const ConversationTabView = memo(function ConversationTabView({
     onTimeout: () => {
       if (!connectionReadyRef.current) retargetConnection()
       else if (canForceReconnectRef.current) void forceReconnect()
-      mqFailHead()
+      mqFailHead("send_failed")
     },
   })
 
@@ -1465,7 +1465,7 @@ const ConversationTabView = memo(function ConversationTabView({
     isReady: () => !queueWaitsOnIdleConnection(composerConnStatus),
     onTimeout: () => {
       handleFocus()
-      mqFailHead()
+      mqFailHead("send_failed")
     },
   })
 
@@ -1768,7 +1768,7 @@ const ConversationTabView = memo(function ConversationTabView({
             })
           : commandErrorReason(error),
       })
-      mqFailHead()
+      mqFailHead("send_failed")
     },
     [tBranch, mqFailHead]
   )
@@ -3415,24 +3415,18 @@ const ConversationTabView = memo(function ConversationTabView({
   // up is left alone.
   //
   // #1323：连接失败过的（不是没装），不弹「打开 Agents 设置」（Cowork 下凭据
-  // 在门户，这个指引有误导），记下这条、重新连接，连上以后由下面的 effect 替
-  // 用户清掉失败标记、交给自动发送，服务恢复后点一次就能发出去。重连又失败的，
-  // 失败提示由连接那边照常弹，消息照旧标着失败、带重试。
+  // 在门户，这个指引有误导），记下这条、重新连接，连接错误一清掉就由下面的
+  // effect 替用户清掉失败标记、交给自动发送（由它等连接就绪，#1640），服务恢复
+  // 后点一次就能发出去。重连又失败的，失败提示由连接那边照常弹，「智能体不可用
+  // 就标失败」的 effect 把消息重新标成失败、带重试。
   const [retryAfterReconnect] = useState(createRetryAfterReconnect)
   useEffect(() => {
     const target = retryAfterReconnect.observe({
-      ready: connectionReady,
       unavailable: agentUnavailable,
     })
     if (target === "all") mqRetryAll()
     else if (target != null) mqRetry(target)
-  }, [
-    connectionReady,
-    agentUnavailable,
-    retryAfterReconnect,
-    mqRetry,
-    mqRetryAll,
-  ])
+  }, [agentUnavailable, retryAfterReconnect, mqRetry, mqRetryAll])
   const handleQueueRetry = useCallback(
     (id: string) => {
       if (agentUnavailableReason == null) {

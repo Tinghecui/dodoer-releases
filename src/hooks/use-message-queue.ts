@@ -65,6 +65,10 @@ export interface QueuedMessage {
    * it may or may not have been about to go, so it waits for the user.
    * `turn_failed` — it went out, but the turn failed before the agent
    * answered anything (#424): retrying sends it again.
+   * `send_failed` — it never went out (no usable agent, a connection that
+   * would not come up, a worktree that could not be created, #1640): the
+   * queue's own row already says it failed, so the panel adds nothing, and
+   * reading it back from storage keeps it this kind, not `restored`.
    * Only ever set together with `failed`; retry clears both.
    */
   failure?: QueueFailureKind
@@ -85,7 +89,11 @@ export interface QueuedMessage {
   firstOfConversation?: boolean
 }
 
-export type QueueFailureKind = "auth" | "restored" | "turn_failed"
+export type QueueFailureKind =
+  | "auth"
+  | "restored"
+  | "turn_failed"
+  | "send_failed"
 
 export interface UseMessageQueueReturn {
   queue: QueuedMessage[]

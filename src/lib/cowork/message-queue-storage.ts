@@ -217,10 +217,14 @@ export function readStoredQueue(key: string): QueuedMessage[] {
       failed: true,
       // A refusal for credentials keeps its "sign in" link, and a message
       // whose turn failed after it went out still says so (#424): neither
-      // was "not sent yet". Anything else says it was read back after a
-      // reload.
+      // was "not sent yet". One that failed to go out (no usable agent, a
+      // connect that timed out) was already failed before it was stored, so
+      // switching away and back must not call it "not sent before a reload"
+      // (#1640). Anything else says it was read back after a reload.
       failure:
-        e.failure === "auth" || e.failure === "turn_failed"
+        e.failure === "auth" ||
+        e.failure === "turn_failed" ||
+        e.failure === "send_failed"
           ? e.failure
           : "restored",
     })

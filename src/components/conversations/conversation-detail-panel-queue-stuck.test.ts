@@ -47,7 +47,7 @@ describe("no usable agent fails the waiting message", () => {
     expect(effect).toContain(
       "if (msgQueue.length === 0 || queueHeadFailed) return"
     )
-    expect(effect).toContain("mqFailHead()")
+    expect(effect).toContain('mqFailHead("send_failed")')
   })
 
   it("keeps the send path's own wait for a connection that is not ready", () => {
@@ -119,7 +119,8 @@ describe("no usable agent fails the waiting message", () => {
       "retryAfterReconnect.observe({",
       "// Cowork 加的（#423）"
     )
-    expect(effect).toContain("ready: connectionReady")
+    // #1640：连接错误一清掉就重试，不等就绪（由自动发送去等）。
+    expect(effect).not.toContain("ready: connectionReady")
     expect(effect).toContain("unavailable: agentUnavailable")
     expect(effect).toContain("mqRetryAll()")
     expect(effect).toContain("mqRetry(target)")
@@ -239,7 +240,7 @@ describe("a worktree that cannot be created fails the message", () => {
     expect(handler).toContain("description: isBranchNameTooLongError(error)")
     expect(handler).toContain('tBranch("dialogs.branchNameTooLong"')
     expect(handler).toContain(": commandErrorReason(error)")
-    expect(handler).toContain("mqFailHead()")
+    expect(handler).toContain('mqFailHead("send_failed")')
     // …and the send's worktree branch hands its failure to it.
     const failure = between(
       "notifyWorktreeCreated(created, tBranch)",
@@ -629,7 +630,7 @@ describe("a connection bound to another target does not hold the queue forever",
     expect(effect).toContain("headFailed: queueHeadFailed")
     expect(effect).toContain("isReady: () => connectionReadyRef.current")
     expect(effect).toContain("retargetConnection()")
-    expect(effect).toContain("mqFailHead()")
+    expect(effect).toContain('mqFailHead("send_failed")')
   })
 })
 
@@ -659,7 +660,7 @@ describe("a session that never finishes initializing does not hold the queue for
     expect(onTimeout).toContain("if (!connectionReadyRef.current)")
     expect(onTimeout).toContain("retargetConnection()")
     expect(onTimeout).toContain("void forceReconnect()")
-    expect(onTimeout).toContain("mqFailHead()")
+    expect(onTimeout).toContain('mqFailHead("send_failed")')
   })
 
   // 审查打回：发完就切到别的标签，后台标签到点也要重连，只看能不能连。
@@ -702,7 +703,7 @@ describe("a queue waiting on a connection nobody is starting", () => {
     )
     const onTimeout = effect.slice(effect.indexOf("onTimeout:"))
     expect(onTimeout).toContain("handleFocus()")
-    expect(onTimeout).toContain("mqFailHead()")
+    expect(onTimeout).toContain('mqFailHead("send_failed")')
   })
 
   it("does not tell the user the message will send by itself while nothing connects", () => {

@@ -100,6 +100,26 @@ describe("read / write", () => {
     ])
   })
 
+  // #1640：连接失败标成失败的那条，切走再切回来（面板重新挂载、从存储读回）
+  // 不能变成「页面刷新时还没发出去」。
+  it("keeps a message whose send failed as such", () => {
+    writeStoredQueue(KEY, [
+      item("a", { failed: true, failure: "send_failed" }),
+      item("b"),
+    ])
+    expect(readStoredQueue(KEY)).toEqual([
+      { ...item("a"), failed: true, failure: "send_failed" },
+      { ...item("b"), failed: true, failure: "restored" },
+    ])
+  })
+
+  it("still reads an untyped failure from older data as restored", () => {
+    writeStoredQueue(KEY, [item("a", { failed: true })])
+    expect(readStoredQueue(KEY)).toEqual([
+      { ...item("a"), failed: true, failure: "restored" },
+    ])
+  })
+
   it("removes the entry once the queue is empty", () => {
     writeStoredQueue(KEY, [item("a")])
     expect(window.localStorage.getItem(KEY)).not.toBeNull()

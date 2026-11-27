@@ -37,6 +37,8 @@ export function ExternalConflictDialog() {
     dismissExternalConflict,
   } = useWorkspaceExternalConflict()
   const [savingCopy, setSavingCopy] = useState(false)
+  const [reloading, setReloading] = useState(false)
+  const busy = savingCopy || reloading
 
   if (!externalConflict) return null
 
@@ -51,6 +53,20 @@ export function ExternalConflictDialog() {
       })
     } finally {
       setSavingCopy(false)
+    }
+  }
+
+  // 重载失败时冲突框留着、没存的改动也留着，提示原因让用户再选（#1511）
+  const handleReload = async () => {
+    setReloading(true)
+    try {
+      await reloadExternalConflict()
+    } catch (error) {
+      toast.error(t("toasts.reloadFailed"), {
+        description: toErrorMessage(error),
+      })
+    } finally {
+      setReloading(false)
     }
   }
 
@@ -75,7 +91,7 @@ export function ExternalConflictDialog() {
           <Button
             type="button"
             variant="outline"
-            disabled={savingCopy}
+            disabled={busy}
             onClick={compareExternalConflict}
           >
             {t("externalConflictDialog.compare")}
@@ -83,7 +99,7 @@ export function ExternalConflictDialog() {
           <Button
             type="button"
             variant="outline"
-            disabled={savingCopy}
+            disabled={busy}
             onClick={() => {
               void handleSaveCopy()
             }}
@@ -95,8 +111,10 @@ export function ExternalConflictDialog() {
           <Button
             type="button"
             variant="destructive"
-            disabled={savingCopy}
-            onClick={reloadExternalConflict}
+            disabled={busy}
+            onClick={() => {
+              void handleReload()
+            }}
           >
             {t("externalConflictDialog.reload")}
           </Button>

@@ -229,6 +229,9 @@ export interface UseOpenFileTabsWatchParams {
   consumeSelfWriteEcho: (path: string) => boolean
   // 原地重读一个工作区差异标签，不切换当前标签。
   refreshWorkingTreeDiffTab: (tabId: string) => void
+  // 有没存改动的标签，外部变化后读不到磁盘（只标了过期、没法出冲突框）时
+  // 提示用户。同一个文件连着失败只提示一次，读成功过以后再失败才再提示。
+  notifyExternalReadFailed: (path: string, error: string) => void
 }
 
 export function useOpenFileTabsWatch({
@@ -246,7 +249,29 @@ export function useOpenFileTabsWatch({
   enqueueExternalConflict,
   consumeSelfWriteEcho,
   refreshWorkingTreeDiffTab,
+  notifyExternalReadFailed,
 }: UseOpenFileTabsWatchParams): void {
+  // 已经提示过「读不到」的文件。放进 ref，订阅那个 effect 不会因为它重建；
+  // 当前标签过期又有改动时每敲一个字都会重读一次，靠这个不重复弹。
+  const readFailNotifiedRef = useRef(new Set<string>())
+  const notifyExternalReadFailedRef = useRef(notifyExternalReadFailed)
+  useEffect(() => {
+    notifyExternalReadFailedRef.current = notifyExternalReadFailed
+  }, [notifyExternalReadFailed])
+  // 脏标签读不到：标过期（不丢改动），并提示一次（#1511）。
+  const handleDirtyReadFailureRef = useRef(
+    (path: string, error: string, markStale: (path: string) => void) => {
+      markStale(path)
+      const key = normalizeAbsPath(path)
+      if (readFailNotifiedRef.current.has(key)) return
+      readFailNotifiedRef.current.add(key)
+      notifyExternalReadFailedRef.current(path, error)
+    }
+  )
+  // 读成功了（不管结果是冲突、重载还是没变），下次再读不到时重新提示。
+  const clearReadFailureRef = useRef((path: string) => {
+    readFailNotifiedRef.current.delete(normalizeAbsPath(path))
+  })
   // Collision-safe, stable-by-value signature of the roots to watch: the
   // deduped owning folders of the open file tabs. JSON encoding (not join)
   // so no path content can forge a separator. Recomputed per render (cheap
@@ -385,6 +410,7 @@ export function useOpenFileTabsWatch({
           const decision = await resolveFileChangeDecision(tab, io, fileTabsRef)
           if (disposed) return
 
+          if (decision.kind !== "missing") clearReadFailureRef.current(path)
           if (decision.kind === "none") continue
 
           if (decision.kind === "reload") {
@@ -397,7 +423,11 @@ export function useOpenFileTabsWatch({
               (t) => t.id === tab.id
             )
             if (liveTab?.isDirty) {
-              markTabsStale(decision.path)
+              handleDirtyReadFailureRef.current(
+                decision.path,
+                decision.error,
+                markTabsStale
+              )
             } else {
               rejectFileTab(decision.path, decision.error)
             }
@@ -516,8 +546,10 @@ export function useOpenFileTabsWatch({
       }
       const io = splitAbsPath(tab.path)
       if (!io) return
+      const tabPath = tab.path
       void (async () => {
         const decision = await resolveFileChangeDecision(tab, io, fileTabsRef)
+        if (decision.kind !== "missing") clearReadFailureRef.current(tabPath)
         if (decision.kind === "conflict") {
           enqueueExternalConflict({
             path: decision.path,
@@ -533,7 +565,12 @@ export function useOpenFileTabsWatch({
           // tab.isDirty === true) so we keep the stale flag on the tab —
           // refusing to silently lose the user's unsaved edits. The user
           // discovers the deletion on save (backend recreates or errors).
-          markTabsStale(decision.path)
+          // 读不到也提示一次，用户才知道磁盘变了、这份改动没法对比（#1511）。
+          handleDirtyReadFailureRef.current(
+            decision.path,
+            decision.error,
+            markTabsStale
+          )
         }
       })()
       return
@@ -555,8 +592,10 @@ export function useOpenFileTabsWatch({
     if (findOwningFolder(tab.path, allFolders)) return
     const io = splitAbsPath(tab.path)
     if (!io) return
+    const tabPath = tab.path
     void (async () => {
       const decision = await resolveFileChangeDecision(tab, io, fileTabsRef)
+      if (decision.kind !== "missing") clearReadFailureRef.current(tabPath)
       if (decision.kind === "conflict") {
         enqueueExternalConflict({
           path: decision.path,
@@ -569,7 +608,11 @@ export function useOpenFileTabsWatch({
       } else if (decision.kind === "missing") {
         const liveTab = (fileTabsRef.current ?? []).find((t) => t.id === tab.id)
         if (liveTab?.isDirty) {
-          markTabsStale(decision.path)
+          handleDirtyReadFailureRef.current(
+            decision.path,
+            decision.error,
+            markTabsStale
+          )
         } else {
           rejectFileTab(decision.path, decision.error)
         }

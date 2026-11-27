@@ -1,5 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react"
-import { useEffect, type ReactNode } from "react"
+import { useEffect, useState, type ReactNode } from "react"
 import type { Monaco } from "@monaco-editor/react"
 import { useTrackMonacoModel } from "@/contexts/monaco-model-context"
 import { buildMonacoModelPath } from "@/lib/monaco-model-path"
@@ -3216,14 +3216,29 @@ describe("file tabs decoupled from the active folder", () => {
 })
 
 function ConflictProbe() {
-  const { externalConflict, dismissExternalConflict } =
+  const { externalConflict, dismissExternalConflict, reloadExternalConflict } =
     useWorkspaceExternalConflict()
+  const [reloadError, setReloadError] = useState("none")
   return (
     <div>
       <output data-testid="conflict-head">
         {externalConflict ? externalConflict.path : "none"}
       </output>
+      <output data-testid="conflict-reload-error">{reloadError}</output>
       <button onClick={dismissExternalConflict}>dismiss-conflict</button>
+      <button
+        onClick={() => {
+          Promise.resolve(reloadExternalConflict()).then(
+            () => setReloadError("none"),
+            (error: unknown) =>
+              setReloadError(
+                error instanceof Error ? error.message : String(error)
+              )
+          )
+        }}
+      >
+        reload-conflict
+      </button>
     </div>
   )
 }
@@ -3260,7 +3275,13 @@ function WatcherProbe({
       <button onClick={() => updateActiveFileContent("dirty-local")}>
         edit
       </button>
+      <button onClick={() => updateActiveFileContent("dirty-later")}>
+        edit-more
+      </button>
       <button onClick={() => void saveActiveFile()}>save</button>
+      <button onClick={() => void saveActiveFile({ explicit: true })}>
+        save-explicit
+      </button>
       <button onClick={() => markTabsStale("/repo/a.ts")}>stale-a-f1</button>
     </div>
   )
@@ -3396,6 +3417,310 @@ describe("provider tab watcher (per-folder streams, lazy staleness)", () => {
     })
 
     expect(screen.getByTestId("conflict-head")).toHaveTextContent("/repo/a.ts")
+    const tabA = snap().tabs.find((t) => t.id === fileTabId("/repo/a.ts"))
+    expect(tabA?.content).toBe("dirty-local")
+    expect(tabA?.isDirty).toBe(true)
+  })
+
+  it("keeps the buffer and the conflict when the conflict reload fails, then reloads on retry (#1511)", async () => {
+    const snap = renderWatcher()
+
+    await act(async () => {
+      screen.getByText("open-a-f1").click()
+    })
+    await act(async () => {
+      screen.getByText("edit").click()
+    })
+    mockedApi.readFileForEdit.mockResolvedValueOnce({
+      path: "a.ts",
+      content: "disk-v2",
+      etag: "e-ext",
+      mtime_ms: 2,
+      readonly: false,
+      line_ending: "lf",
+    })
+    await act(async () => {
+      workspaceStoreMock.emitRoot("/repo", ["a.ts"])
+    })
+    expect(screen.getByTestId("conflict-head")).toHaveTextContent("/repo/a.ts")
+
+    // 读文件失败（比如服务端回 500）：用户打的字不能被错误文字换掉，冲突框留着能再点。
+    mockedApi.readFileForEdit.mockRejectedValueOnce(
+      new Error("simulated read failure")
+    )
+    await act(async () => {
+      screen.getByText("reload-conflict").click()
+    })
+    let tabA = snap().tabs.find((t) => t.id === fileTabId("/repo/a.ts"))
+    expect(tabA?.content).toBe("dirty-local")
+    expect(tabA?.isDirty).toBe(true)
+    expect(screen.getByTestId("conflict-head")).toHaveTextContent("/repo/a.ts")
+    expect(screen.getByTestId("conflict-reload-error")).toHaveTextContent(
+      "simulated read failure"
+    )
+
+    // 恢复后再点重载：换成磁盘内容，冲突出队。
+    mockedApi.readFileForEdit.mockResolvedValueOnce({
+      path: "a.ts",
+      content: "disk-v3",
+      etag: "e-ext3",
+      mtime_ms: 3,
+      readonly: false,
+      line_ending: "lf",
+    })
+    await act(async () => {
+      screen.getByText("reload-conflict").click()
+    })
+    tabA = snap().tabs.find((t) => t.id === fileTabId("/repo/a.ts"))
+    expect(tabA?.content).toBe("disk-v3")
+    expect(tabA?.isDirty).toBe(false)
+    expect(screen.getByTestId("conflict-head")).toHaveTextContent("none")
+    expect(screen.getByTestId("conflict-reload-error")).toHaveTextContent(
+      "none"
+    )
+  })
+
+  it("keeps the buffer after a failed conflict reload when the dialog is closed and the file is reopened (#1511)", async () => {
+    const snap = renderWatcher()
+
+    await act(async () => {
+      screen.getByText("open-a-f1").click()
+    })
+    await act(async () => {
+      screen.getByText("edit").click()
+    })
+    mockedApi.readFileForEdit.mockResolvedValueOnce({
+      path: "a.ts",
+      content: "disk-v2",
+      etag: "e-ext",
+      mtime_ms: 2,
+      readonly: false,
+      line_ending: "lf",
+    })
+    await act(async () => {
+      workspaceStoreMock.emitRoot("/repo", ["a.ts"])
+    })
+    mockedApi.readFileForEdit.mockRejectedValueOnce(
+      new Error("simulated read failure")
+    )
+    await act(async () => {
+      screen.getByText("reload-conflict").click()
+    })
+    // 关掉冲突框后再点文件会接着重载；就算又读失败，用户打的字也不能被错误文字换掉。
+    await act(async () => {
+      screen.getByText("dismiss-conflict").click()
+    })
+    mockedApi.readFileForEdit.mockRejectedValueOnce(
+      new Error("simulated read failure again")
+    )
+    await act(async () => {
+      screen.getByText("open-a-f1").click()
+    })
+    const tabA = snap().tabs.find((t) => t.id === fileTabId("/repo/a.ts"))
+    expect(tabA?.content).toBe("dirty-local")
+    expect(tabA?.isDirty).toBe(true)
+  })
+
+  it("finishes a failed conflict reload when the dialog is closed and the file is reopened after recovery (#1511)", async () => {
+    const snap = renderWatcher()
+
+    await act(async () => {
+      screen.getByText("open-a-f1").click()
+    })
+    await act(async () => {
+      screen.getByText("edit").click()
+    })
+    mockedApi.readFileForEdit.mockResolvedValueOnce({
+      path: "a.ts",
+      content: "disk-v2",
+      etag: "e-ext",
+      mtime_ms: 2,
+      readonly: false,
+      line_ending: "lf",
+    })
+    await act(async () => {
+      workspaceStoreMock.emitRoot("/repo", ["a.ts"])
+    })
+    mockedApi.readFileForEdit.mockRejectedValueOnce(
+      new Error("simulated read failure")
+    )
+    await act(async () => {
+      screen.getByText("reload-conflict").click()
+    })
+    await act(async () => {
+      screen.getByText("dismiss-conflict").click()
+    })
+    // 服务恢复后在文件树里再点：用户点过「重载」，要接着把它做完，显示磁盘内容。
+    mockedApi.readFileForEdit.mockResolvedValueOnce({
+      path: "a.ts",
+      content: "disk-v3",
+      etag: "e-ext3",
+      mtime_ms: 3,
+      readonly: false,
+      line_ending: "lf",
+    })
+    await act(async () => {
+      screen.getByText("open-a-f1").click()
+    })
+    await waitFor(() => {
+      const tabA = snap().tabs.find((t) => t.id === fileTabId("/repo/a.ts"))
+      expect(tabA?.content).toBe("disk-v3")
+    })
+    const tabA = snap().tabs.find((t) => t.id === fileTabId("/repo/a.ts"))
+    expect(tabA?.isDirty).toBe(false)
+  })
+
+  it("keeps text typed after a failed conflict reload instead of finishing the reload on reopen (#1511)", async () => {
+    const snap = renderWatcher()
+
+    await act(async () => {
+      screen.getByText("open-a-f1").click()
+    })
+    await act(async () => {
+      screen.getByText("edit").click()
+    })
+    mockedApi.readFileForEdit.mockResolvedValueOnce({
+      path: "a.ts",
+      content: "disk-v2",
+      etag: "e-ext",
+      mtime_ms: 2,
+      readonly: false,
+      line_ending: "lf",
+    })
+    await act(async () => {
+      workspaceStoreMock.emitRoot("/repo", ["a.ts"])
+    })
+    mockedApi.readFileForEdit.mockRejectedValueOnce(
+      new Error("simulated read failure")
+    )
+    await act(async () => {
+      screen.getByText("reload-conflict").click()
+    })
+    await act(async () => {
+      screen.getByText("dismiss-conflict").click()
+    })
+    // 重载失败后用户接着打字：这算放弃了那次重载，后来打的字不能被磁盘内容盖掉
+    await act(async () => {
+      screen.getByText("edit-more").click()
+    })
+    mockedApi.readFileForEdit.mockResolvedValue({
+      path: "a.ts",
+      content: "disk-v3",
+      etag: "e-ext3",
+      mtime_ms: 3,
+      readonly: false,
+      line_ending: "lf",
+    })
+    await act(async () => {
+      screen.getByText("open-a-f1").click()
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    const tabA = snap().tabs.find((t) => t.id === fileTabId("/repo/a.ts"))
+    expect(tabA?.content).toBe("dirty-later")
+    expect(tabA?.isDirty).toBe(true)
+  })
+
+  // 重载失败、关掉冲突框以后的公共步骤：脏标签、外部改动出冲突、重载读失败
+  async function failConflictReloadAndDismiss() {
+    await act(async () => {
+      screen.getByText("open-a-f1").click()
+    })
+    await act(async () => {
+      screen.getByText("edit").click()
+    })
+    mockedApi.readFileForEdit.mockResolvedValueOnce({
+      path: "a.ts",
+      content: "disk-v2",
+      etag: "e-ext",
+      mtime_ms: 2,
+      readonly: false,
+      line_ending: "lf",
+    })
+    await act(async () => {
+      workspaceStoreMock.emitRoot("/repo", ["a.ts"])
+    })
+    mockedApi.readFileForEdit.mockRejectedValueOnce(
+      new Error("simulated read failure")
+    )
+    await act(async () => {
+      screen.getByText("reload-conflict").click()
+    })
+    await act(async () => {
+      screen.getByText("dismiss-conflict").click()
+    })
+  }
+
+  it("still finishes a failed conflict reload on reopen when an automatic save failed in between (#1511)", async () => {
+    const snap = renderWatcher()
+    await failConflictReloadAndDismiss()
+
+    // 窗口失焦触发的自动保存，服务故障没存成。这不是用户选了留着改动
+    mockedApi.saveFileContent.mockRejectedValue(
+      new Error("simulated save failure")
+    )
+    await act(async () => {
+      screen.getByText("save").click()
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(mockedApi.saveFileContent).toHaveBeenCalled()
+
+    mockedApi.readFileForEdit.mockReset()
+    mockedApi.readFileForEdit.mockResolvedValue({
+      path: "a.ts",
+      content: "disk-v3",
+      etag: "e-ext3",
+      mtime_ms: 3,
+      readonly: false,
+      line_ending: "lf",
+    })
+    await act(async () => {
+      screen.getByText("open-a-f1").click()
+    })
+    await waitFor(() => {
+      const tabA = snap().tabs.find((t) => t.id === fileTabId("/repo/a.ts"))
+      expect(tabA?.content).toBe("disk-v3")
+    })
+  })
+
+  it("drops a failed conflict reload once the user explicitly saves, even if the save is refused (#1511)", async () => {
+    const snap = renderWatcher()
+    await failConflictReloadAndDismiss()
+    // 文件被标成过期：保存前要先读磁盘核对
+    await act(async () => {
+      screen.getByText("stale-a-f1").click()
+    })
+
+    // 用户按 Ctrl+S：预检查读磁盘失败，保存没做成，但用户已经选了留着自己的改动
+    mockedApi.readFileForEdit.mockRejectedValueOnce(
+      new Error("simulated read failure on save")
+    )
+    await act(async () => {
+      screen.getByText("save-explicit").click()
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(mockedApi.saveFileContent).not.toHaveBeenCalled()
+
+    mockedApi.readFileForEdit.mockReset()
+    mockedApi.readFileForEdit.mockResolvedValue({
+      path: "a.ts",
+      content: "disk-v3",
+      etag: "e-ext3",
+      mtime_ms: 3,
+      readonly: false,
+      line_ending: "lf",
+    })
+    await act(async () => {
+      screen.getByText("open-a-f1").click()
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
     const tabA = snap().tabs.find((t) => t.id === fileTabId("/repo/a.ts"))
     expect(tabA?.content).toBe("dirty-local")
     expect(tabA?.isDirty).toBe(true)

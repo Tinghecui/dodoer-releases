@@ -62,3 +62,19 @@ export function disposeClosedEditorModels(
     tracked.delete(uri)
   }
 }
+
+/**
+ * 编辑器重新挂载时，@monaco-editor/react 会直接用同一路径留着的旧 model
+ * （keepCurrentModel），不会把这次的 value 写进去；挂载那一刻的 value 也不算
+ * 变化，不会再同步。标签内容才是准的：旧 model 的文字和它不一样时（比如上次
+ * 读失败留下的错误文字、后来读成功了，#1511），在这里写进去。一样时不动，
+ * 保住撤销记录。返回有没有改。
+ */
+export function syncRetainedModelValue(
+  model: { getValue: () => string; setValue: (value: string) => void } | null,
+  value: string
+): boolean {
+  if (!model || model.getValue() === value) return false
+  model.setValue(value)
+  return true
+}

@@ -16,7 +16,10 @@ import { useTabStore } from "@/contexts/tab-context"
 import { emitAttachFileToSession } from "@/lib/session-attachment-events"
 import { formatFileRangeLabel } from "@/lib/reference-link"
 import { findOwningFolder, splitAbsPath } from "@/lib/file-open-target"
-import { buildMonacoModelPath } from "@/lib/monaco-model-path"
+import {
+  buildMonacoModelPath,
+  syncRetainedModelValue,
+} from "@/lib/monaco-model-path"
 import { useTrackMonacoModel } from "@/contexts/monaco-model-context"
 import { parseFileTabId } from "@/lib/file-tab-id"
 import {
@@ -894,6 +897,13 @@ function FileWorkspacePanelBody() {
     handleCompositionChange
   )
   const isFileTab = activeFileTab?.kind === "file"
+  // 挂载回调读的是挂载那一刻的内容：包装组件只在第一次渲染时记下 onMount。
+  // 输入法组字时受控值是 undefined（暂不同步），沿用上一次的值。
+  const editorValueRef = useRef("")
+  useEffect(() => {
+    const next = isFileTab ? imeSafeEditorValue : renderedContent
+    if (next !== undefined) editorValueRef.current = next
+  }, [isFileTab, imeSafeEditorValue, renderedContent])
   const fileReadonly = isFileTab ? Boolean(activeFileTab.readonly) : true
   const fileSaveState = isFileTab ? (activeFileTab.saveState ?? "idle") : "idle"
   const fileIsDirty = isFileTab ? Boolean(activeFileTab.isDirty) : false
@@ -1349,6 +1359,9 @@ function FileWorkspacePanelBody() {
     (editorInstance, monaco) => {
       editorRef.current = editorInstance
       setEditorMonaco(monaco)
+      // 重新挂载时沿用的是同一路径留着的旧 model，里面可能还是上次的文字
+      // （比如读失败的错误说明），先换成标签现在的内容（#1511）。
+      syncRetainedModelValue(editorInstance.getModel(), editorValueRef.current)
       bindImeEditor(editorInstance)
       cursorListenerRef.current?.dispose()
       cursorListenerRef.current = editorInstance.onDidChangeCursorPosition(
@@ -1663,7 +1676,7 @@ function FileWorkspacePanelBody() {
       if (!isSaveShortcut) return
       event.preventDefault()
       if (!canEdit) return
-      void saveActiveFile()
+      void saveActiveFile({ explicit: true })
     }
 
     window.addEventListener("keydown", onKeyDown)

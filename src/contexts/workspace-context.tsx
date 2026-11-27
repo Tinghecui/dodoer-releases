@@ -21,6 +21,7 @@ import {
   type SetStateAction,
 } from "react"
 import { useTranslations } from "next-intl"
+import { toast } from "sonner"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { MonacoModelProvider } from "@/contexts/monaco-model-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
@@ -215,6 +216,10 @@ interface FileWorkspaceTabBase {
   // 重载都不能走读失败的冷加载（清空内容、卸掉编辑器，#1443）。开始下一次
   // 读或保存时清掉。
   loadFailed?: boolean
+  // 冲突框点了「重载」但读失败了：用户要丢掉改动换成磁盘内容，还没做成。
+  // 内容还是用户打的字。再打开这个标签时接着重读：读成功换成磁盘内容，
+  // 读失败内容原样留着。读成功、用户保存或接着编辑时清掉（#1511）。
+  pendingReload?: boolean
 }
 
 /** A file, a unified diff, or a rich (side-by-side) diff. */
@@ -235,6 +240,13 @@ export interface BrowserWorkspaceTab extends FileWorkspaceTabBase {
 // tab can never carry browser state and a `browser` tab can never be dirty,
 // and the compiler should say so at every switch on `kind`.
 export type FileWorkspaceTab = FileLikeWorkspaceTab | BrowserWorkspaceTab
+
+// force：冲突框的覆盖，跳过预检查。explicit：用户亲手点的保存（Ctrl+S），
+// 自动保存不带它
+export interface FileSaveOptions {
+  force?: boolean
+  explicit?: boolean
+}
 
 // The provider value is split across three contexts so high-frequency
 // fileTabs churn (per-keystroke content updates, watcher-driven reloads)
@@ -341,7 +353,7 @@ export interface WorkspaceActionsValue {
   ) => void
   updateActiveFileContent: (content: string) => void
   updateFileTabContent: (tabId: string, content: string) => void
-  saveActiveFile: (options?: { force?: boolean }) => Promise<boolean>
+  saveActiveFile: (options?: FileSaveOptions) => Promise<boolean>
   setFileTabComposing: (tabId: string, composing: boolean) => void
   reloadActiveFile: () => Promise<void>
   toggleFileTabPreview: (tabId: string) => void
@@ -470,7 +482,7 @@ interface WorkspaceExternalConflictValue {
   compareExternalConflict: () => void
   // "Reload": discard the buffer and refetch from disk; clears the shown
   // signature so a subsequent identical divergence prompts again.
-  reloadExternalConflict: () => void
+  reloadExternalConflict: () => Promise<void>
   // "Save as copy": write the unsaved buffer next to the original.
   // Resolves with the saved path (dequeues) or throws on failure (the
   // conflict stays queued so the user can retry).
@@ -654,7 +666,10 @@ function loadingTab(
   }
 }
 
-type LoadDecision = { kind: "skip" } | { kind: "fetch"; gen: number }
+type LoadDecision =
+  | { kind: "skip" }
+  // keepBuffer：这次读失败时不把报错写进内容（接着做没做成的重载，#1511）
+  | { kind: "fetch"; gen: number; keepBuffer?: boolean }
 
 async function withTimeout<T>(
   promise: Promise<T>,
@@ -853,11 +868,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   // guardrail's least-recently-active eviction order.
   const tabRecencyRef = useRef<string[]>([])
   const composingFileTabIdsRef = useRef<Set<string>>(new Set())
-  const deferredSaveTabsRef = useRef<Map<string, { force?: boolean }>>(
-    new Map()
-  )
+  const deferredSaveTabsRef = useRef<Map<string, FileSaveOptions>>(new Map())
   const saveFileTabRef = useRef<
-    ((tabId: string, options?: { force?: boolean }) => Promise<boolean>) | null
+    ((tabId: string, options?: FileSaveOptions) => Promise<boolean>) | null
   >(null)
 
   useEffect(() => {
@@ -1745,6 +1758,16 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       const stalePromotesReload =
         existing.kind === "file" && existing.stale === true && !existing.isDirty
 
+      // 冲突框的重载失败过：再打开就接着重载，内容先原样留着（#1511）
+      if (existing.kind === "file" && existing.pendingReload === true) {
+        markTabRefreshing(existing.id)
+        return {
+          kind: "fetch",
+          gen: beginFetchGeneration(seed.id),
+          keepBuffer: true,
+        }
+      }
+
       if (!reload && !stalePromotesReload) {
         // Cache hit — nothing to do.
         return { kind: "skip" }
@@ -2014,6 +2037,18 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       return updated
     })
   }, [])
+
+  // 外部改了有没存改动的文件、却读不到磁盘：冲突框出不来，至少提示一下，
+  // 改动照旧留在编辑器里（#1511）。
+  const notifyExternalReadFailed = useCallback(
+    (rawPath: string, errorMessage: string) => {
+      const name = rawPath.split(/[\\/]/).pop() || rawPath
+      toast.error(t("externalReadFailed", { name }), {
+        description: errorMessage,
+      })
+    },
+    [t]
+  )
 
   // Batch variant for the watcher's lazy background pass: N affected
   // background tabs cost ONE setState and zero disk reads. Patches ONLY
@@ -2294,7 +2329,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           targetScope
         )
         if (decision.kind === "skip") return
-        const { gen } = decision
+        const { gen, keepBuffer } = decision
 
         try {
           // Office files (.docx/.xlsx/.pptx) are binary OpenXML — never read as
@@ -2388,6 +2423,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                     saveError: null,
                     loading: false,
                     stale: false,
+                    pendingReload: false,
                   }
                 : tab
             )
@@ -2398,6 +2434,23 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             setPendingFileReveal((prev) =>
               prev && prev.path === absPath ? null : prev
             )
+          }
+          if (keepBuffer) {
+            // 接着做的重载又读失败：用户打的字原样留着，下次打开再试
+            const message = toErrorMessage(error)
+            setFileTabs((prev) =>
+              prev.map((tab) =>
+                tab.id === tabId
+                  ? {
+                      ...tab,
+                      loading: false,
+                      saveState: "error",
+                      saveError: message,
+                    }
+                  : tab
+              )
+            )
+            return
           }
           // 文件（或它所在的文件夹）已经不在了：给一句人话，不用后端原文
           rejectTab(
@@ -3155,12 +3208,6 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     openExternalConflictDiff(head.path, head.diskContent, unsavedContent)
   }, [dequeueExternalConflict, openExternalConflictDiff])
 
-  const reloadExternalConflict = useCallback(() => {
-    const head = dequeueExternalConflict({ clearSignature: true })
-    if (!head) return
-    void openFilePreview(head.path, { reload: true })
-  }, [dequeueExternalConflict, openFilePreview])
-
   const saveExternalConflictCopy = useCallback(async (): Promise<string> => {
     const head = externalConflictQueueRef.current[0]
     if (!head) throw new Error("no external conflict to resolve")
@@ -3199,6 +3246,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           isDirty: content !== savedContent,
           saveState: tab.saveState === "saving" ? "saving" : "idle",
           saveError: null,
+          // 冲突重载失败后用户又接着打字：算放弃那次重载，再打开时不能拿磁盘
+          // 内容盖掉后来打的字（#1511）
+          pendingReload: false,
         }
       })
 
@@ -3216,11 +3266,12 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   )
 
   const saveFileTab = useCallback(
-    async (tabId: string, options?: { force?: boolean }): Promise<boolean> => {
+    async (tabId: string, options?: FileSaveOptions): Promise<boolean> => {
       if (composingFileTabIdsRef.current.has(tabId)) {
         const deferredOptions = deferredSaveTabsRef.current.get(tabId)
         deferredSaveTabsRef.current.set(tabId, {
           force: Boolean(deferredOptions?.force || options?.force),
+          explicit: Boolean(deferredOptions?.explicit || options?.explicit),
         })
         return false
       }
@@ -3234,6 +3285,20 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
       const io = splitAbsPath(tab.path)
       if (!io) return false
+
+      // 用户亲手点的保存：算选了留着自己的改动，不再接着做没做成的冲突重载。
+      // 要在下面的预检查之前清，预检查读失败或发现冲突提前返回时也算数。
+      // 自动保存（定时、失焦、切标签）不算，只有真存成功了才清（#1511）
+      if (options?.explicit && tab.pendingReload) {
+        const clearPending = (tabs: FileWorkspaceTab[]) =>
+          tabs.map((candidate) =>
+            candidate.id === tabId && candidate.kind === "file"
+              ? { ...candidate, pendingReload: false }
+              : candidate
+          )
+        fileTabsRef.current = clearPending(fileTabsRef.current)
+        setFileTabs(clearPending)
+      }
 
       // Divergence guard (covers EVERY write path — manual save, 5s
       // autosave, blur/switch/close saves — because they all funnel here):
@@ -3333,6 +3398,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
               stale: false,
               saveState: "idle",
               saveError: null,
+              // 改动已经写到磁盘上了，没做成的重载不用再接着做
+              pendingReload: false,
             }
           })
         )
@@ -3380,7 +3447,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   )
 
   const saveActiveFile = useCallback(
-    async (options?: { force?: boolean }) => {
+    async (options?: FileSaveOptions) => {
       const activeId = activeFileTabIdRef.current
       if (!activeId) return false
       return saveFileTab(activeId, options)
@@ -3388,15 +3455,21 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     [saveFileTab]
   )
 
+  // 读失败时保留标签里的内容（包括没存的改动），返回失败原因；成功或没读返回 null。
+  // keepBuffer：读失败时不标 loadFailed。冲突框的重载用它：内容是用户打的字，
+  // 不是报错文字，标了的话再点文件会走冷加载重试先清空内容，又读失败就只剩报错文字。
   const reloadFileTab = useCallback(
-    async (tabId: string) => {
+    async (
+      tabId: string,
+      options?: { keepBuffer?: boolean }
+    ): Promise<string | null> => {
       const tab = fileTabsRef.current.find(
         (candidate) => candidate.id === tabId
       )
-      if (!tab || tab.kind !== "file" || !tab.path) return
+      if (!tab || tab.kind !== "file" || !tab.path) return null
       const tabPath = tab.path
       const io = splitAbsPath(tabPath)
-      if (!io) return
+      if (!io) return null
 
       setFileTabs((prev) =>
         prev.map((candidate) =>
@@ -3441,10 +3514,12 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                   // asks for — clearing it here keeps the activation pass
                   // from immediately re-reloading the same tab.
                   stale: false,
+                  pendingReload: false,
                 }
               : candidate
           )
         )
+        return null
       } catch (error) {
         const message = toErrorMessage(error)
         setFileTabs((prev) =>
@@ -3456,11 +3531,16 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                   saveState: "error",
                   saveError: message,
                   // 这是读失败：再打开要重新读，不能当成保存失败命中缓存
-                  loadFailed: true,
+                  loadFailed: options?.keepBuffer !== true,
+                  // 冲突框的重载没做成：记着，再打开时接着重读
+                  ...(options?.keepBuffer === true
+                    ? { pendingReload: true }
+                    : {}),
                 }
               : candidate
           )
         )
+        return message
       }
     },
     [fetchGitBase, t]
@@ -3470,6 +3550,24 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     const activeId = activeFileTabIdRef.current
     if (!activeId) return
     await reloadFileTab(activeId)
+  }, [reloadFileTab])
+
+  // 「重载」：先重读，读成功了才丢掉没存的改动、关掉冲突框。读失败时标签内容
+  // （用户打的字）原样留着，冲突也留在队列里，抛出失败原因让对话框提示，
+  // 用户可以再点重载、另存副本或对比（#1511）。不走 openFilePreview：
+  // 它读失败会把错误文字写进标签内容。
+  const reloadExternalConflict = useCallback(async (): Promise<void> => {
+    const head = externalConflictQueueRef.current[0]
+    if (!head) return
+    const tabId = buildFileTabId({ kind: "file", path: head.path })
+    const failure = await reloadFileTab(tabId, { keepBuffer: true })
+    if (failure !== null) throw new Error(failure)
+    // 等读的这段时间队首可能变了：按路径出队，不误关别的文件的冲突。
+    const key = conflictKey(head.path)
+    conflictSignatureByKeyRef.current.delete(key)
+    setExternalConflictQueue((prev) =>
+      prev.filter((queued) => conflictKey(queued.path) !== key)
+    )
   }, [reloadFileTab])
 
   const switchFileTab = useCallback(
@@ -3938,6 +4036,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     enqueueExternalConflict,
     consumeSelfWriteEcho,
     refreshWorkingTreeDiffTab,
+    notifyExternalReadFailed,
   })
 
   const toggleFileTabPreview = useCallback((tabId: string) => {

@@ -59,6 +59,8 @@ function emit(envelope: Envelope) {
 
 function setup(tabs: FileWorkspaceTab[], activeId: string | null) {
   const refreshWorkingTreeDiffTab = vi.fn()
+  const markTabsStale = vi.fn()
+  const notifyExternalReadFailed = vi.fn()
   const markTabsStaleBatch = vi.fn()
   const openFilePreview = vi.fn(async () => null)
   const activeFileTabIdRef = { current: activeId }
@@ -72,15 +74,22 @@ function setup(tabs: FileWorkspaceTab[], activeId: string | null) {
       openFilePreview,
       reloadOpenFileBackground: vi.fn(async () => {}),
       applyExternalReload: vi.fn(async () => {}),
-      markTabsStale: vi.fn(),
+      markTabsStale,
       markTabsStaleBatch,
       rejectFileTab: vi.fn(),
       enqueueExternalConflict: vi.fn(),
       consumeSelfWriteEcho: () => false,
       refreshWorkingTreeDiffTab,
+      notifyExternalReadFailed,
     })
   )
-  return { refreshWorkingTreeDiffTab, activeFileTabIdRef, openFilePreview }
+  return {
+    refreshWorkingTreeDiffTab,
+    activeFileTabIdRef,
+    openFilePreview,
+    markTabsStale,
+    notifyExternalReadFailed,
+  }
 }
 
 describe("useOpenFileTabsWatch：工作区差异标签", () => {
@@ -139,5 +148,51 @@ describe("useOpenFileTabsWatch：工作区差异标签", () => {
     await waitFor(() =>
       expect(refreshWorkingTreeDiffTab).toHaveBeenCalledWith(tab.id)
     )
+  })
+})
+
+function dirtyFileTab(path: string): FileWorkspaceTab {
+  return {
+    id: buildFileTabId({ kind: "file", path }),
+    kind: "file",
+    title: path.split("/").pop() ?? path,
+    description: path,
+    path,
+    language: "markdown",
+    content: "dirty-local",
+    savedContent: "disk",
+    etag: "e1",
+    isDirty: true,
+    loading: false,
+  } as FileWorkspaceTab
+}
+
+describe("useOpenFileTabsWatch：外部改了但读不到（#1511）", () => {
+  beforeEach(async () => {
+    listenersByRoot.clear()
+    const api = await import("@/lib/api")
+    vi.mocked(api.readFileForEdit).mockReset()
+  })
+
+  it("当前标签有没存的改动时，读失败要提示用户，同一次失败只提示一次", async () => {
+    const api = await import("@/lib/api")
+    vi.mocked(api.readFileForEdit).mockRejectedValue(
+      new Error("simulated read failure")
+    )
+    const path = `${ROOT}/README.md`
+    const tab = dirtyFileTab(path)
+    const { markTabsStale, notifyExternalReadFailed } = setup([tab], tab.id)
+    emit({ kind: "meta", changed_paths: ["README.md"] })
+    await waitFor(() => expect(markTabsStale).toHaveBeenCalledWith(path))
+    await waitFor(() =>
+      expect(notifyExternalReadFailed).toHaveBeenCalledWith(
+        path,
+        "simulated read failure"
+      )
+    )
+    // 同一个文件再来一次变化、还是读不到：不重复弹
+    emit({ kind: "meta", changed_paths: ["README.md"] })
+    await waitFor(() => expect(markTabsStale).toHaveBeenCalledTimes(2))
+    expect(notifyExternalReadFailed).toHaveBeenCalledTimes(1)
   })
 })

@@ -397,6 +397,39 @@ describe("ChatInput automatic collapse", () => {
     expect(document.activeElement).toBe(screen.getByTestId("editor"))
   })
 
+  // #1652：鼠标移上去马上按下，编辑区还在展开的过渡里、暂时聚焦不了，
+  // 第一次 focus() 落空；以前只试一次，光标留在 BODY，接着打的字全丢了。
+  it("keeps trying to focus the editor until it can take the caret", () => {
+    const { container } = setup()
+    fireEvent.mouseEnter(container)
+    const editor = screen.getByTestId("editor")
+    const realFocus = editor.focus.bind(editor)
+    let attempts = 0
+    // 前两次 focus() 不生效，模拟编辑区还没显示出来
+    editor.focus = () => {
+      attempts += 1
+      if (attempts > 2) realFocus()
+    }
+    const bar = container.querySelector<HTMLElement>(
+      "[data-composer-collapsed-bar]"
+    )!
+    pointerDown(bar, "mouse")
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    expect(document.activeElement).toBe(editor)
+  })
+
+  // #1652：展开时编辑区不能等 visibility 的过渡延迟才变得可聚焦。
+  it("makes the opened body focusable at once, without a delayed visibility", () => {
+    const { container } = setup()
+    fireEvent.mouseEnter(container)
+    const body = container.querySelector<HTMLElement>("[data-composer-body]")!
+    expect(body.className).not.toMatch(/visibility/)
+    leave(container)
+    expect(body.className).toMatch(/visibility/)
+  })
+
   it("leaves a press on a composer control to that control", () => {
     const { container } = setup()
     fireEvent.mouseEnter(container)

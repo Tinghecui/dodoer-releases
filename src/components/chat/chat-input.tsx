@@ -387,16 +387,38 @@ export const ChatInput = memo(function ChatInput({
       ? barPx
       : Math.max(barPx, bodyHeight)
 
+  // #1652：刚展开时编辑区可能还在过渡里、一时聚焦不了，focus() 会落空。
+  // 所以每帧试一次，直到光标真的进了编辑区；最多试到展开动画走完为止。
+  // 焦点被用户放到了输入框以外的地方、或者又收起了，就不再抢。
+  const focusFrameRef = useRef<number | null>(null)
+  const cancelFocusRetry = useCallback(() => {
+    if (focusFrameRef.current != null) {
+      cancelAnimationFrame(focusFrameRef.current)
+      focusFrameRef.current = null
+    }
+  }, [])
+  useEffect(() => cancelFocusRetry, [cancelFocusRetry])
   const expandAndFocus = () => {
     setFocused(true)
-    requestAnimationFrame(() => {
+    cancelFocusRetry()
+    let framesLeft = Math.ceil(COMPOSER_EXPAND_MS / 16) + 4
+    const attempt = () => {
+      focusFrameRef.current = null
       const container = containerRef.current
-      if (container?.dataset.composerState === "expanded") {
-        container
-          .querySelector<HTMLElement>('[contenteditable="true"]')
-          ?.focus()
-      }
-    })
+      if (container?.dataset.composerState !== "expanded") return
+      const editor = container.querySelector<HTMLElement>(
+        '[contenteditable="true"]'
+      )
+      if (!editor || editor.contains(document.activeElement)) return
+      const active = document.activeElement
+      if (active && active !== document.body && !container.contains(active))
+        return
+      editor.focus()
+      if (editor.contains(document.activeElement)) return
+      framesLeft -= 1
+      if (framesLeft > 0) focusFrameRef.current = requestAnimationFrame(attempt)
+    }
+    focusFrameRef.current = requestAnimationFrame(attempt)
   }
 
   // Active/historical conversations dock the composer at the very bottom of the
@@ -544,12 +566,15 @@ export const ChatInput = memo(function ChatInput({
           style={{ visibility: collapsed ? "hidden" : undefined }}
           className={cn(
             settled ? "relative" : "absolute inset-x-0 bottom-0",
-            "transition-[opacity,translate,visibility] motion-reduce:transition-none",
+            "motion-reduce:transition-none",
             // The content fades in as the outline opens (a beat behind it,
             // rising a few pixels) and out before it closes.
+            // #1652：展开时 visibility 不跟着过渡（不吃 50ms 的延迟），一展开
+            // 编辑区就能聚焦，鼠标移上去马上按下也能把光标放进去；收起时
+            // visibility 照旧跟着过渡，等淡出完再藏起来。
             collapsed
-              ? "translate-y-1.5 opacity-0 duration-[140ms] ease-in"
-              : "translate-y-0 opacity-100 delay-[50ms] duration-[220ms] ease-out"
+              ? "transition-[opacity,translate,visibility] translate-y-1.5 opacity-0 duration-[140ms] ease-in"
+              : "transition-[opacity,translate] translate-y-0 opacity-100 delay-[50ms] duration-[220ms] ease-out"
           )}
         >
           <div>

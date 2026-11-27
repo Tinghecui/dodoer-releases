@@ -14604,6 +14604,11 @@ fn terminal_error_details(e: &AcpError, stderr_tail: &StderrTail) -> Option<Stri
     if !matches!(e, AcpError::SessionLost) {
         return None;
     }
+    stderr_tail_block(stderr_tail)
+}
+
+/// 智能体 stderr 的最后几行，排成「stderr (last N lines):」一段；没有就 `None`。
+fn stderr_tail_block(stderr_tail: &StderrTail) -> Option<String> {
     let tail = stderr_tail.tail_since(0, EMPTY_TURN_STDERR_LINES, EMPTY_TURN_STDERR_BYTES);
     if tail.is_empty() {
         return None;
@@ -14614,6 +14619,107 @@ fn terminal_error_details(e: &AcpError, stderr_tail: &StderrTail) -> Option<Stri
         block.push_str(line);
     }
     Some(block)
+}
+
+/// Cowork 加的（#1646）：「会话在这条连接上接不下去了」的 AIR 失败记录
+/// （[`session_failure_ends_session`]），适配器没给 details 时补上 stderr 的最后几行。
+/// 底下的 claude 被杀时，claude-agent-acp 只发一句「The connection to Claude was
+/// lost.」，进程怎么没的（`Process exited with signal: 9`）只在 stderr 里；不补的话，
+/// 用户发下一条消息之前（还没有 `session_lost` 收尾报错，见 [`terminal_error_details`]），
+/// 告警的「详情」里就只有这一句。别的记录和适配器自己给了 details 的不动。
+fn attach_stderr_to_lost_session_failure(record: &mut SessionFailureRecord, tail: &StderrTail) {
+    if record.details.is_some() || !session_failure_ends_session(record) {
+        return;
+    }
+    record.details = stderr_tail_block(tail);
+}
+
+/// [`attach_stderr_to_lost_session_failure`] 用在空闲和回合里的 `session_info_update`
+/// 上：改的是它 `_meta` 里那条记录的原始 JSON，`emit_conversation_update` 照旧解析转发。
+fn attach_stderr_to_lost_session_update(update: &mut SessionUpdate, tail: &StderrTail) {
+    let SessionUpdate::SessionInfoUpdate(info) = update else {
+        return;
+    };
+    let Some(mut record) =
+        air_session_failure(info.meta.as_ref()).and_then(parse_session_failure_record)
+    else {
+        return;
+    };
+    if record.details.is_some() {
+        return;
+    }
+    attach_stderr_to_lost_session_failure(&mut record, tail);
+    let Some(details) = record.details else {
+        return;
+    };
+    if let Some(raw) = info
+        .meta
+        .as_mut()
+        .and_then(|meta| meta.get_mut("jetbrains"))
+        .and_then(|jb| jb.get_mut("air"))
+        .and_then(|air| air.get_mut("sessionFailure"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        raw.insert("details".to_string(), serde_json::Value::String(details));
+    }
+}
+
+/// 这种记录（[`session_failure_ends_session`]）收到时，适配器打到 stderr 的
+/// 「Process exited…」可能还没读进来：stdout 和 stderr 是两根管子，谁先到不一定。
+/// 等这一行读进来、stderr 安静下来（见 [`settle_stderr`]），最多等
+/// [`CONNECTION_LOSS_GRACE`]。别的记录不等。
+async fn settle_stderr_for_lost_session(update: &SessionUpdate, tail: &StderrTail) {
+    let SessionUpdate::SessionInfoUpdate(info) = update else {
+        return;
+    };
+    let ends = air_session_failure(info.meta.as_ref())
+        .and_then(parse_session_failure_record)
+        .is_some_and(|r| r.details.is_none() && session_failure_ends_session(&r));
+    if ends {
+        settle_stderr(tail).await;
+    }
+}
+
+/// stderr 多久没有新行就算读完了，见 [`settle_stderr_for_lost_session`]。
+const STDERR_SETTLE_QUIET: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// 记录到了以后，「Process exited…」可能过了好几百毫秒才打出来，只看安静
+/// 200 毫秒会把它漏掉（#1646 返工）。所以要等到 stderr 里出现进程退出的那一行、
+/// 再等它安静才算读完；中间来的普通日志不算（第 2 次返工）。一直没有这一行，
+/// 就等满 [`CONNECTION_LOSS_GRACE`]。
+async fn settle_stderr(tail: &StderrTail) {
+    let deadline = tokio::time::Instant::now() + CONNECTION_LOSS_GRACE;
+    let mut last = tail.mark();
+    loop {
+        tokio::time::sleep(STDERR_SETTLE_QUIET).await;
+        let now = tail.mark();
+        if tokio::time::Instant::now() >= deadline
+            || (now == last && stderr_mentions_process_exit(tail))
+        {
+            return;
+        }
+        last = now;
+    }
+}
+
+/// stderr 最近几行里有没有进程退出的说法（`Process exited with signal: 9`、
+/// `exited with code 1`、`terminated by signal`）。只认这几种成句的说法：普通日志里
+/// 单独出现的 signal、killed、exited（`abort signal attached`）不算，不然等待会在
+/// 真正的退出那一行到之前就结束（#1646 第 3 次返工）。认错了最多是多等或少等一会儿。
+fn stderr_mentions_process_exit(tail: &StderrTail) -> bool {
+    const EXIT_PHRASES: [&str; 4] = [
+        "exited with",
+        "killed by signal",
+        "terminated by signal",
+        "exit status:",
+    ];
+    tail.tail_since(0, EMPTY_TURN_STDERR_LINES, EMPTY_TURN_STDERR_BYTES)
+        .lines
+        .iter()
+        .any(|line| {
+            let line = line.to_ascii_lowercase();
+            EXIT_PHRASES.iter().any(|phrase| line.contains(phrase))
+        })
 }
 
 /// Whether codeg can absorb a "the agent forgot this session" load failure by
@@ -14709,7 +14815,12 @@ async fn handle_turn_notification(
     raw_output_cache: &mut ToolCallOutputCache,
     cb_state: &mut CodeBuddyLiveState,
     probe: &mut TurnOutputProbe,
+    stderr_tail: &StderrTail,
 ) {
+    let mut notif = notif;
+    // #1646：会话没了的失败记录补上 stderr 再转发。
+    settle_stderr_for_lost_session(&notif.update, stderr_tail).await;
+    attach_stderr_to_lost_session_update(&mut notif.update, stderr_tail);
     let should_poll_now =
         track_terminal_tool_calls(agent_type, &notif.update, tracked_terminal_tool_calls);
     probe.note_update(agent_type, &notif.update);
@@ -15212,7 +15323,10 @@ async fn run_conversation_loop(
                         let drift = &mut config_drift_to_reassert;
                         if let Err(e) = MatchDispatch::new(dispatch)
                             .if_notification(
-                                async |notif: SessionNotification| {
+                                async |mut notif: SessionNotification| {
+                                    // #1646：会话没了的失败记录补上 stderr 再转发。
+                                    settle_stderr_for_lost_session(&notif.update, stderr_tail).await;
+                                    attach_stderr_to_lost_session_update(&mut notif.update, stderr_tail);
                                     // BEFORE the emit: it overwrites the very
                                     // state the comparison reads.
                                     if let SessionUpdate::ConfigOptionUpdate(update) = &notif.update {
@@ -15687,6 +15801,7 @@ async fn run_conversation_loop(
                                             &mut raw_output_cache,
                                             &mut cb_state,
                                             &mut probe,
+                                            stderr_tail,
                                         )
                                         .await;
                                         Ok(())
@@ -15913,8 +16028,17 @@ async fn run_conversation_loop(
                             // must land before `apply_event`'s turn-boundary
                             // settle, or the retry warnings it escalates would
                             // be marked recovered while the failure is live.
-                            let terminal_failure =
+                            let mut terminal_failure =
                                 response_session_failure(response.meta.as_ref());
+                            // #1646：会话没了的收尾记录补上 stderr 的最后几行。
+                            if let Some(record) = terminal_failure.as_mut() {
+                                if record.details.is_none()
+                                    && session_failure_ends_session(record)
+                                {
+                                    settle_stderr(stderr_tail).await;
+                                    attach_stderr_to_lost_session_failure(record, stderr_tail);
+                                }
+                            }
                             if let Some(record) = &terminal_failure {
                                 emit_with_state(
                                     state,
@@ -53067,6 +53191,181 @@ mod tests {
             terminal_error_details(&AcpError::SessionLost, &StderrTail::new()),
             None
         );
+    }
+
+    /// #1646：空闲时底下的 claude 被杀，适配器只发一条 details 为空的失败记录。
+    /// 转发前把 stderr 的最后几行补进 details，告警「详情」里才看得到 signal: 9。
+    #[test]
+    fn a_lost_session_failure_update_carries_the_agent_stderr_tail() {
+        fn info_update(failure: serde_json::Value) -> SessionUpdate {
+            serde_json::from_value(serde_json::json!({
+                "sessionUpdate": "session_info_update",
+                "_meta": {"jetbrains": {"air": {"version": 1, "sessionFailure": failure}}},
+            }))
+            .expect("valid session_info_update wire shape")
+        }
+        fn forwarded_details(update: &SessionUpdate) -> Option<String> {
+            let SessionUpdate::SessionInfoUpdate(info) = update else {
+                panic!("not a session_info_update");
+            };
+            parse_session_failure_record(air_session_failure(info.meta.as_ref())?)?.details
+        }
+        let lost = serde_json::json!({
+            "id": "f1", "revision": 1, "category": "connection", "severity": "error",
+            "title": "The connection to Claude was lost.", "actions": ["new_session"],
+        });
+        let tail = StderrTail::new();
+        tail.push("[debug] query ended");
+        tail.push("Process exited with signal: 9 (SIGKILL)");
+
+        let mut update = info_update(lost.clone());
+        attach_stderr_to_lost_session_update(&mut update, &tail);
+        let details = forwarded_details(&update).expect("details should carry stderr");
+        assert!(details.starts_with("stderr (last 2 lines):"), "{details}");
+        assert!(
+            details.contains("Process exited with signal: 9"),
+            "{details}"
+        );
+
+        // stderr 什么都没有：原样转发。
+        let mut update = info_update(lost.clone());
+        attach_stderr_to_lost_session_update(&mut update, &StderrTail::new());
+        assert_eq!(forwarded_details(&update), None);
+
+        // 适配器自己给了 details：不覆盖。
+        let mut own = lost.clone();
+        own["details"] = serde_json::json!("adapter details");
+        let mut update = info_update(own);
+        attach_stderr_to_lost_session_update(&mut update, &tail);
+        assert_eq!(
+            forwarded_details(&update).as_deref(),
+            Some("adapter details")
+        );
+
+        // 不是「会话没了」的记录（网络重试的 warning）：不动。
+        let mut warning = lost.clone();
+        warning["severity"] = serde_json::json!("warning");
+        let mut update = info_update(warning);
+        attach_stderr_to_lost_session_update(&mut update, &tail);
+        assert_eq!(forwarded_details(&update), None);
+
+        // 回合收尾挂在 prompt 响应上的同一种记录也补。
+        let mut record = air_failure("connection", "error", &["new_session"]);
+        attach_stderr_to_lost_session_failure(&mut record, &tail);
+        assert!(record
+            .details
+            .as_deref()
+            .is_some_and(|d| d.contains("Process exited with signal: 9")));
+        let mut retry_only = air_failure("connection", "error", &["retry"]);
+        attach_stderr_to_lost_session_failure(&mut retry_only, &tail);
+        assert_eq!(retry_only.details, None);
+    }
+
+    /// #1646 返工：适配器先发失败记录，「Process exited…」过了好几百毫秒才打到 stderr。
+    /// 只按「安静 200 毫秒」算读完的话，这一行会被漏掉。
+    #[tokio::test(start_paused = true)]
+    async fn settling_stderr_waits_for_an_exit_line_that_comes_after_the_record() {
+        let tail = std::sync::Arc::new(StderrTail::new());
+        tail.push("[debug] query ended");
+        let late = tail.clone();
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            late.push("Process exited with signal: 9 (SIGKILL)");
+        });
+        let started = tokio::time::Instant::now();
+        settle_stderr(&tail).await;
+        // 等完马上取，和转发时一样；晚到的那一行要在这之前就读进来了。
+        let mut record = air_failure("connection", "error", &["new_session"]);
+        attach_stderr_to_lost_session_failure(&mut record, &tail);
+        writer.await.unwrap();
+        let details = record.details.unwrap_or_default();
+        assert!(
+            details.contains("Process exited with signal: 9"),
+            "{details}"
+        );
+        assert!(started.elapsed() <= CONNECTION_LOSS_GRACE + STDERR_SETTLE_QUIET);
+
+        // 退出那一行在记录之前就已经读进来了：不用干等到最后。
+        let tail = StderrTail::new();
+        tail.push("Process exited with signal: 9 (SIGKILL)");
+        let started = tokio::time::Instant::now();
+        settle_stderr(&tail).await;
+        assert!(
+            started.elapsed() < CONNECTION_LOSS_GRACE,
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// #1646 第 2 次返工：记录到了以后先来一条普通日志，「Process exited…」过了
+    /// 好几百毫秒才到。不能把普通日志当成「已经等到了」，安静 200 毫秒就收手。
+    #[tokio::test(start_paused = true)]
+    async fn settling_stderr_is_not_fooled_by_an_ordinary_line_before_the_exit_line() {
+        let tail = std::sync::Arc::new(StderrTail::new());
+        tail.push("[debug] query ended");
+        let late = tail.clone();
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            late.push("[debug] closing transport");
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            late.push("Process exited with signal: 9 (SIGKILL)");
+        });
+        settle_stderr(&tail).await;
+        let mut record = air_failure("connection", "error", &["new_session"]);
+        attach_stderr_to_lost_session_failure(&mut record, &tail);
+        writer.await.unwrap();
+        let details = record.details.unwrap_or_default();
+        assert!(
+            details.contains("Process exited with signal: 9"),
+            "{details}"
+        );
+    }
+
+    /// #1646 第 3 次返工：先来的普通日志里碰巧有「signal」「killed」这样的词，
+    /// 也不能当成进程退出那一行，安静 200 毫秒就收手。
+    #[tokio::test(start_paused = true)]
+    async fn settling_stderr_is_not_fooled_by_an_ordinary_line_that_mentions_signal() {
+        let tail = std::sync::Arc::new(StderrTail::new());
+        tail.push("[debug] query ended");
+        let late = tail.clone();
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            late.push("[debug] abort signal attached; killed pending tool call");
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            late.push("Process exited with signal: 9 (SIGKILL)");
+        });
+        settle_stderr(&tail).await;
+        let mut record = air_failure("connection", "error", &["new_session"]);
+        attach_stderr_to_lost_session_failure(&mut record, &tail);
+        writer.await.unwrap();
+        let details = record.details.unwrap_or_default();
+        assert!(
+            details.contains("Process exited with signal: 9"),
+            "{details}"
+        );
+    }
+
+    #[test]
+    fn only_real_exit_lines_count_as_process_exit() {
+        for line in [
+            "Process exited with signal: 9 (SIGKILL)",
+            "Process exited with exit status: 1",
+            "claude process exited with code 1",
+            "child terminated by signal SIGTERM",
+        ] {
+            let tail = StderrTail::new();
+            tail.push(line);
+            assert!(stderr_mentions_process_exit(&tail), "{line}");
+        }
+        for line in [
+            "[debug] abort signal attached",
+            "[debug] killed pending tool call",
+            "[info] user exited plan mode",
+        ] {
+            let tail = StderrTail::new();
+            tail.push(line);
+            assert!(!stderr_mentions_process_exit(&tail), "{line}");
+        }
     }
 
     #[test]

@@ -584,6 +584,20 @@ export function CommentComposer({
     })
   }, [api, text, draftKey])
   const target = api.target
+  // 点了「回复」「对这条留言」（包括再点一次同一条）：光标进留言框、放到字末尾，
+  // 接着打的字才不会丢。每次点都是一个新的目标对象，按对象比；取消（null）和
+  // 挂上时已有的目标不抢焦点。
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const focusedTarget = useRef(target)
+  useEffect(() => {
+    if (target === focusedTarget.current) return
+    focusedTarget.current = target
+    const el = textareaRef.current
+    if (!target || !el) return
+    el.focus()
+    const end = el.value.length
+    el.setSelectionRange(end, end)
+  }, [target])
   return (
     <div data-comment-composer="" className="flex flex-col gap-1.5">
       {target && (
@@ -606,6 +620,7 @@ export function CommentComposer({
       )}
       <div className="flex items-end gap-2">
         <Textarea
+          ref={textareaRef}
           value={text}
           onChange={(e) => {
             const value = e.target.value

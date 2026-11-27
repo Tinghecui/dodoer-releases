@@ -333,6 +333,37 @@ describe("comments in the read-only view", () => {
     )
   })
 
+  it("#1650：点「回复」后光标进留言框，再点一次同一条也进；取消不抢焦点", async () => {
+    api.teamComments.mockResolvedValue(commentsPage([comment({ id: "c1" })]))
+    await openView()
+    fireEvent.change(composer(), { target: { value: "hi" } })
+    const reply = screen.getByRole("button", { name: "Reply" })
+    reply.focus()
+    fireEvent.click(reply)
+    expect(document.activeElement).toBe(composer())
+    expect(composer().selectionStart).toBe(2)
+    expect(composer().selectionEnd).toBe(2)
+
+    reply.focus()
+    fireEvent.click(reply)
+    expect(document.activeElement).toBe(composer())
+
+    const cancel = screen.getByRole("button", { name: "Cancel" })
+    cancel.focus()
+    fireEvent.click(cancel)
+    expect(document.querySelector("[data-comment-target]")).toBeNull()
+    // X 点完自己就不在了，焦点落回页面；留言框不把它抢过去。
+    expect(document.activeElement).not.toBe(composer())
+  })
+
+  it("#1650：点「对这条留言」后光标进留言框", async () => {
+    await openView()
+    const button = screen.getByRole("button", { name: "Comment on this entry" })
+    button.focus()
+    fireEvent.click(button)
+    expect(document.activeElement).toBe(composer())
+  })
+
   it("only comments with canDelete have Delete, and it sends comment_delete", async () => {
     api.teamComments.mockResolvedValue(
       commentsPage([

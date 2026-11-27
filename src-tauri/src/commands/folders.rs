@@ -405,6 +405,12 @@ pub(crate) const GIT_IDENTITY_MISSING_I18N_KEY: &str = "errors.gitIdentityMissin
 /// `git commit` 失败时的错误。没配 Git 姓名和邮箱的，报「缺少 Git 身份」
 /// 并带 i18n 键，git 原文放进 detail；别的失败照旧是 git 原文。
 fn git_commit_error(stderr: &[u8]) -> AppCommandError {
+    git_identity_aware_error("commit", stderr)
+}
+
+/// 会写出提交的 git 操作（提交、合并、变基、冲突后继续）失败时的错误：
+/// 缺少 Git 身份的报「缺少 Git 身份」并带 i18n 键，别的照旧是 git 原文。
+pub(crate) fn git_identity_aware_error(operation: &str, stderr: &[u8]) -> AppCommandError {
     let text = String::from_utf8_lossy(stderr);
     if GIT_IDENTITY_MISSING_MARKERS
         .iter()
@@ -414,7 +420,7 @@ fn git_commit_error(stderr: &[u8]) -> AppCommandError {
             .with_detail(text.trim().to_string())
             .with_i18n(GIT_IDENTITY_MISSING_I18N_KEY, Default::default());
     }
-    git_command_error("commit", stderr)
+    git_command_error(operation, stderr)
 }
 
 use crate::git_repo::ensure_git_repo;
@@ -1643,7 +1649,8 @@ pub(crate) async fn git_pull_core(
             return Err(git_command_error("merge --ff-only", &ff_output.stderr));
         }
     } else {
-        let merge_output = crate::process::tokio_command("git")
+        // 带 --no-commit 的合并 git 也先查身份（#1562）
+        let merge_output = git_commit_command(None)
             .args(["merge", "--no-commit", "@{u}"])
             .current_dir(path)
             .output()
@@ -1669,10 +1676,11 @@ pub(crate) async fn git_pull_core(
                     }),
                 });
             }
-            return Err(git_command_error("merge", &merge_output.stderr));
+            return Err(git_identity_aware_error("merge", &merge_output.stderr));
         }
 
-        let commit_output = crate::process::tokio_command("git")
+        // 分叉时的合并提交也不许 git 猜作者（#1562）
+        let commit_output = git_commit_command(None)
             .args(["commit", "--no-edit"])
             .current_dir(path)
             .output()
@@ -1683,7 +1691,14 @@ pub(crate) async fn git_pull_core(
             let stderr = String::from_utf8_lossy(&commit_output.stderr);
             let stdout = String::from_utf8_lossy(&commit_output.stdout);
             if !stderr.contains("nothing to commit") && !stdout.contains("nothing to commit") {
-                return Err(git_command_error("commit", &commit_output.stderr));
+                // 合并已经做了、提交没成：撤掉这次合并，不留 MERGE_HEAD 和
+                // 合进来的文件，免得后面的 git 操作卡在合并一半（#1562）
+                let _ = crate::process::tokio_command("git")
+                    .args(["merge", "--abort"])
+                    .current_dir(path)
+                    .output()
+                    .await;
+                return Err(git_identity_aware_error("commit", &commit_output.stderr));
             }
         }
     }
@@ -1730,7 +1745,8 @@ pub async fn git_start_pull_merge(
     upstream_commit: Option<String>,
 ) -> Result<(), AppCommandError> {
     let target = upstream_commit.as_deref().unwrap_or("@{u}");
-    let output = crate::process::tokio_command("git")
+    // 带 --no-commit 的合并 git 也先查身份（#1562）
+    let output = git_commit_command(None)
         .args(["merge", "--no-commit", target])
         .current_dir(&path)
         .output()
@@ -1744,7 +1760,7 @@ pub async fn git_start_pull_merge(
         if !conflicted_files.is_empty() {
             return Ok(()); // Conflict state is now active — merge workspace can proceed
         }
-        return Err(git_command_error("merge", &output.stderr));
+        return Err(git_identity_aware_error("merge", &output.stderr));
     }
 
     Ok(())
@@ -2948,6 +2964,28 @@ pub async fn git_show_file_base64(
     })
 }
 
+/// 会写出提交的 `git`（后面接 `commit …`、`merge …`、`rebase …`）：提交窗口、
+/// 拉取分叉时的合并提交、合并分支、变基、冲突后继续都用它。一律带
+/// `user.useConfigOnly=true`：没显式配 Git 姓名和邮箱时，git 不许拿系统用户名
+/// 和主机名自己凑一个作者，提交失败，走「缺少 Git 身份」的中文提示（#1562）。
+/// 提交窗口匹配到账号时显式给出作者，不受影响。任务流程（`work_task::git`）的
+/// 提交和合并也用它。
+pub(crate) fn git_commit_command(
+    author_override: Option<&(String, String)>,
+) -> tokio::process::Command {
+    let mut cmd = crate::process::tokio_command("git");
+    cmd.args(["-c", "user.useConfigOnly=true"]);
+    if let Some((name, email)) = author_override {
+        cmd.args([
+            "-c",
+            &format!("user.name={name}"),
+            "-c",
+            &format!("user.email={email}"),
+        ]);
+    }
+    cmd
+}
+
 pub(crate) async fn git_commit_core(
     emitter: &EventEmitter,
     folder_id: Option<i32>,
@@ -3023,15 +3061,7 @@ pub(crate) async fn git_commit_core(
     let author_override = crate::git_credential::resolve_commit_author(path, conn).await;
 
     // Commit
-    let mut commit_cmd = crate::process::tokio_command("git");
-    if let Some((ref name, ref email)) = author_override {
-        commit_cmd.args([
-            "-c",
-            &format!("user.name={name}"),
-            "-c",
-            &format!("user.email={email}"),
-        ]);
-    }
+    let mut commit_cmd = git_commit_command(author_override.as_ref());
     commit_cmd.args(["commit", "-m", message]);
     // 暂存区里还有没勾选的改动时，只提交勾选的路径，没勾的原样留在暂存区（#1442）。
     if let Some(only_specs) = commit_only_pathspecs(path, files).await {
@@ -4022,7 +4052,8 @@ pub async fn git_merge(
         0
     };
 
-    let output = crate::process::tokio_command("git")
+    // 非快进的合并会写出合并提交，不许 git 猜作者（#1562）
+    let output = git_commit_command(None)
         .args(["merge", &branch_name])
         .current_dir(&path)
         .output()
@@ -4042,7 +4073,7 @@ pub async fn git_merge(
                 }),
             });
         }
-        return Err(git_command_error("merge", &output.stderr));
+        return Err(git_identity_aware_error("merge", &output.stderr));
     }
     Ok(GitMergeResult {
         merged_commits,
@@ -4055,7 +4086,8 @@ pub async fn git_rebase(
     path: String,
     branch_name: String,
 ) -> Result<GitRebaseResult, AppCommandError> {
-    let output = crate::process::tokio_command("git")
+    // 变基重写出的提交要提交者身份，同样不许 git 猜（#1562）
+    let output = git_commit_command(None)
         .args(["rebase", &branch_name])
         .current_dir(&path)
         .output()
@@ -4075,7 +4107,17 @@ pub async fn git_rebase(
                 }),
             });
         }
-        return Err(git_command_error("rebase", &output.stderr));
+        let err = git_identity_aware_error("rebase", &output.stderr);
+        // 缺少身份时 git 已经切到目标分支、停在第一个提交上：撤回这次变基，
+        // 分支和工作区回到变基前，填好身份再来（#1562）
+        if err.i18n_key.as_deref() == Some(GIT_IDENTITY_MISSING_I18N_KEY) {
+            let _ = crate::process::tokio_command("git")
+                .args(["rebase", "--abort"])
+                .current_dir(&path)
+                .output()
+                .await;
+        }
+        return Err(err);
     }
     Ok(GitRebaseResult {
         message: String::from_utf8_lossy(&output.stdout).trim().to_string(),
@@ -4261,9 +4303,9 @@ pub async fn git_continue_operation(
     path: String,
     operation: String,
 ) -> Result<(), AppCommandError> {
-    let (program, args): (&str, Vec<&str>) = match operation.as_str() {
-        "merge" | "pull" => ("git", vec!["commit", "--no-edit"]),
-        "rebase" => ("git", vec!["rebase", "--continue"]),
+    let args: Vec<&str> = match operation.as_str() {
+        "merge" | "pull" => vec!["commit", "--no-edit"],
+        "rebase" => vec!["rebase", "--continue"],
         _ => {
             return Err(AppCommandError::invalid_input(format!(
                 "Unknown operation: {operation}"
@@ -4286,7 +4328,8 @@ pub async fn git_continue_operation(
         }
     }
 
-    let output = crate::process::tokio_command(program)
+    // 继续合并、继续变基都会写出提交，不许 git 猜作者（#1562）
+    let output = git_commit_command(None)
         .args(&args)
         .current_dir(&path)
         .env("GIT_EDITOR", "true")
@@ -4295,7 +4338,7 @@ pub async fn git_continue_operation(
         .map_err(AppCommandError::io)?;
 
     if !output.status.success() {
-        return Err(git_command_error(
+        return Err(git_identity_aware_error(
             &format!("{} --continue", operation),
             &output.stderr,
         ));
@@ -10295,6 +10338,176 @@ branch refs/heads/main";
             .expect("branch diff");
         assert!(names_itself(&branch), "{branch}");
     }
+    /// 建一个 main 和 side 各有一个提交、互相分叉的仓库，再用仓库自己的配置把
+    /// 姓名和邮箱设成空的（盖过这台机器的全局配置），和没配过身份一样。
+    /// `conflict` 为真时两边改同一行。
+    fn diverged_repo_without_identity(root: &std::path::Path, conflict: bool) {
+        git_run(root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("README.md"), "a\n").unwrap();
+        git_run(root, &["add", "README.md"]);
+        git_run(root, &["commit", "-q", "-m", "base"]);
+        git_run(root, &["checkout", "-q", "-b", "side"]);
+        let side_file = if conflict { "README.md" } else { "side.txt" };
+        std::fs::write(root.join(side_file), "side\n").unwrap();
+        git_run(root, &["add", "-A"]);
+        git_run(root, &["commit", "-q", "-m", "side"]);
+        git_run(root, &["checkout", "-q", "main"]);
+        std::fs::write(root.join("README.md"), "main\n").unwrap();
+        git_run(root, &["commit", "-q", "-am", "main"]);
+        git_run(root, &["config", "user.name", ""]);
+        git_run(root, &["config", "user.email", ""]);
+    }
+
+    fn assert_identity_missing(err: &AppCommandError) {
+        assert_eq!(
+            err.code,
+            crate::app_error::AppErrorCode::ConfigurationMissing,
+            "{err:?}"
+        );
+        assert_eq!(err.i18n_key.as_deref(), Some("errors.gitIdentityMissing"));
+    }
+
+    /// 合并分支、冲突后继续合并、变基、拉取分叉时的合并提交，没配身份时都和
+    /// 提交窗口一样报「缺少 Git 身份」，不写出新提交（#1562）。
+    #[tokio::test]
+    async fn merging_without_a_git_identity_says_the_identity_is_missing() {
+        // 合并分支（非快进，要写合并提交）
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        diverged_repo_without_identity(root, false);
+        let head = git_capture(root, &["rev-parse", "HEAD"]);
+        let err = git_merge(root.to_string_lossy().to_string(), "side".into())
+            .await
+            .expect_err("merge needs an author");
+        assert_identity_missing(&err);
+        assert_eq!(git_capture(root, &["rev-parse", "HEAD"]), head);
+
+        // 冲突解决后点继续
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        diverged_repo_without_identity(root, true);
+        // 起冲突这一步临时给个身份，不然 git 一开始就拒绝合并
+        let merge = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(["merge", "side"])
+            .current_dir(root)
+            .output()
+            .expect("git merge");
+        assert!(!merge.status.success(), "merge should conflict");
+        std::fs::write(root.join("README.md"), "both\n").unwrap();
+        git_run(root, &["add", "README.md"]);
+        let head = git_capture(root, &["rev-parse", "HEAD"]);
+        let err = git_continue_operation(root.to_string_lossy().to_string(), "merge".into())
+            .await
+            .expect_err("merge continue needs an author");
+        assert_identity_missing(&err);
+        assert_eq!(git_capture(root, &["rev-parse", "HEAD"]), head);
+
+        // 变基
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        diverged_repo_without_identity(root, false);
+        let head = git_capture(root, &["rev-parse", "HEAD"]);
+        let err = git_rebase(root.to_string_lossy().to_string(), "side".into())
+            .await
+            .expect_err("rebase needs a committer");
+        assert_identity_missing(&err);
+        assert_eq!(git_capture(root, &["rev-parse", "HEAD"]), head);
+    }
+
+    #[tokio::test]
+    async fn pulling_a_diverged_branch_without_a_git_identity_says_the_identity_is_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let origin = dir.path().join("origin");
+        std::fs::create_dir(&origin).unwrap();
+        git_run(&origin, &["init", "-q", "-b", "main"]);
+        std::fs::write(origin.join("README.md"), "a\n").unwrap();
+        git_run(&origin, &["add", "README.md"]);
+        git_run(&origin, &["commit", "-q", "-m", "base"]);
+        let local = dir.path().join("local");
+        git_run(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                &format!("file://{}", origin.to_string_lossy()),
+                &local.to_string_lossy(),
+            ],
+        );
+        std::fs::write(origin.join("remote.txt"), "r\n").unwrap();
+        git_run(&origin, &["add", "remote.txt"]);
+        git_run(&origin, &["commit", "-q", "-m", "remote"]);
+        std::fs::write(local.join("local.txt"), "l\n").unwrap();
+        git_run(&local, &["add", "local.txt"]);
+        git_run(&local, &["commit", "-q", "-m", "local"]);
+        git_run(&local, &["config", "user.name", ""]);
+        git_run(&local, &["config", "user.email", ""]);
+        let head = git_capture(&local, &["rev-parse", "HEAD"]);
+
+        let db = fresh_in_memory_db().await;
+        let data_dir = tempfile::tempdir().expect("tempdir");
+        let err = git_pull_core(&local.to_string_lossy(), None, &db, data_dir.path())
+            .await
+            .expect_err("the merge commit needs an author");
+        assert_identity_missing(&err);
+        assert_eq!(git_capture(&local, &["rev-parse", "HEAD"]), head);
+    }
+
+    /// 拉取分叉时，合并已经做了、合并提交却失败（缺少身份、钩子拒绝）：
+    /// 要把这次合并撤掉，不留 MERGE_HEAD 和合进来的文件（#1562）。
+    #[tokio::test]
+    async fn a_failed_pull_merge_commit_leaves_no_merge_in_progress() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let origin = dir.path().join("origin");
+        std::fs::create_dir(&origin).unwrap();
+        git_run(&origin, &["init", "-q", "-b", "main"]);
+        std::fs::write(origin.join("README.md"), "a\n").unwrap();
+        git_run(&origin, &["add", "README.md"]);
+        git_run(&origin, &["commit", "-q", "-m", "base"]);
+        let local = dir.path().join("local");
+        git_run(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                &format!("file://{}", origin.to_string_lossy()),
+                &local.to_string_lossy(),
+            ],
+        );
+        std::fs::write(origin.join("remote.txt"), "r\n").unwrap();
+        git_run(&origin, &["add", "remote.txt"]);
+        git_run(&origin, &["commit", "-q", "-m", "remote"]);
+        std::fs::write(local.join("local.txt"), "l\n").unwrap();
+        git_run(&local, &["add", "local.txt"]);
+        git_run(&local, &["commit", "-q", "-m", "local"]);
+        // 身份是有的，合并本身能做；提交那一步被 pre-commit 钩子拒绝。
+        git_run(&local, &["config", "user.name", "Test Author"]);
+        git_run(&local, &["config", "user.email", "author@example.com"]);
+        let hook = local.join(".git").join("hooks").join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let head = git_capture(&local, &["rev-parse", "HEAD"]);
+
+        let db = fresh_in_memory_db().await;
+        let data_dir = tempfile::tempdir().expect("tempdir");
+        git_pull_core(&local.to_string_lossy(), None, &db, data_dir.path())
+            .await
+            .expect_err("the merge commit was refused");
+        assert_eq!(git_capture(&local, &["rev-parse", "HEAD"]), head);
+        assert!(
+            !local.join(".git").join("MERGE_HEAD").exists(),
+            "a merge is left in progress"
+        );
+        assert!(
+            !local.join("remote.txt").exists(),
+            "merged files left behind"
+        );
+    }
+
     /// 没配 Git 姓名和邮箱时提交（#1419）：报的是「缺少 Git 身份」，带界面认的
     /// i18n 键，git 的原文放进 detail；暂存的新文件照旧退回去。
     #[tokio::test]
@@ -10337,6 +10550,83 @@ branch refs/heads/main";
         assert_eq!(
             git_capture(root, &["status", "--porcelain=v1", "-uall"]),
             "?? new.txt"
+        );
+    }
+
+    /// 在一个哪里都没配 Git 身份的环境里（空 HOME、不读系统配置、仓库里也不配
+    /// user.*），用提交窗口的 git 命令提交，返回 git 的输出。
+    async fn commit_with_no_configured_identity(
+        repo: &std::path::Path,
+        author_override: Option<&(String, String)>,
+    ) -> std::process::Output {
+        let home = tempfile::tempdir().expect("tempdir");
+        let mut cmd = git_commit_command(author_override);
+        cmd.args(["commit", "--allow-empty", "-m", "no identity"])
+            .current_dir(repo)
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", home.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_CONFIG_GLOBAL")
+            .env_remove("GIT_CONFIG_SYSTEM")
+            .env_remove("GIT_AUTHOR_NAME")
+            .env_remove("GIT_AUTHOR_EMAIL")
+            .env_remove("GIT_COMMITTER_NAME")
+            .env_remove("GIT_COMMITTER_EMAIL")
+            .env_remove("EMAIL");
+        cmd.output().await.expect("spawn git")
+    }
+
+    /// 没显式配 Git 姓名和邮箱时，提交窗口的提交不让 git 用系统用户名和
+    /// 主机名猜一个作者，而是报「缺少 Git 身份」（#1562）。
+    #[tokio::test]
+    async fn a_commit_never_falls_back_to_a_guessed_identity() {
+        // git 能不能猜出作者看这台机器的主机名（带域名才猜得出），所以先直接
+        // 看命令：不管有没有匹配到账号，都禁止 git 自己猜。
+        for author in [None, Some(("n".to_string(), "n@example.com".to_string()))] {
+            let cmd = git_commit_command(author.as_ref());
+            let args: Vec<String> = cmd
+                .as_std()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                args.windows(2)
+                    .any(|w| w[0] == "-c" && w[1] == "user.useConfigOnly=true"),
+                "{args:?}"
+            );
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        git_run(root, &["init", "-q", "-b", "main"]);
+        git_run(root, &["commit", "-q", "--allow-empty", "-m", "base"]);
+
+        let out = commit_with_no_configured_identity(root, None).await;
+        assert!(
+            !out.status.success(),
+            "git committed with a guessed author: {}",
+            git_capture(root, &["log", "-1", "--format=%an <%ae>"])
+        );
+        let err = git_commit_error(&out.stderr);
+        assert_eq!(
+            err.code,
+            crate::app_error::AppErrorCode::ConfigurationMissing,
+            "{err:?}"
+        );
+        assert_eq!(err.i18n_key.as_deref(), Some("errors.gitIdentityMissing"));
+        assert_eq!(git_capture(root, &["rev-list", "--count", "HEAD"]), "1");
+
+        // 匹配到账号、显式给了作者的照常提交。
+        let author = ("Test Author".to_string(), "author@example.com".to_string());
+        let out = commit_with_no_configured_identity(root, Some(&author)).await;
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            git_capture(root, &["log", "-1", "--format=%an <%ae>"]),
+            "Test Author <author@example.com>"
         );
     }
 

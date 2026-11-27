@@ -5,12 +5,29 @@
 
 use crate::app_error::{AppCommandError, AppErrorCode};
 use crate::commands::folders::{
-    detect_conflicts, git_command_error, numstat_rename_sides, to_git_literal_pathspec,
+    detect_conflicts, git_command_error, git_commit_command, git_identity_aware_error,
+    numstat_rename_sides, to_git_literal_pathspec,
 };
 use crate::models::WorkTaskChangedFile;
 
 async fn run_git(path: &str, args: &[&str]) -> Result<std::process::Output, AppCommandError> {
     crate::process::tokio_command("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .await
+        .map_err(AppCommandError::io)
+}
+
+/// 会写出提交的 git（任务的提交、把基准分支合进 worktree、落地的合并提交）：
+/// 和提交窗口一样带 `user.useConfigOnly=true`，没配 Git 姓名和邮箱时不许 git
+/// 拿系统用户名和主机名凑作者，失败时报「缺少 Git 身份」（#1562）。
+async fn run_git_writing_commit(
+    path: &str,
+    author_override: Option<&(String, String)>,
+    args: &[&str],
+) -> Result<std::process::Output, AppCommandError> {
+    git_commit_command(author_override)
         .args(args)
         .current_dir(path)
         .output()
@@ -130,19 +147,10 @@ pub async fn commit_staged(
     message: &str,
 ) -> Result<(), AppCommandError> {
     let author_override = crate::git_credential::resolve_commit_author(path, conn).await;
-    let mut cmd = crate::process::tokio_command("git");
-    if let Some((ref name, ref email)) = author_override {
-        cmd.args([
-            "-c",
-            &format!("user.name={name}"),
-            "-c",
-            &format!("user.email={email}"),
-        ]);
-    }
-    cmd.args(["commit", "-m", message]).current_dir(path);
-    let out = cmd.output().await.map_err(AppCommandError::io)?;
+    let out =
+        run_git_writing_commit(path, author_override.as_ref(), &["commit", "-m", message]).await?;
     if !out.status.success() {
-        return Err(git_command_error("commit", &out.stderr));
+        return Err(git_identity_aware_error("commit", &out.stderr));
     }
     Ok(())
 }
@@ -158,16 +166,24 @@ pub enum MergeAttempt {
 /// land in the worktree. On conflict the merge is aborted and the conflicted
 /// paths are returned.
 pub async fn merge_base_into_worktree(
+    conn: &sea_orm::DatabaseConnection,
     worktree_path: &str,
     base_branch: &str,
 ) -> Result<MergeAttempt, AppCommandError> {
-    let out = run_git(worktree_path, &["merge", "--no-edit", base_branch]).await?;
+    // 和任务的提交一样，匹配到代码托管账号时用它当作者（#1562）
+    let author_override = crate::git_credential::resolve_commit_author(worktree_path, conn).await;
+    let out = run_git_writing_commit(
+        worktree_path,
+        author_override.as_ref(),
+        &["merge", "--no-edit", base_branch],
+    )
+    .await?;
     if out.status.success() {
         return Ok(MergeAttempt::Ok);
     }
     let conflicts = detect_conflicts(worktree_path).await?;
     if conflicts.is_empty() {
-        return Err(git_command_error("merge", &out.stderr));
+        return Err(git_identity_aware_error("merge", &out.stderr));
     }
     let abort = run_git(worktree_path, &["merge", "--abort"]).await?;
     if !abort.status.success() {
@@ -192,13 +208,21 @@ pub async fn merge_squash(path: &str, work_branch: &str) -> Result<(), AppComman
 
 /// Stage B (merge commit): `git merge --no-ff -m <message> <branch>`.
 pub async fn merge_no_ff(
+    conn: &sea_orm::DatabaseConnection,
     path: &str,
     work_branch: &str,
     message: &str,
 ) -> Result<(), AppCommandError> {
-    let out = run_git(path, &["merge", "--no-ff", "-m", message, work_branch]).await?;
+    // 和任务的提交一样，匹配到代码托管账号时用它当作者（#1562）
+    let author_override = crate::git_credential::resolve_commit_author(path, conn).await;
+    let out = run_git_writing_commit(
+        path,
+        author_override.as_ref(),
+        &["merge", "--no-ff", "-m", message, work_branch],
+    )
+    .await?;
     if !out.status.success() {
-        return Err(git_command_error("merge --no-ff", &out.stderr));
+        return Err(git_identity_aware_error("merge --no-ff", &out.stderr));
     }
     Ok(())
 }
@@ -975,6 +999,169 @@ mod tests {
         if args.first() == Some(&"init") {
             git_run(dir, &["config", "core.autocrlf", "false"]);
         }
+    }
+
+    /// 任务流程里会写出提交的 git（提交、把基准分支合进 worktree、落地的合并
+    /// 提交）不许 git 自己猜作者；没配 Git 姓名和邮箱时报「缺少 Git 身份」，
+    /// 不写出新提交，也不停在合并一半（#1562）。
+    #[tokio::test]
+    async fn task_commits_and_merges_never_fall_back_to_a_guessed_identity() {
+        // git 能不能猜出作者看这台机器的主机名，所以先直接看命令。
+        let cmd = git_commit_command(None);
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-c" && w[1] == "user.useConfigOnly=true"),
+            "{args:?}"
+        );
+
+        let capture = |dir: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("spawn git");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let assert_identity_missing = |err: &AppCommandError| {
+            assert_eq!(err.code, AppErrorCode::ConfigurationMissing, "{err:?}");
+            assert_eq!(err.i18n_key.as_deref(), Some("errors.gitIdentityMissing"));
+        };
+
+        // 两个分叉的分支，仓库里把姓名和邮箱设成空串，盖过全局配置。
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let path = root.to_str().expect("utf-8 path");
+        git_run(root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("a.txt"), "a\n").unwrap();
+        git_run(root, &["add", "-A"]);
+        git_run(root, &["commit", "-q", "-m", "base"]);
+        git_run(root, &["checkout", "-q", "-b", "task/1"]);
+        std::fs::write(root.join("task.txt"), "task\n").unwrap();
+        git_run(root, &["add", "-A"]);
+        git_run(root, &["commit", "-q", "-m", "task"]);
+        git_run(root, &["checkout", "-q", "main"]);
+        std::fs::write(root.join("main.txt"), "main\n").unwrap();
+        git_run(root, &["add", "-A"]);
+        git_run(root, &["commit", "-q", "-m", "main"]);
+        git_run(root, &["config", "user.name", ""]);
+        git_run(root, &["config", "user.email", ""]);
+
+        // 落地的合并提交
+        let head = capture(root, &["rev-parse", "HEAD"]);
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let err = merge_no_ff(&db.conn, path, "task/1", "land")
+            .await
+            .expect_err("a merge commit needs an author");
+        assert_identity_missing(&err);
+        assert_eq!(capture(root, &["rev-parse", "HEAD"]), head);
+        assert!(!has_merge_head(path).await.unwrap());
+
+        // 把基准分支合进 worktree
+        git_run(root, &["checkout", "-q", "task/1"]);
+        let head = capture(root, &["rev-parse", "HEAD"]);
+        let err = match merge_base_into_worktree(&db.conn, path, "main").await {
+            Err(err) => err,
+            Ok(_) => panic!("merging the base needs an author"),
+        };
+        assert_identity_missing(&err);
+        assert_eq!(capture(root, &["rev-parse", "HEAD"]), head);
+        assert!(!has_merge_head(path).await.unwrap());
+
+        // 任务的提交（没有数据库、匹配不到账号）
+        std::fs::write(root.join("b.txt"), "b\n").unwrap();
+        let err = commit_all(&db.conn, path, "work")
+            .await
+            .expect_err("a commit needs an author");
+        assert_identity_missing(&err);
+        assert_eq!(capture(root, &["rev-parse", "HEAD"]), head);
+    }
+
+    /// 绑定了代码托管账号、能对上作者的，任务的合并也用这个作者：没配 Git
+    /// 姓名和邮箱时照常合并，不报缺少身份（#1562）。
+    #[tokio::test]
+    async fn task_merges_use_the_matched_account_author() {
+        let capture = |dir: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("spawn git");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let path = root.to_str().expect("utf-8 path");
+        git_run(root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("a.txt"), "a\n").unwrap();
+        git_run(root, &["add", "-A"]);
+        git_run(root, &["commit", "-q", "-m", "base"]);
+        git_run(root, &["checkout", "-q", "-b", "task/1"]);
+        std::fs::write(root.join("task.txt"), "task\n").unwrap();
+        git_run(root, &["add", "-A"]);
+        git_run(root, &["commit", "-q", "-m", "task"]);
+        git_run(root, &["checkout", "-q", "main"]);
+        std::fs::write(root.join("main.txt"), "main\n").unwrap();
+        git_run(root, &["add", "-A"]);
+        git_run(root, &["commit", "-q", "-m", "main"]);
+        git_run(
+            root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme-demo/widgets.git",
+            ],
+        );
+        // 仓库里把姓名和邮箱设成空串：没有账号作者的话 git 一定拒绝。
+        git_run(root, &["config", "user.name", ""]);
+        git_run(root, &["config", "user.email", ""]);
+
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let accounts = serde_json::json!({
+            "accounts": [{
+                "id": "acc-1",
+                "server_url": "https://github.com",
+                "username": "octo-demo",
+                "scopes": [],
+                "avatar_url": null,
+                "is_default": true,
+                "created_at": "2026-01-01T00:00:00Z"
+            }]
+        });
+        crate::db::service::app_metadata_service::upsert_value(
+            &db.conn,
+            "github_accounts",
+            &accounts.to_string(),
+        )
+        .await
+        .expect("save accounts");
+
+        // 落地的合并提交
+        merge_no_ff(&db.conn, path, "task/1", "land")
+            .await
+            .expect("the matched account authors the merge commit");
+        assert_eq!(
+            capture(root, &["log", "-1", "--format=%an <%ae>"]),
+            "octo-demo <octo-demo@users.noreply.github.com>"
+        );
+
+        // 把基准分支合进 worktree
+        git_run(root, &["checkout", "-q", "task/1"]);
+        git_run(root, &["reset", "-q", "--hard", "task/1"]);
+        match merge_base_into_worktree(&db.conn, path, "main").await {
+            Ok(MergeAttempt::Ok) => {}
+            Ok(MergeAttempt::Conflict(files)) => panic!("unexpected conflict: {files:?}"),
+            Err(err) => panic!("the matched account authors the merge: {err:?}"),
+        }
+        assert_eq!(
+            capture(root, &["log", "-1", "--format=%an <%ae>"]),
+            "octo-demo <octo-demo@users.noreply.github.com>"
+        );
     }
 
     /// Copying an index must keep Git's racy-clean check: a same-size edit

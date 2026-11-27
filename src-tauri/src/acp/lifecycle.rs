@@ -3646,6 +3646,16 @@ pub fn lifecycle_subscriber_task(
                         }
                     }
 
+                    // #1643：一轮回完马上看一次进程（不等 15 秒的定时器），记下 Claude 连接
+                    // 转接进程下面的 Claude 进程：回完马上被杀的，第一次定时巡检已经读不到它了。
+                    // 另起任务，不挡事件分发。
+                    if matches!(envelope_arc.payload, AcpEvent::TurnComplete { .. }) {
+                        let watch_manager = manager.clone_ref();
+                        tokio::spawn(async move {
+                            watch_manager.refresh_process_watch().await;
+                        });
+                    }
+
                     // Fast-path filter: skip events the worker would no-op.
                     // Avoids spawning a worker for connections that only emit
                     // high-frequency noise and avoids crowding existing

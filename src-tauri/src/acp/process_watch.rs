@@ -297,7 +297,7 @@ pub(crate) struct ProcessWatch {
     pub agent: Option<ProcessIdentity>,
     /// 后台任务 id → 绑上的写它输出文件的进程。没绑上的任务不在这里。
     pub writers: BTreeMap<String, Vec<ProcessIdentity>>,
-    /// 只有 Claude 连接用：在跑或等后台时第一次看到的、转接进程（pid 格子里那个）下面的
+    /// 只有 Claude 连接用：在跑、等后台或空闲（#1643）时第一次看到的、转接进程（pid 格子里那个）下面的
     /// 直接子进程，也就是真正的 Claude 进程。之后只认这一个，不猜新冒出来的子进程。
     /// pid 格子换了时丢掉；空闲时留着（#1554，空闲时它没了就把连接停掉）。
     pub claude_child: Option<ProcessIdentity>,
@@ -541,6 +541,37 @@ pub(crate) fn idle_claude_exited(
         .filter(|a| a.pid == input.pid)
         .is_none_or(|a| a.start == start);
     same_agent && sample.claude_child_alive == Some(false)
+}
+
+/// #1643：空闲的 Claude 连接的一次（没过期的）采样记进 `watch`（纯函数）：记下 pid 格子、
+/// 转接进程的身份，还没记下过 Claude 进程时记下这次看到的那一个。一轮很快回完、巡检从没在它
+/// 在跑时看过的连接，靠这里补记，之后才能按 [`idle_claude_exited`] 发现 Claude 进程没了。
+/// 不判「?」，不碰后台任务那几样。
+pub(crate) fn record_idle_claude(
+    watch: &mut ProcessWatch,
+    input: &WatchInput,
+    sample: &WatchSample,
+) {
+    if input.pid == 0 {
+        return;
+    }
+    if watch.seen_pid != input.pid {
+        watch.agent = None;
+        watch.claude_child = None;
+    }
+    watch.seen_pid = input.pid;
+    let ProcessProbe::Alive { start } = sample.agent else {
+        return;
+    };
+    if watch.agent.is_none() {
+        watch.agent = Some(ProcessIdentity {
+            pid: input.pid,
+            start,
+        });
+    }
+    if watch.claude_child.is_none() {
+        watch.claude_child = sample.new_claude_child;
+    }
 }
 
 /// 把一次（没过期的）采样记进 `watch`，返回新的结论（也写进 `watch.uncertain`）。
@@ -1515,6 +1546,72 @@ mod tests {
             ..watch.clone()
         };
         assert!(!idle_claude_exited(&settling, &idle, &gone));
+    }
+
+    /// #1643：从没在在跑时看过的空闲 Claude 连接：第一次采样记下 pid、转接进程身份和 Claude
+    /// 进程，之后按记下的判；已经记下的不换，pid 格子换了重新记，转接进程不在了不记。
+    #[test]
+    fn an_idle_claude_connection_first_seen_idle_records_its_claude_child() {
+        let idle = WatchInput {
+            running: false,
+            waiting: false,
+            ..input()
+        };
+        let child = ProcessIdentity {
+            pid: 200,
+            start: 20,
+        };
+        let first = WatchSample {
+            new_claude_child: Some(child),
+            ..healthy()
+        };
+        let mut watch = ProcessWatch::default();
+        assert!(!idle_claude_exited(&watch, &idle, &first));
+        record_idle_claude(&mut watch, &idle, &first);
+        assert_eq!(watch, watched_with_claude());
+        let gone = WatchSample {
+            claude_child_alive: Some(false),
+            ..healthy()
+        };
+        assert!(idle_claude_exited(&watch, &idle, &gone));
+
+        // 已经记下的不换成新冒出来的子进程。
+        let other = WatchSample {
+            new_claude_child: Some(ProcessIdentity {
+                pid: 300,
+                start: 30,
+            }),
+            ..healthy()
+        };
+        record_idle_claude(&mut watch, &idle, &other);
+        assert_eq!(watch.claude_child, Some(child));
+
+        // pid 格子换了：上一个转接进程的身份和 Claude 进程丢掉，记新的。
+        let moved = WatchInput { pid: 101, ..idle };
+        let fresh = WatchSample {
+            agent: ProcessProbe::Alive { start: 9 },
+            ..other.clone()
+        };
+        record_idle_claude(&mut watch, &moved, &fresh);
+        assert_eq!(watch.seen_pid, 101);
+        assert_eq!(watch.agent, Some(ProcessIdentity { pid: 101, start: 9 }));
+        assert_eq!(watch.claude_child, other.new_claude_child);
+
+        // 转接进程不在了、读不了：只记 pid，不记身份和 Claude 进程；pid 格子是 0 不动。
+        for agent in [ProcessProbe::Gone, ProcessProbe::Unknown] {
+            let mut watch = ProcessWatch::default();
+            let s = WatchSample {
+                agent,
+                ..first.clone()
+            };
+            record_idle_claude(&mut watch, &idle, &s);
+            assert_eq!(watch.seen_pid, 100);
+            assert_eq!(watch.agent, None);
+            assert_eq!(watch.claude_child, None);
+        }
+        let mut watch = ProcessWatch::default();
+        record_idle_claude(&mut watch, &WatchInput { pid: 0, ..idle }, &first);
+        assert_eq!(watch, ProcessWatch::default());
     }
 
     #[test]

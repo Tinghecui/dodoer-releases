@@ -782,6 +782,17 @@ pub struct SessionState {
     /// not part of the client-visible snapshot.
     pub turn_in_flight: bool,
 
+    /// #1645：codeg 发出的这一轮 prompt 是什么时候被接下的（和 `turn_in_flight`
+    /// 同时由 manager 设，毫秒精度），`TurnComplete` 时挪进
+    /// [`Self::last_turn_prompt_started_at`]。连接断了时它还在，就说明断在
+    /// 一轮 prompt 中间。不序列化，和 `turn_in_flight` 一样只在后端用。
+    pub prompt_started_at: Option<DateTime<Utc>>,
+
+    /// #1645：刚结束的那一轮如果是 codeg 发的 prompt，它开始的时间；智能体
+    /// 自己开的一轮是 `None`。lifecycle 据它判断失败是不是属于一轮用户的
+    /// prompt：空闲时进程被杀、后台醒来的那种不存成「本轮失败」。
+    pub last_turn_prompt_started_at: Option<DateTime<Utc>>,
+
     /// Whether the open turn is one the AGENT started on its own (Grok's
     /// follow-up to a background workflow), which the idle loop renders as a
     /// turn so its content isn't dropped between turns. Such a turn never took
@@ -1015,6 +1026,8 @@ impl SessionState {
             pending_user_message: None,
             pending_user_message_started_at: None,
             turn_in_flight: false,
+            prompt_started_at: None,
+            last_turn_prompt_started_at: None,
             agent_initiated_turn: false,
             turns_completed: 0,
             turn_file_jobs: Vec::new(),
@@ -1699,6 +1712,14 @@ impl SessionState {
                 // discard the state entirely, so no stale flag can outlive them.)
                 // A turn the agent started itself never held the gate; a set
                 // flag then belongs to a prompt admitted while it ran.
+                // #1645：这一轮是不是 codeg 发的 prompt，留给 lifecycle。只在
+                // 一轮真的开着时改：重复的 TurnComplete 不能把上一条记下的冲掉。
+                // 智能体自己开的一轮里被接下的 prompt 是下一轮的，它的时间留着。
+                if self.agent_initiated_turn {
+                    self.last_turn_prompt_started_at = None;
+                } else if self.turn_in_flight {
+                    self.last_turn_prompt_started_at = self.prompt_started_at.take();
+                }
                 if !self.agent_initiated_turn {
                     self.turn_in_flight = false;
                 }
@@ -4241,6 +4262,34 @@ mod tests {
             s.pending_user_message_started_at.is_none(),
             "the turn-start instant is cleared in lockstep with the pending prompt"
         );
+    }
+
+    /// #1645：codeg 发的 prompt 结束时，它开始的时间留给 lifecycle（判断失败
+    /// 是不是这一轮的）；智能体自己开的一轮、重复的 TurnComplete 不算 prompt。
+    #[test]
+    fn turn_complete_hands_the_prompt_start_to_the_lifecycle() {
+        let started = DateTime::from_timestamp_millis(1_800_000_000_000).unwrap();
+        let end = |s: &mut SessionState| {
+            s.apply_event(&AcpEvent::TurnComplete {
+                session_id: "sess".into(),
+                stop_reason: "end_turn".into(),
+                agent_type: "claude_code".into(),
+            })
+        };
+        let mut s = fresh_state();
+        s.turn_in_flight = true;
+        s.prompt_started_at = Some(started);
+        end(&mut s);
+        assert_eq!(s.last_turn_prompt_started_at, Some(started));
+        assert_eq!(s.prompt_started_at, None);
+        // 取消那条路径会再来一个 TurnComplete：这一轮已经收过尾，不动。
+        end(&mut s);
+        assert_eq!(s.last_turn_prompt_started_at, Some(started));
+
+        // 智能体自己开的一轮，不是用户的 prompt。
+        assert!(s.begin_agent_initiated_turn());
+        end(&mut s);
+        assert_eq!(s.last_turn_prompt_started_at, None);
     }
 
     #[test]

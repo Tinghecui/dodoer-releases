@@ -1397,6 +1397,10 @@ impl ConnectionManager {
                 return Err(AcpError::TurnInProgress);
             }
             s.turn_in_flight = true;
+            // #1645：记下这一轮 prompt 开始的时间（毫秒精度，和解析出来的
+            // 用户消息时间比）。存失败时用它认出失败属于哪一轮。
+            s.prompt_started_at =
+                chrono::DateTime::from_timestamp_millis(chrono::Utc::now().timestamp_millis());
         }
         permit.send(ConnectionCommand::Prompt {
             blocks,
@@ -8631,6 +8635,28 @@ mod tests {
                 .turn_in_flight,
             "the gate must NOT be set while blocked on channel capacity (cancellation-safe)"
         );
+    }
+
+    /// #1645：prompt 被接下时记下开始的时间，和 `turn_in_flight` 一起设。
+    #[tokio::test]
+    async fn send_prompt_inner_stamps_when_the_prompt_started() {
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-stamp";
+        let _rx = insert_live_connection(&mgr, conn_id, AgentType::ClaudeCode, None).await;
+        let before = chrono::Utc::now() - chrono::Duration::milliseconds(1);
+        mgr.send_prompt_inner(
+            conn_id,
+            vec![PromptInputBlock::Text { text: "hi".into() }],
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        let state = mgr.get_state(conn_id).await.unwrap();
+        let s = state.read().await;
+        assert!(s.turn_in_flight);
+        let started = s.prompt_started_at.expect("the prompt start is stamped");
+        assert!(started >= before);
     }
 
     #[tokio::test]

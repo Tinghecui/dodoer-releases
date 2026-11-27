@@ -500,7 +500,14 @@ async fn handle_event(
             else {
                 return Ok(());
             };
-            let (conversation_id, last_text, claimed, next_turn_started, terminal_failure) = {
+            let (
+                conversation_id,
+                last_text,
+                claimed,
+                next_turn_started,
+                terminal_failure,
+                prompt_started_at,
+            ) = {
                 let mut snap = state_arc.write().await;
                 // Re-entrant for this worker: a retry of this same envelope
                 // claims again and goes on. Only a CLI run's fallback that
@@ -520,6 +527,8 @@ async fn handle_event(
                         .values()
                         .find(|f| f.severity == "error" && !f.resolved)
                         .cloned(),
+                    // #1645：这一轮是用户的 prompt 时它开始的时间。
+                    snap.last_turn_prompt_started_at,
                 )
             };
             let terminal_failed = terminal_failure.is_some();
@@ -537,14 +546,19 @@ async fn handle_event(
             };
             // #1120：失败说明存下来，刷新后补回对话（见 `turn_failure`）；这一轮
             // 不是这样收尾的，就把上一轮的清掉。存不下只少一行说明，不挡状态。
+            // #1645：没有用户的 prompt 在跑（空闲时进程被杀、智能体自己开的一轮）
+            // 的失败不存：刷新时它会挂到之前已经回完的那一轮下面。
             if !next_turn_started {
-                let kept = match &terminal_failure {
-                    Some(record) => {
-                        let failure =
-                            crate::acp::turn_failure::from_record(record, chrono::Utc::now());
+                let kept = match (&terminal_failure, prompt_started_at) {
+                    (Some(record), Some(started)) => {
+                        let failure = crate::acp::turn_failure::from_record(
+                            record,
+                            chrono::Utc::now(),
+                            Some(started),
+                        );
                         crate::acp::turn_failure::save(db_conn, cid, &failure).await
                     }
-                    None => crate::acp::turn_failure::clear(db_conn, cid).await,
+                    _ => crate::acp::turn_failure::clear(db_conn, cid).await,
                 };
                 if let Err(e) = kept {
                     tracing::warn!(conversation_id = cid, error = %e, "[lifecycle] turn failure not kept");
@@ -893,11 +907,18 @@ async fn handle_terminal_event(
     // 失败说明也存下来，刷新后补回对话、带「重试」。只在 InProgress 被翻成
     // Cancelled 时存：用户主动停止时 `manager.cancel` 已经先写了 Cancelled，
     // 这里 CAS 落空，不会误存。存不下只少一行说明，不挡状态。
-    if let Some(message) = terminal_error {
+    // #1645：只存断在一轮用户 prompt 中间的。后台活动把会话写成进行中、空闲时
+    // 进程被杀的，没有 prompt 在跑，存下来刷新时会挂到已经回完的那一轮下面。
+    let prompt_started_at = {
+        let s = entry.state.read().await;
+        s.prompt_started_at.filter(|_| s.turn_in_flight)
+    };
+    if let (Some(message), Some(started)) = (terminal_error, prompt_started_at) {
         let failure = crate::acp::turn_failure::PersistedTurnFailure {
             message: message.to_string(),
             kind: Some(crate::acp::turn_failure::KIND_CONNECTION_LOST.to_string()),
             at: chrono::Utc::now(),
+            prompt_started_at: Some(started),
         };
         if let Err(e) = crate::acp::turn_failure::save(db_conn, cid, &failure).await {
             tracing::warn!(conversation_id = cid, error = %e, "[lifecycle] turn failure not kept");
@@ -4568,11 +4589,13 @@ mod tests {
         let conn = fake_connection_with_state("c1", Some(conv.id));
         let mut record = session_failure("t1:error", "error", false);
         record.actions = vec!["new_session".into()];
-        conn.state
-            .write()
-            .await
-            .session_failures
-            .insert(record.id.clone(), record);
+        let started = chrono::Utc::now() - chrono::Duration::seconds(3);
+        {
+            let mut s = conn.state.write().await;
+            s.session_failures.insert(record.id.clone(), record);
+            // 这一轮是用户发的 prompt（`TurnComplete` 应用时挪过来的）。
+            s.last_turn_prompt_started_at = Some(started);
+        }
         let state = conn.state.clone();
         mgr.connections.lock().await.insert("c1".to_string(), conn);
 
@@ -4587,6 +4610,7 @@ mod tests {
             saved.kind.as_deref(),
             Some(turn_failure::KIND_CONNECTION_LOST)
         );
+        assert_eq!(saved.prompt_started_at, Some(started));
 
         // 下一轮：失败被下一条 prompt 清掉，这一轮正常结束。
         state.write().await.session_failures.clear();
@@ -4594,6 +4618,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(turn_failure::load(&db.conn, conv.id).await, None);
+    }
+
+    /// #1645：结束的这一轮不是用户的 prompt（空闲时进程被杀、智能体自己开的
+    /// 一轮），失败不存成「本轮失败」，刷新后不会挂到已经回完的那一轮下面。
+    /// 会话照旧按失败算（Cancelled）。
+    #[tokio::test]
+    async fn handle_event_does_not_keep_a_failure_outside_a_prompt() {
+        use crate::acp::turn_failure;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/turn-failure-idle").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection_with_state("c1", Some(conv.id));
+        let record = session_failure("t1:error", "error", false);
+        conn.state
+            .write()
+            .await
+            .session_failures
+            .insert(record.id.clone(), record);
+        mgr.connections.lock().await.insert("c1".to_string(), conn);
+
+        handle_event(&db.conn, &mgr, &turn_complete(1, "end_turn"), None, None)
+            .await
+            .unwrap();
+        assert_eq!(turn_failure::load(&db.conn, conv.id).await, None);
+        assert!(turn_failure::load_history(&db.conn, conv.id)
+            .await
+            .is_empty());
+        assert_eq!(
+            read_row_status(&db, conv.id).await,
+            ConversationStatus::Cancelled
+        );
     }
 
     /// The `cancelled` write is conditional: a row the user's stop already
@@ -5023,21 +5083,36 @@ mod tests {
         .await
         .unwrap();
 
+        // #1645：后台活动把会话写成了进行中，但没有用户的 prompt 在跑。
+        let idle =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+
         let mgr = ConnectionManager::new();
+        let started = chrono::Utc::now() - chrono::Duration::seconds(3);
         {
             let mut map = mgr.connections.lock().await;
-            map.insert(
-                "c1".to_string(),
-                fake_connection_with_state("c1", Some(mid_turn.id)),
-            );
+            let cut = fake_connection_with_state("c1", Some(mid_turn.id));
+            {
+                let mut s = cut.state.write().await;
+                s.turn_in_flight = true;
+                s.prompt_started_at = Some(started);
+            }
+            map.insert("c1".to_string(), cut);
             map.insert(
                 "c2".to_string(),
                 fake_connection_with_state("c2", Some(settled.id)),
+            );
+            map.insert(
+                "c3".to_string(),
+                fake_connection_with_state("c3", Some(idle.id)),
             );
         }
         let mut cache: HashMap<String, CachedConn> = HashMap::new();
         seed_cache(&mut cache, &mgr, "c1", mid_turn.id).await;
         seed_cache(&mut cache, &mgr, "c2", settled.id).await;
+        seed_cache(&mut cache, &mgr, "c3", idle.id).await;
 
         handle_terminal_event(
             &db.conn,
@@ -5055,6 +5130,14 @@ mod tests {
         )
         .await
         .unwrap();
+        handle_terminal_event(
+            &db.conn,
+            &mut cache,
+            "c3",
+            Some("server shut down unexpectedly"),
+        )
+        .await
+        .unwrap();
 
         let saved = turn_failure::load(&db.conn, mid_turn.id)
             .await
@@ -5064,7 +5147,13 @@ mod tests {
             saved.kind.as_deref(),
             Some(turn_failure::KIND_CONNECTION_LOST)
         );
+        assert_eq!(saved.prompt_started_at, Some(started));
         assert_eq!(turn_failure::load(&db.conn, settled.id).await, None);
+        assert_eq!(turn_failure::load(&db.conn, idle.id).await, None);
+        assert_eq!(
+            read_row_status(&db, idle.id).await,
+            ConversationStatus::Cancelled
+        );
     }
 
     #[tokio::test]

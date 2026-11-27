@@ -11092,6 +11092,7 @@ mod tests {
                 message: "The connection to Codex was lost.".into(),
                 kind: Some(crate::acp::turn_failure::KIND_CONNECTION_LOST.into()),
                 at: chrono::Utc::now() + chrono::Duration::seconds(1),
+                prompt_started_at: None,
             },
         )
         .await
@@ -11134,6 +11135,7 @@ mod tests {
                 message: "old failure".into(),
                 kind: None,
                 at: chrono::Utc::now() - chrono::Duration::hours(1),
+                prompt_started_at: None,
             },
         )
         .await

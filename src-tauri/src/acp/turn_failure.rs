@@ -31,6 +31,10 @@ pub struct PersistedTurnFailure {
     pub kind: Option<String>,
     /// 这一轮收尾的时间。比它晚的用户消息说明已经是下一轮了。
     pub at: DateTime<Utc>,
+    /// #1645：这一轮的用户消息是什么时候发出的（`SessionState::prompt_started_at`）。
+    /// 刷新时只补到这条消息开头的那一轮；这版以前存的没有，照旧按时间补。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_started_at: Option<DateTime<Utc>>,
 }
 
 fn key(conversation_id: i32) -> String {
@@ -44,7 +48,11 @@ pub fn kind_of(record: &SessionFailureRecord) -> Option<String> {
 }
 
 /// 由一条失败记录得出要存的内容。
-pub fn from_record(record: &SessionFailureRecord, at: DateTime<Utc>) -> PersistedTurnFailure {
+pub fn from_record(
+    record: &SessionFailureRecord,
+    at: DateTime<Utc>,
+    prompt_started_at: Option<DateTime<Utc>>,
+) -> PersistedTurnFailure {
     let title = record.title.trim();
     PersistedTurnFailure {
         message: if title.is_empty() {
@@ -54,6 +62,7 @@ pub fn from_record(record: &SessionFailureRecord, at: DateTime<Utc>) -> Persiste
         },
         kind: kind_of(record),
         at,
+        prompt_started_at,
     }
 }
 
@@ -181,11 +190,15 @@ fn extend_to_failure(round: &mut [MessageTurn], failed_at: DateTime<Utc>) -> u64
     }
 }
 
+/// 用户消息的时间和 prompt 开始的时间来自同一台机器，留几秒余量就够。
+const PROMPT_CLOCK_SLACK_SECS: i64 = 5;
+
 /// 按存下来的失败给它那一轮补一行失败说明，放在那一轮最后；返回补长的时长。
 ///
 /// 那一轮是失败之前最后一条用户消息到下一条用户消息之间（#1555：被杀的那一轮
 /// 点了「重试」以后，它已经不是最后一轮了）。不补的：失败之前没有用户消息；
-/// 那一轮已经有失败行（智能体自己记下了，解析器拼得出来）。
+/// 那条用户消息比这一轮 prompt 开始得早（#1645）；那一轮已经有失败行（智能体
+/// 自己记下了，解析器拼得出来）。
 pub fn inject(turns: &mut Vec<MessageTurn>, failure: &PersistedTurnFailure) -> u64 {
     let Some(start) = turns
         .iter()
@@ -193,6 +206,14 @@ pub fn inject(turns: &mut Vec<MessageTurn>, failure: &PersistedTurnFailure) -> u
     else {
         return 0;
     };
+    // #1645：知道这一轮 prompt 什么时候开始的，那一轮的用户消息就不会比它早
+    // （智能体在收到 prompt 以后才记下它）。早的是之前已经回完的一轮：这一轮
+    // 的消息没进记录，不往别的轮次下面挂失败、也不拉长它的时长。
+    if let Some(started) = failure.prompt_started_at {
+        if turns[start].timestamp < started - chrono::Duration::seconds(PROMPT_CLOCK_SLACK_SECS) {
+            return 0;
+        }
+    }
     let end = turns[start + 1..]
         .iter()
         .position(|turn| matches!(turn.role, TurnRole::User))
@@ -280,6 +301,7 @@ mod tests {
             message: "The connection to Claude was lost.".into(),
             kind: Some(KIND_CONNECTION_LOST.into()),
             at: at(ts),
+            prompt_started_at: None,
         }
     }
 
@@ -298,9 +320,12 @@ mod tests {
 
     #[test]
     fn a_lost_connection_record_is_kept_with_its_kind() {
-        let saved = from_record(&record("connection", &["new_session"]), at(5));
+        let saved = from_record(&record("connection", &["new_session"]), at(5), None);
         assert_eq!(saved, lost(5));
-        assert_eq!(from_record(&record("limit", &["retry"]), at(5)).kind, None);
+        assert_eq!(
+            from_record(&record("limit", &["retry"]), at(5), None).kind,
+            None
+        );
     }
 
     #[test]
@@ -417,6 +442,43 @@ mod tests {
         inject(&mut turns, &lost(5));
         assert_eq!(turns[1].duration_ms, Some(9_000));
         assert_eq!(turns[1].completed_at, Some(at(9)));
+    }
+
+    /// #1645：两轮都正常回完以后进程才被杀，存下的失败对不上任何一轮的用户
+    /// 消息（这一轮 prompt 的消息没进记录）：不补失败行，回完的那一轮时长不动。
+    /// 对得上第二轮的，照旧补在第二轮、时长补到失败那一刻。
+    #[test]
+    fn a_failure_only_closes_the_round_its_prompt_started() {
+        fn two_finished_rounds() -> Vec<MessageTurn> {
+            let mut first = turn("turn-1", TurnRole::Assistant, text("你好！"), 0);
+            first.duration_ms = Some(1_000);
+            first.completed_at = Some(at(1));
+            let mut second = turn("turn-3", TurnRole::Assistant, text("在的"), 60);
+            second.duration_ms = Some(1_000);
+            second.completed_at = Some(at(61));
+            vec![
+                turn("turn-0", TurnRole::User, text("你好"), 0),
+                first,
+                turn("turn-2", TurnRole::User, text("还在吗"), 60),
+                second,
+            ]
+        }
+        let mut stray = lost(143);
+        stray.prompt_started_at = Some(at(130));
+        let mut turns = two_finished_rounds();
+        assert_eq!(inject(&mut turns, &stray), 0);
+        assert_eq!(turns.len(), 4, "no failure line under a finished round");
+        assert_eq!(turns[1].duration_ms, Some(1_000));
+        assert_eq!(turns[3].duration_ms, Some(1_000));
+        assert_eq!(turns[3].completed_at, Some(at(61)));
+
+        let mut own = lost(143);
+        own.prompt_started_at = Some(at(60));
+        let mut turns = two_finished_rounds();
+        assert_eq!(inject(&mut turns, &own), 82_000);
+        assert_eq!(turns.len(), 5);
+        assert!(is_turn_error_turn(&turns[4]));
+        assert_eq!(turns[3].duration_ms, Some(83_000));
     }
 
     #[test]

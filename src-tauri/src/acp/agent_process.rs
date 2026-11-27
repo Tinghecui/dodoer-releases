@@ -908,7 +908,11 @@ impl RunMarker {
     /// 智能体收尸以后调：把带这个标记、还在跑的进程收掉（先 SIGTERM，
     /// [`PROCESS_GROUP_KILL_GRACE`] 后还在就 SIGKILL）。扫进程表放在阻塞线程上，
     /// 不阻塞调用方；没有 tokio 运行时就当场 SIGTERM 加 SIGKILL。
+    ///
+    /// 摘标记之前先记进还没收完的表，收完才划掉：中间任何时候程序退出，
+    /// 退出兜底都找得到它（见 [`finish_pending_marker_sweeps_blocking`]）。
     fn sweep(self) {
+        let pending = begin_pending_sweep(&self.value, &self.descendants);
         self.forget();
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
@@ -918,13 +922,17 @@ impl RunMarker {
                         &self.descendants,
                         PROCESS_GROUP_KILL_GRACE,
                     );
+                    end_pending_sweep(pending);
                 });
             }
-            Err(_) => finish_marked_processes_blocking(
-                Some(&self.value),
-                &self.descendants,
-                std::time::Duration::ZERO,
-            ),
+            Err(_) => {
+                finish_marked_processes_blocking(
+                    Some(&self.value),
+                    &self.descendants,
+                    std::time::Duration::ZERO,
+                );
+                end_pending_sweep(pending);
+            }
         }
     }
 
@@ -933,6 +941,71 @@ impl RunMarker {
     pub(crate) fn finish_blocking(self, grace: std::time::Duration) {
         self.forget();
         finish_marked_processes_blocking(Some(&self.value), &self.descendants, grace);
+    }
+}
+
+/// 智能体已经收尸、按标记收尾还没做完的：编号 → 标记和收尸前记下的后代。
+/// [`RunMarker::sweep`] 把标记从 [`run_markers`] 摘掉、退出回调把 pid 清零以后，
+/// 收尾还在后台跑（不理 SIGTERM 的要等 [`PROCESS_GROUP_KILL_GRACE`] 才补
+/// SIGKILL）。程序恰好这时退出，后台任务跟着没了，退出兜底靠这张表接着收完
+/// （见 [`finish_pending_marker_sweeps_blocking`]）。
+#[derive(Clone)]
+struct PendingSweep {
+    marker: String,
+    descendants: Vec<(u32, u64)>,
+}
+
+type PendingSweeps = std::collections::HashMap<u64, PendingSweep>;
+
+fn pending_sweeps() -> &'static std::sync::Mutex<PendingSweeps> {
+    static PENDING: std::sync::OnceLock<std::sync::Mutex<PendingSweeps>> =
+        std::sync::OnceLock::new();
+    PENDING.get_or_init(Default::default)
+}
+
+fn begin_pending_sweep(marker: &str, descendants: &[(u32, u64)]) -> u64 {
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut pending) = pending_sweeps().lock() {
+        pending.insert(
+            id,
+            PendingSweep {
+                marker: marker.to_string(),
+                descendants: descendants.to_vec(),
+            },
+        );
+    }
+    id
+}
+
+fn end_pending_sweep(id: u64) {
+    if let Ok(mut pending) = pending_sweeps().lock() {
+        pending.remove(&id);
+    }
+}
+
+/// 还有没收完的按标记收尾。
+pub(crate) fn has_pending_marker_sweeps() -> bool {
+    pending_sweeps()
+        .lock()
+        .map(|pending| !pending.is_empty())
+        .unwrap_or(false)
+}
+
+/// 退出兜底用：把还没收完的按标记收尾在当前线程上做完，返回时带标记的进程、
+/// 记下的后代已经收到 SIGTERM，`grace` 内没走的也补了 SIGKILL。后台那一份
+/// 可能同时在收，重复发信号无害（每次都重新扫、核对身份）。只在阻塞线程上调。
+pub(crate) fn finish_pending_marker_sweeps_blocking(grace: std::time::Duration) {
+    let pending: Vec<(u64, PendingSweep)> = match pending_sweeps().lock() {
+        Ok(pending) => pending
+            .iter()
+            .map(|(id, sweep)| (*id, sweep.clone()))
+            .collect(),
+        Err(_) => return,
+    };
+    for (id, sweep) in pending {
+        finish_marked_processes_blocking(Some(&sweep.marker), &sweep.descendants, grace);
+        end_pending_sweep(id);
     }
 }
 
@@ -1121,10 +1194,96 @@ fn marked_or_remembered(marker: Option<&str>, descendants: &[(u32, u64)]) -> Vec
     pids
 }
 
+/// `pid` 现在还是这次要收的：环境里带这个标记，或者是收尸前记下的后代
+/// （启动时刻对得上、不是僵尸）。只 Linux 能核对，别的系统一律算是。
+#[cfg(unix)]
+fn still_marked_or_remembered(pid: u32, marker: Option<&str>, descendants: &[(u32, u64)]) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let marked = marker.is_some_and(|marker| {
+            let needle = format!("{AGENT_RUN_ENV}={marker}");
+            std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|environ| {
+                environ
+                    .split(|byte| *byte == 0)
+                    .any(|entry| entry == needle.as_bytes())
+            })
+        });
+        marked || live_descendants(descendants).contains(&pid)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (pid, marker, descendants);
+        true
+    }
+}
+
+/// 给 `pid` 发 `signal`，前提是 `is_ours` 认它。Linux 上先用 pidfd 把进程钉住
+/// 再核对：核对时看到的和收信号的是同一个进程，扫进程表到发信号之间它退出了、
+/// 号被无关进程占去，信号也只会落空（ESRCH），打不到新进程上。
+/// 开不了 pidfd（5.3 以前的内核、fd 用完了）时不发：按号发总有号被复用、
+/// 打到无关进程的可能，宁可这一个不收（进程组那一路照收）。
+/// 别的 unix 没有 pidfd，核对完按号发。返回信号发出去了没有。
+#[cfg(unix)]
+fn signal_if_still_ours(pid: u32, signal: libc::c_int, is_ours: impl FnOnce(u32) -> bool) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        signal_through_pidfd(pid, signal, open_pidfd, is_ours)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if !is_ours(pid) {
+            return false;
+        }
+        // SAFETY: `kill` 只收整数，不碰我们的内存。
+        unsafe { libc::kill(pid as libc::pid_t, signal) == 0 }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn open_pidfd(pid: u32) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+    // SAFETY: `pidfd_open` 只收整数，成功时返回一个归我们的新 fd。
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fd 是上面刚开的、没有别人持有，交给 `OwnedFd` 负责关掉。
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as std::os::fd::RawFd) })
+}
+
+/// [`signal_if_still_ours`] 的 Linux 实现，`open` 换成别的好在测试里模拟
+/// 开不了 pidfd。开不了就不发，不退回按号发。
+#[cfg(target_os = "linux")]
+fn signal_through_pidfd(
+    pid: u32,
+    signal: libc::c_int,
+    open: impl FnOnce(u32) -> std::io::Result<std::os::fd::OwnedFd>,
+    is_ours: impl FnOnce(u32) -> bool,
+) -> bool {
+    use std::os::fd::AsRawFd;
+    let Ok(fd) = open(pid) else {
+        return false;
+    };
+    if !is_ours(pid) {
+        return false;
+    }
+    // SAFETY: 只收 fd、信号号和空指针，不碰我们的内存。
+    unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            fd.as_raw_fd(),
+            signal,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        ) == 0
+    }
+}
+
 /// 给带标记的进程和收尸前记下的后代发 SIGTERM，最多等 `grace`，还在的补 SIGKILL。
 /// `marker` 为 `None` 时只收 `descendants`。
 /// 每次都重新扫：带标记的按标记，记下的后代按启动时刻核对，pid 号被别人占去
-/// 也打不到别人（扫完到发信号之间那一下除外）。僵尸的 environ 读出来是空的，
+/// 也打不到别人；扫完到发信号之间那一下，Linux 上先拿 pidfd 钉住进程再核对一遍
+/// （见 [`signal_if_still_ours`]）。僵尸的 environ 读出来是空的，
 /// 记下的后代成了僵尸也不算，都不在内。
 fn finish_marked_processes_blocking(
     marker: Option<&str>,
@@ -1136,10 +1295,9 @@ fn finish_marked_processes_blocking(
         let signal_all = |signal: libc::c_int| {
             let pids = marked_or_remembered(marker, descendants);
             for pid in &pids {
-                // SAFETY: `kill` 只收整数，不碰我们的内存。
-                unsafe {
-                    libc::kill(*pid as libc::pid_t, signal);
-                }
+                signal_if_still_ours(*pid, signal, |pid| {
+                    still_marked_or_remembered(pid, marker, descendants)
+                });
             }
             !pids.is_empty()
         };
@@ -2344,11 +2502,13 @@ read -r _"#;
     }
 
     /// 起一个用 `setsid` 离开智能体进程组和会话的后台命令，读出它的 pid，
-    /// 等它真的换成 sleep 再返回。
+    /// 等它真的换成 sleep 再返回。`adopted` 时起它的子 shell 已经退出，
+    /// 还要等它被过继给智能体（收养人），断言它的父进程不再是那个子 shell。
     #[cfg(target_os = "linux")]
     async fn read_detached_sleeper(
         lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
         agent_pid: u32,
+        adopted: bool,
     ) -> HardKillOnDrop {
         let pid = lines.next_line().await.expect("read").expect("sleeper pid");
         let sleeper = HardKillOnDrop(pid.trim().to_string());
@@ -2367,6 +2527,20 @@ read -r _"#;
             pgid > 0 && pgid as u32 != agent_pid && sid as u32 != agent_pid,
             "测试前提：sleep 已经离开智能体的进程组和会话"
         );
+        if adopted {
+            let parent = || process_stat(pid as u32).map(|(_, ppid, _)| ppid);
+            for _ in 0..100 {
+                if parent() == Some(agent_pid) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            assert_eq!(
+                parent(),
+                Some(agent_pid),
+                "测试前提：起 sleep 的子 shell 已经退出，sleep 被过继给了智能体"
+            );
+        }
         sleeper
     }
 
@@ -2387,7 +2561,7 @@ read -r _"#;
         let (_stdin, stdout, stderr, child) = agent.spawn_process().expect("spawn agent");
         let agent_pid = child.id().expect("agent pid");
         let mut lines = tokio::io::BufReader::new(stdout).lines();
-        let sleeper = read_detached_sleeper(&mut lines, agent_pid).await;
+        let sleeper = read_detached_sleeper(&mut lines, agent_pid, true).await;
 
         let stderr = spawn_stderr_reader(stderr, None);
         let _ = monitor_child(child, stderr, STDERR_DRAIN_LIMIT, None).await;
@@ -2399,6 +2573,97 @@ read -r _"#;
         assert!(
             !process_is_running(&sleeper.0),
             "智能体退出 3 秒后，它用 setsid 起的后台命令还在跑：{}",
+            sleeper.0
+        );
+    }
+
+    /// 按号发信号前先用 pidfd 钉住进程再核对：核对不认的不发；核对时进程已经
+    /// 没了（号随时可能给了别人）的，信号落空，不会打到别的进程上。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn signal_if_still_ours_checks_the_process_it_pinned() {
+        let mut target = std::process::Command::new("/bin/sleep")
+            .arg("300")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = target.id();
+
+        // 核对不认：不发。
+        assert!(!signal_if_still_ours(pid, libc::SIGKILL, |_| false));
+        assert!(process_is_running(&pid.to_string()));
+
+        // 钉住以后、发信号之前进程退出并收了尸：信号落空。
+        let mut other = std::process::Command::new("/bin/sleep")
+            .arg("300")
+            .spawn()
+            .expect("spawn sleep");
+        let other_pid = other.id();
+        let sent = signal_if_still_ours(other_pid, libc::SIGTERM, |_| {
+            let _ = other.kill();
+            let _ = other.wait();
+            true
+        });
+        assert!(!sent, "进程在核对时已经收了尸，信号不该发出去");
+
+        // 核对认了：发出去。
+        assert!(signal_if_still_ours(pid, libc::SIGKILL, |p| p == pid));
+        let _ = target.wait();
+    }
+
+    /// 开不了 pidfd（老内核、fd 用完了）时不能退回按号发：号可能已经给了无关进程。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn without_a_pidfd_no_signal_is_sent_by_number() {
+        let mut target = std::process::Command::new("/bin/sleep")
+            .arg("300")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = target.id();
+        let sent = signal_through_pidfd(
+            pid,
+            libc::SIGKILL,
+            |_| Err(std::io::Error::from_raw_os_error(libc::ENOSYS)),
+            |_| true,
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let alive = process_is_running(&pid.to_string());
+        let _ = target.kill();
+        let _ = target.wait();
+        assert!(!sent, "开不了 pidfd 时不该按号发信号");
+        assert!(alive, "开不了 pidfd 时按号发了 SIGKILL，进程被杀了");
+    }
+
+    /// 智能体自己退出、收尸以后，按标记收尾放在后台：不理 SIGTERM 的命令要等
+    /// 半秒才补 SIGKILL。程序恰好在这半秒里退出时，退出兜底手里的 pid 已经清零、
+    /// 标记也从表里摘了，得靠还没收完的那张表接着收完，返回时命令已经结束。
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_exit_backstop_finishes_a_marker_sweep_still_in_progress() {
+        use tokio::io::AsyncBufReadExt;
+
+        let agent = AcpAgent::from_args([
+            "/bin/sh",
+            "-c",
+            "(setsid /bin/sh -c 'trap \"\" TERM; exec /bin/sleep 300' >/dev/null 2>&1 & echo $!); sleep 0.3; exit 0",
+        ])
+        .unwrap();
+        let (_stdin, stdout, stderr, child) = agent.spawn_process().expect("spawn agent");
+        let agent_pid = child.id().expect("agent pid");
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let sleeper = read_detached_sleeper(&mut lines, agent_pid, true).await;
+
+        let stderr = spawn_stderr_reader(stderr, None);
+        let _ = monitor_child(child, stderr, STDERR_DRAIN_LIMIT, None).await;
+        // 智能体已经收尸，后台的收尾刚发出 SIGTERM。程序这时退出：
+        tokio::task::spawn_blocking(|| {
+            finish_pending_marker_sweeps_blocking(PROCESS_GROUP_KILL_GRACE)
+        })
+        .await
+        .expect("backstop");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !process_is_running(&sleeper.0),
+            "退出兜底返回后，智能体用 setsid 起、不理 SIGTERM 的命令还在跑：{}",
             sleeper.0
         );
     }
@@ -2420,7 +2685,7 @@ read -r _"#;
         let (_stdin, stdout, _stderr, child) = agent.spawn_process().expect("spawn agent");
         let agent_pid = child.id().expect("agent pid");
         let mut lines = tokio::io::BufReader::new(stdout).lines();
-        let sleeper = read_detached_sleeper(&mut lines, agent_pid).await;
+        let sleeper = read_detached_sleeper(&mut lines, agent_pid, true).await;
 
         drop(ChildGuard::new(child, None));
 
@@ -2452,7 +2717,7 @@ read -r _"#;
         let (_stdin, stdout, _stderr, child) = agent.spawn_process().expect("spawn agent");
         let agent_pid = child.id().expect("agent pid");
         let mut lines = tokio::io::BufReader::new(stdout).lines();
-        let sleeper = read_detached_sleeper(&mut lines, agent_pid).await;
+        let sleeper = read_detached_sleeper(&mut lines, agent_pid, true).await;
         let environ = std::fs::read(format!("/proc/{}/environ", sleeper.0)).unwrap_or_default();
         assert!(
             !environ
@@ -2491,7 +2756,7 @@ read -r _"#;
         let (_stdin, stdout, stderr, child) = agent.spawn_process().expect("spawn agent");
         let agent_pid = child.id().expect("agent pid");
         let mut lines = tokio::io::BufReader::new(stdout).lines();
-        let sleeper = read_detached_sleeper(&mut lines, agent_pid).await;
+        let sleeper = read_detached_sleeper(&mut lines, agent_pid, true).await;
 
         let stderr = spawn_stderr_reader(stderr, None);
         let monitor = tokio::spawn(monitor_child(child, stderr, STDERR_DRAIN_LIMIT, None));
@@ -2531,7 +2796,7 @@ read -r _"#;
         let (_stdin, stdout, stderr, child) = agent.spawn_process().expect("spawn agent");
         let agent_pid = child.id().expect("agent pid");
         let mut lines = tokio::io::BufReader::new(stdout).lines();
-        let sleeper = read_detached_sleeper(&mut lines, agent_pid).await;
+        let sleeper = read_detached_sleeper(&mut lines, agent_pid, false).await;
         let cli = lines
             .next_line()
             .await
@@ -2595,7 +2860,7 @@ read -r _"#;
         tokio::time::sleep(TREE_SNAPSHOT_INTERVAL * 5 / 2).await;
         stdin.write_all(b"go\n").await.expect("write");
         stdin.flush().await.expect("flush");
-        let sleeper = read_detached_sleeper(&mut lines, agent_pid).await;
+        let sleeper = read_detached_sleeper(&mut lines, agent_pid, false).await;
         // SAFETY: 只给测试自己起的里层 sh 发信号。
         unsafe {
             libc::kill(cli, libc::SIGKILL);

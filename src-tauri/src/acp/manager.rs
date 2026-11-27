@@ -12,7 +12,8 @@ use sea_orm::{
 
 use crate::acp::agent_mentions::strip_route_separator_from_prompt;
 use crate::acp::agent_process::{
-    finish_process_group_blocking, signal_process_group, ProcessGroupSignal, RunMarker,
+    finish_pending_marker_sweeps_blocking, finish_process_group_blocking,
+    has_pending_marker_sweeps, signal_process_group, ProcessGroupSignal, RunMarker,
 };
 use crate::acp::connection::{
     spawn_agent_connection, AgentConnection, ConnectionCommand, GoalControlAction, SetterOutcome,
@@ -3480,7 +3481,9 @@ impl ConnectionManager {
                     .map(|c| c.pid.clone()),
             );
         }
-        if pid_cells.is_empty() {
+        // 智能体已经收尸、按标记收尾还在后台跑的，也得在下面收完：程序一退出，
+        // 后台任务就没了。
+        if pid_cells.is_empty() && !has_pending_marker_sweeps() {
             return disconnected;
         }
 
@@ -3494,10 +3497,12 @@ impl ConnectionManager {
         // waits on it. The pid is loaded inside, after the window — see the
         // doc comment.
         match tokio::task::spawn_blocking(move || {
-            pid_cells
+            let unconfirmed = pid_cells
                 .iter()
                 .filter(|cell| !kill_tree_and_wait(cell))
-                .count()
+                .count();
+            finish_pending_marker_sweeps_blocking(ESCALATE_TO_SIGKILL_AFTER);
+            unconfirmed
         })
         .await
         {

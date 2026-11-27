@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   createSessionLostRetry,
+  sessionLostNeedsNotice,
   sessionLostRetryRoute,
 } from "./session-lost-retry"
 
@@ -64,5 +65,21 @@ describe("sessionLostRetryRoute", () => {
     expect(sessionLostRetryRoute({ isActive: false, canConnect: false })).toBe(
       "wait"
     )
+  })
+})
+
+// #1647：第一次 session_lost 会自动重发，不提示；同一条第二次失败、不再自动重发时才提示。
+describe("sessionLostNeedsNotice", () => {
+  const draft = { displayText: "还在吗" }
+
+  it("stays quiet the first time and speaks up when the auto-resend failed too", () => {
+    const retry = createSessionLostRetry()
+    expect(sessionLostNeedsNotice(true, retry.noteFailed(draft))).toBe(false)
+    retry.takeReady({ draft, failed: true }, "disconnected")
+    expect(sessionLostNeedsNotice(true, retry.noteFailed(draft))).toBe(true)
+  })
+
+  it("says nothing for a turn that did not end with session_lost", () => {
+    expect(sessionLostNeedsNotice(false, false)).toBe(false)
   })
 })

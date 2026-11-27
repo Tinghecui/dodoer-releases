@@ -10357,6 +10357,49 @@ describe("AIR session failures are told as notifications", () => {
     expect(alert.evidence).toContain("Process exited with signal: 9")
   })
 
+  // #1647：发消息的这一轮以 session_lost 结束时，会话面板会自动重连、再发一次，
+  // 这里不弹「这条消息没有执行」，也不发桌面通知；第二次失败的提示由面板弹。
+  // 这一轮照样以失败收尾（面板靠它把消息放回排队区、决定自动重发）。
+  it("does not toast a session_lost that ends a prompting turn (#1647)", async () => {
+    const handlers = await connectOwner()
+    // 会话面板挂着（它登记了失败按钮），回合结束时由它决定要不要提示。
+    act(() => {
+      h.actions!.registerSessionFailureActions(TAB, vi.fn())
+    })
+    h.notifyDesktop.mockClear()
+    startTurn(handlers)
+    emit(handlers, {
+      type: "error",
+      message: "session lost",
+      agent_type: "claude_code",
+      code: "session_lost",
+      details: "stderr (last 1 lines):\n  Process exited with signal: 9",
+    })
+    expect(h.toastError).not.toHaveBeenCalled()
+    expect(h.toastWarning).not.toHaveBeenCalled()
+    expect(h.notifyDesktop).not.toHaveBeenCalled()
+    expect(h.store!.getConnection(TAB)!.error).toBe("backendErrors.sessionLost")
+  })
+
+  // #1647 返工：没有会话面板挂着的（标签关了），没人会自动重发、补提示，
+  // 连接层照旧弹「这条消息没有执行」。
+  it("still toasts a prompting-turn session_lost when no conversation view is mounted (#1647)", async () => {
+    const handlers = await connectOwner()
+    startTurn(handlers)
+    emit(handlers, {
+      type: "error",
+      message: "session lost",
+      agent_type: "claude_code",
+      code: "session_lost",
+      details: "stderr (last 1 lines):\n  Process exited with signal: 9",
+    })
+    const calls = [
+      ...h.toastError.mock.calls,
+      ...h.toastWarning.mock.calls,
+    ] as unknown[][]
+    expect(calls.map((c) => c[0])).toContain("backendErrors.sessionLost")
+  })
+
   it("tells one failed turn once — the typed record first, then codeg's verdict", async () => {
     const handlers = await connectOwner()
     startTurn(handlers)

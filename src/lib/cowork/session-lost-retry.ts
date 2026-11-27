@@ -40,6 +40,20 @@ export function createSessionLostRetry() {
 }
 
 /**
+ * 这一轮结束时要不要提示 `session_lost`（#1647）。第一次失败会自动重连、再发一次
+ * （`autoResend`，即 `noteFailed` 返回 true），用户什么都不用做，不提示；自动重发过
+ * 又失败的、或者这一轮不是这个标签发的（没法自动重发），才提示用户点「重试」。
+ * 连接层（acp-connections-context）在发消息的这一轮里收到 `session_lost` 时不弹提示，
+ * 交给这里决定。
+ */
+export function sessionLostNeedsNotice(
+  sessionLost: boolean,
+  autoResend: boolean
+): boolean {
+  return sessionLost && !autoResend
+}
+
+/**
  * 自动重发这一刻怎么走（审查打回 #499）。`retry`：当前标签，和点「重试」一样
  * （重连只管当前标签）。`background`：用户已经切到别的会话，自己清掉失败标记、
  * 在后台重连，排队区连上以后照常发出去。`wait`：后台标签自己连不了（智能体不可用、

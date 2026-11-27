@@ -166,6 +166,7 @@ import { useCachedCoworkInfo } from "@/lib/cowork/info"
 import { openAgentSignIn, signInViaPortal } from "@/lib/cowork/sign-in"
 import {
   createSessionLostRetry,
+  sessionLostNeedsNotice,
   sessionLostRetryRoute,
   settleEndedTurn,
 } from "@/lib/cowork/session-lost-retry"
@@ -400,6 +401,7 @@ const ConversationTabView = memo(function ConversationTabView({
   const sharedT = useTranslations("Folder.chat.shared")
   const tMessageList = useTranslations("Folder.chat.messageList")
   const tAsyncTasks = useTranslations("Folder.chat.asyncTasks")
+  const tAcp = useTranslations("Folder.chat.acpConnections")
   const tBranch = useTranslations("Folder.branchDropdown")
   const refreshConversations = useAppWorkspaceStore(
     (s) => s.refreshConversations
@@ -1096,6 +1098,8 @@ const ConversationTabView = memo(function ConversationTabView({
   // 回合结束时读、清；要自动重发的那条记在 `sessionLostRetry`。
   const turnSessionLostRef = useRef(false)
   const [sessionLostRetry] = useState(createSessionLostRetry)
+  // #1647：自动重发过又失败时弹的提示上的「重试」，走排队区的重试（定义在下面）。
+  const handleQueueRetryRef = useRef<((id: string) => void) | null>(null)
   // Cowork fork (#984)：发送请求没等到回应时，用服务器回传的同一条用户消息
   // 判断它其实送到了没有（见 `createUncertainSendWatch`）。
   // 记下放回排队区的副本的排队 id 和草稿本身：迟到的回传只拿掉用户没改过的。
@@ -1151,6 +1155,32 @@ const ConversationTabView = memo(function ConversationTabView({
       // 自动重试一次（见下面 `handleQueueRetry` 旁边的 effect）。
       if (sessionLost) autoResend = sessionLostRetry.noteFailed(sent.draft)
     }
+    // #1647：连接层在发消息的这一轮里收到 `session_lost` 时不弹提示（第一次会自动
+    // 重发，用户什么都不用做）；不再自动重发的，这里提示，带排队区的「重试」。
+    // 只读观看的标签不登记失败按钮，连接层照旧自己提示，这里不再弹第二条。
+    if (
+      sessionLostNeedsNotice(sessionLost, autoResend) &&
+      !isViewerRef.current
+    ) {
+      const retryId = requeuedId
+      notify({
+        level: "warning",
+        key: `session-lost:${conn.connectionId ?? effectiveConversationId}`,
+        title: tAcp("backendErrors.sessionLost", {
+          agent: getAgentLabel(selectedAgentRef.current),
+        }),
+        actions:
+          retryId != null
+            ? [
+                {
+                  label: tAcp("actions.retry"),
+                  onClick: () => handleQueueRetryRef.current?.(retryId),
+                  toastOnly: true,
+                },
+              ]
+            : undefined,
+      })
+    }
     // #1120：这一轮失败了，记下当初发出去的原样（带附件），对话最后那行
     // 「连接断了」的「重试」重发它；刷新以后没有，就从对话里那条消息还原。
     // 放回了排队区的记下排队 id，「重试」重试那一条，不再放一份（返工）。
@@ -1192,6 +1222,7 @@ const ConversationTabView = memo(function ConversationTabView({
     }
   }, [
     completeTurn,
+    conn.connectionId,
     connStatus,
     dbConversationId,
     discardTurn,
@@ -1199,6 +1230,7 @@ const ConversationTabView = memo(function ConversationTabView({
     mqRequeueFailed,
     sessionLostRetry,
     syncTurnMetadata,
+    tAcp,
   ])
   // #1120 第 3 次返工：新建会话的第一条就失败、回合结束时还没有会话号的，
   // 失败那一轮只记在内存里；会话号到了（从没有变成有）再补存进 localStorage，
@@ -3461,6 +3493,10 @@ const ConversationTabView = memo(function ConversationTabView({
       handleOpenAgentsSettings,
     ]
   )
+
+  useEffect(() => {
+    handleQueueRetryRef.current = handleQueueRetry
+  }, [handleQueueRetry])
 
   // Cowork 加的（#423）：智能体不认这个会话了的那条消息，等旧连接退下去（不再是
   // error / prompting），替用户点一次「重试」：清掉失败标记、重新连接、由排队区

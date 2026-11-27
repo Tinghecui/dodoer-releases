@@ -6700,6 +6700,19 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               level: route.level,
             })
           }
+          // Cowork（#1647）：发出去的这一轮以 `session_lost` 结束：会话面板会自动
+          // 重连、再发一次（`createSessionLostRetry`），用户什么都不用做，这里不弹
+          // 「这条消息没有执行」、不发桌面通知。自动重发过又失败的那次由面板提示。
+          // 只在拥有这个连接的会话面板挂着（登记了失败按钮）时这样：面板没挂着
+          // 就没人自动重发、补提示，照旧往下弹（返工）。只读观看的不登记，也照旧。
+          if (
+            e.code === "session_lost" &&
+            wasPrompting &&
+            nc?.connectionId &&
+            sessionFailureHandlerFor(nc.connectionId)
+          ) {
+            break
+          }
           // OS notification: only for a session that broke, and message-only —
           // notification centers persist their payload outside the app, so
           // agent output must not be forwarded there. The message can still
@@ -6971,6 +6984,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       scheduleToolCallUpdateFlush,
       presentBackendError,
       retireTurnFailures,
+      sessionFailureHandlerFor,
       sessionFailureNotifyActions,
       sessionNotification,
       settleRetryIncidentsOnProgress,

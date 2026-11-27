@@ -414,12 +414,41 @@ describe("leaveProjectBoot 在手机布局下", () => {
     expect(router.push).not.toHaveBeenCalled()
   })
 
-  it("宽屏网页版照旧后退", async () => {
+  // #1595：宽屏网页版直接打开（没有 opener、没有当前页打开的记录）的，以前
+  // 只做 history.back()，没有历史可退就停在新建项目页
+  it("宽屏网页版直接打开的：回到工作区，不后退", async () => {
     stubMobile(false)
+    vi.spyOn(window.history, "length", "get").mockReturnValue(1)
     const back = vi.spyOn(window.history, "back").mockImplementation(() => {})
     await leaveProjectBoot()
-    expect(back).toHaveBeenCalledTimes(1)
+    expect(router.push).toHaveBeenCalledWith("/workspace")
+    expect(router.back).not.toHaveBeenCalled()
+    expect(back).not.toHaveBeenCalled()
+  })
+
+  it("宽屏网页版由工作区另开的：关掉这个标签页", async () => {
+    stubMobile(false)
+    vi.stubGlobal("opener", {})
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {})
+    const close = vi.spyOn(window, "close").mockImplementation(() => {
+      vi.stubGlobal("closed", true)
+    })
+    await leaveProjectBoot()
+    vi.unstubAllGlobals()
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(back).not.toHaveBeenCalled()
     expect(router.push).not.toHaveBeenCalled()
+  })
+
+  it("宽屏网页版另开的、浏览器不让关：回到工作区", async () => {
+    stubMobile(false)
+    vi.stubGlobal("opener", {})
+    vi.spyOn(window, "close").mockImplementation(() => {})
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {})
+    await leaveProjectBoot()
+    vi.unstubAllGlobals()
+    expect(router.push).toHaveBeenCalledWith("/workspace")
+    expect(back).not.toHaveBeenCalled()
   })
 })
 

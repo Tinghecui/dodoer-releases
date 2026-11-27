@@ -309,12 +309,15 @@ export function isInPageContext(): boolean {
 /**
  * 新建项目页建好项目以后，要不要在这一页里回到工作区、由工作区接着打开新项目
  * （#1354）：从工作区在当前页打开的（有记录），或者手机布局（直接用链接打开、
- * 恢复的、带 opener 的链接另开的都算：手机上没有另一个开着的工作区窗口可指望）。
+ * 恢复的、带 opener 的链接另开的都算：手机上没有另一个开着的工作区窗口可指望），
+ * 或者宽屏下不是脚本另开的（没有 opener，#1595）：用户直接打开的标签页关不掉、
+ * 往往也没有历史可退，不能指望另一个工作区标签页接着打开。只有工作区用
+ * `window.open` 另开的（带 opener）才交给那个工作区、关掉自己。
  * 记待打开文件夹和 {@link leaveProjectBootToWorkspace} 用同一条，交接和离开对得上。
  */
 export function isProjectBootInPage(): boolean {
   if (typeof window === "undefined") return false
-  return wasOpenedInPage() || isMobileLayout()
+  return wasOpenedInPage() || isMobileLayout() || !window.opener
 }
 
 /**

@@ -5,9 +5,11 @@ import {
 } from "./transport"
 import type { EventStream, UnsubscribeFn } from "./transport/types"
 import {
+  IN_PAGE_HOME_PATH,
   isProjectBootInPage,
   leaveIfOpenedInPage,
   leaveProjectBootToWorkspace,
+  navigateInPage,
 } from "./in-page-navigation"
 
 /**
@@ -297,15 +299,22 @@ export async function closeCurrentWindow(): Promise<void> {
 }
 
 /**
- * 新建项目页建好项目以后离开（#1354）。桌面版和宽屏网页版照旧
- * {@link closeCurrentWindow}；手机布局或从工作区在当前页打开的，回到工作区
- * （工作区挂上时取走待打开的文件夹，打开新项目和新会话），不停在新建项目页，
- * 也不退回到标签页里之前的别的页面。
+ * 新建项目页建好项目以后离开（#1354）。桌面版照旧 {@link closeCurrentWindow}。
+ * 网页版：手机布局、从工作区在当前页打开的、宽屏下直接打开的（没有 opener，
+ * #1595），回到工作区（工作区挂上时取走待打开的文件夹，打开新项目和新会话），
+ * 不停在新建项目页，也不退回到标签页里之前的别的页面。宽屏下由工作区另开的
+ * 标签页关掉自己（那个工作区收到广播接着打开）；浏览器不让关时也回到工作区，
+ * 不停在新建项目页。
  */
 export async function leaveProjectBoot(): Promise<void> {
-  if (!isDesktop() && isProjectBootInPage()) {
+  if (isDesktop()) {
+    await closeCurrentWindow()
+    return
+  }
+  if (isProjectBootInPage()) {
     leaveProjectBootToWorkspace()
     return
   }
-  await closeCurrentWindow()
+  if (await closeAppWindow()) return
+  navigateInPage(IN_PAGE_HOME_PATH)
 }

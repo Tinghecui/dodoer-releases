@@ -283,9 +283,20 @@ describe("openFolderInWorkspace", () => {
   })
 
   it("另开窗口的新建项目页不记（工作区开着，收得到广播）", async () => {
+    vi.stubGlobal("opener", {})
     window.history.replaceState({}, "", "/project-boot")
     mocks.call.mockResolvedValue(detail)
     await openFolderInWorkspace("/tmp/demo-app")
+    vi.unstubAllGlobals()
     expect(takePendingWorkspaceFolder()).toBeNull()
+  })
+
+  // #1595：宽屏网页版直接打开的新建项目页，建好以后在这一页回到工作区，
+  // 要把文件夹记下来给工作区接着打开
+  it("宽屏网页版直接打开的新建项目页（没有 opener）也记下来", async () => {
+    window.history.replaceState({}, "", "/project-boot")
+    mocks.call.mockResolvedValue(detail)
+    await openFolderInWorkspace("/tmp/demo-app")
+    expect(takePendingWorkspaceFolder()).toEqual(detail)
   })
 })

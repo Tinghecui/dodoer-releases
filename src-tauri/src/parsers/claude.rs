@@ -833,6 +833,50 @@ fn mark_stopped_calls(messages: &mut [UnifiedMessage]) {
     }
 }
 
+/// #1644：Claude 接着一个被杀掉的会话跑之前，给没有结果的调用补写的出错结果的
+/// 原话（老版本借用中断记录那两句，新版本是专门的一句）。逐字比较，和
+/// `is_interrupt_marker` 一样不去空白、不认子串：命令自己的输出里引用了这句话
+/// 的，照旧按出错的结果算。
+const CUT_OFF_RESULTS: [&str; 3] = [
+    "[Request interrupted by user for tool use]",
+    "[Request interrupted by user]",
+    "[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is unknown. Check whether it took effect before relying on it or running it again.]",
+];
+
+/// 是这种补写结果的，返回它对应的调用 id。
+fn cut_off_result_id(block: &ContentBlock) -> Option<&str> {
+    match block {
+        ContentBlock::ToolResult {
+            tool_use_id: Some(id),
+            output_preview: Some(text),
+            is_error: true,
+            ..
+        } if CUT_OFF_RESULTS.contains(&text.as_str()) => Some(id.as_str()),
+        _ => None,
+    }
+}
+
+/// 配上了补写结果的调用标成 `cancelled`（界面显示「已中断」，不是「失败」）。
+/// 智能体自己记了状态的不动。
+fn mark_cut_off_calls(messages: &mut [UnifiedMessage], cut_off: &[String]) {
+    for block in messages
+        .iter_mut()
+        .rev()
+        .flat_map(|msg| msg.content.iter_mut())
+    {
+        if let ContentBlock::ToolUse {
+            tool_use_id: Some(id),
+            status,
+            ..
+        } = block
+        {
+            if status.is_none() && cut_off.contains(id) {
+                *status = Some("cancelled".to_string());
+            }
+        }
+    }
+}
+
 /// The prompt of a message the user sent while a turn was running and Claude
 /// Code folded into that turn, or `None` for any other record.
 ///
@@ -2516,6 +2560,19 @@ impl ClaudeRecordAccumulator {
                     }
                 }
 
+                // #1644：接着被杀的会话跑之前补写的结果：调用标成被打断。这条
+                // 记录的时间是重试那一刻，不是命令停下的时候，整条都是这种结果
+                // 的不拿来算这一轮的结束时间（失败那一刻由 turn_failure 补）。
+                let cut_off: Vec<String> = content
+                    .iter()
+                    .filter_map(cut_off_result_id)
+                    .map(str::to_string)
+                    .collect();
+                let only_cut_off = !cut_off.is_empty() && cut_off.len() == content.len();
+                if !cut_off.is_empty() {
+                    mark_cut_off_calls(messages, &cut_off);
+                }
+
                 messages.push(UnifiedMessage {
                     id: uuid,
                     role,
@@ -2524,7 +2581,7 @@ impl ClaudeRecordAccumulator {
                     usage: None,
                     duration_ms: None,
                     model: None,
-                    completed_at: Some(timestamp),
+                    completed_at: (!only_cut_off).then_some(timestamp),
                 agent_message_id: None,
                 });
             }
@@ -9326,6 +9383,87 @@ mod tests {
         };
         assert_eq!(feed(true).as_deref(), Some("cancelled"));
         assert_eq!(feed(false), None);
+    }
+
+    /// #1644：智能体被杀以后点「重试」，Claude 接着这个会话跑之前，给上一轮
+    /// 没有结果的命令补写一条出错的结果，原话是「[Request interrupted by user
+    /// for tool use]」（新一点的版本是「[Tool call interrupted: …]」），时间是
+    /// 重试那一刻。这个命令是被打断的，标成 cancelled，不是「失败」；这一轮的
+    /// 结束时间也不算到补写那一刻（还停在发起调用时，补失败行时再补到失败那
+    /// 一刻）。普通的出错结果照旧不带状态。
+    #[test]
+    fn a_result_written_on_resume_for_a_cut_off_call_reads_as_cancelled() {
+        let feed = |result: &str| {
+            let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+            for record in [
+                json!({
+                    "type": "user", "timestamp": "2026-11-26T01:00:00.000Z", "uuid": "u1",
+                    "message": {"role": "user", "content": [{"type": "text", "text": "run dd"}]}
+                }),
+                json!({
+                    "type": "assistant", "timestamp": "2026-11-26T01:00:01.000Z", "uuid": "a1",
+                    "message": {"role": "assistant", "id": "msg-1", "content": [
+                        {"type": "tool_use", "id": "toolu_dd", "name": "Bash",
+                         "input": {"command": "dd if=/dev/zero bs=1M count=200000 | sha256sum"}}
+                    ]}
+                }),
+                json!({
+                    "type": "user", "timestamp": "2026-11-26T01:00:33.000Z", "uuid": "u2",
+                    "message": {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_dd",
+                         "content": result, "is_error": true}
+                    ]}
+                }),
+                json!({
+                    "type": "user", "timestamp": "2026-11-26T01:00:33.500Z", "uuid": "u3",
+                    "message": {"role": "user", "content": [{"type": "text", "text": "run dd"}]}
+                }),
+                json!({
+                    "type": "assistant", "timestamp": "2026-11-26T01:00:35.000Z", "uuid": "a2",
+                    "message": {"role": "assistant", "id": "msg-2", "content": [
+                        {"type": "text", "text": "Running it again."}
+                    ]}
+                }),
+            ] {
+                acc.feed_line(&record.to_string());
+            }
+            acc.finalize_background_lifecycle();
+            let turns = group_into_turns(acc.messages);
+            let dd_turn = turns
+                .iter()
+                .find(|t| {
+                    t.blocks.iter().any(|b| {
+                        matches!(b, ContentBlock::ToolUse { tool_use_id: Some(id), .. } if id == "toolu_dd")
+                    })
+                })
+                .expect("the call is parsed");
+            let status = dd_turn.blocks.iter().find_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_use_id: Some(id),
+                    status,
+                    ..
+                } if id == "toolu_dd" => Some(status.clone()),
+                _ => None,
+            });
+            (status.flatten(), dd_turn.completed_at)
+        };
+        let started = "2026-11-26T01:00:01.000Z".parse::<DateTime<Utc>>().ok();
+        for marker in [
+            "[Request interrupted by user for tool use]",
+            "[Tool call interrupted: the session ended before this call's result was \
+             recorded, so its outcome is unknown. Check whether it took effect before \
+             relying on it or running it again.]",
+        ] {
+            let (status, completed_at) = feed(marker);
+            assert_eq!(status.as_deref(), Some("cancelled"), "{marker}");
+            assert_eq!(completed_at, started, "{marker}");
+        }
+        let (status, completed_at) = feed("Exit code 1");
+        assert_eq!(status, None);
+        assert_eq!(
+            completed_at,
+            "2026-11-26T01:00:33.000Z".parse::<DateTime<Utc>>().ok()
+        );
     }
 
     /// 同一轮里先在权限框里拒绝了一个调用，再停止另一个正在跑的：只有紧挨着

@@ -2010,7 +2010,28 @@ function cancelledTurnOf(message: LiveMessage): CancelledTurnReports | null {
       openCalls.add(block.info.tool_call_id)
     }
   }
-  return openCalls.size > 0 ? { message, openCalls } : null
+  // #1644：记下的这一轮和画出来的一样，没跑完的调用已经标成被打断；智能体
+  // 之后补报的状态再盖在它上面。
+  return openCalls.size > 0
+    ? { message: cancelUnsettledToolCalls(message), openCalls }
+    : null
+}
+
+/** 这一轮没跑完（还没有终态）的调用都标成 `cancelled`；没有这样的调用时原样
+ *  返回同一个对象，不触发多余的重画。 */
+function cancelUnsettledToolCalls(message: LiveMessage): LiveMessage {
+  let changed = false
+  const content = message.content.map((block) => {
+    if (block.type !== "tool_call" || !toolStatusUnsettled(block.info.status)) {
+      return block
+    }
+    changed = true
+    return {
+      type: "tool_call" as const,
+      info: { ...block.info, status: "cancelled" },
+    }
+  })
+  return changed ? { ...message, content } : message
 }
 
 /** Fold an out-of-turn report into a stopped turn's record when it revises one
@@ -2031,8 +2052,11 @@ function foldCancelledTurnReport(
   // #1555：用户点了停止，这一轮没跑完的调用随后由智能体报成 failed（Claude
   // 写的是「The user doesn't want to proceed…」）。它是被停止打断的，不是自己
   // 失败了：记成 cancelled，界面显示「已中断」，和刷新后解析器读出来的一样。
+  // #1644：停止时已经标成被打断了，之后来的进度报告（还没有终态）不把它
+  // 改回「运行中」。
   const stopped =
-    turn.openCalls.has(update.tool_call_id) && merged.status === "failed"
+    turn.openCalls.has(update.tool_call_id) &&
+    (merged.status === "failed" || toolStatusUnsettled(merged.status))
   next[index] = {
     type: "tool_call",
     info: stopped ? { ...merged, status: "cancelled" } : merged,
@@ -2484,6 +2508,13 @@ function connectionsReducer(
         conn.cancelledTurn?.message.id !== conn.liveMessage.id
       ) {
         updated.cancelledTurn = cancelledTurnOf(conn.liveMessage)
+      }
+      // #1644：用户点了停止，这一轮没跑完的调用当场标成被打断，和刷新后
+      // 解析器读出来的一样；不等智能体补报（claude-agent-acp 常常不报，卡片就
+      // 一直没有状态）。上面的 cancelledTurn 按改之前的状态记下哪些调用没跑完，
+      // 智能体之后补报的终态照样经 foldCancelledTurnReport 盖上去。
+      if (action.stopReason === "cancelled" && conn.liveMessage) {
+        updated.liveMessage = cancelUnsettledToolCalls(conn.liveMessage)
       }
       next.set(action.contextKey, updated)
       return next

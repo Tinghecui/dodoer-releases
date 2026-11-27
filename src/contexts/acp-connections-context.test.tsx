@@ -4435,8 +4435,11 @@ describe("out-of-turn wire guard + background activity", () => {
         session_id: "sess-1",
       })
       runTurn("toolu_1", "cancelled")
+      // #1644：停止的那一刻，没跑完的调用就画成「已中断」，不等智能体补报；
+      // 智能体之后报的终态照样盖上去。
       expect(blocksOf("toolu_1")).toMatchObject([
-        { type: "tool_use", status: "pending" },
+        { type: "tool_use", status: "cancelled" },
+        { type: "tool_result", is_error: false },
       ])
       closeCall("toolu_1")
       // #1555：停止打断的调用随后报 failed，记成被打断，和刷新后一样。
@@ -4487,7 +4490,8 @@ describe("out-of-turn wire guard + background activity", () => {
       })
       runFrames()
       expect(blocksOf("toolu_2")).toMatchObject([
-        { type: "tool_use", status: "pending" },
+        { type: "tool_use", status: "cancelled" },
+        { type: "tool_result", is_error: false },
       ])
       closeCall("toolu_2")
       expect(blocksOf("toolu_2")).toMatchObject([

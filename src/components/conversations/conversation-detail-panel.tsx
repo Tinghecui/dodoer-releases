@@ -69,6 +69,7 @@ import {
   parkAskSelectionPrompt,
   type AskSelectionParkedDetail,
 } from "@/lib/ask-selection-handoff"
+import { useContinuePromptDrain } from "@/lib/cowork/continue-handoff"
 import {
   useConnectionLifecycle,
   type SendFailedCallback,
@@ -3030,6 +3031,19 @@ const ConversationTabView = memo(function ConversationTabView({
     return () =>
       window.removeEventListener(ASK_SELECTION_PARKED_EVENT, onParked)
   }, [folderId, mqEnqueue, selectedAgent, tabId])
+
+  // CoTeam「让我的智能体接着做」（#1235 第 7 行）：只读视图给这个草稿存了一句
+  // 预填的话，放进输入框，不进排队区、不发送，用户补完自己点发送。只读视图
+  // 开的是空白草稿（freshDraft），所以整段替换：同一个草稿收到两次时只留最后
+  // 那句，不叠两句。
+  const handleContinuePrompt = useCallback((text: string) => {
+    setComposerInject({ text, mode: "replace" })
+  }, [])
+  useContinuePromptDrain(
+    tabId,
+    { agentType: selectedAgent, folderId },
+    handleContinuePrompt
+  )
 
   const canShowDetailErrorActions =
     hasPersistedConversation && dbConversationId != null && !!folder

@@ -16,6 +16,9 @@
 // 这里没有任何能给对方智能体发话、停止、批准的控件。谁能看由服务端判断。
 // 输入框的位置是留言输入（第 5 行），右侧一栏是这个会话的留言线程；每条记录
 // 旁边能「对这条留言」。留言不会发给对方的智能体。
+// 「让我的智能体接着做」（第 7 行）在我自己的工作环境里开一个草稿，只预填
+// 输入框（叫我的智能体先用 cowork-context team-read 读这个会话），不发送；
+// 碰不到对方的智能体和文件。
 // 正文：提问、回复、思考、工具记录四种块都走现成的 markdown 渲染（带净化），
 // 别人会话里的 HTML 不会原样插进页面。
 
@@ -27,7 +30,7 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import { Check, Eye, Link2, X } from "lucide-react"
+import { Bot, Check, Eye, Link2, X } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { ConversationCornerReserve } from "@/components/layout/conversation-corner-reserve"
@@ -47,6 +50,10 @@ import {
   type TeamSharedVia,
 } from "@/lib/cowork/team"
 import { noteTeamError, teamErrorText } from "@/lib/cowork/team-errors"
+import {
+  continueSessionRef,
+  parkContinuePrompt,
+} from "@/lib/cowork/continue-handoff"
 import { formatTimeAgo } from "@/lib/relative-time"
 import { cn, copyTextToClipboard } from "@/lib/utils"
 import {
@@ -61,6 +68,7 @@ import {
   useCoworkTeamStore,
   type SharedSessionTarget,
 } from "@/stores/cowork-team-store"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabStore } from "@/stores/tab-store"
 
 /** 只读视图多久增量拉一次。 */
@@ -150,6 +158,45 @@ export function SharedSessionHost({ children }: { children: ReactNode }) {
       )}
     </>
   )
+}
+
+/**
+ * 「让我的智能体接着做」：在我当前的项目里开一个新草稿（智能体跟我当前标签
+ * 的一样，复用的草稿也改成这个智能体；没开项目时开一个不带项目的对话），把 `prompt` 交给它的输入框。
+ * 只交给输入框，不进排队区、不发送。新草稿成了当前标签，只读视图跟着收起。
+ * `freshDraft`：分组里的草稿有没发的字或排队区存着消息时不复用、另开一个，
+ * 也不领关掉的草稿寄存的消息，所以这个草稿的输入框和排队区都是空的。
+ */
+export function openContinueDraft(prompt: string): void {
+  const { activeFolderId, allFolders } = useAppWorkspaceStore.getState()
+  const folder =
+    activeFolderId != null
+      ? (allFolders.find((f) => f.id === activeFolderId) ?? null)
+      : null
+  const tabs = useTabStore.getState()
+  // 第 2 次返工：智能体跟我当前标签的一样，明确传 forceAgent。只靠
+  // inheritFromActive 时，项目的默认智能体会盖过当前的；没开项目时复用的
+  // 空白聊天草稿还留着它原来的智能体。认当前标签的规则和 store 的
+  // inherit 一样：已有会话，或者智能体不是系统猜的。
+  const active = tabs.rawTabs.find((t) => t.id === tabs.activeTabId)
+  const currentAgent =
+    active && (active.conversationId != null || !active.agentTypeProvisional)
+      ? active.agentType
+      : null
+  const agentOption = currentAgent != null ? { forceAgent: currentAgent } : {}
+  const target = folder
+    ? tabs.openNewConversationTab(folder.id, folder.path, {
+        inheritFromActive: true,
+        freshDraft: true,
+        ...agentOption,
+      })
+    : tabs.openChatModeTab({ freshDraft: true, ...agentOption })
+  // 按 store 说好的项目和智能体存：复用的草稿改挂完才取。
+  parkContinuePrompt(target.tabId, {
+    prompt,
+    agentType: target.agentType,
+    folderId: target.folderId,
+  })
 }
 
 /** 只读视图顶部「在等 TA ……」按在等什么换文案；认不出的原因用笼统的那句。 */
@@ -400,6 +447,15 @@ function SharedSessionView({
     })
   }, [link])
 
+  const handleContinue = useCallback(() => {
+    openContinueDraft(
+      t("sharedViewContinuePrompt", {
+        owner: ownerLabel,
+        ref: continueSessionRef(owner, id),
+      })
+    )
+  }, [id, owner, ownerLabel, t])
+
   return (
     <div
       data-shared-session-view={`${owner}/${id}`}
@@ -441,6 +497,18 @@ function SharedSessionView({
                 <Link2 aria-hidden="true" className="h-3.5 w-3.5" />
               )}
               {copied ? t("sharedViewLinkCopied") : t("sharedViewCopyLink")}
+            </button>
+          )}
+          {!gone && (
+            <button
+              type="button"
+              onClick={handleContinue}
+              title={t("sharedViewContinueHint")}
+              data-shared-session-continue=""
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[0.75rem] text-muted-foreground outline-none hover:bg-[var(--g-hover)] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Bot aria-hidden="true" className="h-3.5 w-3.5" />
+              {t("sharedViewContinue")}
             </button>
           )}
           <button

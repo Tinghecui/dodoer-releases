@@ -16,6 +16,16 @@ import {
   type SharedSessionTarget,
 } from "@/stores/cowork-team-store"
 import { useTabStore } from "@/stores/tab-store"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import {
+  consumeContinuePrompt,
+  resetContinuePromptsForTests,
+} from "@/lib/cowork/continue-handoff"
+import {
+  draftMessageQueueStorageKey,
+  readStoredQueue,
+} from "@/lib/cowork/message-queue-storage"
+import type { FolderDetail } from "@/lib/types"
 import { useOverlayHostHidden } from "@/components/ui/overlay-host-hidden"
 import { leftChromeReserve, rightChromeReserve } from "@/lib/window-chrome"
 import {
@@ -616,7 +626,11 @@ describe("SharedSessionHost", () => {
     const buttons = Array.from(root.querySelectorAll("button"))
       .filter((b) => !b.closest(COMMENT_UI))
       .map((b) => b.getAttribute("aria-label") || b.textContent)
-    expect(buttons.sort()).toEqual(["Close", "Copy link"])
+    expect(buttons.sort()).toEqual([
+      "Close",
+      "Copy link",
+      "Let my agent continue",
+    ])
   })
 
   it("folds away when one of my conversations or a tab is clicked", async () => {
@@ -805,5 +819,138 @@ describe("SharedSessionHost", () => {
     const box = screen.getByPlaceholderText(/Leave a comment/)
     const footer = box.closest(".border-t") as HTMLElement
     expect(footer.style.paddingBottom).toBe("")
+  })
+
+  // 第 7 行：「让我的智能体接着做」只开我自己的草稿、预填输入框，不发送。
+  describe("let my agent continue", () => {
+    const openDraft = vi.fn()
+    const openChat = vi.fn()
+    let realOpenDraft: ReturnType<
+      typeof useTabStore.getState
+    >["openNewConversationTab"]
+    let realOpenChat: ReturnType<typeof useTabStore.getState>["openChatModeTab"]
+
+    beforeEach(() => {
+      resetContinuePromptsForTests()
+      openDraft.mockReset()
+      openDraft.mockReturnValue({
+        tabId: "draft-1",
+        agentType: "codex",
+        folderId: 7,
+      })
+      openChat.mockReset()
+      openChat.mockReturnValue({
+        tabId: "chat-1",
+        agentType: "claude_code",
+        folderId: 99,
+      })
+      realOpenDraft = useTabStore.getState().openNewConversationTab
+      realOpenChat = useTabStore.getState().openChatModeTab
+      useTabStore.setState({
+        openNewConversationTab: openDraft,
+        openChatModeTab: openChat,
+      })
+      useAppWorkspaceStore.setState({
+        activeFolderId: 7,
+        allFolders: [
+          { id: 7, path: "/work/my-project", name: "my-project" } as never,
+        ] as FolderDetail[],
+      })
+    })
+
+    afterEach(() => {
+      useTabStore.setState({
+        openNewConversationTab: realOpenDraft,
+        openChatModeTab: realOpenChat,
+      })
+      useAppWorkspaceStore.setState({ activeFolderId: null, allFolders: [] })
+      resetContinuePromptsForTests()
+    })
+
+    it("opens my own draft in my current project with my current agent and prefills, without sending", async () => {
+      makeAvailable()
+      api.teamEntries.mockResolvedValue(page([entry(0, "user", "hi")]))
+      renderHost()
+      await open()
+      fireEvent.click(
+        screen.getByRole("button", { name: "Let my agent continue" })
+      )
+      expect(openDraft).toHaveBeenCalledTimes(1)
+      // 要一个空白草稿：分组里的草稿排队区存着消息或有没发的字时不复用。
+      expect(openDraft).toHaveBeenCalledWith(7, "/work/my-project", {
+        inheritFromActive: true,
+        freshDraft: true,
+      })
+      expect(openChat).not.toHaveBeenCalled()
+      // 话交给新草稿的输入框（按打开时说好的项目和智能体取）。
+      expect(
+        consumeContinuePrompt("draft-1", { agentType: "codex", folderId: 7 })
+      ).toBe(
+        "First use cowork-context team-read to read Wang's session member-a/42, " +
+          "work out how far they got and what's left, then continue here with me:"
+      )
+      // 排队区是空的：什么都没有发出去，也没有排着等发。
+      expect(readStoredQueue(draftMessageQueueStorageKey("draft-1"))).toEqual(
+        []
+      )
+    })
+
+    it("uses the fixed Chinese sentence with the owner's name, login and session id", async () => {
+      makeAvailable()
+      api.teamEntries.mockResolvedValue(page([], { ownerLabel: "小王" }))
+      render(
+        <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+          <SharedSessionHost>
+            <div />
+          </SharedSessionHost>
+        </NextIntlClientProvider>
+      )
+      await open({
+        ...TARGET,
+        ownerLabel: "小王",
+        via: { kind: "leader", groupName: "后端" },
+      })
+      fireEvent.click(
+        screen.getByRole("button", { name: "让我的智能体接着做" })
+      )
+      expect(
+        consumeContinuePrompt("draft-1", { agentType: "codex", folderId: 7 })
+      ).toBe(
+        "请先用 cowork-context team-read 读小王的会话 member-a/42，弄清 TA 做到哪了、还剩什么，然后在我这里接着做："
+      )
+    })
+
+    it("falls back to a folderless chat draft when no project is open", async () => {
+      useAppWorkspaceStore.setState({ activeFolderId: null, allFolders: [] })
+      makeAvailable()
+      api.teamEntries.mockResolvedValue(page([]))
+      renderHost()
+      await open()
+      fireEvent.click(
+        screen.getByRole("button", { name: "Let my agent continue" })
+      )
+      expect(openDraft).not.toHaveBeenCalled()
+      expect(openChat).toHaveBeenCalledTimes(1)
+      expect(openChat).toHaveBeenCalledWith({ freshDraft: true })
+      expect(
+        consumeContinuePrompt("chat-1", {
+          agentType: "claude_code",
+          folderId: 99,
+        })
+      ).toMatch(/member-a\/42/)
+    })
+
+    it("is hidden once the share is withdrawn", async () => {
+      makeAvailable()
+      api.teamEntries.mockRejectedValue(
+        new CoworkTeamError("not_found", "gone")
+      )
+      renderHost()
+      await open()
+      await flush()
+      expect(
+        screen.queryByRole("button", { name: "Let my agent continue" })
+      ).toBeNull()
+    })
   })
 })

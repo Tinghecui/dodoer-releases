@@ -339,6 +339,10 @@ export interface TabStoreState {
        *  给的是一份干净的草稿）；只给不是用户点「新建会话」的内部调用用，
        *  比如启动时回到上次的项目。 */
       keepDraftWorktree?: boolean
+      /** CoTeam「让我的智能体接着做」（#1235 第 7 行）：要一个真正空白的草稿。
+       *  分组里已有的草稿只在它什么都没有（没打的字、排队区空）时才复用，
+       *  不然在旁边另开一个；也不领关掉的草稿寄存的消息（#1042）。 */
+      freshDraft?: boolean
     }
   ) => OpenedDraftTarget
   openChatModeTab: (options?: {
@@ -347,6 +351,8 @@ export interface TabStoreState {
     forceAgent?: AgentType
     /** See `openNewConversationTab`'s `retargetTabId`. */
     retargetTabId?: string
+    /** See `openNewConversationTab`'s `freshDraft`. */
+    freshDraft?: boolean
   }) => OpenedDraftTarget
   setChatDraftWorkingDir: (tabId: string, workingDir: string) => void
   /** Record (or clear, with `null`) a draft's "start in my own worktree"
@@ -1915,6 +1921,12 @@ function isBlankDraft(tab: TabItemInternal): boolean {
   )
 }
 
+/** `freshDraft` 能复用的草稿：空白（`isBlankDraft`），排队区连只在内存里的
+ *  消息也没有。 */
+function isFreshReusableDraft(tab: TabItemInternal): boolean {
+  return isBlankDraft(tab) && !draftQueueHoldsMessages(tab.id)
+}
+
 /**
  * One draft per group: close the blank drafts that share a group with
  * `keepId` in its own folder view (parked or on screen). While tabs follow
@@ -2871,6 +2883,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         ...(options?.forceAgent != null
           ? { forceAgent: options.forceAgent }
           : {}),
+        ...(options?.freshDraft ? { freshDraft: true } : {}),
       })
     }
     // Read before any folder scope switch: "inherit from active" means the
@@ -2917,6 +2930,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const targetGroup = movingDraft
       ? groupOfTab(prevState.groupOf, prevState.groupLayout, movingDraft.id)
       : resolveTargetGroup(prevState, options?.targetGroup)
+    const freshDraft = !movingDraft && options?.freshDraft === true
     const existingTab =
       movingDraft ??
       prevState.rawTabs.find(
@@ -2924,7 +2938,8 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
           t.conversationId == null &&
           isTabInScope(t) &&
           groupOfTab(prevState.groupOf, prevState.groupLayout, t.id) ===
-            targetGroup
+            targetGroup &&
+          (!freshDraft || isFreshReusableDraft(t))
       )
 
     // Cowork（#1042）：这个项目寄存着关掉的草稿没发出去的消息时，交给这次
@@ -2937,6 +2952,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     // #1191 第 3 次返工：只在内存里、存储存不下的消息也算存着。
     const claimed =
       movingDraft ||
+      freshDraft ||
       (existingTab != null && draftQueueHoldsMessages(existingTab.id))
         ? null
         : claimParkedDraftQueue(
@@ -3103,10 +3119,14 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       : resolveTargetGroup(st, options?.targetGroup)
     const inTargetGroup = (t: TabItemInternal) =>
       groupOfTab(st.groupOf, st.groupLayout, t.id) === targetGroup
+    const freshDraft = !movingDraft && options?.freshDraft === true
     const isTargetDraft = (t: TabItemInternal) =>
       movingDraft
         ? t.id === movingDraft.id
-        : t.conversationId == null && isTabInScope(t) && inTargetGroup(t)
+        : t.conversationId == null &&
+          isTabInScope(t) &&
+          inTargetGroup(t) &&
+          (!freshDraft || isFreshReusableDraft(t))
     const existingDraft = st.rawTabs.find(isTargetDraft)
     const needsDisconnect =
       existingDraft != null &&

@@ -3,3 +3,4 @@
 {"t":"2026-11-28T00:20:11Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":46083148848,"status":"pending","title":"Merge pull request #1522 from Tinghecui/autopilot/1511-conflict-reloa…","wf":"release-train"}]}
 {"t":"2026-11-28T00:30:17Z","running":[{"wf":"release-train","run":46087428637,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-28T00:27:23Z"}],"queued":[]}
 {"t":"2026-11-28T00:40:11Z","running":[{"wf":"release-train","run":46087428637,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-28T00:27:23Z"}],"queued":[]}
+{"t":"2026-11-28T00:50:11Z","running":[],"queued":[]}

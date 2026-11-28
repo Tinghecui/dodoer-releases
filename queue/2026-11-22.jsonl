@@ -1,0 +1,147 @@
+{"t":"2026-11-22T00:00:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T00:10:12Z","running":[{"wf":"release-train","run":44965223441,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T00:09:42Z"}],"queued":[]}
+{"t":"2026-11-22T00:20:10Z","running":[{"wf":"release-train","run":44965223441,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T00:09:42Z"}],"queued":[]}
+{"t":"2026-11-22T00:30:13Z","running":[],"queued":[]}
+{"t":"2026-11-22T00:40:08Z","running":[],"queued":[]}
+{"t":"2026-11-22T00:50:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T01:00:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T01:10:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T01:20:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T01:30:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T01:40:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T01:50:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T02:00:14Z","running":[],"queued":[]}
+{"t":"2026-11-22T02:10:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T02:20:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T02:30:13Z","running":[],"queued":[]}
+{"t":"2026-11-22T02:40:08Z","running":[],"queued":[]}
+{"t":"2026-11-22T02:50:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T03:00:21Z","running":[],"queued":[]}
+{"t":"2026-11-22T03:10:11Z","running":[],"queued":[]}
+{"t":"2026-11-22T03:20:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T03:25:37Z","running":[],"queued":[]}
+{"t":"2026-11-22T03:30:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T03:40:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T03:50:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T04:00:11Z","running":[],"queued":[]}
+{"t":"2026-11-22T04:10:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T04:20:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T04:30:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T04:40:08Z","running":[],"queued":[]}
+{"t":"2026-11-22T04:50:11Z","running":[],"queued":[]}
+{"t":"2026-11-22T05:00:11Z","running":[],"queued":[]}
+{"t":"2026-11-22T05:10:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T05:20:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T05:30:14Z","running":[],"queued":[]}
+{"t":"2026-11-22T05:40:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T05:50:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T06:00:11Z","running":[],"queued":[]}
+{"t":"2026-11-22T06:10:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T06:20:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T06:30:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T06:40:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T06:50:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T07:00:14Z","running":[],"queued":[]}
+{"t":"2026-11-22T07:10:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T07:20:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T07:30:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T07:40:14Z","running":[],"queued":[]}
+{"t":"2026-11-22T07:50:15Z","running":[],"queued":[]}
+{"t":"2026-11-22T08:00:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T08:10:17Z","running":[],"queued":[]}
+{"t":"2026-11-22T08:20:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T08:30:11Z","running":[],"queued":[]}
+{"t":"2026-11-22T08:40:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T08:50:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T09:00:18Z","running":[],"queued":[]}
+{"t":"2026-11-22T09:10:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T09:20:14Z","running":[],"queued":[]}
+{"t":"2026-11-22T09:30:16Z","running":[],"queued":[]}
+{"t":"2026-11-22T09:40:11Z","running":[],"queued":[]}
+{"t":"2026-11-22T09:50:12Z","running":[],"queued":[]}
+{"t":"2026-11-22T10:00:19Z","running":[],"queued":[]}
+{"t":"2026-11-22T10:10:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T10:20:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T10:30:16Z","running":[],"queued":[]}
+{"t":"2026-11-22T10:40:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T10:50:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T11:00:14Z","running":[],"queued":[]}
+{"t":"2026-11-22T11:10:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T11:20:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T11:30:16Z","running":[],"queued":[]}
+{"t":"2026-11-22T11:40:10Z","running":[{"wf":"release-train","run":45018049186,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T11:35:34Z"}],"queued":[{"job":"整班在等前一班跑完","run":45018259365,"status":"pending","title":"Merge pull request #1218 from Tinghecui/cowork/desktop-e2e-native","wf":"release-train"}]}
+{"t":"2026-11-22T11:50:10Z","running":[{"wf":"release-train","run":45018049186,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T11:35:34Z"}],"queued":[{"job":"整班在等前一班跑完","run":45018259365,"status":"pending","title":"Merge pull request #1218 from Tinghecui/cowork/desktop-e2e-native","wf":"release-train"}]}
+{"t":"2026-11-22T11:53:56Z","running":[{"wf":"release-train","run":45018049186,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T11:35:34Z"}],"queued":[{"job":"整班在等前一班跑完","run":45018259365,"status":"pending","title":"Merge pull request #1218 from Tinghecui/cowork/desktop-e2e-native","wf":"release-train"}]}
+{"t":"2026-11-22T12:00:12Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45018259365,"status":"pending","title":"Merge pull request #1218 from Tinghecui/cowork/desktop-e2e-native","wf":"release-train"}]}
+{"t":"2026-11-22T12:10:10Z","running":[{"wf":"release-train","run":45018259365,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T12:04:11Z"}],"queued":[]}
+{"t":"2026-11-22T12:20:15Z","running":[{"wf":"release-train","run":45018259365,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T12:04:11Z"}],"queued":[]}
+{"t":"2026-11-22T12:30:17Z","running":[{"wf":"release-train","run":45022290924,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T12:29:14Z"}],"queued":[]}
+{"t":"2026-11-22T12:40:11Z","running":[{"wf":"release-train","run":45022290924,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T12:29:14Z"}],"queued":[]}
+{"t":"2026-11-22T12:50:12Z","running":[{"wf":"release-train","run":45022290924,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T12:29:14Z"}],"queued":[]}
+{"t":"2026-11-22T13:00:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T13:10:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T13:20:11Z","running":[],"queued":[]}
+{"t":"2026-11-22T13:30:11Z","running":[{"wf":"release-train","run":45027359668,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T13:25:20Z"}],"queued":[]}
+{"t":"2026-11-22T13:40:09Z","running":[{"wf":"release-train","run":45027359668,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T13:25:20Z"}],"queued":[]}
+{"t":"2026-11-22T13:50:10Z","running":[],"queued":[]}
+{"t":"2026-11-22T14:00:12Z","running":[],"queued":[]}
+{"t":"2026-11-22T14:10:11Z","running":[],"queued":[]}
+{"t":"2026-11-22T14:20:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T14:30:11Z","running":[{"wf":"release-train","run":45032473936,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T14:22:54Z"}],"queued":[{"job":"整班在等前一班跑完","run":45033098788,"status":"pending","title":"Merge pull request #1224 from Tinghecui/cowork/task-plan-paren","wf":"release-train"}]}
+{"t":"2026-11-22T14:40:14Z","running":[{"wf":"release-train","run":45032473936,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T14:22:54Z"}],"queued":[{"job":"整班在等前一班跑完","run":45033098788,"status":"pending","title":"Merge pull request #1224 from Tinghecui/cowork/task-plan-paren","wf":"release-train"}]}
+{"t":"2026-11-22T14:50:15Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45033098788,"status":"pending","title":"Merge pull request #1224 from Tinghecui/cowork/task-plan-paren","wf":"release-train"}]}
+{"t":"2026-11-22T15:00:14Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45035277623,"status":"pending","title":"Merge pull request #1228 from Tinghecui/cowork/task-plan-paren-2","wf":"release-train"}]}
+{"t":"2026-11-22T15:10:17Z","running":[{"wf":"release-train","run":45036096019,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-22T15:04:03Z"}],"queued":[{"job":"整班在等前一班跑完","run":45036308169,"status":"pending","title":"Merge pull request #1223 from Tinghecui/cowork/upstream-pick-1122","wf":"release-train"}]}
+{"t":"2026-11-22T15:20:13Z","running":[{"wf":"release-train","run":45036096019,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-22T15:04:03Z"}],"queued":[{"job":"整班在等前一班跑完","run":45036308169,"status":"pending","title":"Merge pull request #1223 from Tinghecui/cowork/upstream-pick-1122","wf":"release-train"}]}
+{"t":"2026-11-22T15:30:12Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45036308169,"status":"pending","title":"Merge pull request #1223 from Tinghecui/cowork/upstream-pick-1122","wf":"release-train"}]}
+{"t":"2026-11-22T15:40:18Z","running":[{"wf":"release-train","run":45036308169,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T15:32:27Z"}],"queued":[]}
+{"t":"2026-11-22T15:50:13Z","running":[{"wf":"release-train","run":45036308169,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T15:32:27Z"}],"queued":[{"job":"整班在等前一班跑完","run":45040230061,"status":"pending","title":"Merge pull request #1226 from Tinghecui/cowork/list-sync","wf":"release-train"}]}
+{"t":"2026-11-22T16:00:20Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45040230061,"status":"pending","title":"Merge pull request #1226 from Tinghecui/cowork/list-sync","wf":"release-train"}]}
+{"t":"2026-11-22T16:10:18Z","running":[{"wf":"release-train","run":45040230061,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-22T16:01:44Z"}],"queued":[]}
+{"t":"2026-11-22T16:20:12Z","running":[{"wf":"release-train","run":45040230061,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-22T16:01:44Z"}],"queued":[]}
+{"t":"2026-11-22T16:30:16Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45044166115,"status":"pending","title":"Merge pull request #1163 from Tinghecui/autopilot/1111-agent-install-…","wf":"release-train"}]}
+{"t":"2026-11-22T16:40:13Z","running":[{"wf":"release-train","run":45044166115,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T16:31:05Z"}],"queued":[]}
+{"t":"2026-11-22T16:50:11Z","running":[{"wf":"release-train","run":45044166115,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T16:31:05Z"}],"queued":[{"job":"整班在等前一班跑完","run":45045602381,"status":"pending","title":"Merge pull request #1164 from Tinghecui/autopilot/1113-export-omit-ap…","wf":"release-train"}]}
+{"t":"2026-11-22T17:00:14Z","running":[{"wf":"release-train","run":45046768356,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-22T16:59:41Z"}],"queued":[]}
+{"t":"2026-11-22T17:10:16Z","running":[{"wf":"release-train","run":45046768356,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-22T16:59:41Z"}],"queued":[]}
+{"t":"2026-11-22T17:20:12Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45048288352,"status":"pending","title":"Merge pull request #1243 from Tinghecui/cowork/fix-app-token-prettier","wf":"release-train"}]}
+{"t":"2026-11-22T17:30:12Z","running":[{"wf":"release-train","run":45048288352,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T17:26:38Z"}],"queued":[]}
+{"t":"2026-11-22T17:40:12Z","running":[{"wf":"release-train","run":45048288352,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh","started":"2026-11-22T17:26:38Z"}],"queued":[{"job":"整班在等前一班跑完","run":45049956870,"status":"pending","title":"Merge pull request #1241 from Tinghecui/cowork/apphandle-arc","wf":"release-train"}]}
+{"t":"2026-11-22T17:50:15Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45051214069,"status":"pending","title":"Merge pull request #1167 from Tinghecui/autopilot/1120-turn-failure-r…","wf":"release-train"}]}
+{"t":"2026-11-22T18:00:12Z","running":[{"wf":"release-train","run":45051214069,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T17:51:22Z"}],"queued":[{"job":"整班在等前一班跑完","run":45051764327,"status":"pending","title":"Merge pull request #1166 from Tinghecui/autopilot/1136-terminal-close…","wf":"release-train"}]}
+{"t":"2026-11-22T18:10:12Z","running":[{"wf":"release-train","run":45051214069,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T17:51:22Z"}],"queued":[{"job":"整班在等前一班跑完","run":45053057688,"status":"pending","title":"Merge pull request #1165 from Tinghecui/autopilot/1119-delegation-inh…","wf":"release-train"}]}
+{"t":"2026-11-22T18:20:14Z","running":[{"wf":"release-train","run":45053057688,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-22T18:18:42Z"}],"queued":[{"job":"整班在等前一班跑完","run":45054394185,"status":"pending","title":"Merge pull request #1256 from Tinghecui/autopilot/1247-workspace-star…","wf":"release-train"}]}
+{"t":"2026-11-22T18:30:14Z","running":[{"wf":"release-train","run":45053057688,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-22T18:18:42Z"}],"queued":[{"job":"整班在等前一班跑完","run":45054793633,"status":"pending","title":"Merge pull request #1259 from Tinghecui/autopilot/1210-close-tab-keep…","wf":"release-train"}]}
+{"t":"2026-11-22T18:40:18Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45056304509,"status":"pending","title":"Merge pull request #1232 from Tinghecui/autopilot/1230-r1-cowork-team…","wf":"release-train"}]}
+{"t":"2026-11-22T18:50:15Z","running":[{"wf":"release-train","run":45056304509,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T18:43:21Z"}],"queued":[{"job":"整班在等前一班跑完","run":45057017466,"status":"pending","title":"Merge pull request #1264 from Tinghecui/autopilot/1213-remote-token-r…","wf":"release-train"}]}
+{"t":"2026-11-22T19:00:13Z","running":[{"wf":"release-train","run":45056304509,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T18:43:21Z"}],"queued":[{"job":"整班在等前一班跑完","run":45057017466,"status":"pending","title":"Merge pull request #1264 from Tinghecui/autopilot/1213-remote-token-r…","wf":"release-train"}]}
+{"t":"2026-11-22T19:10:13Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45057017466,"status":"pending","title":"Merge pull request #1264 from Tinghecui/autopilot/1213-remote-token-r…","wf":"release-train"}]}
+{"t":"2026-11-22T19:20:12Z","running":[{"wf":"release-train","run":45057017466,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T19:12:55Z"}],"queued":[]}
+{"t":"2026-11-22T19:26:39Z","running":[{"wf":"release-train","run":45057017466,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T19:12:55Z"}],"queued":[]}
+{"t":"2026-11-22T19:30:14Z","running":[{"wf":"release-train","run":45057017466,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T19:12:55Z"}],"queued":[]}
+{"t":"2026-11-22T19:40:13Z","running":[],"queued":[]}
+{"t":"2026-11-22T19:50:12Z","running":[],"queued":[]}
+{"t":"2026-11-22T20:00:12Z","running":[],"queued":[]}
+{"t":"2026-11-22T20:10:13Z","running":[],"queued":[]}
+{"t":"2026-11-22T20:20:11Z","running":[],"queued":[]}
+{"t":"2026-11-22T20:30:12Z","running":[],"queued":[]}
+{"t":"2026-11-22T20:40:16Z","running":[],"queued":[]}
+{"t":"2026-11-22T20:50:11Z","running":[],"queued":[]}
+{"t":"2026-11-22T21:00:12Z","running":[],"queued":[]}
+{"t":"2026-11-22T21:10:18Z","running":[{"wf":"desktop-macos-intel","run":45069555320,"job":"dodoer.app (macOS Intel，黑苹果原生编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T21:00:14Z"}],"queued":[]}
+{"t":"2026-11-22T21:20:11Z","running":[],"queued":[]}
+{"t":"2026-11-22T21:30:12Z","running":[],"queued":[]}
+{"t":"2026-11-22T21:40:16Z","running":[],"queued":[]}
+{"t":"2026-11-22T21:50:14Z","running":[{"wf":"release-train","run":45073703647,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T21:44:02Z"}],"queued":[{"job":"整班在等前一班跑完","run":45074208307,"status":"pending","title":"Merge pull request #1293 from Tinghecui/autopilot/1281-gitlog-branch-…","wf":"release-train"}]}
+{"t":"2026-11-22T22:00:14Z","running":[{"wf":"release-train","run":45073703647,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T21:44:02Z"}],"queued":[{"job":"整班在等前一班跑完","run":45075024140,"status":"pending","title":"Merge pull request #1290 from Tinghecui/autopilot/1279-scroll-area-fo…","wf":"release-train"}]}
+{"t":"2026-11-22T22:10:14Z","running":[{"wf":"release-train","run":45075024140,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T22:04:56Z"}],"queued":[{"job":"整班在等前一班跑完","run":45075763162,"status":"pending","title":"Merge pull request #1292 from Tinghecui/autopilot/1252-diff-eof-newli…","wf":"release-train"}]}
+{"t":"2026-11-22T22:20:13Z","running":[{"wf":"release-train","run":45075024140,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-22T22:04:56Z"}],"queued":[{"job":"整班在等前一班跑完","run":45075763162,"status":"pending","title":"Merge pull request #1292 from Tinghecui/autopilot/1252-diff-eof-newli…","wf":"release-train"}]}
+{"t":"2026-11-22T22:30:16Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45075763162,"status":"pending","title":"Merge pull request #1292 from Tinghecui/autopilot/1252-diff-eof-newli…","wf":"release-train"}]}
+{"t":"2026-11-22T22:40:10Z","running":[{"wf":"release-train","run":45075763162,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-22T22:35:02Z"}],"queued":[{"job":"整班在等前一班跑完","run":45078666096,"status":"pending","title":"Merge pull request #1301 from Tinghecui/feat/deepseek-acp-coteam","wf":"release-train"}]}
+{"t":"2026-11-22T22:50:11Z","running":[{"wf":"release-train","run":45075763162,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-22T22:35:02Z"}],"queued":[{"job":"整班在等前一班跑完","run":45078666096,"status":"pending","title":"Merge pull request #1301 from Tinghecui/feat/deepseek-acp-coteam","wf":"release-train"}]}
+{"t":"2026-11-22T23:00:15Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45078666096,"status":"pending","title":"Merge pull request #1301 from Tinghecui/feat/deepseek-acp-coteam","wf":"release-train"}]}
+{"t":"2026-11-22T23:10:09Z","running":[{"wf":"release-train","run":45078666096,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-22T23:07:10Z"}],"queued":[]}
+{"t":"2026-11-22T23:20:10Z","running":[{"wf":"release-train","run":45078666096,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-22T23:07:10Z"}],"queued":[]}
+{"t":"2026-11-22T23:30:12Z","running":[],"queued":[]}
+{"t":"2026-11-22T23:40:09Z","running":[],"queued":[]}
+{"t":"2026-11-22T23:50:15Z","running":[],"queued":[]}

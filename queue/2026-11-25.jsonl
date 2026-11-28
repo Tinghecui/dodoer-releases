@@ -1,0 +1,144 @@
+{"t":"2026-11-25T00:00:13Z","running":[{"wf":"release-train","run":45513497042,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-24T23:52:19Z"}],"queued":[]}
+{"t":"2026-11-25T00:10:10Z","running":[{"wf":"release-train","run":45513497042,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-24T23:52:19Z"}],"queued":[{"job":"整班在等前一班跑完","run":45515350978,"status":"pending","title":"Merge pull request #1503 from Tinghecui/autopilot/1351-mobile-add-men…","wf":"release-train"}]}
+{"t":"2026-11-25T00:20:10Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45515350978,"status":"pending","title":"Merge pull request #1503 from Tinghecui/autopilot/1351-mobile-add-men…","wf":"release-train"}]}
+{"t":"2026-11-25T00:30:13Z","running":[{"wf":"release-train","run":45515350978,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-25T00:21:09Z"}],"queued":[]}
+{"t":"2026-11-25T00:40:14Z","running":[{"wf":"release-train","run":45515350978,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-25T00:21:09Z"}],"queued":[{"job":"整班在等前一班跑完","run":45519767497,"status":"pending","title":"Merge pull request #1430 from Tinghecui/autopilot/1421-webdav-save-va…","wf":"release-train"}]}
+{"t":"2026-11-25T00:50:11Z","running":[{"wf":"release-train","run":45519767497,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-25T00:49:36Z"}],"queued":[]}
+{"t":"2026-11-25T01:00:11Z","running":[{"wf":"release-train","run":45519767497,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-25T00:49:36Z"}],"queued":[]}
+{"t":"2026-11-25T01:10:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T01:20:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T01:30:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T01:40:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T01:50:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T02:00:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T02:10:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T02:20:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T02:30:15Z","running":[],"queued":[]}
+{"t":"2026-11-25T02:40:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T02:50:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T03:00:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T03:10:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T03:20:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T03:30:14Z","running":[],"queued":[]}
+{"t":"2026-11-25T03:40:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T03:50:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T04:00:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T04:10:13Z","running":[],"queued":[]}
+{"t":"2026-11-25T04:20:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T04:30:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T04:40:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T04:50:18Z","running":[],"queued":[]}
+{"t":"2026-11-25T05:00:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T05:10:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T05:20:17Z","running":[],"queued":[]}
+{"t":"2026-11-25T05:30:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T05:40:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T05:50:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T06:00:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T06:10:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T06:20:17Z","running":[],"queued":[]}
+{"t":"2026-11-25T06:30:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T06:40:16Z","running":[],"queued":[]}
+{"t":"2026-11-25T06:50:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T07:00:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T07:10:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T07:20:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T07:30:19Z","running":[],"queued":[]}
+{"t":"2026-11-25T07:40:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T07:50:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T08:00:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T08:10:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T08:15:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T08:20:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T08:30:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T08:40:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T08:50:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T09:00:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T09:10:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T09:20:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T09:30:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T09:40:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T09:50:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T10:00:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T10:10:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T10:20:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T10:30:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T10:40:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T10:50:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T11:00:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T11:10:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T11:20:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T11:30:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T11:40:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T11:50:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T12:00:13Z","running":[],"queued":[]}
+{"t":"2026-11-25T12:10:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T12:20:15Z","running":[],"queued":[]}
+{"t":"2026-11-25T12:30:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T12:40:15Z","running":[],"queued":[]}
+{"t":"2026-11-25T12:50:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T13:00:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T13:10:14Z","running":[],"queued":[]}
+{"t":"2026-11-25T13:20:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T13:30:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T13:40:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T13:50:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T14:00:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T14:10:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T14:20:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T14:30:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T14:40:16Z","running":[],"queued":[]}
+{"t":"2026-11-25T14:50:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T15:00:13Z","running":[],"queued":[]}
+{"t":"2026-11-25T15:10:18Z","running":[],"queued":[]}
+{"t":"2026-11-25T15:20:15Z","running":[],"queued":[]}
+{"t":"2026-11-25T15:30:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T15:40:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T15:50:13Z","running":[],"queued":[]}
+{"t":"2026-11-25T16:00:15Z","running":[],"queued":[]}
+{"t":"2026-11-25T16:30:13Z","running":[],"queued":[]}
+{"t":"2026-11-25T16:40:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T16:50:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T17:00:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T17:10:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T17:20:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T17:30:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T17:40:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T17:50:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T18:00:18Z","running":[],"queued":[]}
+{"t":"2026-11-25T18:10:14Z","running":[],"queued":[]}
+{"t":"2026-11-25T18:20:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T18:30:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T18:40:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T18:42:46Z","running":[],"queued":[]}
+{"t":"2026-11-25T18:50:14Z","running":[],"queued":[]}
+{"t":"2026-11-25T19:00:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T19:10:21Z","running":[],"queued":[]}
+{"t":"2026-11-25T19:20:09Z","running":[],"queued":[]}
+{"t":"2026-11-25T19:30:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T19:40:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T19:50:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T20:00:18Z","running":[],"queued":[]}
+{"t":"2026-11-25T20:10:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T20:20:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T20:30:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T20:40:13Z","running":[],"queued":[]}
+{"t":"2026-11-25T20:50:19Z","running":[],"queued":[]}
+{"t":"2026-11-25T21:00:18Z","running":[{"wf":"release-train","run":45698960497,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-25T20:52:07Z"}],"queued":[{"wf":"desktop-macos-intel","run":45700220883,"job":"dodoer.app (macOS Intel，黑苹果原生编译)","status":"queued","runner":null,"started":"2026-11-25T21:00:16Z"},{"job":"整班在等前一班跑完","run":45699416286,"status":"pending","title":"Merge pull request #1519 from Tinghecui/autopilot/1514-ctrlk-file-sea…","wf":"release-train"}]}
+{"t":"2026-11-25T21:10:18Z","running":[{"wf":"release-train","run":45698960497,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-25T20:52:07Z"},{"wf":"desktop-macos-intel","run":45700220883,"job":"dodoer.app (macOS Intel，黑苹果原生编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-25T21:00:18Z"}],"queued":[{"job":"整班在等前一班跑完","run":45701352804,"status":"pending","title":"Merge pull request #1527 from Tinghecui/autopilot/1516-air-completed-…","wf":"release-train"}]}
+{"t":"2026-11-25T21:20:23Z","running":[{"wf":"release-train","run":45698960497,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-25T20:52:07Z"},{"wf":"desktop-macos-intel","run":45700220883,"job":"dodoer.app (macOS Intel，黑苹果原生编译)","status":"in_progress","runner":"hackintosh-3","started":"2026-11-25T21:00:18Z"}],"queued":[{"job":"整班在等前一班跑完","run":45701352804,"status":"pending","title":"Merge pull request #1527 from Tinghecui/autopilot/1516-air-completed-…","wf":"release-train"}]}
+{"t":"2026-11-25T21:30:16Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45704130823,"status":"pending","title":"Merge pull request #1533 from Tinghecui/autopilot/1457-shared-view-se…","wf":"release-train"}]}
+{"t":"2026-11-25T21:40:14Z","running":[{"wf":"release-train","run":45706123766,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-25T21:38:32Z"}],"queued":[{"job":"整班在等前一班跑完","run":45706349722,"status":"pending","title":"Merge pull request #1534 from Tinghecui/autopilot/1456-automation-dra…","wf":"release-train"}]}
+{"t":"2026-11-25T21:50:17Z","running":[{"wf":"release-train","run":45706123766,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-25T21:38:32Z"}],"queued":[{"job":"整班在等前一班跑完","run":45706349722,"status":"pending","title":"Merge pull request #1534 from Tinghecui/autopilot/1456-automation-dra…","wf":"release-train"}]}
+{"t":"2026-11-25T22:00:16Z","running":[],"queued":[{"job":"整班在等前一班跑完","run":45708208776,"status":"pending","title":"Merge pull request #1479 from Tinghecui/autopilot/1371-connection-pil…","wf":"release-train"}]}
+{"t":"2026-11-25T22:10:15Z","running":[{"wf":"release-train","run":45708208776,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-25T22:00:43Z"}],"queued":[]}
+{"t":"2026-11-25T22:20:14Z","running":[{"wf":"release-train","run":45708208776,"job":"桌面包 / dodoer.app (macOS arm64，黑苹果交叉编译)","status":"in_progress","runner":"hackintosh-2","started":"2026-11-25T22:00:43Z"}],"queued":[]}
+{"t":"2026-11-25T22:30:17Z","running":[],"queued":[]}
+{"t":"2026-11-25T22:40:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T22:50:10Z","running":[],"queued":[]}
+{"t":"2026-11-25T23:00:16Z","running":[],"queued":[]}
+{"t":"2026-11-25T23:10:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T23:20:12Z","running":[],"queued":[]}
+{"t":"2026-11-25T23:30:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T23:40:11Z","running":[],"queued":[]}
+{"t":"2026-11-25T23:50:11Z","running":[],"queued":[]}
